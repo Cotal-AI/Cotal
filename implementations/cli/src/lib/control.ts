@@ -33,7 +33,7 @@ import {
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { controlCaller, loadSpaceAuth, renderWorkspaceError, type ControlAuth } from "@cotal-ai/workspace";
+import { controlCaller, loadSpaceAuth, renderWorkspaceError, userViewAuth, type Connection, type ControlAuth } from "@cotal-ai/workspace";
 import { DEV_OWNER, type SpaceAuth } from "@cotal-ai/core";
 import { c, staleStoreHint } from "../ui.js";
 import { cliVersion } from "./version.js";
@@ -652,6 +652,57 @@ async function askManagerScatterEp(
   }
 }
 
+/** User-mode `cotal ps` census across every live manager registered to the caller's owner (or
+ *  `local`, mirroring `managerGate`): freeze the endpoint class on the `registry-reader` connection,
+ *  keep the caller's instances, and query each through its own pinned `manager-caller` exchange. */
+async function askManagerUserCensus(
+  space: string,
+  server: string,
+  op: string,
+  auth: ControlAuth,
+  userConn: Connection,
+  timeoutMs?: number,
+): Promise<ScatterReply> {
+  const caller = auth.epCaller!;
+  let kept: string[];
+  try {
+    const frozen = await withControlConnection(server, auth, async (nc) => {
+      const jsm = await jetstreamManager(nc, { checkAPI: false });
+      return freezeExpectedSet(jsm, space, BASELINE_LIFECYCLE_ENDPOINT);
+    });
+    // Mirror `managerGate` (implementations/auth/src/service.ts:682): keep instances whose
+    // registered spec owner is the caller's owner, or the local manager whose spec owner is `local`.
+    kept = frozen.filter((f) => f.owner === caller.owner || f.owner === DEV_OWNER).map((f) => f.instanceId);
+    if (kept.length === 0)
+      return {
+        ok: false,
+        error: `no live manager for owner ${caller.owner} is registered in space "${space}"; start one with \`cotal supervise --space ${space}\`, or target a specific instance with \`--on <instance>\``,
+      };
+  } catch (e) {
+    const { error } = epRailFailure(e);
+    return { ok: false, error: error ?? "error" };
+  }
+  const instances: ScatterInstanceReply[] = [];
+  for (const instanceId of kept) {
+    try {
+      const m = await userViewAuth(userConn, "manager-caller", { managerInstanceId: instanceId });
+      const reply = await askManager(space, server, op, undefined, {
+        bearer: m.bearer,
+        sentinelCreds: m.sentinelCreds,
+        tls: auth.tls,
+        epCaller: { owner: m.owner, actor: m.actor, uid: m.lifecycleUid },
+        managerInstanceId: m.managerInstanceId,
+      }, "owner", timeoutMs, { instanceId });
+      if (reply.ok) instances.push({ instanceId, reachable: true, data: reply.data });
+      else if (reply.unanswered) instances.push({ instanceId, reachable: false });
+      else instances.push({ instanceId, reachable: true, error: reply.error ?? reply.code ?? "error" });
+    } catch (e) {
+      instances.push({ instanceId, reachable: true, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { ok: true, instances };
+}
+
 /** SCATTER one untargeted read (`ps`) across EVERY registered manager instance in the space and merge
  *  the attributed results — the `cotal ps` default in a multi-manager space (P2 item 3). Auth shapes
  *  match {@link askManager}: a minted instrument or user bearer rides its own caller triple; a raw
@@ -667,9 +718,11 @@ export async function scatterManager(
   auth: ControlAuth = {},
   spaceAuth?: SpaceAuth,
   timeoutMs?: number,
+  userConn?: Connection,
 ): Promise<ScatterReply> {
   const who = controlCaller(auth);
   if ("refusal" in who) return { ok: false, error: who.refusal };
+  if (auth.bearer && userConn) return askManagerUserCensus(space, server, op, { ...auth, epCaller: who.caller }, userConn, timeoutMs);
   return askManagerScatterEp(space, server, op, { ...auth, epCaller: who.caller }, spaceAuth, timeoutMs);
 }
 

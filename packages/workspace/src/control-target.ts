@@ -28,7 +28,7 @@ import {
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths } from "./agent-secrets.js";
 import { authDir, findCotalRoot, soleSpaceOf } from "./auth-paths.js";
-import { connectOrExit, connectOrThrow, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, userViewAuth, type ConnectFlags } from "./connect.js";
+import { connectOrExit, connectOrThrow, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, userViewAuth, type ConnectFlags, type Connection } from "./connect.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type MeshTargetErrorCode } from "./mesh-target.js";
 import { findMesh } from "./mesh-registry.js";
 import { pruneStaleMeshes } from "./preflight.js";
@@ -52,6 +52,9 @@ export interface ControlTarget {
    *  {@link spaceAuth}. */
   mode?: MeshTarget["mode"];
   policy?: MeshTarget["policy"];
+  /** The resolved user-mode connection, carried forward so a census caller can exchange per-instance
+   *  pinned views against the same target without re-running the unpinned connect. */
+  userConn?: Connection;
 }
 
 /** The only {@link MeshTargetErrorCode}s that mean "there is NO registry entry here", and so the
@@ -109,7 +112,10 @@ export async function resolveControlTarget(
       if (!isWorkspaceTargetError(e) || !TARGET_ABSENT_CODES.has(e.code)) throw e;
     }
     if (mode === "user") {
-      const conn = await (opts.onRefusal === "throw" ? connectUserControlOrThrow : connectUserControlOrExit)(withSpace);
+      const conn = await (opts.onRefusal === "throw" ? connectUserControlOrThrow : connectUserControlOrExit)(
+        withSpace,
+        profile === "registry-reader" ? "registry-reader" : undefined,
+      );
       // A managed seat's own shell defaults to the manager that launched it, as its tools do, so a
       // second live manager for the owner does not make the seat's calls ambiguous. `--on` wins.
       const pin = instanceId ?? seatManagerInstance(conn.space);
@@ -127,13 +133,14 @@ export async function resolveControlTarget(
           epCaller: { owner: manager.owner, actor: manager.actor, uid: manager.lifecycleUid },
           managerInstanceId: manager.managerInstanceId,
         } : { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
+        userConn: conn,
         ...(conn.root !== undefined ? { root: conn.root } : {}),
         ...(conn.mode !== undefined ? { mode: conn.mode } : {}),
         ...(conn.policy ? { policy: conn.policy } : {}),
       };
     }
   }
-  const conn = await connect_(withSpace, profile, ...(instanceId !== undefined ? [{ instanceId }] as const : []));
+  const conn = await connect_(withSpace, profile === "registry-reader" ? "control-caller-privileged" : profile, ...(instanceId !== undefined ? [{ instanceId }] as const : []));
   return {
     space: conn.space,
     server: conn.server,

@@ -61,6 +61,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     teardown: () => one("teardown"),
     "control-caller-privileged": () => one("control-caller-privileged"),
     "control-caller-admin": () => one("control-caller-admin"),
+    "registry-reader": () => one("registry-reader"),
     deployer() { one("deployer"); one("deployer", { controlTier: "privileged" }, "privileged-tier"); },
     "endpoint-serve"() {
       const grant = epServeGrantRows(space, { endpoint: "manager", instanceId: instance, epoch: 1, ephemeralCommands: ["ps", "run-start", "run-resume"] });
@@ -251,7 +252,7 @@ export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "session-ledger", "session-serving", "run-mediator", "run-operator", "remote-manager",
   "lifecycle-executor", "endpoint-serve-executor", "endpoint-serve", "control-caller-privileged",
   "control-caller-admin", "backup", "restore", "endpoint-evictor", "retirement-requester",
-  "issuer", "run-admitter", "transfer-writer", "transfer-reader",
+  "issuer", "run-admitter", "transfer-writer", "transfer-reader", "registry-reader",
   // Manager-only infrastructure duties, like remote-manager. This classification is not
   // an isolation proof; host admission and the child UID boundary remain separate requirements.
   "environment-bootstrap", "environment-manager-supervisor", "environment-manager-executor",

@@ -476,7 +476,7 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
  *
  * If this function is ever changed to accept or consult a {@link Profile}, every caller is wrong.
  */
-export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Connection> {
+export async function connectUserControlOrExit(flags: ConnectFlags, view?: "registry-reader"): Promise<Connection> {
   if (flags.creds) {
     console.error(
       c.red(
@@ -495,7 +495,7 @@ export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Con
     process.exit(1);
   }
   try {
-    return await userConnectOrThrow(target);
+    return await userConnectOrThrow(target, view);
   } catch (e) {
     exitOnRefusal(e);
   }
@@ -503,11 +503,11 @@ export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Con
 
 /** {@link connectUserControlOrExit} for a caller that must record a refusal before it fails, such
  *  as `up`'s same-principal resume, which degrades its maintenance journal with the reason. */
-export async function connectUserControlOrThrow(flags: ResolveFlags): Promise<Connection> {
+export async function connectUserControlOrThrow(flags: ResolveFlags, view?: "registry-reader"): Promise<Connection> {
   const target = await resolveTargetOrThrow(flags);
   if (target.mode !== "user")
     throw new ConnectRefusal(`✗ connectUserControlOrThrow requires a user-auth mesh (resolved mode is "${target.mode}")`);
-  return userConnectOrThrow(target);
+  return userConnectOrThrow(target, view);
 }
 
 /** The user-mode connect: resolve the space's auth provider from the registry (composition-root
@@ -520,15 +520,15 @@ export async function connectUserControlOrThrow(flags: ResolveFlags): Promise<Co
  *  enter via {@link connectUserControlOrExit} (no role) or the user branch of {@link connectOrExit}
  *  (which refuses control-caller-* instruments). If a Profile is ever threaded into this function,
  *  the call sites that invented dummy roles are the defect. */
-async function userConnectOrThrow(target: MeshTarget): Promise<Connection> {
+async function userConnectOrThrow(target: MeshTarget, view?: "registry-reader"): Promise<Connection> {
   try {
-    return await userConnect(target);
+    return await userConnect(target, view);
   } catch (e) {
     throw new ConnectRefusal(`✗ ${e instanceof Error ? e.message : String(e)}`, undefined, { cause: e });
   }
 }
 
-async function userConnect(target: MeshTarget): Promise<Connection> {
+async function userConnect(target: MeshTarget, view?: "registry-reader"): Promise<Connection> {
   const ua = target.userAuth!; // mode "user" guarantees it (targetFromEntry throws otherwise)
   let provider: AuthProvider;
   try {
@@ -543,6 +543,7 @@ async function userConnect(target: MeshTarget): Promise<Connection> {
     dir: userAuthStateDir(target.root, target.space),
     space: target.space,
     actor: CLI_USER_ACTOR,
+    ...(view ? { view } : {}),
   });
   // The v0.4 caller triple (1c.2c): the callout mints the cli actor's ep-rail rows keyed on the
   // LEDGER lifecycle claim the bearer carries - the same three tokens, read client-side, let

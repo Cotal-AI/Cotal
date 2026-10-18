@@ -438,7 +438,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
   const on = onInstanceOrExit(v.on, "cotal ps");
   // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
   // this resolve, and a credential cannot gain an instance rail after it is minted.
-  const t = await resolveControlTarget(v, "control-caller-privileged", on);
+  const t = await resolveControlTarget(v, on === undefined && !opts.slots ? "registry-reader" : "control-caller-privileged", on);
   // `--on <instance>`: pin ps to ONE manager instance's `inst` route (P2 item 3 multi-manager) — a
   // single-manager view. Same path for both modes (no freeze; no scatter).
   if (on !== undefined) {
@@ -455,19 +455,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
     return;
   }
 
-  // Mode chosen UP FRONT from the connection shape. Never try-scatter-catch-degrade: a silent
-  // downgrade is the bug this branch fixes, and reintroducing it in the fix would be the whole
-  // night in miniature.
-  //
-  // USER MODE (bearer present): the borrowed manager view pins one authorized instance and keeps
-  // the actor's existing command scopes. It has no registry freeze rows and never scatters.
-  // The manager answers from its in-memory roster with an owner filter; this is not a complete
-  // multi-manager inventory (see docs/cli.md).
-  //
-  // STATIC/OPEN (no bearer): class scatter. The operator instrument (or bare open connect) holds
-  // the freeze rows; every registered instance is attributed, and a non-answering one is labeled
-  // unreachable (pin 3).
-  if (t.auth.bearer) {
+  if (opts.slots && t.auth.bearer) {
     // No explicit --on on this branch; askManager uses the issuer's concrete selection.
     const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, {});
     failIfNotOk(reply);
@@ -480,7 +468,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
     return;
   }
 
-  const scatter = await scatterManager(t.space, t.server, command, t.auth, t.spaceAuth);
+  const scatter = await scatterManager(t.space, t.server, command, t.auth, t.spaceAuth, undefined, t.userConn);
   if (!scatter.ok) {
     console.error(c.red(`✗ ${scatter.error}`));
     process.exit(1);

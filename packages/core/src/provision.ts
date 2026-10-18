@@ -130,6 +130,7 @@ export type Profile =
   // row IS cross-agent reach, so ps/start and stop/attach get SEPARATE, tier-scoped caller creds.
   | "control-caller-privileged" // ps/start → the privileged instrument set, no any-mode row (no cross-agent reach)
   | "control-caller-admin" // stop/attach → the admin instrument set, adding the any-mode rows + manager.admin (cross-agent power)
+  | "registry-reader" // read-only service-registry freeze (scatterFreezeReadRows)
   | "deployer" // spawn -f deploy authority: reads + admin-control launch on one ephemeral cred
   // v0.4 control surface (SPEC §13.9): the per-instance endpoint serve credential — EXACTLY the
   // instance's registered rails + epoch-pinned egress, no agent baseline. Consumes only an
@@ -282,6 +283,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   teardown: { class: "one-shot", note: "space teardown can be long/destructive; needs TTL budget/remint guard before default exp" },
   "control-caller-privileged": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "ps/start control call" },
   "control-caller-admin": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "stop/attach admin control call" },
+  "registry-reader": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one-shot service-registry freeze read (user-mode cotal ps census)" },
   deployer: { class: "one-shot", note: "manifest deploy spans planning/launch/ledger; needs near-expiry guard or remint before default exp" },
   "endpoint-serve": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "per-instance endpoint serve credential (SPEC 13.9); the managing authority re-mints on renewal and on takeover (new epoch), and the 13.1 barrier revokes the superseded one" },
   "goal-writer": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "self-mediated goal-writer for spawn-as-action; the manager re-mints for the SAME nkey on renewal, disjoint from the serve credential" },
@@ -1262,6 +1264,7 @@ export function permissionsFor(
   if (profile === "teardown") return teardownPermissions(space, pr, opts.transferStreams ?? []); // sole STREAM.DELETE holder
   if (profile === "control-caller-privileged") return controlCallerPermissions(space, pr, "privileged", opts); // ps/start reads
   if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, "admin", opts); // any-mode stop/attach
+  if (profile === "registry-reader") return { pub: { allow: scatterFreezeReadRows(space) }, sub: { allow: [`_INBOX_${pr.connId}.>`] } };
   if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? "admin", opts); // spawn -f deploy authority (user-mode view rides privileged)
   if (profile === "session-caller") return sessionCallerPermissions(space, pr, opts.sessionCaller); // one §13.6 session's caller rails
   if (profile === "session-serving") return sessionServingPermissions(space, pr, opts.sessionServing); // one §13.6 session's SERVING rails
@@ -2013,14 +2016,16 @@ function controlCallerPermissions(space: string, pr: MintPrincipal, epTier: "pri
   };
 }
 
-/** The SCOPED §13.9 records-read rows the class-scatter freeze rides (`cotal ps`): the
- *  `svc.*` enumeration consumer + the leader-served per-slot spec/status read of the endpoint's
- *  `svc` registry — a READ of exactly the service-registration keys, no write, no other bucket.
- *  The keyed Direct Get is subject-PINNED to `svc.>`; the enumeration consumer
- *  and the leader `STREAM.MSG.GET` are STREAM-scoped because the requested key rides the PAYLOAD
- *  (which a subject grant cannot narrow) — the SAME NAMED RESIDUAL every records reader already
- *  accepts (the provisioner, the lifecycle/serve executors): for this EPHEMERAL one-shot instrument's
- *  lifetime it can READ (never write) any records-store row — registration metadata, no secrets. */
+/** The §13.9 records-read rows the class-scatter freeze rides (`cotal ps`): the
+ *  `svc.*` enumeration + the leader-served per-slot spec/status read of the endpoint's
+ *  `svc` registry — no write, no other bucket.
+ *  The keyed Direct Get is subject-PINNED to `svc.>`; `STREAM.INFO` with a subject filter lists
+ *  every key on `KV_cotal_records_<space>`, and the leader `STREAM.MSG.GET` is STREAM-scoped because
+ *  the requested key rides the PAYLOAD (which a subject grant cannot narrow) — the NAMED RESIDUAL
+ *  carried by the operator instrument, the provisioner, the lifecycle/serve executors, and for 5
+ *  minutes by an `admin`-scoped human holding the `registry-reader` view on either exchange face:
+ *  for its lifetime it can READ (never write) any row of the space's records bucket (every record
+ *  kind, including goal, answer, and run rows). */
 function scatterFreezeReadRows(space: string): string[] {
   const REC = recordsBucket(space);
   return [
