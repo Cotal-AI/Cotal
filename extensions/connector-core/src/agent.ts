@@ -2184,11 +2184,15 @@ export class MeshAgent extends EventEmitter {
           return { ok: false, error: `${command}: this agent's bearer comes from its host, which issues no manager-call bearer, so manager operations are unavailable` };
         const managerInstanceId = opts.instanceId ?? this.config.managerInstanceId;
         const { instanceId: _instanceId, follow, ...invokeOpts } = opts;
+        // An ambiguity refusal names the bearer command's own selector. This caller passes it from
+        // the tool's `instance` argument, so the tool's caller is told that argument instead.
         const bearer = (signal?: AbortSignal) => this.execBearerCmd([
           ...bearerCmd,
           "--manager-call",
           ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : []),
-        ], signal);
+        ], signal).catch((e: unknown) => {
+          throw e instanceof Error ? new Error(e.message.replace("--manager-instance <instanceId>", "the instance argument")) : e;
+        });
         // Subscribe before submission on the renewing main connection. A long accepted launch
         // must not inherit the short-lived control credential's expiry.
         r = await invokeUserManager({ ...this.config, managerInstanceId }, bearer, command, input, {

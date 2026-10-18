@@ -111,6 +111,11 @@ if (subcommand === "tool-seat") {
       const spawner = config.managerInstanceId;
       config.managerInstanceId = undefined;
       trace({ kind: "unbound-run-ps", ...await call(tool, { verb: "ps" }) });
+      // #4037: the same seat's own `cotal agent-bearer --manager-call`, with its launch flags and no instance.
+      const bearerCmd = config.userAuth!.bearerCmd!;
+      if (!bearerCmd.includes("agent-bearer")) throw new Error("the seat's bearer command does not run agent-bearer");
+      const { code, stderr } = await shell(["agent-bearer", ...bearerCmd.slice(bearerCmd.indexOf("agent-bearer") + 1), "--manager-call"]);
+      trace({ kind: "unbound-cli-bearer", code, stderr });
       trace({ kind: "unbound-run-ps-on", ...await call(tool, { verb: "ps", instance: other }) });
       trace({ kind: "unbound-personas-on", ...await call(personas, { instance: other }) });
       config.managerInstanceId = spawner;
@@ -449,6 +454,7 @@ try {
   cell("#3959 a managed seat's own `cotal run ps` defaults to its spawner", seat("pin-cli-run-ps").code === 0, seat("pin-cli-run-ps"));
   cell("#3959 an explicit --on from a managed seat wins over its spawner", seat("pin-cli-models-on").code === 0 && onB.models === before.b.models + 1, { call: seat("pin-cli-models-on"), before, onB });
   cell("#3959 an unbound seat's cotal_run ps refuses, lists both and names the instance argument", seat("unbound-run-ps").isError === true && namesBoth(seat("unbound-run-ps").text, "instance argument"), seat("unbound-run-ps"));
+  cell("#4037 an unbound seat's `cotal agent-bearer --manager-call` refuses, lists both and names --manager-instance", seat("unbound-cli-bearer").code === 1 && namesBoth(seat("unbound-cli-bearer").stderr, "--manager-instance <instanceId>"), seat("unbound-cli-bearer"));
   cell("#3959 MCP cotal_run ps with instance succeeds against the named instance", answered("unbound-run-ps-on"), seat("unbound-run-ps-on"));
   cell("#3959 MCP cotal_personas with instance reads the named instance's catalog", answered("unbound-personas-on") && seat("unbound-personas-on").text === "No personas in the manager catalog.", seat("unbound-personas-on"));
   cell("#3959 each seat call reached the manager it named (runs: spawner 2, other 1)", onA.runs === before.a.runs + 2 && onB.runs === before.b.runs + 1, { before, onA, onB });

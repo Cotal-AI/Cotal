@@ -52,6 +52,48 @@ throws("array hole rejected (would coerce to null)", () => { const a = [1]; a.le
 throws("non-index own property on array rejected", () => { const a = [1] as number[] & { x?: number }; a.x = 2; return canonicalJson({ a }); }, "non-index");
 ok("null-prototype plain object canonicalizes", canonicalJson(Object.assign(Object.create(null), { a: 1 })) === '{"a":1}');
 ok("JSON.parse-shaped data canonicalizes unchanged", canonicalJson(JSON.parse('{"b":[1,2],"a":"x"}')) === '{"a":"x","b":[1,2]}');
+ok("an own __proto__ key canonicalizes as a key", canonicalJson(JSON.parse('{"__proto__":{"a":1}}')) === '{"__proto__":{"a":1}}');
+
+// 5c) One read (#3264): the text and its digest encode the data the check inspected, never a later
+// read. Each Proxy reports plain data but answers `get` for one key with something else.
+const answering = <T extends object>(target: T, key: string, value: unknown) =>
+  new Proxy(target, { get: (t, k, r) => (k === key ? value : Reflect.get(t, k, r)) });
+ok("a string read as a lone surrogate is not serialized", canonicalJson(answering({ s: "ok" }, "s", "\uD800")) === '{"s":"ok"}');
+ok("a number read as Infinity is not serialized as null", canonicalJson(answering({ n: 1 }, "n", Infinity)) === '{"n":1}');
+ok("an array element read as a lone surrogate is not serialized", canonicalJson({ a: answering(["ok"], "0", "\uDC00") }) === '{"a":["ok"]}');
+ok("a Proxy answering toJSON serializes its own data", canonicalJson(answering({ a: 1 }, "toJSON", () => ({ b: 1, a: 2 }))) === '{"a":1}');
+ok("a digest covers the data the check inspected", contractDigest(answering({ s: "ok" }, "s", "\uD800")) === contractDigest({ s: "ok" }));
+// An array's length is read once, from its descriptor. Each Proxy below answers `get("length")`
+// differently once the copy has read element 0, or reports a length its target does not have.
+const grows = () => {
+  let copying = false;
+  return new Proxy(["ok", "extra"], {
+    ownKeys: () => ["0", "length"],
+    getOwnPropertyDescriptor: (t, k) => {
+      if (k === "0") copying = true;
+      return k === "length" ? { value: 1, writable: true, enumerable: false, configurable: false } : Reflect.getOwnPropertyDescriptor(t, k);
+    },
+    get: (t, k, r) => (k === "length" ? (copying ? 2 : 1) : Reflect.get(t, k, r)),
+  });
+};
+const shrinks = () => {
+  let copying = false;
+  return new Proxy(["ok", "kept"], {
+    getOwnPropertyDescriptor: (t, k) => {
+      if (k === "0") copying = true;
+      return Reflect.getOwnPropertyDescriptor(t, k);
+    },
+    get: (t, k, r) => (k === "length" ? (copying ? 1 : 2) : Reflect.get(t, k, r)),
+  });
+};
+const reportsLength = (target: unknown[], value: unknown) =>
+  new Proxy(target, {
+    getOwnPropertyDescriptor: (t, k) => (k === "length" ? { value, writable: true, enumerable: false, configurable: false } : Reflect.getOwnPropertyDescriptor(t, k)),
+  });
+ok("an array length read again does not add an element", canonicalJson({ a: grows() }) === '{"a":["ok"]}');
+ok("an array length read again does not drop a checked element", canonicalJson({ a: shrinks() }) === '{"a":["ok","kept"]}');
+throws("an index past the reported array length is refused", () => canonicalJson({ a: reportsLength(["ok", "kept"], 1) }), 'non-index own property "1"');
+throws("a NaN array length is refused", () => canonicalJson({ a: reportsLength(["ok"], Number.NaN) }), "invalid array length");
 
 // 6) Digest identity: shape, stability, and independence from key insertion order.
 const d1 = contractDigest({ x: 1, y: [true, "z"] });
