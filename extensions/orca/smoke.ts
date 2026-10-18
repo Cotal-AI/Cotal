@@ -128,6 +128,45 @@ else { process.stdout.write(JSON.stringify({ ok: false, error: { code: "timeout"
       /timeout/,
     );
 
+    // A CLI that survives SIGTERM: the async wait must still settle at its own bound, not when the
+    // child chooses to exit.
+    const pidFile = join(stubDir, "wait-pid");
+    const stubPids: number[] = [];
+    const sigtermProofWait = (answerAfterMs: number) => {
+      writeFileSync(
+        stub,
+        `#!/usr/bin/env node
+require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+process.on("SIGTERM", () => {});
+process.stdout.on("error", () => {});
+setTimeout(() => process.stdout.write(JSON.stringify({ ok: true, result: { wait: { handle: "term_wait", condition: "exit", satisfied: true, status: "exited", exitCode: 0 } } })), ${answerAfterMs});
+`,
+        { mode: 0o700 },
+      );
+      const started = Date.now();
+      return orca
+        .waitManagedTerminalExit({ handle: "term_wait", ptyId: "pty_wait" }, 1_000)
+        .then(
+          () => ({ ok: true, ms: Date.now() - started, detail: "" }),
+          (err: Error) => ({ ok: false, ms: Date.now() - started, detail: err.message }),
+        )
+        .finally(() => stubPids.push(Number(readFileSync(pidFile, "utf8"))));
+    };
+    try {
+      const answered = await sigtermProofWait(200);
+      ok("async terminal wait returns a prompt answer from a SIGTERM-proof CLI", answered.ok && answered.ms < 1_000, JSON.stringify(answered));
+      const hung = await sigtermProofWait(8_000);
+      ok("async terminal wait settles at its bound when the CLI survives SIGTERM", !hung.ok && hung.ms < 4_000, JSON.stringify(hung));
+    } finally {
+      for (const pid of stubPids) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* already exited */
+        }
+      }
+    }
+
     writeFileSync(
       stub,
       `#!/usr/bin/env node
