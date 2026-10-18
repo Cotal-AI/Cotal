@@ -495,6 +495,10 @@ export class CotalEndpoint extends EventEmitter {
    *  live iterator. See {@link watchDeliveryLease}. */
   private leaseWatchIntent?: { shardIndex: number; onEvent: (info: DeliveryLeaseInfo | undefined) => void };
   private leaseWatchIter?: Awaited<ReturnType<KV["watch"]>>;
+  /** Consumer deletes of retired lease watches still in flight. The stop handle cannot await its
+   *  delete, so {@link stop} and a live-epoch rebuild await these before they close the connection
+   *  that carries them (#3966). */
+  private readonly leaseWatchDeletes = new Set<Promise<void>>();
   /** Plane-3 durable-membership registry KV — lazily opened by the privileged delivery daemon (or a
    *  short-lived provisioner). */
   private membersKv?: KV;
@@ -1795,7 +1799,7 @@ export class CotalEndpoint extends EventEmitter {
       // Manual reconnect still has a live old epoch: complete broker-consumer cleanup before close.
       // Terminal self-heal has an already-closed epoch: disarm retains stream/name for fresh cleanup.
       if (oldNc && !oldNc.isClosed())
-        await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));
+        await Promise.all([...[...this.membershipFeedWatches].map((watch) => watch.arm), ...this.leaseWatchDeletes]);
       this.nc = undefined;
       this.js = undefined;
       this.jsm = undefined;
@@ -1977,6 +1981,7 @@ export class CotalEndpoint extends EventEmitter {
     } catch {
       /* best-effort graceful leave */
     }
+    await Promise.all(this.leaseWatchDeletes);
     await this.closeWithoutLibraryReconnect(this.nc);
     // #1356: stop() does its own teardown and never runs clearConnectionScoped, so clear here too —
     // AFTER the best-effort offline publish above, which would otherwise re-record a refusal on its
@@ -3205,10 +3210,10 @@ export class CotalEndpoint extends EventEmitter {
     return /^\d+$/.test(subject.slice(cut)) && this.ownWatchDeletePrefixes.has(subject.slice(0, cut));
   }
 
-  /** Delete a history reader's own ephemeral consumer. A refused delete is the designed outcome for
-   *  the elevated profile, which holds no stream-wide CONSUMER.DELETE (#691): the broker reaps the
-   *  consumer at its inactive threshold. */
-  private async deleteReaderConsumer(consumer: Consumer): Promise<void> {
+  /** Delete one of this connection's own ephemeral consumers, a history reader's or a KV watch's. A
+   *  refused delete is the designed outcome for a profile without a stream-wide CONSUMER.DELETE
+   *  (#691): the broker reaps the consumer at its inactive threshold. */
+  private async deleteOwnConsumer(consumer: Consumer | PushConsumer): Promise<void> {
     try { await consumer.delete(); }
     catch (e) {
       if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound) && !isPublishPermissionDenied(e)) throw e;
@@ -3627,7 +3632,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      await this.deleteReaderConsumer(consumer);
+      await this.deleteOwnConsumer(consumer);
     }
   }
 
@@ -3669,7 +3674,7 @@ export class CotalEndpoint extends EventEmitter {
       // exists to stop.
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      await this.deleteReaderConsumer(consumer);
+      await this.deleteOwnConsumer(consumer);
     }
   }
 
@@ -3747,7 +3752,7 @@ export class CotalEndpoint extends EventEmitter {
       // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
       // The observer and admin profiles may not delete (#691), so the dashboard's readers do live out
       // that threshold; only a profile holding the delete row reclaims them here.
-      await this.deleteReaderConsumer(consumer).finally(() => { this.ownWatchDeletePrefixes.delete(readerPrefix); });
+      await this.deleteOwnConsumer(consumer).finally(() => { this.ownWatchDeletePrefixes.delete(readerPrefix); });
     }
   }
 
@@ -4161,15 +4166,30 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private stopDeliveryLeaseWatch(): void {
-    try { this.leaseWatchIter?.stop(); } catch { /* already closed with its connection */ }
+    if (this.leaseWatchIter) this.retireDeliveryLeaseWatch(this.leaseWatchIter);
     this.leaseWatchIter = undefined;
+  }
+
+  /** Stop a lease watch and delete its ordered consumer, which the stop alone leaves on the broker
+   *  until its five-minute inactive threshold (#3966). A connection that closed on its own cannot
+   *  carry the delete, so that consumer is left to the threshold. A failed delete is a warning: the
+   *  broker still reaps the consumer, and the daemon's synchronous stop handle has no caller to
+   *  reject. */
+  private retireDeliveryLeaseWatch(iter: Awaited<ReturnType<KV["watch"]>>): void {
+    try { iter.stop(); } catch { /* already closed with its connection */ }
+    if (!this.nc || this.nc.isClosed()) return;
+    const deleting = this.deleteOwnConsumer(kvWatchConsumer(iter)).catch((e: Error) => this.emitRecoverable(
+      new Error(`a retired delivery lease watch consumer was not deleted (${e.message}); the broker reaps it at its inactive threshold`),
+    ));
+    this.leaseWatchDeletes.add(deleting);
+    void deleting.then(() => this.leaseWatchDeletes.delete(deleting));
   }
 
   private async bindDeliveryLeaseWatch(): Promise<void> {
     const intent = this.leaseWatchIntent!;
     const iter = await (await this.deliveryRegistry()).watch({ key: leaseKey(intent.shardIndex) });
     if (this.leaseWatchIntent !== intent) {
-      try { iter.stop(); } catch { /* already closed */ }
+      this.retireDeliveryLeaseWatch(iter);
       return;
     }
     this.leaseWatchIter = iter;

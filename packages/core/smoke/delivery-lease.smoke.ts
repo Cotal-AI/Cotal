@@ -196,7 +196,7 @@ try {
   //   W2 a row overwritten by another incarnation fires the trigger within delivery latency
   //      (bounded far under the renew period; the named bound is 5s, ~10x the measured latency);
   //   W3 a DEL on the key fires the trigger too (gone's territory, same tree);
-  //   W4 the stop handle stops it, and a later write lands unobserved.
+  //   W4 the stop handle stops it, a later write lands unobserved, and its broker consumer is deleted.
   console.log("\nW. the lease-loss watch fires on foreign writes and deletes, not on our own");
   const w1 = await mkDaemon(); w1.on("error", () => {}); await w1.start();
   try {
@@ -247,7 +247,14 @@ try {
    } finally { await taker.stop(); }
    // W4: the stop handle stops the watch; later writes land unobserved. W3 deleted the key, so a
    // fresh own-row is created (an event in itself, if the watch were still live) and then MOVED
-   // once more; both must land unobserved after the stop.
+   // once more; both must land unobserved after the stop. The handle also deletes the watch's
+   // ordered consumer, which a stop alone leaves on the broker for its five-minute inactive
+   // threshold (#3966). w1 holds the daemon's credential, so this proves its grant allows the delete.
+   const leaseNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "delivery"), tls: false }) });
+   const leaseJsm = await jetstreamManager(leaseNc);
+   const leaseConsumers = async () => (await leaseJsm.streams.info(`KV_${deliveryBucket(space)}`)).state.consumer_count;
+   const watching = await leaseConsumers();
+   check("W4 CONTROL: the bound lease watch holds a consumer on the delivery bucket", watching >= 1, { watching });
    stopWatch();
    const w4rev = await w1.acquireDeliveryLease(3);
    await w1.markDeliveryLeaseReady(3, w4rev);
@@ -257,6 +264,9 @@ try {
    await overwriteLeaseRow(w4row.revision, { ...w4row.info, since: Date.now() });
    await wait(1200);
    check("W4 after the stop handle, later writes on the key land unobserved", events.length === before, { before, after: events.length });
+   const retired = await leaseConsumers();
+   await leaseNc.close();
+   check("W4 the stop handle deletes the watch's consumer instead of leaving it to the inactive threshold", retired === watching - 1, { watching, retired });
    await w1.releaseDeliveryLease(3, (await w1.readDeliveryLeaseEntry(3))?.revision);
  } finally { await w1.stop(); }
 
