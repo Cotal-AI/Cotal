@@ -2669,9 +2669,9 @@ recover one by hand.
 
 `deliver` runs the server-side Plane-3 delivery daemon: the durable backstop and membership/ACL
 authority. It is auth-mode-only and single-instance (`--shard`/`--shards` accept only `N=1`);
-`--dev-mint` mints a scoped cred from the local signer for standalone dev. `--creds` can start a
-daemon that already looks healthy, but production renewal is not that file alone: the manager and
-the daemon must address one credential store. On a stock split host with two project roots, a
+`--dev-mint` mints a scoped cred for standalone dev, signed by the local account of the space the
+daemon serves. `--creds` can start a daemon that already looks healthy, but production renewal is
+not that file alone: the manager and the daemon must address one credential store. On a stock split host with two project roots, a
 direct `deliver` is not an independent repair; keep the daemon under `cotal up` on the broker
 host, or inject the same store into both processes ([embedding](embedding.md#supervisor-signing-authority)).
 Typed by hand on the workstation, `deliver` dials the broker recorded for `--space` in the mesh
