@@ -411,7 +411,7 @@ registers the cluster.
 | Concern | What the tool-result caller does |
 | --- | --- |
 | Authority | `acquire()` returns the holder's own stock-issued `tool-result-caller` bearer, the space's deny-all sentinel and the serving instance's current epoch. No other view is used, a `manager-caller`, agent or admin bearer included. |
-| Pins | The bearer must name the configured space, the holder's principal and lifecycle, and a consent for exactly the configured target owner, actor and lifecycle that names this holder. A missing epoch refuses. Every refusal comes before any connect. |
+| Pins | The bearer must name the configured space, the holder's principal and lifecycle, and a consent for the configured target owner, actor and lifecycle that names this holder. A missing epoch refuses. Every refusal comes before any connect. |
 | Epoch | The holder's grants carry no describe and no registry read, so the host supplies the epoch it read. Every call binds it, so another incarnation refuses before effect. An answer from another epoch invalidates the caller. |
 | Repeats | A refusal before effect is sent once more. A consent or revoke that was accepted, or whose outcome is unknown, is never sent again. |
 | Answers | Returned unchanged: `available`, `pending`, `not-shared`, `missing` and `expired` stay distinct, and `""`, `0` and `false` are values. Render `content` as inert text. Nothing is cached. |
