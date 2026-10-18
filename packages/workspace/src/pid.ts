@@ -600,7 +600,18 @@ export function removePidPair(pidfilePath: string, recorded: string): void {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     }
     if (now !== undefined && now !== recorded) return; // a successor's record: not this removal's
-    rmSync(pinPath, { force: true });
+    try {
+      rmSync(pinPath, { force: true });
+    } catch (e) {
+      // No publish writes a directory here, and a recursive removal could delete a tree this
+      // module did not write, so the record is refused whole.
+      if ((e as NodeJS.ErrnoException).code !== "ERR_FS_EISDIR") throw e;
+      throw new Error(
+        `refusing to remove the record at ${pidfilePath}: its identity pin ${pinPath} is a directory, which no publish writes. The record is preserved.\n` +
+        `NEXT: inspect that directory and remove it if nothing in it is needed; the next stop then clears the record.`,
+        { cause: e },
+      );
+    }
     rmSync(pidfilePath, { force: true });
   } finally {
     held.release();

@@ -463,7 +463,8 @@ lock left by a crashed one. When no start token can be read for the new process,
 `-` in place of the token, which reads as a legacy record, and the publish ends in the legacy shape:
 a pidfile with no pin. Teardown, and a daemon removing its own record on exit, take the same lock and
 remove the record only while the pidfile still names the pid they stopped, so a stop that races a
-publish leaves the new record whole.
+publish leaves the new record whole. A directory at the pin path is refused by name and the record
+is kept, because no publish writes one and removing it could delete files Cotal did not write.
 
 The web dashboard claims `web.pid` with an exclusive create, so a second dashboard for the same mesh
 is refused, and writes its pin right after the claim. A stop that runs between the two reads a
