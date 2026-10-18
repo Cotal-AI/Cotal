@@ -1,5 +1,5 @@
 /**
- * Upstream Cotal#4005 Phase 1 reproduction smoke:
+ * Upstream Cotal#4005 Phase 1c reproduction smoke:
  * Managed lifecycles provisioned by a user-mode manager with a remoteAuthority must reach
  * terminal retirement once their seat is gone, across every manager exit and restart path:
  *
@@ -16,13 +16,18 @@
  *   before `prepareAgentRetirement` / `requestRetirement` reaches the host.
  * - (d) a preserved inventory (`preparePreservation` + `commitPreservation`) that is never
  *   resumed while a new manager starts on the same root.
+ * - (e) an enrollment reply lost after the host committed the grant and `dm_`/`dlv_` durables
+ *   before the manager wrote its first post-response slot (`enrollUserAgent`).
+ * - (f) an owned, live, same-start process under an injected `EACCES` on `/proc/<pid>/stat`
+ *   during `requireRuntimeReap` / `reapSeat` (must fail closed, never report `reaped`).
  * - (g1) guard: a successor manager starts while a released custodial seat is STILL ALIVE:
  *   it must not retire the live seat, and head, grant, and `dm_`/`dlv_` durables stay live.
  * - (g2) guard: a `resumePreserved` adoption (`resumePreserved` -> `commitResume` ->
  *   `finalizeResume`) keeps the adopted seat's lifecycle head active, grant unrevoked, and
  *   `dm_`/`dlv_` durables present.
- * - (g3) guard: a delegated launch (`delegatedIntent`) stays held (`prepareAgentRetirement`
- *   refused on `driveDeprovision` and on successor manager startup).
+ * - (g3) guard: a cross-owner delegated launch (`delegatedIntent`) executed by a `p_...`
+ *   platform control manager for a distinct `u_...` user owner stays held (`prepareAgentRetirement`
+ *   refused on `driveDeprovision` and on successor platform manager startup).
  */
 
 const subcommand = process.argv[2] ?? "";
@@ -89,7 +94,9 @@ if (subcommand === "seat") {
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
+import fsDefault from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -111,7 +118,9 @@ import {
   mintCreds,
   mintLifecycleUid,
   newIdentity,
+  parseRemoteDelegatedUserIntentExecutionResult,
   presenceBucket,
+  provisionAgentDurables,
   recordsBucket,
   registry,
   remoteManagerActors,
@@ -120,7 +129,10 @@ import {
   setupSpaceStreams,
   standaloneConnectOpts,
   type Connector,
+  type PlatformControlAssignment,
+  type RemoteDelegatedUserIntentExecutionRequest,
   type RuntimeProvider,
+  type SecretStore,
 } from "@cotal-ai/core";
 import {
   assertUserAuthInfo,
@@ -131,16 +143,27 @@ import {
   workspaceSecretStore,
 } from "@cotal-ai/workspace";
 import {
+  authorizeDelegatedUserIntentAdmission,
+  authorizeDelegatedUserIntentExecution,
   cotalAuthProvider,
   deriveOwnerForIdpSubject,
   findManagedActor,
   grantActor,
+  grantManagedActor,
   loadAuthServiceInfo,
+  loadCalloutAuth,
   loadOwnerSecret,
   loadPinnedIdp,
+  platformControlOwner,
+  saveAuthServiceInfo,
   saveIdpSession,
+  startAuthService,
+  type AuthServiceHandle,
+  type DelegatedUserIntentRecord,
 } from "@cotal-ai/auth";
+import { bootToken, processStartToken, readRecord, recordPath, seatId, socketPath, type SeatRecord } from "@cotal-ai/seat";
 import { Manager, type ManagerOptions } from "../src/manager.js";
+import { requireRuntimeReap } from "../src/runtime/index.js";
 import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import { staticLifecycleTransport } from "../src/static-lifecycle.js";
 import { managerClusterArtifacts } from "../src/manager-service-contract.js";
@@ -152,6 +175,17 @@ import { freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from
 
 const here = import.meta.dirname;
 const self = resolve(here, "remote-retirement-custody.smoke.ts");
+
+function makeInjectedWorkspaceStore(root: string, spaceName: string): SecretStore {
+  const base = workspaceSecretStore(root);
+  return {
+    identity: { kind: "injected", coordinate: `u4005:${spaceName}` },
+    get: (k) => base.get(k),
+    put: (k, v) => base.put(k, v),
+    create: (k, v) => base.create(k, v),
+    delete: (k) => base.delete(k),
+  };
+}
 
 if (subcommand === "manager-child") {
   const cfg = JSON.parse(readFileSync(process.argv[3]!, "utf8")) as {
@@ -168,7 +202,7 @@ if (subcommand === "manager-child") {
   };
   process.env.COTAL_HOME = cfg.home;
   const hostDir = userAuthStateDir(cfg.hostRoot, cfg.space);
-  const hostStore = workspaceSecretStore(cfg.hostRoot);
+  const hostStore = makeInjectedWorkspaceStore(cfg.hostRoot, cfg.space);
   const info = loadAuthServiceInfo(hostDir)!;
   const pin = loadPinnedIdp(hostDir)!;
   const secret = (await loadOwnerSecret(hostStore, cfg.space))!;
@@ -348,7 +382,7 @@ const space = `u4005${mintLifecycleUid().slice(0, 8)}`;
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const hostDir = userAuthStateDir(hostRoot, space);
-const hostStore = workspaceSecretStore(hostRoot);
+const hostStore = makeInjectedWorkspaceStore(hostRoot, space);
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 async function until(fn: () => boolean | Promise<boolean>, label: string, ms = 25_000): Promise<void> {
@@ -435,7 +469,7 @@ function checkContract(cell: string, name: string, condition: boolean, detail?: 
 }
 
 let broker: ChildProcess | undefined;
-let authChild: ChildProcess | undefined;
+let authService: AuthServiceHandle | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 let idpServer: ReturnType<typeof createServer> | undefined;
 let inspectNc: Awaited<ReturnType<typeof connect>> | undefined;
@@ -502,21 +536,30 @@ try {
   const lifecycleTransport = staticLifecycleTransport(recordsKv, authKv);
 
   delivery = await bootDeliveryDaemon({ space, servers, auth, reloadStoreIdentity: hostStore.identity! });
-  authChild = spawn(
-    process.execPath,
-    [...process.execArgv, self, "auth-service", "--space", space, "--server", servers, "--exchange-public-port", "0"],
-    { cwd: hostRoot, env: process.env, stdio: ["ignore", "pipe", "pipe"] },
-  );
-  await until(async () => {
-    if (authChild!.exitCode !== null) throw new Error("stock auth service exited during boot");
-    const info = loadAuthServiceInfo(hostDir);
-    return !!info?.publicUrl && (await fetch(`${info.url}/health`).catch(() => undefined))?.ok === true;
-  }, "stock auth service readiness");
+  let currentPlatformAssignment: PlatformControlAssignment | null = null;
+  authService = await startAuthService({
+    context: { accountPublicKey: auth.account.pub, lifecycleUid: mintLifecycleUid() },
+    space,
+    servers,
+    stateDir: hostDir,
+    store: hostStore,
+    storeIdentity: hostStore.identity!,
+    publicFace: { port: 0, trustedProxy: false },
+    platformControl: { observeAssignment: async () => currentPlatformAssignment },
+  });
+  saveAuthServiceInfo(hostDir, {
+    url: authService.url,
+    pid: process.pid,
+    cap: authService.cap,
+    ...(authService.publicUrl !== undefined ? { publicUrl: authService.publicUrl } : {}),
+  });
 
   const info = loadAuthServiceInfo(hostDir)!;
   const pin = loadPinnedIdp(hostDir)!;
   const secret = (await loadOwnerSecret(hostStore, space))!;
+  const calloutAuth = (await loadCalloutAuth(hostStore, space))!;
   const owner = deriveOwnerForIdpSubject(secret, pin.issuer, signup.user.id);
+  const platformOwner = platformControlOwner(secret, space, auth.account.pub);
   grantActor(hostDir, {
     owner,
     actor: "cli",
@@ -576,9 +619,9 @@ try {
   const retireCounts = new Map<string, number>();
   const countKey = (actor: string, uid: string) => `${actor}:${uid}`;
 
-  async function inspectLifecycleState(actor: string, uid: string) {
-    const head = await headCandidate(lifecycleTransport, owner, actor);
-    const grant = findManagedActor(hostDir, owner, actor);
+  async function inspectLifecycleState(actor: string, uid: string, targetOwner = owner) {
+    const head = await headCandidate(lifecycleTransport, targetOwner, actor);
+    const grant = findManagedActor(hostDir, targetOwner, actor);
     const consumerPresent = async (stream: string, durable: string): Promise<boolean> => {
       try {
         await jsm.consumers.info(stream, durable);
@@ -588,8 +631,8 @@ try {
         throw e;
       }
     };
-    const dmPresent = await consumerPresent(dmStream(space), dmDurable(owner, actor, uid));
-    const dlvPresent = await consumerPresent(dlvStream(space), dlvDurable(owner, actor, uid));
+    const dmPresent = await consumerPresent(dmStream(space), dmDurable(targetOwner, actor, uid));
+    const dlvPresent = await consumerPresent(dlvStream(space), dlvDurable(targetOwner, actor, uid));
     const prepareRetirementCalls = prepareCounts.get(countKey(actor, uid)) ?? 0;
     const retireCalls = retireCounts.get(countKey(actor, uid)) ?? 0;
     return {
@@ -619,7 +662,16 @@ try {
     for (const seatName of seatNames) {
       writeFileSync(
         join(ws, ".cotal", "agents", `${seatName}.md`),
-        `---\nname: ${seatName}\nagent: u4005-seat\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nSeat ${seatName}.\n`,
+        `---
+name: ${seatName}
+agent: u4005-seat
+role: worker
+subscribe: []
+allowSubscribe: []
+allowPublish: []
+---
+Seat ${seatName}.
+`,
       );
     }
     return ws;
@@ -629,7 +681,12 @@ try {
   const callAuthority = (request: Parameters<NonNullable<typeof cotalAuthProvider.managerServiceAuthority>>[0]["request"]) =>
     cotalAuthProvider.managerServiceAuthority!({ ...callArgs, request });
 
-  async function bootRemoteManagerOnRoot(wsRoot: string, runtime: "pty" | "custodial-pty", resumeAttemptId?: string) {
+  async function bootRemoteManagerOnRoot(
+    wsRoot: string,
+    runtime: "pty" | "custodial-pty",
+    resumeAttemptId?: string,
+    onAfterHostEnrollmentCommit?: (material: { actor: string; lifecycleUid: string }) => void,
+  ) {
     const state = remote.loadOrCreateRemoteManagerIdentity(wsRoot, space);
     const prep = await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "prepare"));
     const supervisorCreds = remote.materialCredential(prep, "supervisor", state.identities.supervisor);
@@ -685,35 +742,12 @@ try {
       },
       enrollManagedAgent: async ({ target }) => {
         const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target);
-        return remote.remoteManagedAgentEnrollmentMaterial(await cotalAuthProvider.enrollRemoteManagedAgent!({ ...callArgs, request }), request);
-      },
-      executeDelegatedUserIntent: async (exec) => {
-        if (exec.operation !== "launch") throw new Error("unexpected delegated operation in guard fixture");
-        const enrollTarget = {
-          actor: exec.target.actor,
-          tokenHash: exec.target.tokenHash,
-          role: "worker",
-          subscribe: [] as string[],
-          allowSubscribe: [] as string[],
-          allowPublish: [eventChannel({ owner, actor: exec.target.actor })],
-        };
-        const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, enrollTarget);
         const material = remote.remoteManagedAgentEnrollmentMaterial(
           await cotalAuthProvider.enrollRemoteManagedAgent!({ ...callArgs, request }),
           request,
         );
-        return {
-          v: 1 as const,
-          kind: "manager-delegated-user-intent-execution" as const,
-          operation: "launch" as const,
-          space,
-          instanceId: state.instanceId,
-          managerLifecycleUid: state.lifecycleUid,
-          requestId: `exec${mintLifecycleUid()}`,
-          serveEpoch: registered.processEpoch,
-          intentId: exec.intentId,
-          material,
-        };
+        onAfterHostEnrollmentCommit?.(material);
+        return material;
       },
       prepareAgentRetirement: async ({ target, opId }) => {
         const k = countKey(target.actor, target.lifecycleUid);
@@ -758,6 +792,223 @@ try {
     });
     await mgr.start();
     return { mgr, state };
+  }
+
+  /** Boot a platform-control manager (`remoteAuthority.owner === platformOwner = p_...`) that
+   *  executes delegated user intents for the distinct human user `owner = u_...` via the shipped
+   *  `authorizeDelegatedUserIntentExecution` + `activateManagedLifecycle` + `grantManagedActor` +
+   *  `provisionAgentDurables` stack (SPEC §13.16). */
+  async function bootPlatformControlManagerOnRoot(
+    wsRoot: string,
+    runtime: "pty" | "custodial-pty",
+    getAdmittedIntent: () => DelegatedUserIntentRecord | null,
+  ) {
+    const state = remote.loadOrCreateRemoteManagerIdentity(wsRoot, space);
+    currentPlatformAssignment = {
+      v: 1,
+      space,
+      accountPublicKey: auth.account.pub,
+      instanceId: state.instanceId,
+      lifecycleUid: state.lifecycleUid,
+      assignmentRevision: 1,
+      state: "assigned",
+    };
+    const callPlatform = <R extends Parameters<NonNullable<AuthServiceHandle["platformControlAuthority"]>>[0]["request"]>(request: R) =>
+      authService!.platformControlAuthority!({
+        v: 1,
+        kind: "platform-control-authority",
+        space,
+        accountPublicKey: auth.account.pub,
+        assignmentRevision: 1,
+        request,
+      });
+    const prep = await callPlatform(remote.remoteManagerAuthorityRequest(state, "cli", "prepare"));
+    const supervisorCreds = remote.materialCredential(prep, "supervisor", state.identities.supervisor);
+    const executorCreds = remote.materialCredential(prep, "executor", state.identities.executor);
+    const registered = await registerRemoteManagerAuthority({
+      space,
+      server: servers,
+      owner: platformOwner,
+      instanceId: state.instanceId,
+      serveActor: remoteManagerActors(state.instanceId).serve,
+      prepareCreds: executorCreds,
+      tlsRequired: false,
+      evict: async (principals) => {
+        const request = remote.remoteManagerMaintenanceRequest(state, "cli", "evict-family-principal", state.instanceId, [...principals]);
+        const result = await callPlatform(request);
+        return remote.remoteManagerMaintenanceResult(result, request, platformOwner).evictions!.map((e) => e.verifiedGone);
+      },
+    });
+    const artifacts = managerClusterArtifacts();
+    const contractArtifacts = [artifacts.document, artifacts.manifest];
+    const activate = await callPlatform(
+      remote.remoteManagerAuthorityRequest(state, "cli", "activate", {
+        registrationProof: remoteManagerRegistrationProof(platformOwner, state, contractArtifacts),
+        contractArtifacts,
+      }),
+    );
+    const proof = remote.currentRegistrationProof(activate);
+    const standing = remote.remoteStandingBundleRenewal({ state, owner: platformOwner, registrationProof: proof, supervisorCreds, call: callPlatform });
+    const remoteAuthority: NonNullable<ManagerOptions["remoteAuthority"]> = {
+      ...standing,
+      owner: platformOwner,
+      actors: remoteManagerActors(state.instanceId),
+      instanceId: state.instanceId,
+      lifecycleUid: state.lifecycleUid,
+      identities: state.identities,
+      supervisorCreds,
+      executorCreds,
+      serveCreds: remote.materialCredential(activate, "serve", state.identities.serve),
+      goalWriterCreds: remote.materialCredential(activate, "goalWriter", state.identities.goalWriter),
+      sessionLedgerCreds: remote.materialCredential(activate, "sessionLedger", state.identities.sessionLedger),
+      serveGrant: registered.serveGrant,
+      agentBearerExchangeUrl: info.publicUrl!,
+      renewExecutor: async () =>
+        remote.materialCredential(
+          await callPlatform(remote.remoteManagerAuthorityRequest(state, "cli", "renew", { registrationProof: proof })),
+          "executor",
+          state.identities.executor,
+        ),
+      authorizeAdmin: async (caller) => {
+        const request = remote.remoteManagerAdminAuthorizationRequest(state, "cli", proof, registered.processEpoch, caller);
+        const response = await callPlatform(request);
+        return remote.remoteManagerAdminAuthorized(response, request, platformOwner);
+      },
+      executeDelegatedUserIntent: async (exec) => {
+        if (exec.operation !== "launch") throw new Error("unexpected delegated operation in guard fixture");
+        const execReq: RemoteDelegatedUserIntentExecutionRequest = {
+          v: 1,
+          kind: "manager-delegated-user-intent-execution",
+          space,
+          actor: "cli",
+          accountPublicKey: auth.account.pub,
+          assignmentRevision: currentPlatformAssignment!.assignmentRevision,
+          instanceId: state.instanceId,
+          managerLifecycleUid: state.lifecycleUid,
+          requestId: `exec${mintLifecycleUid()}`,
+          registrationProof: proof,
+          serveEpoch: registered.processEpoch,
+          identities: remote.publicIdentities(state),
+          intentId: exec.intentId,
+          execute: { operation: "launch", target: exec.target },
+        };
+        const decision = await authorizeDelegatedUserIntentExecution({
+          request: execReq,
+          space,
+          accountPublicKey: auth.account.pub,
+          platformOwner,
+          intent: getAdmittedIntent(),
+          observeAssignment: async () => currentPlatformAssignment,
+          observeManagerGate: authService!.observeManagerGate!,
+          proofSecret: auth.account.signingSeed!,
+          now: Date.now(),
+        });
+        assert.equal(decision.operation, "launch");
+        const target = decision.target as import("@cotal-ai/core").DelegatedUserLaunchTarget;
+        const lifecycleUid = mintLifecycleUid();
+        await authService!.activateManagedLifecycle!({
+          owner: decision.owner,
+          actor: target.actor,
+          lifecycleUid,
+        });
+        const row = grantManagedActor(hostDir, {
+          owner: decision.owner,
+          actor: target.actor,
+          scope: target.capabilities ?? [],
+          allowSubscribe: target.allowSubscribe ?? [],
+          allowPublish: target.allowPublish ?? [],
+          ...(target.role !== undefined ? { role: target.role } : {}),
+          ...(target.label !== undefined ? { label: target.label } : {}),
+          parent: decision.parent,
+          lifecycleUid,
+          tokenHash: decision.tokenHash!,
+        });
+        const provIdentity = newIdentity();
+        const provisioner = new CotalEndpoint({
+          space,
+          servers,
+          channels: [],
+          creds: await mintCreds(auth, provIdentity, "provisioner"),
+          card: { id: provIdentity.id, name: "provisioner", role: "provisioner", kind: "endpoint" },
+          registerPresence: false,
+          watchPresence: false,
+          watchChannels: false,
+          consume: false,
+        });
+        await provisioner.start();
+        try {
+          await provisionAgentDurables(
+            provisioner,
+            { owner: decision.owner, actor: target.actor, lifecycleUid },
+            { subscribe: target.subscribe ?? [], allowSubscribe: row.allowSubscribe, role: row.role },
+          );
+        } finally {
+          await provisioner.stop();
+        }
+        const rawResult = {
+          v: 1 as const,
+          kind: "manager-delegated-user-intent-execution" as const,
+          operation: "launch" as const,
+          space,
+          instanceId: state.instanceId,
+          managerLifecycleUid: state.lifecycleUid,
+          requestId: execReq.requestId,
+          serveEpoch: registered.processEpoch,
+          intentId: exec.intentId,
+          material: {
+            owner: decision.owner,
+            actor: target.actor,
+            lifecycleUid,
+            sentinelCreds: calloutAuth.sentinelCreds,
+            subscribe: target.subscribe ?? [],
+            allowSubscribe: row.allowSubscribe,
+            allowPublish: row.allowPublish,
+            agentBearerExchangeUrl: info.publicUrl!,
+          },
+        };
+        return parseRemoteDelegatedUserIntentExecutionResult(rawResult, execReq);
+      },
+      prepareAgentRetirement: async ({ target }) => {
+        const k = countKey(target.actor, target.lifecycleUid);
+        prepareCounts.set(k, (prepareCounts.get(k) ?? 0) + 1);
+        throw new Error("platform control manager must never call prepareAgentRetirement for a delegated launch");
+      },
+      mintRetirementRequester: async ({ identity, target, opId, serveEpoch }) => {
+        const k = countKey(target.actor, target.lifecycleUid);
+        retireCounts.set(k, (retireCounts.get(k) ?? 0) + 1);
+        return remote.materialCredential(
+          await callPlatform(
+            remote.remoteManagerAuthorityRequest(state, "cli", "retire", {
+              registrationProof: remoteManagerRegistrationProof(platformOwner, state),
+              retirement: { id: identity.id, target, opId, serveEpoch },
+            }),
+          ),
+          "retirementRequester",
+          identity,
+        );
+      },
+      mintSessionServing: async () => {
+        throw new Error("unused");
+      },
+      validateRetainedAgent: async (a) => {
+        const request = remote.remoteRetainedAgentValidationRequest(state, "cli", proof, registered.processEpoch, { owner: a.owner, actor: a.actor, lifecycleUid: a.lifecycleUid }, a.actorToken, a.sentinelCreds);
+        return remote.retainedAgentAuthority(await callPlatform(request), request);
+      },
+      scanGoalIndex: async () => {
+        const request = remote.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch);
+        return remote.remoteManagerGoalIndexEntries(await callPlatform(request), request, platformOwner);
+      },
+    };
+    const mgr = new Manager({
+      space,
+      servers,
+      workspaceRoot: wsRoot,
+      runtime,
+      remoteAuthority,
+      eventsRequired: true,
+    });
+    await mgr.start();
+    return { mgr, state, remoteAuthority };
   }
 
   // =========================================================================
@@ -1169,6 +1420,187 @@ try {
     );
   }
 
+  // =========================================================================
+  // Cell (e): enrollment reply lost after host committed grant and durables
+  // =========================================================================
+  console.log("\n=== Cell (e): enrollment reply lost after host committed grant and durables ===");
+  {
+    const cell = "cell-e-enrollment-reply-loss";
+    const seatName = "seat_e_reply_loss";
+    const ws = createWorkspaceRoot("e-reply-loss", [seatName]);
+    let committedUid = "";
+    const { mgr: mgr1 } = await bootRemoteManagerOnRoot(ws, "pty", undefined, (material) => {
+      if (material.actor === seatName && !committedUid) {
+        committedUid = material.lifecycleUid;
+        throw new Error("simulated lost enrollment response after host commit");
+      }
+    });
+    const started = await mgr1.startAgent({ name: seatName, agent: "u4005-seat" });
+    checkSetup(
+      cell,
+      "startAgent reports post-commit enrollment response loss without launching seat process",
+      !started.ok &&
+        /simulated lost enrollment response/.test(started.error ?? "") &&
+        committedUid.length > 0 &&
+        !existsSync(join(scratch, `${seatName}.pid.json`)),
+      { started, committedUid },
+    );
+    await mgr1.stop();
+
+    const afterLoss = await inspectLifecycleState(seatName, committedUid);
+    checkRepro(cell, "after lost enrollment reply: host managed grant is still unrevoked", afterLoss.grantUnrevoked === true, afterLoss);
+    checkRepro(
+      cell,
+      "after lost enrollment reply: dm_ and dlv_ durables are still present",
+      afterLoss.dmPresent === true && afterLoss.dlvPresent === true,
+      afterLoss,
+    );
+    checkRepro(
+      cell,
+      "after lost enrollment reply: no retirement was requested (prepare=0, retire=0)",
+      afterLoss.prepareRetirementCalls === 0 && afterLoss.retireCalls === 0,
+      afterLoss,
+    );
+
+    const { mgr: mgr2 } = await bootRemoteManagerOnRoot(ws, "pty");
+    const afterReconcile = await inspectLifecycleState(seatName, committedUid);
+    await mgr2.stop();
+    const slotEntry =
+      (await recordsKv.get(`mgrslot.${owner}.${owner}-${seatName}`)) ??
+      (await recordsKv.get(`mgrslot.${owner}.${seatName}`));
+
+    checkContract(
+      cell,
+      "after lost enrollment reply + manager2 start: durable mgrslot custody record exists",
+      slotEntry !== null && slotEntry.operation === "PUT",
+      slotEntry ? { key: slotEntry.key, revision: slotEntry.revision } : null,
+    );
+    checkContract(
+      cell,
+      "after lost enrollment reply + manager2 start: lifecycle head reaches retired",
+      afterReconcile.headState === "retired",
+      afterReconcile,
+    );
+    checkContract(
+      cell,
+      "after lost enrollment reply + manager2 start: managed grant is revoked",
+      !afterReconcile.grantUnrevoked,
+      afterReconcile,
+    );
+    checkContract(
+      cell,
+      "after lost enrollment reply + manager2 start: dm_ and dlv_ durables are removed",
+      !afterReconcile.dmPresent && !afterReconcile.dlvPresent,
+      afterReconcile,
+    );
+  }
+
+  // =========================================================================
+  // Cell (f): owned live same-start process under injected EACCES on /proc/<pid>/stat
+  // =========================================================================
+  console.log("\n=== Cell (f): owned live process under injected EACCES on /proc/<pid>/stat during requireRuntimeReap ===");
+  {
+    const cell = "cell-f-unreadable-reap";
+    const unreadableRoot = mkdtempSync(join(tmpdir(), "u4005-unreadable-"));
+    const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+      detached: true,
+    });
+    const pid = sleeper.pid ?? 0;
+    const realReadFileSync = fsDefault.readFileSync;
+    try {
+      const startToken = pid > 0 ? processStartToken(pid) : undefined;
+      const boot = bootToken();
+      const id = seatId();
+      const recFile = recordPath(unreadableRoot, id);
+      mkdirSync(join(unreadableRoot, id), { recursive: true, mode: 0o700 });
+      const rec: SeatRecord = {
+        version: 1,
+        id,
+        name: "owned-live-unreadable",
+        socket: socketPath(unreadableRoot, id),
+        token: "unreadable-probe-token",
+        custodianPid: pid,
+        custodianStart: startToken ?? "",
+        childPid: pid,
+        childStart: startToken ?? "",
+        bootId: boot,
+      };
+      writeFileSync(recFile, JSON.stringify(rec) + "\n", { mode: 0o600 });
+      const recordBefore = readRecord(recFile);
+      const aliveBefore = pidAlive(pid);
+      checkSetup(
+        cell,
+        "owned live process has readable startToken, bootToken, and custody record before EACCES injection",
+        pid > 0 && aliveBefore && Boolean(startToken) && Boolean(boot) && recordBefore?.childStart === startToken,
+        { pid, aliveBefore, startToken, boot },
+      );
+
+      const targetStatPath = `/proc/${pid}/stat`;
+      let injectedReads = 0;
+      let reapOutcome: string | undefined;
+      let reapError: string | undefined;
+      try {
+        fsDefault.readFileSync = ((
+          path: Parameters<typeof realReadFileSync>[0],
+          ...rest: unknown[]
+        ) => {
+          if (String(path) === targetStatPath) {
+            injectedReads++;
+            throw Object.assign(new Error(`EACCES: permission denied, open '${targetStatPath}'`), { code: "EACCES" });
+          }
+          return (realReadFileSync as (...a: unknown[]) => unknown)(path, ...rest);
+        }) as typeof realReadFileSync;
+        syncBuiltinESMExports();
+        try {
+          const result = await requireRuntimeReap(new CustodialPtyRuntime(unreadableRoot), { kind: "pty", id });
+          reapOutcome = result.outcome;
+        } catch (e) {
+          reapError = (e as Error).message;
+        }
+      } finally {
+        fsDefault.readFileSync = realReadFileSync;
+        syncBuiltinESMExports();
+      }
+
+      const aliveAfter = pidAlive(pid);
+      const recordAfter = existsSync(recFile) ? readRecord(recFile) : undefined;
+      checkRepro(
+        cell,
+        "injected EACCES on /proc/<pid>/stat was hit while owned process remained alive",
+        injectedReads > 0 && aliveAfter,
+        { injectedReads, aliveAfter },
+      );
+      checkRepro(
+        cell,
+        "unfixed requireRuntimeReap/reapSeat treats EACCES as gone, deletes custody record, and reports reaped",
+        reapOutcome === "reaped" && recordAfter === undefined,
+        { reapOutcome, reapError, recordExistsAfter: recordAfter !== undefined },
+      );
+      checkContract(
+        cell,
+        "under EACCES on /proc/<pid>/stat: requireRuntimeReap refuses to report reaped while process is alive",
+        reapOutcome !== "reaped" && reapError !== undefined,
+        { reapOutcome, reapError, aliveAfter },
+      );
+      checkContract(
+        cell,
+        "under EACCES on /proc/<pid>/stat: custody record is retained on disk while process is alive",
+        recordAfter !== undefined,
+        { recordExistsAfter: recordAfter !== undefined, aliveAfter },
+      );
+    } finally {
+      fsDefault.readFileSync = realReadFileSync;
+      syncBuiltinESMExports();
+      try {
+        if (pid > 0) process.kill(-pid, "SIGKILL");
+      } catch {
+        // ignore
+      }
+      await killAndAwaitExit(sleeper, "SIGKILL").catch(() => {});
+      rmSync(unreadableRoot, { recursive: true, force: true });
+    }
+  }
 
   // =========================================================================
   // Guard (g1): successor manager starts while released custodial seat is STILL ALIVE
@@ -1301,44 +1733,106 @@ try {
   }
 
   // =========================================================================
-  // Guard (g3): delegated launch stays held and is not retired via prepareAgentRetirement
+  // Guard (g3): cross-owner delegated launch (p_... holder, u_... user owner) stays held
   // =========================================================================
-  console.log("\n=== Guard (g3): delegated launch stays held and is not retired via prepareAgentRetirement ===");
+  console.log("\n=== Guard (g3): cross-owner delegated launch (p_... holder, u_... user owner) stays held ===");
   {
     const cell = "cell-g3-delegated-launch-held";
     const seatName = "seat_g3_delegated";
     const ws = createWorkspaceRoot("g3-delegated", [seatName]);
-    const { mgr: mgr1 } = await bootRemoteManagerOnRoot(ws, "pty");
+    checkSetup(
+      cell,
+      "platform control holder (p_...) and user target owner (u_...) are distinct principals",
+      platformOwner.startsWith("p_") && owner.startsWith("u_") && platformOwner !== owner,
+      { platformOwner, owner },
+    );
+
+    let admittedIntent: DelegatedUserIntentRecord | null = null;
+    const { mgr: mgr1, state: mgr1State, remoteAuthority: mgr1Auth } = await bootPlatformControlManagerOnRoot(
+      ws,
+      "pty",
+      () => admittedIntent,
+    );
+    admittedIntent = await authorizeDelegatedUserIntentAdmission({
+      request: {
+        v: 1,
+        kind: "delegated-user-intent",
+        space,
+        accountPublicKey: auth.account.pub,
+        instanceId: mgr1State.instanceId,
+        actor: "cli",
+        requestId: `admit${mintLifecycleUid()}`,
+        intent: {
+          operation: "launch",
+          target: {
+            actor: seatName,
+            role: "worker",
+            subscribe: [],
+            allowSubscribe: [],
+            allowPublish: [eventChannel({ owner, actor: seatName })],
+          },
+        },
+      },
+      space,
+      accountPublicKey: auth.account.pub,
+      owner,
+      dir: hostDir,
+      observeAssignment: async () => currentPlatformAssignment,
+      observeManagerGate: authService.observeManagerGate!,
+      observeLaunchRecord: async () => null,
+      observeAliasRecords: async () => [],
+      platformOwner,
+      now: Date.now(),
+    });
     const started = await mgr1.startAgent({
       name: seatName,
       agent: "u4005-seat",
-      delegatedIntent: { intentId: "intent-g3", owner, parent: `${owner}.cli` },
+      delegatedIntent: { intentId: admittedIntent.intentId, owner, parent: admittedIntent.parent },
     });
-    checkSetup(cell, "seat_g3_delegated launched via delegatedIntent on manager1", started.ok, started.error);
     const ctl = seatControls.get(seatName)!;
     await until(() => existsSync(ctl.pidFile), "seat_g3_delegated pid file");
     const { pid: seatPid, uid } = JSON.parse(readFileSync(ctl.pidFile, "utf8")) as { pid: number; uid: string };
+    checkSetup(
+      cell,
+      "seat_g3_delegated launched via delegatedIntent on p_... platform manager while enrolled under u_... user owner",
+      started.ok && mgr1Auth.owner === platformOwner && admittedIntent.owner === owner,
+      { started, managerOwner: mgr1Auth.owner, targetOwner: admittedIntent.owner, uid },
+    );
 
     // Stop manager1 withAgents: driveDeprovision refuses prepareAgentRetirement for a.delegated
     await mgr1.stop({ withAgents: true });
     await until(() => !pidAlive(seatPid), "seat_g3_delegated process exit");
 
-    // Start successor manager2 on same root: reconciliation must leave delegated lifecycle held
-    const { mgr: mgr2 } = await bootRemoteManagerOnRoot(ws, "pty");
-    const afterRestart = await inspectLifecycleState(seatName, uid);
+    // Start successor platform manager2 on same root: reconciliation under platformOwner must leave delegated lifecycle held
+    const { mgr: mgr2, remoteAuthority: mgr2Auth } = await bootPlatformControlManagerOnRoot(
+      ws,
+      "pty",
+      () => admittedIntent,
+    );
+    const afterRestart = await inspectLifecycleState(seatName, uid, owner);
     await mgr2.stop();
 
-    checkGuard(cell, "after delegated seat exit + manager2 start: lifecycle head stays active", afterRestart.headState === "active" && afterRestart.headUid === uid, afterRestart);
-    checkGuard(cell, "after delegated seat exit + manager2 start: managed grant stays unrevoked", afterRestart.grantUnrevoked === true, afterRestart);
     checkGuard(
       cell,
-      "after delegated seat exit + manager2 start: dm_ and dlv_ durables stay present",
+      "after cross-owner delegated seat exit + platform manager2 start: lifecycle head under user owner stays active",
+      mgr2Auth.owner === platformOwner && afterRestart.headState === "active" && afterRestart.headUid === uid,
+      afterRestart,
+    );
+    checkGuard(
+      cell,
+      "after cross-owner delegated seat exit + platform manager2 start: user managed grant stays unrevoked",
+      afterRestart.grantUnrevoked === true,
+      afterRestart,
+    );
+    checkGuard(
+      cell,
+      "after cross-owner delegated seat exit + platform manager2 start: user dm_ and dlv_ durables stay present",
       afterRestart.dmPresent === true && afterRestart.dlvPresent === true,
       afterRestart,
     );
     checkGuard(
       cell,
-      "after delegated seat exit + manager2 start: prepareAgentRetirement and retire are never called (prepare=0, retire=0)",
+      "after cross-owner delegated seat exit + platform manager2 start: prepareAgentRetirement and retire are never called (prepare=0, retire=0)",
       afterRestart.prepareRetirementCalls === 0 && afterRestart.retireCalls === 0,
       afterRestart,
     );
@@ -1369,7 +1863,7 @@ try {
   await inspectNc?.close().catch(() => {});
   await supNc?.close().catch(() => {});
   await delivery?.stop().catch(() => {});
-  if (authChild) await killAndAwaitExit(authChild);
+  await authService?.close().catch(() => {});
   if (broker) await killAndAwaitExit(broker);
   if (idpServer) await new Promise<void>((r) => idpServer!.close(() => r()));
   rmSync(scratch, { recursive: true, force: true });
