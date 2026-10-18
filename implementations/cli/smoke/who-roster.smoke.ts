@@ -122,6 +122,15 @@ const run = (args: string[], extra: NodeJS.ProcessEnv = {}, preload?: string): P
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1200), stderr: r.stderr.slice(0, 600) });
 const rowsOf = (r: { envelope?: Envelope }) => Object.fromEntries((r.envelope?.result?.items ?? []).map((row) => [row.name, row]));
 
+function probeTraceResult(read: Awaited<ReturnType<typeof run>>, trace: string) {
+  return {
+    status: read.status,
+    code: read.envelope?.error?.code,
+    stderrBytes: Buffer.byteLength(read.stderr),
+    trace: existsSync(trace) ? readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as unknown) : [],
+  };
+}
+
 const endpoints: CotalEndpoint[] = [];
 let provisioner: CotalEndpoint | undefined;
 try {
@@ -198,6 +207,13 @@ try {
       read.envelope?.outcome === "partial" && read.envelope.completeness === "partial" &&
       read.envelope.warnings.some((w) => w.code === code), { observed, ...shown(read) });
   }
+
+  const diagnosticMarker = "fixture: probe module failed";
+  const diagnosticFailure = join(home, "probe-error.mjs");
+  writeFileSync(diagnosticFailure, `throw new Error(${JSON.stringify(diagnosticMarker)});`);
+  const failedDiagnostic = await run(["--version"], {}, diagnosticFailure);
+  const diagnosticResult = probeTraceResult(failedDiagnostic, join(home, "absent-probe-trace.jsonl"));
+  check("native probe diagnostics omit a real module error message", failedDiagnostic.status === 1 && failedDiagnostic.stderr.includes(diagnosticMarker) && diagnosticResult.stderrBytes > 0 && !JSON.stringify(diagnosticResult).includes(diagnosticMarker), { status: failedDiagnostic.status, fields: Object.keys(diagnosticResult), stderrBytes: diagnosticResult.stderrBytes });
 
   const waiting = await run(["who", "--waiting", "--json"]);
   check("--waiting keeps the waiting row and the row with a condition", Object.keys(rowsOf(waiting)).sort().join() === "bob,carol" && waiting.envelope?.target.scope === "waiting", Object.keys(rowsOf(waiting)));
@@ -278,7 +294,7 @@ try {
         brokerSignalCode: broker.signalCode,
         plain: await probeConnect(servers),
         userinfo: await probeConnect(`nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`),
-        tracedChild: { status: traced.status, code: traced.envelope?.error?.code, stderr: redactUrlMarkers(traced.stderr).slice(0, 600), trace: existsSync(trace) ? readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as unknown) : [] },
+        tracedChild: probeTraceResult(traced, trace),
       };
     })();
     check(`who ${format ?? "human"} keeps a placeholder for a private broker URL in auth recovery`, read.status === 2 && hidden && message?.includes("--server <url> --mode auth --force") === true, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr), diagnostic });
