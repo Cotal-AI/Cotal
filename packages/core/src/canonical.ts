@@ -76,15 +76,20 @@ function interchangeableCopy(v: unknown, path: string): unknown {
       if (Array.isArray(v)) {
         if (Object.getPrototypeOf(v) !== Array.prototype)
           throw new Error(`canonicalJson: non-ordinary array at ${path} (a subclassed/exotic array canonicalizes through projections)`);
+        // One read of `length`, from its descriptor, bounds both the index check and the copy. A
+        // second read could add an element no index check covered or drop one the check accepted.
+        const length: unknown = Object.getOwnPropertyDescriptor(v, "length")?.value;
+        if (typeof length !== "number" || !Number.isInteger(length) || length < 0)
+          throw new Error(`canonicalJson: invalid array length at ${path} (refusing the projection)`);
         for (const k of Reflect.ownKeys(v)) {
           if (typeof k !== "string")
             throw new Error(`canonicalJson: symbol-keyed own property on array at ${path} (invisible to canonicalization; refusing the projection)`);
           if (k === "length") continue;
-          if (!/^(0|[1-9][0-9]*)$/.test(k) || Number(k) >= v.length)
+          if (!/^(0|[1-9][0-9]*)$/.test(k) || Number(k) >= length)
             throw new Error(`canonicalJson: non-index own property "${k}" on array at ${path} (invisible to canonicalization; refusing the projection)`);
         }
         const copy: unknown[] = [];
-        for (let i = 0; i < v.length; i++) {
+        for (let i = 0; i < length; i++) {
           const d = Object.getOwnPropertyDescriptor(v, i);
           if (d === undefined)
             throw new Error(`canonicalJson: hole at ${path}[${i}] (a hole would be coerced to null; refusing the projection)`);
