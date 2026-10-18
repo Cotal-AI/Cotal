@@ -12,11 +12,16 @@
  * registry refusal or died as a raw `Invalid URL` on the `--server` mismatch parse. A URL, and a
  * `host:port` spelling, are refused by name pointing at `--server`, and a correct bare host still
  * reaches the registry's own refusal.
+ *
+ * And the implicit-space refusals (#3905, broker-free unless the product regresses): a bare `up`
+ * beside an unreadable account record refuses before any broker or registry write even though one
+ * valid account remains, and a manifest dry run plans its own space in a root holding two accounts,
+ * where a flag-only `up` still refuses to pick one.
  * Run: pnpm smoke:up-refresh-identity:live
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertScratchHeld, makeScratch } from "../../../bin/smoke/_scratch.js";
@@ -30,7 +35,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 13 + 5 + 14; // storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
+const EXPECTED_CHECKS = 29 + 13 + 5 + 14 + 6; // storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord + implicitSpaceAccounts
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -423,8 +428,53 @@ async function hostShapeRefusals(): Promise<void> {
   }
 }
 
+/** #3905 - a bare `up` takes its space from the root it runs in without weakening the account
+ *  checks that resolution has always made. An unreadable account record leaves the tenant count
+ *  uncertain, so the boot refuses before it starts a broker or records a mesh, even with one valid
+ *  account beside it. A manifest names its own space, so its dry run plans in a root holding two
+ *  valid accounts, while a flag-only `up` in that root still refuses to pick one. */
+async function implicitSpaceAccounts(): Promise<void> {
+  const fixture = await makeFixture("implicit-accounts");
+  const { createBrokerAuth, createSpaceAccountAuth } = await import("@cotal-ai/core");
+  const { authDir, loadMeshes, saveBrokerAuth, saveSpaceAccountAuth, spaceAccountPath } = await import("@cotal-ai/workspace");
+  const dir = authDir(fixture.root);
+  const broker = await createBrokerAuth("implicit-accounts");
+  saveBrokerAuth(dir, broker);
+  saveSpaceAccountAuth(dir, await createSpaceAccountAuth(broker, "alpha"));
+  const beta = spaceAccountPath(dir, "beta");
+  const pidPath = join(fixture.root, ".cotal", "nats.pid");
+  const out = (r: { stdout: string; stderr: string }) => `${r.stdout}${r.stderr}`;
+  try {
+    // Occupies the account namespace but carries no account: the inventory counts it as corrupt.
+    writeFileSync(beta, JSON.stringify({ space: "beta" }));
+    const corrupt = cotal(fixture, ["up", "--open", "--detach", "--no-manager", "--server", fixture.server]);
+    check("an implicit up beside an unreadable account record starts no broker and records no mesh", !existsSync(pidPath) && loadMeshes().length === 0, { output: out(corrupt), meshes: loadMeshes() });
+    check("...and refuses", corrupt.status !== 0, out(corrupt));
+    check("...naming the unreadable record", out(corrupt).includes(basename(beta)) && /unreadable/.test(out(corrupt)), out(corrupt));
+
+    saveSpaceAccountAuth(dir, await createSpaceAccountAuth(broker, "beta"));
+    const manifest = join(fixture.root, "mesh.yaml");
+    writeFileSync(manifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: alpha\nbroker: {servers: "${fixture.server}", auth: false}\nagents: {}\nchannels: {}\n`);
+    const dry = cotal(fixture, ["up", "-f", manifest, "--dry-run"]);
+    check("a manifest dry run in a two-account root plans the manifest's space", dry.status === 0 && /Dry run - nothing was changed/.test(out(dry)), out(dry));
+    check("...and writes nothing", !existsSync(pidPath) && loadMeshes().length === 0, loadMeshes());
+    const bare = cotal(fixture, ["up", "--open", "--detach", "--no-manager", "--server", fixture.server]);
+    check("a flag-only up in that root still refuses to pick a space, before any broker", bare.status !== 0 && /refuses to pick one/.test(out(bare)) && !existsSync(pidPath), out(bare));
+  } finally {
+    // Only a regression boots a broker here. Stop it so the run leaves nothing behind; `down`
+    // refuses while the unreadable record is present, so that goes first.
+    if (existsSync(pidPath)) {
+      rmSync(beta, { force: true });
+      await stop(fixture);
+    }
+    rmSync(fixture.home, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
 try {
   await hostShapeRefusals();
+  await implicitSpaceAccounts();
   await orderedRefresh("alpha-root", "omega-tenant", ["alpha-root", "omega-tenant"]);
   await orderedRefresh("omega-root", "alpha-tenant", ["alpha-tenant", "omega-root"]);
   await foreignRootRefusal();

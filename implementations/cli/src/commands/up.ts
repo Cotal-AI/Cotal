@@ -587,7 +587,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   //
   // Dry-run must not pin (mkdir is a mutation). Validation still uses whatever root is visible;
   // persistence is already suppressed below.
-  const space = values.space ?? implicitSpace();
+  //
+  // The space is resolved once, here, before the pin can move the root. A manifest dry run takes its
+  // space from the manifest and pins nothing, so it resolves none: resolving one refused a manifest
+  // that names its space in a root holding several accounts.
+  const resolvedSpace = values.file && values["dry-run"] ? undefined : (values.space ?? implicitSpace());
   if (!values["dry-run"]) {
     if (values.file) {
       try {
@@ -597,7 +601,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // Manifest errors are reported by the -f path with the same load; do not double-print.
       }
     } else {
-      ensureRootForSpace(space);
+      ensureRootForSpace(resolvedSpace!);
     }
   }
 
@@ -683,6 +687,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
     return;
   }
+  const space = resolvedSpace!; // only a manifest dry run leaves it unresolved, and it returned above
   // `--runtime <name>` selects the backend the mesh's manager spawns agents through. The `-f` path
   // preflights inside upManifest; the no-manifest path must too, or the flag is silently dropped and
   // the detached manager boots the default pty. Resolve + probe the runtime NOW, in the operator's
@@ -2682,11 +2687,14 @@ function hostedSpaces(root: string): string[] {
 
 /** The space a boot without `--space` runs: the one this root hosts, else {@link resolveSpace}.
  *  `resolveSpace` reads only auth accounts, so on an open mesh's root it answered the default and
- *  {@link ensureRootForSpace} refused the folder's own re-run. A root hosting several spaces also
- *  goes to `resolveSpace`, which refuses to pick one. */
+ *  {@link ensureRootForSpace} refused the folder's own re-run. It still runs first, because it is
+ *  what refuses a root holding several accounts or an unreadable account record: {@link hostedSpaces}
+ *  lists only the valid accounts, and picking the sole valid one beside a corrupt one booted a broker
+ *  while the tenant count was uncertain. */
 function implicitSpace(): string {
+  const fromAuth = resolveSpace(process.cwd());
   const hosted = hostedSpaces(cotalRoot());
-  return hosted.length === 1 ? hosted[0] : resolveSpace(process.cwd());
+  return hosted.length === 1 ? hosted[0] : fromAuth;
 }
 
 function realpathSafe(p: string): string {
