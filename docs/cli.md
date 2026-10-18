@@ -2726,7 +2726,9 @@ answers `{"ok":false,"taken":true}` when a peer with that name is live, so the s
 name. Otherwise it prints one JSON line: the launch env the connector reads and the reference that
 `retire` takes. The channels and role come from the mesh's default persona. On a mesh with static
 credentials it provisions the identity's own delivery durables and writes its credential to a 0600
-file in a new temporary directory; the credential never appears on stdout. `cotal app-identity
-retire --space <space> --id <id> --lifecycle-uid <uid> --dir <dir>` removes that file and directory
-and the identity's broker footprint. A mesh that uses per-user sign-in is refused. Like
+file in a new temporary directory; the credential never appears on stdout. A record beside it names
+the identity, the mesh and the process that asked. `cotal app-identity retire --dir <dir>` removes
+the identity's broker footprint, then the files and the directory. When the broker is not answering
+it keeps them. Each provision also retires the directories whose owning process has exited, which
+covers a host killed before it could retire. A mesh that uses per-user sign-in is refused. Like
 `agent-bearer`, it skips the connector-seed boot gate.

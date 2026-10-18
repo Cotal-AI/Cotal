@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
@@ -21,31 +21,33 @@ import { liveMeshNames } from "../lib/live-names.js";
 
 /** Every credential directory provision makes is a fresh `mkdtemp` under the OS temp dir with this prefix. */
 const CRED_DIR_PREFIX = "cotal-app-identity-";
+/** The file in that directory that says what to retire. It carries no secret. */
+const RECORD = "identity.json";
 
 /**
  * `cotal app-identity`: machine-facing plumbing for a Claude app conversation on a local mesh. The
  * Claude connector's local server runs it to open one conversation's own identity on the selected
  * mesh, and again to retire it. It prints one JSON line on stdout and nothing else there. The
- * credential is never in that line: it goes to a 0600 file whose path the env names.
+ * credential is never in that line: it goes to a 0600 file whose path the env names. A record beside
+ * it names the identity, the mesh and the process that asked, so retire needs only the directory,
+ * and a later provision retires what a process that died without retiring left behind.
  */
 export const appIdentityFlags = [
   { name: "name", type: "string", value: "<name>", description: "provision: the agent name to open, exactly" },
   { name: "space", type: "string", value: "<space>", description: "the mesh to use; defaults as `cotal spawn` does" },
-  { name: "id", type: "string", value: "<id>", description: "retire: the identity provision returned" },
-  { name: "lifecycle-uid", type: "string", value: "<uid>", description: "retire: the lifecycle provision returned" },
   { name: "dir", type: "string", value: "<dir>", description: "retire: the credential directory provision returned" },
 ] as const satisfies readonly FlagSpec[];
 
-/** What `provision` hands back for `retire`. */
-export interface AppIdentityRetire {
+/** What the record in a credential directory says. `owner` is the process that ran provision. */
+interface IdentityRecord {
   space: string;
   id: string;
   lifecycleUid: string;
-  dir: string;
+  owner: number;
 }
 
 export type AppIdentityReply =
-  | { ok: true; env: Record<string, string>; retire?: AppIdentityRetire }
+  | { ok: true; env: Record<string, string>; retire?: { dir: string } }
   | { ok: false; taken: true }
   | { ok: false; error: string };
 
@@ -64,7 +66,7 @@ export async function appIdentity(args: ParsedArgs): Promise<void> {
   try {
     if (verb === "provision" && args.positionals.length === 1) return reply(await provision(values));
     if (verb === "retire" && args.positionals.length === 1) return reply(await retire(values));
-    reply({ ok: false, error: "usage: cotal app-identity provision --name <name> | retire --space <s> --id <id> --lifecycle-uid <uid> --dir <dir>" });
+    reply({ ok: false, error: "usage: cotal app-identity provision --name <name> [--space <space>] | retire --dir <dir>" });
   } catch (e) {
     reply({ ok: false, error: errorText(e) });
   }
@@ -111,6 +113,7 @@ async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<A
   };
   if (!t.auth) return { ok: true, env };
 
+  await retireOrphans();
   const identity = newIdentity();
   const lifecycleUid = mintLifecycleUid();
   const prov = new CotalEndpoint({
@@ -129,7 +132,9 @@ async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<A
   const ignoreProvisionerWarning = () => {};
   prov.on("warning", ignoreProvisionerWarning);
   const dir = mkdtempSync(join(tmpdir(), CRED_DIR_PREFIX));
-  const retireRef: AppIdentityRetire = { space: t.space, id: identity.id, lifecycleUid, dir };
+  // Written before anything reaches the broker, so a provision killed partway still leaves a record.
+  const record: IdentityRecord = { space: t.space, id: identity.id, lifecycleUid, owner: process.ppid };
+  writeFileSync(join(dir, RECORD), JSON.stringify(record), { mode: 0o600 });
   try {
     await prov.start();
     // The same durable footprint a foreground spawn provisions (DM and delivery durables, read-ACL
@@ -138,32 +143,65 @@ async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<A
     writeFileSync(join(dir, "agent.creds"), creds, { mode: 0o600 });
   } catch (e) {
     await prov.stop().catch(() => {});
-    await retireIdentity(t, retireRef).catch(() => {});
+    await retireDir(dir).catch(() => {});
     throw e;
   }
   await prov.stop();
-  return { ok: true, env: { ...env, COTAL_CREDS: join(dir, "agent.creds"), COTAL_LIFECYCLE_UID: lifecycleUid }, retire: retireRef };
+  return { ok: true, env: { ...env, COTAL_CREDS: join(dir, "agent.creds"), COTAL_LIFECYCLE_UID: lifecycleUid }, retire: { dir } };
 }
 
 async function retire(values: FlagValues<typeof appIdentityFlags>): Promise<{ ok: true } | AppIdentityReply> {
-  const { space, id, dir } = values;
-  const lifecycleUid = values["lifecycle-uid"];
-  if (!space || !id || !lifecycleUid || !dir) return { ok: false, error: "retire needs --space, --id, --lifecycle-uid and --dir" };
-  await retireIdentity(target(space), { space, id, lifecycleUid, dir });
+  if (!values.dir) return { ok: false, error: "retire needs --dir <dir>" };
+  await retireDir(values.dir);
   return { ok: true };
 }
 
-/** Remove what provision made: the credential directory and, on an auth mesh, the identity's broker
- *  footprint, with a deprovisioner credential pinned to that one identity. The directory must be one
- *  provision's shape names, and only its credential file goes, so a wrong path removes nothing else. */
-async function retireIdentity(t: MeshTarget, r: AppIdentityRetire): Promise<void> {
-  const dir = resolve(r.dir);
-  if (dirname(dir) !== resolve(tmpdir()) || !basename(dir).startsWith(CRED_DIR_PREFIX))
-    throw new Error(`refusing to remove ${r.dir}: not a credential directory provision made`);
+/** Remove what provision made in `dirArg`: on an auth mesh the identity's broker footprint first,
+ *  with a deprovisioner credential pinned to that one identity, then the credential, the record and
+ *  the directory. The directory must have provision's shape, and only those two files go, so a wrong
+ *  path removes nothing else. When the broker footprint cannot be removed the files stay, so a
+ *  later attempt still knows what to retire. */
+async function retireDir(dirArg: string): Promise<void> {
+  const dir = resolve(dirArg);
+  if (dirname(dir) !== resolve(tmpdir()) || !basename(dir).startsWith(CRED_DIR_PREFIX) || !lstatSync(dir, { throwIfNoEntry: false })?.isDirectory())
+    throw new Error(`refusing to remove ${dirArg}: not a credential directory provision made`);
+  const record = JSON.parse(readFileSync(join(dir, RECORD), "utf8")) as IdentityRecord;
+  const t = target(record.space);
+  if (t.auth) {
+    if (!(await isReachable(t.server))) throw new Error(`the mesh "${t.space}" at ${t.server} is not answering, so ${record.id} keeps its broker footprint`);
+    const creds = await mintCreds(t.auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: record.id, lifecycleUid: record.lifecycleUid } });
+    await deprovisionAgent({ servers: t.server, space: t.space, targetId: record.id, lifecycleUid: record.lifecycleUid, creds });
+  }
   rmSync(join(dir, "agent.creds"), { force: true });
+  rmSync(join(dir, RECORD), { force: true });
   if (existsSync(dir)) rmdirSync(dir);
-  if (!t.auth) return;
-  if (!(await isReachable(t.server))) throw new Error(`the mesh "${t.space}" at ${t.server} is not answering, so ${r.id} keeps its broker footprint`);
-  const creds = await mintCreds(t.auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: r.id, lifecycleUid: r.lifecycleUid } });
-  await deprovisionAgent({ servers: t.server, space: t.space, targetId: r.id, lifecycleUid: r.lifecycleUid, creds });
+}
+
+/** Retire every credential directory of this user's whose owning process is gone: a host killed
+ *  before it could retire. One that cannot be retired now stays for the next provision. */
+async function retireOrphans(): Promise<void> {
+  const uid = process.getuid?.();
+  for (const name of readdirSync(tmpdir())) {
+    if (!name.startsWith(CRED_DIR_PREFIX)) continue;
+    const dir = join(tmpdir(), name);
+    try {
+      const st = lstatSync(dir);
+      if (!st.isDirectory() || (uid !== undefined && st.uid !== uid)) continue;
+      const record = JSON.parse(readFileSync(join(dir, RECORD), "utf8")) as IdentityRecord;
+      if (alive(record.owner)) continue;
+      await retireDir(dir);
+    } catch {
+      // Unreadable, half-written or unreachable: left for a later provision.
+    }
+  }
+}
+
+/** Whether `pid` names a running process. A reused pid reads as alive, so its directory is kept. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
 }

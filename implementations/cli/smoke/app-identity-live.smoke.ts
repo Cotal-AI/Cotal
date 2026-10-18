@@ -10,7 +10,8 @@
  * Run: pnpm smoke:app-identity:live
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -23,7 +24,7 @@ const {
   createSpaceAuth, deprovisionAgent, mintCreds, mintLifecycleUid, newIdentity, provisionAgent, seedChannelRegistry,
   setupSpaceStreams, CotalEndpoint,
 } = await import("@cotal-ai/core");
-const { authDir, saveSpaceAuth } = await import("@cotal-ai/workspace");
+const { authDir, recordMesh, saveSpaceAuth } = await import("@cotal-ai/workspace");
 const { meshes } = await import("../src/commands/meshes.js");
 const { appIdentity } = await import("../src/commands/app-identity.js");
 const { bootBroker } = await import("../../manager/smoke/_boot-broker.js");
@@ -81,6 +82,7 @@ const credDirs = () => readdirSync(tmpdir()).filter((n) => n.startsWith("cotal-a
 const SPACE = "appmesh";
 const root = mkdtempSync(join(tmpdir(), "cotal-appid-smoke-root-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
+const userRoot = mkdtempSync(join(tmpdir(), "cotal-appid-smoke-user-"));
 const auth = await createSpaceAuth(SPACE);
 const broker = await bootBroker(auth);
 const cleanup: Array<() => Promise<void> | void> = [];
@@ -104,6 +106,19 @@ try {
     "a mesh with no default persona is refused, naming where it looked",
     noPersona.code === 1 && noPersona.reply?.error?.includes(join(root, ".cotal", "agents")) && /cotal setup/.test(noPersona.reply.error),
     noPersona.out,
+  );
+  check("  and it made no credential directory", credDirs().length === before, credDirs());
+  // A per-user sign-in mesh, recorded the way `cotal meshes add` records one. It is refused before
+  // anything dials it, so its addresses only need to parse.
+  recordMesh({ space: "usermesh", server: "nats://127.0.0.1:9", root: userRoot, mode: "user", origin: "manual", userAuth: {
+    provider: "cotal", idp: { url: "https://idp.example/api/auth", issuer: "https://idp.example", audience: "https://idp.example" },
+    endpoints: { url: "https://cotal.example/agents", agentProvisioningUrl: "https://cotal.example/agents" }, remote: true,
+  }, ts: new Date().toISOString() } as never);
+  const userMesh = await run(["provision"], { space: "usermesh", name: "claude_app" });
+  check(
+    "a mesh that uses per-user sign-in is refused by name",
+    userMesh.code === 1 && /per-user sign-in/.test(userMesh.reply?.error) && userMesh.reply.error.includes('"usermesh"'),
+    userMesh.out,
   );
   check("  and it made no credential directory", credDirs().length === before, credDirs());
 
@@ -130,16 +145,21 @@ try {
   check("  in a directory only its owner can enter", (statSync(dirname(env.COTAL_CREDS)).mode & 0o777) === 0o700);
   const jwt = credsText.split("\n").find((l) => l.startsWith("eyJ"));
   check("stdout carries no credential", !/NKEY SEED|BEGIN NATS/.test(opened.out) && !!jwt && !opened.out.includes(jwt), opened.out);
+  check("the retire reference is the credential's directory", retire?.dir === dirname(env.COTAL_CREDS), retire);
+  const recordPath = join(retire.dir, "identity.json");
+  const recordText = readFileSync(recordPath, "utf8");
+  const record = JSON.parse(recordText);
   check(
-    "the retire reference matches what was provisioned",
-    retire?.space === SPACE && retire.lifecycleUid === env.COTAL_LIFECYCLE_UID && retire.dir === dirname(env.COTAL_CREDS) && typeof retire.id === "string",
-    retire,
+    "a record beside it names the identity, its mesh and the process that asked",
+    record.space === SPACE && record.lifecycleUid === env.COTAL_LIFECYCLE_UID && typeof record.id === "string" && record.owner === process.ppid,
+    record,
   );
+  check("  readable by its owner only, and carrying no credential", (statSync(recordPath).mode & 0o777) === 0o600 && !/NKEY SEED|BEGIN NATS/.test(recordText) && !recordText.includes(jwt!));
 
   // ── the identity works: it joins and a peer's DM reaches it ──────────────────────────────────
   const app = new CotalEndpoint({
     space: SPACE, servers: env.COTAL_SERVERS, creds: credsText, lifecycleUid: env.COTAL_LIFECYCLE_UID,
-    card: { name: env.COTAL_NAME, kind: "agent", id: retire.id }, channels: ["general"],
+    card: { name: env.COTAL_NAME, kind: "agent", id: record.id }, channels: ["general"],
   });
   const heard: string[] = [];
   app.on("message", (m: { parts?: Array<{ kind: string; text?: string }> }) => {
@@ -175,42 +195,66 @@ try {
   check("  and it made no credential directory", credDirs().length === beforeTaken, credDirs());
   const other = await run(["provision"], { space: SPACE, name: "claude_app_2" });
   check("another name provisions beside it", other.code === 0 && other.reply?.ok === true && other.reply.env.COTAL_NAME === "claude_app_2", other.out);
-  check("  as an identity of its own", other.reply.retire.id !== retire.id && other.reply.env.COTAL_CREDS !== env.COTAL_CREDS);
+  const otherRecord = JSON.parse(readFileSync(join(other.reply.retire.dir, "identity.json"), "utf8"));
+  check("  as an identity of its own", otherRecord.id !== record.id && other.reply.env.COTAL_CREDS !== env.COTAL_CREDS);
 
   // ── retire: the credential directory and the broker footprint go ─────────────────────────────
   const foreign = mkdtempSync(join(tmpdir(), "not-an-app-identity-"));
-  const refused = await run(["retire"], { space: SPACE, id: retire.id, "lifecycle-uid": retire.lifecycleUid, dir: foreign });
+  const refused = await run(["retire"], { dir: foreign });
   check("retire refuses a directory provision did not make", refused.code === 1 && /refusing to remove/.test(refused.reply?.error), refused.out);
   check("  and leaves it in place", existsSync(foreign));
   // Raw, as a caller could pass it: `join` would normalize the climb away before retire saw it.
   const climbing = `${tmpdir()}/cotal-app-identity-/../${basename(foreign)}`;
-  const climbed = await run(["retire"], { space: SPACE, id: retire.id, "lifecycle-uid": retire.lifecycleUid, dir: climbing });
+  const climbed = await run(["retire"], { dir: climbing });
   check("retire refuses a path that climbs out of a credential directory", climbed.code === 1 && /refusing to remove/.test(climbed.reply?.error), climbed.out);
   check("  and leaves what it names in place", existsSync(foreign));
   rmSync(foreign, { recursive: true, force: true });
   const elsewhere = join(root, "cotal-app-identity-elsewhere");
   mkdirSync(elsewhere);
   writeFileSync(join(elsewhere, "agent.creds"), "not provision's");
-  const misplaced = await run(["retire"], { space: SPACE, id: retire.id, "lifecycle-uid": retire.lifecycleUid, dir: elsewhere });
+  // A readable record naming the live mesh, so only the directory checks stand between retire and the file.
+  writeFileSync(join(elsewhere, "identity.json"), JSON.stringify({ space: SPACE, id: newIdentity().id, lifecycleUid: mintLifecycleUid(), owner: process.pid }));
+  const misplaced = await run(["retire"], { dir: elsewhere });
   check("retire refuses a credential-named directory outside the temp directory", misplaced.code === 1 && /refusing to remove/.test(misplaced.reply?.error), misplaced.out);
   check("  and leaves its file in place", existsSync(join(elsewhere, "agent.creds")));
-  const missing = await run(["retire"], { space: SPACE, id: retire.id });
-  check("retire without the full reference is refused", missing.code === 1 && /--lifecycle-uid/.test(missing.reply?.error), missing.out);
+  const link = join(tmpdir(), `cotal-app-identity-link-${process.pid}`);
+  symlinkSync(elsewhere, link);
+  const linked = await run(["retire"], { dir: link });
+  check("retire refuses a credential-named link to another directory", linked.code === 1 && /refusing to remove/.test(linked.reply?.error), linked.out);
+  check("  and leaves the file it points at", existsSync(join(elsewhere, "agent.creds")));
+  rmSync(link, { force: true });
+  const missing = await run(["retire"], {});
+  check("retire without a directory is refused", missing.code === 1 && /--dir/.test(missing.reply?.error), missing.out);
 
   await stopApp();
   cleanup.splice(cleanup.indexOf(stopApp), 1);
-  const retired = await run(["retire"], { space: SPACE, id: retire.id, "lifecycle-uid": retire.lifecycleUid, dir: retire.dir });
+  const retired = await run(["retire"], { dir: retire.dir });
   check("retire answers ok", retired.code === 0 && retired.reply?.ok === true && retired.out.trim().split("\n").length === 1, retired.out);
   check("  and removed the credential directory", !existsSync(retire.dir));
   // A second deprovision of the same identity finds nothing left: the read-ACL row and both
   // durables were removed by retire, not by this call.
   const again = await deprovisionAgent({
-    servers: broker.servers, space: SPACE, targetId: retire.id, lifecycleUid: retire.lifecycleUid,
-    creds: await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: retire.id, lifecycleUid: retire.lifecycleUid } }),
+    servers: broker.servers, space: SPACE, targetId: record.id, lifecycleUid: record.lifecycleUid,
+    creds: await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: record.id, lifecycleUid: record.lifecycleUid } }),
   });
   check("  and removed its broker footprint", again.acls.absent === 1 && again.consumers.absent === 2 && again.deleted === 0, again);
 
-  const otherRetired = await run(["retire"], { space: SPACE, ...other.reply.retire, "lifecycle-uid": other.reply.retire.lifecycleUid });
+  // ── an identity whose host died without retiring is retired by the next provision ───────────
+  const orphan = await run(["provision"], { space: SPACE, name: "claude_app_9" });
+  const orphanRecord = JSON.parse(readFileSync(join(orphan.reply.retire.dir, "identity.json"), "utf8"));
+  const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+  writeFileSync(join(orphan.reply.retire.dir, "identity.json"), JSON.stringify({ ...orphanRecord, owner: dead }), { mode: 0o600 });
+  const third = await run(["provision"], { space: SPACE, name: "claude_app_3" });
+  check("the next provision answers ok", third.code === 0 && third.reply?.ok === true, third.out);
+  check("  and retired the identity whose host is gone", !existsSync(orphan.reply.retire.dir));
+  const orphanAgain = await deprovisionAgent({
+    servers: broker.servers, space: SPACE, targetId: orphanRecord.id, lifecycleUid: orphanRecord.lifecycleUid,
+    creds: await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: orphanRecord.id, lifecycleUid: orphanRecord.lifecycleUid } }),
+  });
+  check("  with its broker footprint", orphanAgain.acls.absent === 1 && orphanAgain.consumers.absent === 2 && orphanAgain.deleted === 0, orphanAgain);
+  check("  and kept the one whose host is alive", existsSync(join(other.reply.retire.dir, "agent.creds")));
+
+  const otherRetired = await run(["retire"], { dir: other.reply.retire.dir });
   check("the other identity retires on its own", otherRetired.code === 0 && !existsSync(other.reply.retire.dir), otherRetired.out);
 
   // ── a mesh that does not answer ──────────────────────────────────────────────────────────────
@@ -221,10 +265,15 @@ try {
   const down = await run(["provision"], { space: SPACE, name: "claude_app" });
   check("a mesh that is not answering is refused by name", down.code === 1 && down.reply?.error?.includes(`"${SPACE}"`) && /not answering/.test(down.reply.error), down.out);
   check("  and it made no credential directory", credDirs().length === beforeDown, credDirs());
+  const downRetire = await run(["retire"], { dir: third.reply.retire.dir });
+  check("retire on a mesh that is not answering is refused", downRetire.code === 1 && /not answering/.test(downRetire.reply?.error), downRetire.out);
+  check("  and keeps what a later retire needs", existsSync(join(third.reply.retire.dir, "agent.creds")) && existsSync(join(third.reply.retire.dir, "identity.json")));
+  rmSync(third.reply.retire.dir, { recursive: true, force: true });
 } finally {
   for (const stop of cleanup.reverse()) await Promise.resolve(stop()).catch(() => {});
   if (brokerUp) await broker.stop();
   rmSync(root, { recursive: true, force: true });
+  rmSync(userRoot, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
 }
 
