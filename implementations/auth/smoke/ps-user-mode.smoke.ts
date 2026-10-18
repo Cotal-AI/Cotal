@@ -24,6 +24,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { jwt } from "better-auth/plugins/jwt";
@@ -69,7 +70,7 @@ let PUBLIC_EXCHANGE_PORT!: number;
 const SPACE = `psuser-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
-const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
+const TSX = fileURLToPath(import.meta.resolve("tsx/cli"));
 
 /**
  * How the child ENDED is part of the result, not a detail of the wrapper.
@@ -103,7 +104,7 @@ function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
       cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: [...(["ignore", "pipe", "pipe"] as const)],
     };
     assertSmokeSandboxDown(sandbox, args, options);
-    const child = spawn(TSX, [BIN, ...args], options);
+    const child = spawn(process.execPath, [TSX, BIN, ...args], options);
     let out = "";
     let timedOut = false;
     let settled = false;
@@ -289,7 +290,24 @@ try {
   // `status: null`, which reads only as "non-zero" and loses why.
   mustHaveRun(up, "`cotal up`");
   check("up exits 0", up.status === 0, up.out.slice(-600));
-  if (up.status !== 0) { process.exitCode = 1; throw new Error("fixture"); }
+  if (up.status !== 0) {
+    // Emit only fixed diagnostic labels. A detached manager log can contain credentials.
+    const { canonicalLocalProcessPath, MANAGER_LOGFILE } = await import("@cotal-ai/workspace");
+    const log = canonicalLocalProcessPath(MANAGER_LOGFILE, { root, space: SPACE });
+    try {
+      const text = readFileSync(log, "utf8");
+      const codes = ["ERR_MODULE_NOT_FOUND", "ERR_PACKAGE_PATH_NOT_EXPORTED", "ERR_UNKNOWN_FILE_EXTENSION", "ERR_DLOPEN_FAILED", "ERR_INPUT_TYPE_NOT_ALLOWED", "EACCES", "ENOENT", "EADDRINUSE"];
+      const kinds = ["SyntaxError", "ReferenceError", "TypeError"];
+      console.error("PS_USER_MANAGER_FAILURE " + JSON.stringify({
+        logReadable: true, codes: codes.filter((code) => text.includes(code)), kinds: kinds.filter((kind) => text.includes(kind)),
+        requireInEsm: text.includes("require is not defined in ES module scope"),
+      }));
+    } catch {
+      console.error("PS_USER_MANAGER_FAILURE " + JSON.stringify({ logReadable: false }));
+    }
+    process.exitCode = 1;
+    throw new Error("fixture");
+  }
   await wait(3000);
 
   /** Whether output carries credential material: a JWT (bearer or user JWT), a NATS creds block or an
