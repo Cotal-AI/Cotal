@@ -5804,10 +5804,14 @@ export class Manager {
     // One read of the cotal config per spawn: the delegated refusal, the model policy and the launch
     // fields below all take this value, so the awaits between the policy check and the launch cannot
     // admit the seat under one file and launch it with another's servers and env allowlist. Read per
-    // spawn, so a policy edit reaches the next spawn without a restart.
+    // spawn, so a policy edit reaches the next spawn without a restart. The launch fields are resolved
+    // here too, before the spawn is accepted, so a sharing selection that names an undeclared server
+    // is refused while there is nothing to roll back.
     let cotalConfig: CotalConfig;
+    let hostFields: ReturnType<Manager["hostLaunchFields"]>;
     try {
       cotalConfig = loadCotalConfig(this.workspaceRoot);
+      hostFields = this.hostLaunchFields(cotalConfig, agent, opts.shareTools, harness);
     } catch (e) {
       return { ok: false, error: rejectionText(e) };
     }
@@ -5828,7 +5832,7 @@ export class Manager {
         return { ok: false, error: `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)` };
       if (typeof opts.cwd === "string" && opts.cwd !== "")
         return { ok: false, error: `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory` };
-      const shared = Object.keys(connectorServers(cotalConfig, agent, opts.shareTools));
+      const shared = Object.keys(hostFields.mcpServers!);
       if (shared.length)
         return { ok: false, error: `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none` };
     }
@@ -6240,7 +6244,7 @@ export class Manager {
         : undefined;
       const manifestSha256 = manifestPath ? this.fileDigest(manifestPath) : undefined;
       const launchOpts: LaunchOpts = {
-        ...this.hostLaunchFields(cotalConfig, agent, opts.shareTools, harness),
+        ...hostFields,
         name,
         role,
         // User mode: the principal IS the identity (the endpoint derives card.id from owner+actor);
