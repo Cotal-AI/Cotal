@@ -104,7 +104,7 @@ export function mintToolResultConsent(args: MintToolResultConsentArgs, keyPair: 
     v: 1 as const,
     id: randomBytes(18).toString("base64url"),
     space: args.space,
-    scope: TOOL_RESULT_CONSENT_SCOPE,
+    scope: TOOL_RESULT_CONSENT_SCOPE as typeof TOOL_RESULT_CONSENT_SCOPE,
     target: t,
     holder: holderFor({ id: args.holder }, t),
     proofAt,
