@@ -87,10 +87,7 @@ export function bootToken(): string | undefined {
   }
 }
 
-/** The Linux process start token: `/proc/<pid>/stat` field 22 (starttime, in clock ticks since
- *  boot), parsed after the final `)` because comm may hold spaces and parentheses. A zombie still
- *  reports it, so a child that exited before its custodian reaped it is still readable. Undefined
- *  when the pid has no `/proc` entry. */
+/** Three-valued outcome of inspecting `/proc/<pid>/stat` field 22 (starttime). */
 export type ProcessStartInspection =
   | { state: "present"; token: string }
   | { state: "absent" }
@@ -114,6 +111,10 @@ export function inspectProcessStart(pid: number): ProcessStartInspection {
   }
 }
 
+/** The Linux process start token: `/proc/<pid>/stat` field 22 (starttime, in clock ticks since
+ *  boot), parsed after the final `)` because comm may hold spaces and parentheses. A zombie still
+ *  reports it, so a child that exited before its custodian reaped it is still readable. Undefined
+ *  when the pid has no `/proc` entry or cannot be read. */
 export function processStartToken(pid: number): string | undefined {
   const res = inspectProcessStart(pid);
   return res.state === "present" ? res.token : undefined;

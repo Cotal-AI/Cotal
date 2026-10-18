@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { KV } from "@nats-io/kv";
 import {
@@ -7,32 +7,32 @@ import {
   assertPrincipalOwnerToken,
   assertValidOwnerToken,
   isCasLoss,
+  staticSlotKey,
   type RuntimeReference,
 } from "@cotal-ai/core";
 import { spaceKey } from "@cotal-ai/workspace";
-import { bootToken, identityVerdict, inspectProcessStart } from "@cotal-ai/seat";
+import {
+  captureProcessIdentity,
+  probeRecordedProcess,
+  type ProcessProbeVerdict,
+  type RecordedProcessIdentity,
+} from "@cotal-ai/seat";
+
+export { captureProcessIdentity, probeRecordedProcess, type ProcessProbeVerdict };
+export type ManagerSlotProcess = RecordedProcessIdentity;
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-export const USER_SLOT_PREFIX = "mgrslot";
 export const USER_SLOT_INDEX_TOKEN = "_index";
 
 export interface ManagerSlotEnrollSpec {
   role?: string;
-  label?: string;
+  label: string;
   capabilities?: string[];
   subscribe?: string[];
   allowSubscribe: string[];
   allowPublish?: string[];
-}
-
-export interface ManagerSlotProcess {
-  pid: number;
-  startToken: string;
-  bootId: string;
-  custodianPid?: number;
-  custodianStartToken?: string;
 }
 
 export type ManagerSlotPhase =
@@ -112,12 +112,12 @@ export function parseUserSlotSuffix(suffix: string): { targetOwner: string; acto
 
 export function userSlotKey(managerOwner: string, targetOwner: string, actor: string): string {
   const holder = assertPrincipalOwnerToken(managerOwner, { allowPlatform: true });
-  return `${USER_SLOT_PREFIX}.${holder}.${userSlotSuffix(targetOwner, actor)}`;
+  return staticSlotKey(holder, userSlotSuffix(targetOwner, actor));
 }
 
 export function userSlotIndexKey(managerOwner: string): string {
   const holder = assertPrincipalOwnerToken(managerOwner, { allowPlatform: true });
-  return `${USER_SLOT_PREFIX}.${holder}.${USER_SLOT_INDEX_TOKEN}`;
+  return staticSlotKey(holder, USER_SLOT_INDEX_TOKEN);
 }
 
 function localSlotIndexPath(workspaceRoot: string, space: string): string {
@@ -277,130 +277,26 @@ export async function readUserSlot(
   };
 }
 
+/** Write a user slot row with a required compare-and-set revision: `expectedRevision === 0`
+ *  creates the row when absent (`kv.create`); `expectedRevision > 0` updates against that exact
+ *  KV revision (`kv.update`). Never performs an unpinned overwrite. */
 export async function writeUserSlot(
   kv: KV,
   workspaceRoot: string,
   space: string,
   row: ManagerSlotRecord,
-  expectedRevision?: number,
+  expectedRevision: number,
 ): Promise<number> {
+  if (!Number.isInteger(expectedRevision) || expectedRevision < 0)
+    throw new Error(`writeUserSlot requires a non-negative integer expectedRevision (got ${String(expectedRevision)})`);
   const suffix = userSlotSuffix(row.targetOwner, row.actor);
   parseManagerSlotRecord(enc.encode(JSON.stringify(row)), space, row.managerOwner, suffix);
   recordLocalSlotSuffix(workspaceRoot, space, suffix);
   await ensureKvSlotSuffix(kv, space, row.managerOwner, suffix);
   const key = userSlotKey(row.managerOwner, row.targetOwner, row.actor);
   const payload = enc.encode(JSON.stringify(row));
-  if (expectedRevision !== undefined) {
-    return await kv.update(key, payload, expectedRevision);
+  if (expectedRevision === 0) {
+    return await kv.create(key, payload);
   }
-  for (let attempt = 0; attempt < 6; attempt++) {
-    const existing = await kv.get(key);
-    if (existing === null) {
-      try {
-        return await kv.create(key, payload);
-      } catch (e) {
-        if (isCasLoss(e)) continue;
-        throw e;
-      }
-    }
-    if (existing.operation !== "PUT")
-      throw new Error(`mgrslot row ${key} carries a ${existing.operation} marker; slot rows are never deleted`);
-    try {
-      return await kv.update(key, payload, existing.revision);
-    } catch (e) {
-      if (isCasLoss(e)) continue;
-      throw e;
-    }
-  }
-  throw new Error(`could not write mgrslot row ${key} after concurrent contention`);
-}
-
-export function captureProcessIdentity(
-  pid: number | undefined,
-  seatRecord?: { custodianPid?: number; custodianStart?: string; childPid?: number; childStart?: string; bootId?: string },
-): ManagerSlotProcess | undefined {
-  const effectivePid = seatRecord?.childPid ?? pid;
-  if (typeof effectivePid !== "number" || !Number.isInteger(effectivePid) || effectivePid <= 0) return undefined;
-  const inspected = inspectProcessStart(effectivePid);
-  const startToken = seatRecord?.childStart ?? (inspected.state === "present" ? inspected.token : undefined);
-  const bootId = seatRecord?.bootId ?? bootToken();
-  if (!startToken || !bootId) return undefined;
-  return {
-    pid: effectivePid,
-    startToken,
-    bootId,
-    ...(typeof seatRecord?.custodianPid === "number" && typeof seatRecord?.custodianStart === "string"
-      ? { custodianPid: seatRecord.custodianPid, custodianStartToken: seatRecord.custodianStart }
-      : {}),
-  };
-}
-
-function groupHasMembersFailClosed(pgid: number): { state: "empty" } | { state: "non-empty" } | { state: "unknown"; reason: string } {
-  let entries: string[];
-  try {
-    entries = readdirSync("/proc");
-  } catch (e) {
-    return { state: "unknown", reason: `cannot read /proc: ${(e as Error).message}` };
-  }
-  for (const entry of entries) {
-    if (!/^\d+$/.test(entry)) continue;
-    const pid = Number(entry);
-    try {
-      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-      const after = stat.lastIndexOf(") ");
-      if (after < 0) return { state: "unknown", reason: `malformed /proc/${pid}/stat` };
-      const pgrp = Number(stat.slice(after + 2).split(" ")[2]);
-      if (!Number.isInteger(pgrp)) return { state: "unknown", reason: `malformed pgrp in /proc/${pid}/stat` };
-      if (pgrp === pgid) return { state: "non-empty" };
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" || code === "ESRCH") continue;
-      return { state: "unknown", reason: `cannot read /proc/${pid}/stat: ${(e as Error).message}` };
-    }
-  }
-  return { state: "empty" };
-}
-
-/** Three-valued fail-closed process probe (`"live" | "proved-dead" | "unknown"`). Retires only on
- *  positive proof of death; any unreadable `/proc` file, missing boot/start token, or non-empty
- *  process group for an absent leader returns `"unknown"`. */
-export function probeRecordedProcess(
-  proc: ManagerSlotProcess | undefined,
-): { state: "live" } | { state: "proved-dead"; detail: string } | { state: "unknown"; reason: string } {
-  if (!proc || !proc.bootId || !proc.startToken || !Number.isInteger(proc.pid) || proc.pid <= 0) {
-    return { state: "unknown", reason: "incomplete process identity in slot record" };
-  }
-  const currentBoot = bootToken();
-  if (currentBoot === undefined) {
-    return { state: "unknown", reason: "host boot_id is unreadable" };
-  }
-  if (currentBoot !== proc.bootId) {
-    return { state: "proved-dead", detail: "recorded on an earlier OS boot" };
-  }
-  const childVerdict = identityVerdict(proc.pid, proc.startToken);
-  if (childVerdict === "unknown") {
-    return { state: "unknown", reason: `process ${proc.pid} /proc stat is unreadable` };
-  }
-  const custodianVerdict =
-    proc.custodianPid !== undefined && proc.custodianStartToken !== undefined
-      ? identityVerdict(proc.custodianPid, proc.custodianStartToken)
-      : "gone";
-  if (custodianVerdict === "unknown") {
-    return { state: "unknown", reason: `custodian ${proc.custodianPid} /proc stat is unreadable` };
-  }
-  if (childVerdict === "live" || custodianVerdict === "live") {
-    return { state: "live" };
-  }
-  const startState = inspectProcessStart(proc.pid);
-  if (startState.state === "unknown") {
-    return { state: "unknown", reason: startState.reason };
-  }
-  if (startState.state === "absent") {
-    const grp = groupHasMembersFailClosed(proc.pid);
-    if (grp.state === "unknown") return { state: "unknown", reason: grp.reason };
-    if (grp.state === "non-empty") {
-      return { state: "unknown", reason: `process group ${proc.pid} still has members for absent leader` };
-    }
-  }
-  return { state: "proved-dead", detail: "process and group verified gone" };
+  return await kv.update(key, payload, expectedRevision);
 }

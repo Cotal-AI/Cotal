@@ -140,6 +140,64 @@ const STATUS_OUTPUT_SCHEMA = {
         },
       },
     },
+    /** Current startup/post-adoption user-mode slot reconciliation state. */
+    userReconciliation: {
+      type: "object",
+      additionalProperties: false,
+      required: ["state", "ready", "markers", "failures"],
+      properties: {
+        state: { enum: ["idle", "running", "failed"] },
+        ready: { type: "boolean" },
+        lastSweep: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "startedAt", "examined", "preservedForeign", "attempted", "succeeded", "failed"],
+          properties: {
+            kind: { enum: ["startup", "post-adoption"] },
+            startedAt: { type: "string" },
+            completedAt: { type: "string" },
+            examined: { type: "integer", minimum: 0 },
+            preservedForeign: { type: "integer", minimum: 0 },
+            attempted: { type: "integer", minimum: 0 },
+            succeeded: { type: "integer", minimum: 0 },
+            failed: { type: "integer", minimum: 0 },
+            error: { type: "string" },
+          },
+        },
+        markers: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "adoptedReleasedCount",
+            "deferredForResumeCount",
+            "adoptedResumeSkipCount",
+            "heldDelegatedSlotCount",
+          ],
+          properties: {
+            adoptedReleasedCount: { type: "integer", minimum: 0 },
+            deferredForResumeCount: { type: "integer", minimum: 0 },
+            adoptedResumeSkipCount: { type: "integer", minimum: 0 },
+            heldDelegatedSlotCount: { type: "integer", minimum: 0 },
+          },
+        },
+        failures: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["actor", "targetOwner", "phase", "disposition", "lastError"],
+            properties: {
+              actor: { type: "string" },
+              targetOwner: { type: "string" },
+              lifecycleUid: { type: "string" },
+              phase: { enum: ["enrolling", "provisioning", "active", "preserved", "releasing", "retired"] },
+              disposition: { enum: ["held", "refused", "failed"] },
+              lastError: { type: "string" },
+            },
+          },
+        },
+      },
+    },
   },
 } as const;
 
@@ -156,6 +214,43 @@ export interface ManagerStatus {
   connectors: ManagerConnectorStatus[];
   classSpawn: boolean;
   staticReconciliation: ManagerStaticReconciliationStatus;
+  userReconciliation?: ManagerUserReconciliationStatus;
+}
+
+export interface ManagerUserReconciliationMarkers {
+  adoptedReleasedCount: number;
+  deferredForResumeCount: number;
+  adoptedResumeSkipCount: number;
+  heldDelegatedSlotCount: number;
+}
+
+export interface ManagerUserReconciliationSweep {
+  kind: "startup" | "post-adoption";
+  startedAt: string;
+  completedAt?: string;
+  examined: number;
+  preservedForeign: number;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  error?: string;
+}
+
+export interface ManagerUserReconciliationFailure {
+  actor: string;
+  targetOwner: string;
+  lifecycleUid?: string;
+  phase: "enrolling" | "provisioning" | "active" | "preserved" | "releasing" | "retired";
+  disposition: "held" | "refused" | "failed";
+  lastError: string;
+}
+
+export interface ManagerUserReconciliationStatus {
+  state: "idle" | "running" | "failed";
+  ready: boolean;
+  lastSweep?: ManagerUserReconciliationSweep;
+  markers: ManagerUserReconciliationMarkers;
+  failures: ManagerUserReconciliationFailure[];
 }
 
 export interface ManagerStaticReconciliationSweep {

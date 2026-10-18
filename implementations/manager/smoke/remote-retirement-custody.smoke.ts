@@ -688,6 +688,7 @@ Seat ${seatName}.
     runtime: "pty" | "custodial-pty",
     resumeAttemptId?: string,
     onAfterHostEnrollmentCommit?: (material: { actor: string; lifecycleUid: string }) => void,
+    opts?: { deferStart?: boolean },
   ) {
     const state = remote.loadOrCreateRemoteManagerIdentity(wsRoot, space);
     const prep = await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "prepare"));
@@ -792,7 +793,9 @@ Seat ${seatName}.
       eventsRequired: true,
       ...(resumeAttemptId ? { resumeAttemptId } : {}),
     });
-    await mgr.start();
+    if (!opts?.deferStart) {
+      await mgr.start();
+    }
     return { mgr, state };
   }
 
@@ -1014,7 +1017,7 @@ Seat ${seatName}.
   }
 
   const onlyCell = process.env.U4005_ONLY_CELL;
-  const shouldRunCell = (c: string) => !onlyCell || onlyCell === c;
+  const shouldRunCell = (c: string) => !onlyCell || onlyCell.split(",").includes(c);
 
   // =========================================================================
   // Control (a-inproc): stop() without withAgents on built-in in-process pty
@@ -1646,7 +1649,7 @@ Seat ${seatName}.
 
     // Start successor manager2 while seat_g1 is still alive
     const { mgr: mgr2 } = await bootRemoteManagerOnRoot(ws, "custodial-pty");
-    const mgr2Diag = mgr2.userReconcileDiagnostics();
+    const mgr2Diag = mgr2.status().userReconciliation!.markers;
     const whileLive = await inspectLifecycleState(seatName, uid);
 
     checkGuard(
@@ -1671,9 +1674,17 @@ Seat ${seatName}.
       whileLive,
     );
 
-    // Clean up seat_g1 and manager2
+    // Once released seat_g1 exits, manager2's released-seat watcher retires its lifecycle without waiting for a restart
     writeFileSync(ctl.exitFile, "exit");
     await until(() => !pidAlive(seatPid), "seat_g1 exit cleanup");
+    await until(async () => (await inspectLifecycleState(seatName, uid)).headState === "retired", "seat_g1 retired by manager2 released-seat watch after exit");
+    const afterWatchedExit = await inspectLifecycleState(seatName, uid);
+    checkContract(
+      cell,
+      "after released seat_g1 exits while manager2 runs: watcher retires lifecycle head, revokes grant, and removes durables",
+      afterWatchedExit.headState === "retired" && !afterWatchedExit.grantUnrevoked && !afterWatchedExit.dmPresent && !afterWatchedExit.dlvPresent,
+      afterWatchedExit,
+    );
     await mgr2.stop();
   }
 
@@ -1737,7 +1748,7 @@ Seat ${seatName}.
       resumedUid = parsed.uid;
     }
 
-    const mgr2Diag = mgr2.userReconcileDiagnostics();
+    const mgr2Diag = mgr2.status().userReconciliation!.markers;
     const afterAdopt = await inspectLifecycleState(seatName, uid);
     checkGuard(
       cell,
@@ -1847,7 +1858,7 @@ Seat ${seatName}.
       "pty",
       () => admittedIntent,
     );
-    const mgr2Diag = mgr2.userReconcileDiagnostics();
+    const mgr2Diag = mgr2.status().userReconciliation!.markers;
     const afterRestart = await inspectLifecycleState(seatName, uid, owner);
     await mgr2.stop();
     const supClaims = credsClaims(mgr2Auth.supervisorCreds) as { nats?: { pub?: { allow?: string[] } } };
@@ -1895,6 +1906,195 @@ Seat ${seatName}.
     );
   }
 
+  // =========================================================================
+  // Guard (g4 / F1): sibling manager instance of the same owner starts while A's custodial seat is live
+  // =========================================================================
+  console.log("\n=== Guard (g4 / F1): sibling manager instance of one owner starts while the other's custodial seat is live ===");
+  if (shouldRunCell("cell-g4-sibling-instance-custodial")) {
+    const cell = "cell-g4-sibling-instance-custodial";
+    const seatName = "seat_sib_cust";
+    const wsA = createWorkspaceRoot("sib-a-cust", [seatName]);
+    const wsB = createWorkspaceRoot("sib-b-cust", []);
+    const { mgr: mgrA, state: stateA } = await bootRemoteManagerOnRoot(wsA, "custodial-pty");
+    const started = await mgrA.startAgent({ name: seatName, agent: "u4005-seat" });
+    checkSetup(cell, "seat spawned on manager A", started.ok, started.error);
+    const ctl = seatControls.get(seatName)!;
+    await until(() => existsSync(ctl.pidFile), `${seatName} pid file`);
+    const { pid: seatPid, uid } = JSON.parse(readFileSync(ctl.pidFile, "utf8")) as { pid: number; uid: string };
+    const before = await inspectLifecycleState(seatName, uid);
+    checkSetup(cell, "before B starts: head active, grant unrevoked, seat alive", before.headState === "active" && before.headUid === uid && before.grantUnrevoked && pidAlive(seatPid), before);
+    const { mgr: mgrB, state: stateB } = await bootRemoteManagerOnRoot(wsB, "custodial-pty");
+    checkSetup(cell, "A and B are distinct manager instances of one owner", stateA.instanceId !== stateB.instanceId, { a: stateA.instanceId, b: stateB.instanceId });
+    const after = await inspectLifecycleState(seatName, uid);
+    const statusB = mgrB.status().userReconciliation;
+    checkGuard(cell, "sibling manager B records A's row as preservedForeign in userReconciliation status", (statusB?.lastSweep?.preservedForeign ?? 0) >= 1, statusB);
+    checkGuard(cell, "after sibling manager B starts: A's custodial seat process is still alive", pidAlive(seatPid), { seatPid });
+    checkGuard(cell, "after sibling manager B starts: A's lifecycle head stays active", after.headState === "active" && after.headUid === uid, after);
+    checkGuard(cell, "after sibling manager B starts: A's managed grant stays unrevoked", after.grantUnrevoked === true, after);
+    checkGuard(cell, "after sibling manager B starts: A's dm_ and dlv_ durables stay present", after.dmPresent === true && after.dlvPresent === true, after);
+    checkGuard(cell, "after sibling manager B starts: no retirement requested (prepare=0, retire=0)", after.prepareRetirementCalls === 0 && after.retireCalls === 0, after);
+    await mgrB.stop();
+    if (pidAlive(seatPid)) {
+      writeFileSync(ctl.exitFile, "exit");
+      await until(() => !pidAlive(seatPid), `${seatName} exit cleanup`);
+    }
+    await mgrA.stop({ withAgents: true }).catch(() => mgrA.stop());
+  }
+
+  // =========================================================================
+  // Contract (e2 / F2): lost enrollment reply followed by a same-name retry in the same manager lifetime
+  // =========================================================================
+  console.log("\n=== Contract (e2 / F2): lost enrollment reply followed by a same-name retry converges and retires ===");
+  if (shouldRunCell("cell-e2-enrollment-retry-converges")) {
+    const cell = "cell-e2-enrollment-retry-converges";
+    const seatName = "seat_e_retry";
+    const ws = createWorkspaceRoot("e-retry", [seatName]);
+    let committedUid = "";
+    let dropReplies = 2;
+    const { mgr: mgr1 } = await bootRemoteManagerOnRoot(ws, "pty", undefined, (material) => {
+      if (material.actor === seatName && dropReplies > 0) {
+        dropReplies--;
+        committedUid = material.lifecycleUid;
+        throw new Error("simulated lost enrollment response after host commit");
+      }
+    });
+    const slotKey = `mgrslot.${owner}.${owner}-${seatName}`;
+    const first = await mgr1.startAgent({ name: seatName, agent: "u4005-seat" });
+    const rowAfterFirst = await recordsKv.get(slotKey);
+    const firstRow = rowAfterFirst ? (JSON.parse(new TextDecoder().decode(rowAfterFirst.value)) as { phase?: string; provisionalUid?: string; tokenHash?: string }) : undefined;
+    checkSetup(cell, "first spawn loses the enrollment reply after the host committed", !first.ok && /simulated lost enrollment response/.test(first.error ?? "") && committedUid.length > 0, { first, committedUid });
+    checkSetup(cell, "after the first spawn: the slot row is enrolling with a recorded tokenHash", firstRow?.phase === "enrolling" && typeof firstRow?.tokenHash === "string", { firstRow, revision: rowAfterFirst?.revision });
+
+    // First retry also loses the reply: it must reuse the existing enrolling row's tokenHash and provisionalUid (never minting a conflicting token)
+    const retryLost = await mgr1.startAgent({ name: seatName, agent: "u4005-seat" });
+    const rowAfterRetryLost = await recordsKv.get(slotKey);
+    const retryLostRow = rowAfterRetryLost ? (JSON.parse(new TextDecoder().decode(rowAfterRetryLost.value)) as { phase?: string; provisionalUid?: string; tokenHash?: string }) : undefined;
+    checkContract(
+      cell,
+      "same-name retry after lost reply preserves the enrolling row's tokenHash and provisionalUid",
+      !retryLost.ok &&
+        retryLostRow?.phase === "enrolling" &&
+        retryLostRow?.tokenHash === firstRow?.tokenHash &&
+        retryLostRow?.provisionalUid === firstRow?.provisionalUid,
+      { firstRow, retryLostRow },
+    );
+
+    // Second retry when replies succeed converges on committedUid and launches the seat; manager2 after stop/restart verifies retired
+    const retryOk = await mgr1.startAgent({ name: seatName, agent: "u4005-seat" });
+    const ctl = seatControls.get(seatName)!;
+    if (retryOk.ok) {
+      await until(() => existsSync(ctl.pidFile), `${seatName} pid file`);
+    }
+    const rowAfterRetryOk = await recordsKv.get(slotKey);
+    const retryOkRow = rowAfterRetryOk ? (JSON.parse(new TextDecoder().decode(rowAfterRetryOk.value)) as { phase?: string; lifecycleUid?: string }) : undefined;
+    checkContract(
+      cell,
+      "same-name retry converges on the host-committed lifecycleUid",
+      retryOk.ok && retryOkRow?.phase === "active" && retryOkRow?.lifecycleUid === committedUid,
+      { retryOk, retryOkRow, committedUid },
+    );
+    await mgr1.stop();
+    const { mgr: mgr2 } = await bootRemoteManagerOnRoot(ws, "pty");
+    const afterReconcile = await inspectLifecycleState(seatName, committedUid);
+    await mgr2.stop();
+    checkContract(cell, "after same-name retry + manager2 start: the committed lifecycle head reaches retired", afterReconcile.headState === "retired", { afterReconcile });
+    checkContract(cell, "after same-name retry + manager2 start: its managed grant is revoked", !afterReconcile.grantUnrevoked, afterReconcile);
+    checkContract(cell, "after same-name retry + manager2 start: its dm_ and dlv_ durables are removed", !afterReconcile.dmPresent && !afterReconcile.dlvPresent, afterReconcile);
+  }
+
+  // =========================================================================
+  // Guard (g5 / F3): reconcile hold with unknown liveness refuses a same-name spawn and keeps the live seat
+  // =========================================================================
+  console.log("\n=== Guard (g5 / F3): reconcile hold with unknown liveness refuses a same-name spawn and keeps the live seat ===");
+  if (shouldRunCell("cell-g5-unknown-hold-refuses-respawn")) {
+    const cell = "cell-g5-unknown-hold-refuses-respawn";
+    const seatName = "seat_unk";
+    const ws = createWorkspaceRoot("unk-hold", [seatName]);
+    const { mgr: mgr1 } = await bootRemoteManagerOnRoot(ws, "custodial-pty");
+    const started = await mgr1.startAgent({ name: seatName, agent: "u4005-seat" });
+    checkSetup(cell, "seat spawned on custodial-pty manager1", started.ok, started.error);
+    const ctl = seatControls.get(seatName)!;
+    await until(() => existsSync(ctl.pidFile), `${seatName} pid file`);
+    const { pid: seatPid, uid } = JSON.parse(readFileSync(ctl.pidFile, "utf8")) as { pid: number; uid: string };
+    await mgr1.stop();
+    checkSetup(cell, "seat remains alive after manager1.stop() released it", pidAlive(seatPid), { seatPid });
+    const realReadFileSync = fsDefault.readFileSync;
+    const targetStatPath = `/proc/${seatPid}/stat`;
+    let injectedReads = 0;
+    let mgr2: Manager | undefined;
+    try {
+      fsDefault.readFileSync = ((path: Parameters<typeof realReadFileSync>[0], ...rest: unknown[]) => {
+        if (String(path) === targetStatPath) {
+          injectedReads++;
+          throw Object.assign(new Error(`EACCES: permission denied, open '${targetStatPath}'`), { code: "EACCES" });
+        }
+        return (realReadFileSync as (...a: unknown[]) => unknown)(path, ...rest);
+      }) as typeof realReadFileSync;
+      syncBuiltinESMExports();
+      ({ mgr: mgr2 } = await bootRemoteManagerOnRoot(ws, "custodial-pty"));
+    } finally {
+      fsDefault.readFileSync = realReadFileSync;
+      syncBuiltinESMExports();
+    }
+    checkSetup(cell, "the injected EACCES was hit during manager2's start reconciliation", injectedReads > 0, { injectedReads });
+    const kept = await inspectLifecycleState(seatName, uid);
+    checkGuard(cell, "after the unknown-liveness reconcile: seat alive, head active, grant unrevoked (kept)", pidAlive(seatPid) && kept.headState === "active" && kept.headUid === uid && kept.grantUnrevoked === true, kept);
+    const respawn = await mgr2!.startAgent({ name: seatName, agent: "u4005-seat" });
+    await new Promise((r) => setTimeout(r, 2500));
+    const after = await inspectLifecycleState(seatName, uid);
+    checkGuard(cell, "same-name spawn while liveness hold stands is refused", !respawn.ok, respawn);
+    checkGuard(cell, "after a same-name spawn attempt: the seat process is still alive", pidAlive(seatPid), { seatPid });
+    checkGuard(cell, "after a same-name spawn attempt: the live seat's head stays active", after.headState === "active" && after.headUid === uid, after);
+    checkGuard(cell, "after a same-name spawn attempt: its managed grant stays unrevoked", after.grantUnrevoked === true, after);
+    checkGuard(cell, "after a same-name spawn attempt: its dm_ and dlv_ durables stay present", after.dmPresent === true && after.dlvPresent === true, after);
+    checkGuard(cell, "after a same-name spawn attempt: no retirement requested (prepare=0, retire=0)", after.prepareRetirementCalls === 0 && after.retireCalls === 0, after);
+    if (pidAlive(seatPid)) {
+      writeFileSync(ctl.exitFile, "exit");
+      await until(() => !pidAlive(seatPid), `${seatName} exit cleanup`);
+    }
+    await mgr2!.stop();
+  }
+
+  // =========================================================================
+  // Guard (g6 / F6 & F4): startup spawn gate refuses spawn during scan and stays closed on scan failure
+  // =========================================================================
+  console.log("\n=== Guard (g6 / F6 & F4): startup spawn gate refuses spawn during scan and stays closed on scan failure ===");
+  if (shouldRunCell("cell-g6-startup-spawn-gate")) {
+    const cell = "cell-g6-startup-spawn-gate";
+    const seatName = "seat_gate_fail";
+    const wsFail = createWorkspaceRoot("gate-scan-fail", [seatName]);
+    const spaceDir = join(wsFail, ".cotal", `space.${Buffer.from(space, "utf8").toString("hex")}`);
+    mkdirSync(spaceDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(spaceDir, "mgrslots.json"), '{"v":999,"suffixes":"not-an-array"}\n', { mode: 0o600 });
+
+    let startErr: unknown;
+    const { mgr: mgrFail } = await bootRemoteManagerOnRoot(wsFail, "pty", undefined, undefined, { deferStart: true });
+    try {
+      await mgrFail.start();
+    } catch (e) {
+      startErr = e;
+    }
+    const failStatus = mgrFail.status().userReconciliation;
+    const staticStatus = mgrFail.status().staticReconciliation;
+    const refusedAfterFail = await mgrFail.startAgent({ name: seatName, agent: "u4005-seat" });
+    checkGuard(
+      cell,
+      "failed startup slot scan rejects start() and records failed state in userReconciliation status while staticReconciliation stays idle",
+      startErr !== undefined &&
+        failStatus?.state === "failed" &&
+        failStatus?.ready === false &&
+        typeof failStatus?.lastSweep?.error === "string" &&
+        staticStatus.state === "idle",
+      { startErr: String(startErr), failStatus, staticStatus },
+    );
+    checkGuard(
+      cell,
+      "startup spawn gate stays closed (userReconcileReady=false) and refuses startAgent after a failed scan",
+      !refusedAfterFail.ok && /startup reconciliation is still scanning/.test(refusedAfterFail.error ?? ""),
+      refusedAfterFail,
+    );
+    await mgrFail.stop().catch(() => {});
+  }
   const summary = {
     space,
     counts: {

@@ -4655,6 +4655,24 @@ unexecuted. Once a holder's execution has consumed a record, the host MUST finis
 whether or not the holder remains. A failed or uncertain step keeps the alias held, and a retry is
 the same operation.
 
+**User-mode slot custody.** Every user-mode manager (both a non-delegated user manager where
+`<holderOwner> === <targetOwner>` and a delegated platform holder where `<holderOwner>` is `p_…`
+and `<targetOwner>` is `u_…`) records durable per-seat custody in `KV_cotal_records_<space>` at
+`mgrslot.<holderOwner>.<targetOwner>-<actor>` (indexed at `mgrslot.<holderOwner>._index` via
+`DIRECT.GET`, with no `CONSUMER.CREATE` grant on `KV_<REC>`). Every slot write MUST be a
+revision-pinned compare-and-set (`create` when absent, or `update` against the prior revision); a
+same-name retry after an interrupted `enrolling` write MUST converge on the existing `enrolling`
+row's `provisionalUid` and `tokenHash` rather than overwriting it with a newly minted token. Startup
+reconciliation classifies only rows whose `managerInstanceId` matches the reconciling manager
+instance (preserving sibling instances' rows untouched), defers `active`/`preserved` rows when
+`resumeRequired` is set until post-adoption reconciliation, and evaluates process liveness
+fail-closed (`live`, `proved-dead`, or `unknown`; on a `hidepid` host where `/proc` stat or process
+group reads fail with `EACCES`/`EPERM`, every reap and liveness probe refuses as `unknown` and
+retains custody). A hold that keeps custody (`delegated`, `live`, or `unknown` liveness) MUST NOT
+be re-driven into retirement by a same-name spawn or resume attempt; a released live seat is
+watched while the manager runs and retired once its recorded process and process group are proved
+dead.
+
 **What stays.** Under the `platform-control` view itself the holder still enrolls, retires,
 validates and authorizes only same-owner descendants, and a `u_` principal's spawn request or admin
 authorization against a platform manager is refused as before. A spawn the holder starts without a

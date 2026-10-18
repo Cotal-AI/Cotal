@@ -58,7 +58,10 @@ function processGroupOf(pid: number): number | undefined {
   }
 }
 
-/** Every live pid whose process group is `pgid`. Bounded by the process table; read once per poll. */
+/** Every live pid whose process group is `pgid`. Bounded by the process table; read once per poll.
+ *  On a `hidepid` host where reading `/proc/<pid>/stat` throws `EACCES`/`EPERM`, `processGroupOf`
+ *  throws so every reap and liveness probe fails closed and retains custody rather than claiming
+ *  a group empty. */
 function groupMembers(pgid: number): number[] {
   const out: number[] = [];
   for (const entry of readdirSync("/proc")) {
@@ -156,8 +159,92 @@ function unprovedIdentity(id: string, rec: SeatRecord, boot: string | undefined)
 /** Whether `rec` was written on an earlier boot than `boot`, this host's. No process outlives a
  *  reboot, so every process it names is gone, and whatever holds those pid numbers now is one of this
  *  boot's and is never signalled. */
-function fromEarlierBoot(rec: SeatRecord, boot: string): boolean {
+function fromEarlierBoot(rec: { bootId?: string }, boot: string): boolean {
   return rec.bootId !== boot;
+}
+
+/** Durable process identity snapshot for a managed seat (`SeatRecord` custody or a direct child pid). */
+export interface RecordedProcessIdentity {
+  pid: number;
+  startToken?: string;
+  custodianPid?: number;
+  custodianStart?: string;
+  childPid?: number;
+  childStart?: string;
+  bootId?: string;
+}
+
+/** Three-valued process liveness verdict derived from {@link identityVerdict} and {@link groupMembers}. */
+export type ProcessProbeVerdict =
+  | { state: "live" }
+  | { state: "proved-dead" }
+  | { state: "unknown"; reason: string };
+
+/** Capture the kernel start and boot tokens for a seat's process (and optional custodian record). */
+export function captureProcessIdentity(
+  pid: number | undefined,
+  seatRecord?: Partial<Pick<SeatRecord, "custodianPid" | "custodianStart" | "childPid" | "childStart" | "bootId">>,
+): RecordedProcessIdentity | undefined {
+  const effectivePid = seatRecord?.childPid ?? pid;
+  if (typeof effectivePid !== "number" || !Number.isInteger(effectivePid) || effectivePid <= 0) return undefined;
+  const startToken = seatRecord?.childStart ?? processStartToken(effectivePid);
+  const bootId = seatRecord?.bootId ?? bootToken();
+  return {
+    pid: effectivePid,
+    ...(startToken !== undefined ? { startToken } : {}),
+    ...(seatRecord?.custodianPid !== undefined ? { custodianPid: seatRecord.custodianPid } : {}),
+    ...(seatRecord?.custodianStart !== undefined ? { custodianStart: seatRecord.custodianStart } : {}),
+    ...(seatRecord?.childPid !== undefined ? { childPid: seatRecord.childPid } : {}),
+    ...(seatRecord?.childStart !== undefined ? { childStart: seatRecord.childStart } : {}),
+    ...(bootId !== undefined ? { bootId } : {}),
+  };
+}
+
+/** Fail-closed liveness verdict for a recorded process identity. Returns `proved-dead` only when
+ *  either the host has rebooted since `rec.bootId` or every recorded process (`custodianPid`,
+ *  `childPid`/`pid`) is verified gone AND process group `childPid` has zero members. Any unreadable
+ *  `/proc` entry (`hidepid`, `EACCES`, `EPERM`) or missing start/boot identity returns `unknown`. */
+export function probeRecordedProcess(rec: RecordedProcessIdentity | undefined): ProcessProbeVerdict {
+  if (!rec) return { state: "unknown", reason: "no process identity recorded" };
+  if (!rec.bootId) return { state: "unknown", reason: `process ${rec.pid} carries no boot identity` };
+  const currentBoot = bootToken();
+  if (!currentBoot) return { state: "unknown", reason: `host publishes no boot identity for process ${rec.pid}` };
+  if (fromEarlierBoot(rec, currentBoot)) return { state: "proved-dead" };
+
+  if (rec.custodianPid !== undefined) {
+    if (!rec.custodianStart) {
+      return { state: "unknown", reason: `custodian ${rec.custodianPid} carries no start identity` };
+    }
+    const custodianVerdict = identityVerdict(rec.custodianPid, rec.custodianStart);
+    if (custodianVerdict === "unknown") {
+      return { state: "unknown", reason: `custodian ${rec.custodianPid} process liveness is unknown (unreadable /proc stat)` };
+    }
+    if (custodianVerdict === "live") {
+      return { state: "live" };
+    }
+  }
+
+  const childPid = rec.childPid ?? rec.pid;
+  const childStart = rec.childStart ?? rec.startToken;
+  if (!childStart) {
+    return { state: "unknown", reason: `process ${childPid} carries no start identity` };
+  }
+  const childVerdict = identityVerdict(childPid, childStart);
+  if (childVerdict === "unknown") {
+    return { state: "unknown", reason: `process ${childPid} liveness is unknown (unreadable /proc stat)` };
+  }
+  if (childVerdict === "live") {
+    return { state: "live" };
+  }
+
+  try {
+    if (groupMembers(childPid).length > 0) {
+      return { state: "unknown", reason: `process group ${childPid} still has members` };
+    }
+  } catch (e) {
+    return { state: "unknown", reason: `process group ${childPid} liveness is unknown (${(e as Error).message})` };
+  }
+  return { state: "proved-dead" };
 }
 
 /**
