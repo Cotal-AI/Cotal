@@ -48,6 +48,7 @@ import {
   EpEnvelopeError,
   epAuthBucket,
   epsSubject,
+  isCasLoss,
   endpointToken,
   parsePrincipalKey,
   isPrincipalOwnerToken,
@@ -174,11 +175,6 @@ function parseRow(raw: Uint8Array, key: string): SessionLedgerRow {
     throw new EpEnvelopeError("internal", `the session row ${key} names non-deterministic credential ids (caller "${r.credCaller}", serving "${r.credServing}"); a swapped/aliased id never authorizes (SPEC 13.6)`);
   return r as SessionLedgerRow;
 }
-
-const isCasLoss = (e: unknown): boolean => {
-  const code = (e as { api_error?: { err_code?: number } })?.api_error?.err_code;
-  return code === 10071 || code === 10164 || /wrong last sequence/i.test((e as Error)?.message ?? "");
-};
 
 /** The real-KV {@link SessionLedger}: create-only CAS for the one-use `issuing` row,
  *  revision-pinned CAS for every transition, monotonic states enforced on the write path. */

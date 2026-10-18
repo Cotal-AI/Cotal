@@ -538,8 +538,7 @@ async function ensureSettleFact(kv: KV, js: JetStreamClient, jsm: JetStreamManag
     await js.publish(subject, new TextEncoder().encode(JSON.stringify(fact)), { headers: h });
     return fact;
   } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    if (code !== 10071 && code !== 10164) throw e;
+    if (!isCasLoss(e)) throw e;
     const winner = await readCheckpointSettle(jsm, space, ref);
     if (winner === undefined)
       throw new EpEnvelopeError("internal", `checkpoint "${ref.token}" settle-fact CAS lost but no winner is readable; reconcile the store (SPEC 13.6)`);

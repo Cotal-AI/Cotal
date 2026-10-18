@@ -49,6 +49,7 @@ import type { KV } from "@nats-io/kv";
 import { idFromCreds } from "./identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { isConsumerNotFound } from "./jetstream-missing.js";
+import { isCasLoss } from "./endpoint-records.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
 import { openAclRegistry, deleteAcl } from "./acls.js";
 import { openMembersRegistry, deleteMember } from "./members.js";
@@ -984,8 +985,7 @@ async function purgeKvKeyWithAccounting(
     await kv.purge(key, { previousSeq: before.seq });
     return before.live ? { outcome: "deleted", status: "won" } : { outcome: "absent", status: "already-tombstoned" };
   } catch (err: unknown) {
-    const m = (err as Error)?.message ?? "";
-    if ((err as { code?: number }).code === 10071 || m.includes("10071") || m.includes("wrong last sequence")) {
+    if (isCasLoss(err)) {
       const after = await observe();
       if (after.live) throw new Error(`CAS loss left a live ${bucket}/${key}`, { cause: err });
       return { outcome: before.live ? "disappeared" : "absent", status: "raced-loss" };

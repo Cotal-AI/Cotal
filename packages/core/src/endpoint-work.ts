@@ -37,7 +37,7 @@ import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-
 import { canonicalJson, rawDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { epwSubject, epfSubject, assertBoundedOwner, assertLifecycleToken, type EpCaller } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, createRecordEntry, updateRecordEntry, openRecordsBucket } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, createRecordEntry, updateRecordEntry, openRecordsBucket, isCasLoss } from "./endpoint-records.js";
 import { epfStreamName, readLastFact, type AcceptanceFact } from "./endpoint-journal.js";
 // The §13.12 resource names and consumer configs live in endpoint-binding.ts (the single source
 // of the stream/durable table: epwStreamName, poolDurable, poolConsumerConfig); this module is
@@ -204,8 +204,7 @@ export async function enqueueWorkItem(
     const pa = await ctx.js.publish(subject, bytes, { headers: h });
     return { enqueued: true, seq: pa.seq };
   } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    if (code !== 10071 && code !== 10164) throw e;
+    if (!isCasLoss(e)) throw e;
     // A prior enqueue exists (or existed and was consumed). If a live entry remains, verify its
     // bytes match; a consumed-and-gone entry (no message) is a settled/in-flight item the caller
     // reconciles, not a mismatch.
@@ -696,8 +695,7 @@ async function publishCreateOnly(js: JetStreamClient, subject: string, bytes: Ui
     await js.publish(subject, bytes, { headers: h });
     return { won: true };
   } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    if (code === 10071 || code === 10164) return { won: false };
+    if (isCasLoss(e)) return { won: false };
     throw e;
   }
 }
