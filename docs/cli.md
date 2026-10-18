@@ -114,9 +114,17 @@ document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ex
 failure.
 
 A command whose `structured output` line also names `plain` takes `--plain`, which writes the same
-report as plain lines: no color, no marks, ASCII labels. Pass one of `--json` and `--plain`; both is a
-`USAGE_INVALID` refusal. A table that does not fit the terminal is written as one labeled record per
-row, so no value is cut off.
+report as plain lines: no color, no marks, ASCII labels. Plain writes these punctuation marks in
+ASCII wherever they appear: `·` and long dashes as `-`, `…` as `...`, `→` and `↳` as `->`, and `§`
+as `section`. Other characters, such as the letters of a name or a message, are written as they are.
+Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
+terminal is written as one labeled record per row, so no value is cut off.
+
+On a terminal, a long value, line, warning or failure wraps at spaces, and each continuation line
+starts under the text it continues. A word wider than the line, such as a path, keeps a line of its
+own and is never split. Help wraps the same way: a usage line breaks only between options, and when
+the flag names leave their descriptions fewer than 30 columns, each description goes on the lines
+under its flag. Output to a pipe or a file is never wrapped.
 
 A read that could not read part of what it was asked for is `partial`: `result` holds what it read,
 `completeness` is `partial`, each part it could not read is a warning, and it exits 4. A list is
@@ -1042,6 +1050,11 @@ lists managed seats. Stale Claude skills and out-of-date `.agents` skills recomm
 `cotal setup --skills`, not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the
 mesh to inspect; it starts nothing.
 
+Status displays broker addresses without URL user information, query parameters or fragments,
+including component facts. Saved addresses and connection inputs are unchanged. An address that
+cannot be displayed safely is `null` in JSON, `unavailable` in text, and names a
+`BROKER_ADDRESS_INVALID` warning with a partial result. Its broker component is refused.
+
 Only the selected mesh is checked. Its row in the recorded meshes dials its address with its
 recorded TLS requirement, and every other row reads `not checked`. `--all` checks every recorded
 mesh, including discovered ones, each with its own recorded TLS requirement.
@@ -1062,11 +1075,13 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. A part it cannot read is named on its row and as a warning, and the run is
 `partial` with exit 4: a PID record, the folder's trust material, the delivery-aware marker, the
-extensions manifest, the connectors, the skills bundle, the web records, a persona catalog, the mesh
+connectors, the skills bundle, the web records, a persona catalog, the mesh
 registry or one of its records, the current-mesh pointer, a user-auth login, or the selected mesh's
 channels. Only an absent catalog, registry or pointer reads as empty or unset; an empty pointer is
 named too. A registry directory or record that cannot be read also leaves the selected mesh
-unresolved, because resolution refuses it, and the readable records are still listed. The manager
+unresolved, because resolution refuses it, and the readable records are still listed. A corrupt or
+unreadable extensions manifest is refused while loading the command surface, before this report
+can run. The manager
 row asks the service endpoint once: a live process that does
 not answer is `not serving`, and a probe that could not be made leaves the row
 `running · service unchecked`.

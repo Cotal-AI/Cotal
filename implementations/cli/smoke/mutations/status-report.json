@@ -83,6 +83,24 @@
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
+      "name": "the membership feed row prints its raw ISO time",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "entries · updated ${formatAge(Math.max(0, Date.now() - Date.parse(s.membershipFeed.asOf)))} ago`",
+      "replace": "entries · ${s.membershipFeed.asOf}`",
+      "expectRed": "the membership feed row says how long ago it was updated",
+      "cell": "the membership feed row says how long ago it was updated",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--components takes --plain",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "  if (values.components && (presentation !== \"rich\" || values.all))",
+      "replace": "  if (values.components && (presentation === \"json\" || values.all))",
+      "expectRed": "status --components --plain is refused before any probe, exit 1",
+      "cell": "status --components --plain is refused before any probe, exit 1",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
       "name": "an unreadable persona catalog reads as an empty one",
       "file": "implementations/cli/src/lib/personas.ts",
       "find": "    if ((e as NodeJS.ErrnoException).code === \"ENOENT\") return [];\n",

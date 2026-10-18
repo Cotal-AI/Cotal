@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 533,
-    "honest-text": 37,
-    "presence-only-glyph/count": 59,
+    "total": 537,
+    "honest-text": 35,
+    "presence-only-glyph/count": 57,
     "command-ack": 12,
-    "non-render/control": 425
+    "non-render/control": 433
   },
   "renderers": [
     {
@@ -311,17 +311,6 @@
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
-      "anchor": "ster\")\n    : r.mesh === \"offline\"\n      ? c.dim(\"mesh off",
-      "class": "honest-text",
-      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
-      "proof": {
-        "path": "implementations/manager/smoke/cli-seat-locality.smoke.ts",
-        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working · progress unknown/.test(ps.out), ps.out.slice(-1200));"
-      }
-    },
-    {
-      "path": "implementations/cli/src/commands/agents.ts",
-      "kind": "status-token",
       "anchor": "\"working\"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
@@ -329,7 +318,28 @@
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
-      "anchor": "\")\n        : r.mesh === \"waiting\"\n          ? c.yellow(\"w",
+      "anchor": " view is stale)\", tone: \"waiting\" };\n  if (r.meshView ===",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "status-token",
+      "anchor": " yet populated)\", tone: \"waiting\" };\n  // The harness-rep",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "status-token",
+      "anchor": "roster${detail}`, tone: \"waiting\" };\n  if (r.mesh === \"of",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "status-token",
+      "anchor": "ng\" };\n  if (r.mesh === \"offline\")\n    return { text: `${",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -340,21 +350,50 @@
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
-      "anchor": "g\"\n          ? c.yellow(\"waiting\")\n          : c.cyan(r.m",
+      "anchor": "ok\" };\n  if (r.mesh === \"waiting\") return { text: `waitin",
+      "class": "honest-text",
+      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
+      "proof": {
+        "path": "implementations/manager/smoke/cli-seat-locality.smoke.ts",
+        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working · progress unknown/.test(ps.out), ps.out.slice(-1200));"
+      }
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "status-token",
+      "anchor": "aiting${detail}`, tone: \"waiting\" };\n  return { text: `${",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "derived-output",
-      "anchor": "c.yellow(r.status) + c.dim(\" \" + fmtUptime(r.uptimeMs))",
+      "anchor": "`${r.mesh}${detail}`",
+      "class": "honest-text",
+      "rationale": "The ps mesh column joins the status word with the harness-reported condition and last-activity age; the cited output assertion keeps a working row's unknown progress explicit.",
+      "proof": {
+        "path": "implementations/manager/smoke/cli-seat-locality.smoke.ts",
+        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working · progress unknown/.test(ps.out), ps.out.slice(-1200));"
+      }
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "`${r.status} ${fmtUptime(r.uptimeMs)}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/commands/agents.ts",
-      "kind": "derived-output",
-      "anchor": "`${indent}${c.bold(peerLabel(r))}  ${c.dim(\n      agentIdentity(r),\n    )}  ${proc}  ${mesh}${r.authHealth ? \"  \" + authColor(r.authHealth) : \"\"}`",
+      "kind": "status-token",
+      "anchor": "me(r.uptimeMs)}`, tone: \"waiting\" };\n}\n\n/** Confirmed fai",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "status-token",
+      "anchor": "al-failed\" ? \"failed\" : \"waiting\");\n\n/** Extra operationa",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -2950,31 +2989,6 @@
       "rationale": "Connector lifecycle: pushes the join acknowledgement status to the endpoint's wire presence; no rendering."
     },
     {
-      "path": "implementations/cli/src/commands/agents.ts",
-      "kind": "derived-output",
-      "anchor": "c.cyan(r.mesh)",
-      "class": "presence-only-glyph/count",
-      "rationale": "Colors the mesh column of a roster table row; it makes no textual progress claim."
-    },
-    {
-      "path": "implementations/cli/src/commands/agents.ts",
-      "kind": "derived-output",
-      "anchor": "c.yellow(r.status)",
-      "class": "presence-only-glyph/count",
-      "rationale": "Colors the status word by its presence class; color alone carries no progress claim beyond presence."
-    },
-    {
-      "path": "implementations/cli/src/commands/agents.ts",
-      "kind": "derived-output",
-      "anchor": "mesh + condition",
-      "class": "honest-text",
-      "rationale": "The ps mesh column joins the status word with the harness-reported condition and last-activity age; the cited output assertion keeps a working row's unknown progress explicit.",
-      "proof": {
-        "path": "implementations/manager/smoke/cli-seat-locality.smoke.ts",
-        "anchor": "check(\"ps textual working mesh row names unknown progress\", /working · progress unknown/.test(ps.out), ps.out.slice(-1200));"
-      }
-    },
-    {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
       "anchor": "captureSeatCheckpoints(root, mesh.space, resume, seatCheckpointDir(root, attemptId), sessionStores)",
@@ -3833,6 +3847,34 @@
       "path": "implementations/cli/src/commands/whoami.ts",
       "kind": "status-token",
       "anchor": " text: \"unknown\", tone: \"waiting\" } : r.dms ? \"yes\" : \"no",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/completion.ts",
+      "kind": "status-token",
+      "anchor": "om this version\", tone: \"waiting\" },\n  missing: { text: \"",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/completion.ts",
+      "kind": "status-token",
+      "anchor": "ll ${s.shell}\\``, tone: \"waiting\" as const })),\n         ",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/completion.ts",
+      "kind": "indexed-map",
+      "anchor": "LOAD_NOW[status.shell]",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/runtimes.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },

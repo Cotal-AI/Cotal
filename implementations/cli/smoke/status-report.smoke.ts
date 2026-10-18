@@ -14,6 +14,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
+import { findMesh, recordMesh, renderReport } from "@cotal-ai/workspace";
+import { statusView } from "../src/commands/status.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -27,7 +29,7 @@ process.on("exit", () => {
   for (const dir of roots) rmSync(dir, { recursive: true, force: true });
 });
 
-type Mesh = { space: string; check: string; current: boolean };
+type Mesh = { space: string; server: string | null; check: string; current: boolean };
 type Envelope = {
   outcome: string;
   completeness: string;
@@ -38,7 +40,7 @@ type Envelope = {
     machine: { nats: string };
     folder: { auth: { state: string }; personas: { root: string; default: string; error: string | null }; processes: { name: string; state: string }[] | null };
     meshes: { current: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
-    selected: { resolved: boolean; code?: string; space?: string; connection?: string };
+    selected: { resolved: boolean; code?: string; space?: string; server?: string | null; connection?: string };
     hints: string[];
   } | null;
   warnings: { code: string; target: unknown; message: string }[];
@@ -69,6 +71,9 @@ const shown = (r: { status: number | null; stdout: string; stderr: string }) => 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-z ]+$/.test(line));
 
+const brokerDisplayOnly = process.argv.includes("--broker-display-only");
+let brokerDisplayCases = 0;
+if (!brokerDisplayOnly) {
 // ── a fresh machine: one envelope, one report, the agreed order ──────────────────────────────────
 {
   const { run } = sandbox();
@@ -85,7 +90,7 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
   const rich = run(["status", ...unknown], { FORCE_COLOR: "1" });
   const plain = run(["status", ...unknown, "--plain"], { FORCE_COLOR: "1" });
   check("status draws a colored report", rich.status === 0 && /\x1b\[/.test(rich.stdout), shown(rich));
-  check("--plain writes the same words with no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout === strip(rich.stdout), shown(plain));
+  check("--plain writes the same words with no ANSI and ASCII punctuation", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout === strip(rich.stdout).replace(/·/g, "-"), shown(plain));
   check(
     "the sections keep the infrastructure order and end with the hints",
     JSON.stringify(titles(plain.stdout)) === JSON.stringify(["Machine", "Extensions", "This Folder", "Recorded Meshes", "Selected Mesh", "Hints"]),
@@ -110,6 +115,10 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
   check("the selected registration is checked and reported unreachable", byName(selected.envelope).alpha === "unreachable", byName(selected.envelope));
   check("the other registration is not checked", byName(selected.envelope).beta === "not-checked", byName(selected.envelope));
   check("an unreachable selected mesh is a fact, not a partial read", selected.status === 0 && selected.envelope?.completeness === "complete" && selected.envelope.result?.selected.connection === "unreachable", shown(selected));
+  // The membership feed's time is shown as an age; the document keeps the ISO time it was read at.
+  const fed = { ...selected.envelope!.result!, selected: { ...selected.envelope!.result!.selected, membershipFeed: { entries: 2, asOf: new Date(Date.now() - 90_000).toISOString() } } };
+  const fedReport = renderReport(statusView(fed as unknown as Parameters<typeof statusView>[0]), "plain");
+  check("the membership feed row says how long ago it was updated", /^ {2}membership feed: +2 entries - updated 1m ago$/m.test(fedReport), fedReport.split("\n").filter((l) => /membership/.test(l)));
   const plain = run(["status", "--space", "alpha", "--plain"]);
   check("the report says not checked for the other registration", /beta\s+not checked/.test(plain.stdout), plain.stdout);
   const all = run(["status", "--space", "alpha", "--all", "--json"]);
@@ -209,8 +218,59 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
     const r = run(["status", ...args]);
     check(`status ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
+  const plainOnly = run(["status", "--components", "--plain"]);
+  check("status --components --plain is refused before any probe, exit 1", plainOnly.status === 1 && plainOnly.stdout === "" && /--components checks the selected mesh/.test(plainOnly.stderr), shown(plainOnly));
   const all = run(["status", "--components", "--all"]);
   check("status --components --all is refused before any probe, exit 1", all.status === 1 && all.stdout === "" && /--components checks the selected mesh/.test(all.stderr), shown(all));
 }
 
+
+}
+
+// Display copies never expose stored broker credentials, including legacy component facts.
+{
+  const { home, run } = sandbox();
+  const previousHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(home, ".cotal-home");
+  const marker = "unusable-status-display-marker";
+  try {
+    const port = await freePort();
+    const display = `nats://127.0.0.1:${port}`;
+    const cases = [
+      { name: "ordinary", server: display, display },
+      { name: "password", server: `nats://user:${marker}@127.0.0.1:${port}?token=${marker}#${marker}`, display },
+      { name: "bare", server: `user:${marker}@127.0.0.1:${port}?token=${marker}#${marker}`, display: `127.0.0.1:${port}` },
+      { name: "list", server: `${display},nats://user:${marker}@127.0.0.1:${port}?token=${marker}`, display: `${display},${display}` },
+      { name: "invalid", server: `https://user:${marker}@127.0.0.1:${port}`, display: null },
+    ];
+    for (const item of cases) {
+      brokerDisplayCases++;
+      const space = `status-display-${item.name}`;
+      recordMesh({ space, server: item.server, root: home, mode: "open", origin: "manual", ts: new Date().toISOString() });
+      const json = run(["status", "--space", space, "--json"]);
+      const result = json.envelope?.result;
+      const recorded = result?.meshes.items.find(mesh => mesh.space === space);
+      if (item.display !== null) {
+        check(`status redacts recorded broker address for ${item.name}`, json.status === 0 && recorded?.server === item.display, { status: json.status, matches: recorded?.server === item.display });
+        check(`status redacts selected broker address for ${item.name}`, result?.selected.resolved === true && result.selected.server === item.display, { matches: result?.selected.server === item.display });
+      } else {
+        check("status reports an invalid stored address as unknown", json.status === 4 && json.envelope?.outcome === "partial" && recorded?.server === null && result?.selected.server === null && json.envelope.warnings.some(w => w.code === "BROKER_ADDRESS_INVALID"), { status: json.status, warnings: json.envelope?.warnings });
+      }
+      check(`status JSON omits all broker URL markers for ${item.name}`, !json.stdout.includes(marker) && !json.stderr.includes(marker), { status: json.status });
+      for (const format of ["--plain", undefined]) {
+        const read = run(["status", "--space", space, ...(format ? [format] : [])], { NO_COLOR: "1" });
+        const text = read.stdout + read.stderr;
+        check(`status ${format ?? "human"} redacts broker address for ${item.name}`, read.status === (item.display === null ? 4 : 0) && !text.includes(marker) && text.includes(item.display ?? "unavailable"), { status: read.status, containsMarker: text.includes(marker) });
+      }
+      const components = run(["status", "--space", space, "--components"], { NO_COLOR: "1" });
+      const facts = components.stdout.split("Component Health")[1] ?? "";
+      check(`status component facts omit broker secrets for ${item.name}`, components.status !== null && [1, 2, 3].includes(components.status) && !facts.includes(marker) && facts.includes(item.display === null ? "registered address unavailable" : `registered ${item.display}`), { status: components.status, containsMarker: facts.includes(marker) });
+      check(`status does not rewrite saved dial input for ${item.name}`, findMesh(space)?.server === item.server);
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
+  }
+}
+
+if (brokerDisplayOnly) check("broker display profile reaches all five fixtures", brokerDisplayCases === 5);
 finish();

@@ -16,8 +16,9 @@ import {
   outputDeclarationProblems,
   renderWorkspaceError,
   targetErrorCode,
+  terminalWidth,
 } from "@cotal-ai/workspace";
-import { c, staleStoreHint } from "./ui.js";
+import { c, staleStoreHint, stderrLine } from "./ui.js";
 import {
   isExtensionStub,
   materializeExtension,
@@ -83,8 +84,8 @@ function asksForJson(cmd: Command, args: readonly string[]): boolean {
  *  for, and the exit code its outcome sets. The envelope is written synchronously, because stdout
  *  to a pipe is asynchronous on some platforms and `exit` would cut it short. */
 function failureExit(cmd: Command, failure: CommandFailure, json: boolean): never {
-  console.error(c.red(`✗ ${failure.message}`));
-  if (failure.remedy) console.error(c.dim(`  ↳ ${failure.remedy}`));
+  stderrLine("✗ ", failure.message, c.red);
+  if (failure.remedy) stderrLine("  ↳ ", failure.remedy, c.dim);
   if (json) writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure)));
   process.exit(exitCode(failure.outcome, failure.code));
 }
@@ -182,8 +183,8 @@ function usageExit(message: string, cmd?: Command, json = false): never {
   if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: `run \`cotal help ${cmd.name}\`` }), true);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
-  console.error(c.red(`✗ ${message}`));
-  if (cmd) printCommandHelp(cmd, undefined, (line) => console.error(line));
+  stderrLine("✗ ", message, c.red);
+  if (cmd) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
   process.exit(1);
 }
 
@@ -250,7 +251,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     try {
       if (await extSeedGate(registry, argv)) return;
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
     }
   }
@@ -261,7 +262,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     } catch (e) {
       // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
       // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
     }
     for (const cmd of commands) {
@@ -300,7 +301,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     try {
       await reconcileSeededConnectors();
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
     }
     commands = surface();
@@ -314,7 +315,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     try {
       cmd = await materializeExtensionCommand(cmd);
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
     }
     parsed = parseOrExit(cmd, rest);
@@ -359,11 +360,11 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // contract is "denied, not absent", not a crash. The full stack stays available under
     // COTAL_DEBUG for diagnosis.
     const msg = e instanceof Error ? e.message : String(e);
-    console.error(c.red(`✗ ${msg}`));
+    stderrLine("✗ ", msg, c.red);
     // Known failure signatures get a one-line operator hint (e.g. a stale-store durable
     // collision names the `cotal clean` reset) - the error itself stays verbatim.
     const hint = staleStoreHint(msg);
-    if (hint) console.error(c.dim(`  ↳ ${hint}`));
+    if (hint) stderrLine("  ↳ ", hint, c.dim);
     if (process.env.COTAL_DEBUG && e instanceof Error && e.stack) console.error(c.dim(e.stack));
     process.exit(1);
   }
