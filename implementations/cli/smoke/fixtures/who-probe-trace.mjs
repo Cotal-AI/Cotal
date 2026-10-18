@@ -11,9 +11,41 @@ write({ kind: "hook-registered", node: process.versions.node });
 registerHooks({
   load(url, context, nextLoad) {
     const loaded = nextLoad(url, context);
-    if (!new URL(url).pathname.endsWith("/packages/core/dist/endpoint.js")) return loaded;
-    if (loaded.format !== "module" || loaded.source == null) throw new Error("unexpected core probe module format");
-    const source = typeof loaded.source === "string" ? loaded.source : Buffer.from(loaded.source).toString("utf8");
+    const path = new URL(url).pathname;
+    const sdk = path.endsWith("/@nats-io/transport-node/lib/node_transport.js") ? "transport"
+      : path.endsWith("/@nats-io/nats-core/lib/protocol.js") ? "protocol" : null;
+    const endpoint = path.endsWith("/packages/core/dist/endpoint.js");
+    if (!sdk && !endpoint) return loaded;
+    if (loaded.source == null) throw new Error("missing native diagnostic module source");
+    let source = typeof loaded.source === "string" ? loaded.source : Buffer.from(loaded.source).toString("utf8");
+    if (sdk) {
+      const expected = sdk === "transport" ? "527474ca776b69b5ba35e5be54f23da838280b91f52d508423baf47b79b55fec" : "90a0ac36b06e7a29088fea89e2aa1815871187e39340f0df4288051f8b0c6d93";
+      const sha256 = createHash("sha256").update(source).digest("hex");
+      // A synchronous require load may omit format. Exact pinned bytes identify this CommonJS module.
+      if (sha256 !== expected || (loaded.format !== undefined && loaded.format !== "commonjs")) throw new Error("unexpected pinned SDK diagnostic module");
+      write({ kind: "sdk-module-matched", sdk, format: loaded.format ?? null, sourceSha256: sha256 });
+      const prefix = `function __cotalSdkWrite(record) {
+        require("node:fs").appendFileSync(process.env.SMOKE_WHO_PROBE_TRACE, JSON.stringify(record) + "\\n");
+      }
+      function __cotalSdkTag(value) { return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value) ? value : "other"; }
+      `;
+      const changes = sdk === "transport" ? [
+        ["                this.socket = await this.dial(hp);", "                __cotalSdkWrite({ kind: 'sdk-await-dial' });\n                this.socket = await this.dial(hp);"],
+        ["            const info = await this.peekInfo();", "            __cotalSdkWrite({ kind: 'sdk-await-info' });\n            const info = await this.peekInfo();\n            __cotalSdkWrite({ kind: 'sdk-info', authRequired: info.auth_required === true, tlsRequired: info.tls_required === true, tlsAvailable: info.tls_available === true });"],
+        ["        catch (ex) {\n            let err = ex;", "        catch (ex) {\n            __cotalSdkWrite({ kind: 'sdk-connect-rejected', code: __cotalSdkTag(ex?.code), constructor: __cotalSdkTag(ex?.constructor?.name), connected: this.connected, done: this.done, bufferedFrames: this.yields.length });\n            let err = ex;"],
+        ["                yield yields[i];", "                __cotalSdkWrite({ kind: 'sdk-frame', bytes: yields[i].byteLength, info: Buffer.from(yields[i]).toString('ascii').startsWith('INFO '), authViolation: Buffer.from(yields[i]).includes(Buffer.from('Authorization Violation')), authTimeout: Buffer.from(yields[i]).includes(Buffer.from('Authentication Timeout')) });\n                yield yields[i];"],
+        ["    async _closed(err, internal = true) {", "    async _closed(err, internal = true) {\n        __cotalSdkWrite({ kind: 'sdk-close', code: __cotalSdkTag(err?.code), constructor: __cotalSdkTag(err?.constructor?.name), connected: this.connected, done: this.done, internal, bufferedFrames: this.yields.length });"],
+      ] : [
+        ["        const err = ProtocolHandler.toError(s);", "        const err = ProtocolHandler.toError(s);\n        __cotalSdkWrite({ kind: 'sdk-error-parsed', authorization: err instanceof errors_1.errors.AuthorizationError, expired: err instanceof errors_1.errors.UserAuthenticationExpiredError, constructor: __cotalSdkTag(err?.constructor?.name) });"],
+      ];
+      changes.push(['"use strict";\n', '"use strict";\n' + prefix]);
+      for (const [anchor, replacement] of changes) {
+        if (source.split(anchor).length !== 2) throw new Error("pinned SDK diagnostic anchor is not unique");
+        source = source.replace(anchor, replacement);
+      }
+      return { ...loaded, source, shortCircuit: true };
+    }
+    if (loaded.format !== "module") throw new Error("unexpected core probe module format");
     const anchor = "function classifyProbeFailure(e, opts) {";
     if (source.split(anchor).length !== 2) throw new Error("native probe classifier anchor is not unique");
     write({ kind: "module-matched", sourceSha256: createHash("sha256").update(source).digest("hex") });
