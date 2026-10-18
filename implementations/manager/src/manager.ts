@@ -93,6 +93,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
+import { STOP_BROKER_BUDGET_MS, TransportWatch, retireConnection, stopBrokerWait } from "./connection-retire.js";
 import { DELIVERY_ADMIN_BOOT_WAIT_MS, isUnansweredDeliveryAdmin, makeManagerEndpointEvictionEvidence, makeManagerEndpointHolderEvictor, untilDeliveryAdminAnswers, withScopedEndpoint } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
@@ -331,6 +332,12 @@ function rejectionText(e: unknown): string {
   } catch {
     return "an unreadable rejection";
   }
+}
+
+/** Print a stop's retired-connection cut. Loud and not fatal, like the deregistration step: the
+ *  stop still completes, and a failed stop would wrongly keep the pid record that fences live seats. */
+function warnRetire(e: unknown): void {
+  console.error(`! manager stop: ${rejectionText(e)}`);
 }
 
 /** A caught value as a lifecycle envelope, or undefined when it is not one. A thrown Proxy can throw
@@ -1296,11 +1303,10 @@ export class Manager {
    *  every (re)connect, so a renewal is adopted without re-registration). Absent on open meshes,
    *  in user mode, and before registration completes. */
   private serviceServe?: { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
-  /** #1577: serve connections whose transport is down while the client reconnects them. Such a
-   *  connection is open (`isClosed()` is false under unbounded reconnects) yet the broker holds
-   *  none of its rails, so the liveness responder must not grade it `bound`. Keyed by the
-   *  connection, so a re-dial that swaps in a fresh one starts from its own state. */
-  private readonly serveTransportDown = new WeakSet<NatsConnection>();
+  /** #1577: the transport state of the serve, goal-writer and session-ledger connections. A serve
+   *  connection that is down must not be graded `bound` by the liveness responder, and a stop
+   *  closes a down connection instead of draining it (#3972, #4013). */
+  private readonly transport = new TransportWatch();
   /** The spawn-as-action SELF-MEDIATED goal-writer connection + ActionContext — a
    *  standing connection DISJOINT from the serve credential, scoped to exactly this endpoint's
    *  goal bind/terminal facts + goal-record writes ({@link goalWriterGrants}). Auth mode mints the
@@ -1932,7 +1938,7 @@ export class Manager {
     // carries the operator's workspace root and pid.
     this.ep.serveLiveness("manager", () => {
       const s = this.serviceServe;
-      return s?.handle && !s.nc.isClosed() && !this.serveTransportDown.has(s.nc) ? "bound" : "unbound";
+      return s?.handle && !s.nc.isClosed() && !this.transport.isDown(s.nc) ? "bound" : "unbound";
     });
     // Unit B (static §13.1): after this instance holds its lease, collect the durable static rows
     // now, but do not let their exact-op terminals make the whole space unreachable. The service
@@ -3125,15 +3131,18 @@ export class Manager {
     // before teardown can answer. Deregistration runs AFTER the serve loop has drained, so no
     // in-flight command can write a status back onto the record it just removed.
     const registrationRevision = this.serviceServe?.grant.registrationRevision;
-    await step("stop service serve", () => this.stopServiceServe());
+    // One broker budget for the dedicated connections below, so an outage at any of them, or a
+    // drop that lands while one drains, cannot hold the endpoint and attach teardown past the grace.
+    const brokerBy = Date.now() + STOP_BROKER_BUDGET_MS;
+    await step("stop service serve", () => this.stopServiceServe(brokerBy));
     // The drives AFTER the serve loop (no new `run-start` can land) and BEFORE deregistration: a
     // released run's status write is the last thing this incarnation says about it.
     await step("stop run hosting", () => this.runHosting?.stop());
     this.runHosting = undefined;
     if (registrationRevision !== undefined && seatFailure === undefined)
-      await step("deregister service", () => this.deregisterServiceOnStop(registrationRevision));
-    await step("stop goal writer", () => this.stopGoalWriter());
-    await step("stop session plane", () => this.stopSessionPlane());
+      await step("deregister service", () => this.deregisterServiceOnStop(registrationRevision, brokerBy));
+    await step("stop goal writer", () => this.stopGoalWriter(brokerBy));
+    await step("stop session plane", () => this.stopSessionPlane(brokerBy));
     await step("stop endpoint", () => this.ep.stop());
     await step("stop attach endpoint", () => this.attach.stop());
     const also = failures.length ? `; teardown also failed: ${failures.join("; ")}` : "";
@@ -3184,7 +3193,7 @@ export class Manager {
    * rather than swallowed. It is not fatal because a crash leaves the same state and the operator
    * verb handles both.
    */
-  private async deregisterServiceOnStop(registrationRevision: number): Promise<void> {
+  private async deregisterServiceOnStop(registrationRevision: number, brokerBy: number): Promise<void> {
     const iid = this.managerInstanceId;
     const dereg = ({ recordsKv, authKv }: { recordsKv: KV; authKv: KV }): Promise<ServiceDeregistration> =>
       deregisterServiceInstance(recordsKv, {
@@ -3194,9 +3203,10 @@ export class Manager {
         observeGeneration: () => readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid }),
       });
     try {
+      const waitMs = stopBrokerWait(brokerBy);
       const outcome = await ((this.auth || this.remoteAuthority)
-        ? this.withEndpointServeExecutor(dereg)
-        : this.withOpenServeConnection(dereg));
+        ? this.withEndpointServeExecutor(dereg, waitMs)
+        : this.withOpenServeConnection(dereg, waitMs));
       if (outcome.removed)
         console.error(`✓ deregistered manager instance ${iid} from the ${MANAGER_ENDPOINT} service registry (spec revision ${outcome.specRevision})`);
       else if (outcome.reason === "superseded")
@@ -3214,21 +3224,18 @@ export class Manager {
   }
 
   /** Stop the v0.4 service-endpoint serve loop (drain subscriptions, await in-flight handlers)
-   *  and drop its dedicated connection, or only close the connection while its transport is down.
-   *  Best-effort so a graceful stop completes its remaining teardown even when the broker is gone. */
-  private async stopServiceServe(): Promise<void> {
+   *  and drain its dedicated connection. A broker that is down or does not answer gets the
+   *  connection closed instead, with a warning ({@link retireConnection}), so the rest of the stop
+   *  still runs inside the stop grace. */
+  private async stopServiceServe(brokerBy: number): Promise<void> {
     const s = this.serviceServe;
     if (!s) return;
     this.serviceServe = undefined;
-    // A drain on a reconnecting connection does not fail: it waits for the reconnect, so the stop
-    // would last as long as the outage. A broker this connection cannot reach has nothing left to
-    // flush, so the retired connection is closed instead.
-    if (this.serveTransportDown.has(s.nc)) {
-      try { await s.nc.close(); } catch { /* best effort */ }
-      return;
-    }
-    try { await s.handle.stop(); } catch { /* best effort */ }
-    try { await s.nc.drain(); } catch { try { s.nc.close(); } catch { /* best effort */ } }
+    await retireConnection(s.nc, "serve", {
+      waitMs: stopBrokerWait(brokerBy),
+      watch: this.transport,
+      graceful: async () => { await s.handle.stop(); await s.nc.drain(); },
+    }).catch(warnRetire);
   }
 
   /** Keep this instance's liveness key fresh, and end the process only when another process holds it.
@@ -7542,8 +7549,9 @@ export class Manager {
    *  manager instance's `epgate`/`epcred` keys plus its registration's two records keys, so the
    *  gate CAS, mint fence, spec/governance writes, and clean deregistration ride a one-shot scoped
    *  authority. The remote boot goal-index sweep instead uses the authenticated host-owned scan.
-   *  This is NEVER the manager's standing seed/supervisor connection. */
-  private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
+   *  This is NEVER the manager's standing seed/supervisor connection. `stopWaitMs` bounds the
+   *  connection the way {@link withOneShotConnection} says; the remote renewal before it is not bounded. */
+  private async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>, stopWaitMs?: number): Promise<T> {
     const identity = this.remoteAuthority?.identities.executor ?? newIdentity();
     if (this.remoteAuthority && (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy")) {
       // Shutdown has drained and discarded the standing serve context. Renew only its scoped
@@ -7560,24 +7568,21 @@ export class Manager {
         })
       : undefined);
     if (!creds) throw new Error("withEndpointServeExecutor: no scoped executor authority (an open mesh must use the bare path)");
-    const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
-    try {
+    return this.withOneShotConnection(standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), stopWaitMs, async (nc) => {
       const kvm = new Kvm(nc);
       return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
-    } finally {
-      await nc.drain().catch(() => nc.close());
-    }
+    });
   }
 
   /** The open-mesh counterpart of {@link withEndpointServeExecutor}: an OPEN mesh has no
    *  credential system, so there is no scoped executor to mint - the same §13.1 gate/records
    *  writes ride a bare one-shot connection (the broker enforces nothing on an open mesh; the
-   *  ceremony still produces the real gate, epoch, and registration the serve rails run on). */
-  private async withOpenServeConnection<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
+   *  ceremony still produces the real gate, epoch, and registration the serve rails run on).
+   *  `stopWaitMs` bounds the connection the way {@link withOneShotConnection} says. */
+  private async withOpenServeConnection<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>, stopWaitMs?: number): Promise<T> {
     if (this.auth || this.remoteAuthority)
       throw new Error("withOpenServeConnection: an authenticated mesh must use the scoped endpoint-serve executor");
-    const nc = await this.dial({ maxReconnectAttempts: 0 });
-    try {
+    return this.withOneShotConnection({}, stopWaitMs, async (nc) => {
       const kvm = new Kvm(nc);
       // An open mesh may be a RAW broker (no `cotal up` provisioning ran), and `Kvm.open` binds
       // lazily without checking the stream exists — create-or-verify the §13.12 authority stores
@@ -7585,8 +7590,35 @@ export class Manager {
       // store), or the first gate write dies "stream not found".
       await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
       return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
+    });
+  }
+
+  /** Run `fn` on a one-shot connection that never reconnects, then drain it. With `stopWaitMs` (a
+   *  stop), the dial and `fn` get that long before the connection is closed under them, so a down or
+   *  frozen broker fails the operation loud instead of holding the stop until it recovers, and
+   *  nothing `fn` started can still write once this returns. */
+  private async withOneShotConnection<T>(
+    opts: Parameters<ReturnType<typeof dialerFor>>[0],
+    stopWaitMs: number | undefined,
+    fn: (nc: NatsConnection) => Promise<T>,
+  ): Promise<T> {
+    if (stopWaitMs === undefined) {
+      const nc = await this.dial({ ...opts, maxReconnectAttempts: 0 });
+      try {
+        return await fn(nc);
+      } finally {
+        await nc.drain().catch(() => nc.close());
+      }
+    }
+    const until = Date.now() + stopWaitMs;
+    const nc = await this.dial({ ...opts, maxReconnectAttempts: 0, timeout: stopWaitMs });
+    const cut = setTimeout(() => { void nc.close().catch(() => {}); }, Math.max(0, until - Date.now()));
+    try {
+      return await fn(nc);
     } finally {
-      await nc.drain().catch(() => nc.close());
+      clearTimeout(cut);
+      // `fn` settled: its writes were acknowledged or it failed, so a drain cut here hides nothing it reported.
+      await retireConnection(nc, "one-shot", { waitMs: stopBrokerWait(until) }).catch(() => {});
     }
   }
 
@@ -7690,15 +7722,7 @@ export class Manager {
       inboxPrefix: `_INBOX_${state.identity.id}`,
       maxReconnectAttempts: -1,
     });
-    // Track the transport from the first moment: nats.js reports `disconnect` when the socket
-    // drops and `reconnect` only after it has re-sent this connection's subscriptions. If the
-    // status stream itself fails, the transport can no longer be observed, so it counts as down.
-    void (async () => {
-      for await (const st of nc.status()) {
-        if (st.type === "disconnect") this.serveTransportDown.add(nc);
-        else if (st.type === "reconnect") this.serveTransportDown.delete(nc);
-      }
-    })().catch(() => this.serveTransportDown.add(nc));
+    this.transport.watch(nc);
     let handle: EpServeHandle;
     try {
       // The typed surface + the derived `describe`. The descriptor stays PUBLIC in static
@@ -8049,6 +8073,7 @@ export class Manager {
       maxReconnectAttempts: -1,
     });
     nc.closed().then((err) => { void this.onGoalWriterConnectionClosed(err ?? undefined); });
+    this.transport.watch(nc);
     gw.nc = nc;
     // The (i) fence resolver (SPEC 13.6): resolve an executing instance's CURRENT gate
     // epoch. This manager reconciles only ITS OWN goals, so it resolves its own
@@ -8122,12 +8147,13 @@ export class Manager {
     console.error(`manager goal-writer standing (endpoint ${MANAGER_ENDPOINT}, ${(this.auth || this.remoteAuthority) ? "scoped cred, §13.1 family-staged" : "open/bare"})`);
   }
 
-  /** Drain the goal-writer connection (best-effort, both exit paths). */
-  private async stopGoalWriter(): Promise<void> {
+  /** Drain the goal-writer connection (both exit paths), or close it with a warning when the broker
+   *  is down or does not answer ({@link retireConnection}). */
+  private async stopGoalWriter(brokerBy: number): Promise<void> {
     const gw = this.goalWriter;
     if (!gw) return;
     this.goalWriter = undefined;
-    try { await gw.nc.drain(); } catch { try { gw.nc.close(); } catch { /* best effort */ } }
+    await retireConnection(gw.nc, "goal-writer", { waitMs: stopBrokerWait(brokerBy), watch: this.transport }).catch(warnRetire);
   }
 
   /** Mint the standing `session-ledger` credential and STAGE it into this instance's
@@ -8183,6 +8209,7 @@ export class Manager {
       maxReconnectAttempts: -1,
     });
     nc.closed().then((err) => { void this.onSessionLedgerConnectionClosed(err ?? undefined); });
+    this.transport.watch(nc);
     sw.nc = nc;
   }
 
@@ -8407,10 +8434,11 @@ export class Manager {
     };
   }
 
-  /** Tear the session plane down (best-effort, both exit paths): end every live bridge with the
-   *  honest `manager-restart` reason (this incarnation is going away; any successor takes a new epoch
-   *  and refuses these grants), then drain each session's own connection and the ledger connection. */
-  private async stopSessionPlane(): Promise<void> {
+  /** Tear the session plane down (both exit paths): end every live bridge with the honest
+   *  `manager-restart` reason (this incarnation is going away; any successor takes a new epoch and
+   *  refuses these grants), then drain each session's own connection and the ledger connection. A
+   *  ledger connection the broker cannot drain is closed with a warning ({@link retireConnection}). */
+  private async stopSessionPlane(brokerBy: number): Promise<void> {
     const plane = this.sessionPlane;
     const sw = this.sessionLedgerConn;
     this.sessionPlane = undefined;
@@ -8418,7 +8446,7 @@ export class Manager {
     // `drain` awaits each session's teardown (connection close, terminal row, credential revoke);
     // `endAll` alone would let the process exit with per-session connections still open.
     try { await plane?.drain("manager-restart"); } catch { /* best effort */ }
-    if (sw) { try { await sw.nc.drain(); } catch { try { sw.nc.close(); } catch { /* best effort */ } } }
+    if (sw) await retireConnection(sw.nc, "session-ledger", { waitMs: stopBrokerWait(brokerBy), watch: this.transport }).catch(warnRetire);
   }
 
   /** The boot reconcile: a fresh incarnation (a manager restart takes a NEW

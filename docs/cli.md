@@ -396,7 +396,11 @@ manager and delivery stops send an authenticated local cleanup request because W
 signals terminate without running cleanup handlers. The request requires the process's private
 capability, its creation identity and the live stopper's identity and reservation. Other platforms
 use `SIGTERM`. A process still running after 20s on the Windows cooperative path, or 15s after
-`SIGTERM`, receives `SIGKILL`. Ctrl-C stops the manager first; when that
+`SIGTERM`, receives `SIGKILL`. A manager stop gives the broker 2s in total to drain the manager's serve, goal-writer and
+session-ledger connections and to remove its service registration. A connection whose transport is
+down, drops during its drain, or gets no answer in that time is closed and named in a warning, since
+anything it had not yet flushed is lost, and the stop goes on so the endpoint and console listener
+still close inside that grace. Ctrl-C stops the manager first; when that
 stop is refused or the manager's exit cannot be confirmed, Ctrl-C signals nothing else, prints the
 refusal with the reap route, and leaves the stack running; end it with `cotal down --with-agents`.
 `--with-agents` is a one-shot destructive policy bound to the exact verified manager process
