@@ -78,16 +78,16 @@
     {
       "name": "plugin2.ts never clears the boot prompt once the submission lands",
       "file": "extensions/connector-opencode/src/plugin2.ts",
-      "find": "      if (system) primed = true;\n      if (boot !== undefined) bootPrompt = undefined;",
-      "replace": "      if (system) primed = true;",
+      "find": "        if (system) primed = true;\n        if (boot !== undefined) bootPrompt = undefined;",
+      "replace": "        if (system) primed = true;",
       "expectRed": "after the boot turn ends a DM drives a turn carrying the DM and not the boot text again",
       "cell": "after the boot turn ends a DM drives a turn carrying the DM and not the boot text again"
     },
     {
       "name": "plugin2.ts clears the boot prompt before the submission has landed",
       "file": "extensions/connector-opencode/src/plugin2.ts",
-      "find": "    busy = true;\n    briefed = true;\n    try {\n      await opencodeApi(",
-      "replace": "    busy = true;\n    briefed = true;\n    if (boot !== undefined) bootPrompt = undefined;\n    try {\n      await opencodeApi(",
+      "find": "    submitting = (async () => {\n      try {\n        await opencodeApi(",
+      "replace": "    submitting = (async () => {\n      if (boot !== undefined) bootPrompt = undefined;\n      try {\n        await opencodeApi(",
       "expectRed": "a failed boot submission keeps the prompt and the next drive submits it",
       "cell": "a failed boot submission keeps the prompt and the next drive submits it"
     }
