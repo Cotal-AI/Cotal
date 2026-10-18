@@ -15,6 +15,7 @@ import {
 } from "@cotal-ai/core";
 import { ENV_REFERENCE } from "@cotal-ai/connector-core";
 import { CLI_RECORD } from "./cli-record.js";
+import { desktopConfigPath, readDesktopEntry, writeDesktopEntry, type DesktopEntry } from "./desktop-config.js";
 import { claudeUserMcpServers } from "./user-mcp.js";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -79,6 +80,26 @@ function updateInstalls(version: string, skip?: string): { current: number; miss
     current += 1;
   }
   return { current, missing };
+}
+
+/** The `cotal` entry Claude Desktop runs: the materialized server, started by the node that runs the
+ *  CLI. Desktop starts it with its own environment, so a non-default Cotal home goes with it. */
+function desktopEntry(cotal: readonly string[]): DesktopEntry {
+  return {
+    command: cotal[0]!,
+    args: [join(marketplaceDir(), "cotal", "dist", "mcp.cjs"), "--desktop"],
+    ...(process.env.COTAL_HOME ? { env: { COTAL_HOME: process.env.COTAL_HOME } } : {}),
+  };
+}
+
+/** Write the `cotal` entry into Claude Desktop's config where Desktop is installed. With `add` false
+ *  only an entry already there is brought current. `undefined` when there was nothing to do. */
+function desktop(cotal: readonly string[], add: boolean): string | undefined {
+  const path = desktopConfigPath();
+  if (!path || !existsSync(dirname(path))) return undefined;
+  if (!add && readDesktopEntry(path) === undefined) return undefined;
+  const state = writeDesktopEntry(path, desktopEntry(cotal));
+  return `Claude Desktop ${state}${state === "current" ? "" : "; quit and reopen Claude Desktop to load it"}`;
 }
 
 const installsText = (version: string, { current, missing }: { current: number; missing: string[] }): string =>
@@ -304,6 +325,25 @@ function pluginRow(entries: PluginEntry[] | undefined, { version }: ConnectorSta
   return row("ok", `current (${installs.length} install${installs.length === 1 ? "" : "s"})`);
 }
 
+/** Cotal's entry in Claude Desktop's config, where Desktop is installed. It must run the server setup
+ *  materialized. */
+function desktopRow(): ConnectorStatusRow | undefined {
+  const path = desktopConfigPath();
+  if (!path || !existsSync(dirname(path))) return undefined;
+  const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude Desktop", state, text });
+  let entry: unknown;
+  try {
+    entry = readDesktopEntry(path);
+  } catch (e) {
+    return row("error", (e as Error).message);
+  }
+  if (entry === undefined) return row("off", "not added · run `cotal setup`");
+  const server = (entry as { args?: unknown }).args;
+  const expected = join(marketplaceDir(), "cotal", "dist", "mcp.cjs");
+  if (!Array.isArray(server) || server[0] !== expected || !existsSync(expected)) return row("warn", "stale · run `cotal setup`");
+  return row("ok", "added");
+}
+
 /** Whether setup may copy a server entry into the cotal config: the config reader must accept it
  *  ({@link mcpServerProblem}), or every spawn would be refused. That config holds secrets only as
  *  `${VAR}` references, and literal text cannot be told apart from a secret, so every `env` and
@@ -333,19 +373,29 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
       install("cotal", "local", version);
       // The marketplace now holds this version, so every other install moves to it too.
       updateInstalls(version, process.cwd());
-      return `cotal@${MARKETPLACE} (local scope)`;
+      const app = desktop(cotal, true);
+      return `cotal@${MARKETPLACE} (local scope)${app ? `; ${app}` : ""}`;
     },
   },
   refresh: {
     name: "claude-plugin-refresh",
     title: "Refresh the Claude Code plugin",
-    explain: "Brings every installed copy of the Cotal plugin for Claude Code to this release.",
+    explain: "Brings every installed copy of the Cotal plugin for Claude Code, and Cotal's entry in Claude Desktop, to this release.",
     context: [DOCS_URL],
     run({ cotal }) {
-      if (!listPlugins().some((entry) => entry.id === `cotal@${MARKETPLACE}`)) return "not installed";
+      const code = listPlugins().some((entry) => entry.id === `cotal@${MARKETPLACE}`);
+      const path = desktopConfigPath();
+      const app = path !== undefined && readDesktopEntry(path) !== undefined;
+      if (!code && !app) return "not installed";
       const version = materializeCotal(cotal);
-      writeMarketplace();
-      return installsText(version, updateInstalls(version));
+      const parts: string[] = [];
+      if (code) {
+        writeMarketplace();
+        parts.push(installsText(version, updateInstalls(version)));
+      }
+      const desktopText = app ? desktop(cotal, false) : undefined;
+      if (desktopText) parts.push(desktopText);
+      return parts.join("; ");
     },
   },
   skills: {
@@ -402,7 +452,8 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
   },
   status(input) {
     const plugins = pluginList();
-    return [pluginRow(plugins, input), skillsRow(plugins, input)];
+    const app = desktopRow();
+    return [pluginRow(plugins, input), ...(app ? [app] : []), skillsRow(plugins, input)];
   },
 };
 

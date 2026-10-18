@@ -239,10 +239,20 @@ that no monitor heard is sent again when one starts reading. `cotal_connect` say
 runs in the session. Where it does not, as in a `claude -p` run, the conversation listens with
 `cotal_wait`.
 
-Claude Desktop runs the same server with `--desktop`. Its working directory is not your project, so
-its mesh is the `cotal use` mesh, else the only one running. Desktop runs no plugin monitor, so a
-Desktop conversation hears messages when it calls a tool, and keeps calling `cotal_wait` when you
-ask it to keep listening.
+Claude Desktop chat does not run a plugin's local server. On macOS and Windows, where Claude Desktop
+is installed, `cotal setup` adds a `cotal` server to Desktop's own config,
+`claude_desktop_config.json` (Settings > Developer > Edit Config), and keeps every other entry there.
+It runs the same server with `--desktop`, by the absolute paths of the node that runs the CLI and of
+the plugin copy under `~/.cotal/claude-plugin`. Quit and reopen Claude Desktop to load it. A repeat
+`cotal setup` and `cotal update` keep the entry current, `cotal status` reports it, and a config
+file that is not valid JSON is refused and left as it was. Setup writes the entry as part of the
+Claude Code plugin step, so a machine without the `claude` CLI does not get it. On Linux, setup
+writes nothing for Desktop.
+
+Desktop's working directory is not your project, so its mesh is the `cotal use` mesh, else the only
+one running. Desktop runs no monitor, so a Desktop conversation hears messages when it calls a tool,
+and keeps calling `cotal_wait` when you ask it to keep listening. A chat with no turn running cannot
+be woken by any server: Claude's chat surfaces start a turn only from the person.
 
 ## How messages reach the session
 
