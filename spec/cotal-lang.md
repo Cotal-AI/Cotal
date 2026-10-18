@@ -121,8 +121,9 @@ The validator MUST also refuse, before a program runs:
 
 - An identifier that is not declared in the program and is not a reserved name (L2001); a host
   global by name (L2012, with the language's replacement in the fix, §3); the name `Promise` (L2011).
-- A declaration, parameter or function name that shadows a reserved name (L2002); an assignment
-  to a `const` binding (L2003).
+- A declaration, parameter or function name that shadows a reserved name (L2002); a write to a
+  `const` binding (L2003), whether by plain assignment, as a destructuring assignment target or as
+  the target of a `for...of` with no declaration.
 - **A reference to a `let`/`const` binding above its declaration (L2004, the dead zone; §3)**, where
   straight-line code makes it visible. A reference from inside a nested function is not refused —
   the function may run after the declaration — and the same refusal moves to run time when the call

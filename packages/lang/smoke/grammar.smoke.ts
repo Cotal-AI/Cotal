@@ -481,6 +481,13 @@ rejects("an unknown identifier is a parse error", "L2001", "function f() { retur
 rejects("shadowing a primitive is refused", "L2002", "const turn = 1;");
 rejects("shadowing a builtin as a parameter is refused", "L2002", "function f(log) { return log; }");
 rejects("const cannot be reassigned", "L2003", "function f() { const x = 1; x = 2; return x; }");
+rejects("const cannot be an array destructuring target", "L2003", "const c = 0;\n[c] = [1];");
+rejects("const cannot be an object destructuring target", "L2003", "const c = 0;\n({ c } = { c: 1 });");
+rejects("const cannot be a for-of target", "L2003", "const c = 0;\nfor (c of [1]) {}");
+accepts(
+  "let destructuring and for-of targets, and a field of a const, are writable",
+  "let c = 0;\n[c] = [1];\n({ c } = { c: 2 });\nfor (c of [3]) {}\nconst o = { a: 0 };\n[o.a] = [1];",
+);
 
 {
   // A misspelled name must point at the fix, since this is the most common repair an LLM makes.

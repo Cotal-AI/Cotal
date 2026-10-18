@@ -1514,15 +1514,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
     }
 
     case "AssignmentExpression": {
-      const left = node.left as AnyNode;
-      if (left.type === "Identifier" && scope.lookup(left.name as string) === "const") {
-        v.fail(
-          "L2003",
-          left,
-          `\`${left.name as string}\` is declared \`const\`.`,
-          "Declare it with `let` if it is meant to be reassigned.",
-        );
-      }
+      checkConstWrite(node.left as AnyNode, scope, v);
       for (const c of children(node)) walkResolve(c, v, scope);
       return;
     }
@@ -1629,6 +1621,10 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
 
     case "ForStatement":
     case "ForOfStatement": {
+      // `for (x of xs)` with no declaration assigns `x` on every iteration.
+      if (node.type === "ForOfStatement" && (node.left as AnyNode).type !== "VariableDeclaration") {
+        checkConstWrite(node.left as AnyNode, scope, v);
+      }
       const inner = new Scope(scope);
       for (const c of children(node)) walkResolve(c, v, inner);
       return;
@@ -1643,6 +1639,22 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
     default: {
       for (const c of children(node)) walkResolve(c, v, scope);
       return;
+    }
+  }
+}
+
+/** A destructuring leaf writes its binding as surely as a bare `x = …` does. */
+function checkConstWrite(target: AnyNode, scope: Scope, v: Validator): void {
+  const targets: AnyNode[] = [];
+  patternTargets(target, targets);
+  for (const t of targets) {
+    if (t.type === "Identifier" && scope.lookup(t.name as string) === "const") {
+      v.fail(
+        "L2003",
+        t,
+        `\`${t.name as string}\` is declared \`const\`.`,
+        "Declare it with `let` if it is meant to be reassigned.",
+      );
     }
   }
 }
