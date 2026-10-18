@@ -13,8 +13,11 @@
  * - Not complete history. It is in-process, bounded by entry count, content bytes and age, and it
  *   is empty after a restart; an id it does not hold is `missing`, never inferred.
  * - Not redaction. A result is kept byte-for-byte up to the content bound, and a tool that printed
- *   a secret returns that secret to the holder. Sharing is the owner's explicit choice, and the
- *   default is `off`: nothing is captured and every lookup answers `not-shared`.
+ *   a secret returns that secret to the holder. Sharing is off until a verified human consent
+ *   (core `verifyToolResultConsent`) is applied: before that nothing is captured and every lookup
+ *   answers `not-shared`. When the last consent lapses or is revoked, every held result is
+ *   discarded. Lapse is checked on the next capture or lookup, so it is bounded by the consent's
+ *   `exp`, not instantaneous.
  * - Not a correlation engine. Entries are keyed by the native `(threadId, toolCallId)` pair the
  *   harness wrote; nothing is matched by time, order or name.
  */
@@ -22,9 +25,16 @@
 import { AGUI_EVENT_TYPE, type AguiEvent } from "./agui.js";
 import type { RecordMapper } from "./agui-emitter.js";
 
-/** Who may read captured results. Closed. `off` (the default) captures nothing;
- *  `handle-holders` captures and serves only to a redeemed `handle`-mode grant on this target. */
-export type ToolResultSharing = "off" | "handle-holders";
+/** Whether the journal is capturing: `off` until a verified consent is applied, `consented` while
+ *  at least one applied consent is unexpired and unrevoked. */
+export type ToolResultSharing = "off" | "consented";
+
+/** The parts of a VERIFIED consent the journal keeps. Verification is the caller's job. */
+export interface AppliedToolResultConsent {
+  id: string;
+  holder: { id: string };
+  exp: number;
+}
 
 export const TOOL_RESULT_DEFAULTS = Object.freeze({
   maxEntries: 256,
@@ -35,7 +45,7 @@ export const TOOL_RESULT_DEFAULTS = Object.freeze({
 /** One lookup's answer. Every state is distinct and none is inferred from another:
  *  - `available`: the harness reported a result; `content` is its text, possibly `""`.
  *  - `pending`: the call started and no result has arrived yet.
- *  - `not-shared`: sharing is off, so nothing was captured.
+ *  - `not-shared`: no applied consent names this reader, so nothing is shown.
  *  - `missing`: no call or result with this id was observed by this process.
  *  - `expired`: a result was held and the retention bound (age or capacity) dropped it. */
 export type ToolResultAnswer =
@@ -67,7 +77,6 @@ function bounded(text: string, max: number): { content: string; truncated: boole
 }
 
 export class ToolResultJournal {
-  readonly sharing: ToolResultSharing;
   private readonly maxEntries: number;
   private readonly maxContentBytes: number;
   private readonly ttlMs: number;
@@ -77,11 +86,10 @@ export class ToolResultJournal {
   /** Keys a retention bound dropped, so a later lookup says `expired` instead of `missing`. */
   private readonly dropped = new Map<string, number>();
   private retiredFlag = false;
+  /** Applied consents by id: holder and expiry. */
+  private readonly consents = new Map<string, { holder: string; exp: number }>();
 
-  constructor(opts: { sharing: ToolResultSharing; maxEntries?: number; maxContentBytes?: number; ttlMs?: number; now?: () => number }) {
-    if (opts.sharing !== "off" && opts.sharing !== "handle-holders")
-      throw new Error(`tool-result sharing must be "off" or "handle-holders", got ${JSON.stringify(opts.sharing)}`);
-    this.sharing = opts.sharing;
+  constructor(opts: { maxEntries?: number; maxContentBytes?: number; ttlMs?: number; now?: () => number } = {}) {
     this.maxEntries = opts.maxEntries ?? TOOL_RESULT_DEFAULTS.maxEntries;
     this.maxContentBytes = opts.maxContentBytes ?? TOOL_RESULT_DEFAULTS.maxContentBytes;
     this.ttlMs = opts.ttlMs ?? TOOL_RESULT_DEFAULTS.ttlMs;
@@ -90,17 +98,40 @@ export class ToolResultJournal {
       if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`tool-result ${name} must be a positive integer`);
   }
 
-  /** True once the lifecycle this journal served ended or its sharing was revoked. */
+  /** True once the lifecycle this journal served ended. */
   get retired(): boolean {
     return this.retiredFlag;
+  }
+
+  get sharing(): ToolResultSharing {
+    return this.active(this.now()) ? "consented" : "off";
+  }
+
+  /** Start (or extend) sharing for one holder under a consent the caller has VERIFIED. Capture
+   *  begins with the next mapped batch; nothing before it is recovered. */
+  applyConsent(consent: AppliedToolResultConsent): void {
+    if (this.retiredFlag) throw new Error("tool-result journal is retired");
+    const at = this.now();
+    if (!(consent.exp > at)) return;
+    this.consents.set(consent.id, { holder: consent.holder.id, exp: consent.exp });
+  }
+
+  /** Withdraw one consent. Only its holder may withdraw it; true when it was active. The last
+   *  withdrawal discards every held result. */
+  revokeConsent(id: string, holder: string): boolean {
+    const c = this.consents.get(id);
+    if (!c || c.holder !== holder) return false;
+    this.consents.delete(id);
+    this.active(this.now());
+    return true;
   }
 
   /** Record what one mapped batch says about tool calls on `threadId`: a `TOOL_CALL_START` opens a
    *  pending entry and a `TOOL_CALL_RESULT` fills it. A result already held is kept as first seen,
    *  so a replayed transcript cannot rewrite it. Arguments are never read. */
   observe(threadId: string, events: readonly AguiEvent[]): void {
-    if (this.sharing === "off" || this.retiredFlag) return;
     const at = this.now();
+    if (this.retiredFlag || !this.active(at)) return;
     this.sweep(at);
     for (const event of events) {
       const e = event as { type?: unknown; toolCallId?: unknown; content?: unknown; cotal?: { isError?: unknown } };
@@ -115,9 +146,11 @@ export class ToolResultJournal {
     }
   }
 
-  answer(threadId: string, toolCallId: string): ToolResultAnswer {
-    if (this.sharing === "off" || this.retiredFlag) return { state: "not-shared" };
-    this.sweep(this.now());
+  /** Look up one result for `holder`, who must hold an applied, unexpired consent. */
+  answer(threadId: string, toolCallId: string, holder: string): ToolResultAnswer {
+    const at = this.now();
+    if (this.retiredFlag || !this.active(at) || ![...this.consents.values()].some((c) => c.holder === holder)) return { state: "not-shared" };
+    this.sweep(at);
     const key = this.key(threadId, toolCallId);
     const entry = this.entries.get(key);
     if (!entry) return this.dropped.has(key) ? { state: "expired" } : { state: "missing" };
@@ -125,12 +158,22 @@ export class ToolResultJournal {
     return { state: "available", threadId, toolCallId, content: entry.content, truncated: entry.truncated, bytes: entry.bytes, isError: entry.isError, capturedAt: entry.at };
   }
 
-  /** End sharing for good: the lifecycle retired, or the owner revoked sharing. Every held result
-   *  is discarded at once and later lookups answer `not-shared`. */
+  /** End sharing for good: the lifecycle retired. Every consent and held result is discarded at
+   *  once and later lookups answer `not-shared`. */
   retire(): void {
     this.retiredFlag = true;
+    this.consents.clear();
     this.entries.clear();
     this.dropped.clear();
+  }
+
+  /** Drop lapsed consents; when none is left, discard everything held. */
+  private active(at: number): boolean {
+    for (const [id, c] of this.consents) if (c.exp <= at) this.consents.delete(id);
+    if (this.consents.size > 0) return true;
+    this.entries.clear();
+    this.dropped.clear();
+    return false;
   }
 
   private key(threadId: string, toolCallId: string): string {
@@ -165,7 +208,6 @@ export class ToolResultJournal {
  *  The emitter still receives the same events and still withholds the result kinds from the
  *  event channel; the journal only reads them. */
 export function captureToolResults<T>(map: RecordMapper<T>, journal: ToolResultJournal, threadId: string): RecordMapper<T> {
-  if (journal.sharing === "off") return map;
   return (record) => {
     const out = map(record);
     if (out && "events" in out) journal.observe(threadId, out.events);

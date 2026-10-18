@@ -2994,14 +2994,26 @@ another lifecycle, or after the journal retired, is `expired`. The input is the 
 is closed: `available` (`content` verbatim, `""`/`"0"`/`"false"`/`"null"` included, plus `truncated`,
 the full UTF-8 `bytes`, `isError`, `capturedAt`), `pending` (the call started, no result yet),
 `not-shared`, `missing` (never observed by this process) or `expired` (dropped by the age or capacity
-bound). Sharing defaults to `off`: nothing is captured and every lookup is `not-shared`. A result is
+bound). Sharing is off until a human consents: a **tool-result consent** is a closed artifact
+`{ v, id, space, scope: "tool-results", target: { owner, actor, lifecycleUid }, holder: { id }, proofAt,
+iat, exp, issuer: { keyId }, sig }` signed by an anchor with the `consents` role whose scope covers
+`tool-results`. Only a host's authenticated human route holds such a key: it verifies a fresh
+interactive IdP proof for the target's owner (`proofAt` at most 300 s before `iat`), names a holder
+under that owner, and signs a window of at most 24 hours. An agent holds no `consents` key, so it
+cannot consent for its owner. The holder presents it with `tool-result-consent` (handle mode; the
+consent's holder MUST be the caller); the serving connector verifies it fresh against the anchor
+registry and the exact target incarnation, and only then starts capturing. Nothing produced before
+that is recovered. `tool-result` answers `not-shared` to a caller no live consent names.
+`tool-result-revoke` lets the holder withdraw its consent; when the last consent is withdrawn or
+reaches `exp`, every held result is discarded and capture stops, checked on the next capture or
+lookup, so lapse is bounded by `exp` rather than instantaneous. A result is
 kept as first observed, so a replayed transcript cannot rewrite it; content past the byte bound is cut
 on a code-point boundary. Retiring the lifecycle or revoking sharing discards every held result.
 Results never ride an event, chat or DM channel, and the `events.<owner>.<actor>` egress fence is
 unchanged. The journal is not redaction or complete history: content is the tool's own bytes, held only
-in the serving process, and a consumer renders it as inert text. Registering the command and issuing the
-agent's serve grant, and the flow by which a human mints the handle, belong to the hosting authority and
-are not defined here.
+in the serving process, and a consumer renders it as inert text. Registering the commands and issuing the
+agent's serve grant, the host's human route that signs a consent, and the redemption that mints the
+holder's handle are hosting-authority work not defined here.
 
 ### 13.7 Contracts and discovery
 
@@ -4125,7 +4137,7 @@ authorization slots, capability handles, checkpoint resumes, trait definitions a
 attachments, session grants, receipts. Anchors are `signer.<keyId>` records: spec =
 `{ keyId, publicKey (Ed25519), owner (the principal or reverse-DNS domain the key belongs
 to), roles ⊆ [handles, traits, receipts, resume, sessions, authz-slots, obligations,
-payments], scope: per-role structured ceilings, for a `handles`-role key the **full grant
+payments, consents], scope: per-role structured ceilings, for a `handles`-role key the **full grant
 dimensions**, in the handle-grant shape itself: the endpoints/domains, and per entry the
 maximal commands, authorization modes, target patterns, instance ids, and read subtrees the
 key may issue for (a handles- or receipts-role key without a dimension ceiling has that

@@ -74,6 +74,7 @@ export function assertArtifactCurrency(
 /** The §13.10 anchor roles: which artifact family a registered key may sign. */
 export const ANCHOR_ROLES = Object.freeze([
   "handles", "traits", "receipts", "resume", "sessions", "authz-slots", "obligations", "payments",
+  "consents",
 ] as const);
 export type AnchorRole = (typeof ANCHOR_ROLES)[number];
 

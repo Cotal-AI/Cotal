@@ -16,10 +16,23 @@
  * of this module.
  */
 
-import { compileContract, EpEnvelopeError, type EpCommandDef } from "@cotal-ai/core";
+import type { NatsConnection } from "@nats-io/transport-node";
+import {
+  compileContract,
+  EpEnvelopeError,
+  serveEndpoint,
+  verifyToolResultConsent,
+  type AnchorResolver,
+  type EpCommandDef,
+  type EpServeContext,
+  type EpServeGrant,
+  type EpServeHandle,
+} from "@cotal-ai/core";
 import type { ToolResultJournal } from "./tool-result-journal.js";
 
 export const TOOL_RESULT_COMMAND = "tool-result";
+export const TOOL_RESULT_CONSENT_COMMAND = "tool-result-consent";
+export const TOOL_RESULT_REVOKE_COMMAND = "tool-result-revoke";
 
 const id = { type: "string", minLength: 1, maxLength: 256 } as const;
 
@@ -49,12 +62,47 @@ export const TOOL_RESULT_OUTPUT_SCHEMA = {
   },
 } as const;
 
+/** `tool-result-consent`: the holder presents the host-signed consent artifact it was given. */
+export const TOOL_RESULT_CONSENT_INPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["consent"],
+  properties: { consent: { type: "object" } },
+} as const;
+
+/** `tool-result-revoke`: the holder withdraws one consent by id. */
+export const TOOL_RESULT_REVOKE_INPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["id"],
+  properties: { id: { type: "string", minLength: 16, maxLength: 64 } },
+} as const;
+
+export const TOOL_RESULT_CONSENT_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["state"],
+  properties: { state: { enum: ["active", "revoked", "unknown"] }, id: { type: "string" }, exp: { type: "number" } },
+} as const;
+
 /** The agent this command answers for: the managed target's alias and the lifecycle whose journal
  *  it serves. A successor incarnation builds a new journal and a new def. */
 export interface ToolResultTarget {
   owner: string;
   actor: string;
   lifecycleUid: string;
+}
+
+/** The handle-only gate every tool-result command shares; returns the caller's principal. */
+function handleCaller({ subject }: EpServeContext, self: ToolResultTarget, journal: ToolResultJournal, command: string): string {
+  const t = subject.target;
+  if (t === null || t.mode !== "handle")
+    throw new EpEnvelopeError("permission-denied", `${command} is served only to a redeemed capability handle on this agent`);
+  if (t.tOwner !== self.owner || t.tActor !== self.actor)
+    throw new EpEnvelopeError("target-mismatch", `${command} answers only for ${self.owner}.${self.actor}`);
+  if (t.tUid !== self.lifecycleUid || journal.retired)
+    throw new EpEnvelopeError("expired", `${command}: the handle names a lifecycle this journal does not serve`);
+  return `${subject.caller.owner}.${subject.caller.actor}`;
 }
 
 export function toolResultCommandDef(journal: ToolResultJournal, self: ToolResultTarget): EpCommandDef {
@@ -64,16 +112,72 @@ export function toolResultCommandDef(journal: ToolResultJournal, self: ToolResul
       input: compileContract({ root: TOOL_RESULT_INPUT_SCHEMA }),
       output: compileContract({ root: TOOL_RESULT_OUTPUT_SCHEMA }),
     },
-    handler: ({ subject, request }) => {
-      const t = subject.target;
-      if (t === null || t.mode !== "handle")
-        throw new EpEnvelopeError("permission-denied", `${TOOL_RESULT_COMMAND} is served only to a redeemed capability handle on this agent`);
-      if (t.tOwner !== self.owner || t.tActor !== self.actor)
-        throw new EpEnvelopeError("target-mismatch", `${TOOL_RESULT_COMMAND} answers only for ${self.owner}.${self.actor}`);
-      if (t.tUid !== self.lifecycleUid || journal.retired)
-        throw new EpEnvelopeError("expired", `${TOOL_RESULT_COMMAND}: the handle names a lifecycle this journal does not serve`);
-      const args = request.args as { threadId: string; toolCallId: string };
-      return journal.answer(args.threadId, args.toolCallId);
+    handler: (ctx) => {
+      const caller = handleCaller(ctx, self, journal, TOOL_RESULT_COMMAND);
+      const args = ctx.request.args as { threadId: string; toolCallId: string };
+      return journal.answer(args.threadId, args.toolCallId, caller);
     },
   };
+}
+
+/** Apply a consent. The artifact is verified FRESH against the anchor registry (`consents` role):
+ *  only a host's human route can sign one, so an agent cannot consent for its owner. The caller
+ *  must be the holder the consent names (presenter equality). */
+export function toolResultConsentCommandDef(
+  journal: ToolResultJournal,
+  self: ToolResultTarget,
+  verify: { space: string; resolveAnchor: AnchorResolver; now?: () => number },
+): EpCommandDef {
+  return {
+    command: TOOL_RESULT_CONSENT_COMMAND,
+    contract: {
+      input: compileContract({ root: TOOL_RESULT_CONSENT_INPUT_SCHEMA }),
+      output: compileContract({ root: TOOL_RESULT_CONSENT_OUTPUT_SCHEMA }),
+    },
+    handler: async (ctx) => {
+      const caller = handleCaller(ctx, self, journal, TOOL_RESULT_CONSENT_COMMAND);
+      const consent = await verifyToolResultConsent((ctx.request.args as { consent: unknown }).consent, {
+        space: verify.space,
+        expect: self,
+        resolveAnchor: verify.resolveAnchor,
+        ...(verify.now ? { now: verify.now() } : {}),
+      });
+      if (consent.holder.id !== caller)
+        throw new EpEnvelopeError("permission-denied", `${TOOL_RESULT_CONSENT_COMMAND}: the consent names another holder; only its holder may present it`);
+      journal.applyConsent(consent);
+      return { state: "active", id: consent.id, exp: consent.exp };
+    },
+  };
+}
+
+export function toolResultRevokeCommandDef(journal: ToolResultJournal, self: ToolResultTarget): EpCommandDef {
+  return {
+    command: TOOL_RESULT_REVOKE_COMMAND,
+    contract: {
+      input: compileContract({ root: TOOL_RESULT_REVOKE_INPUT_SCHEMA }),
+      output: compileContract({ root: TOOL_RESULT_CONSENT_OUTPUT_SCHEMA }),
+    },
+    handler: (ctx) => {
+      const caller = handleCaller(ctx, self, journal, TOOL_RESULT_REVOKE_COMMAND);
+      const { id } = ctx.request.args as { id: string };
+      return journal.revokeConsent(id, caller) ? { state: "revoked", id } : { state: "unknown", id };
+    },
+  };
+}
+
+/** Serve the three tool-result commands on an AUTHORIZED serve grant (registry-verified, §13.9).
+ *  Without a grant there is no serve exposure at all. */
+export function serveToolResults(
+  nc: NatsConnection,
+  space: string,
+  grant: EpServeGrant,
+  journal: ToolResultJournal,
+  self: ToolResultTarget,
+  resolveAnchor: AnchorResolver,
+): EpServeHandle {
+  return serveEndpoint(nc, space, grant, [
+    toolResultCommandDef(journal, self),
+    toolResultConsentCommandDef(journal, self, { space, resolveAnchor }),
+    toolResultRevokeCommandDef(journal, self),
+  ], { public: true });
 }

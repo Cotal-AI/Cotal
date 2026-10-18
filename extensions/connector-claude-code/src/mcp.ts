@@ -12,7 +12,9 @@ import type { Readable, Writable } from "node:stream";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
+  captureToolResults,
   configFromEnv,
+  ToolResultJournal,
   envFlag,
   eventPlaneArmed,
   hasIdentity,
@@ -179,6 +181,13 @@ async function startSession(
       else if (agent.connected && agent.transportConnected) finish();
     });
 
+  // Private tool results (SPEC §13.6): the mapper below shows every batch to this journal, which
+  // captures nothing until a verified human consent is applied through the handle-only
+  // `tool-result-consent` command, and serves reads only through `tool-result`. Both are served
+  // only on an authorized serve grant (`serveToolResults`); no connector is issued one yet, so this
+  // journal stays empty and nothing is exposed. Results never ride the event channel.
+  const toolResults = new ToolResultJournal();
+
   if (eventPlaneArmed(config, env)) {
     // The mapper is built inside the emitter factory, because it is keyed on the thread the
     // transcript names and that is not known until a hook hands one over. It is HELD here because
@@ -246,7 +255,7 @@ async function startSession(
             wal,
             subjectFrontier,
             source: boundSource,
-            map: mapper.map,
+            map: captureToolResults(mapper.map, toolResults, threadId),
             // Claude writes the transcript, and a write it cut short (a full disk) leaves part of
             // one record glued to the next on a single line that never becomes readable. That line
             // is stepped over and named here; halting on it ended the plane, and on a space that

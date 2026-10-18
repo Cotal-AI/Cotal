@@ -14,7 +14,10 @@ let checks = 0;
 const ok = (value: unknown, message: string): void => { assert.ok(value, message); checks++; };
 
 const THREAD = "5a1b2c3d-claude-session";
-const journal = new ToolResultJournal({ sharing: "handle-holders" });
+const HOLDER = "u_owner.web";
+const journal = new ToolResultJournal();
+// Capture starts only under an applied consent (verified by the consent command in production).
+journal.applyConsent({ id: "consent-0123456789ab", holder: { id: HOLDER }, exp: Number.MAX_SAFE_INTEGER });
 const mapper = createClaudeMapper({ threadId: THREAD, mintRunId: () => "run-new", resumeRunId: "run-open", now: () => 0 });
 const map = captureToolResults(mapper.map, journal, THREAD);
 
@@ -25,7 +28,7 @@ const call = map({
   message: { id: "msg_1", role: "assistant", content: [{ type: "tool_use", id: "toolu_01CANARY", name: "Bash", input: { command: "echo canary" } }] },
 } as ClaudeEntry);
 ok(call !== null && "events" in call, "the tool_use record maps to a batch");
-ok(journal.answer(THREAD, "toolu_01CANARY").state === "pending", "the native tool_use id is pending before its result");
+ok(journal.answer(THREAD, "toolu_01CANARY", HOLDER).state === "pending", "the native tool_use id is pending before its result");
 
 const done = map({
   type: "user",
@@ -34,8 +37,8 @@ const done = map({
   message: { content: [{ type: "tool_result", tool_use_id: "toolu_01CANARY", content: "canary\n" }] },
 } as ClaudeEntry);
 ok(done !== null && "events" in done && done.events.some((e) => e.type === "TOOL_CALL_RESULT"), "the emitter still receives the result event, which its egress fence withholds");
-const got = journal.answer(THREAD, "toolu_01CANARY");
+const got = journal.answer(THREAD, "toolu_01CANARY", HOLDER);
 ok(got.state === "available" && got.content === "canary\n" && got.toolCallId === "toolu_01CANARY", "the journal holds the result under Claude's own id");
-ok(journal.answer(THREAD, "toolu_01OTHER").state === "missing", "no nearest-call correlation: another id is missing");
+ok(journal.answer(THREAD, "toolu_01OTHER", HOLDER).state === "missing", "no nearest-call correlation: another id is missing");
 
 console.log(`tool-result-capture smoke: ${checks} checks passed`);
