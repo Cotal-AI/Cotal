@@ -1995,6 +1995,7 @@ export async function startAuthService(inputs: HostedContextInputs & {
   const badFace = inputs.publicFace && checkPublicFace(inputs.publicFace);
   if (badFace) throw new Error(badFace);
   const started = await startAuthContext({
+    ...(inputs.toolResultConsentSigner ? { toolResultConsentSigner: inputs.toolResultConsentSigner } : {}),
     space: inputs.space,
     server: inputs.servers,
     port,
@@ -2034,6 +2035,8 @@ interface AuthContextOptions {
   platformControl?: PlatformControlInput;
   platformSupervisor?: PlatformSupervisorInput;
   standingRenewableTtlSeconds?: number;
+  /** Trusted-host only; see {@link startAuthService}. Absent: consent requests refuse. */
+  toolResultConsentSigner?: ToolResultConsentSigner;
 }
 
 async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<AuthServiceHandle, "readiness">; status(): AuthContextStatus; ended: Promise<AuthContextEnd> }> {
@@ -2131,7 +2134,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
     const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
     const ctx: HandlerCtx = {
-      ...(inputs.toolResultConsentSigner ? { toolResultConsentSigner: inputs.toolResultConsentSigner } : {}),
+      ...(o.toolResultConsentSigner ? { toolResultConsentSigner: o.toolResultConsentSigner } : {}),
       issuer,
       bridge,
       bridgeIdp,
