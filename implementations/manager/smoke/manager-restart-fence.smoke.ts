@@ -52,7 +52,6 @@ process.env.COTAL_HOME = home;
 const {
   probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, EpEnvelopeError,
   bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf, registry, MANAGER_LEASE_TTL_MS,
-  MANAGER_LEASE_ATTEMPT_MS,
 } = await import("@cotal-ai/core");
 const { CotalEndpoint } = await import("../../../packages/core/src/index.js");
 const { recordMesh, loadManagerInstanceIdentity } = await import("@cotal-ai/workspace");
@@ -99,13 +98,15 @@ const reqFor = (goalId: string): ParsedEpRequest =>
   ({ plane: "request", route: "one", endpoint: MANAGER_ENDPOINT, command: "spawn", caller, id: goalId } as unknown as ParsedEpRequest);
 
 // A TCP relay in front of the broker. `outage` drops every piped socket and holds new dials until it
-// ends, which is what a reconnecting client meets. `loseNextDelete` arms one more outage at the
-// conditional delete of `key`, started in place of forwarding it, so the delete never lands.
+// ends or `heal` ends it early, which is what a reconnecting client meets. `loseNextDelete` arms one
+// more outage at the conditional delete of `key`, started in place of forwarding it, so the delete
+// never lands.
 class Relay {
   private readonly socks = new Set<Socket>();
   private readonly held: Socket[] = [];
   private server?: Server;
   private down = false;
+  private healTimer?: ReturnType<typeof setTimeout>;
   key = "";
   loseNextDelete = 0;
   deletesLost = 0;
@@ -137,7 +138,13 @@ class Relay {
     this.down = true;
     for (const s of this.socks) s.destroy();
     this.socks.clear();
-    setTimeout(() => { this.down = false; for (const c of this.held.splice(0)) if (!c.destroyed) this.pipe(c); }, ms);
+    clearTimeout(this.healTimer);
+    this.healTimer = setTimeout(() => this.heal(), ms);
+  }
+  heal(): void {
+    clearTimeout(this.healTimer);
+    this.down = false;
+    for (const c of this.held.splice(0)) if (!c.destroyed) this.pipe(c);
   }
   close(): void { for (const s of [...this.socks, ...this.held]) s.destroy(); this.server?.close(); }
 }
@@ -424,7 +431,7 @@ try {
   console.log("\n-- lease release when the stop's connection reconnects --");
   await mgr.stop({ withAgents: true });
   mgr = undefined;
-  const stopAcrossOutage = async (label: string, outageMs: number, loseDeleteMs = 0) => {
+  const stopAcrossOutage = async (label: string, outageMs: number, loseDeleteMs = 0, healOnRelease = false) => {
     const relay = new Relay();
     relays.push(relay);
     const servers = await relay.listen();
@@ -445,7 +452,10 @@ try {
     };
     const realRelease = priv.releaseOwnManagerLease.bind(m);
     const release = { start: 0, end: 0 };
-    priv.releaseOwnManagerLease = async () => { release.start = Date.now(); try { await realRelease(); } finally { release.end = Date.now(); } };
+    priv.releaseOwnManagerLease = async () => {
+      release.start = Date.now();
+      try { await realRelease(); } finally { release.end = Date.now(); if (healOnRelease) relay.heal(); }
+    };
     await wait(700);
     relay.loseNextDelete = loseDeleteMs;
     if (outageMs) relay.outage(outageMs);
@@ -482,8 +492,12 @@ try {
 
   // Control: an outage longer than one TTL. Only the start of a retry is bounded: none starts once
   // one TTL has passed since the first read, so the one read that may start later is the
-  // confirming read, and an attempt already in flight still runs to its own deadline.
-  const blackout = await stopAcrossOutage("blackout", MANAGER_LEASE_TTL_MS + 3 * MANAGER_LEASE_ATTEMPT_MS);
+  // confirming read, and an attempt already in flight still runs to its own deadline. The outage
+  // lasts until the release returns, so every read it makes meets the outage however late the stop
+  // reaches it. A fixed length could heal under the confirming read and get it answered. On its own
+  // the outage heals only after three TTLs, which a release that kept retrying would reach, and its
+  // late reads then fail this cell.
+  const blackout = await stopAcrossOutage("blackout", 3 * MANAGER_LEASE_TTL_MS, 0, true);
   const lateReads = blackout.reads.filter((r) => r.at >= blackout.reads[0].at + MANAGER_LEASE_TTL_MS).length;
   check("(f) control: under an outage longer than one lease TTL no retry starts after that TTL, and no delete is sent",
     blackout.reads.length > 1 && blackout.reads.every((r) => r.timedOut) && lateReads <= 1 && blackout.relay.deletesForwarded === 0,
