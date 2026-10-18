@@ -111,9 +111,9 @@ const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key === "FORCE_COLOR" || key === "NO_COLOR") delete cleanEnv[key];
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
-const run = (args: string[], extra: NodeJS.ProcessEnv = {}, preload?: string): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
+const run = (args: string[], extra: NodeJS.ProcessEnv = {}, preload?: string, timeoutMs = 120_000): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [...(preload ? ["--import", pathToFileURL(preload).href] : []), BIN, ...args], { cwd: shell, env: { ...isolatedEnv, ...extra }, timeout: 120_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [...(preload ? ["--import", pathToFileURL(preload).href] : []), BIN, ...args], { cwd: shell, env: { ...isolatedEnv, ...extra }, timeout: timeoutMs }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -129,6 +129,10 @@ function probeTraceResult(read: Awaited<ReturnType<typeof run>>, trace: string) 
     stderrBytes: Buffer.byteLength(read.stderr),
     trace: existsSync(trace) ? readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as unknown) : [],
   };
+}
+
+function probeTraceLine(value: ReturnType<typeof probeTraceResult> & { format?: string; attempt?: number }): string {
+  return `WHO_PROBE_TRACE ${JSON.stringify(value)}`;
 }
 
 const endpoints: CotalEndpoint[] = [];
@@ -215,6 +219,13 @@ try {
   const diagnosticResult = probeTraceResult(failedDiagnostic, join(home, "absent-probe-trace.jsonl"));
   check("native probe diagnostics omit a real module error message", failedDiagnostic.status === 1 && failedDiagnostic.stderr.includes(diagnosticMarker) && diagnosticResult.stderrBytes > 0 && !JSON.stringify(diagnosticResult).includes(diagnosticMarker), { status: failedDiagnostic.status, fields: Object.keys(diagnosticResult), stderrBytes: diagnosticResult.stderrBytes });
 
+  const traceControl = join(home, "probe-control.jsonl");
+  const traceRead = await run(["--version"], { SMOKE_WHO_PROBE_TRACE: traceControl }, join(import.meta.dirname, "fixtures", "who-probe-trace.mjs"));
+  const traceLine = probeTraceLine(probeTraceResult(traceRead, traceControl));
+  console.log(traceLine);
+  const tracePayload = JSON.parse(traceLine.slice("WHO_PROBE_TRACE ".length)) as ReturnType<typeof probeTraceResult>;
+  check("native probe diagnostics preserve nested module records as one JSON line", traceRead.status === 0 && tracePayload.trace.some((record) => typeof record === "object" && record !== null && "kind" in record && record.kind === "module-matched" && "sourceSha256" in record && /^[a-f0-9]{64}$/.test(String(record.sourceSha256))), { status: traceRead.status, traceLine });
+
   const waiting = await run(["who", "--waiting", "--json"]);
   check("--waiting keeps the waiting row and the row with a condition", Object.keys(rowsOf(waiting)).sort().join() === "bob,carol" && waiting.envelope?.target.scope === "waiting", Object.keys(rowsOf(waiting)));
   const all = await run(["who", "--all", "--json"]);
@@ -287,14 +298,21 @@ try {
     const message = format === "--json" ? read.envelope?.error?.message : read.stderr;
     const detail = shown(read);
     const diagnostic = message?.includes("--server <url> --mode auth --force") ? undefined : await (async () => {
-      const trace = join(home, `probe-${format ?? "human"}.jsonl`);
-      const traced = await run(["who", "--space", "url-auth-recovery", ...(format ? [format] : [])], { SMOKE_WHO_PROBE_TRACE: trace }, join(import.meta.dirname, "fixtures", "who-probe-trace.mjs"));
+      let tracedAttempts = 0;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const trace = join(home, `probe-${format ?? "human"}-${attempt}.jsonl`);
+        const traced = await run(["who", "--space", "url-auth-recovery", ...(format ? [format] : [])], { SMOKE_WHO_PROBE_TRACE: trace }, join(import.meta.dirname, "fixtures", "who-probe-trace.mjs"), 10_000);
+        const result = probeTraceResult(traced, trace);
+        console.log(probeTraceLine({ ...result, format: format ?? "human", attempt }));
+        tracedAttempts++;
+        if (result.trace.some((record) => typeof record === "object" && record !== null && "kind" in record && record.kind === "classification" && "reason" in record && ["unreachable", "timeout"].includes(String(record.reason)))) break;
+      }
       return {
         brokerExitCode: broker.exitCode,
         brokerSignalCode: broker.signalCode,
         plain: await probeConnect(servers),
         userinfo: await probeConnect(`nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`),
-        tracedChild: probeTraceResult(traced, trace),
+        tracedAttempts,
       };
     })();
     check(`who ${format ?? "human"} keeps a placeholder for a private broker URL in auth recovery`, read.status === 2 && hidden && message?.includes("--server <url> --mode auth --force") === true, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr), diagnostic });
