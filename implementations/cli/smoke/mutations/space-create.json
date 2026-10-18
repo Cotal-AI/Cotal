@@ -220,7 +220,7 @@
     {
       "name": "up keeps the prepared record of a space it started",
       "file": "implementations/cli/src/commands/up.ts",
-      "find": "  removePreparedSpace(m.space); // started: the registration is its record now\n",
+      "find": "  removePreparedSpace(m.space);",
       "replace": "",
       "expectRed": "up in its root starts it under its name, and the prepared record goes",
       "cell": "up in its root starts it under its name, and the prepared record goes",
