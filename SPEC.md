@@ -384,10 +384,11 @@ Live clients MUST NOT heartbeat as `offline`. A graceful disconnect MAY publish 
 from KV delete/purge events. Offline peers MAY remain in local rosters for observability.
 An instance MUST write only its own presence key, and the key MUST equal `card.id`.
 Readers MUST drop a record whose `card.id` differs from its KV key, whose `card.name` or
-`status` does not have the type given above, whose `ts` is not a finite number, or whose
-`card.role`, `activity`, `attention` or `condition.code` is present and not a string, and SHOULD
-report the rejection on their recoverable diagnostic path. A reader that kept a record whose
-`ts` is missing or text such as `"nope"` could not age it past the liveness window, so it would
+`status` does not have the type given above, whose `ts` is not a finite number, whose
+`card.role`, `activity` or `attention` is present and not a string, or whose `condition` is present
+and is not an object with a string `code`, and SHOULD report the rejection on their recoverable
+diagnostic path. A `condition` of `null`, a bare string or an object with no `code` is dropped.
+A reader that kept a record whose `ts` is missing or text such as `"nope"` could not age it past the liveness window, so it would
 show its peer live after the key expired. Readers print the string fields as text, and an object
 such as `{"toString":null,"valueOf":null}` throws when converted, so one kept row would fail every
 reader's roster.

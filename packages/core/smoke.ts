@@ -212,6 +212,42 @@ try {
       { roster: bob.getRoster(), warnings: bobWarnings, drops: bob.presenceBindingDropCount },
     );
     await presenceKv.delete("local.binding_probe");
+
+    // A peer writes its own row, and readers print these fields as text: an object here would
+    // throw on conversion and fail every reader's roster (#3969).
+    const hostile = { toString: null, valueOf: null };
+    const shapeRow = (key: string, fields: Record<string, unknown>, card: Record<string, unknown> = {}) =>
+      JSON.stringify({ card: { id: key, name: key, kind: "agent", ...card }, status: "idle", ts: Date.now(), ...fields });
+    await presenceKv.put("local.shape_ok", shapeRow("local.shape_ok",
+      { activity: "reading", attention: "open", condition: { code: "approval", since: 1 } }, { role: "builder" }));
+    check(
+      "the roster keeps a presence row whose display fields are strings",
+      await until(() => bob.getRoster().some((peer) => peer.card.id === "local.shape_ok")),
+      { roster: bob.getRoster(), warnings: bobWarnings },
+    );
+    await presenceKv.delete("local.shape_ok");
+    const malformed: Array<[string, Record<string, unknown>, Record<string, unknown>?]> = [
+      ["card.role is an object", {}, { role: hostile }],
+      ["activity is an object", { activity: hostile }],
+      ["attention is an object", { attention: hostile }],
+      ["condition.code is an object", { condition: { code: hostile } }],
+      ["condition is null", { condition: null }],
+      ["condition is a string", { condition: "approval" }],
+      ["condition has no code", { condition: { since: 1 } }],
+    ];
+    for (const [i, [label, fields, card]] of malformed.entries()) {
+      const key = `local.shape_probe_${i}`;
+      const drops = bob.presenceBindingDropCount;
+      await presenceKv.put(key, shapeRow(key, fields, card));
+      check(
+        `the roster drops and diagnoses a presence row whose ${label}`,
+        await until(() => bob.presenceBindingDropCount === drops + 1)
+          && !bob.getRoster().some((peer) => peer.card.id === key)
+          && bobWarnings.some((message) => message.includes(`key "${key}"`)),
+        { roster: bob.getRoster(), warnings: bobWarnings, drops: bob.presenceBindingDropCount },
+      );
+      await presenceKv.delete(key);
+    }
   } finally {
     await bindingProbe.close();
   }
@@ -496,7 +532,7 @@ try {
   if (brokerExited && storeRemoved) releaseBroker();
 }
 
-const EXPECTED_BEFORE_COUNT = 30;
+const EXPECTED_BEFORE_COUNT = 38;
 check(
   `every scenario cell ran — ${EXPECTED_BEFORE_COUNT} expected`,
   pass + fail === EXPECTED_BEFORE_COUNT,

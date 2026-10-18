@@ -6548,7 +6548,7 @@ export class CotalEndpoint extends EventEmitter {
     }
     if (!isUsablePresence(p)) {
       this.presenceBindingDrops++;
-      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: not a record with a string card.name, a known status, a finite ts and string display fields`));
+      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: not a record with a string card.name, a known status, a finite ts, string display fields and a condition with a string code`));
       return;
     }
     this.applyPresence(e.key, p);
@@ -6975,8 +6975,9 @@ const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: t
  *  ends the watch. `status` decides offline and is what roster consumers read. `card.role`,
  *  `activity`, `attention` and `condition.code` are printed as text, and the peer writes its own
  *  row: an object such as `{"toString":null,"valueOf":null}` throws on conversion and would fail
- *  every reader's roster. `card.id` is left to the KV-key check, which rejects anything but the
- *  key string. */
+ *  every reader's roster. A present `condition` must be an object with a string `code`, which SPEC
+ *  §6 makes required: `null`, a bare string or an object with no code is dropped too. `card.id` is
+ *  left to the KV-key check, which rejects anything but the key string. */
 function isUsablePresence(value: unknown): value is Presence {
   return isRecord(value) && isRecord(value.card) && typeof value.card.name === "string" &&
     isOptionalString(value.card.role) &&
