@@ -94,6 +94,23 @@ export interface GatewayOptions {
   /** The longest `cotal_wait` may hold one call, in whole seconds. Defaults to
    *  {@link GATEWAY_WAIT_SECONDS}. Keep it under every proxy and client timeout on the path. */
   waitSeconds?: number;
+  /** A way to wake the client other than a held `cotal_wait`, for an embedder whose client can be
+   *  woken. Without it a conversation hears messages only when it calls a tool. */
+  wake?: GatewayWake;
+}
+
+/** How an embedder wakes its client when a connection has something to read. */
+export interface GatewayWake {
+  /** Called when a connection gets something that ends a `cotal_wait` while none holds it, and
+   *  not again for that connection until a `cotal_inbox` or `cotal_wait` reads its messages.
+   *  Return false when no client heard it, so the next rewake signals it again. */
+  signal(connection: GatewayConnection): boolean;
+  /** What `cotal_connect` adds about listening, read when the connection opens: whether this
+   *  client will be woken. */
+  listening(): string;
+  /** Called once with the rewake: call it when a client starts listening, and every connection
+   *  with something to read that no client heard about is signalled. */
+  attach?(rewake: () => void): void;
 }
 
 /** The names `cotal_connect` tries for `base`, in order. */
@@ -238,6 +255,32 @@ export function registerCotalGatewayTools(
   if (!Number.isInteger(waitSeconds) || waitSeconds < 1) {
     throw new Error(`waitSeconds must be a whole number of seconds, at least 1; got ${waitSeconds}`);
   }
+  const wake = options.wake;
+  // Connections signalled and not read since, how many cotal_wait calls hold each one, and the
+  // check for each watched connection, which the rewake runs again.
+  const signalled = new WeakSet<MeshAgent>();
+  const holding = new WeakMap<MeshAgent, number>();
+  const watched = new Set<() => void>();
+  wake?.attach?.(() => {
+    for (const fire of watched) fire();
+  });
+  const watch = (c: GatewayConnection) => {
+    if (!wake) return;
+    // Counted before `fire` runs, so a focus @mention is in the count `fire` reads.
+    mentionsOf(c.agent);
+    const fire = () => {
+      if (c.agent.stopping || signalled.has(c.agent) || (holding.get(c.agent) ?? 0) > 0 || wakeCount(c.agent) === 0) return;
+      if (wake.signal(c)) signalled.add(c.agent);
+    };
+    watched.add(fire);
+    c.agent.on("incoming", fire);
+    c.agent.on("mention-wake", fire);
+    c.agent.once("stopping", () => {
+      watched.delete(fire);
+      c.agent.off("incoming", fire);
+      c.agent.off("mention-wake", fire);
+    });
+  };
 
   server.registerTool(
     "cotal_connect",
@@ -268,9 +311,11 @@ export function registerCotalGatewayTools(
         }
         try {
           const c = await host.open(account, candidate);
+          watch(c);
           const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
+          const listening = wake ? `\n${wake.listening()}` : "";
           return toContent({
-            text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.`,
+            text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.${listening}`,
           });
         } catch (e) {
           if (e instanceof NameTaken) continue;
@@ -333,11 +378,18 @@ export function registerCotalGatewayTools(
       const inbox = cotalToolSpecs(c.config, source, undefined, GATEWAY_TOOLS).find((s) => s.name === "cotal_inbox");
       if (!inbox) return refuse("cotal_wait is not available on this connection.");
       const limit = seconds ?? waitSeconds;
-      const woke = await waitForWake(c.agent, limit * 1000, extra.signal);
+      holding.set(c.agent, (holding.get(c.agent) ?? 0) + 1);
+      let woke: boolean;
+      try {
+        woke = await waitForWake(c.agent, limit * 1000, extra.signal);
+      } finally {
+        holding.set(c.agent, (holding.get(c.agent) ?? 1) - 1);
+      }
       if (c.agent.stopping) return refuse(CONNECTION_REQUIRED);
       if (!woke) {
         return toContent({ text: `No new messages in ${limit} second${limit === 1 ? "" : "s"}. Call cotal_wait again to keep listening.` });
       }
+      signalled.delete(c.agent);
       try {
         return toContent(await runFor(inbox, c, {}, extra.signal));
       } catch (e) {
@@ -370,6 +422,7 @@ export function registerCotalGatewayTools(
         // Unreachable while GATEWAY_TOOLS holds no capability-gated tool; a future one refuses here.
         if (!own) return refuse(`${spec.name} is not available on this connection.`);
         let result: ReturnType<typeof toContent>;
+        if (spec.name === "cotal_inbox") signalled.delete(c.agent);
         try {
           result = toContent(await runFor(own, c, rest, extra.signal));
         } catch (e) {
@@ -383,13 +436,21 @@ export function registerCotalGatewayTools(
   }
 }
 
-/** The server instructions {@link handleGatewayRequest} sends when the embedder gives none. */
-export const GATEWAY_INSTRUCTIONS =
+/** How a conversation hears messages when nothing can wake it: the last part of
+ *  {@link GATEWAY_INSTRUCTIONS}. */
+export const GATEWAY_LISTENING =
+  "Messages reach you only when you call a tool: to listen, call cotal_wait, which returns as soon as a " +
+  "message arrives. When the person asks you to stay on Cotal or keep listening, call cotal_wait again each " +
+  "time it returns and handle each message as it arrives, until they ask you to stop.";
+
+/** How a conversation joins and names its connection: the first part of {@link GATEWAY_INSTRUCTIONS}. */
+export const GATEWAY_CONNECTING =
   "Cotal connects this conversation to the person's Cotal space. Call cotal_connect once with a short name " +
   "for this conversation, then pass the returned connection_id on every other cotal tool call. Each " +
-  "conversation needs its own connection. Never reuse another conversation's connection_id. Messages " +
-  "reach you only when you call a tool: to listen, call cotal_wait, which returns as soon as a message " +
-  "arrives, and call it again to keep listening.";
+  "conversation needs its own connection. Never reuse another conversation's connection_id.";
+
+/** The server instructions {@link handleGatewayRequest} sends when the embedder gives none. */
+export const GATEWAY_INSTRUCTIONS = `${GATEWAY_CONNECTING} ${GATEWAY_LISTENING}`;
 
 /** One HTTP request to a gateway endpoint. */
 export interface GatewayRequest {
@@ -449,6 +510,8 @@ export interface GatewayStdio {
   instructions?: string;
   /** See {@link GatewayOptions.waitSeconds}. */
   waitSeconds?: number;
+  /** See {@link GatewayOptions.wake}. */
+  wake?: GatewayWake;
 }
 
 /**
@@ -459,7 +522,10 @@ export interface GatewayStdio {
  */
 export async function serveGatewayStdio(host: GatewayHost, o: GatewayStdio = {}): Promise<{ close(): Promise<void> }> {
   const server = new McpServer({ name: "cotal", version: "0.0.0" }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });
-  registerCotalGatewayTools(server, host, o.source, o.waitSeconds === undefined ? {} : { waitSeconds: o.waitSeconds });
+  registerCotalGatewayTools(server, host, o.source, {
+    ...(o.waitSeconds === undefined ? {} : { waitSeconds: o.waitSeconds }),
+    ...(o.wake ? { wake: o.wake } : {}),
+  });
   await server.connect(new StdioServerTransport(o.input, o.output));
   return { close: () => server.close() };
 }
