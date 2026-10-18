@@ -16,7 +16,7 @@ import {
   type FlagValues,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { defaultPersonaRef, resolveMeshTarget, type MeshTarget } from "@cotal-ai/workspace";
+import { defaultPersonaRef, resolveTargetOrThrow, type MeshTarget } from "@cotal-ai/workspace";
 import { liveMeshNames } from "../lib/live-names.js";
 
 /** Every credential directory provision makes is a fresh `mkdtemp` under the OS temp dir with this prefix. */
@@ -72,16 +72,18 @@ export async function appIdentity(args: ParsedArgs): Promise<void> {
   }
 }
 
-/** The mesh the conversation joins, resolved the way a bare `cotal spawn` resolves it, from any
- *  directory: `--space`, then the `cotal use` mesh, then the only one running. */
-function target(space: string | undefined): MeshTarget {
-  return resolveMeshTarget(process.cwd(), space ? { space } : {});
+/** The mesh the conversation joins, resolved as a bare `cotal spawn` resolves it: `--space`, then
+ *  the `cotal use` mesh, then the working directory's project, then the only one running. Without
+ *  `--space` it first sweeps the registry, so a recorded mesh whose broker is down does not count
+ *  as running. */
+function target(space: string | undefined): Promise<MeshTarget> {
+  return resolveTargetOrThrow(space ? { space } : {});
 }
 
 async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<AppIdentityReply> {
   const name = values.name?.trim();
   if (!name) return { ok: false, error: "provision needs --name <name>" };
-  const t = target(values.space);
+  const t = await target(values.space);
   if (t.mode === "user")
     return { ok: false, error: `the mesh "${t.space}" uses per-user sign-in, which a Claude app connection does not support yet. Use a mesh started with \`cotal up\`.` };
   const taken = await liveMeshNames(t);
@@ -166,7 +168,7 @@ async function retireDir(dirArg: string): Promise<void> {
   if (dirname(dir) !== resolve(tmpdir()) || !basename(dir).startsWith(CRED_DIR_PREFIX) || !lstatSync(dir, { throwIfNoEntry: false })?.isDirectory())
     throw new Error(`refusing to remove ${dirArg}: not a credential directory provision made`);
   const record = JSON.parse(readFileSync(join(dir, RECORD), "utf8")) as IdentityRecord;
-  const t = target(record.space);
+  const t = await target(record.space);
   if (t.auth) {
     if (!(await isReachable(t.server))) throw new Error(`the mesh "${t.space}" at ${t.server} is not answering, so ${record.id} keeps its broker footprint`);
     const creds = await mintCreds(t.auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: record.id, lifecycleUid: record.lifecycleUid } });
