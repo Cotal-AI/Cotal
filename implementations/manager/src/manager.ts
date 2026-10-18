@@ -1342,11 +1342,16 @@ export class Manager {
    *  credential is minted INSIDE {@link registerManagerService}'s run block and stashed here. */
   private sessionLedgerIdentity?: Identity;
   private sessionLedgerCreds?: string;
-  /** The acceptance replied for each in-flight goal this incarnation accepted, by {@link goalKey},
-   *  so an idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple)
-   *  without a second spawn. Durable cross-incarnation reconstruction rides the goal index; here the
-   *  live map covers same-incarnation retries, with the committed result fact as the fallback. */
+  /** The acceptance replied for each goal this incarnation accepted, by {@link goalKey}, so an
+   *  idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple)
+   *  without a second spawn. An entry lives while its goal is in flight and for
+   *  {@link goalAcceptanceRetentionMs} after its terminal commits; a later retry, or one at another
+   *  incarnation, is answered from the goal index while the goal runs and from its committed
+   *  result fact once it has ended. */
   private goalAcceptances = new Map<string, SpawnAcceptance>();
+  /** How long a terminal goal's acceptance stays in {@link goalAcceptances}: the retry window its
+   *  turn twin keeps a settled answer for. An instance field so a test can shorten it. */
+  private goalAcceptanceRetentionMs = TURN_ANSWER_RETENTION_MS;
   /** The boot reconcile of the durable goal index runs ONCE at start (a
    *  fresh incarnation inherits the endpoint's accepted-but-unterminal goals from any predecessor).
    *  Spawn-as-action REFUSES to accept until it completes, so the sweep never races a live goal's
@@ -8588,10 +8593,16 @@ export class Manager {
     // name is re-allocated. Same-incarnation rides the live map; the create-only bindGoal in onAccepted
     // still fences a CONCURRENT same-goalId race (the loser aborts and serves the winner's acceptance).
     const prior = this.goalAcceptances.get(key);
-    if (prior !== undefined) {
-      if (prior.fingerprint !== fingerprint)
+    // A goal that already ENDED is answered from its committed terminal and never accepted again.
+    // Running the accept for it allocates a fresh name and identity, then refuses at the index
+    // CAS, because the entry its terminal cleared cannot be created twice, and that refusal tells
+    // the caller to reconcile the store. A retry that outlived its entry above must not reach it.
+    const ended = prior === undefined ? await readGoalResult(gw.ctx, ref) : undefined;
+    const accepted = prior ?? ended;
+    if (accepted !== undefined) {
+      if (accepted.fingerprint !== fingerprint)
         throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted under a different submission; one goalId never carries two specs (SPEC 13.6)`);
-      return prior;
+      return prior ?? this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor);
     }
 
     let resolveAccept!: (a: SpawnAcceptance) => void;
@@ -8650,6 +8661,7 @@ export class Manager {
           const why = (o.data as { reason?: unknown } | undefined)?.reason;
           ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch }, ...(typeof why === "string" && why.length > 0 ? { reason: why } : {}) }));
         }
+        this.expireGoalAcceptance(ref);
         this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
         await clearGoalIndex(gw.ctx, ref); // terminal reached - the successor never reconciles it
         if (acceptance) this.agentGoals.delete(acceptance.name); // goal terminal - no cancel path left
@@ -8780,7 +8792,7 @@ export class Manager {
    *  empty agent it can never address. The acceptance floor in the goal index exists from the moment
    *  of acceptance, so it answers precisely the window the terminal cannot. Where neither is
    *  readable the honest answer is a REFUSAL: an accepted goal whose identity nobody can name is
-   *  `unavailable`, never a hollow success. */
+   *  `unavailable` while it runs and its cached outcome once it has ended, never a hollow success. */
   private async cachedSpawnAcceptance(ref: GoalRef, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): Promise<SpawnAcceptance> {
     const entry = await readGoalIndex(this.goalWriter!.ctx, ref);
     if (entry?.allocated !== undefined) return this.acceptanceFromIndex(entry, ref, goalId, fingerprint, executor);
@@ -8795,7 +8807,17 @@ export class Manager {
     const principal = typeof d.id !== "string" || d.id.length === 0 ? null : this.userMode ? parsePrincipalKey(d.id) : { owner: DEV_OWNER, actor: d.id };
     if (typeof d.name === "string" && d.name.length > 0 && principal !== null && typeof d.lifecycleUid === "string" && d.lifecycleUid.length > 0 && readinessDeadlineMs !== undefined)
       return { name: d.name, owner: principal.owner, actor: principal.actor, uid: d.lifecycleUid, goalId, fingerprint, readinessDeadlineMs, executor };
+    // Only a `succeeded` terminal names the agent. Any other ended goal has its outcome as its
+    // whole durable answer, and no retry will make an identity readable (SPEC 13.6 item 5).
+    if (result !== undefined) throw goalAlreadyTerminal(goalId, result);
     throw new EpEnvelopeError("unavailable", `goal "${goalId}" is already accepted but its allocated identity is not readable (no acceptance floor, and no terminal carrying one); retry (SPEC 13.6)`);
+  }
+
+  /** Drop a goal's acceptance {@link goalAcceptanceRetentionMs} after its terminal committed. A
+   *  retry after that reads the terminal, so only a goal that has one may be passed here. */
+  private expireGoalAcceptance(ref: GoalRef): void {
+    const key = goalKey(ref);
+    setTimeout(() => this.goalAcceptances.delete(key), this.goalAcceptanceRetentionMs).unref?.();
   }
 
   // ---- the turn relay (§8 durable actions) ------------------------------------------------------
@@ -9317,6 +9339,7 @@ export class Manager {
       await this.assertGoalWriterEpochCurrent(epoch); // a superseded corpse never commits a cancel terminal either
       await transitionGoal(gw.ctx, ref, "cancelling", { fields: { cancelMode: mode } });
       const r = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "cancel", data: { cancelledBy: "despawn" }, committer: { instanceId: this.managerInstanceId, epoch } });
+      this.expireGoalAcceptance(ref);
       this.emitGoalProgress(ref, epoch, { phase: "terminal", state: r.fact.state, ...(r.fact.data !== undefined ? { data: r.fact.data } : {}) });
       await clearGoalIndex(gw.ctx, ref); // terminal reached - the successor never reconciles it
     } catch {

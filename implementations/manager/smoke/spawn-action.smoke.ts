@@ -16,6 +16,9 @@
  *                      failed; the readiness window elapsing -> uncertain (bounded, never success).
  *   M6 SAME-ALIAS      a hard-pinned (--name/identity override) collision with a live incarnation
  *                      REFUSES at accept (no bind, no process); a persona-derived base name numbers.
+ *   M9 RETENTION       a terminal goal's acceptance is dropped a retention window after its
+ *                      terminal, never while in flight, and a later same-goal retry is answered
+ *                      from the durable terminal without a second accept.
  *
  * Run: pnpm smoke:manager-spawn-action   (needs nats-server + node on PATH; boots its own broker)
  */
@@ -33,7 +36,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-spawnact-ws-"));
 process.env.COTAL_HOME = join(workspaceRoot, "home");
 const {
   probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, epCall,
-  actionContext, readGoalResult, listGoalIndex, recordsBucket, registry, firstFreeName,
+  actionContext, readGoalResult, listGoalIndex, recordsBucket, registry, firstFreeName, GOAL_TERMINAL_DETAIL_KIND,
 } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { Manager } = await import("../src/manager.js");
@@ -66,7 +69,7 @@ mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 // run has no business claiming wholesale (#1791).
 const seatRoot = makeSeatRoot("spawnact-seats-");
 process.env.COTAL_SEAT_ROOT = seatRoot;
-for (const n of ["a1", "a2", "j1", "x1", "w1", "m4", "dup", "peer", "recon", "boom1", "race"])
+for (const n of ["a1", "a2", "j1", "x1", "w1", "m4", "dup", "peer", "recon", "boom1", "race", "r1", "r2", "r3"])
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 // A ROLE-LESS persona: its succeeded terminal data carries no `role`, which the strict
 // canonicalJson would reject if the manager left `role: undefined` on the payload (surfaced live
@@ -106,8 +109,8 @@ for (const c of [joinCon, exitCon, stuckCon, boomCon]) registry.register(c);
  *  admits it; the goal scopes under this triple). */
 const caller: EpCaller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
 let callNc!: NatsConnection;
-const callSpawn = (args: Record<string, unknown>) =>
-  epCall(callNc, SPACE, { mode: "one" }, { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { events: false, ...args } }, { deadlineMs: 30_000, currentEpoch: async () => 0 });
+const callSpawn = (args: Record<string, unknown>, id?: string) =>
+  epCall(callNc, SPACE, { mode: "one" }, { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { events: false, ...args }, ...(id !== undefined ? { id } : {}) }, { deadlineMs: 30_000, currentEpoch: async () => 0 });
 const callDespawn = (t: { actor: string; lifecycleUid: string }) =>
   epCall(callNc, SPACE, { mode: "one" }, { endpoint: MANAGER_ENDPOINT, command: "despawn", contract: MANAGER_CONTRACTS.despawn, caller, args: { graceful: false }, target: { mode: "owner", owner: DEV_OWNER, actor: t.actor, lifecycleUid: t.lifecycleUid } }, { deadlineMs: 15_000, currentEpoch: async () => 0 });
 
@@ -153,6 +156,7 @@ try {
 
   mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000; // short window for a fast uncertain
+  (mgr as unknown as { goalAcceptanceRetentionMs: number }).goalAcceptanceRetentionMs = 1_000; // M9 waits past it
   await mgr.start();
   // P2 item 3: the goal's executor coordinate is the PERSISTED logical instanceId (the fence key),
   // not the per-process managerLifecycleUid.
@@ -336,6 +340,50 @@ try {
       f.terminal?.state === "succeeded", { terminal: f.terminal, durable });
     check("M8 the DURABLE terminal agrees (a stolen terminal is durable, not just an event)",
       durable?.state === "succeeded", durable);
+  }
+
+  // ── M9: A TERMINAL GOAL'S ACCEPTANCE AGES OFF, AND ITS RETRY RIDES THE DURABLE TERMINAL (#3861) ──
+  {
+    // The retry is the caller's own resubmission: the same args under the same pinned id. A miss
+    // that ran the accept path again was refused at the index CAS of the entry the terminal cleared.
+    const heldIds = () => [...(mgr as unknown as { goalAcceptances: Map<string, { goalId: string }> }).goalAcceptances.values()].map((a) => a.goalId);
+    const held = (goalId: unknown) => heldIds().includes(goalId as string);
+    const floor = (d: Record<string, unknown>) => JSON.stringify([d.name, d.owner, d.actor, d.uid, d.goalId, d.fingerprint]);
+    // A loaded host can miss a 2s presence join, and this needs a real `succeeded`; the same long
+    // window keeps r3 in flight across the wait below.
+    const readinessWindow = (ms: number) => { (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = ms; };
+    readinessWindow(10_000);
+    const ok = acc(await callSpawn({ name: "r1", agent: "join" }));
+    readinessWindow(2_000);
+    const okEnd = await followGoal(ok.goalId as string, 12_000);
+    check("M9 a succeeded goal's acceptance is held inside its retention window", okEnd.terminal?.state === "succeeded" && held(ok.goalId), okEnd.terminal);
+    const bad = acc(await callSpawn({ name: "r2", agent: "exit" }));
+    const badEnd = await followGoal(bad.goalId as string, 12_000);
+    check("M9 a failed goal's acceptance is held inside its retention window", badEnd.terminal?.state === "failed" && held(bad.goalId), badEnd.terminal);
+    readinessWindow(10_000);
+    const live = acc(await callSpawn({ name: "r3", agent: "stuck" }));
+    readinessWindow(2_000);
+    await wait(2_000);
+    check("M9 an in-flight goal's acceptance is never dropped",
+      held(live.goalId) && (await readGoalResult(rctx, goalRef(live.goalId as string))) === undefined, live);
+    // Every terminal above counts, the cancelled M4 and the uncertain M3/M6 ones included. A goal
+    // that ended inside the last window may still be held, so only twice the window is overdue.
+    const overdue: string[] = [];
+    for (const goalId of heldIds()) {
+      const fact = await readGoalResult(rctx, goalRef(goalId));
+      if (fact !== undefined && Date.now() - fact.ts > 2_000) overdue.push(goalId);
+    }
+    check("M9 a terminal goal's acceptance is dropped once its retention window passes", overdue.length === 0 && !held(ok.goalId) && !held(bad.goalId), overdue);
+    const okRetry = await callSpawn({ name: "r1", agent: "join" }, ok.goalId as string);
+    check("M9 a retry after the window is served the identical acceptance from the succeeded terminal",
+      okRetry.reply.ok === true && floor(acc(okRetry)) === floor(ok), { got: okRetry.reply, want: ok });
+    const badRetry = await callSpawn({ name: "r2", agent: "exit" }, bad.goalId as string);
+    const attached = (badRetry.reply.error?.details ?? []).find((x) => (x as { kind?: unknown }).kind === GOAL_TERMINAL_DETAIL_KIND) as { fact?: { state?: string } } | undefined;
+    check("M9 a failed goal's retry after the window is answered with its cached outcome",
+      badRetry.reply.ok === false && badRetry.reply.error?.code === "failed-precondition" && attached?.fact?.state === "failed", badRetry.reply);
+    const retried = new Set([ok.goalId, bad.goalId]);
+    check("M9 neither retry is accepted again (no goal re-recorded for reconcile)",
+      (await listGoalIndex(idxKv, MANAGER_ENDPOINT)).every((g) => !retried.has(g.ref.goalId)));
   }
 
   // ── M5: MANAGER KILL MID-GOAL → the SUCCESSOR reconciles (must-5 Q-B; never drops an accepted goal) ──

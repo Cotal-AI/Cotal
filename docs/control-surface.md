@@ -163,7 +163,10 @@ submitted it, so another caller's spawn under the same id is its own goal with i
 acceptance. A sibling instance or a restarted one
 answers it from the identity the accepting instance recorded before it replied, owner included.
 When that record names no owner because an older manager wrote it, the resubmission is refused
-`unavailable`.
+`unavailable`. Once the goal has ended, the accepting manager keeps its acceptance for five more
+minutes. After that, and at any other instance, the resubmission is answered from the goal's
+terminal and never accepted again: a `succeeded` terminal names the agent, so it returns the same
+acceptance, and any other outcome refuses it `failed-precondition` with that terminal attached.
 
 The name is the one actually allocated: a persona-derived collision is auto-numbered
 (`reviewer`, then `reviewer_2`), while a hard-pinned `--name` that collides with a live
