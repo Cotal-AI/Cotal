@@ -168,11 +168,11 @@ console.log("web-events-filter smoke");
 // `web()`, so these read the shipped source instead of issuing a request.
 {
   const src = readFileSync(join(here, "..", "src", "web.ts"), "utf8");
-  // Two call sites: the channel list and the activity backfill. The declaration carries a type
-  // parameter (`chatOnly<T extends ...>`) so it does not match this pattern and is not counted. A
-  // third call site is a behaviour change this cell should force someone to look at.
-  const calls = src.split("chatOnly(").length - 1;
-  ok("5.1 SOURCE-SHAPE: chatOnly has exactly two call sites", calls === 2, calls);
+  // The declaration plus two call sites: the channel list and the activity backfill. Every mention
+  // of the name is counted, so a third use moves the count however it is spelled, an alias
+  // included. A third call site is a behaviour change this cell should force someone to look at.
+  const mentions = src.split("chatOnly").length - 1;
+  ok("5.1 SOURCE-SHAPE: chatOnly has exactly two call sites", mentions === 3, mentions);
 
   const byName = src.slice(src.indexOf('path.startsWith("/api/channels/")'));
   const routeBody = byName.slice(0, byName.indexOf("}"));
