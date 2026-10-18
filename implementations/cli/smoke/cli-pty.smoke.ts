@@ -145,13 +145,20 @@ try {
     }
   }
 
-  // A failure on a terminal wraps at spaces, each continuation line under its text.
+  // A structured failure wraps the remedy under its own text.
   const failPty = cotalPty(["ps"], { cwd: home, env, cols: 40, rows: 20 });
   ptys.push(failPty);
   const f = session(failPty);
   await until(() => f.exitCode !== undefined);
   const failLines = lines(f.text());
-  check("a failure on a 40-column terminal wraps under its text", f.exitCode === 2 && failLines.length > 1 && fit(f.text(), 40).length === 0 && failLines[0]!.startsWith("✗ ") && failLines.slice(1).every((line) => /^ {2}\S/.test(line)), failLines);
+  check(
+    "a failure on a 40-column terminal wraps under its text",
+    f.exitCode === 2 && failLines.length > 2 && fit(f.text(), 40).length === 0 &&
+      failLines[0] === "✗ no mesh running" && /^ {2}↳ \S/.test(failLines[1] ?? "") &&
+      failLines.slice(2).every((line) => /^ {4}\S/.test(line)) &&
+      failLines.slice(1).map((line) => line.trim().replace(/^↳ /, "")).join(" ") === "run `cotal up` in a project, or pass `--server`",
+    failLines,
+  );
 
   // On a terminal, `meshes add` with no space asks for one. `--no-input` answers with the usage line
   // instead, in either position.

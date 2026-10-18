@@ -53,7 +53,7 @@ type Envelope = {
   target: { space: string; scope?: string };
   result: { kind: string; server?: string; view?: string; managers?: string; hidden?: number; items?: Row[]; identity?: { kind: string; principal: string | null; owner?: string | null; actor?: string | null; subject?: string | null; grant: string | null }; read?: unknown; post?: unknown; dms?: boolean | null; capabilities?: unknown } | null;
   warnings: { code: string; message: string }[];
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; remedy?: string };
 };
 
 const space = `whosmoke-${randomUUID().slice(0, 8)}`;
@@ -295,7 +295,7 @@ try {
   for (const format of ["--json", "--plain", undefined] as const) {
     const read = await run(["who", "--space", "url-auth-recovery", ...(format ? [format] : [])]);
     const hidden = [urlUser, urlPassword, urlToken].every((marker) => !read.stdout.includes(marker) && !read.stderr.includes(marker));
-    const message = format === "--json" ? read.envelope?.error?.message : read.stderr;
+    const message = format === "--json" ? read.envelope?.error?.remedy : read.stderr;
     const detail = shown(read);
     const diagnostic = message?.includes("--server <url> --mode auth --force") ? undefined : await (async () => {
       let tracedAttempts = 0;

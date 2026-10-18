@@ -291,7 +291,7 @@ setCurrent("keep");
   const show = await json(["space", "show", "demo"]);
   check("space show shows it as prepared", show.status === 0 && show.env?.result.kind === "prepared-space" && show.env.result.root === fresh, shown(show));
   const named = await json(["who", "--space", "demo"]);
-  check("a command naming it with --space is TARGET_UNAVAILABLE, naming its root", refused(named, 2, "TARGET_UNAVAILABLE") && named.env?.error?.message.includes(fresh), shown(named));
+  check("a command naming it with --space is TARGET_UNAVAILABLE, naming its root", refused(named, 2, "TARGET_UNAVAILABLE") && /prepared but not started/.test(named.env?.error?.message ?? "") && named.env?.error?.remedy?.includes(fresh), shown(named));
   const inRoot = await json(["who"], fresh);
   check("a command run in its root with nothing selected is TARGET_UNAVAILABLE", refused(inRoot, 2, "TARGET_UNAVAILABLE") && /prepared but not started/.test(inRoot.env?.error?.message ?? ""), shown(inRoot));
   const selected = await json(["use", "demo"]);
@@ -303,7 +303,7 @@ setCurrent("keep");
   const human = await run(["space", "--plain"]);
   check("the listing shows it under its own heading", /Prepared, not started/.test(human.stdout) && /demo \(selected\)/.test(human.stdout), shown(human));
   const target = await json(["who"]);
-  check("a command that targets it is TARGET_UNAVAILABLE, naming cotal up in its root", refused(target, 2, "TARGET_UNAVAILABLE") && /cotal up/.test(target.env?.error?.message ?? "") && target.env?.error?.message.includes(fresh), shown(target));
+  check("a command that targets it is TARGET_UNAVAILABLE, naming cotal up in its root", refused(target, 2, "TARGET_UNAVAILABLE") && /cotal up/.test(target.env?.error?.remedy ?? "") && target.env?.error?.remedy?.includes(fresh), shown(target));
 
   // Under a root that hosts other spaces, so `up` would make this folder a root of its own.
   const elsewhere = join(root, "elsewhere");

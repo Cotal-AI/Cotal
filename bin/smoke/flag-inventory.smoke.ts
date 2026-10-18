@@ -85,7 +85,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `--components` (2026-08): explicit fail-loud health across manager, delivery, web, and broker; bare status remains the recovery-oriented inventory.
   status: { flags: ["all:boolean", "components:boolean", "json:boolean:j", "plain:boolean", "server:string", "space:string"], positionals: false },
   // `sync` (2026-09): refresh the signed-in space catalogs; `--idp` narrows the refresh to one account.
-  sync: { flags: ["idp:string"], positionals: false },
+  // `--json` and `--plain` (2026-10): the refresh on the structured output contract.
+  sync: { flags: ["idp:string", "json:boolean:j", "plain:boolean"], positionals: false },
   doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
   // `--json` and `--plain` (2026-10): `use` reports or changes the selection on the structured output contract.
   use: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },

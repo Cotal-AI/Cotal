@@ -138,7 +138,7 @@ import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
 import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
-import { failManifest } from "./topology.js";
+import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { askManager, type ControlAuth } from "../lib/control.js";
@@ -596,7 +596,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     if (values.file) {
       try {
         const prepared = loadManifest(resolve(values.file));
-        ensureRootForSpace(values.space ?? prepared.manifest.space);
+        // A --space that names another space is refused by the -f path below, before anything is written.
+        if (values.space === undefined || values.space === prepared.manifest.space) ensureRootForSpace(prepared.manifest.space);
       } catch {
         // Manifest errors are reported by the -f path with the same load; do not double-print.
       }
@@ -646,7 +647,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; deploying onto a RUNNING mesh is `spawn -f`.
   // CLI flags override the manifest (flag > manifest > default) so the same file runs at a different
-  // port / runtime / space / auth without editing it.
+  // port / runtime / auth without editing it. Its space is its target: `--space` may only repeat it.
   if (values.file) {
     if (values["dry-run"]) {
       await upManifest(values.file, {
@@ -2069,6 +2070,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   } catch (e) {
     failManifest(e);
   }
+  refuseManifestSpaceMismatch(prepared, opts.space);
   // The auth-mode sources (flags vs manifest) must AGREE — any mismatch names both sources and the
   // exact correction in one sentence (a no-fallback identity decision, never a bare enum error).
   const declared = prepared.manifest.broker?.auth;
@@ -2268,7 +2270,6 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): Prepa
     manifest: {
       ...m,
       broker: Object.keys(broker).length ? broker : undefined,
-      space: o.space ?? m.space,
       runtime: (o.runtime as typeof m.runtime) ?? m.runtime,
     },
   };

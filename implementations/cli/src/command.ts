@@ -16,6 +16,7 @@ import {
   isWorkspaceTargetError,
   outputDeclarationProblems,
   renderWorkspaceError,
+  workspaceErrorParts,
   targetErrorCode,
   terminalWidth,
 } from "@cotal-ai/workspace";
@@ -32,6 +33,7 @@ import { reconcileSeededConnectors } from "./seed/reconcile.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printCommandHelp, printEntry } from "./help.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
+import { chooseMeshTarget } from "./lib/choose-target.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 
 /** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
@@ -155,7 +157,9 @@ function isArgError(e: unknown): boolean {
 
 /** One dispatcher-owned catalog gate for every command that uses the shared mesh target grammar,
  * including commands self-registered by other packages. Registry-local `meshes add/rm` stay
- * offline. `use` takes its target positionally, and status keeps stale bytes diagnostic-only. */
+ * offline. `use` takes its target positionally, and status keeps stale bytes diagnostic-only.
+ * Those commands then let a terminal choose between running spaces (see {@link chooseMeshTarget});
+ * `status` reports an ambiguous target instead. */
 async function prepareCatalogForCommand(cmd: Command, args: ReturnType<typeof parseCommandArgs>): Promise<void> {
   if (cmd.name === "meshes") {
     const sub = args.positionals[0];
@@ -165,7 +169,10 @@ async function prepareCatalogForCommand(cmd: Command, args: ReturnType<typeof pa
   if (cmd.name === "use") return prepareCatalogCommand(args, false, "use");
   if (cmd.name === "status") return prepareCatalogCommand(args, true);
   if (cmd.name === "personas" && args.values.running !== true) return;
-  if (cmd.prepareMeshTarget !== false && hasMeshTargetFlags(cmd.flags)) await prepareCatalogCommand(args);
+  if (cmd.prepareMeshTarget !== false && hasMeshTargetFlags(cmd.flags)) {
+    await prepareCatalogCommand(args);
+    await chooseMeshTarget(args);
+  }
 }
 
 /** Options a composition root passes to {@link runCli}. */
@@ -350,8 +357,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
     if (structured(cmd, mode)) {
       if (isConnectRefusal(e)) failureExit(cmd, e.failure(), json);
-      if (isWorkspaceTargetError(e))
-        failureExit(cmd, new CommandFailure("refused", targetErrorCode(e.code), renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "")), json);
+      if (isWorkspaceTargetError(e)) {
+        const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
+        failureExit(cmd, new CommandFailure("refused", targetErrorCode(e.code), message, remedy ? { remedy } : {}), json);
+      }
       if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json);
       failureExit(cmd, new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e)), json);
     }
