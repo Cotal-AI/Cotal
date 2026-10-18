@@ -16,6 +16,13 @@
  *   before `prepareAgentRetirement` / `requestRetirement` reaches the host.
  * - (d) a preserved inventory (`preparePreservation` + `commitPreservation`) that is never
  *   resumed while a new manager starts on the same root.
+ * - (g1) guard: a successor manager starts while a released custodial seat is STILL ALIVE:
+ *   it must not retire the live seat, and head, grant, and `dm_`/`dlv_` durables stay live.
+ * - (g2) guard: a `resumePreserved` adoption (`resumePreserved` -> `commitResume` ->
+ *   `finalizeResume`) keeps the adopted seat's lifecycle head active, grant unrevoked, and
+ *   `dm_`/`dlv_` durables present.
+ * - (g3) guard: a delegated launch (`delegatedIntent`) stays held (`prepareAgentRetirement`
+ *   refused on `driveDeprovision` and on successor manager startup).
  */
 
 const subcommand = process.argv[2] ?? "";
@@ -104,6 +111,7 @@ import {
   mintCreds,
   mintLifecycleUid,
   newIdentity,
+  presenceBucket,
   recordsBucket,
   registry,
   remoteManagerActors,
@@ -293,7 +301,7 @@ if (subcommand === "manager-child") {
       throw new Error("unused");
     },
     validateRetainedAgent: async (a) => {
-      const request = remote.remoteRetainedAgentValidationRequest(state, "cli", proof, registered.processEpoch, a, a.actorToken, a.sentinelCreds);
+      const request = remote.remoteRetainedAgentValidationRequest(state, "cli", proof, registered.processEpoch, { owner: a.owner, actor: a.actor, lifecycleUid: a.lifecycleUid }, a.actorToken, a.sentinelCreds);
       return remote.retainedAgentAuthority(await cotalAuthProvider.validateRemoteRetainedAgent!({ ...callArgs, request }), request);
     },
     scanGoalIndex: async () => {
@@ -366,7 +374,7 @@ function pidAlive(pid: number | undefined): boolean {
 
 interface CellAssertionRecord {
   cell: string;
-  kind: "setup" | "repro" | "contract";
+  kind: "setup" | "repro" | "contract" | "guard";
   name: string;
   passed: boolean;
   detail?: unknown;
@@ -379,6 +387,8 @@ let reproPass = 0;
 let reproFail = 0;
 let contractPass = 0;
 let contractFail = 0;
+let guardPass = 0;
+let guardFail = 0;
 
 function checkSetup(cell: string, name: string, condition: boolean, detail?: unknown): void {
   records.push({ cell, kind: "setup", name, passed: condition, detail });
@@ -399,6 +409,17 @@ function checkRepro(cell: string, name: string, condition: boolean, detail?: unk
   } else {
     reproFail++;
     console.error(`  ✗ FAIL [${cell}:repro] ${name}`, detail ?? "");
+  }
+}
+
+function checkGuard(cell: string, name: string, condition: boolean, detail?: unknown): void {
+  records.push({ cell, kind: "guard", name, passed: condition, detail });
+  if (condition) {
+    guardPass++;
+    console.log(`  ✓ [${cell}:guard] ${name}`);
+  } else {
+    guardFail++;
+    console.error(`  ✗ FAIL [${cell}:guard] ${name}`, detail !== undefined ? JSON.stringify(detail) : "");
   }
 }
 
@@ -666,6 +687,34 @@ try {
         const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target);
         return remote.remoteManagedAgentEnrollmentMaterial(await cotalAuthProvider.enrollRemoteManagedAgent!({ ...callArgs, request }), request);
       },
+      executeDelegatedUserIntent: async (exec) => {
+        if (exec.operation !== "launch") throw new Error("unexpected delegated operation in guard fixture");
+        const enrollTarget = {
+          actor: exec.target.actor,
+          tokenHash: exec.target.tokenHash,
+          role: "worker",
+          subscribe: [] as string[],
+          allowSubscribe: [] as string[],
+          allowPublish: [eventChannel({ owner, actor: exec.target.actor })],
+        };
+        const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, enrollTarget);
+        const material = remote.remoteManagedAgentEnrollmentMaterial(
+          await cotalAuthProvider.enrollRemoteManagedAgent!({ ...callArgs, request }),
+          request,
+        );
+        return {
+          v: 1 as const,
+          kind: "manager-delegated-user-intent-execution" as const,
+          operation: "launch" as const,
+          space,
+          instanceId: state.instanceId,
+          managerLifecycleUid: state.lifecycleUid,
+          requestId: `exec${mintLifecycleUid()}`,
+          serveEpoch: registered.processEpoch,
+          intentId: exec.intentId,
+          material,
+        };
+      },
       prepareAgentRetirement: async ({ target, opId }) => {
         const k = countKey(target.actor, target.lifecycleUid);
         prepareCounts.set(k, (prepareCounts.get(k) ?? 0) + 1);
@@ -690,7 +739,7 @@ try {
         throw new Error("unused");
       },
       validateRetainedAgent: async (a) => {
-        const request = remote.remoteRetainedAgentValidationRequest(state, "cli", proof, registered.processEpoch, a, a.actorToken, a.sentinelCreds);
+        const request = remote.remoteRetainedAgentValidationRequest(state, "cli", proof, registered.processEpoch, { owner: a.owner, actor: a.actor, lifecycleUid: a.lifecycleUid }, a.actorToken, a.sentinelCreds);
         return remote.retainedAgentAuthority(await cotalAuthProvider.validateRemoteRetainedAgent!({ ...callArgs, request }), request);
       },
       scanGoalIndex: async () => {
@@ -1120,6 +1169,181 @@ try {
     );
   }
 
+
+  // =========================================================================
+  // Guard (g1): successor manager starts while released custodial seat is STILL ALIVE
+  // =========================================================================
+  console.log("\n=== Guard (g1): successor manager starts while released custodial seat is still alive ===");
+  {
+    const cell = "cell-g1-released-live-kept";
+    const seatName = "seat_g1";
+    const ws = createWorkspaceRoot("g1-released-live", [seatName]);
+    const { mgr: mgr1 } = await bootRemoteManagerOnRoot(ws, "custodial-pty");
+    const started = await mgr1.startAgent({ name: seatName, agent: "u4005-seat" });
+    checkSetup(cell, "seat_g1 spawned on custodial-pty manager1", started.ok, started.error);
+    const ctl = seatControls.get(seatName)!;
+    await until(() => existsSync(ctl.pidFile), "seat_g1 pid file");
+    const { pid: seatPid, uid } = JSON.parse(readFileSync(ctl.pidFile, "utf8")) as { pid: number; uid: string };
+
+    await mgr1.stop(); // without withAgents -> releaseManagedAgents() leaves seat_g1 alive
+    checkSetup(cell, "seat_g1 remains alive after manager1.stop()", pidAlive(seatPid), { seatPid });
+
+    // Start successor manager2 while seat_g1 is still alive
+    const { mgr: mgr2 } = await bootRemoteManagerOnRoot(ws, "custodial-pty");
+    const whileLive = await inspectLifecycleState(seatName, uid);
+
+    checkGuard(cell, "while released seat_g1 is alive: process is still running after manager2.start()", pidAlive(seatPid), { seatPid });
+    checkGuard(cell, "while released seat_g1 is alive: lifecycle head stays active", whileLive.headState === "active" && whileLive.headUid === uid, whileLive);
+    checkGuard(cell, "while released seat_g1 is alive: managed grant stays unrevoked", whileLive.grantUnrevoked === true, whileLive);
+    checkGuard(
+      cell,
+      "while released seat_g1 is alive: dm_ and dlv_ durables stay present",
+      whileLive.dmPresent === true && whileLive.dlvPresent === true,
+      whileLive,
+    );
+    checkGuard(
+      cell,
+      "while released seat_g1 is alive: no retirement requested (prepare=0, retire=0)",
+      whileLive.prepareRetirementCalls === 0 && whileLive.retireCalls === 0,
+      whileLive,
+    );
+
+    // Clean up seat_g1 and manager2
+    writeFileSync(ctl.exitFile, "exit");
+    await until(() => !pidAlive(seatPid), "seat_g1 exit cleanup");
+    await mgr2.stop();
+  }
+
+  // =========================================================================
+  // Guard (g2): resumePreserved adoption keeps active head, grant, and durables
+  // =========================================================================
+  console.log("\n=== Guard (g2): resumePreserved adoption keeps active head, grant, and durables ===");
+  {
+    const cell = "cell-g2-resume-preserved-adopted";
+    const seatName = "seat_g2";
+    const ws = createWorkspaceRoot("g2-resume-adopted", [seatName]);
+    const { mgr: mgr1 } = await bootRemoteManagerOnRoot(ws, "pty");
+    const started = await mgr1.startAgent({ name: seatName, agent: "u4005-seat" }, `${owner}.cli`);
+    checkSetup(cell, "seat_g2 spawned on manager1", started.ok, started.error);
+    const ctl = seatControls.get(seatName)!;
+    await until(() => existsSync(ctl.pidFile), "seat_g2 initial pid file");
+    const { pid: seatPid1, uid } = JSON.parse(readFileSync(ctl.pidFile, "utf8")) as { pid: number; uid: string };
+
+    let savedInventory: import("@cotal-ai/manager").ManagerResumeInventory | undefined;
+    const preserved = await mgr1.preserveState({
+      attemptId: "resume-g2",
+      persistInventory: async (inv) => {
+        savedInventory = inv;
+      },
+    });
+    checkSetup(
+      cell,
+      "preserveState stops seat_g2 and captures resume inventory",
+      preserved.ok && preserved.state === "preserved" && savedInventory !== undefined && !pidAlive(seatPid1),
+      preserved,
+    );
+    await mgr1.stop();
+    rmSync(ctl.pidFile, { force: true });
+    // Clear the SIGKILLed predecessor's stale presence row so resumePreserved does not wait 30s TTL
+    const presCreds = await mintCreds(auth, newIdentity(), "operator", { principal: { owner, actor: seatName } });
+    const presNc = await connect({ servers, ...standaloneConnectOpts({ creds: presCreds, tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const presKv = await new Kvm(presNc).open(presenceBucket(space));
+      await presKv.delete(`${owner}.${seatName}`);
+    } finally {
+      await presNc.close().catch(() => {});
+    }
+
+    // Start successor manager2 fenced for resumeAttemptId "resume-g2"
+    const { mgr: mgr2 } = await bootRemoteManagerOnRoot(ws, "pty", "resume-g2");
+    const ops = mgr2 as unknown as {
+      opResumePreserved: (args: unknown) => Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string }>;
+      opCommitResume: (args: unknown) => Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string }>;
+      opFinalizeResume: (args: unknown) => Promise<{ ok: boolean; data?: Record<string, unknown>; error?: string }>;
+    };
+    const resumed = await ops.opResumePreserved({ attemptId: "resume-g2", inventory: savedInventory });
+    const committed = await ops.opCommitResume({ attemptId: "resume-g2" });
+    const token = (committed.data as { durableCommitToken?: string } | undefined)?.durableCommitToken;
+    const finalized = await ops.opFinalizeResume({ attemptId: "resume-g2", durableCommitToken: token });
+    let seatPid2 = 0;
+    let resumedUid = "";
+    if (resumed.ok) {
+      await until(() => existsSync(ctl.pidFile), "seat_g2 resumed pid file");
+      const parsed = JSON.parse(readFileSync(ctl.pidFile, "utf8")) as { pid: number; uid: string };
+      seatPid2 = parsed.pid;
+      resumedUid = parsed.uid;
+    }
+
+    const afterAdopt = await inspectLifecycleState(seatName, uid);
+    checkGuard(
+      cell,
+      "resumePreserved -> commitResume -> finalizeResume succeeds and launches replacement process at retained uid",
+      resumed.ok && committed.ok && finalized.ok && pidAlive(seatPid2) && resumedUid === uid,
+      { resumed, committed, finalized, seatPid2, resumedUid, uid },
+    );
+    checkGuard(cell, "after resumePreserved adoption: lifecycle head stays active at retained uid", afterAdopt.headState === "active" && afterAdopt.headUid === uid, afterAdopt);
+    checkGuard(cell, "after resumePreserved adoption: managed grant stays unrevoked", afterAdopt.grantUnrevoked === true, afterAdopt);
+    checkGuard(
+      cell,
+      "after resumePreserved adoption: dm_ and dlv_ durables stay present",
+      afterAdopt.dmPresent === true && afterAdopt.dlvPresent === true,
+      afterAdopt,
+    );
+    checkGuard(
+      cell,
+      "after resumePreserved adoption: no retirement requested (prepare=0, retire=0)",
+      afterAdopt.prepareRetirementCalls === 0 && afterAdopt.retireCalls === 0,
+      afterAdopt,
+    );
+
+    await mgr2.stop({ withAgents: true });
+    await until(() => !pidAlive(seatPid2), "seat_g2 stop cleanup");
+  }
+
+  // =========================================================================
+  // Guard (g3): delegated launch stays held and is not retired via prepareAgentRetirement
+  // =========================================================================
+  console.log("\n=== Guard (g3): delegated launch stays held and is not retired via prepareAgentRetirement ===");
+  {
+    const cell = "cell-g3-delegated-launch-held";
+    const seatName = "seat_g3_delegated";
+    const ws = createWorkspaceRoot("g3-delegated", [seatName]);
+    const { mgr: mgr1 } = await bootRemoteManagerOnRoot(ws, "pty");
+    const started = await mgr1.startAgent({
+      name: seatName,
+      agent: "u4005-seat",
+      delegatedIntent: { intentId: "intent-g3", owner, parent: `${owner}.cli` },
+    });
+    checkSetup(cell, "seat_g3_delegated launched via delegatedIntent on manager1", started.ok, started.error);
+    const ctl = seatControls.get(seatName)!;
+    await until(() => existsSync(ctl.pidFile), "seat_g3_delegated pid file");
+    const { pid: seatPid, uid } = JSON.parse(readFileSync(ctl.pidFile, "utf8")) as { pid: number; uid: string };
+
+    // Stop manager1 withAgents: driveDeprovision refuses prepareAgentRetirement for a.delegated
+    await mgr1.stop({ withAgents: true });
+    await until(() => !pidAlive(seatPid), "seat_g3_delegated process exit");
+
+    // Start successor manager2 on same root: reconciliation must leave delegated lifecycle held
+    const { mgr: mgr2 } = await bootRemoteManagerOnRoot(ws, "pty");
+    const afterRestart = await inspectLifecycleState(seatName, uid);
+    await mgr2.stop();
+
+    checkGuard(cell, "after delegated seat exit + manager2 start: lifecycle head stays active", afterRestart.headState === "active" && afterRestart.headUid === uid, afterRestart);
+    checkGuard(cell, "after delegated seat exit + manager2 start: managed grant stays unrevoked", afterRestart.grantUnrevoked === true, afterRestart);
+    checkGuard(
+      cell,
+      "after delegated seat exit + manager2 start: dm_ and dlv_ durables stay present",
+      afterRestart.dmPresent === true && afterRestart.dlvPresent === true,
+      afterRestart,
+    );
+    checkGuard(
+      cell,
+      "after delegated seat exit + manager2 start: prepareAgentRetirement and retire are never called (prepare=0, retire=0)",
+      afterRestart.prepareRetirementCalls === 0 && afterRestart.retireCalls === 0,
+      afterRestart,
+    );
+  }
+
   const summary = {
     space,
     counts: {
@@ -1127,6 +1351,8 @@ try {
       setupFail,
       reproPass,
       reproFail,
+      guardPass,
+      guardFail,
       contractPass,
       contractFail,
       totalAssertions: records.length,
@@ -1137,7 +1363,7 @@ try {
     writeFileSync(process.env.U4005_SUMMARY_OUT, JSON.stringify(summary, null, 2) + "\n");
   }
   console.log(
-    `\nU4005 SUMMARY: setup=${setupPass}/${setupPass + setupFail} repro=${reproPass}/${reproPass + reproFail} redContract=${contractFail}/${contractPass + contractFail} (total=${records.length})`,
+    `\nU4005 SUMMARY: setup=${setupPass}/${setupPass + setupFail} repro=${reproPass}/${reproPass + reproFail} guard=${guardPass}/${guardPass + guardFail} redContract=${contractFail}/${contractPass + contractFail} (total=${records.length})`,
   );
 } finally {
   await inspectNc?.close().catch(() => {});
@@ -1150,6 +1376,6 @@ try {
   rmSync(seatRoot, { recursive: true, force: true });
 }
 
-if (setupFail > 0 || reproFail > 0 || contractFail > 0) {
+if (setupFail > 0 || reproFail > 0 || guardFail > 0 || contractFail > 0) {
   process.exit(1);
 }
