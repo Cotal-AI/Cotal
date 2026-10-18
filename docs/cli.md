@@ -919,6 +919,9 @@ restore only when its details prove manager commit and its exact recorded listen
 ```bash
 cotal space [--json|--plain]
 cotal space show [<name>] [--json|--plain]
+cotal space add <name> --server <url> [--root <dir>] [--mode auth|open] [--tls] [--allow-unencrypted-overlay] [--force] [-y|--yes]
+cotal space add [<name>] (-f|--file <bundle.json> | --from <https url>) [--root <dir>] [--server <url>] [--force] [-y|--yes]
+cotal space forget <name>
 cotal use [<space>] [--json|--plain]
 ```
 
@@ -938,6 +941,31 @@ user-auth space under `userAuth` and the catalog's `id`, `slug`, `kind` and `rol
 credential paths out. A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
 so is a bare `space show` with nothing selected.
 
+`space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. With
+`--server`, the trust comes from `--root`'s `.cotal/auth`, and the mode is `auth` when that folder
+holds the space's trust, `open` otherwise. With `--file`, a user-auth connection bundle exported
+where the space runs supplies the login pins and the server, unless `--server` names another
+address for that broker; `--from` fetches the space's discovery
+document instead, after you agree to the fetch, and needs a terminal. Before anything is written,
+`space add` checks that the address may carry credentials, that the trust composes, that the
+broker enforces the mode, and that the credentials open the space; a user-auth space's exchange
+must answer as the issuer it pins. On a terminal it then shows what it will trust and asks; `--yes`
+skips that question, but not the confirmation of fetched pins. It never changes the selection.
+
+A refusal writes nothing and carries its code: `USAGE_INVALID` or `SCHEMA_INVALID` (exit 1) for
+input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `DEPENDENCY_UNAVAILABLE`, `UNSUPPORTED`,
+`AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name that is already
+registered is a `CONFLICT`. `--force` replaces a registration added by hand, never one this machine
+started or a catalog lists, and adds a `--server` space without checking its broker, which suits a
+space that is down right now; a user-auth space is always checked. Declining the question is a
+`no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
+shape `space show` gives, with `verified` and `replaced`.
+
+`space forget <name>` removes a registration this machine keeps. It stops nothing, deletes nothing on
+the broker, and keeps the files under its root. It refuses a space this machine is running with
+`LIFECYCLE_BLOCKED`, because `cotal down` stops it and drops the record, and a discovered space with
+`CONFLICT`, because its catalog keeps it. Forgetting the selected space clears the selection.
+
 `use <space>` selects the space commands target when none is named. It changes only the selection:
 it starts nothing and does not check the broker, so a stopped space can be selected and the command
 that targets it reports that. Selecting the selected space again is a `no-op`. A name that is not
@@ -949,8 +977,9 @@ A command run without `--space` targets the selection. When the selected space's
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
 it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
 
-`cotal meshes` still lists, registers and drops meshes. `space` replaces its listing, and its
-`--json` lines are the old shape.
+`cotal meshes` still lists, registers and drops meshes. `space`, `space add` and `space forget`
+replace it, and its `--json` lines are the old shape. A bare `meshes add` on a terminal is still the
+guided form.
 
 ## Mesh registry
 

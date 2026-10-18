@@ -15,14 +15,27 @@ import {
   type OutputWarning,
   type Report,
 } from "@cotal-ai/workspace";
+import { ADD_FLAGS, spaceAdd, spaceForget } from "./space-registration.js";
 
-export const spaceFlags = [jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
+export const spaceFlags = [
+  jsonFlag,
+  plainFlag,
+  { name: "server", type: "string", value: "<url>", description: "add: the space's broker URL" },
+  { name: "root", type: "string", value: "<dir>", description: "add: the folder whose .cotal/auth holds the space's trust (default: this project)" },
+  { name: "mode", type: "string", value: "<auth|open|user>", description: "add: how the broker authenticates (default: auth when --root holds the space's trust, else open)" },
+  { name: "file", short: "f", type: "string", value: "<bundle.json>", description: "add: a user-auth connection bundle exported where the space runs" },
+  { name: "from", type: "string", value: "<https url>", description: "add: fetch the space's discovery document; its pins are shown and confirmed" },
+  { name: "tls", type: "boolean", description: "add: require TLS on every connection to the space (a tls:// or wss:// --server implies it)" },
+  { name: "allow-unencrypted-overlay", type: "boolean", description: "add: accept that an overlay address is protected only while its tunnel is up" },
+  { name: "force", type: "boolean", description: "add: replace a registration added by hand, and add a --server space without checking its broker" },
+  { name: "yes", short: "y", type: "boolean", description: "add: skip the confirmation on a terminal; fetched pins are still confirmed" },
+] as const satisfies readonly FlagSpec[];
 
 const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
 
 /** Whether a registration's broker answered. A discovered catalog entry is never dialed by a read, so
  *  its broker is `not-checked` rather than a guessed answer. */
-type Check = "reachable" | "unreachable" | "not-checked";
+export type Check = "reachable" | "unreachable" | "not-checked";
 
 /** One registered space, as `cotal space` lists it: the same row `cotal status --json` gives under
  *  `meshes.items`. */
@@ -52,7 +65,7 @@ interface SpacesResult {
 }
 
 /** One registration in full. Pins and endpoints are public; credential paths are left out. */
-interface SpaceDetail extends Omit<SpaceRow, "catalog"> {
+export interface SpaceDetail extends Omit<SpaceRow, "catalog"> {
   readonly kind: "space";
   readonly recordedAt: string;
   readonly attachHost: string | null;
@@ -66,11 +79,17 @@ interface SpaceDetail extends Omit<SpaceRow, "catalog"> {
 /**
  * `cotal space` lists the spaces this machine can reach, and `cotal space show [<name>]` shows one in
  * full. Both read the local registry and probe brokers; neither writes anything. A broker that does
- * not answer leaves its registration in place, reported `unreachable`.
+ * not answer leaves its registration in place, reported `unreachable`. `space add` and
+ * `space forget` change the registry (see `space-registration.ts`).
  */
 export async function space(args: ParsedArgs): Promise<void> {
-  const presentation = presentationOf(args.values as FlagValues<typeof spaceFlags>);
+  const values = args.values as FlagValues<typeof spaceFlags>;
+  const presentation = presentationOf(values);
   const [sub, ...rest] = args.positionals;
+  if (sub === "add") return spaceAdd(rest, values, presentation);
+  const addOnly = ADD_FLAGS.find((flag) => values[flag] !== undefined);
+  if (addOnly) throw usage(`--${addOnly} is taken by \`cotal space add\` only`);
+  if (sub === "forget") return spaceForget(rest, presentation);
   if (sub === undefined) {
     const sweep = await pruneStaleMeshes();
     const current = getCurrent() ?? null;
@@ -110,7 +129,8 @@ function row(m: MeshEntry, current: string | null, check: Check): SpaceRow {
   };
 }
 
-function detail(m: MeshEntry, current: string | null, check: Check): SpaceDetail {
+/** One registration in full, as `space show` reports it. */
+export function detail(m: MeshEntry, current: string | null, check: Check): SpaceDetail {
   const base = row(m, current, check);
   return {
     kind: "space",
@@ -199,7 +219,7 @@ function spaceView(s: SpaceDetail): Report {
 
 /** Argument completion: the subcommand, then registered names. */
 export function spaceComplete(argv: string[]): CompletionResult {
-  if (argv.length <= 1) return { items: [{ value: "show" }], directive: "nofiles" };
-  if (argv[0] === "show" && argv.length === 2) return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
+  if (argv.length <= 1) return { items: [{ value: "show" }, { value: "add" }, { value: "forget" }], directive: "nofiles" };
+  if ((argv[0] === "show" || argv[0] === "forget") && argv.length === 2) return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
   return { items: [], directive: "nofiles" };
 }
