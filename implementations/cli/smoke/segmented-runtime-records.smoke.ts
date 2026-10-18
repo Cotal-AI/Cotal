@@ -25,7 +25,7 @@ import {
   canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
 } from "@cotal-ai/workspace";
 import { deliveryLiveness, deliveryUp, stopDelivery } from "../src/lib/delivery-proc.js";
-import { managerHasDeliveryMarker, managerLiveness, managerUp, stopManager } from "../src/lib/manager-proc.js";
+import { clearManagerArtifacts, managerHasDeliveryMarker, managerLiveness, managerUp, stopManager } from "../src/lib/manager-proc.js";
 
 const ALPHA = "segrec-alpha", BETA = "segrec-beta", GAMMA = "segrec-gamma";
 const root = mkdtempSync(join(tmpdir(), "cotal-segrec-"));
@@ -97,6 +97,7 @@ try {
 
   console.log("\n3) stopping one space's manager leaves the other's running and recorded");
   const stopped = await stopManager(ALPHA);
+  clearManagerArtifacts(ALPHA);
   await waitDead(aPid);
   check("stopManager(alpha) reports a stop", stopped, stopped);
   check("...and alpha's process is dead", !alive(aPid));

@@ -228,7 +228,7 @@ export function startManagerDetached(
   // leaves a torn pairing; a platform that cannot produce a start token still gets the legacy shape.
   writePidPair(pidPath, child.pid);
   // Mark this manager as delivery-aware (non-hosting) so the delivery preflight can tell it apart from
-  // an old Plane-3-hosting manager. Written next to the pid, removed together in stopManager / down.
+  // an old Plane-3-hosting manager. Written next to the pid, removed by `down` or clearManagerArtifacts.
   writeFileSync(canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx(space)), String(child.pid));
   return child.pid ?? 0;
 }
@@ -339,7 +339,8 @@ export const MANAGER_PROCESS = {
  *  capability to spare its managed agents, and reports the agents it left; `withAgents` arms their reap
  *  instead. `pid` binds the stop to the manager the caller judged: a record a successor published since
  *  is left whole and the stop returns false. Throws, with the records kept, when the stop is refused or
- *  the death is not confirmed. */
+ *  the death is not confirmed. The artifacts stay: `down` removes them only after every selected
+ *  component stopped, and every other caller through {@link clearManagerArtifacts}. */
 export async function stopManager(
   space: string = folderSpace(),
   { withAgents = false, pid }: { withAgents?: boolean; pid?: number } = {},
@@ -373,11 +374,13 @@ export async function stopManager(
     // never reaches this, so it cannot remove the intent of the stop that holds it.
     afterFailedSignal: withAgents ? () => disarmManagerShutdownIntent(context) : undefined,
   });
-  // A stop that found no record of its own leaves the artifacts: with `pid` they belong to the
-  // successor whose record it left.
   if (!found) return false;
-  for (const artifact of MANAGER_PROCESS.artifacts) rmSync(localProcessPath(artifact, context), { force: true });
   if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();
   else if (spared) printSparedAgents(spared, spareSeats);
   return found;
+}
+
+/** Remove the records that die with the space's manager process, once a stop outside `down` returned. */
+export function clearManagerArtifacts(space: string): void {
+  for (const artifact of MANAGER_PROCESS.artifacts) rmSync(localProcessPath(artifact, ctx(space)), { force: true });
 }

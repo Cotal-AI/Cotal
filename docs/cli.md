@@ -435,7 +435,8 @@ is named. A component stop and `--dry-run` stay pidfile-only and do not probe.
 Whole-stack shutdown keeps delivery credentials until every required component has stopped.
 A refused stop preserves both the space-scoped credential and its legacy copy. A selective
 delivery stop still removes its credentials after that daemon stops. Credential removal errors
-remain failures.
+remain failures. `down` removes the manager's delivery-aware marker, shutdown intent and spare
+capability only after every selected component has stopped, so a refused stop keeps them too.
 
 **Teardown verifies pinned process identity before signalling.** PIDs are recycled by every OS,
 so a recorded pid alone is not a durable target identity. `up` and `cotal web` record each
