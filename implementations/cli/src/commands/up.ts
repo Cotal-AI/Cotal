@@ -250,6 +250,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     __restoreAttempt?: string;
     __ordinaryResumeAttempt?: string;
   };
+  // Without a manifest there is no plan to print, so the flag would be ignored and the boot would
+  // mutate everything it promised not to. Refused before `--restore` prepares anything.
+  if (values["dry-run"] && !values.file)
+    throw new Error("--dry-run only applies to a manifest launch (`cotal up -f <manifest> --dry-run`)");
   if (values.restore) {
     if (values.file || values.channels)
       throw new Error("--restore cannot be combined with --file/-f or --channels");
