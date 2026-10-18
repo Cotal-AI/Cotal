@@ -23,7 +23,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
+  authDir, canonicalLocalProcessPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
   refreshRegistrationPolicy,
   type MeshEntry,
@@ -160,11 +160,11 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
     // `resolveMeshTarget(...,{space})` distinguishes every known registry fault. Only an absent
     // record gets the host-or-join wording; a corrupt/ambiguous record remains its own loud error.
     if (isWorkspaceTargetError(error) && error.code === "unknown-space") {
-      // A hosting root that predates a registry entry (or whose entry was pruned) still names its
-      // space on disk: `.cotal/auth` is the host proof `resolveMeshTarget` cannot see without a
-      // record. The broker address then comes from the flag/env, exactly what a service unit's
-      // EnvironmentFile supplies.
-      if (soleSpaceOf(authDir(root)) === localSpace)
+      // A hosting root that predates a registry entry (or whose entry was pruned) still holds this
+      // space's account record on disk, beside any other space it hosts: `.cotal/auth` is the host
+      // proof `resolveMeshTarget` cannot see without a record. The broker address then comes from
+      // the flag/env, exactly what a service unit's EnvironmentFile supplies.
+      if (loadSpaceAccountAuth(authDir(root), localSpace))
         return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false, eventsRequired: false };
       throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \`cotal up\` to host, or \`cotal meshes add\` to join`);
     }

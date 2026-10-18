@@ -1610,7 +1610,7 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--space <s>` | this folder's auth space | Space to supervise |
+| `--space <s>` | this folder's auth space | Space to supervise. On a root that hosts several spaces, name one of them here |
 | `--server <url>` | hosting mesh, or matching registered mesh | Broker URL. A registered mesh supplies it when omitted; a different explicit value is refused before anything is dialed. |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
 | `--console-port <n>` | none | Protocol-console port |
