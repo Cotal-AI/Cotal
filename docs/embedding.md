@@ -280,9 +280,11 @@ returns after `options.waitSeconds`, which defaults to `GATEWAY_WAIT_SECONDS` (5
 every proxy and client timeout in front of the service. The reply is one JSON body, so nothing is
 sent until the wait ends: Claude Code gives a remote server 60 seconds to the first byte, Cloudflare
 ends an origin response after about 100 seconds and claude.ai ends a tool call after 240. A wait
-whose client closes the request stops listening, so it does not take a message it cannot deliver.
-Every other routed tool except `cotal_inbox` adds a line to its result when wake-worthy messages are
-buffered.
+whose client closes the request stops listening, and a read whose client is gone by the time it
+would clear messages clears nothing, so neither takes a message it cannot deliver. A wait ends
+when its connection closes. In `focus` an @mention is not buffered, so the gateway counts the ones
+since the last read, and a wait that starts after one returns it at once. Every other routed tool
+except `cotal_inbox` adds a line to its result when wake-worthy messages are waiting.
 
 `handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, waitSeconds? })`
 serves one HTTP request to the endpoint with the package's own MCP server, so the embedding service

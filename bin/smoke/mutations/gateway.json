@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/gateway.smoke.ts"
   ],
-  "guard": "a remote conversation renames only on an authoritative collision of a valid name, an unauthenticated, missing or foreign call runs nothing, each call runs on its own connection's configuration, and the gateway offers and reports only its remote tool subset, and its own request handler serves POST as stateless JSON with the caller's authentication and refuses every other method, and cotal_wait returns a waiting or arriving message at once, follows attention, ignores a run turn it cannot surface, honors the embedder's bound and cleans up, while every other routed tool says when messages are waiting",
+  "guard": "a remote conversation renames only on an authoritative collision of a valid name, an unauthenticated, missing or foreign call runs nothing, each call runs on its own connection's configuration, and the gateway offers and reports only its remote tool subset, and its own request handler serves POST as stateless JSON with the caller's authentication and refuses every other method, and cotal_wait returns a waiting or arriving message at once, follows attention, counts a focus @mention between waits, ignores a run turn it cannot surface, ends when its connection closes, honors the embedder's bound and cleans up, a wait or read whose client is gone clears nothing, and every other routed tool says when messages are waiting",
   "command": "pnpm smoke:gateway",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/gateway.json",
   "why": [
@@ -141,7 +141,7 @@
     {
       "name": "cotal_wait ends on any arrival, ignoring attention",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "      if (agent.inboxWake() > 0) finish(true);",
+      "find": "      if (wakeCount(agent) > 0) finish(true);",
       "replace": "      finish(true);",
       "expectRed": "in dnd attention, channel chatter does not end the wait",
       "cell": "in dnd attention, channel chatter does not end the wait"
@@ -149,7 +149,7 @@
     {
       "name": "a message already waiting does not end the wait",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "  if (agent.inboxWake() > 0) return Promise.resolve(true);\n",
+      "find": "  if (wakeCount(agent) > 0) return Promise.resolve(true);\n",
       "replace": "",
       "expectRed": "a message already waiting is returned at once",
       "cell": "a message already waiting is returned at once"
@@ -157,8 +157,8 @@
     {
       "name": "cotal_wait counts run turns the gateway cannot surface",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "  if (agent.inboxWake() > 0) return Promise.resolve(true);",
-      "replace": "  if (agent.pendingWake() > 0) return Promise.resolve(true);",
+      "find": "  return agent.inboxWake() + mentionsOf(agent).count;",
+      "replace": "  return agent.pendingWake() + mentionsOf(agent).count;",
       "expectRed": "a run turn the gateway cannot surface does not end the wait",
       "cell": "a run turn the gateway cannot surface does not end the wait"
     },
@@ -173,7 +173,7 @@
     {
       "name": "cotal_wait reports an arrival without returning it",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "        return toContent(await inbox.run(c.agent, c.config, parseToolArgs(inbox, {})));",
+      "find": "        return toContent(await runFor(inbox, c, {}, extra.signal));",
       "replace": "        return toContent({ text: \"A message arrived. Read it with cotal_inbox.\" });",
       "expectRed": "a direct message ends the wait and comes back with it",
       "cell": "a direct message ends the wait and comes back with it"
@@ -221,10 +221,66 @@
     {
       "name": "a wait its client dropped keeps listening",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "    signal?.addEventListener(\"abort\", abort, { once: true });\n",
+      "find": "    signal.addEventListener(\"abort\", abort, { once: true });\n",
       "replace": "",
       "expectRed": "a wait its client dropped does not take the next message",
       "cell": "a wait its client dropped does not take the next message"
+    },
+    {
+      "name": "a read whose client is gone still clears what it shows",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        const keeps = () => peek === true || call?.signal?.aborted === true;",
+      "replace": "        const keeps = () => peek === true;",
+      "expectRed": "a read its client dropped clears nothing it could not hand over",
+      "cell": "a read its client dropped clears nothing it could not hand over"
+    },
+    {
+      "name": "the gateway runs a read without its request's signal",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  const result = await spec.run(c.agent, c.config, parseToolArgs(spec, args), { signal });",
+      "replace": "  const result = await spec.run(c.agent, c.config, parseToolArgs(spec, args));",
+      "expectRed": "a read its client dropped clears nothing it could not hand over",
+      "cell": "a read its client dropped clears nothing it could not hand over"
+    },
+    {
+      "name": "a wait whose client already left starts anyway",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  if (signal.aborted) return Promise.resolve(false);\n",
+      "replace": "",
+      "expectRed": "a wait whose client left before it began does not start",
+      "cell": "a wait whose client left before it began does not start"
+    },
+    {
+      "name": "focus @mentions are not counted",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "    agent.on(\"mention-wake\", () => (m.count += 1));\n",
+      "replace": "",
+      "expectRed": "a focus @mention between waits shows in the unread line",
+      "cell": "a focus @mention between waits shows in the unread line"
+    },
+    {
+      "name": "a read leaves the focus @mention count",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  if (spec.name === \"cotal_inbox\" && !args.peek && !signal.aborted) mentionsOf(c.agent).count = 0;\n",
+      "replace": "",
+      "expectRed": "a read clears the focus @mentions it carried",
+      "cell": "a read clears the focus @mentions it carried"
+    },
+    {
+      "name": "stopping the agent does not end a held wait",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "    agent.on(\"transport\", stopped);\n",
+      "replace": "",
+      "expectRed": "disconnecting ends a held wait as a closed connection",
+      "cell": "disconnecting ends a held wait as a closed connection"
+    },
+    {
+      "name": "a wait on a stopped connection reads as quiet",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "      if (c.agent.stopping) return refuse(CONNECTION_REQUIRED);\n",
+      "replace": "",
+      "expectRed": "disconnecting ends a held wait as a closed connection",
+      "cell": "disconnecting ends a held wait as a closed connection"
     }
   ]
 }

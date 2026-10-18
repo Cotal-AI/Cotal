@@ -20,7 +20,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
 import { assertValidName } from "@cotal-ai/core";
-import { cotalToolSpecs, parseToolArgs, type ToolResult } from "./tool-specs.js";
+import { cotalToolSpecs, parseToolArgs, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
 import type { MeshAgent } from "./agent.js";
 import type { AgentConfig } from "./config.js";
 
@@ -139,43 +139,79 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Focus @mentions per agent since a gateway read last cleared them. In `focus` an @mention is
+ *  acked at ingest and recalled by the next `cotal_inbox`, so nothing buffered marks it, and one
+ *  that arrives between two waits would otherwise end neither. */
+const focusMentions = new WeakMap<MeshAgent, { count: number }>();
+
+/** `agent`'s focus @mention count, counted from the first time the gateway asks. Attention reaches
+ *  `focus` only through a gateway call, and every call asks, so the count starts in time. */
+function mentionsOf(agent: MeshAgent): { count: number } {
+  let mentions = focusMentions.get(agent);
+  if (!mentions) {
+    const m = { count: 0 };
+    agent.on("mention-wake", () => (m.count += 1));
+    focusMentions.set(agent, (mentions = m));
+  }
+  return mentions;
+}
+
+/** What should wake a gateway connection: {@link MeshAgent.inboxWake}, the rule a local seat's push
+ *  follows (direct messages, role requests and @mentions always, other channel traffic only in
+ *  `open`), plus the focus @mentions it has not read. */
+function wakeCount(agent: MeshAgent): number {
+  return agent.inboxWake() + mentionsOf(agent).count;
+}
+
 /**
- * Resolve true once `agent` holds a message that should wake it, or false after `ms` or on abort.
- * It uses {@link MeshAgent.inboxWake}, the rule a local seat's push follows: direct messages, role
- * requests and @mentions always, other channel traffic only in `open` attention. A `focus`-mode
- * @mention is not buffered, so its own event ends the wait and `cotal_inbox` recalls it.
+ * Resolve true once `agent` has something that should wake it, or false after `ms`, on abort, or
+ * when the agent stops.
  *
  * The SDK aborts `signal` when the request's connection closes, so a wait its client gave up on
- * stops listening instead of taking the next message to a closed socket.
+ * stops listening instead of taking the next message to a closed socket. A signal can already be
+ * aborted here, because the handler awaits the host first, and an aborted signal fires no event.
  */
-function waitForWake(agent: MeshAgent, ms: number, signal: AbortSignal | undefined): Promise<boolean> {
-  if (agent.inboxWake() > 0) return Promise.resolve(true);
+function waitForWake(agent: MeshAgent, ms: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  if (wakeCount(agent) > 0) return Promise.resolve(true);
   return new Promise((resolve) => {
     const check = () => {
-      if (agent.inboxWake() > 0) finish(true);
+      if (wakeCount(agent) > 0) finish(true);
     };
     const mentioned = () => finish(true);
+    const stopped = () => {
+      if (agent.stopping) finish(false);
+    };
     const abort = () => finish(false);
     const timer = setTimeout(() => finish(false), ms);
     function finish(woke: boolean) {
       clearTimeout(timer);
       agent.off("incoming", check);
-      agent.off("wake", check);
       agent.off("mention-wake", mentioned);
-      signal?.removeEventListener("abort", abort);
+      agent.off("transport", stopped);
+      signal.removeEventListener("abort", abort);
       resolve(woke);
     }
     agent.on("incoming", check);
-    agent.on("wake", check);
     agent.on("mention-wake", mentioned);
-    signal?.addEventListener("abort", abort, { once: true });
+    agent.on("transport", stopped);
+    signal.addEventListener("abort", abort, { once: true });
   });
+}
+
+/** Run `spec` for a connection with the request's signal, so a read whose client is gone clears
+ *  nothing. A `cotal_inbox` read that clears also clears the focus @mention count, since its recall
+ *  carries them. */
+async function runFor(spec: CotalToolSpec, c: GatewayConnection, args: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult> {
+  const result = await spec.run(c.agent, c.config, parseToolArgs(spec, args), { signal });
+  if (spec.name === "cotal_inbox" && !args.peek && !signal.aborted) mentionsOf(c.agent).count = 0;
+  return result;
 }
 
 /** The line every routed tool except `cotal_inbox` adds when messages are waiting, so a
  *  conversation that never polls still learns of them on its next call. */
 function waitingNotice(agent: MeshAgent): { type: "text"; text: string } | undefined {
-  const n = agent.inboxWake();
+  const n = wakeCount(agent);
   if (!n) return undefined;
   return { type: "text", text: `${n} new message${n === 1 ? "" : "s"} waiting. Read ${n === 1 ? "it" : "them"} with cotal_inbox.` };
 }
@@ -296,11 +332,13 @@ export function registerCotalGatewayTools(
       const inbox = cotalToolSpecs(c.config, source, undefined, GATEWAY_TOOLS).find((s) => s.name === "cotal_inbox");
       if (!inbox) return refuse("cotal_wait is not available on this connection.");
       const limit = seconds ?? waitSeconds;
-      if (!(await waitForWake(c.agent, limit * 1000, extra.signal))) {
+      const woke = await waitForWake(c.agent, limit * 1000, extra.signal);
+      if (c.agent.stopping) return refuse(CONNECTION_REQUIRED);
+      if (!woke) {
         return toContent({ text: `No new messages in ${limit} second${limit === 1 ? "" : "s"}. Call cotal_wait again to keep listening.` });
       }
       try {
-        return toContent(await inbox.run(c.agent, c.config, parseToolArgs(inbox, {})));
+        return toContent(await runFor(inbox, c, {}, extra.signal));
       } catch (e) {
         return refuse(errorText(e));
       }
@@ -332,7 +370,7 @@ export function registerCotalGatewayTools(
         if (!own) return refuse(`${spec.name} is not available on this connection.`);
         let result: ReturnType<typeof toContent>;
         try {
-          result = toContent(await own.run(c.agent, c.config, parseToolArgs(own, rest)));
+          result = toContent(await runFor(own, c, rest, extra.signal));
         } catch (e) {
           result = refuse(errorText(e));
         }

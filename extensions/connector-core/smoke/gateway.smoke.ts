@@ -15,8 +15,10 @@
  *   - disconnect closes one connection and leaves the other working;
  *   - only the remote subset is offered, and the orientation card says so;
  *   - cotal_wait returns a message as soon as it arrives, at once when one is waiting, and after its
- *     bound with none; it follows attention, ignores a run turn the gateway cannot surface, and
- *     leaves no listener behind; every other tool says when messages are waiting;
+ *     bound with none; it follows attention, counts a focus @mention that landed between waits,
+ *     ignores a run turn the gateway cannot surface, ends when its connection closes, and leaves
+ *     no listener behind; a wait or read whose client is gone clears nothing; every other tool
+ *     says when messages are waiting;
  *   - the handler answers POST with JSON and the default instructions, and every other method 405.
  *
  * Run: pnpm smoke:gateway
@@ -296,7 +298,6 @@ try {
   const listener = idOf(await call(a, "cotal_connect", { name: "listener" }));
   const talker = idOf(await call(a, "cotal_connect", { name: "talker" }));
   const listenerAgent = live.get(listener)!.conn.agent;
-  const baseListeners = ["incoming", "wake", "mention-wake"].map((e) => listenerAgent.listenerCount(e)).join(",");
   for (let i = 0; i < 30; i++) {
     if ((await call(a, "cotal_roster", { connection_id: talker })).text.includes("listener")) break;
     await sleep(200);
@@ -326,6 +327,8 @@ try {
   const quiet = await call(a, "cotal_wait", { connection_id: listener, seconds: 1 });
   const quietMs = Date.now() - started;
   check("a wait with nothing to read returns after its bound", !quiet.isError && quiet.text.startsWith("No new messages in 1 second.") && quietMs >= 900 && quietMs < 4000, { quiet, quietMs });
+  // Taken after the first wait, which starts the gateway's one lasting focus @mention listener.
+  const baseListeners = ["incoming", "mention-wake", "transport"].map((e) => listenerAgent.listenerCount(e)).join(",");
 
   const listening = call(a, "cotal_wait", { connection_id: listener });
   await sleep(500);
@@ -392,6 +395,81 @@ try {
   check("a wait its client dropped does not take the next message", await peekFor("after-a-dropped-wait"));
   await call(a, "cotal_inbox", { connection_id: listener });
 
+  // A client that gives up after a message woke the wait, while the read is still under way. In
+  // focus the read first fetches channel history, so the abort is made to land during that fetch.
+  await call(a, "cotal_status", { connection_id: listener, attention: "focus" });
+  const midRead = new AbortController();
+  const recall = listenerAgent.recallAmbient.bind(listenerAgent);
+  listenerAgent.recallAmbient = async (...args: Parameters<typeof recall>) => {
+    midRead.abort();
+    await sleep(300);
+    return recall(...args);
+  };
+  const abandoned = fetch(url, {
+    method: "POST",
+    signal: midRead.signal,
+    headers: { authorization: "Bearer tok-a", "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 78, method: "tools/call", params: { name: "cotal_wait", arguments: { connection_id: listener } } }),
+  }).catch(() => undefined);
+  await sleep(500);
+  await call(a, "cotal_dm", { connection_id: talker, to: "listener", text: "woke-a-dropped-read" });
+  await abandoned;
+  await sleep(800);
+  Reflect.deleteProperty(listenerAgent, "recallAmbient");
+  check("a read its client dropped clears nothing it could not hand over", await peekFor("woke-a-dropped-read"));
+  await call(a, "cotal_status", { connection_id: listener, attention: "open" });
+  await call(a, "cotal_inbox", { connection_id: listener });
+
+  // A client that leaves before the wait begins, while the host is still looking the connection up.
+  const early = new AbortController();
+  const find = host.find;
+  host.find = async (...args) => {
+    early.abort();
+    await sleep(300);
+    return find(...args);
+  };
+  await fetch(url, {
+    method: "POST",
+    signal: early.signal,
+    headers: { authorization: "Bearer tok-a", "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 79, method: "tools/call", params: { name: "cotal_wait", arguments: { connection_id: listener } } }),
+  }).catch(() => undefined);
+  await sleep(600);
+  host.find = find;
+  check("a wait whose client left before it began does not start", listenerAgent.listenerCount("incoming") === Number(baseListeners.split(",")[0]));
+  await call(a, "cotal_dm", { connection_id: talker, to: "listener", text: "after-an-early-drop" });
+  check("a wait whose client left before it began does not take the next message", await peekFor("after-an-early-drop"));
+  await call(a, "cotal_inbox", { connection_id: listener });
+
+  // A focus @mention is acked at ingest, so one that lands between two waits is counted by the gateway.
+  await call(a, "cotal_status", { connection_id: listener, attention: "focus" });
+  await call(a, "cotal_send", { connection_id: talker, text: "mention-between-waits", channel: "lobby", mentions: ["listener"] });
+  let between: CallResult = { isError: false, text: "" };
+  for (let i = 0; i < 30 && !between.text.includes("1 new message waiting"); i++) {
+    await sleep(100);
+    between = await call(a, "cotal_roster", { connection_id: listener });
+  }
+  check("a focus @mention between waits shows in the unread line", between.text.includes("1 new message waiting"), between);
+  const caughtAt = Date.now();
+  const caught = await call(a, "cotal_wait", { connection_id: listener, seconds: 5 });
+  check("a focus @mention between waits ends the next wait at once", caught.text.includes("mention-between-waits") && Date.now() - caughtAt < 2000, caught);
+  const afterRead = await call(a, "cotal_wait", { connection_id: listener, seconds: 1 });
+  check("a read clears the focus @mentions it carried", afterRead.text.startsWith("No new messages"), afterRead);
+  await call(a, "cotal_status", { connection_id: listener, attention: "open" });
+
+  // Closing a connection ends a wait held on it.
+  const closer = idOf(await call(a, "cotal_connect", { name: "closer" }));
+  const closing = call(a, "cotal_wait", { connection_id: closer });
+  await sleep(500);
+  const closedAt = Date.now();
+  await call(a, "cotal_disconnect", { connection_id: closer });
+  const closed = await closing;
+  check(
+    "disconnecting ends a held wait as a closed connection",
+    closed.isError && closed.text.startsWith("CONNECTION_REQUIRED") && Date.now() - closedAt < 3000,
+    closed,
+  );
+
   // A run turn the gateway has no way to surface. Set by hand: a gateway connection cannot take one
   // through any tool it offers, so this is the only way to hold one open here.
   const turns = (listenerAgent as unknown as { activeTurns: Map<string, unknown> }).activeTurns;
@@ -405,7 +483,7 @@ try {
   turns.delete("smoke-turn");
   check(
     "a finished wait leaves no listener on the agent",
-    ["incoming", "wake", "mention-wake"].map((e) => listenerAgent.listenerCount(e)).join(",") === baseListeners,
+    ["incoming", "mention-wake", "transport"].map((e) => listenerAgent.listenerCount(e)).join(",") === baseListeners,
     baseListeners,
   );
 
