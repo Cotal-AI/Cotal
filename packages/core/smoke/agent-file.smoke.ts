@@ -208,5 +208,18 @@ ok("an unmodelled key survives a save and reload", provBack.meta?.scope_source =
 saveAgentFile(provenance, provBack);
 ok("and survives a second cycle, so a redefine cannot erode it", loadAgentFile(provenance).meta?.scope_source === "wire-default");
 
+// 9) A meta key that names a modeled field is refused before anything is written. The writer used
+//    to lay meta over the frontmatter it had just validated, so a hint could rebind the name, owner
+//    or capabilities, or write a blank model or a renamed key that the loader then refuses.
+for (const [k, v] of [["model", "   "], ["name", "bob"], ["owner", "mallory-id"], ["capabilities", "spawn"], ["channels", "general"]]) {
+  const target = join(dir, `collide-${k}`, "a.md");
+  let collided = false;
+  try { saveAgentFile(target, { name: "boundary", subscribe: [], model: "valid", meta: { [k]: v } }); } catch { collided = true; }
+  ok(`a meta "${k}" that collides with a modeled field is refused`, collided);
+  ok(`the "${k}" collision creates no directory`, !existsSync(join(dir, `collide-${k}`)));
+}
+const hinted = reread(join(dir, "hinted.md"), { name: "hinted", subscribe: [], model: "valid", meta: { theme: "dark", retries: "3" } });
+ok("unknown scalar hints round-trip beside a modeled model", hinted.model === "valid" && JSON.stringify(hinted.meta) === JSON.stringify({ theme: "dark", retries: "3" }), hinted);
+
 console.log(`\nagent-file yaml smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
