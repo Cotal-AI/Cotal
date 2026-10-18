@@ -81,6 +81,12 @@ are marked; import them with `import type`.
 `CotalEndpoint` accepts `environment` as an explicit presence label. Pass `null` to omit the label
 without reading `COTAL_ENVIRONMENT`. Omitting the option preserves the process environment default.
 
+Shared connector sessions report `card.meta.host` and `card.meta.cwd` from the connector process
+when the session is constructed. They override agent-file values and are advisory display data.
+The directory is a startup snapshot, not a model harness's later shell directory. Neither field
+changes routing or access, and the connector reads no command-line arguments or environment dump
+for these values.
+
 **Daemon runners and lifecycle**
 
 | symbol | package | purpose |
