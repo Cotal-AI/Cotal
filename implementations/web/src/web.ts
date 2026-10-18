@@ -1108,10 +1108,13 @@ export async function web(args: ParsedArgs): Promise<void> {
 
     const file = PAGE[path];
     if (file) {
+      // Read before the status line: a read that throws after `writeHead` reaches the catch below
+      // with the 200 already sent, and the browser runs an empty file as a success.
+      const body = readFileSync(file.path);
       // no-cache: always revalidate so a `cotal` upgrade's new dashboard code is picked up on
       // reload — a stale cached graph.js silently runs old behavior (e.g. pre-fix filters).
       res.writeHead(200, { "content-type": file.type, "cache-control": "no-cache" });
-      res.end(readFileSync(file.path));
+      res.end(body);
       return;
     }
     res.writeHead(404).end("not found");
