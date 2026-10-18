@@ -2117,12 +2117,16 @@ Seat ${seatName}.
     `\nU4005 SUMMARY: setup=${setupPass}/${setupPass + setupFail} repro=${reproPass}/${reproPass + reproFail} guard=${guardPass}/${guardPass + guardFail} redContract=${contractFail}/${contractPass + contractFail} (total=${records.length})`,
   );
 } finally {
+  await drainSeats(seatRoot, { drain: true }).catch(() => {});
   await inspectNc?.close().catch(() => {});
   await supNc?.close().catch(() => {});
   await delivery?.stop().catch(() => {});
   await authService?.close().catch(() => {});
   if (broker) await killAndAwaitExit(broker);
-  if (idpServer) await new Promise<void>((r) => idpServer!.close(() => r()));
+  if (idpServer) {
+    idpServer.closeAllConnections?.();
+    await new Promise<void>((r) => idpServer!.close(() => r()));
+  }
   rmSync(scratch, { recursive: true, force: true });
   rmSync(seatRoot, { recursive: true, force: true });
 }
@@ -2130,3 +2134,4 @@ Seat ${seatName}.
 if (setupFail > 0 || reproFail > 0 || guardFail > 0 || contractFail > 0) {
   process.exit(1);
 }
+process.exit(0);
