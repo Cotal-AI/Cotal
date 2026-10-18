@@ -505,16 +505,19 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   // Signals and cooperative requests share the sparing default. Only the process-bound
   // `cotal down --with-agents` intent authorizes an agent reap.
   let shuttingDown = false;
+  // A start that failed under a pending stop leaves the exit to its own error once that stop settles.
+  let startFailed = false;
+  let stopped: Promise<void> | undefined;
   const shutdown = () => {
     if (shuttingDown) return;
     shuttingDown = true;
     const decision = consumeManagerShutdownIntent({ root: managerRoot, space });
     if (decision.warning) console.error(c.yellow(`! ${decision.warning}`));
-    void mgr.stop({ withAgents: decision.withAgents })
+    stopped = mgr.stop({ withAgents: decision.withAgents })
     .then(() => {
       publishManagerSpareCapability(managerContext, false);
       releasePidRecord?.();
-      process.exit(0);
+      if (!startFailed) process.exit(0);
     })
     .catch((e) => {
       // The record is NOT released here: the stop did not complete, so a seat may still be running
@@ -522,7 +525,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       // pidfile contract exists to prevent. The process still exits: stop() has closed what it could,
       // and the shuttingDown latch would otherwise leave it deaf to every later signal (#2290).
       console.error(c.red(`✗ ${(e as Error).message}`));
-      process.exit(1);
+      if (!startFailed) process.exit(1);
     });
   };
   const disposeLocalStop = process.platform === "win32"
@@ -536,7 +539,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   try { await mgr.start(); }
-  catch (error) { disposeLocalStop?.(); throw error; }
+  catch (error) {
+    disposeLocalStop?.();
+    // The CLI exits as soon as this throws. A stop requested during start runs only after start
+    // settles, so wait for it to release the lease first; the start error still decides the exit.
+    startFailed = true;
+    await stopped;
+    throw error;
+  }
   // A stop that arrived during start owns the exit; this process never announces itself ready.
   if (shuttingDown) return;
   // The control capability precedes the pid record, so a stop cannot observe a ready manager

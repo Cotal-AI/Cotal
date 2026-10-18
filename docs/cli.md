@@ -396,8 +396,9 @@ manager and delivery stops send an authenticated local cleanup request because W
 signals terminate without running cleanup handlers. The request requires the process's private
 capability, its creation identity and the live stopper's identity and reservation. Other platforms
 use `SIGTERM`. A `cotal supervise` that receives `SIGTERM` or `SIGINT` while it is still starting
-finishes the start, then runs the same stop and exits without printing `manager up`, so its
-liveness lease is released and an immediate restart is not refused. A process still running after 20s on the Windows cooperative path, or 15s after
+lets the start settle, then runs the same stop and exits without printing `manager up`, so its
+liveness lease is released and an immediate restart is not refused. When that start fails, the stop
+still releases the lease before the process prints the start error and exits 1. A process still running after 20s on the Windows cooperative path, or 15s after
 `SIGTERM`, receives `SIGKILL`. Ctrl-C stops the manager first; when that
 stop is refused or the manager's exit cannot be confirmed, Ctrl-C signals nothing else, prints the
 refusal with the reap route, and leaves the stack running; end it with `cotal down --with-agents`.
