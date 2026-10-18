@@ -38,6 +38,10 @@ import {
   readCheckpointSettle,
   compileContract,
   TURN_INPUT_SCHEMA,
+  GRACEFUL_INPUT_SCHEMA,
+  SPAWN_INPUT_SCHEMA,
+  SPAWN_OUTPUT_SCHEMA,
+  STOP_OUTPUT_SCHEMA,
   TURN_OUTPUT_SCHEMA,
   contractDigest,
   contractStoreContext,
@@ -131,38 +135,13 @@ const armPending = async (expect = 4): Promise<void> => {
 };
 
 // ── the suite-served manager-shaped goal endpoint (spawn + turn), the turn suite's rig ─────────
-const SPAWN_INPUT = {
-  type: "object", additionalProperties: false, required: ["name"],
-  properties: {
-    name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
-    model: { type: "string" }, variant: { type: "string" },
-    subscribe: { type: "array", items: { type: "string" } },
-  },
-} as const;
-const SPAWN_OUTPUT = {
-  type: "object", additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "executor"],
-  properties: {
-    name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
-    goalId: { type: "string" }, fingerprint: { type: "string" }, readinessDeadlineMs: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
-    },
-  },
-} as const;
-
+// The served schemas are the manager's own, from core, so a manager contract change reaches this stand-in.
 const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
 // A completed run despawns the seats it spawned, so the stand-in serves the manager's despawn too.
-const DESPAWN_INPUT = { type: "object", additionalProperties: false, properties: { graceful: { type: "boolean" } } } as const;
-const DESPAWN_OUTPUT = {
-  type: "object", additionalProperties: false, required: ["name", "stopped", "graceful"],
-  properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
-} as const;
 const COMPILED = {
-  spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
+  spawn: { input: cc(SPAWN_INPUT_SCHEMA), output: cc(SPAWN_OUTPUT_SCHEMA) },
   turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
-  despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
+  despawn: { input: cc(GRACEFUL_INPUT_SCHEMA), output: cc(STOP_OUTPUT_SCHEMA) },
 };
 const DOCUMENT = {
   urn: "ai.cotal.test.worktreemgr", revision: 1, attributes: [], events: [],
@@ -181,7 +160,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT]) {
+  for (const source of [SPAWN_INPUT_SCHEMA, SPAWN_OUTPUT_SCHEMA, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, GRACEFUL_INPUT_SCHEMA, STOP_OUTPUT_SCHEMA]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
