@@ -123,7 +123,7 @@ export interface IdpBridge {
  *  posture as `validateUserToken`, minus the Cotal claim shape (an IdP token has no `ver`/`act`; its
  *  lifetime is the IdP's session policy — but it must expire and must not be post-dated). The `exp` is
  *  returned so `exchange` can CAP the minted Cotal bearer to the upstream proof's remaining life. */
-export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ sub: string; exp: number }> {
+export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ sub: string; exp: number; authTime?: number }> {
   const header = decodeProtectedHeader(token);
   if (header.jku !== undefined || header.jwk !== undefined || header.x5u !== undefined || header.x5c !== undefined)
     throw new Error("idp token: embedded key material (jku/jwk/x5u/x5c) is rejected - keys resolve only via the pinned JWKS");
@@ -147,7 +147,10 @@ export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ s
   if (payload.iat > Math.floor(Date.now() / 1000) + CLOCK_TOLERANCE_SEC) throw new Error("idp token: iat is in the future");
   if (typeof payload.sub !== "string" || !payload.sub)
     throw new Error("idp token: sub must be a non-empty string user id - no coercion at a trust boundary");
-  return { sub: payload.sub, exp: payload.exp };
+  // `auth_time` (OIDC) is when the human last signed in interactively. It is returned only when the
+  // IdP stated it as a number; a caller that needs a fresh interactive proof refuses without it.
+  const authTime = typeof payload.auth_time === "number" && Number.isSafeInteger(payload.auth_time) ? payload.auth_time : undefined;
+  return { sub: payload.sub, exp: payload.exp, ...(authTime !== undefined ? { authTime } : {}) };
 }
 
 /**

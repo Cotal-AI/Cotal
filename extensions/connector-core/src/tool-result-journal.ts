@@ -22,6 +22,7 @@
  *   harness wrote; nothing is matched by time, order or name.
  */
 
+import type { ToolResultAnswer } from "@cotal-ai/core";
 import { AGUI_EVENT_TYPE, type AguiEvent } from "./agui.js";
 import type { RecordMapper } from "./agui-emitter.js";
 
@@ -42,18 +43,7 @@ export const TOOL_RESULT_DEFAULTS = Object.freeze({
   ttlMs: 3_600_000,
 });
 
-/** One lookup's answer. Every state is distinct and none is inferred from another:
- *  - `available`: the harness reported a result; `content` is its text, possibly `""`.
- *  - `pending`: the call started and no result has arrived yet.
- *  - `not-shared`: no applied consent names this reader, so nothing is shown.
- *  - `missing`: no call or result with this id was observed by this process.
- *  - `expired`: a result was held and the retention bound (age or capacity) dropped it. */
-export type ToolResultAnswer =
-  | { state: "available"; threadId: string; toolCallId: string; content: string; truncated: boolean; bytes: number; isError: boolean; capturedAt: number }
-  | { state: "pending"; threadId: string; toolCallId: string }
-  | { state: "not-shared" }
-  | { state: "missing" }
-  | { state: "expired" };
+export type { ToolResultAnswer } from "@cotal-ai/core";
 
 type Entry =
   | { kind: "pending"; at: number }

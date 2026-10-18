@@ -24,6 +24,9 @@ import {
   verifyArtifactSignature,
   type AnchorResolver,
 } from "./endpoint-signing.js";
+import { epCallerReplyGrantRow, epRequestGrantRows } from "./endpoint-grants.js";
+import type { EpCaller } from "./endpoint-subjects.js";
+import { TOOL_RESULT_COMMANDS, TOOL_RESULT_ENDPOINT } from "./tool-result-contract.js";
 
 export const TOOL_RESULT_CONSENT_SCOPE = "tool-results";
 export const TOOL_RESULT_CONSENT_MAX_TTL_MS = 24 * 60 * 60 * 1000;
@@ -158,4 +161,27 @@ export async function verifyToolResultConsent(
     throw new EpEnvelopeError("permission-denied", "the consent's human proof was not fresh when it was signed (SPEC 13.6)");
   assertArtifactCurrency({ iat, exp }, { now, ceilingMs: TOOL_RESULT_CONSENT_MAX_TTL_MS, what: "tool-result consent", ceilingName: "consent", refusals: "post-signature" });
   return { v: 1, id: raw.id, space: opts.space, scope: TOOL_RESULT_CONSENT_SCOPE, target: t, holder, proofAt, iat, exp, issuer: { keyId: raw.issuer.keyId }, sig: raw.sig as string };
+}
+
+/**
+ * The exact broker permissions a redeemed consent mints for its holder: request-publish on the
+ * serving connector's own instance rail for the three tool-result commands, each in `handle` mode
+ * with the consent's full target triple, plus the holder's own reply rail. Nothing class-wide,
+ * no wildcard target, no other command, so the broker confines both the request and the reply.
+ * `consent` MUST already be verified ({@link verifyToolResultConsent}) and `holder` MUST be the
+ * authenticated presenter the consent names.
+ */
+export function toolResultRedemptionRows(
+  space: string,
+  consent: ToolResultConsent,
+  holder: EpCaller,
+  serving: { instanceId: string },
+): { pub: string[]; sub: string[] } {
+  if (`${holder.owner}.${holder.actor}` !== consent.holder.id)
+    throw new EpEnvelopeError("permission-denied", "only the holder a consent names can redeem it (SPEC 13.6)");
+  if (consent.space !== space) throw new EpEnvelopeError("permission-denied", "a consent redeems only in its own space (SPEC 13.6)");
+  const target = { mode: "handle" as const, tOwner: consent.target.owner, tActor: consent.target.actor, tUid: consent.target.lifecycleUid };
+  const pub = TOOL_RESULT_COMMANDS.flatMap((command) =>
+    epRequestGrantRows(space, { endpoint: TOOL_RESULT_ENDPOINT, command, instanceId: serving.instanceId, instanceOnly: true, target }, holder));
+  return { pub, sub: [epCallerReplyGrantRow(space, holder)] };
 }

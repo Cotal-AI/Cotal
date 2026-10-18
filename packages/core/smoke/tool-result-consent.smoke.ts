@@ -56,3 +56,23 @@ assert.throws(() => mint({ proofAt: NOW - TOOL_RESULT_CONSENT_PROOF_MAX_AGE_MS -
 assert.throws(() => mint({ ttlMs: TOOL_RESULT_CONSENT_MAX_TTL_MS + 1 }), (e: unknown) => e instanceof EpEnvelopeError && e.code === "contract-invalid"); checks++;
 
 console.log(`tool-result-consent smoke: ${checks} checks passed`);
+
+// ---- redemption rows: exact, instance-pinned, handle-mode, holder-only -------------------------
+{
+  const { toolResultRedemptionRows } = await import("../src/tool-result-consent.js");
+  const holder = { owner: "u_owner", actor: "web", uid: "h".repeat(26) };
+  const instanceId = "i".repeat(26);
+  const rows = toolResultRedemptionRows(SPACE, good, holder, { instanceId });
+  assert.equal(rows.pub.length, 3); checks++;
+  for (const row of rows.pub) {
+    assert.ok(row.includes(`.inst.tool-results.${instanceId}.`), `instance rail only: ${row}`);
+    assert.ok(row.includes(`.handle.${TARGET.owner}.${TARGET.actor}.${TARGET.lifecycleUid}.`), `full handle triple: ${row}`);
+    assert.ok(!row.includes(".one.") && !row.includes(".all."), `no class or scatter rail: ${row}`);
+    assert.ok(row.endsWith(".*") && !row.slice(0, -2).includes("*") && !row.includes(">"), `only the nonce is a wildcard: ${row}`);
+    checks += 4;
+  }
+  assert.equal(rows.sub.length, 1); checks++;
+  assert.throws(() => toolResultRedemptionRows(SPACE, good, { ...holder, actor: "other" }, { instanceId }), (e: unknown) => e instanceof EpEnvelopeError && e.code === "permission-denied"); checks++;
+  assert.throws(() => toolResultRedemptionRows("neighbour", good, holder, { instanceId }), (e: unknown) => e instanceof EpEnvelopeError && e.code === "permission-denied"); checks++;
+  console.log(`tool-result redemption rows: ${checks} checks so far`);
+}

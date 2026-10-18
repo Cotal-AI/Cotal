@@ -18,6 +18,15 @@
 
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
+  TOOL_RESULT_ENDPOINT,
+  TOOL_RESULT_COMMAND,
+  TOOL_RESULT_CONSENT_COMMAND,
+  TOOL_RESULT_REVOKE_COMMAND,
+  TOOL_RESULT_INPUT_SCHEMA,
+  TOOL_RESULT_OUTPUT_SCHEMA,
+  TOOL_RESULT_CONSENT_INPUT_SCHEMA,
+  TOOL_RESULT_REVOKE_INPUT_SCHEMA,
+  TOOL_RESULT_CONSENT_OUTPUT_SCHEMA,
   compileContract,
   EpEnvelopeError,
   serveEndpoint,
@@ -30,60 +39,17 @@ import {
 } from "@cotal-ai/core";
 import type { ToolResultJournal } from "./tool-result-journal.js";
 
-export const TOOL_RESULT_COMMAND = "tool-result";
-export const TOOL_RESULT_CONSENT_COMMAND = "tool-result-consent";
-export const TOOL_RESULT_REVOKE_COMMAND = "tool-result-revoke";
-
-const id = { type: "string", minLength: 1, maxLength: 256 } as const;
-
-/** Exact native ids only: the harness's session (the AG-UI thread) and its tool-call id. */
-export const TOOL_RESULT_INPUT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["threadId", "toolCallId"],
-  properties: { threadId: id, toolCallId: id },
-} as const;
-
-/** {@link import("./tool-result-journal.js").ToolResultAnswer}, closed. `content` is inert text:
- *  a consumer renders it as text, never as HTML, markdown images or links it follows. */
-export const TOOL_RESULT_OUTPUT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["state"],
-  properties: {
-    state: { enum: ["available", "pending", "not-shared", "missing", "expired"] },
-    threadId: id,
-    toolCallId: id,
-    content: { type: "string" },
-    truncated: { type: "boolean" },
-    bytes: { type: "integer", minimum: 0 },
-    isError: { type: "boolean" },
-    capturedAt: { type: "number" },
-  },
-} as const;
-
-/** `tool-result-consent`: the holder presents the host-signed consent artifact it was given. */
-export const TOOL_RESULT_CONSENT_INPUT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["consent"],
-  properties: { consent: { type: "object" } },
-} as const;
-
-/** `tool-result-revoke`: the holder withdraws one consent by id. */
-export const TOOL_RESULT_REVOKE_INPUT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["id"],
-  properties: { id: { type: "string", minLength: 16, maxLength: 64 } },
-} as const;
-
-export const TOOL_RESULT_CONSENT_OUTPUT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["state"],
-  properties: { state: { enum: ["active", "revoked", "unknown"] }, id: { type: "string" }, exp: { type: "number" } },
-} as const;
+export {
+  TOOL_RESULT_ENDPOINT,
+  TOOL_RESULT_COMMAND,
+  TOOL_RESULT_CONSENT_COMMAND,
+  TOOL_RESULT_REVOKE_COMMAND,
+  TOOL_RESULT_INPUT_SCHEMA,
+  TOOL_RESULT_OUTPUT_SCHEMA,
+  TOOL_RESULT_CONSENT_INPUT_SCHEMA,
+  TOOL_RESULT_REVOKE_INPUT_SCHEMA,
+  TOOL_RESULT_CONSENT_OUTPUT_SCHEMA,
+};
 
 /** The agent this command answers for: the managed target's alias and the lifecycle whose journal
  *  it serves. A successor incarnation builds a new journal and a new def. */

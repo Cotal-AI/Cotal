@@ -34,6 +34,7 @@ export * from "./endpoint-virtual.js";
 export * from "./endpoint-receipt.js";
 export * from "./endpoint-signing.js";
 export * from "./tool-result-consent.js";
+export * from "./tool-result-contract.js";
 export * from "./signing-key-rotation.js";
 export * from "./endpoint-traits.js";
 export * from "./safe-pattern.js";
