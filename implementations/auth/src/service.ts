@@ -181,10 +181,6 @@ const MANAGER_PIN_REMEDY: Record<ManagerCaller | "wire", string> = {
   wire: "name one as managerInstanceId",
 };
 
-/** The service's AUTHORITY PLANE (R1, SPEC 13.1): the two self-minted data-account connections
- *  behind (a) the composed connect authorizer — the file-ledger arm PLUS the credential deny-new
- *  arm through the supervised, shape-proved reader — and (b) the exchange-time root-credential
- *  ensure both exchange arms stamp `act.credentialId` from. */
 /** One Manager instance the issuer found for an owner, as `/manager-instances` lists it. `state` is the
  *  verdict `selectManagerInstance` reads: `candidate` is an open gate of this owner whose current
  *  service registration and status match the gate's registration revision and process epoch. That is
@@ -207,6 +203,10 @@ export interface ManagerInstanceCatalog {
   instances: ManagerInstanceRecord[];
 }
 
+/** The service's AUTHORITY PLANE (R1, SPEC 13.1): the two self-minted data-account connections
+ *  behind (a) the composed connect authorizer — the file-ledger arm PLUS the credential deny-new
+ *  arm through the supervised, shape-proved reader — and (b) the exchange-time root-credential
+ *  ensure both exchange arms stamp `act.credentialId` from. */
 export interface AuthAuthorityPlane {
   authorizeConnect: (t: ValidatedUserToken) => Promise<void>;
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
