@@ -54,6 +54,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     },
     provisioner: () => one("provisioner"),
     deprovisioner: () => one("deprovisioner", { deprovisionTarget: { principal: "local.worker", lifecycleUid: uid } }),
+    "recipient-deprovisioner": () => one("recipient-deprovisioner", { recipientDurables: [{ stream: dmStream(space), durable: `rdm_local-worker-${uid}-${uid}` }] }),
     "retirement-requester": () => one("retirement-requester", { retirementRequester: { owner: "local", actor: "census", uid, target: { owner: "local", actor: "worker", lifecycleUid: uid } } }),
     "lifecycle-executor": () => one("lifecycle-executor", { lifecycleExecutor: { owner: "local", actor: "worker", lifecycleUid: uid, alias: "worker" } }),
     "endpoint-serve-executor": () => one("endpoint-serve-executor", { endpointServeExecutor: { endpoint: "manager", instanceId: instance } }),
@@ -257,7 +258,7 @@ export const PEER_HELD_PROFILES: readonly CensusProfile[] = Object.freeze(["agen
  * adds it to decide, instead of drifting into "trusted" by default.
  */
 export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
-  "supervisor", "operator", "provisioner", "deprovisioner", "admin", "purger", "probe", "delivery",
+  "supervisor", "operator", "provisioner", "deprovisioner", "recipient-deprovisioner", "admin", "purger", "probe", "delivery",
   "teardown", "channel-writer", "channel-purger", "membership-rw", "deployer", "goal-writer",
   "session-ledger", "session-serving", "run-mediator", "run-operator", "remote-manager",
   "lifecycle-executor", "endpoint-serve-executor", "endpoint-serve", "control-caller-privileged",
