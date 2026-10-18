@@ -26,7 +26,7 @@
  */
 import { decodeJwt, decodeProtectedHeader, jwtVerify } from "jose";
 import type { CryptoKey, JWTVerifyGetKey } from "jose";
-import { assertValidOwnerToken } from "@cotal-ai/core";
+import { assertValidOwnerToken, type ToolResultConsent } from "@cotal-ai/core";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
 import { CLOCK_TOLERANCE_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
@@ -116,6 +116,9 @@ export interface IdpBridge {
     verifySession?: (p: { owner: string; actor: string; lifecycleUid: string }) => Promise<UserTokenSession>;
     /** Required for view "transfer-writer": the one object the bearer may upload (#1499). */
     transferWriter?: UserTokenTransferWriter;
+    /** Required for view "tool-result-caller": the identity plane's consent decision for the
+     *  holder this bridge derived. Returns the verified consent to stamp; throws to refuse. */
+    verifyToolResult?: (p: { owner: string; actor: string; lifecycleUid: string }) => Promise<ToolResultConsent>;
   }): Promise<ExchangeResult>;
 }
 
@@ -123,7 +126,7 @@ export interface IdpBridge {
  *  posture as `validateUserToken`, minus the Cotal claim shape (an IdP token has no `ver`/`act`; its
  *  lifetime is the IdP's session policy — but it must expire and must not be post-dated). The `exp` is
  *  returned so `exchange` can CAP the minted Cotal bearer to the upstream proof's remaining life. */
-export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ sub: string; exp: number }> {
+export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ sub: string; exp: number; authTime?: number }> {
   const header = decodeProtectedHeader(token);
   if (header.jku !== undefined || header.jwk !== undefined || header.x5u !== undefined || header.x5c !== undefined)
     throw new Error("idp token: embedded key material (jku/jwk/x5u/x5c) is rejected - keys resolve only via the pinned JWKS");
@@ -147,7 +150,10 @@ export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ s
   if (payload.iat > Math.floor(Date.now() / 1000) + CLOCK_TOLERANCE_SEC) throw new Error("idp token: iat is in the future");
   if (typeof payload.sub !== "string" || !payload.sub)
     throw new Error("idp token: sub must be a non-empty string user id - no coercion at a trust boundary");
-  return { sub: payload.sub, exp: payload.exp };
+  // `auth_time` (OIDC) is when the human last signed in interactively. It is returned only when the
+  // IdP stated it as a number; a caller that needs a fresh interactive proof refuses without it.
+  const authTime = typeof payload.auth_time === "number" && Number.isSafeInteger(payload.auth_time) ? payload.auth_time : undefined;
+  return { sub: payload.sub, exp: payload.exp, ...(authTime !== undefined ? { authTime } : {}) };
 }
 
 /**
@@ -214,6 +220,8 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         throw new Error("idp bridge: authorizeActor must return a grant object - anything else is a deny");
       if (req.view === "manager-service")
         throw new Error('view "manager-service" is not a bearer profile; use the typed manager-service authority exchange');
+      if (req.view === "inbox-recipient")
+        throw new Error('view "inbox-recipient" is redeemed only with a consented grant\'s own secret, never with a sign-in');
       if (req.view !== undefined) {
         // An elevated view is authorized against the FRESH grant just read, per the central
         // policy table (admin-gated operator views; spawn-gated deployer). The refusal names the
@@ -252,6 +260,14 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         session = await req.verifySession({ owner, actor: req.actor, lifecycleUid: grant.lifecycleUid });
         ttlSec = Math.min(ttlSec, Math.max(1, session.exp - Math.floor(Date.now() / 1000)));
       }
+      let toolResult: ToolResultConsent | undefined;
+      if (req.view === "tool-result-caller") {
+        if (!req.verifyToolResult) throw new Error('view "tool-result-caller" needs the identity plane\'s consent decision - refusing to mint');
+        toolResult = await req.verifyToolResult({ owner, actor: req.actor, lifecycleUid: grant.lifecycleUid });
+        // The bearer never outlives the consent it redeems (consent exp is unix milliseconds).
+        ttlSec = Math.min(ttlSec, Math.floor((toolResult.exp - Date.now()) / 1000));
+        if (!(ttlSec > 0)) throw new Error("idp bridge: the tool-result consent has expired - cannot mint a bearer");
+      }
       // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential id
       // rides act.credentialId — ensured (minted release-last on first exchange) BEFORE the
       // bearer bytes are signed, so the row the connect arm requires is durable before any
@@ -270,6 +286,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         managerInstanceId: req.managerInstanceId,
         ...(session ? { session } : {}),
         ...(req.transferWriter ? { transferWriter: req.transferWriter } : {}),
+        ...(toolResult ? { toolResult } : {}),
         ttlSec,
       });
       const { exp } = decodeJwt(token);

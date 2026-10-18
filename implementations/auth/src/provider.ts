@@ -13,7 +13,7 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { isLoopbackLiteral, registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserCredentialsRequest } from "@cotal-ai/core";
+import { isLoopbackLiteral, registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type ToolResultServeAuthorityRequest, type UserCredentialsRequest } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
@@ -270,6 +270,13 @@ export const cotalAuthProvider: AuthProvider = {
   async enrollRemoteManagedAgent({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagedAgentEnrollmentRequest }): Promise<RemoteManagedAgentEnrollmentResult> {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "enrolling a managed agent");
     return postManagerAuthority(endpoint, idpUrl, authorization, request, "managed agent enrollment") as Promise<RemoteManagedAgentEnrollmentResult>;
+  },
+
+  /** Client half of user-mode tool-results serve issuance and renewal. The body comes back verbatim;
+   *  the manager checks it against its own request before writing anything. */
+  async issueRemoteToolResultServe({ store, dir, request }: { store: SecretStore; dir: string; request: ToolResultServeAuthorityRequest }): Promise<unknown> {
+    const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "issuing tool-results serving");
+    return postManagerAuthority(endpoint, idpUrl, authorization, request, "tool-results serve issuance");
   },
 
   /** Client half of host-owned terminal release preparation (#1972 phase P0/P1). The opId is derived

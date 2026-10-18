@@ -24,6 +24,7 @@ import {
   type RemoteManagedAgentPrepareRetirementRequest,
   type RemoteManagedAgentRuntimeCreateRequest,
   type RemoteManagedAgentRuntimeStatusRequest,
+  type ToolResultServeAuthorityRequest,
 } from "@cotal-ai/core";
 import { timingSafeEqual } from "node:crypto";
 import { ledgerAuthorizeGrant } from "./ledger.js";
@@ -34,8 +35,8 @@ export type ObserveManagerGate = (instanceId: string) => Promise<Pick<EpGateStat
 
 /** Every door here runs this one check after its own scope and target checks, so a change to the
  *  gate, principal, epoch, or proof rule reaches all of them at once. */
-async function assertCurrentManagerRegistration(
-  r: RemoteManagedAgentEnrollmentRequest | RemoteManagedAgentPrepareRetirementRequest | RemoteManagedAgentRuntimeCreateRequest | RemoteManagedAgentRuntimeStatusRequest,
+export async function assertCurrentManagerRegistration(
+  r: RemoteManagedAgentEnrollmentRequest | RemoteManagedAgentPrepareRetirementRequest | RemoteManagedAgentRuntimeCreateRequest | RemoteManagedAgentRuntimeStatusRequest | ToolResultServeAuthorityRequest,
   args: { owner: string; proofSecret: string | Uint8Array; observeManagerGate: ObserveManagerGate },
   what: string,
 ): Promise<void> {

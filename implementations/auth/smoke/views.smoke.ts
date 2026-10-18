@@ -74,9 +74,11 @@ const issuer = createUserTokenIssuer({ issuer: "https://views.test", key: signin
 const SESSION = { endpoint: "manager", sessionId: mintSessionId(), epoch: 1, exp: Math.floor(Date.now() / 1000) + 300 };
 // The one object a transfer-writer bearer may upload (#1499).
 const TRANSFER = { instanceId: "m".repeat(26), hex: "a".repeat(64) };
+// The consent a tool-result-caller bearer redeems: shape only here; the callout re-verifies it.
+const TOOL_RESULT = { v: 1 as const, id: "c".repeat(22), space: SPACE, scope: "tool-results" as const, target: { owner: OWNER, actor: "seat", lifecycleUid: smokeUid }, holder: { id: `${OWNER}.cli` }, proofAt: Date.now() - 1000, iat: Date.now(), exp: Date.now() + 300_000, issuer: { keyId: "host" }, sig: "x" };
 for (const view of USER_TOKEN_VIEWS) {
   const required = VIEW_REQUIRED_SCOPE[view];
-  const token = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: required ? [required] : [], view, lifecycleUid: smokeUid, ...(view === "manager-caller" ? { managerInstanceId: "m".repeat(26) } : {}), ...(view === "session-caller" ? { session: SESSION } : {}), ...(view === "transfer-writer" ? { transferWriter: TRANSFER } : {}) });
+  const token = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: required ? [required] : [], view, lifecycleUid: smokeUid, ...(view === "manager-caller" ? { managerInstanceId: "m".repeat(26) } : {}), ...(view === "session-caller" ? { session: SESSION } : {}), ...(view === "transfer-writer" ? { transferWriter: TRANSFER } : {}), ...(view === "tool-result-caller" ? { toolResult: TOOL_RESULT } : {}) });
   const v = await validateUserToken(token, { key: issuer.localKeySet(), issuer: "https://views.test", audience: SPACE });
   const s = v.act.session;
   const sessionIntact = view === "session-caller"
@@ -131,8 +133,9 @@ await rejects(
 console.log("B. view → required-scope policy table");
 check('deployer is spawn-gated (own-team deploys are spawn-grade)', VIEW_REQUIRED_SCOPE.deployer === "spawn");
 check('manager-service is supervise-gated (remote manager authority is distinct)', VIEW_REQUIRED_SCOPE["manager-service"] === "supervise");
-for (const view of USER_TOKEN_VIEWS.filter((v) => v !== "deployer" && v !== "manager-service" && v !== "manager-caller" && v !== "session-caller"))
+for (const view of USER_TOKEN_VIEWS.filter((v) => v !== "deployer" && v !== "manager-service" && v !== "manager-caller" && v !== "session-caller" && v !== "tool-result-caller"))
   check(`${view} is admin-gated (operator authority)`, VIEW_REQUIRED_SCOPE[view] === "admin");
+check("tool-result-caller adds no capability requirement (the signed consent is the authority)", VIEW_REQUIRED_SCOPE["tool-result-caller"] === undefined);
 check("manager-caller adds no capability requirement", VIEW_REQUIRED_SCOPE["manager-caller"] === undefined);
 check("session-caller adds no capability requirement (the redeemed session grant is the authority)", VIEW_REQUIRED_SCOPE["session-caller"] === undefined);
 check(

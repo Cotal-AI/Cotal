@@ -102,6 +102,7 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   "environment-manager-goal-writer": viaEnvironment("environment-manager-goal-writer", `manager_goal_${IID}`),
   provisioner: via("provisioner"),
   deprovisioner: via("deprovisioner", { deprovisionTarget: { principal: `${DEV_OWNER}.worker`, lifecycleUid: UID } }),
+  "recipient-deprovisioner": via("recipient-deprovisioner", { recipientDurables: [{ stream: `DM_${SPACE}`, durable: `rdm_${DEV_OWNER}-worker-${UID}-${UID}` }] }),
   "retirement-requester": via("retirement-requester", { retirementRequester: { owner: DEV_OWNER, actor: "manager", uid: UID, target: { owner: DEV_OWNER, actor: "worker", lifecycleUid: UID } } }),
   "lifecycle-executor": via("lifecycle-executor", { lifecycleExecutor: { owner: DEV_OWNER, actor: "worker", lifecycleUid: UID, alias: "worker" } }),
   "endpoint-serve-executor": via("endpoint-serve-executor", { endpointServeExecutor: { endpoint: EP, instanceId: IID } }),

@@ -371,6 +371,40 @@ await runAuthService(
 );
 ```
 
+### Consented background recipient
+
+`@cotal-ai/core` exports the delivery half of a background recipient: a server-held reader that keeps
+receiving one lifecycle's DMs and Plane-3 deliveries after its page closes, under that person's
+consent. It reads through its own durables, never the lifecycle's `dm_`/`dlv_` durables, so a UI
+reader's ACK never consumes its copy, and the UI never loses one to it.
+
+| Step | Export | What it does |
+| --- | --- | --- |
+| Consent | `captureRecipientFrontier(jsm, space)` | Reads the DM and DLV last sequences when consent is recorded. Delivery starts after them, so nothing earlier is captured. |
+| Provision | `recipientDurableConfigs(scope, frontier)`, `provisionRecipientDurables` | Pre-creates `rdm_…-<grantId>` and `rdlv_…-<grantId>` with the lifecycle's filters, explicit ACK, 64 in flight and no delivery limit. |
+| Grant | `recipientBindGrants(durables)` | The recipient's whole JetStream surface: info, fetch and ACK of those two durables. No create, delete, stream or writer row. |
+| Read | `nextRecipientDelivery(js, durable)` | One delivery with a stable `sourceId` (`<stream>:<sequence>`) and its delivery count. |
+| Commit | `commitThenAck(pending, persist)` | Persists, then ACKs. A failed persist NAKs (`retry`). A persisted delivery whose ACK is unconfirmed is `unknown` and may come back, so `persist` must be idempotent on `sourceId`. |
+| Revoke | `deprovisionRecipientDurables` | Deletes both durables by exact name. It stops further delivery but cannot recall a fetched one, so the host re-checks the grant before each persist. |
+
+A DM-stream delivery is category `dm`. A DLV delivery is `unknown`: this release carries no trusted
+delivery reason, and the category is never guessed from text or rosters.
+
+The auth service holds the authority half (`@cotal-ai/auth`, `recipient-grant.ts`):
+
+| Step | Where | What it checks |
+| --- | --- | --- |
+| Consent | `POST /manager-service-authority`, request `{ kind: "inbox-recipient-consent", actor, lifecycleUid, sources, ttlMs }` | An IdP proof whose `auth_time` is at most five minutes old, the owner's own interactive row at that exact lifecycle, sources from `dm` and `dlv`, and a lifetime of at most seven days. A host without scoped provisioning refuses. |
+| Journal | the 0600 grant row | Written `provisioning` with the frontier and durable names before the durables exist, and `active` only after both are created. A failed provision deletes what it made and grants nothing. |
+| Redeem | `POST /exchange { recipientGrant, recipientToken }` | The grant's own secret, returned once at consent and stored only as its hash. The answer is a bearer of the closed `inbox-recipient` view, at most five minutes long and never past the grant. |
+| Connect | the auth callout | The grant, its owner, actor, lifecycle and expiry, read again. The connection gets the grant's six info, fetch and ACK rows and its own reply inbox, nothing else. |
+| Revoke | `POST /manager-service-authority`, request `{ kind: "inbox-recipient-revoke", actor, grantId }` | Owner only. The grant ends first, then its durables are deleted under a `recipient-deprovisioner` credential pinned to them. |
+
+An expired grant, or one whose lifecycle the owner no longer holds, refuses at the next exchange or
+connect and has its durables deleted then. A connection already open keeps what it fetched until its
+bearer expires, so the host re-checks the grant before each persist. Agents cannot consent: the
+consent route takes only a signed-in human's IdP proof.
+
 ### delivery
 
 `runDelivery(args, store?)` runs from a **pre-minted scoped `delivery` cred** and never loads the
