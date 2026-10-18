@@ -3021,9 +3021,15 @@ the connection it opens expire no later than the consent; the callout repeats th
 mint and grants exactly the handle-mode request rows for the three commands on that incarnation plus
 the holder's own reply rail. An agent-secret exchange cannot request the view. The human proof time is
 the IdP token's own signed OIDC `auth_time` claim; a token without it is refused and the time is never
-synthesized, so a host that signs consents needs an IdP that issues `auth_time`. Registering the
-commands and issuing the agent's serve grant, and registering the host's `consents` anchor, are
-hosting-authority work not defined here.
+synthesized, so a host that signs consents needs an IdP that issues `auth_time`. On a static-auth
+mesh a launcher MAY register one `tool-results` instance per managed incarnation (instance id = its
+lifecycle UID, the three commands `handle`-only, owner = the operator) and hand the agent its serve
+grant and its own `endpoint-serve` credential, bounded like its agent credential, through the 0600
+launch material only; retiring the incarnation deregisters the instance. A mesh with no issuer for
+that material (user-mode, open) refuses such a spawn rather than launching one that serves nothing.
+Registering the host's `consents` anchor and user-mode serve issuance are hosting-authority work not
+defined here; until a session is given anchors, every presented consent is refused and the journal
+stays off.
 
 ### 13.7 Contracts and discovery
 

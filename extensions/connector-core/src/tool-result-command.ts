@@ -36,6 +36,8 @@ import {
   type EpServeContext,
   type EpServeGrant,
   type EpServeHandle,
+  dialerFor,
+  standaloneConnectOpts,
 } from "@cotal-ai/core";
 import type { ToolResultJournal } from "./tool-result-journal.js";
 
@@ -150,4 +152,49 @@ export function serveToolResults(
     toolResultConsentCommandDef(journal, self, { space, resolveAnchor }),
     toolResultRevokeCommandDef(journal, self),
   ], { public: true });
+}
+
+/**
+ * Serve this session's journal from the launcher's serving material (SPEC 13.6): the agent's own
+ * `endpoint-serve` creds, read from its 0600 launch-material file, and the serve grant they were
+ * minted under. Opens ONE
+ * dedicated connection with exactly those creds and serves the three handle-only commands on it.
+ * Without material nothing is served. The grant must name this space, the `tool-results` endpoint
+ * and this incarnation, or nothing is opened.
+ *
+ * No consents anchor registry is supplied to a launched session yet, so every presented consent is
+ * refused as an unknown signer and the journal stays off: serving a consent command never applies a
+ * consent by itself. `stop()` drains the serve subscriptions, retires the journal (discarding every
+ * held result) and closes the connection.
+ */
+export async function serveLaunchedToolResults(args: {
+  material: { creds: string; grant: EpServeGrant };
+  space: string;
+  servers: string;
+  tls: boolean;
+  journal: ToolResultJournal;
+  self: ToolResultTarget;
+}): Promise<{ stop(): Promise<void> }> {
+  const { material, space, journal, self } = args;
+  const g = material.grant;
+  if (g.space !== space || g.endpoint !== TOOL_RESULT_ENDPOINT || g.instanceId !== self.lifecycleUid)
+    throw new EpEnvelopeError("failed-precondition", "the launch's tool-results grant does not name this space, endpoint and incarnation");
+  const nc = await dialerFor(args.servers)({ servers: args.servers, ...standaloneConnectOpts({ creds: material.creds, tls: args.tls }), name: `tool-results-${self.lifecycleUid}` });
+  let handle: EpServeHandle;
+  try {
+    handle = serveToolResults(nc, space, g, journal, self, () => undefined);
+  } catch (e) {
+    await nc.close().catch(() => {});
+    throw e;
+  }
+  return {
+    stop: async () => {
+      try {
+        await handle.stop();
+      } finally {
+        journal.retire();
+        await nc.drain().catch(() => nc.close());
+      }
+    },
+  };
 }

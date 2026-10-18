@@ -40,6 +40,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, statSync } 
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { hardenPrivate, writeSecretFile } from "./secret-fs.js";
+import type { EpServeGrant } from "./endpoint-service.js";
 
 /** The prefix {@link writeLaunchMaterial} gives its private directory, and the single filename it
  *  puts inside. Named constants because {@link discardLaunchMaterial} has to recognise this module's
@@ -68,6 +69,10 @@ export type LaunchMaterial = {
   eventsRequired?: boolean;
   /** User-mode launch identity: principal, sentinel creds path, and the exec-able bearer command. */
   userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  /** This incarnation's `tool-results` serving material (SPEC 13.6): its own `endpoint-serve`
+   *  creds (content, a secret held only in this 0600 file) and the serve grant they were minted
+   *  under. Absent: the session serves no tool results. */
+  toolResults?: { creds: string; grant: EpServeGrant };
 };
 
 /**
@@ -180,6 +185,17 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
       sentinelCredsPath: sentinelCredsPath as string,
       bearerCmd: bearerCmd as string[],
     };
+  }
+  if (raw.toolResults !== undefined) {
+    const t = raw.toolResults as Record<string, unknown> | null;
+    if (typeof t !== "object" || t === null || Array.isArray(t))
+      throw new Error(`launch material: ${path} has a toolResults that is not an object`);
+    if (typeof t.creds !== "string" || !t.creds.trim())
+      throw new Error(`launch material: ${path} has a toolResults.creds that is not a non-empty string`);
+    const g = t.grant as Record<string, unknown> | null;
+    if (typeof g !== "object" || g === null || Array.isArray(g) || typeof g.endpoint !== "string" || typeof g.instanceId !== "string" || typeof g.epoch !== "number")
+      throw new Error(`launch material: ${path} has a toolResults.grant that is not a serve grant`);
+    material.toolResults = { creds: t.creds, grant: g as unknown as EpServeGrant };
   }
   if (Object.keys(material).length === 0)
     throw new Error(
