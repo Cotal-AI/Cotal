@@ -93,7 +93,9 @@ const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise
   const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
   try {
     const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
+    // No tally here: a timeout fails the check that reads the result, or skips cells the
+    // completeness guard then misses. Counting it here as well would count one stuck step twice.
+    if (got === undefined) { console.log(`  ! ${what} did not end within ${ms}ms`); return undefined; }
     return got.v;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
@@ -700,14 +702,15 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
     const bName = b.agent.split("#")[0]!;
     // Not-honored-immediately: a handoff to b, then a turn on d (not b) spends the memo.
     turnEndings.push({ state: "succeeded", status: "handoff", to: bName, delayMs: 200 });
-    await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(token("B")).ctx)), 20_000, "the ignored handoff");
+    const ignored = await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(token("B")).ctx)), 20_000, "the ignored handoff");
     turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
-    await withDeadline(safe(handler.turn({ agent: d, deadline: "5m" }, stepCtx(token("C")).ctx)), 20_000, "the intervening turn");
+    const intervening = await withDeadline(safe(handler.turn({ agent: d, deadline: "5m" }, stepCtx(token("C")).ctx)), 20_000, "the intervening turn");
     const T3 = token("D");
     turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
-    await withDeadline(safe(handler.turn({ agent: b, deadline: "5m" }, stepCtx(T3).ctx)), 20_000, "the late turn on b");
+    const lateOnB = await withDeadline(safe(handler.turn({ agent: b, deadline: "5m" }, stepCtx(T3).ctx)), 20_000, "the late turn on b");
     c("a handoff not honored by the NEXT turn in the scope links nothing",
-      turnInvokes.find((i) => i.goalId === T3)?.handoffFrom === undefined,
+      ignored !== undefined && intervening !== undefined && lateOnB !== undefined
+        && turnInvokes.find((i) => i.goalId === T3)?.handoffFrom === undefined,
       JSON.stringify(turnInvokes.find((i) => i.goalId === T3)));
     // Ambiguity: two concurrent turns in ONE scope both yield handoff to b with no begin between
     // the yields — the memo goes ambiguous and the next turn on b links nothing.
@@ -717,12 +720,13 @@ const isTurnResult = (v: unknown): v is { status: string; to?: { agent: string }
     const pa = safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(TA).ctx));
     await wait(150);
     const pb = safe(handler.turn({ agent: d, deadline: "5m" }, stepCtx(TB).ctx));
-    await withDeadline(Promise.all([pa, pb]), 20_000, "the concurrent handoffs");
+    const concurrent = await withDeadline(Promise.all([pa, pb]), 20_000, "the concurrent handoffs");
     const T4 = token("G");
     turnEndings.push({ state: "succeeded", status: "done", delayMs: 200 });
-    await withDeadline(safe(handler.turn({ agent: b, deadline: "5m" }, stepCtx(T4).ctx)), 20_000, "the post-ambiguity turn");
+    const postAmbiguity = await withDeadline(safe(handler.turn({ agent: b, deadline: "5m" }, stepCtx(T4).ctx)), 20_000, "the post-ambiguity turn");
     c("two pending handoffs naming one agent record no linkage at all",
-      turnInvokes.find((i) => i.goalId === T4)?.handoffFrom === undefined,
+      concurrent !== undefined && postAmbiguity !== undefined
+        && turnInvokes.find((i) => i.goalId === T4)?.handoffFrom === undefined,
       JSON.stringify(turnInvokes.find((i) => i.goalId === T4)));
   }
 }
