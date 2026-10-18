@@ -270,11 +270,17 @@ try {
     const hidden = [urlUser, urlPassword, urlToken].every((marker) => !read.stdout.includes(marker) && !read.stderr.includes(marker));
     const message = format === "--json" ? read.envelope?.error?.message : read.stderr;
     const detail = shown(read);
-    const diagnostic = message?.includes("--server <url> --mode auth --force") ? undefined : {
-      brokerExitCode: broker.exitCode,
-      plain: await probeConnect(servers),
-      userinfo: await probeConnect(`nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`),
-    };
+    const diagnostic = message?.includes("--server <url> --mode auth --force") ? undefined : await (async () => {
+      const trace = join(home, `probe-${format ?? "human"}.jsonl`);
+      const traced = await run(["who", "--space", "url-auth-recovery", ...(format ? [format] : [])], { SMOKE_WHO_PROBE_TRACE: trace }, join(import.meta.dirname, "fixtures", "who-probe-trace.mjs"));
+      return {
+        brokerExitCode: broker.exitCode,
+        brokerSignalCode: broker.signalCode,
+        plain: await probeConnect(servers),
+        userinfo: await probeConnect(`nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`),
+        tracedChild: { status: traced.status, code: traced.envelope?.error?.code, stderr: redactUrlMarkers(traced.stderr).slice(0, 600), trace: existsSync(trace) ? readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as unknown) : [] },
+      };
+    })();
     check(`who ${format ?? "human"} keeps a placeholder for a private broker URL in auth recovery`, read.status === 2 && hidden && message?.includes("--server <url> --mode auth --force") === true, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr), diagnostic });
   }
   for (const target of ["raw", "registered"] as const) {
