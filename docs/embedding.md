@@ -371,6 +371,29 @@ await runAuthService(
 );
 ```
 
+### Consented background recipient
+
+`@cotal-ai/core` exports the delivery half of a background recipient: a server-held reader that keeps
+receiving one lifecycle's DMs and Plane-3 deliveries after its page closes, under that person's
+consent. It reads through its own durables, never the lifecycle's `dm_`/`dlv_` durables, so a UI
+reader's ACK never consumes its copy, and the UI never loses one to it.
+
+| Step | Export | What it does |
+| --- | --- | --- |
+| Consent | `captureRecipientFrontier(jsm, space)` | Reads the DM and DLV last sequences when consent is recorded. Delivery starts after them, so nothing earlier is captured. |
+| Provision | `recipientDurableConfigs(scope, frontier)`, `provisionRecipientDurables` | Pre-creates `rdm_…-<grantId>` and `rdlv_…-<grantId>` with the lifecycle's filters, explicit ACK, 64 in flight and no delivery limit. |
+| Grant | `recipientBindGrants(durables)` | The recipient's whole JetStream surface: info, fetch and ACK of those two durables. No create, delete, stream or writer row. |
+| Read | `nextRecipientDelivery(js, durable)` | One delivery with a stable `sourceId` (`<stream>:<sequence>`) and its delivery count. |
+| Commit | `commitThenAck(pending, persist)` | Persists, then ACKs. A failed persist NAKs (`retry`). A persisted delivery whose ACK is unconfirmed is `unknown` and may come back, so `persist` must be idempotent on `sourceId`. |
+| Revoke | `deprovisionRecipientDurables` | Deletes both durables by exact name. It stops further delivery but cannot recall a fetched one, so the host re-checks the grant before each persist. |
+
+A DM-stream delivery is category `dm`. A DLV delivery is `unknown`: this release carries no trusted
+delivery reason, and the category is never guessed from text or rosters.
+
+The authority half is not in this release. Nothing here records consent, mints the recipient's
+credential or checks its expiry and revocation at connect. Until the auth service issues that
+credential, a host must not run a background recipient.
+
 ### delivery
 
 `runDelivery(args, store?)` runs from a **pre-minted scoped `delivery` cred** and never loads the
