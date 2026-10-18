@@ -251,9 +251,15 @@ export function materialEnv(opts: {
   controlToken?: string;
   eventsRequired?: boolean;
   userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  toolResults?: LaunchMaterial["toolResults"];
+  toolResultsServing?: LaunchMaterial["toolResultsServing"];
 }): Record<string, string> {
   if (opts.userAuth && opts.creds)
     throw new Error("launch: creds (static auth) and userAuth (user-mode auth) are mutually exclusive — one launch carries one identity plane");
+  if (opts.toolResults && !opts.creds)
+    throw new Error("launch: tool-results serving material rides only a static-auth launch; no other source issues it");
+  if (opts.toolResultsServing && !opts.userAuth)
+    throw new Error("launch: a tool-results serving file rides only a user-mode launch, whose host issued it");
   const material: LaunchMaterial = {};
   if (opts.creds) material.creds = opts.creds;
   if (opts.servers) material.servers = opts.servers;
@@ -261,6 +267,8 @@ export function materialEnv(opts: {
   if (opts.controlToken) material.controlToken = opts.controlToken;
   if (opts.eventsRequired) material.eventsRequired = true;
   if (opts.userAuth) material.userAuth = opts.userAuth;
+  if (opts.toolResults) material.toolResults = opts.toolResults;
+  if (opts.toolResultsServing) material.toolResultsServing = opts.toolResultsServing;
   // Nothing to hand over (an open mesh launched with no control endpoint) → no file and no env
   // entry, rather than a file that says nothing. writeLaunchMaterial refuses the empty case too;
   // this is the caller-side half of the same rule.

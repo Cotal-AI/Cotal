@@ -67,7 +67,8 @@ export {
   type DeviceLoginOpts,
   type DeviceLoginPrompt,
 } from "./login.js";
-export { calloutPermissions, type AclResolver, type UserCallerIssuer } from "./permissions.js";
+export { calloutPermissions, SESSION_EXP, type AclResolver, type ToolResultVerifier, type UserCallerIssuer } from "./permissions.js";
+export { verifyToolResultRedemption, type ToolResultRedemptionReads } from "./tool-result-redemption.js";
 export {
   USER_AUTH_TRUST_SCHEME,
   userAuthTrustFingerprint,
