@@ -15,6 +15,7 @@ import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -26,6 +27,7 @@ import {
   mintLifecycleUid,
   newIdentity,
   provisionAgent,
+  probeConnect,
   registry,
   seedChannelRegistry,
   serverConfig,
@@ -111,7 +113,7 @@ const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: h
 
 const run = (args: string[], extra: NodeJS.ProcessEnv = {}, preload?: string): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [...(preload ? ["--import", preload] : []), BIN, ...args], { cwd: shell, env: { ...isolatedEnv, ...extra }, timeout: 120_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [...(preload ? ["--import", pathToFileURL(preload).href] : []), BIN, ...args], { cwd: shell, env: { ...isolatedEnv, ...extra }, timeout: 120_000 }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -185,7 +187,8 @@ try {
 
   // Real CLI children read the owned broker while a test-only preload holds or fails their live
   // KV iterators. Presence state is computed by core, not supplied by a fake endpoint or view.
-  const faultPreload = join(import.meta.dirname, "fixtures", "who-watch-fault.mjs");
+  const faultPreload = join(home, "who watch # fault.mjs");
+  writeFileSync(faultPreload, `import ${JSON.stringify(new URL("./fixtures/who-watch-fault.mjs", import.meta.url).href)};`);
   for (const [fault, code] of [["unpopulated", "ROSTER_INCOMPLETE"], ["stale", "ROSTER_STALE"], ["error", "ROSTER_ERROR"]] as const) {
     const trace = join(home, `who-${fault}.json`);
     const read = await run(["who", "--json"], { SMOKE_WHO_WATCH_FAULT: fault, SMOKE_WHO_WATCH_TRACE: trace }, faultPreload);
@@ -267,7 +270,12 @@ try {
     const hidden = [urlUser, urlPassword, urlToken].every((marker) => !read.stdout.includes(marker) && !read.stderr.includes(marker));
     const message = format === "--json" ? read.envelope?.error?.message : read.stderr;
     const detail = shown(read);
-    check(`who ${format ?? "human"} keeps a placeholder for a private broker URL in auth recovery`, read.status === 2 && hidden && message?.includes("--server <url> --mode auth --force") === true, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
+    const diagnostic = message?.includes("--server <url> --mode auth --force") ? undefined : {
+      brokerExitCode: broker.exitCode,
+      plain: await probeConnect(servers),
+      userinfo: await probeConnect(`nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`),
+    };
+    check(`who ${format ?? "human"} keeps a placeholder for a private broker URL in auth recovery`, read.status === 2 && hidden && message?.includes("--server <url> --mode auth --force") === true, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr), diagnostic });
   }
   for (const target of ["raw", "registered"] as const) {
     for (const format of ["--json", "--plain"] as const) {
