@@ -296,7 +296,9 @@ readiness behavior.
 
 The describe and the contract store reads after it share the resolver's one deadline, so a slow
 store read fails the resolve with `deadline-exceeded` when that deadline expires. Cancelling a
-resolve settles a store read in flight instead of waiting for it to return.
+resolve settles a store read in flight instead of waiting for it to return. When one store read
+fails, the resolve fails with it and fetches no further command contracts; fetches already under
+way finish on their own.
 
 The resolve and the invoke are separate trips through the same anycast queue, so in a
 multi-manager space an unpinned call can land on an instance the caller did not resolve. Every

@@ -267,7 +267,8 @@ function extractSchemaRefs(bytes: Uint8Array): string[] {
 const RESOLVE_MAX_INFLIGHT_READS = 32;
 
 /** Run `work` over `items` with at most `limit` in flight, preserving RESULT ORDER (the resolved
- *  surface must not depend on read timing). Rejects like `Promise.all`: the first failure wins. */
+ *  surface must not depend on read timing). Rejects like `Promise.all`: the first failure wins,
+ *  and no item starts after it. */
 async function pooled<T, R>(items: readonly T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
@@ -275,7 +276,14 @@ async function pooled<T, R>(items: readonly T[], limit: number, work: (item: T) 
     for (;;) {
       const i = next++;
       if (i >= items.length) return;
-      out[i] = await work(items[i]);
+      try {
+        out[i] = await work(items[i]);
+      } catch (e) {
+        // This failure rejects the pool, so a later item would spend store reads on a result
+        // nobody reads. Items already in flight finish on their own.
+        next = items.length;
+        throw e;
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));

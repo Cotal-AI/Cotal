@@ -2,7 +2,7 @@
   "suite": [
     "implementations/manager/smoke/resolve-rtt-probe.smoke.ts"
   ],
-  "guard": "injected-wait occupancy, not wall-clock vs count×RTT, is the concurrency invariant",
+  "guard": "injected-wait occupancy, not wall-clock vs count×RTT, is the concurrency invariant, and a failed closure walk stops the resolve pool from starting more",
   "command": "pnpm smoke:resolve-rtt",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/resolve-rtt-overlap.json",
   "why": [
@@ -12,7 +12,12 @@
     "on the 160ms WAN-profile inject, where overlapped waits collapse and serialized waits sum.",
     "",
     "M1 accounts each wait as serial delayMs instead of the union of open wait intervals. The WAN-profile",
-    "occupancy cell goes red; max-in-flight and dedupe cells stay green."
+    "occupancy cell goes red; max-in-flight and dedupe cells stay green.",
+    "",
+    "M2 removes the pool's stop after a failed item, so the walks queued behind the first window still",
+    "start after the resolve has rejected (#3449). The phase 6 late-walk cell goes red; the rejection",
+    "cell stays green. resolveService is core, which this suite reads from dist, so M2 builds core",
+    "first and rebuilds it after the restore."
   ],
   "mutations": [
     {
@@ -22,6 +27,16 @@
       "replace": "            delaying--;\n            meter.delayOccupancyMs += delayMs;\n            delayOpenAt = null;",
       "expectRed": "WAN-profile injected waits overlap — occupancy well under serial inject (was ~11s serialized)",
       "cell": "WAN-profile injected waits overlap — occupancy well under serial inject (was ~11s serialized)"
+    },
+    {
+      "name": "M2 a failed closure walk no longer stops the resolve pool from claiming more",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "        next = items.length;\n",
+      "replace": "",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:resolve-rtt",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "expectRed": "no closure walk starts after the resolve has rejected",
+      "cell": "no closure walk starts after the resolve has rejected"
     }
   ]
 }
