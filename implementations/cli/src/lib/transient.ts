@@ -1,7 +1,7 @@
 import { CotalEndpoint } from "@cotal-ai/core";
 import { endpointAuth, type Connection } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
-import { connectOrExit } from "./connect.js";
+import { connectOrExit, connectOrThrow } from "./connect.js";
 
 /**
  * A one-shot, write-capable connection for the headless commands that touch the live mesh
@@ -27,12 +27,15 @@ export async function resolveConnect(values: ConnectValues): Promise<Connection>
 }
 
 /** Open a transient endpoint: it watches presence (so name→id resolution and the live roster work)
- *  but never registers itself, binds no inbox, and consumes no channels. The caller stops it. */
+ *  but never registers itself, binds no inbox, and consumes no channels. The caller stops it.
+ *  `throwOnRefusal` throws a connect refusal for the command kernel to report, and `report` takes the
+ *  endpoint's errors and warnings instead of printing them. */
 export async function openTransient(
   values: ConnectValues,
   name: string,
+  opts: { throwOnRefusal?: boolean; report?: (level: "error" | "warning", e: Error) => void } = {},
 ): Promise<{ ep: CotalEndpoint; space: string }> {
-  const conn = await resolveConnect(values);
+  const conn = opts.throwOnRefusal ? await connectOrThrow(values, "operator") : await resolveConnect(values);
   const ep = new CotalEndpoint({
     space: conn.space,
     servers: conn.server,
@@ -46,8 +49,14 @@ export async function openTransient(
     // authority for an operator command.
     card: { name, kind: "endpoint" },
   });
-  ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
-  ep.on("warning", (e: Error) => console.error(c.yellow("! " + e.message)));
-  await ep.start();
+  const report = opts.report ?? ((level, e) => console.error(level === "error" ? c.red("! " + e.message) : c.yellow("! " + e.message)));
+  ep.on("error", (e: Error) => report("error", e));
+  ep.on("warning", (e: Error) => report("warning", e));
+  try {
+    await ep.start();
+  } catch (e) {
+    await ep.stop().catch(() => {});
+    throw e;
+  }
   return { ep, space: conn.space };
 }

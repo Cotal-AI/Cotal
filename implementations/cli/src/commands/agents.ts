@@ -13,6 +13,7 @@ import {
   userSessionAuth,
   writeResult,
   type Block,
+  type ConnectFlags,
   type Cell,
   type OutputWarning,
   type Report,
@@ -514,9 +515,38 @@ export async function ps(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "USAGE_INVALID", "--slots and --wide are mutually exclusive: --slots lists durable static slot rows, --wide the live seat facts", { remedy: "pass one of them" });
   const command = slots ? "slots" : "ps";
   const kind = slots ? "slots" : "seats";
-  const rowsOf = new Map<string, unknown[]>();
-  const view = (result: PsResult): Report => psView(result, wide, rowsOf);
-  const on = onInstance(v.on, "cotal ps");
+  const census = await readSeats(v, command, onInstance(v.on, "cotal ps"));
+  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf);
+  writeResult(
+    presentation,
+    {
+      command: "ps",
+      target: census.target,
+      result: { kind, items: census.items, managers: census.managers },
+      completeness: census.partial ? "partial" : "complete",
+      warnings: census.warnings,
+      ...(census.partial ? { partial: census.partial } : {}),
+    },
+    view,
+  );
+}
+
+/** One census of the managed seats (or, for `slots`, the static slots): each answered manager
+ *  instance's rows as it returned them, every instance's answer, a warning for each one that did not
+ *  return its rows, and the partial notice when any did not. */
+export interface SeatCensus {
+  readonly target: { space: string; scope: string; managerInstanceId?: string | null };
+  readonly items: unknown[];
+  readonly managers: ManagerAnswer[];
+  readonly warnings: OutputWarning[];
+  readonly rowsOf: Map<string, unknown[]>;
+  readonly partial?: { message: string; remedy: string };
+}
+
+/** Read the managed seats the way `ps` lists them: from one manager when `on` pins it or the caller
+ *  holds a user bearer, otherwise from every registered instance. Throws the classified failure when
+ *  the target cannot be resolved or no manager can be asked. */
+export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: string | undefined): Promise<SeatCensus> {
   // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
   // this resolve, and a credential cannot gain an instance rail after it is minted.
   const t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
@@ -536,8 +566,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
     const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, on !== undefined ? { instanceId: on } : {});
     if (!reply.ok) throw readFailure(reply, target);
     const items = (reply.data as unknown[]) ?? [];
-    writeResult(presentation, { command: "ps", target, result: { kind, items, managers: instanceId ? [{ instanceId, state: "answered" }] : [] } }, view);
-    return;
+    return { target, items, managers: instanceId ? [{ instanceId, state: "answered" }] : [], warnings: [], rowsOf: new Map() };
   }
 
   // STATIC/OPEN (no bearer): class scatter. The operator instrument (or bare open connect) holds the
@@ -554,6 +583,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
   const managers: ManagerAnswer[] = [];
   const warnings: OutputWarning[] = [];
   const mismatches: string[] = [];
+  const rowsOf = new Map<string, unknown[]>();
   for (const inst of instances) {
     const at = { space: t.space, managerInstanceId: inst.instanceId };
     if (!inst.reachable) {
@@ -583,6 +613,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
     items.push(...rows);
   }
   const unread = managers.filter((m) => m.state !== "answered").length;
+  const kind = command === "slots" ? "slots" : "seats";
   const partial = unread
     ? {
         message: `Incomplete manager census: ${unread} of ${managers.length} instances did not return ${kind}. Rows above are partial, not a complete list.`,
@@ -591,7 +622,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
           : "retry, or read one manager with `cotal ps --on <instance>`",
       }
     : undefined;
-  writeResult(presentation, { command: "ps", target, result: { kind, items, managers }, completeness: partial ? "partial" : "complete", warnings, ...(partial ? { partial } : {}) }, view);
+  return { target, items, managers, warnings, rowsOf, ...(partial ? { partial } : {}) };
 }
 
 /** Re-establishment backoff, in order; the last value is the cap and repeats forever. A seat that

@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 516,
-    "honest-text": 35,
-    "presence-only-glyph/count": 57,
+    "total": 529,
+    "honest-text": 37,
+    "presence-only-glyph/count": 59,
     "command-ack": 12,
-    "non-render/control": 412
+    "non-render/control": 421
   },
   "renderers": [
     {
@@ -3708,6 +3708,105 @@
       "anchor": "ion}${rec.authority === \"offline\" ? c.dim(\" · offline\") :",
       "class": "non-render/control",
       "rationale": "Doctor renewal record: renders how the LAST RENEWAL PASS was authorised, not any agent's presence; the token matches only because the authority is spelled offline."
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "status-token",
+      "anchor": "t waitingFlag = { name: \"waiting\", type: \"boolean\", descr",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "status-token",
+      "anchor": "l ? \"all\" : v.waiting ? \"waiting\" : \"agents\";\n  const war",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "status-token",
+      "anchor": "waiting || p.status === \"waiting\" || p.condition !== unde",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "status-token",
+      "anchor": "working: \"ok\", waiting: \"waiting\", idle: undefined, offli",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "derived-output",
+      "anchor": "`${row.status === \"working\" ? \"working · progress unknown\" : row.status}${facts.condition}`",
+      "class": "honest-text",
+      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
+      "proof": {
+        "path": "implementations/cli/smoke/who-roster.smoke.ts",
+        "anchor": "check(\n    \"the rich report is colored, marks each state and keeps every state word\","
+      }
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "honest-text",
+      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
+      "proof": {
+        "path": "implementations/cli/smoke/who-roster.smoke.ts",
+        "anchor": "check(\n    \"the rich report is colored, marks each state and keeps every state word\","
+      }
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "indexed-map",
+      "anchor": "STATUS_TONE[row.status]",
+      "class": "presence-only-glyph/count",
+      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "indexed-map",
+      "anchor": "STATUS_MARK[row.status]",
+      "class": "presence-only-glyph/count",
+      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "status-token",
+      "anchor": " text: \"unknown\", tone: \"waiting\" }) : row.managed ? \"yes",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/whoami.ts",
+      "kind": "status-token",
+      "anchor": " text: \"unknown\", tone: \"waiting\" } : g === \"all\" ? \"all\"",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/whoami.ts",
+      "kind": "status-token",
+      "anchor": " \"not signed in\", tone: \"waiting\" }]);\n    if (id.subject",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/whoami.ts",
+      "kind": "status-token",
+      "anchor": " text: \"unknown\", tone: \"waiting\" } : r.dms ? \"yes\" : \"no",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/commands/status.ts",

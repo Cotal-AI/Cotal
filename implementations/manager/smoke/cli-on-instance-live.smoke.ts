@@ -63,13 +63,14 @@ import { spawn } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, registry, type Connector, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveExtensionsManifest, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
+const TSX = fileURLToPath(import.meta.resolve("tsx/cli"));
 const repoRoot = join(import.meta.dirname, "..", "..", "..");
 
 const PORT = await freePort();
@@ -117,7 +118,7 @@ const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
 type Run = { status: number | null; out: string; stdout: string; timedOut: boolean; signal: NodeJS.Signals | null; launchError?: string };
 function cotal(args: string[], cwd: string, timeoutMs = 90_000): Promise<Run> {
   return new Promise((res) => {
-    const child = spawn(TSX, [BIN, ...args], {
+    const child = spawn(process.execPath, [TSX, BIN, ...args], {
       cwd, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "", stdout = "", timedOut = false, settled = false;
