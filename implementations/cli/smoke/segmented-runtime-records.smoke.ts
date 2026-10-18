@@ -97,9 +97,12 @@ try {
 
   console.log("\n3) stopping one space's manager leaves the other's running and recorded");
   const stopped = await stopManager(ALPHA);
+  // `down` removes the marker only after its all-stopped gate, so the stop itself must leave it.
+  const markerLeft = existsSync(record(MANAGER_DELIVERY_AWARE_MARKER, ALPHA));
   clearManagerArtifacts(ALPHA);
   await waitDead(aPid);
   check("stopManager(alpha) reports a stop", stopped, stopped);
+  check("...and the stop leaves alpha's marker for its caller to remove", markerLeft);
   check("...and alpha's process is dead", !alive(aPid));
   check("...and beta's manager is UNTOUCHED — the defect this change fixes", alive(bPid) && managerUp(BETA));
   check("...and alpha's records are gone", !existsSync(record(MANAGER_PIDFILE, ALPHA)) && !existsSync(record(MANAGER_DELIVERY_AWARE_MARKER, ALPHA)));
