@@ -129,8 +129,12 @@ export async function consentRecipientGrant(
   const o = raw as Record<string, unknown>;
   closed(o, ["kind", "actor", "lifecycleUid", "sources", "ttlMs"], "an inbox recipient consent");
   const now = Date.now();
-  if (proof.authTime === undefined || now - proof.authTime * 1000 > RECIPIENT_CONSENT_PROOF_MAX_AGE_MS)
-    throw new EpEnvelopeError("permission-denied", "an inbox recipient consent needs a fresh interactive sign-in (IdP auth_time within the last five minutes)");
+  // `auth_time` is integer SECONDS (OIDC). A future value, or one in milliseconds (which reads as
+  // far future), refuses; it is never clamped to now, so a forged-fresh proof cannot pass.
+  const authTime = proof.authTime;
+  if (authTime === undefined || !Number.isSafeInteger(authTime) || authTime < 0 || authTime * 1000 > now
+    || now - authTime * 1000 > RECIPIENT_CONSENT_PROOF_MAX_AGE_MS)
+    throw new EpEnvelopeError("permission-denied", "an inbox recipient consent needs a fresh interactive sign-in (IdP auth_time, in seconds, within the last five minutes and not in the future)");
   if (typeof o.actor !== "string" || typeof o.lifecycleUid !== "string")
     throw new EpEnvelopeError("bad-request", "an inbox recipient consent needs { actor, lifecycleUid }");
   const row = findInteractiveActor(deps.dir, owner, o.actor);
@@ -152,7 +156,7 @@ export async function consentRecipientGrant(
       journaled = {
         v: 1, grantId, space: deps.space, owner, actor: scope.actor, lifecycleUid: scope.lifecycleUid, sources, frontier,
         durables: durables.map((d) => ({ stream: d.stream, durable: d.config.durable_name! })),
-        tokenHash: secret.tokenHash, proofAt: Math.min(proof.authTime! * 1000, now), consentAt: now, expiresAt: now + (o.ttlMs as number),
+        tokenHash: secret.tokenHash, proofAt: authTime * 1000, consentAt: now, expiresAt: now + (o.ttlMs as number),
         state: "provisioning",
       };
       writeGrant(deps.dir, journaled);

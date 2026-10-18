@@ -64,6 +64,8 @@ try {
   // ---- A ----
   check("consent refuses a proof without auth_time (an agent arm carries none)", await refuses(() => consent({}, {}), /fresh interactive sign-in/));
   check("consent refuses an auth_time older than five minutes", await refuses(() => consent({}, { authTime: nowSec() - 6 * 60 }), /fresh interactive sign-in/));
+  check("consent refuses a future, millisecond or fractional auth_time, never clamping it to now",
+    (await refuses(() => consent({}, { authTime: nowSec() + 60 }), /fresh interactive sign-in/)) && (await refuses(() => consent({}, { authTime: Date.now() }), /fresh interactive sign-in/)) && (await refuses(() => consent({}, { authTime: nowSec() - 0.5 }), /fresh interactive sign-in/)));
   check("consent refuses a lifecycle the owner does not currently hold", await refuses(() => consent({ lifecycleUid: mintLifecycleUid() }), /does not currently hold/));
   check("consent refuses an actor with no interactive row", await refuses(() => consent({ actor: "agent1" }), /does not currently hold/));
   check("consent refuses an unknown field", await refuses(() => consent({ extra: 1 }), /unknown field "extra"/));
@@ -133,7 +135,7 @@ try {
   rmSync(dir, { recursive: true, force: true });
 }
 
-const EXPECTED = 28;
+const EXPECTED = 29;
 console.log(`\ninbox-recipient smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);
