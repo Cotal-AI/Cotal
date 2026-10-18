@@ -30,6 +30,7 @@ import { mkdtempSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { CotalEndpoint, isReachable, mintLifecycleUid, type CotalMessage, type Delivery } from "@cotal-ai/core";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -37,7 +38,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { GATEWAY_INSTRUCTIONS, NameTaken, handleGatewayRequest, registerCotalGatewayTools, type GatewayConnection, type GatewayHost } from "../src/gateway.js";
+import { GATEWAY_INSTRUCTIONS, NameTaken, handleGatewayRequest, registerCotalGatewayTools, serveGatewayStdio, type GatewayConnection, type GatewayHost } from "../src/gateway.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -547,6 +548,75 @@ try {
     ["incoming", "mention-wake", "stopping"].map((e) => listenerAgent.listenerCount(e)).join(",") === baseListeners,
     baseListeners,
   );
+
+  // ---- stdio ----
+  // A local client launches the gateway and speaks JSON-RPC over its pipes, with no authentication.
+  const toServer = new PassThrough();
+  const fromServer = new PassThrough();
+  const local: GatewayHost = { ...host, account: (auth) => (auth === undefined ? "acct_a" : host.account(auth)) };
+  const stdio = await serveGatewayStdio(local, { input: toServer, output: fromServer, waitSeconds: WAIT });
+  const answers = new Map<number, (m: { result?: { content?: { text: string }[]; isError?: boolean; tools?: { name: string }[] } }) => void>();
+  let pending = "";
+  fromServer.on("data", (chunk: Buffer) => {
+    pending += chunk.toString("utf8");
+    for (let at = pending.indexOf("\n"); at >= 0; at = pending.indexOf("\n")) {
+      const m = JSON.parse(pending.slice(0, at));
+      pending = pending.slice(at + 1);
+      answers.get(m.id)?.(m);
+    }
+  });
+  const send = (m: object) => toServer.write(`${JSON.stringify({ jsonrpc: "2.0", ...m })}\n`);
+  let nextId = 1;
+  // Unanswered after 10 s, a call resolves empty, so a server that never answers fails a named check.
+  const rpc = (method: string, params: object) =>
+    new Promise<Parameters<NonNullable<ReturnType<typeof answers.get>>>[0]>((resolve) => {
+      const id = nextId++;
+      const timer = setTimeout(() => resolve({}), 10_000);
+      answers.set(id, (m) => {
+        clearTimeout(timer);
+        resolve(m);
+      });
+      send({ id, method, params });
+    });
+  const tool = async (name: string, args: object) => {
+    const r = await rpc("tools/call", { name, arguments: args });
+    return { text: (r.result?.content ?? []).map((c) => c.text).join("\n"), isError: r.result?.isError === true };
+  };
+  const hello = (await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "stdio-smoke", version: "0" } })) as { result?: { instructions?: string } };
+  check("the stdio server sends the default instructions", hello.result?.instructions === GATEWAY_INSTRUCTIONS, hello.result?.instructions);
+  send({ method: "notifications/initialized" });
+  const stdioTools = (await rpc("tools/list", {})).result?.tools?.map((t) => t.name) ?? [];
+  check("the stdio server offers the gateway surface", ["cotal_connect", "cotal_wait", "cotal_inbox"].every((n) => stdioTools.includes(n)), stdioTools);
+  const seat = idOf(await tool("cotal_connect", { name: "stdio_seat" }));
+  check("a stdio call with no authentication connects as the local user", seat !== "" && live.get(seat)?.account === "acct_a", seat);
+  for (let i = 0; i < 30; i++) {
+    if ((await call(a, "cotal_roster", { connection_id: talker })).text.includes("stdio_seat")) break;
+    await sleep(200);
+  }
+  // A held wait the client cancels stops listening, so it does not take the next message.
+  const cancelledId = nextId++;
+  send({ id: cancelledId, method: "tools/call", params: { name: "cotal_wait", arguments: { connection_id: seat } } });
+  const seatAgent = live.get(seat)!.conn.agent;
+  const idle = seatAgent.listenerCount("incoming");
+  let held = false;
+  for (let i = 0; i < 25 && !held; i++) {
+    await sleep(100);
+    held = seatAgent.listenerCount("incoming") > idle;
+  }
+  send({ method: "notifications/cancelled", params: { requestId: cancelledId, reason: "smoke" } });
+  await sleep(300);
+  check("a cancelled stdio wait was listening and stopped", held && seatAgent.listenerCount("incoming") === idle, { held, idle });
+  await call(a, "cotal_dm", { connection_id: talker, to: "stdio_seat", text: "after-a-cancelled-wait" });
+  let kept = false;
+  for (let i = 0; i < 25 && !kept; i++) {
+    kept = (await tool("cotal_inbox", { connection_id: seat, peek: true })).text.includes("after-a-cancelled-wait");
+    if (!kept) await sleep(200);
+  }
+  check("a wait the stdio client cancels does not take the next message", kept);
+  const stdioWoke = await tool("cotal_wait", { connection_id: seat, seconds: 2 });
+  check("a stdio wait returns a waiting message", stdioWoke.text.includes("after-a-cancelled-wait"), stdioWoke);
+  await tool("cotal_disconnect", { connection_id: seat });
+  await stdio.close();
 
   // ---- disconnect ----
   const wrongOwner = await call(b, "cotal_disconnect", { connection_id: id2 });

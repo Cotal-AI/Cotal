@@ -295,6 +295,12 @@ as `body`. The endpoint is stateless: each POST gets a fresh server and a JSON r
 other method answers 405. A `cotal_wait` call holds its POST open for up to `waitSeconds`.
 `GATEWAY_INSTRUCTIONS` is the server instructions text sent when `instructions` is omitted.
 
+`serveGatewayStdio(host, { input?, output?, source?, instructions?, waitSeconds? })` serves the same
+surface over stdio, for a local client such as Claude Desktop that launches one process for all of
+its conversations. A stdio request carries no authentication, so `host.account` receives `undefined`
+and names the local user. A client that cancels a call aborts its signal, so a cancelled wait stops
+listening. The streams default to the process's own, and stdout then carries only MCP.
+
 ### Remote manager client composition
 
 `@cotal-ai/manager` exports the `remoteManagerClient` namespace, containing the stock remote

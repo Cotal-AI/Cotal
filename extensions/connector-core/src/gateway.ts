@@ -15,7 +15,9 @@
  * an MCP SDK of its own.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Readable, Writable } from "node:stream";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
@@ -434,4 +436,30 @@ export async function handleGatewayRequest(host: GatewayHost, r: GatewayRequest)
   (r.req as IncomingMessage & { auth?: AuthInfo }).auth = r.auth;
   await server.connect(transport);
   await transport.handleRequest(r.req, r.res, r.body);
+}
+
+/** One local client that launches the gateway as a process and speaks MCP over its pipes. */
+export interface GatewayStdio {
+  /** Defaults to `process.stdin`. */
+  input?: Readable;
+  /** Defaults to `process.stdout`, so every diagnostic must go to stderr. */
+  output?: Writable;
+  /** The source tag on messages this server sends. */
+  source?: string;
+  instructions?: string;
+  /** See {@link GatewayOptions.waitSeconds}. */
+  waitSeconds?: number;
+}
+
+/**
+ * Serve the gateway surface over stdio with this package's own MCP server, for a client such as
+ * Claude Desktop that runs one local process for every conversation. A stdio request carries no
+ * authentication, so `host.account` receives `undefined` and names the local user. A client that
+ * cancels a call aborts its signal, as a closed HTTP request does.
+ */
+export async function serveGatewayStdio(host: GatewayHost, o: GatewayStdio = {}): Promise<{ close(): Promise<void> }> {
+  const server = new McpServer({ name: "cotal", version: "0.0.0" }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });
+  registerCotalGatewayTools(server, host, o.source, o.waitSeconds === undefined ? {} : { waitSeconds: o.waitSeconds });
+  await server.connect(new StdioServerTransport(o.input, o.output));
+  return { close: () => server.close() };
 }

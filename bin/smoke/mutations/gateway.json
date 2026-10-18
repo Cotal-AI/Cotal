@@ -305,6 +305,22 @@
       "replace": "  if (spec.name === \"cotal_inbox\" && !args.peek) mentionsOf(c.agent).count = 0;",
       "expectRed": "a read its client dropped keeps the focus @mention count",
       "cell": "a read its client dropped keeps the focus @mention count"
+    },
+    {
+      "name": "the stdio server sends no default instructions",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  const server = new McpServer({ name: \"cotal\", version: \"0.0.0\" }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });",
+      "replace": "  const server = new McpServer({ name: \"cotal\", version: \"0.0.0\" });",
+      "expectRed": "the stdio server sends the default instructions",
+      "cell": "the stdio server sends the default instructions"
+    },
+    {
+      "name": "the stdio server ignores the streams it was given",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  await server.connect(new StdioServerTransport(o.input, o.output));",
+      "replace": "  await server.connect(new StdioServerTransport());",
+      "expectRed": "the stdio server sends the default instructions",
+      "cell": "the stdio server sends the default instructions"
     }
   ]
 }
