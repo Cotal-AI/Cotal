@@ -373,7 +373,7 @@ export class PiDriver {
     if (this.overflowRetry) return;
     const confirmed = this.batches.filter((batch) => batch.confirmed);
     const ids = confirmed.flatMap((batch) => batch.ids);
-    const committed = this.inbox.commitConfirmed(ids);
+    this.inbox.commitConfirmed(ids);
     this.batches = this.batches.filter((batch) => !batch.confirmed);
 
     if (this.batches.length > 0) {
