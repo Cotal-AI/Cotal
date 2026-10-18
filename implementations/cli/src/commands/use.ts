@@ -1,5 +1,5 @@
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, findMesh, getCurrent, jsonFlag, loadMeshes, plainFlag, presentationOf, setCurrent, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, findMesh, findPreparedSpace, getCurrent, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, presentationOf, setCurrent, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
 
 export const useFlags = [jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
@@ -12,12 +12,14 @@ interface Selection {
   /** Whether `current` names a registration on this machine, as `cotal status --json` reports it. */
   readonly currentRecorded: boolean;
   readonly server: string | null;
+  /** The root `cotal up` starts `current` in, when it names a space `cotal space create` prepared. */
+  readonly preparedRoot: string | null;
 }
 
 /**
  * `cotal use <space>` selects the space commands target when none is named, from any directory. It
  * changes the selection only: it starts nothing, and it does not check whether the space's broker
- * is up, so a stopped space can be selected and the command that targets it says so. Bare
+ * is up, so a stopped or prepared space can be selected and the command that targets it says so. Bare
  * `cotal use` reports the selection.
  */
 export async function use(args: ParsedArgs): Promise<void> {
@@ -27,18 +29,20 @@ export async function use(args: ParsedArgs): Promise<void> {
   const name = args.positionals[0];
   if (name === undefined) {
     const m = previous === null ? undefined : findMesh(previous);
-    const result: Selection = { kind: "selection", current: previous, previous, currentRecorded: previous === null || m !== undefined, server: m?.server ?? null };
-    const warnings: OutputWarning[] = previous !== null && !m
+    const p = previous === null || m ? undefined : findPreparedSpace(previous);
+    const result: Selection = { kind: "selection", current: previous, previous, currentRecorded: previous === null || m !== undefined, server: m?.server ?? null, preparedRoot: p?.root ?? null };
+    const warnings: OutputWarning[] = previous !== null && !m && !p
       ? [{ code: "SELECTION_NOT_REGISTERED", target: { space: previous }, message: `the selected space "${previous}" is not registered here - select another with \`cotal use <name>\`` }]
       : [];
     writeResult(presentation, { command: "use", target: previous === null ? null : { space: previous }, result, warnings }, selectionView);
     return;
   }
   const m = findMesh(name);
-  if (!m) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { remedy: "see the registered spaces with `cotal space`" });
+  const p = m ? undefined : findPreparedSpace(name);
+  if (!m && !p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { remedy: "see the registered spaces with `cotal space`" });
   const changed = previous !== name;
   if (changed) setCurrent(name);
-  const result: Selection = { kind: "selection", current: name, previous, currentRecorded: true, server: m.server };
+  const result: Selection = { kind: "selection", current: name, previous, currentRecorded: m !== undefined, server: m?.server ?? null, preparedRoot: p?.root ?? null };
   writeResult(presentation, { command: "use", target: { space: name }, result, noOp: !changed }, selectionView);
 }
 
@@ -49,10 +53,11 @@ function selectionView(s: Selection): Report {
     : { text: `selected ${s.current}${s.previous ? ` (was ${s.previous})` : ""}`, tone: "ok", mark: "✓" };
   const lines: Cell[] = [head];
   if (s.server) lines.push({ text: `  ${s.server}`, tone: "hint" });
+  if (s.preparedRoot) lines.push({ text: `  prepared, not started - start it with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" });
   return { sections: [{ blocks: [{ kind: "lines", lines }] }] };
 }
 
 export function useComplete(argv: string[]): CompletionResult {
-  if (argv.length <= 1) return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
+  if (argv.length <= 1) return { items: [...loadMeshes().map((m) => ({ value: m.space })), ...loadPreparedSpaces().map((p) => ({ value: p.space }))], directive: "nofiles" };
   return { items: [], directive: "nofiles" };
 }

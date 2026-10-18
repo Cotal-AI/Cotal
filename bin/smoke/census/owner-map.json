@@ -396,6 +396,7 @@
   "cli:setup--yes": "pending:setup",
   "cli:space": "current:space",
   "cli:space add": "current:space add",
+  "cli:space create": "current:space create",
   "cli:space forget": "current:space forget",
   "cli:space show": "current:space show",
   "cli:space--allow-unencrypted-overlay": "current:space add --allow-unencrypted-overlay",

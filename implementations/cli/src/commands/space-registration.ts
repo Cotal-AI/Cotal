@@ -1,15 +1,24 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import {
   CommandFailure,
   authDir,
+  canonicalRoot,
   checkDiscoveryDocument,
   clearCurrent,
   discoveryDocumentUrl,
   findMesh,
+  findPreparedSpace,
   getCurrent,
+  homeCotalDir,
+  loadMeshes,
   pinnedFetch,
+  preparedSpaceAt,
   recordMesh,
+  recordPreparedSpace,
   removeMesh,
+  removePreparedSpace,
   writeResult,
   type Cell,
   type Check,
@@ -72,12 +81,23 @@ interface AddCancelled {
   readonly space: string | null;
 }
 
+interface SpaceCreated {
+  readonly kind: "space-created";
+  readonly space: string;
+  /** The folder `cotal up` starts the space in. */
+  readonly root: string;
+  readonly preparedAt: string;
+  readonly current: boolean;
+}
+
 interface SpaceForgotten {
   readonly kind: "space-forgotten";
   readonly space: string;
-  readonly server: string;
+  /** The broker it was registered at, or null for a prepared space, which has none. */
+  readonly server: string | null;
   readonly root: string;
-  readonly origin: MeshEntry["origin"] | null;
+  /** How it came to be here: a registration's origin, or `prepared` for a space `space create` made. */
+  readonly origin: MeshEntry["origin"] | "prepared" | null;
   /** Whether it was the selected space, so no space is selected now. */
   readonly selectionCleared: boolean;
 }
@@ -97,6 +117,8 @@ const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: st
 /** Only a registration added by hand can be replaced; one this machine started or a catalog lists
  *  is forgotten or stopped first. */
 function replaceable(name: string, force: boolean, target: unknown): boolean {
+  if (findPreparedSpace(name))
+    throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `start it with \`cotal up\` in its root, or forget it with \`cotal space forget ${name}\``);
   const existing = findMesh(name);
   if (!existing) return false;
   if (!force) throw refuse("CONFLICT", `"${name}" is already registered at ${existing.server}`, target, `forget it first with \`cotal space forget ${name}\`, or pass --force to replace it`);
@@ -258,17 +280,67 @@ function addedView(r: SpaceAdded | AddCancelled): Report {
 }
 
 /**
+ * `cotal space create <name>` prepares a space to start on this machine: it records the name and
+ * the root, and makes `<root>/.cotal/` so `cotal up` there starts it under that name. It starts
+ * nothing, and the selection is left as it is. The root is `--root`, else this folder.
+ */
+export async function spaceCreate(rest: readonly string[], rootFlag: string | undefined, presentation: Presentation): Promise<void> {
+  if (rest.length !== 1 || rest[0]!.trim() === "") throw usage("usage: cotal space create <name> [--root <dir>]");
+  const name = rest[0]!;
+  const target = { space: name };
+  const root = resolve(rootFlag ?? process.cwd());
+  if (!isDir(root)) throw usage(`--root ${root} is not a directory`, "create the folder first, or pass an existing one");
+  if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
+    throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, "create the space in a project folder, or pass --root <dir>");
+  const registered = findMesh(name);
+  if (registered) throw refuse("CONFLICT", `"${name}" is already registered at ${registered.server}`, target, `see it with \`cotal space show ${name}\``);
+  const prepared = findPreparedSpace(name);
+  if (prepared) throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}`, target, `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
+  const held = [...take(spacesAtRoot(root), target), ...loadMeshes().filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)];
+  if (held.length > 0)
+    throw refuse("CONFLICT", `${root} is already the root of "${[...new Set(held)].join('", "')}"`, target, "create the space in another folder, or pass --root <dir>");
+  mkdirSync(join(root, ".cotal"), { recursive: true });
+  const ts = new Date().toISOString();
+  recordPreparedSpace({ space: name, root, ts });
+  const result: SpaceCreated = { kind: "space-created", space: name, root, preparedAt: ts, current: getCurrent() === name };
+  writeResult(presentation, { command: "space", target, result }, createdView);
+}
+
+function isDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function createdView(r: SpaceCreated): Report {
+  const lines: Cell[] = [
+    { text: `prepared ${r.space}`, tone: "ok", mark: "✓" },
+    { text: `  start it with \`cotal up\` in ${r.root}`, tone: "hint" },
+  ];
+  if (!r.current) lines.push({ text: `  select it with \`cotal use ${r.space}\``, tone: "hint" });
+  return { sections: [{ blocks: [{ kind: "lines", lines }] }] };
+}
+
+/**
  * `cotal space forget <name>` removes a registration this machine keeps. It stops nothing and
  * deletes nothing on a broker, and the root's files stay. A space this machine is running is
  * stopped with `cotal down`, which also drops its record, and a discovered space follows its
- * catalog. Forgetting the selected space clears the selection.
+ * catalog. Forgetting the selected space clears the selection. A prepared space is forgotten the
+ * same way, and the `.cotal/` folder `space create` made stays.
  */
 export async function spaceForget(rest: readonly string[], presentation: Presentation): Promise<void> {
   if (rest.length !== 1) throw usage("usage: cotal space forget <name>");
   const name = rest[0]!;
   const target = { space: name };
   const m = findMesh(name);
-  if (!m) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, target, "see the registered spaces with `cotal space`");
+  if (!m) {
+    const p = findPreparedSpace(name);
+    if (!p) throw refuse("TARGET_NOT_FOUND", `no space named "${name}" is registered here`, target, "see the registered spaces with `cotal space`");
+    removePreparedSpace(name);
+    return forgotten(presentation, { space: name, server: null, root: p.root, origin: "prepared" });
+  }
   if (m.origin === "catalog")
     throw refuse("CONFLICT", `"${name}" is listed by a signed-in space catalog, so this machine does not own its registration`, target, "it is removed when the catalog no longer lists it and `cotal sync` runs");
   if (m.origin !== "manual") {
@@ -281,16 +353,20 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     if (running) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${m.root} (${running})`, target, `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
   }
   removeMesh(name);
-  const selectionCleared = getCurrent() === name;
+  forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null });
+}
+
+function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | "selectionCleared">): void {
+  const selectionCleared = getCurrent() === r.space;
   if (selectionCleared) clearCurrent();
-  const result: SpaceForgotten = { kind: "space-forgotten", space: name, server: m.server, root: m.root, origin: m.origin ?? null, selectionCleared };
-  writeResult(presentation, { command: "space", target, result }, forgottenView);
+  const result: SpaceForgotten = { kind: "space-forgotten", ...r, selectionCleared };
+  writeResult(presentation, { command: "space", target: { space: r.space }, result }, forgottenView);
 }
 
 function forgottenView(r: SpaceForgotten): Report {
   const lines: Cell[] = [
     { text: `forgot ${r.space}`, tone: "ok", mark: "✓" },
-    { text: `  ${r.server}; the files under ${r.root} are kept`, tone: "hint" },
+    { text: `  ${r.server === null ? "prepared, never started" : r.server}; the files under ${r.root} are kept`, tone: "hint" },
   ];
   if (r.selectionCleared) lines.push({ text: "no space is selected now - select one with `cotal use <name>`", tone: "hint" });
   return { sections: [{ blocks: [{ kind: "lines", lines }] }] };

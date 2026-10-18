@@ -23,6 +23,7 @@ export * from "./preferences.js";
 export * from "./present.js";
 export * from "./provenance.js";
 export * from "./mesh-registry.js";
+export * from "./prepared-spaces.js";
 export * from "./join-target.js";
 export * from "./registration-policy.js";
 export * from "./broker-policy.js";
