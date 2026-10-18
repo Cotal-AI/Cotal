@@ -35,11 +35,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
 import {
   chatStream,
   createSpaceAuth,
   credsClaims,
   inspectCredHealth,
+  MEMBERSHIP_FEED_KEY,
+  membershipBucket,
   mintConnectionEvictorCreds,
   mintCreds,
   mintLifecycleUid,
@@ -193,6 +196,18 @@ async function withJsm<T>(creds: string, fn: (jsm: Awaited<ReturnType<typeof jet
     await nc.close();
   }
 }
+/** The membership feed's heartbeat: epoch ms of its last COMPLETE sweep, read through an observer cred
+ *  (the dashboard's read path). An incomplete sweep skips the write, so a feed that never completes one
+ *  leaves this where it was. */
+async function feedHeartbeat(creds: string): Promise<number | undefined> {
+  const nc = await connect({ servers: SERVERS, timeout: 5000, reconnect: false, maxReconnectAttempts: 0, ...standaloneConnectOpts({ creds, tls: false }) });
+  try {
+    const e = await (await new Kvm(nc).open(membershipBucket(SPACE))).get(MEMBERSHIP_FEED_KEY);
+    return e ? e.json<{ observedAt: number }>().observedAt : undefined;
+  } finally {
+    await nc.close();
+  }
+}
 /** The CHAT stream's identity as the operator's data: how many messages, and where the log is. A
  *  stream that was recreated by the rotation would come back at sequence 0. (No role may
  *  `STREAM.MSG.GET` on CHAT, since reads there are consumer-scoped by design, so the bytes are proven
@@ -321,6 +336,18 @@ try {
     doc3 = cotal(["doctor", "auth"]);
   }
   check(`\`cotal doctor auth\` exits 0 after the rotation (${Math.round((Date.now() - started) / 1000)}s)`, doc3.code === 0, `code=${doc3.code} ${doc3.out.slice(-400)}`);
+  // The verdict check above cannot see a feed that keeps omitting its own connection: that path logs a
+  // sweep notice and skips the write without ever reporting degraded. So the feed must also stamp its
+  // heartbeat after the renewal pass the doctor wait observed, within three 15s poll intervals. A
+  // transient omission costs one sweep; a persistent one never stamps.
+  const observer = await mintCreds(auth, newIdentity(), "observer");
+  const since = Date.now();
+  let beat = await feedHeartbeat(observer);
+  while (!(beat !== undefined && beat > since) && Date.now() - since < 45_000) {
+    await wait(2000);
+    beat = await feedHeartbeat(observer);
+  }
+  check("the membership feed's heartbeat advances after the renewal pass", beat !== undefined && beat > since, `heartbeat=${beat} since=${since}`);
 
   // ── 5) what the repair promised to leave alone ─────────────────────────────────────────────────
   console.log("\n5) the survival claim the repair copy makes");
