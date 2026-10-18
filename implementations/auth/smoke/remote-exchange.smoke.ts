@@ -31,6 +31,10 @@
  *      refusal is the public face's policy and not a broken view path. `channel-writer` is the
  *      allow-list exception: a signed-in human whose row carries `admin` mints it on the public
  *      face. Agent-secret exchanges still never mint a view.
+ *   E2. the signed-in human's own manager instance list (`POST /manager-instances`): this owner's
+ *      gates only, each with the verdict selection reads, refreshed when an instance changes, and
+ *      selection counting the same list. A browser Origin, a GET, a missing or forged proof, and a
+ *      loopback request without the capability are refused, never answered with an empty list.
  *   F. Origin rejection, JSON-only content-type and the 64 KB body bound hold VERBATIM on the
  *      public face (they are inherited by sharing handleExchange, and this proves the sharing).
  *   G. per-peer isolation, the throttling claim: peer A floods the public face with refusals until
@@ -457,6 +461,43 @@ try {
   check("the public human exchange serves manager-caller and returns the selected instance",
     humanManagerCall.status === 200 && humanManagerCall.body.managerInstanceId === remoteOne, humanManagerCall);
 
+  // ---------- E2. the human's own manager instance list ----------
+  console.log("E2) the signed-in human's own manager instances, read-only");
+  type Listed = Array<{ instanceId: string; placement: string; state: string }>;
+  const list = async (face = PUBLIC, headers: Record<string, string> = {}) => post(`${face}/manager-instances`, { idpToken: idpJwt }, headers);
+  const listed = await list();
+  const rows = (listed.body.instances ?? []) as Listed;
+  const stateOf = (rs: Listed, id: string) => rs.find((r) => r.instanceId === id)?.state;
+  check("the public face lists the human's own manager instances (v1, this owner, complete, timestamped)",
+    listed.status === 200 && listed.body.v === 1 && listed.body.owner === OWNER && listed.body.complete === true && typeof listed.body.observedAt === "number", listed);
+  check("each own gate carries the verdict selection reads (two live remotes, one deregistered, the local manager)",
+    stateOf(rows, remoteOne) === "candidate" && stateOf(rows, remoteTwo) === "candidate" && stateOf(rows, stopped) === "not registered"
+      && rows.find((r) => r.instanceId === localManagerInstanceId)?.placement === "local", rows);
+  check("another owner's gates are not listed (a foreign remote and a frozen one)",
+    stateOf(rows, foreign) === undefined && stateOf(rows, unavailableId) === undefined, rows);
+  check("a record carries only its id, placement and verdict", rows.length > 0 && rows.every((r) => Object.keys(r).sort().join() === "instanceId,placement,state"), rows);
+  const remoteThree = mintLifecycleUid();
+  await putManager({ instanceId: remoteThree, principal: `${OWNER}.${remoteManagerActors(remoteThree).serve}`, owner: OWNER });
+  const grown = (await list()).body.instances as Listed;
+  const grownSelection = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
+  check("a newly registered instance appears, and selection counts the same three live remotes",
+    stateOf(grown, remoteThree) === "candidate" && grownSelection.status === 401 && String(grownSelection.body.error).includes("3 live remote manager candidates"), { grown, grownSelection });
+  await putManager({ instanceId: remoteThree, principal: `${OWNER}.${remoteManagerActors(remoteThree).serve}`, owner: OWNER, state: "retired" });
+  const shrunk = (await list()).body.instances as Listed;
+  const shrunkSelection = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
+  check("a retired instance stays listed as not open, and selection is back to two",
+    stateOf(shrunk, remoteThree) === "not open" && shrunkSelection.status === 401 && String(shrunkSelection.body.error).includes("2 live remote manager candidates"), { shrunk, shrunkSelection });
+  check("the list refuses a browser Origin (403)", (await list(PUBLIC, { origin: "https://evil.example" })).status === 403);
+  check("the list refuses a GET (405)", (await get(`${PUBLIC}/manager-instances`)).status === 405);
+  check("the list refuses a request with no proof (400)", (await post(`${PUBLIC}/manager-instances`, {})).status === 400);
+  const forged = await post(`${PUBLIC}/manager-instances`, { idpToken: `${idpJwt.split(".").slice(0, 2).join(".")}.${"A".repeat(86)}` });
+  check("the list refuses a forged proof (401), never an empty list", forged.status === 401 && forged.body.instances === undefined, forged);
+  check("an agent secret is no proof for the list (400)", (await post(`${PUBLIC}/manager-instances`, agentBody)).status === 400);
+  check("the loopback list demands the exchange capability (401)", (await list(LOOPBACK)).status === 401);
+  const loopbackListed = await list(LOOPBACK, { authorization: `Bearer ${info!.cap}` });
+  check("with the capability, loopback lists the same instances",
+    loopbackListed.status === 200 && JSON.stringify((loopbackListed.body.instances as Listed).map((r) => r.instanceId).sort()) === JSON.stringify(shrunk.map((r) => r.instanceId).sort()), loopbackListed);
+
   // ---------- F. inherited hardening holds verbatim ----------
   const ids = Object.fromEntries(["supervisor", "executor", "serve", "goalWriter", "sessionLedger"].map((name) => [name, { id: newIdentity().id }]));
   const mgrPrepare = await post(`${PUBLIC}/manager-service-authority`, { idpToken: idpJwt, request: {
@@ -713,7 +754,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 95;
+const EXPECTED = 108;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);

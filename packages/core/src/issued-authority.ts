@@ -37,21 +37,13 @@ import { assertGeneration, callerTokens, type EpCaller } from "./endpoint-subjec
 export { assertGeneration, isIssuedCaller, EP_RAIL_V1, type IssuedCaller } from "./endpoint-subjects.js";
 import type { IssuedCaller } from "./endpoint-subjects.js";
 import { subjectMatches, token } from "./subjects.js";
+import { acceptedBucket, acceptedKey, assertIssuedSpace, closed, issuedCallerOfToken, readAcceptedRow, refSnapshot, type IssuedAuthorityRef } from "./issued-accepted.js";
+export { acceptedBucket, acceptedKey, assertIssuedSpace, issuedCallerOfToken, readAcceptedRow } from "./issued-accepted.js";
+export type { IssuedAuthorityRef } from "./issued-accepted.js";
 
-/** Issued coordinates carry a canonical space token, never a lossy display-name rewrite. */
-export function assertIssuedSpace(space: string): void {
-  if (typeof space !== "string" || space.length === 0 || token(space) !== space)
-    throw new Error("issued space must be a nonempty canonical subject token ([A-Za-z0-9_-])");
-}
 
 // ---- the reference -------------------------------------------------------------------------------
 
-/** The four caller coordinates plus the generation. `generation` is 32 lowercase hex characters
- *  of issuer-chosen entropy (at least 128 bits); it is an identifier, never a bearer secret. */
-export interface IssuedAuthorityRef extends EpCaller {
-  readonly space: string;
-  readonly generation: string;
-}
 
 /** A fresh generation: 128 bits, hex. Chosen by the ISSUER, never by the client. */
 export function mintGeneration(): string {
@@ -63,13 +55,6 @@ export function mintAcceptedToken(): string {
   return randomBytes(16).toString("hex");
 }
 
-function refSnapshot(value: IssuedAuthorityRef): IssuedAuthorityRef {
-  closed(value, ["space", "owner", "actor", "uid", "generation"], "issued reference");
-  assertIssuedSpace(value.space);
-  callerTokens(value);
-  assertGeneration(value.generation);
-  return Object.freeze({ space: value.space, owner: value.owner, actor: value.actor, uid: value.uid, generation: value.generation });
-}
 
 // ---- the permission model ------------------------------------------------------------------------
 
@@ -92,16 +77,6 @@ export interface IssuedSubjectPermissions {
   readonly subscribe: IssuedSubjectPermission;
 }
 
-function closed(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)
-    || (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null))
-    throw new Error(`${label} must be a plain record`);
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key !== "string" || !keys.includes(key)) throw new Error(`${label} carries an unsupported field ${String(key)}`);
-    if (!Object.hasOwn(Object.getOwnPropertyDescriptor(value, key)!, "value")) throw new Error(`${label} cannot carry accessors`);
-  }
-  return value as Record<string, unknown>;
-}
 
 function subjectToken(value: unknown, pattern: boolean): string {
   if (typeof value !== "string" || value.length === 0 || /\s/u.test(value)
@@ -249,12 +224,6 @@ export function issuedBucket(space: string): string {
   return `cotal_issued_${token(space)}`;
 }
 
-/** The per-space accepted-row store. Its own bucket, and `allow_direct` ON: per-key scoping is
- *  only expressible on a `DIRECT.GET` grant, and a stream-wide `STREAM.MSG.GET` on a shared bucket
- *  would let a client read every other client's row. */
-export function acceptedBucket(space: string): string {
-  return `cotal_accepted_${token(space)}`;
-}
 
 export function issuedEvidenceKey(ref: IssuedAuthorityRef): string {
   const snap = refSnapshot(ref);
@@ -576,9 +545,6 @@ export async function ensureIssuedStores(jsm: JetStreamManager, kvm: Kvm, space:
 
 // ---- the accepted row ----------------------------------------------------------------------------
 
-export function acceptedKey(acceptedToken: string): string {
-  return `accepted.v1.${assertGeneration(acceptedToken, "accepted token")}`;
-}
 
 /** The read grant an issued ceiling carries for exactly its own accepted row and nothing else. */
 export function acceptedReadGrant(space: string, acceptedToken: string): string {
@@ -600,30 +566,12 @@ export async function writeAcceptedRow(kv: KV, acceptedToken: string, ref: Issue
   await kv.create(acceptedKey(acceptedToken), bytes({ version: 1, ref: refSnapshot(ref) }));
 }
 
-/** Read by the CLIENT over its own connection: the reference the ISSUER wrote, so a client that
- *  proposed or was told a different generation learns the accepted one here. The broker admits
- *  the read only under the ceiling's per-key grant, which is what binds the answer to the
- *  credential this connection presented. */
-export async function readAcceptedRow(nc: NatsConnection, space: string, acceptedToken: string, timeoutMs = 3000): Promise<IssuedAuthorityRef> {
-  const bucket = acceptedBucket(space);
-  const response = await nc.request(`$JS.API.DIRECT.GET.KV_${bucket}.$KV.${bucket}.${acceptedKey(acceptedToken)}`, new Uint8Array(0), { timeout: timeoutMs });
-  const status = response.headers?.get("Status");
-  if (status) throw new EpEnvelopeError("permission-denied", `no accepted row for this token (${status}); the connection holds no issued authority (SPEC 13.15)`);
-  const row = closed(JSON.parse(dec.decode(response.data)), ["version", "ref"], "accepted row");
-  if (row.version !== 1) throw new Error("unsupported accepted-row version");
-  const ref = refSnapshot(row.ref as IssuedAuthorityRef);
-  if (ref.space !== space) throw new EpEnvelopeError("permission-denied", "the accepted row names a foreign space");
-  return ref;
-}
 
 /** Read this user-auth connection's accepted row (SPEC 13.15) and return the issued caller it names.
  *  `connId` is the inbox nonce the connection presented; the token is derived from it, never read
  *  from a file or a body. Refuses a row whose owner, actor or uid is not `expected`'s. */
 export async function issuedUserCaller(nc: NatsConnection, space: string, connId: string, expected: EpCaller): Promise<IssuedCaller> {
-  const ref = await readAcceptedRow(nc, space, connectionAcceptedToken(connId));
-  if (ref.owner !== expected.owner || ref.actor !== expected.actor || ref.uid !== expected.uid)
-    throw new EpEnvelopeError("permission-denied", `this connection's accepted row names ${ref.owner}.${ref.actor}/${ref.uid}, not the caller ${expected.owner}.${expected.actor}/${expected.uid}; refused (SPEC 13.15)`);
-  return { owner: ref.owner, actor: ref.actor, uid: ref.uid, generation: ref.generation } as IssuedCaller;
+  return issuedCallerOfToken(nc, space, connectionAcceptedToken(connId), expected);
 }
 
 /** `details[].kind` of the refusal a command requiring issued caller authority returns to a

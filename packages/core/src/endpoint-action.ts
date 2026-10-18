@@ -41,6 +41,8 @@ import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManage
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { canonicalJson, contractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { GOAL_TERMINAL_STATES, assertClosedKeys, assertGoalResultFactShape, goalOutcomeDigestMismatch } from "./goal-result-fact.js";
+export { GOAL_TERMINAL_STATES };
 import { withDeadline } from "./deadline.js";
 import { epfSubject, assertIdToken, endpointToken, type EpCaller, type ParsedEpRequest } from "./endpoint-subjects.js";
 import { RECORD_KINDS, recordSpecKey, recordStatusKey, recordAtomicKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader, decodeEntry } from "./endpoint-records.js";
@@ -198,11 +200,6 @@ function assertSafeInt(v: unknown, what: string): number {
   return v;
 }
 
-function assertClosedKeys(o: Record<string, unknown>, allowed: readonly string[], what: string): void {
-  for (const k of Object.keys(o))
-    if (!allowed.includes(k))
-      throw new EpEnvelopeError("internal", `${what} carries unknown field ${JSON.stringify(k)}; a closed schema admits no extras - garbled state never authorizes (SPEC 13.4)`);
-}
 
 // ---- the goal bind (§13.4 item 3, canonicalizer-owned) ---------------------------------------
 
@@ -304,8 +301,6 @@ export async function resolveGoalSubmission(
 /** The §13.6 single status vocabulary for every long-running surface. */
 export const GOAL_STATES = Object.freeze(["accepted", "running", "waiting", "cancelling", "succeeded", "failed", "cancelled", "expired", "uncertain"] as const);
 export type GoalState = (typeof GOAL_STATES)[number];
-/** All five are TERMINAL and immutable; first-terminal-fact-wins applies uniformly. */
-export const GOAL_TERMINAL_STATES: readonly GoalState[] = Object.freeze(["succeeded", "failed", "cancelled", "expired", "uncertain"]);
 
 /** The legal §13.6 transitions: `accepted → running ⇄ waiting`, `cancelling` between a cancel
  *  and its terminal, every non-terminal may project a terminal, a terminal absorbs. */
@@ -783,28 +778,8 @@ function assertTerminalAttribution(fact: GoalResultFact, spec: GoalSpecValue, go
 
 /** Closed validation, IDENTITY-BOUND to the ref, with the tombstone digest RE-VERIFIED. */
 export function parseGoalResultFact(raw: unknown, subject: string, ref: GoalRef): GoalResultFact {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
-    throw new EpEnvelopeError("internal", `goal result fact on ${subject} is not an object; garbled state never authorizes (SPEC 13.6)`);
-  const o = raw as Record<string, unknown>;
-  assertClosedKeys(o, ["v", "goalId", "fingerprint", "state", "outcomeDigest", "data", "committer", "ts"], `goal result fact on ${subject}`);
-  if (o.committer !== undefined) {
-    const cm = o.committer as Record<string, unknown>;
-    if (cm === null || typeof cm !== "object" || Array.isArray(cm))
-      throw new EpEnvelopeError("internal", `goal result fact on ${subject} committer is not an object; garbled state never authorizes (SPEC 13.6)`);
-    assertClosedKeys(cm, ["instanceId", "epoch"], `goal result fact on ${subject} committer`);
-    if (typeof cm.instanceId !== "string" || cm.instanceId.length === 0
-      || typeof cm.epoch !== "number" || !Number.isSafeInteger(cm.epoch) || cm.epoch < 0)
-      throw new EpEnvelopeError("internal", `goal result fact on ${subject} carries a malformed committer; garbled state never authorizes (SPEC 13.6)`);
-  }
-  if (o.v !== 1 || typeof o.goalId !== "string" || typeof o.fingerprint !== "string" || o.fingerprint.length === 0
-    || typeof o.state !== "string" || !(GOAL_TERMINAL_STATES as readonly string[]).includes(o.state)
-    || typeof o.outcomeDigest !== "string" || o.outcomeDigest.length === 0
-    || typeof o.ts !== "number" || !Number.isSafeInteger(o.ts) || o.ts < 0)
-    throw new EpEnvelopeError("internal", `goal result fact on ${subject} is malformed; garbled state never authorizes (SPEC 13.6)`);
-  if (o.goalId !== ref.goalId)
-    throw new EpEnvelopeError("internal", `goal result fact on ${subject} names goalId ${JSON.stringify(o.goalId)}, not its subject's ${ref.goalId}; a mis-subjected fact never authorizes (SPEC 13.4)`);
-  if (contractDigest(o.data === undefined ? null : o.data) !== o.outcomeDigest)
-    throw new EpEnvelopeError("internal", `goal result fact on ${subject} carries an outcomeDigest that does not match its payload; a digest-inconsistent fact never authorizes (SPEC 13.6)`);
+  const o = assertGoalResultFactShape(raw, subject, ref);
+  if (contractDigest(o.data === undefined ? null : o.data) !== o.outcomeDigest) throw goalOutcomeDigestMismatch(subject);
   return o as unknown as GoalResultFact;
 }
 

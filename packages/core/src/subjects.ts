@@ -27,7 +27,6 @@
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
  */
 
-import { randomBytes } from "node:crypto";
 
 const ILLEGAL = /[^A-Za-z0-9_-]/g;
 
@@ -249,7 +248,7 @@ export function assertLifecycleToken(v: string, what = "lifecycleUid"): string {
  *  short render in-grammar without losing entropy. The UID is minted ONCE per lifecycle by the
  *  provisioning path and preserved across supervised restarts — never re-minted per process. */
 export function mintLifecycleUid(): string {
-  return assertLifecycleToken(BigInt(`0x${randomBytes(20).toString("hex")}`).toString(36).padStart(26, "0"));
+  return assertLifecycleToken(BigInt(`0x${Array.from(globalThis.crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, "0")).join("")}`).toString(36).padStart(26, "0"));
 }
 
 /** The lifecycle-scoped JetStream-name form `<owner>-<actor>-<lifecycleUid>` (SPEC §13.1 "the UID is

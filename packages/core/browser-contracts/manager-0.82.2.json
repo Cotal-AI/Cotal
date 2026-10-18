@@ -1,0 +1,2208 @@
+{
+  "label": "@cotal-ai/manager@0.82.2",
+  "clusterDigest": "sha256:dd7db8069ccab85fc32a8f8a81e9b49f23dbb6fd1dad209e8aba3da62fc00e02",
+  "document": {
+    "urn": "ai.cotal.manager",
+    "revision": 27,
+    "attributes": [],
+    "events": [],
+    "commands": [
+      {
+        "name": "status",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.read",
+        "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+        "outputDigest": "sha256:7f174dbfd7522076720a052bd88bacdca967a2d296813ab32fe8dafe3b5ecda5"
+      },
+      {
+        "name": "ps",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.read",
+        "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+        "outputDigest": "sha256:89813cb7126075bcb004a5cc6617eef6ff4a395597a3215d3f5c55d79127f65f"
+      },
+      {
+        "name": "inspect",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.read",
+        "inputDigest": "sha256:c74bfe6c0426cf31f56796a48992639eb08a46c36f7dd7205b497cf2c83a8382",
+        "outputDigest": "sha256:8c30952fad71c90e7be46e7b8f59f471d807a787c6c77f0edca86eb12e2f9455"
+      },
+      {
+        "name": "slots",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.read",
+        "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+        "outputDigest": "sha256:da5feb93000530a54705e4699c81390bbb3e1d3acd4ebfbab0349544b75f47a9"
+      },
+      {
+        "name": "models",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.read",
+        "inputDigest": "sha256:edcf1dcdeede38991ec59b6bf2a44fc2a36bb6252fce5d80e399717ec85df88c",
+        "outputDigest": "sha256:66c9c24fef33a9cf69afdb59324a37591e600ce8106ed61e71b46dddcbc124f6"
+      },
+      {
+        "name": "resolve-cwd",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.spawn",
+        "inputDigest": "sha256:ea591334a950e26e492ad4be32c44ac5687ba73c01929064c41e7ae59efa3d22",
+        "outputDigest": "sha256:5c3dc3539b27d9a7c95379984bb8e9eba33d0bffb68817681f014d4b0646ef79"
+      },
+      {
+        "name": "resolve-agent",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.spawn",
+        "inputDigest": "sha256:4e082d960896c6bfffe62657e42a56694a1e371fa9aaf9fb4dee5e0a93713db9",
+        "outputDigest": "sha256:bd5150fceb1ed179f0cb3db78c67e4adba7be6501db228a619556c355474a295"
+      },
+      {
+        "name": "spawn",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.spawn",
+        "inputDigest": "sha256:423a84eefc17334320632f0e22dae96cb1dbe37d49f50019bfcdacc14f756017",
+        "outputDigest": "sha256:d883a9f97f7c034772c7cbc28b22d63cf69870ba072d470c2f7b104f455e2e83"
+      },
+      {
+        "name": "despawn",
+        "class": "ephemeral",
+        "targeted": true,
+        "modes": [
+          "owner",
+          "any"
+        ],
+        "capability": "manager.lifecycle",
+        "inputDigest": "sha256:2fde1dce4a65d3dad7991113b4b98f51f10b94109898f049154759bc456567ef",
+        "outputDigest": "sha256:7ec7cf7c8d9011fc57022db68577851eb1fb57cdbef94766e4d6ca26bc70131e"
+      },
+      {
+        "name": "attach",
+        "class": "ephemeral",
+        "targeted": true,
+        "modes": [
+          "owner",
+          "any"
+        ],
+        "capability": "manager.lifecycle",
+        "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+        "outputDigest": "sha256:db9b6af74cba69ac9d3a08c9d313b3f65dca9df6e19ad19cc1753956dcf937c3"
+      },
+      {
+        "name": "input",
+        "class": "ephemeral",
+        "targeted": true,
+        "modes": [
+          "owner",
+          "any"
+        ],
+        "capability": "manager.lifecycle",
+        "inputDigest": "sha256:31b92d1926fc84652ca043f8b9a2c443ed272932e99935b64ab35e24d88c0052",
+        "outputDigest": "sha256:165c6b378b4731d23598bf42d390998da55afeac3690cfdad700820b0ad5b126"
+      },
+      {
+        "name": "turn",
+        "class": "ephemeral",
+        "targeted": true,
+        "modes": [
+          "owner",
+          "any"
+        ],
+        "capability": "manager.lifecycle",
+        "inputDigest": "sha256:89dfd09e59fbbef6db68f62f6ab2bbeb8ba7223ea89be008cb327b25723754e7",
+        "outputDigest": "sha256:b9d570154853a000e00e612c8051b21aaedaf96586b4ccca76bf4572b24b050d"
+      },
+      {
+        "name": "turn-pending",
+        "class": "ephemeral",
+        "targeted": true,
+        "modes": [
+          "self"
+        ],
+        "capability": "manager.self",
+        "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+        "outputDigest": "sha256:9e916615754c822e144ec614bd1534226f8fbc90a55ac3e66e088ed7a56dc848"
+      },
+      {
+        "name": "turn-yield",
+        "class": "ephemeral",
+        "targeted": true,
+        "modes": [
+          "self"
+        ],
+        "capability": "manager.self",
+        "inputDigest": "sha256:dc992f7975be5cec5c3f90153288ad6821380867fe004056fbcf8eb227656542",
+        "outputDigest": "sha256:63909e8274cd7febd74f46b4932af8e1a27d6d5b7c16dd5d8dbd2955142bd013"
+      },
+      {
+        "name": "cancel",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.lifecycle",
+        "inputDigest": "sha256:57768d63b61c55c1590cf549cba7e0b4ee1b4de62dc711ec036eea8576511583",
+        "outputDigest": "sha256:63909e8274cd7febd74f46b4932af8e1a27d6d5b7c16dd5d8dbd2955142bd013"
+      },
+      {
+        "name": "stop",
+        "class": "ephemeral",
+        "targeted": true,
+        "modes": [
+          "self"
+        ],
+        "capability": "manager.self",
+        "inputDigest": "sha256:2fde1dce4a65d3dad7991113b4b98f51f10b94109898f049154759bc456567ef",
+        "outputDigest": "sha256:7ec7cf7c8d9011fc57022db68577851eb1fb57cdbef94766e4d6ca26bc70131e"
+      },
+      {
+        "name": "run-start",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.run",
+        "inputDigest": "sha256:8e362b51f48d3895be78889490dcc402d3dad77f8f444c7041a5f38a770ce8d5",
+        "outputDigest": "sha256:137ba8c3bf03a825cce5b1f3958db9a9f7a8788ee4fb1f1137cb98b34a04578c"
+      },
+      {
+        "name": "run-resume",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.run",
+        "inputDigest": "sha256:caf250696cca5065b7bf9056decccba83775b1ff3d8941d285350b6575c0dfe1",
+        "outputDigest": "sha256:137ba8c3bf03a825cce5b1f3958db9a9f7a8788ee4fb1f1137cb98b34a04578c"
+      },
+      {
+        "name": "run-answer",
+        "class": "ephemeral",
+        "targeted": true,
+        "modes": [
+          "self"
+        ],
+        "capability": "manager.run",
+        "inputDigest": "sha256:6866b0ca9769bce89c5d1a20e1bfaa8615631ca3aeb305bfc984a6b723521830",
+        "outputDigest": "sha256:25a531f5a7cdb8ae96563e0af24afbcb18edd63b72bd769c530a07f90221a235"
+      },
+      {
+        "name": "run-status",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.read",
+        "inputDigest": "sha256:3688c2c5d24033efd3f0ea1d6445efe7ba0bffdcb0656838cbe6ce5e9c97ff9b",
+        "outputDigest": "sha256:6791622643f58f05dfbc24050aa45398ac02f82b03ccd9b2ebc096e6836570d2"
+      },
+      {
+        "name": "run-ps",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.read",
+        "inputDigest": "sha256:31fb205f2db7459f10d8c3a24c1bb2518f946879c2a25b41385550be8192d63b",
+        "outputDigest": "sha256:b79ae5b660216764727e36339c54bbb885ef97fb5e6fbcaf33d6d4ec038a0b36"
+      },
+      {
+        "name": "goal-result",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.read",
+        "inputDigest": "sha256:d85c21db12518b997058347762cabad0a41f6f63d32a9b487abbeae49a51ecd1",
+        "outputDigest": "sha256:df1e8e4a9c3b5865f022b39638db4fc6ef9199a924ea5e70f82a165beb022d46"
+      },
+      {
+        "name": "define-persona",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.persona",
+        "inputDigest": "sha256:3b37fed51bec7f24f4b71dcda682d601f52f22459f5a1908c32d1e89cfd0c4e3",
+        "outputDigest": "sha256:a121baba27357c3710b20023422927b0c11d4d1d58a542f909efd7ad1152751c"
+      },
+      {
+        "name": "list-personas",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.read",
+        "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
+        "outputDigest": "sha256:bb37634698c67b4468dd1c85dfbcfa0c13125f91aed9fd0769ee813438048c49"
+      },
+      {
+        "name": "show-persona",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.read",
+        "inputDigest": "sha256:c74bfe6c0426cf31f56796a48992639eb08a46c36f7dd7205b497cf2c83a8382",
+        "outputDigest": "sha256:45118d9dfc9803469c095dc2d34d8f6bec6b48eec90d8017f4617acc9d6fb7d2"
+      },
+      {
+        "name": "purge",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.admin",
+        "inputDigest": "sha256:fc7eb2289bcdc583558efe1127c5f8ab988649ecbe0a0e950dd175c512b4cd86",
+        "outputDigest": "sha256:dc91365525849af1bd5dfacedd4b5b6fbdc611db99c2478a803ee8995191ee4e"
+      },
+      {
+        "name": "launch",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.admin",
+        "inputDigest": "sha256:dc33bfbeba9027bba4e06e0d96ea5ea0bdb2f412899707288ba0e534d88dc565",
+        "outputDigest": "sha256:d883a9f97f7c034772c7cbc28b22d63cf69870ba072d470c2f7b104f455e2e83"
+      },
+      {
+        "name": "resume-preserved",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.admin",
+        "inputDigest": "sha256:204aa0baa9794e9c0183cf62666928f0a8a04811aa92b4ce73e5c12a0574b5b9",
+        "outputDigest": "sha256:241df3a8f87af62ea53beb2267ab5309af830a357180952924a0fca26e748efb"
+      },
+      {
+        "name": "commit-resume",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.admin",
+        "inputDigest": "sha256:b863e0912fbf9344b346a1f69179a1039254fad2a5dec27cb691fd7812617976",
+        "outputDigest": "sha256:b89dc03ca8afa323c4e36ad54e8af032fa084aba04e0c3f6b27ef5df4788f46c"
+      },
+      {
+        "name": "finalize-resume",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.admin",
+        "inputDigest": "sha256:7df6373748333f8c0907dc38eaca8596714aad3a05cf11974bef97cd328f238c",
+        "outputDigest": "sha256:959dbd34809db2f410c4f983b1cb0bf7a7fbf24d275ceb5fd097979e46e1fee7"
+      },
+      {
+        "name": "prepare-preservation",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.admin",
+        "inputDigest": "sha256:b863e0912fbf9344b346a1f69179a1039254fad2a5dec27cb691fd7812617976",
+        "outputDigest": "sha256:241df3a8f87af62ea53beb2267ab5309af830a357180952924a0fca26e748efb"
+      },
+      {
+        "name": "commit-preservation",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.admin",
+        "inputDigest": "sha256:b863e0912fbf9344b346a1f69179a1039254fad2a5dec27cb691fd7812617976",
+        "outputDigest": "sha256:241df3a8f87af62ea53beb2267ab5309af830a357180952924a0fca26e748efb"
+      },
+      {
+        "name": "abort-preservation",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.admin",
+        "inputDigest": "sha256:b863e0912fbf9344b346a1f69179a1039254fad2a5dec27cb691fd7812617976",
+        "outputDigest": "sha256:959dbd34809db2f410c4f983b1cb0bf7a7fbf24d275ceb5fd097979e46e1fee7"
+      },
+      {
+        "name": "transcript-receive",
+        "class": "ephemeral",
+        "targeted": false,
+        "capability": "manager.admin",
+        "inputDigest": "sha256:af7e6146da1d67b985d06171139d1cba1e8bd812ac2f96b1b481db9ef1918e1f",
+        "outputDigest": "sha256:1ee2030f621873f348aee7f7daca6411f1814e4ad4bdbe1065377c8030d4afa8"
+      }
+    ]
+  },
+  "roots": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "bytes"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    {
+      "type": "null"
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "upload",
+            "staged"
+          ]
+        },
+        "claim": {
+          "type": "string"
+        },
+        "fetched": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attemptId",
+        "inventory"
+      ],
+      "properties": {
+        "attemptId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inventory": {
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "object"
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "token",
+        "answerId"
+      ],
+      "properties": {
+        "token": {
+          "type": "string"
+        },
+        "answerId": {
+          "type": "string"
+        },
+        "settle": {
+          "type": "object"
+        },
+        "supersedes": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "graceful": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "enter": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "endpoint": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "persona"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "persona": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "subscribe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowSubscribe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowPublish": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agent": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "defaultAgent": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "role": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "config": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "identity": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "model": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "variant": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "launchOptions": {
+          "type": "object"
+        },
+        "resume": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "resumeClaim": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "resumeAgent": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "events": {
+          "type": "boolean"
+        },
+        "cwd": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "prompt": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "subscribe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowSubscribe": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allowPublish": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "shareTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "supervise": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "restarts",
+            "windowMs"
+          ],
+          "properties": {
+            "restarts": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "windowMs": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "persona": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "config": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "agent": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        },
+        "defaultAgent": {
+          "type": "string",
+          "pattern": "^\\s*\\S"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "goalId"
+      ],
+      "properties": {
+        "goalId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "enum": [
+            "graceful",
+            "terminate"
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cwd",
+        "host"
+      ],
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "goalId",
+        "state"
+      ],
+      "properties": {
+        "goalId": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "cancelled",
+            "expired",
+            "uncertain"
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "catalogs"
+      ],
+      "properties": {
+        "catalogs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "agent",
+              "supported",
+              "models"
+            ],
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "supported": {
+                "type": "boolean"
+              },
+              "models": {
+                "type": "array"
+              },
+              "error": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "endpoint",
+        "spec",
+        "journal"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "spec": {
+          "type": "object"
+        },
+        "status": {
+          "type": "object"
+        },
+        "journal": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "n",
+              "kind"
+            ],
+            "properties": {
+              "n": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "activation",
+                  "step"
+                ]
+              },
+              "holder": {
+                "type": "string"
+              },
+              "epoch": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "replayedTo": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "step": {
+                "type": "string"
+              },
+              "effect": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "settled"
+                ]
+              },
+              "outcome": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "errorCode": {
+                "type": "string"
+              },
+              "startedAt": {
+                "type": "number"
+              },
+              "endedAt": {
+                "type": "number"
+              },
+              "asks": {
+                "type": "string"
+              },
+              "addressee": {
+                "type": "string"
+              },
+              "deadlineAt": {
+                "type": "number"
+              },
+              "onExpiry": {
+                "type": "string"
+              },
+              "answer": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "answerId"
+                ],
+                "properties": {
+                  "answerId": {
+                    "type": "string"
+                  },
+                  "value": {},
+                  "by": {
+                    "type": "string"
+                  },
+                  "artifact": {
+                    "type": "string"
+                  },
+                  "at": {
+                    "type": "number"
+                  }
+                }
+              },
+              "amendments": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "answerId",
+                    "supersedes",
+                    "by",
+                    "at"
+                  ],
+                  "properties": {
+                    "answerId": {
+                      "type": "string"
+                    },
+                    "supersedes": {
+                      "type": "string"
+                    },
+                    "value": {},
+                    "by": {
+                      "type": "string"
+                    },
+                    "artifact": {
+                      "type": "string"
+                    },
+                    "at": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "stepKey"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "endpoint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stepKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {},
+        "artifact": {
+          "type": "string",
+          "minLength": 1
+        },
+        "amend": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attemptId",
+        "durableCommitToken"
+      ],
+      "properties": {
+        "attemptId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "durableCommitToken": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "stopped",
+        "graceful"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "stopped": {
+          "type": "boolean"
+        },
+        "graceful": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instanceId",
+        "execution",
+        "runtime",
+        "custody",
+        "runHosting",
+        "terminalSessions",
+        "agentCount",
+        "uptimeMs",
+        "connectors",
+        "classSpawn",
+        "staticReconciliation"
+      ],
+      "properties": {
+        "instanceId": {
+          "type": "string"
+        },
+        "execution": {
+          "enum": [
+            "runtime",
+            "none"
+          ]
+        },
+        "runtime": {
+          "type": "string"
+        },
+        "custody": {
+          "enum": [
+            "legacy",
+            "custodied",
+            "none"
+          ]
+        },
+        "runHosting": {
+          "type": "boolean"
+        },
+        "terminalSessions": {
+          "type": "boolean"
+        },
+        "agentCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "uptimeMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "classSpawn": {
+          "type": "boolean"
+        },
+        "connectors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "agent",
+              "state",
+              "binaries"
+            ],
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "available",
+                  "unavailable"
+                ]
+              },
+              "binaries": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "staticReconciliation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "failures"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "idle",
+                "running",
+                "retry-wait",
+                "retrying",
+                "recovered",
+                "failed"
+              ]
+            },
+            "lastSweep": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "startedAt",
+                "attempted",
+                "succeeded",
+                "failed"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "startup",
+                    "post-adoption"
+                  ]
+                },
+                "startedAt": {
+                  "type": "string"
+                },
+                "completedAt": {
+                  "type": "string"
+                },
+                "attempted": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "succeeded": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "error": {
+                  "type": "string"
+                }
+              }
+            },
+            "failures": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "alias",
+                  "actor",
+                  "lifecycleUid",
+                  "phase",
+                  "attempts",
+                  "maxAttempts",
+                  "disposition"
+                ],
+                "properties": {
+                  "alias": {
+                    "type": "string"
+                  },
+                  "actor": {
+                    "type": "string"
+                  },
+                  "lifecycleUid": {
+                    "type": "string"
+                  },
+                  "phase": {
+                    "enum": [
+                      "provisioning",
+                      "active",
+                      "terminalizing",
+                      "retired"
+                    ]
+                  },
+                  "attempts": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "maxAttempts": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "disposition": {
+                    "enum": [
+                      "retry-scheduled",
+                      "retrying",
+                      "recovered",
+                      "refused",
+                      "refused-foreign",
+                      "retry-exhausted"
+                    ]
+                  },
+                  "lastError": {
+                    "type": "string"
+                  },
+                  "nextRetryAt": {
+                    "type": "string"
+                  },
+                  "recoveredAt": {
+                    "type": "string"
+                  },
+                  "remedy": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "id",
+          "agent",
+          "space",
+          "mode",
+          "status",
+          "uptimeMs",
+          "mesh",
+          "lifecycleUid"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "space": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "uptimeMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mesh": {
+            "type": "string"
+          },
+          "condition": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "since": {
+                "type": "number"
+              }
+            }
+          },
+          "activeAt": {
+            "type": "number"
+          },
+          "meshView": {
+            "type": "string",
+            "enum": [
+              "current",
+              "stale",
+              "unpopulated"
+            ]
+          },
+          "offlineSince": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lifecycleUid": {
+            "type": "string"
+          },
+          "authHealth": {
+            "type": "string"
+          },
+          "authReason": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "variant": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "spawner": {
+            "type": "string"
+          },
+          "instanceId": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "resume": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source"
+            ],
+            "properties": {
+              "source": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "transcriptSha256": {
+                "type": "string"
+              },
+              "host": {
+                "type": "string"
+              },
+              "transferredAt": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "payload"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "deadlineMs"
+          ]
+        },
+        {
+          "required": [
+            "deadlineAt"
+          ]
+        }
+      ],
+      "properties": {
+        "payload": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        },
+        "deadlineMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "deadlineAt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "handoffFrom": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "id",
+        "agent",
+        "space",
+        "mode",
+        "status",
+        "uptimeMs",
+        "mesh",
+        "lifecycleUid"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "space": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "uptimeMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mesh": {
+          "type": "string"
+        },
+        "condition": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code"
+          ],
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "since": {
+              "type": "number"
+            }
+          }
+        },
+        "activeAt": {
+          "type": "number"
+        },
+        "meshView": {
+          "type": "string",
+          "enum": [
+            "current",
+            "stale",
+            "unpopulated"
+          ]
+        },
+        "offlineSince": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lifecycleUid": {
+          "type": "string"
+        },
+        "authHealth": {
+          "type": "string"
+        },
+        "authReason": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "variant": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "spawner": {
+          "type": "string"
+        },
+        "instanceId": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "resume": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source"
+          ],
+          "properties": {
+            "source": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "transcriptSha256": {
+              "type": "string"
+            },
+            "host": {
+              "type": "string"
+            },
+            "transferredAt": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeout": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attemptId",
+        "state"
+      ],
+      "properties": {
+        "attemptId": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "turns"
+      ],
+      "properties": {
+        "turns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "goalId",
+              "payload",
+              "acceptedAt",
+              "deadlineAt"
+            ],
+            "properties": {
+              "goalId": {
+                "type": "string"
+              },
+              "payload": {
+                "type": "string"
+              },
+              "acceptedAt": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deadlineAt": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "path"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "size",
+        "source",
+        "sourceHost"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceHost": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "runId",
+          "endpoint"
+        ],
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "released",
+              "completed",
+              "failed"
+            ]
+          },
+          "holder": {
+            "type": "string"
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "journalHigh": {
+            "type": "integer",
+            "minimum": -1
+          },
+          "startedAt": {
+            "type": "number"
+          },
+          "programHash": {
+            "type": "string"
+          },
+          "forkedFrom": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run",
+              "step"
+            ],
+            "properties": {
+              "run": {
+                "type": "string"
+              },
+              "step": {
+                "type": "string"
+              }
+            }
+          },
+          "revoked": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "by",
+              "reason"
+            ],
+            "properties": {
+              "by": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          },
+          "revocationUnreadable": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attemptId"
+      ],
+      "properties": {
+        "attemptId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attemptId",
+        "state",
+        "durableCommitToken"
+      ],
+      "properties": {
+        "attemptId": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "durableCommitToken": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "owner",
+        "actor",
+        "uid",
+        "goalId",
+        "fingerprint",
+        "deadlineAt",
+        "executor"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "uid": {
+          "type": "string"
+        },
+        "goalId": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "deadlineAt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "executor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lifecycleUid",
+            "epoch"
+          ],
+          "properties": {
+            "lifecycleUid": {
+              "type": "string"
+            },
+            "epoch": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "personas"
+      ],
+      "properties": {
+        "personas": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent"
+      ],
+      "properties": {
+        "agent": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeout": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "goalId"
+      ],
+      "properties": {
+        "goalId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "owner",
+        "actor",
+        "uid",
+        "goalId",
+        "fingerprint",
+        "executor"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "uid": {
+          "type": "string"
+        },
+        "goalId": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "readinessDeadlineMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "executor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lifecycleUid",
+            "epoch"
+          ],
+          "properties": {
+            "lifecycleUid": {
+              "type": "string"
+            },
+            "epoch": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "owner",
+          "actor",
+          "slotLifecycleUid",
+          "slotPhase",
+          "slotRevision",
+          "readOrder",
+          "consistency",
+          "live",
+          "managerInstanceId"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "slotLifecycleUid": {
+            "type": "string"
+          },
+          "slotPhase": {
+            "type": "string",
+            "enum": [
+              "provisioning",
+              "active",
+              "terminalizing",
+              "retired"
+            ]
+          },
+          "cleanupComplete": {
+            "type": "boolean"
+          },
+          "slotRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "headState": {
+            "type": "string",
+            "enum": [
+              "active",
+              "retiring",
+              "retired"
+            ]
+          },
+          "headOp": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "opId",
+              "kind"
+            ],
+            "properties": {
+              "opId": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "retirement"
+                ]
+              }
+            }
+          },
+          "headLifecycleUid": {
+            "type": "string"
+          },
+          "headRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "readOrder": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "slot",
+                "head"
+              ]
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "consistency": {
+            "type": "string",
+            "enum": [
+              "ordered-not-atomic"
+            ]
+          },
+          "live": {
+            "type": "boolean"
+          },
+          "managerInstanceId": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grant"
+      ],
+      "properties": {
+        "grant": {
+          "type": "object"
+        },
+        "resumedFrom": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "host",
+            "source"
+          ],
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "name"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "spec": {
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chat"
+      ],
+      "properties": {
+        "chat": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dm": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "goalId",
+        "status"
+      ],
+      "properties": {
+        "goalId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "done",
+            "blocked",
+            "handoff"
+          ]
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "goalId"
+      ],
+      "properties": {
+        "goalId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cwd"
+      ],
+      "properties": {
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "refresh": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "includeDms": {
+          "type": "boolean"
+        }
+      }
+    }
+  ]
+}
