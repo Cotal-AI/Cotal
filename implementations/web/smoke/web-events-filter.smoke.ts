@@ -174,10 +174,15 @@ console.log("web-events-filter smoke");
   const calls = src.split("chatOnly(").length - 1;
   ok("5.1 SOURCE-SHAPE: chatOnly has exactly two call sites", calls === 2, calls);
 
-  const byName = src.slice(src.indexOf('path.startsWith("/api/channels/")'));
-  const routeBody = byName.slice(0, byName.indexOf("}"));
-  ok("5.2 SOURCE-SHAPE: the by-name history route applies no filter", !routeBody.includes("chatOnly"), routeBody.slice(0, 200));
-  ok("5.3 SOURCE-SHAPE: it still serves whatever channel is named", routeBody.includes("channelHistory"));
+  // The route runs from its guard to the brace that closes it at the handler's indent, so the window
+  // reaches the page the route returns. A body that no longer both reads the channel and returns
+  // that page has been restructured, and both cells fail on it.
+  const guard = src.indexOf('if (path.startsWith("/api/channels/") && path.endsWith("/history")) {');
+  const close = guard === -1 ? -1 : src.indexOf("\n    }\n", guard);
+  const routeBody = close === -1 ? "" : src.slice(guard, close);
+  const located = routeBody.includes("ep.channelHistory(") && routeBody.includes("return json(res, page);");
+  ok("5.2 SOURCE-SHAPE: the by-name history route applies no filter", located && !routeBody.includes("chatOnly"), routeBody.slice(0, 200));
+  ok("5.3 SOURCE-SHAPE: it still serves whatever channel is named", located);
 
   const tap = src.slice(src.indexOf("ep.tap("), src.indexOf("ep.tap(") + 200);
   ok("5.4 SOURCE-SHAPE: the live tap is not filtered, so frames stay visible", !tap.includes("chatOnly"), tap.slice(0, 120));
