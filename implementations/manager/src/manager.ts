@@ -75,6 +75,8 @@ import {
   resolveService,
   invokeCommand,
   digestIdToken,
+  registerToolResultServing,
+  deregisterToolResultServing,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
@@ -413,6 +415,11 @@ export interface ManagerOptions {
   workspaceRoot?: string;
   /** The selected registration requires every launched connector session to publish events. */
   eventsRequired?: boolean;
+  /** Register a `tool-results` serving instance (SPEC 13.6) for every static-auth spawn whose
+   *  connector declares `toolResults`, and hand the agent its own serve grant and `endpoint-serve`
+   *  creds through the launch material. Off by default: nothing is registered or served. A spawn on
+   *  a user-mode or open mesh, which has no issuer for this material, is refused while it is on. */
+  toolResultServing?: boolean;
   /** Port for the console + attach HTTP/WS endpoint. 0 → ephemeral. */
   consolePort?: number;
   /** The broker's WebSocket listener port (loopback), allocated by `cotal up`. When set,
@@ -1211,6 +1218,7 @@ export class Manager {
   private readonly name: string;
   private readonly workspaceRoot: string;
   private readonly eventsRequired: boolean;
+  private readonly toolResultServing: boolean;
   /** The operator-set global live-session ceiling (see {@link ManagerOptions.maxSessions}). */
   private readonly maxSessions?: number;
   /** The ONE secret store for every kind this manager touches (daemon-cred remint + agent kinds).
@@ -1545,6 +1553,7 @@ export class Manager {
     this.name = opts.name ?? "manager";
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
     this.eventsRequired = opts.eventsRequired === true;
+    this.toolResultServing = opts.toolResultServing === true;
     this.maxSessions = opts.maxSessions;
     this.remoteAuthority = opts.remoteAuthority;
     this.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
@@ -6137,6 +6146,12 @@ export class Manager {
       let userLaunch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } | undefined;
       let userOwner: string | undefined;
       let enrolled: { material: ManagedEnrollment; actorToken: string } | undefined;
+      let toolResultMaterial: LaunchOpts["toolResults"];
+      // SPEC 13.6: only the static-auth arm below can issue an incarnation its own tool-results
+      // serving material. A user-mode or open mesh has no issuer for it, so an enabled spawn there
+      // refuses instead of launching a session that silently serves nothing.
+      if (this.toolResultServing && connector.toolResults === true && (this.userMode || !this.auth))
+        throw new Error(`tool-results serving is enabled, but this ${this.userMode ? "user-mode" : "open"} mesh has no issuer for an agent's serve grant; only a static-auth mesh registers it`);
       if (this.userMode) {
         const prep = await this.provisionUserAgent(name, {
           spawner,
@@ -6232,6 +6247,22 @@ export class Manager {
         await secrets.put(agentSecretKeyForFile(credsPath, this.space), creds);
         await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, this.space), credsPath);
         provisioned = { id: identity.id, name, lifecycleUid, secretPaths: { creds: credsPath }, ...(custody ? { runtime: custody } : {}) }; // footprint now exists — the finally rolls it back if the spawn throws
+        if (this.toolResultServing && connector.toolResults === true) {
+          // This incarnation's own `tool-results` instance (SPEC 13.6): instance id = its lifecycle
+          // UID, the serve credential minted for its own identity with the same bounded expiry as
+          // its agent credential. Registered after `provisioned` is armed, so a later throw rolls the
+          // record back through the static retirement's deregistration.
+          const serving = await registerToolResultServing({
+            auth: this.auth!,
+            servers: this.servers ?? DEFAULT_SERVER,
+            space: this.space,
+            tls: false, // the manager's executor dials are not yet wired to a recorded transport
+            identity,
+            lifecycleUid,
+            expiresAt: exp,
+          });
+          toolResultMaterial = { creds: serving.creds, grant: serving.grant };
+        }
       }
       // Per-agent cwd overrides the manager's shared workspace root, so agents can be rooted at
       // arbitrary folders/repos. A relative path resolves against the workspace root; omitted → the
@@ -6253,6 +6284,7 @@ export class Manager {
         id: userLaunch ? undefined : identity.id,
         creds: credsPath,
         userAuth: userLaunch,
+        ...(toolResultMaterial ? { toolResults: toolResultMaterial } : {}),
         // The incarnation's lifecycle UID: the agent endpoint binds its lifecycle-keyed dm/dlv/
         // chathist durables by this exact value (its creds pin the same names, so a mismatch fails
         // at the broker, never silently).
@@ -9483,6 +9515,12 @@ export class Manager {
         await attemptCleanup(failed, `file ${creds}`, () => rmSync(creds, { force: true }));
       }
       await attemptCleanup(failed, "broker teardown", () => this.deprovisionBroker(a));
+      // The incarnation's tool-results record, if serving was on. An absent record (never
+      // registered, or already removed) is a no-op result, so this cannot wedge a retirement.
+      if (this.toolResultServing)
+        await attemptCleanup(failed, "tool-results deregistration", async () => {
+          await deregisterToolResultServing({ auth: this.auth!, servers: this.servers ?? DEFAULT_SERVER, space: this.space, tls: false, lifecycleUid: a.lifecycleUid });
+        });
       if (failed.length) throw new Error(`cleanup failed: ${failed.join("; ")}`);
     };
     // The process goes before its footprint: reap the orphan seat by reference, then tear down.

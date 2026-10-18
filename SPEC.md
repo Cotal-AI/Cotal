@@ -2983,6 +2983,54 @@ epoch). The session binds the target's `(principal, lifecycleUid)` and the servi
 successor incarnation (advanced epoch) refuses old-epoch grants, and a same-name successor is a distinct
 session.
 
+**Private tool results** (connector-served, draft). A connector MAY keep the tool results its
+harness reported (never the arguments) in a private, bounded, in-process journal and serve them
+through one targeted command, `tool-result`, admitted **only in `handle` mode**: the request subject
+pins the full target triple from a redeemed, holder-bound capability handle, so the broker confines
+the read to the one holder the grant names, and a space boundary is still the account boundary. Every
+other mode is refused `permission-denied`; a handle on another alias is `target-mismatch`; a handle on
+another lifecycle, or after the journal retired, is `expired`. The input is the exact native pair
+`{ threadId, toolCallId }` and nothing else; there is no correlation by time, order or name. The answer
+is closed: `available` (`content` verbatim, `""`/`"0"`/`"false"`/`"null"` included, plus `truncated`,
+the full UTF-8 `bytes`, `isError`, `capturedAt`), `pending` (the call started, no result yet),
+`not-shared`, `missing` (never observed by this process) or `expired` (dropped by the age or capacity
+bound). Sharing is off until a human consents: a **tool-result consent** is a closed artifact
+`{ v, id, space, scope: "tool-results", target: { owner, actor, lifecycleUid }, holder: { id }, proofAt,
+iat, exp, issuer: { keyId }, sig }` signed by an anchor with the `consents` role whose scope covers
+`tool-results`. Only a host's authenticated human route holds such a key: it verifies a fresh
+interactive IdP proof for the target's owner (`proofAt` at most 300 s before `iat`), names a holder
+under that owner, and signs a window of at most 24 hours. An agent holds no `consents` key, so it
+cannot consent for its owner. The holder presents it with `tool-result-consent` (handle mode; the
+consent's holder MUST be the caller); the serving connector verifies it fresh against the anchor
+registry and the exact target incarnation, and only then starts capturing. Nothing produced before
+that is recovered. `tool-result` answers `not-shared` to a caller no live consent names.
+`tool-result-revoke` lets the holder withdraw its consent; when the last consent is withdrawn or
+reaches `exp`, every held result is discarded and capture stops, checked on the next capture or
+lookup, so lapse is bounded by `exp` rather than instantaneous. A result is
+kept as first observed, so a replayed transcript cannot rewrite it; content past the byte bound is cut
+on a code-point boundary. Retiring the lifecycle or revoking sharing discards every held result.
+Results never ride an event, chat or DM channel, and the `events.<owner>.<actor>` egress fence is
+unchanged. The journal is not redaction or complete history: content is the tool's own bytes, held only
+in the serving process, and a consumer renders it as inert text. The connector serves these commands
+with `instanceId` equal to the target's `lifecycleUid`, so a holder's rows bind the one incarnation its
+consent names. **Redemption** is a user-mode exchange: the holder's signed-in human exchange asks for
+the `tool-result-caller` view with the consent; the auth plane leader-reads the target's lifecycle head
+(it MUST be `active` at the consent's incarnation), re-verifies the consent against the host's
+`consents` anchors, and requires the consent's holder to be the exchanging principal. The bearer and
+the connection it opens expire no later than the consent; the callout repeats the same checks at the
+mint and grants exactly the handle-mode request rows for the three commands on that incarnation plus
+the holder's own reply rail. An agent-secret exchange cannot request the view. The human proof time is
+the IdP token's own signed OIDC `auth_time` claim; a token without it is refused and the time is never
+synthesized, so a host that signs consents needs an IdP that issues `auth_time`. On a static-auth
+mesh a launcher MAY register one `tool-results` instance per managed incarnation (instance id = its
+lifecycle UID, the three commands `handle`-only, owner = the operator) and hand the agent its serve
+grant and its own `endpoint-serve` credential, bounded like its agent credential, through the 0600
+launch material only; retiring the incarnation deregisters the instance. A mesh with no issuer for
+that material (user-mode, open) refuses such a spawn rather than launching one that serves nothing.
+Registering the host's `consents` anchor and user-mode serve issuance are hosting-authority work not
+defined here; until a session is given anchors, every presented consent is refused and the journal
+stays off.
+
 ### 13.7 Contracts and discovery
 
 **Clusters.** An endpoint's surface is a set of composable **capability clusters**, each
@@ -4105,7 +4153,7 @@ authorization slots, capability handles, checkpoint resumes, trait definitions a
 attachments, session grants, receipts. Anchors are `signer.<keyId>` records: spec =
 `{ keyId, publicKey (Ed25519), owner (the principal or reverse-DNS domain the key belongs
 to), roles ⊆ [handles, traits, receipts, resume, sessions, authz-slots, obligations,
-payments], scope: per-role structured ceilings, for a `handles`-role key the **full grant
+payments, consents], scope: per-role structured ceilings, for a `handles`-role key the **full grant
 dimensions**, in the handle-grant shape itself: the endpoints/domains, and per entry the
 maximal commands, authorization modes, target patterns, instance ids, and read subtrees the
 key may issue for (a handles- or receipts-role key without a dimension ceiling has that
