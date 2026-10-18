@@ -32,6 +32,7 @@ import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parseP
 import { configFromEnv, cotalToolSpecs } from "@cotal-ai/connector-core";
 import { connect as rawConnect } from "@nats-io/transport-node";
 import { bootPlugin, bootPlugin2, fakeOpenCode2Context, disposeInProcess } from "./_boot-plugin.js";
+import plugin from "../src/plugin.entry.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await freePort();
@@ -505,6 +506,7 @@ try {
   const prompts2: { body: { text?: string } }[] = [];
   let modelListing: Array<{ providerID: string; modelID: string }> = [];
   let modelReads = 0;
+  let sessionCreates2 = 0;
 
   const oc2 = createHttpServer((req, res) => {
     if (req.headers.authorization !== auth2) {
@@ -516,6 +518,7 @@ try {
     req.on("data", (d) => (raw += d));
     req.on("end", () => {
       if (req.method === "POST" && req.url === "/api/session") {
+        sessionCreates2++;
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: { id: SID2 } }));
         return;
       }
@@ -557,6 +560,19 @@ try {
   let sessionLine = "";
   let dispose2: (() => Promise<void>) | void = undefined;
   try {
+    // Through the plugin entry's `setup`, the export OpenCode 2.x loads: once a setup is refused, the
+    // next setup in the same process must refuse too, since returning reads as a running agent.
+    delete process.env.COTAL_OPENCODE_SERVER_URL;
+    const refusals: string[] = [];
+    for (let i = 0; i < 2; i++)
+      refusals.push(await plugin.setup(fakeOpenCode2Context()).then(() => "returned", (e: Error) => e.message));
+    process.env.COTAL_OPENCODE_SERVER_URL = `http://127.0.0.1:${ocPort2}`;
+    check(
+      "2.x: a setup refused through the plugin entry refuses the next setup too",
+      refusals.every((m) => m === "opencode connector: missing COTAL_OPENCODE_SERVER_URL/OPENCODE_SERVER_PASSWORD"),
+      refusals,
+    );
+
     await awaitBrokerReady(() => isReachable(servers2), { servers: servers2, attempts: 50, delayMs: 200 });
     await seedChannelRegistry({ servers: servers2, space: space2, file: { defaults: { replay: false }, channels: { team: { replay: false }, quiet: { replay: false } } } });
     await pub2.start();
@@ -688,7 +704,11 @@ try {
       if (line.includes("[cotal-session]")) sessionLine = line;
       return originalStderrWrite2!.call(process.stderr, chunk, ...(args as [BufferEncoding, (error?: Error | null) => void]));
     }) as typeof process.stderr.write;
-    dispose2 = await bootPlugin2(ctx2);
+    // A concurrent and a later setup share the first one's agent, and only the first owns its teardown.
+    sessionCreates2 = 0;
+    const [first2, concurrent2] = await Promise.all([plugin.setup(ctx2), plugin.setup(fakeOpenCode2Context())]);
+    dispose2 = first2;
+    const repeated2 = await plugin.setup(fakeOpenCode2Context());
 
     for (let i = 0; i < 50; i++) {
       if (sessionLine) break;
@@ -702,6 +722,11 @@ try {
     }
     const otto2Id = pub2.getRoster().find((p) => p.card.name === "Otto2")?.card.id;
     check("2.x: the adapter came online (Otto2 live in the publisher roster)", !!otto2Id, otto2Id);
+    check(
+      "2.x: a concurrent and a later setup through the plugin entry start no second agent and return no teardown",
+      typeof first2 === "function" && concurrent2 === undefined && repeated2 === undefined && sessionCreates2 === 1,
+      { first2: typeof first2, concurrent2, repeated2, sessionCreates2 },
+    );
 
     await pub2.unicast(otto2Id!, "hello via 2.x");
     for (let i = 0; i < 50 && prompts2.length < 1; i++) await sleep(100);

@@ -34,8 +34,11 @@ function log(msg: string): void {
 }
 
 /** Process-global guard, mirroring `plugin.ts`'s `guard.__cotalOpencodeHooks`: 2.x may call
- *  `setup` more than once per process (per location boot), and we want exactly one mesh agent. */
-const guard = globalThis as { __cotalOpencodeSetup?: boolean };
+ *  `setup` more than once per process (per location boot), and we want exactly one mesh agent. It
+ *  holds the first attempt, so a concurrent or later call shares that attempt's outcome. A refused
+ *  attempt is not run again, since it may already have scrubbed the launch material a second
+ *  attempt would read; every later call refuses with its error instead. */
+const guard = globalThis as { __cotalOpencodeSetup?: Promise<unknown> };
 
 /** The 2.x `/api/session/:id/message` shape is `{data:[{type, text|content, model, agent}]}` and
  *  the `content` element shape was not measured, so `agui-source.ts` cannot read it truthfully —
@@ -89,9 +92,16 @@ const EVENT_QUIESCE_MS = 10_000;
 /** The 2.x `setup(context)` entry point. */
 export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<void>) | void> {
   if (!hasIdentity()) return; // no COTAL_* env — a plain `opencode`, stay inert (same rule as 1.x)
-  if (guard.__cotalOpencodeSetup) return; // one agent; a later boot in this process is a no-op
-  guard.__cotalOpencodeSetup = true;
+  if (guard.__cotalOpencodeSetup) {
+    await guard.__cotalOpencodeSetup;
+    return; // the teardown belongs to the call that started the agent
+  }
+  const attempt = setupOnce(ctx);
+  guard.__cotalOpencodeSetup = attempt;
+  return attempt;
+}
 
+async function setupOnce(ctx: OpenCode2Context): Promise<() => Promise<void>> {
   const config = configFromEnv();
   if (eventPlaneArmed(config)) {
     log(EVENTS_REFUSAL);

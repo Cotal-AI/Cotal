@@ -1,6 +1,7 @@
 {
   "suite": [
-    "extensions/connector-opencode/smoke/boot-prompt.smoke.ts"
+    "extensions/connector-opencode/smoke/boot-prompt.smoke.ts",
+    "extensions/connector-opencode/smoke/turn-wedge.smoke.ts"
   ],
   "guard": "an operator COTAL_OPENCODE_BIN pin wins over the manager's boot-resolved fallback",
   "command": "pnpm smoke:opencode-boot-prompt",
@@ -30,6 +31,15 @@
       "replace": "  if (major === 1 || major === 2) return 2;",
       "expectRed": "opencodeLine parses '1.18.23' as line 1",
       "cell": "opencodeLine parses '1.18.23' as line 1"
+    },
+    {
+      "name": "plugin2.ts commits its setup guard before the attempt again, so a refused setup turns every later setup into a silent no-op",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "  const attempt = setupOnce(ctx);\n  guard.__cotalOpencodeSetup = attempt;\n  return attempt;",
+      "replace": "  guard.__cotalOpencodeSetup = Promise.resolve();\n  return setupOnce(ctx);",
+      "command": "pnpm smoke:opencode",
+      "expectRed": "2.x: a setup refused through the plugin entry refuses the next setup too",
+      "cell": "2.x: a setup refused through the plugin entry refuses the next setup too"
     },
     {
       "name": "plugin2.ts skips the 2.x GET /api/model check, joining with an unverified model",

@@ -136,6 +136,10 @@ in-process plugin does everything.
   connector then runs the same teardown as a stop and exits the server. Whenever the server exits,
   the launcher closes its TUI, killing it if it is still up 3 seconds later, so the manager sees the
   seat end.
+- **One agent per server on 2.x.** OpenCode 2.x can run the plugin's setup more than once in one
+  server process. The first setup starts the agent, and a concurrent or later one shares it. When
+  the first setup refuses, every later setup refuses with the same error, so a refused launch never
+  looks like a running agent.
 - **`/new` = context reset.** Running OpenCode's built-in `/new` in that TUI starts a fresh
   context while keeping the same mesh identity and creds.
 - **`/reconnect` = in-process recovery.** OpenCode has no host reconnect surface, so the connector
