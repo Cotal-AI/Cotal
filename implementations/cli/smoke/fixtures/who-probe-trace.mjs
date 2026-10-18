@@ -24,19 +24,29 @@ registerHooks({
       // A synchronous require load may omit format. Exact pinned bytes identify this CommonJS module.
       if (sha256 !== expected || (loaded.format !== undefined && loaded.format !== "commonjs")) throw new Error("unexpected pinned SDK diagnostic module");
       write({ kind: "sdk-module-matched", sdk, format: loaded.format ?? null, sourceSha256: sha256 });
-      const prefix = `function __cotalSdkWrite(record) {
-        require("node:fs").appendFileSync(process.env.SMOKE_WHO_PROBE_TRACE, JSON.stringify(record) + "\\n");
+      const prefix = `function __cotalSdkWrite(record, transport) {
+        const key = Symbol.for("cotal.who.probe.trace.state");
+        const state = globalThis[key] ??= { started: process.hrtime.bigint(), next: 1, ids: new WeakMap() };
+        const elapsedMs = Number(process.hrtime.bigint() - state.started) / 1e6;
+        if (transport) {
+          if (!state.ids.has(transport)) state.ids.set(transport, state.next++);
+          record = { ...record, transportId: state.ids.get(transport),
+            localPort: Number.isInteger(transport.socket?.localPort) ? transport.socket.localPort : null,
+            remotePort: Number.isInteger(transport.socket?.remotePort) ? transport.socket.remotePort : null };
+        }
+        require("node:fs").appendFileSync(process.env.SMOKE_WHO_PROBE_TRACE, JSON.stringify({ ...record, elapsedMs }) + "\\n");
       }
       function __cotalSdkTag(value) { return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value) ? value : "other"; }
       `;
       const changes = sdk === "transport" ? [
-        ["                this.socket = await this.dial(hp);", "                __cotalSdkWrite({ kind: 'sdk-await-dial' });\n                this.socket = await this.dial(hp);"],
-        ["            const info = await this.peekInfo();", "            __cotalSdkWrite({ kind: 'sdk-await-info' });\n            const info = await this.peekInfo();\n            __cotalSdkWrite({ kind: 'sdk-info', authRequired: info.auth_required === true, tlsRequired: info.tls_required === true, tlsAvailable: info.tls_available === true });"],
-        ["        catch (ex) {\n            let err = ex;", "        catch (ex) {\n            __cotalSdkWrite({ kind: 'sdk-connect-rejected', code: __cotalSdkTag(ex?.code), constructor: __cotalSdkTag(ex?.constructor?.name), connected: this.connected, done: this.done, bufferedFrames: this.yields.length });\n            let err = ex;"],
-        ["                yield yields[i];", "                __cotalSdkWrite({ kind: 'sdk-frame', bytes: yields[i].byteLength, info: Buffer.from(yields[i]).toString('ascii').startsWith('INFO '), authViolation: Buffer.from(yields[i]).includes(Buffer.from('Authorization Violation')), authTimeout: Buffer.from(yields[i]).includes(Buffer.from('Authentication Timeout')) });\n                yield yields[i];"],
-        ["    async _closed(err, internal = true) {", "    async _closed(err, internal = true) {\n        __cotalSdkWrite({ kind: 'sdk-close', code: __cotalSdkTag(err?.code), constructor: __cotalSdkTag(err?.constructor?.name), connected: this.connected, done: this.done, internal, bufferedFrames: this.yields.length });"],
+        ["                this.socket = await this.dial(hp);", "                __cotalSdkWrite({ kind: 'sdk-await-dial' }, this);\n                this.socket = await this.dial(hp);"],
+        ["            const info = await this.peekInfo();", "            __cotalSdkWrite({ kind: 'sdk-await-info' }, this);\n            const info = await this.peekInfo();\n            __cotalSdkWrite({ kind: 'sdk-info', authRequired: info.auth_required === true, tlsRequired: info.tls_required === true, tlsAvailable: info.tls_available === true }, this);"],
+        ["        catch (ex) {\n            let err = ex;", "        catch (ex) {\n            __cotalSdkWrite({ kind: 'sdk-connect-rejected', code: __cotalSdkTag(ex?.code), constructor: __cotalSdkTag(ex?.constructor?.name), connected: this.connected, done: this.done, bufferedFrames: this.yields.length }, this);\n            let err = ex;"],
+        ["                yield yields[i];", "                __cotalSdkWrite({ kind: 'sdk-frame', bytes: yields[i].byteLength, info: Buffer.from(yields[i]).toString('ascii').startsWith('INFO '), authViolation: Buffer.from(yields[i]).includes(Buffer.from('Authorization Violation')), authTimeout: Buffer.from(yields[i]).includes(Buffer.from('Authentication Timeout')) }, this);\n                yield yields[i];"],
+        ["    send(frame) {", "    send(frame) {\n        const __cotalBytes = Buffer.from(frame);\n        __cotalSdkWrite({ kind: 'sdk-send', bytes: frame.byteLength, connect: __cotalBytes.subarray(0, 8).equals(Buffer.from('CONNECT ')), ping: __cotalBytes.equals(Buffer.from('PING\\r\\n')) }, this);"],
+        ["    async _closed(err, internal = true) {", "    async _closed(err, internal = true) {\n        __cotalSdkWrite({ kind: 'sdk-close', code: __cotalSdkTag(err?.code), constructor: __cotalSdkTag(err?.constructor?.name), connected: this.connected, done: this.done, internal, bufferedFrames: this.yields.length }, this);"],
       ] : [
-        ["        const err = ProtocolHandler.toError(s);", "        const err = ProtocolHandler.toError(s);\n        __cotalSdkWrite({ kind: 'sdk-error-parsed', authorization: err instanceof errors_1.errors.AuthorizationError, expired: err instanceof errors_1.errors.UserAuthenticationExpiredError, constructor: __cotalSdkTag(err?.constructor?.name) });"],
+        ["        const err = ProtocolHandler.toError(s);", "        const err = ProtocolHandler.toError(s);\n        __cotalSdkWrite({ kind: 'sdk-error-parsed', authorization: err instanceof errors_1.errors.AuthorizationError, expired: err instanceof errors_1.errors.UserAuthenticationExpiredError, constructor: __cotalSdkTag(err?.constructor?.name) }, this.transport);"],
       ];
       changes.push(['"use strict";\n', '"use strict";\n' + prefix]);
       for (const [anchor, replacement] of changes) {

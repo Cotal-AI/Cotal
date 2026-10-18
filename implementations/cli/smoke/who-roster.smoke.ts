@@ -92,7 +92,20 @@ const port = await pickFreePort();
 const servers = `nats://127.0.0.1:${port}`;
 const storeDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(storeDir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(storeDir, "js") }));
-const broker = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { stdio: "ignore" });
+const brokerEvents: { at: number; cid: number | null; clientPort: number | null; authenticationError: true }[] = [];
+const broker = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
+let brokerLogPending = "";
+broker.stderr.setEncoding("utf8");
+broker.stderr.on("data", (chunk: string) => {
+  const lines = (brokerLogPending + chunk).split("\n");
+  brokerLogPending = lines.pop()!.slice(-8192);
+  for (const line of lines) {
+    if (!line.includes("authentication error")) continue;
+    const cid = /\bcid:(\d+)\b/.exec(line);
+    const clientPort = /127\.0\.0\.1:(\d+)\s+-/.exec(line);
+    brokerEvents.push({ at: Date.now(), cid: cid ? Number(cid[1]) : null, clientPort: clientPort ? Number(clientPort[1]) : null, authenticationError: true });
+  }
+});
 const releaseBroker = teardownOnSignal(broker, storeDir);
 
 const home = mkdtempSync(join(tmpdir(), "cotal-who-home-"));
@@ -293,7 +306,11 @@ try {
     check(`whoami ${format} treats an unparseable --server as safe usage refusal`, invalid.status === 1 && safe && (format !== "--json" || invalid.envelope?.error?.code === "USAGE_INVALID"), { status: shownInvalid.status, stdout: redactUrlMarkers(shownInvalid.stdout), stderr: redactUrlMarkers(shownInvalid.stderr) });
   }
   for (const format of ["--json", "--plain", undefined] as const) {
+    const originalStarted = Date.now();
+    const originalBrokerOffset = brokerEvents.length;
     const read = await run(["who", "--space", "url-auth-recovery", ...(format ? [format] : [])]);
+    const originalFinished = Date.now();
+    const originalBrokerEvents = brokerEvents.slice(originalBrokerOffset);
     const hidden = [urlUser, urlPassword, urlToken].every((marker) => !read.stdout.includes(marker) && !read.stderr.includes(marker));
     const message = format === "--json" ? read.envelope?.error?.message : read.stderr;
     const detail = shown(read);
@@ -301,8 +318,10 @@ try {
       let tracedAttempts = 0;
       for (let attempt = 0; attempt < 8; attempt++) {
         const trace = join(home, `probe-${format ?? "human"}-${attempt}.jsonl`);
+        const traceStarted = Date.now();
+        const traceBrokerOffset = brokerEvents.length;
         const traced = await run(["who", "--space", "url-auth-recovery", ...(format ? [format] : [])], { SMOKE_WHO_PROBE_TRACE: trace }, join(import.meta.dirname, "fixtures", "who-probe-trace.mjs"), 10_000);
-        const result = probeTraceResult(traced, trace);
+        const result = { ...probeTraceResult(traced, trace), traceStarted, traceFinished: Date.now(), brokerEvents: brokerEvents.slice(traceBrokerOffset) };
         console.log(probeTraceLine({ ...result, format: format ?? "human", attempt }));
         tracedAttempts++;
         if (result.trace.some((record) => typeof record === "object" && record !== null && "kind" in record && record.kind === "classification" && "reason" in record && ["unreachable", "timeout"].includes(String(record.reason)))) break;
@@ -313,6 +332,7 @@ try {
         plain: await probeConnect(servers),
         userinfo: await probeConnect(`nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`),
         tracedAttempts,
+        originalStarted, originalFinished, originalBrokerEvents,
       };
     })();
     check(`who ${format ?? "human"} keeps a placeholder for a private broker URL in auth recovery`, read.status === 2 && hidden && message?.includes("--server <url> --mode auth --force") === true, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr), diagnostic });
