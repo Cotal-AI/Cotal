@@ -671,7 +671,13 @@ a crash between the `dlv` handoff and the member surfacing the message cannot lo
 stays at-least-once end-to-end, not maybe-once. Content
 for a channel dropped from the ACL, or (for a durable channel) left, is never surfaced (at-least-once for
 the member within retention; **leave is a hard read boundary for the backstop**); a `live`-channel
-`@mention` copy is delivered and `id`-deduped the same way. The read MUST run in this trusted component
+`@mention` copy is delivered and `id`-deduped the same way. The reader names the reason it
+authorized each copy, `durable-channel` or `live-mention`, in a `Cotal-Delivery-Reason` header beside
+its `Cotal-Delivery-Frame: 1` header; the version-1 frame body is unchanged, so a recipient that does
+not read the header still accepts the copy. A recipient surfaces the reason only from that header
+(reference: `MessageMeta.deliveryReason`), never from payload `mentions`, text or the roster. A copy
+without the header, or with a value the recipient does not recognize, is still delivered and carries
+no reason, which means unknown, not "not a mention". The read MUST run in this trusted component
 the agent cannot bypass, because a self-bound consumer has no server-side per-message ACL/membership
 filter. The store's stream/subject layout, the fan-out writer, the trusted reader, and the membership
 registry are reference-implementation, not normative; a conformant deployment MAY realize the backstop
