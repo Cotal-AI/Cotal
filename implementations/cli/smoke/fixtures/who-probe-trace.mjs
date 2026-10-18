@@ -7,7 +7,7 @@ import { registerHooks } from "node:module";
 const trace = process.env.SMOKE_WHO_PROBE_TRACE;
 if (!trace) throw new Error("missing who probe trace path");
 const write = (record) => appendFileSync(trace, `${JSON.stringify(record)}\n`);
-write({ kind: "hook-registered", node: process.versions.node });
+write({ kind: "hook-registered", node: process.versions.node, batchHandshake: process.env.SMOKE_WHO_PROBE_BATCH === "1" });
 registerHooks({
   load(url, context, nextLoad) {
     const loaded = nextLoad(url, context);
@@ -48,6 +48,14 @@ registerHooks({
       ] : [
         ["        const err = ProtocolHandler.toError(s);", "        const err = ProtocolHandler.toError(s);\n        __cotalSdkWrite({ kind: 'sdk-error-parsed', authorization: err instanceof errors_1.errors.AuthorizationError, expired: err instanceof errors_1.errors.UserAuthenticationExpiredError, constructor: __cotalSdkTag(err?.constructor?.name) }, this.transport);"],
       ];
+      // A separately labelled diagnostic child changes only write grouping, never the bytes.
+      if (sdk === "protocol" && process.env.SMOKE_WHO_PROBE_BATCH === "1") {
+        write({ kind: "handshake-batch-experiment" });
+        changes.push([
+          "                this.transport.send((0, encoders_1.encode)(`CONNECT ${cs}${transport_1.CR_LF}`));\n                this.transport.send(PING_CMD);",
+          "                this.transport.send(Buffer.concat([(0, encoders_1.encode)(`CONNECT ${cs}${transport_1.CR_LF}`), PING_CMD]));",
+        ]);
+      }
       changes.push(['"use strict";\n', '"use strict";\n' + prefix]);
       for (const [anchor, replacement] of changes) {
         if (source.split(anchor).length !== 2) throw new Error("pinned SDK diagnostic anchor is not unique");

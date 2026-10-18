@@ -326,6 +326,12 @@ try {
         tracedAttempts++;
         if (result.trace.some((record) => typeof record === "object" && record !== null && "kind" in record && record.kind === "classification" && "reason" in record && ["unreachable", "timeout"].includes(String(record.reason)))) break;
       }
+      const batchTrace = join(home, `probe-${format ?? "human"}-batched.jsonl`);
+      const batchStarted = Date.now();
+      const batchBrokerOffset = brokerEvents.length;
+      const batched = await run(["who", "--space", "url-auth-recovery", ...(format ? [format] : [])], { SMOKE_WHO_PROBE_TRACE: batchTrace, SMOKE_WHO_PROBE_BATCH: "1" }, join(import.meta.dirname, "fixtures", "who-probe-trace.mjs"), 10_000);
+      const batchResult = { ...probeTraceResult(batched, batchTrace), experiment: "connect-ping-batch", traceStarted: batchStarted, traceFinished: Date.now(), brokerEvents: brokerEvents.slice(batchBrokerOffset) };
+      console.log(probeTraceLine({ ...batchResult, format: format ?? "human", attempt: 0 }));
       return {
         brokerExitCode: broker.exitCode,
         brokerSignalCode: broker.signalCode,
