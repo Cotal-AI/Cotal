@@ -3,7 +3,7 @@
     "bin/smoke/seat-env-scope.smoke.ts"
   ],
   "guard": "a manager-spawned seat hands no connection material to the processes it spawns, and still resolves its own identity and control token from the launch-material file",
-  "command": "pnpm build > /dev/null && pnpm smoke:seat-env-scope",
+  "command": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null && pnpm smoke:seat-env-scope",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/seat-env-scope.mutations.json",
   "why": [
     "THE SUITE MAKES TWO OPPOSITE CLAIMS AND EACH NEEDS ITS OWN KILL. It asserts an ABSENCE (no",
@@ -25,7 +25,9 @@
     "`@cotal-ai/connector-core` resolve to `dist/`, so a mutation to `src` that is not compiled is a",
     "mutation the suite never sees: the run would be green and the verdict would be a lie in the",
     "reassuring direction. `afterRestore` rebuilds, because `dist/` is gitignored and git cannot be",
-    "the recovery for a tree left holding a build compiled from the mutant.",
+    "the recovery for a tree left holding a build compiled from the mutant. Both build the dependency",
+    "closures of the six connectors the suite imports, which hold every mutated package and every",
+    "bundle that inlines connector-core; a whole-repo build adds packages the suite never loads.",
     "",
     "NO `completionMarker` IS DECLARED, and that is deliberate. This suite is fail-fast: it exits at",
     "the first assertion, so its `seat-env-scope: PASS` banner is by construction the one line a",
@@ -70,7 +72,7 @@
       "replace": "    if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;\n    if (opts.servers) env.COTAL_SERVERS = opts.servers;",
       "expectRed": "A2: a real grandchild of a seat inherited COTAL_SERVERS",
       "note": "Also reds A1 for pi, later in the run. A2 is named because it is the assertion that observed a real descendant process rather than the launch spec.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"
     },
     {
       "name": "M2 the claude connector puts the control token back into the seat environment",
@@ -79,7 +81,7 @@
       "replace": "      COTAL_CONTROL_SOCKET: control.path,\n      COTAL_CONTROL_TOKEN: control.token,\n    };",
       "expectRed": "A1: the claude connector exports COTAL_CONTROL_TOKEN into the seat environment",
       "note": "The control token is the half a build script has least business holding. Claude is the connector that cannot drop the material reference after startup, so its env is the one worth pinning explicitly.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"
     },
     {
       "name": "M3 the launch material silently loses the broker URL",
@@ -88,7 +90,7 @@
       "replace": "  if (opts.servers) material.servers = undefined;",
       "expectRed": "A3: claude lost the broker URL",
       "note": "The failure the absence assertions cannot see: material removed from the environment and not delivered anywhere else. Without this kill, a connector that exported nothing would read as fixed.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"
     },
     {
       "name": "M4 the reader accepts a material file that says nothing",
@@ -97,7 +99,7 @@
       "replace": "  if (false)\n    throw new Error(",
       "expectRed": "A6: an empty material object was read as a valid launch instead of refused",
       "note": "The write-side refusal survives this mutation untouched, which is the point: it is the READ side that a broken or truncated file reaches, and without this check `{}` resolved to the default broker with no credential - open mode, silently, on a launch that asked for the opposite.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"
     },
     {
       "name": "M5 a join link stops counting as a direct carrier",
@@ -106,7 +108,7 @@
       "replace": "] as const;",
       "expectRed": "A7: a launch carrying both a material file and a join link resolved by precedence instead of refusing",
       "note": "The silent half of the two-carrier defect: no error, no warning, just one of two answers to 'who is this session' winning on precedence.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"
     },
     {
       "name": "M6 half a control pair reads as no control plane instead of throwing",
@@ -115,7 +117,7 @@
       "replace": "  if (path && token) return { path, token };\n  if (true) return undefined;",
       "expectRed": "A8: a socket with no resolvable token was reported as no control plane rather than a broken one",
       "note": "Exactly the shape that shipped: a broken control endpoint indistinguishable from a session that never had one. The pi launch failure this branch hit live was the loud version of it; the quiet version is a seat whose presence never advances.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"
     },
     {
       "name": "M7 the scrub drops the pointer but leaves the file on disk",
@@ -124,7 +126,7 @@
       "replace": "    void file;",
       "expectRed": "A5: the material file survived the scrub that was supposed to unlink it",
       "note": "The pointer is dropped and the material stays on disk for the life of the box. Retargeted when the removal moved out of the connector and beside the writer; the tool refused the stale target rather than reporting a kill against a string that was no longer there, which is the behaviour that makes a config safe to move code under.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"
     },
     {
       "name": "M8 the scrub unlinks the file but leaves its private directory",
@@ -133,7 +135,7 @@
       "replace": "    void dir;",
       "expectRed": "A5: the material's private directory was left behind",
       "note": "Found on a live sandbox spawn, not here: the file was gone and an empty 0700 directory per launch stayed in the OS temp tree. Litter this change would have introduced rather than found, which is a different and worse kind of defect than one it inherited.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"
     },
     {
       "name": "M9 the discard removes the directory recursively again",
@@ -142,7 +144,7 @@
       "replace": "    rmSync(dir, { recursive: true, force: true });",
       "expectRed": "A9: the discard deleted a file it did not write",
       "note": "The dangerous first version, restored. It reddens an assertion about a BYSTANDER file rather than about the directory, because the directory going away is the intended outcome in the ordinary case and an assertion watching the directory alone would stay green under this mutant. Two earlier attempts at this mutation are worth recording: one wrote a recursive call using a symbol the module did not import, which failed the BUILD and graded WRONG-RED at zero progress marks (a mutation that cannot compile grades the compiler, not the suite); the other reached for rmSync with recursive false as the real implementation, which does not remove a directory at all, so the SUITE caught the wrong fix before the mutation could. The module now removes the file with rmSync and the directory with rmdirSync, which is both the correct behaviour and a shape this mutation can express in one line.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"
     },
     {
       "name": "M10 the discard stops requiring the OS temp root",
@@ -151,7 +153,7 @@
       "replace": "    if (false) return;",
       "expectRed": "A9: the discard removed a directory that was not directly under the OS temp root",
       "note": "Leaves the prefix test in place, which is the point: the prefix is a hint anyone can satisfy by naming a directory, and the location is what makes the claim structural. Without this check a hand-set pointer at <anywhere>/cotal-launch-project/material.json takes its directory with it.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"
     }
   ]
 }
