@@ -642,7 +642,8 @@ unreachable exact endpoint from the recorded cut.
 That endpoint is probed immediately before cloning, so a live broker with a missing or stale pidfile
 is still refused. It claims the cut, reflink/copies the stopped source to a
 private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
-independent parent/deadline watchdog. It validates the canonical stream and pull-consumer inventory,
+independent parent/deadline watchdog. A bootstrap broker that does not accept connections within
+15 seconds fails the command. It validates the canonical stream and pull-consumer inventory,
 writes native snapshots with consumers excluded, and stores conservative contiguous ACK-floor
 checkpoints separately. The presence bucket is memory-backed, so it does not survive the cut and
 the clone may lack it. Every other stream must be present. The original store is never opened by
