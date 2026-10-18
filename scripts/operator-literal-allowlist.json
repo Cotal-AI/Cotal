@@ -61,6 +61,12 @@
       "reason": "macOS home path mutation fixture"
     }
   },
+  "extensions/connector-claude-code/smoke/desktop-config.smoke.ts": {
+    "home-path": {
+      "count": 5,
+      "reason": "macOS and Linux home path fixtures for the Claude Desktop config location"
+    }
+  },
   "implementations/cli/smoke/install.smoke.ts": {
     "home-path": {
       "count": 2,
