@@ -807,7 +807,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           const perms = mint({ generation, acceptedToken });
           const ref = { space, owner, actor, uid, generation };
           const prepared = await session.store.stage({
-            version: 1, ref, sources: [actorLedgerSource(space, owner, actor, uid)], permissions: importNativeSubjectPermissions(perms),
+            version: 1, ref, sources: [actorLedgerSource(space, owner, actor, uid)], permissions: importNativeSubjectPermissions(perms), expiresAt: t.exp,
           });
           await session.store.release(prepared, async () => {});
           await writeAcceptedRow(session.accepted, acceptedToken, ref);

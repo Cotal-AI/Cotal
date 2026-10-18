@@ -187,7 +187,9 @@ async function startSession(
   // Parsed here, not in the handshake handler that applies it: the SDK routes a throw from that
   // handler to its error hook and the session would run on with the flag unread.
   const channelFlag = envFlag(env, "COTAL_CHANNEL");
-  const agent = new MeshAgent(config, env);
+  // One process may host several sessions, so its own directory is not a session's: the card's
+  // directory comes from that session's SessionStart hook instead.
+  const agent = new MeshAgent(config, env, { withholdProcessCwd: true });
   const eventWaitStop = new AbortController();
   // A Cotal bind can remain current while nats.js is reconnecting and has no server info.
   // Wait for both edges before starting or pumping the recorder. Its transcript stays durable

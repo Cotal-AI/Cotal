@@ -172,6 +172,9 @@ import {
   unicastRecvFilter,
 } from "./subjects.js";
 
+import { isPermissionDenied } from "./permission-denied.js";
+export { isPermissionDenied };
+
 export const DEFAULT_SERVER = "nats://127.0.0.1:4222";
 const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
 
@@ -2833,6 +2836,18 @@ export class CotalEndpoint extends EventEmitter {
     else delete meta.variant;
     if (p) meta.provider = p;
     this.card.meta = meta;
+    await this.publishPresence();
+  }
+
+  /** Overlay the session's working directory onto the card's display-only `meta.cwd`, then
+   *  republish presence. For connectors that learn the directory from the harness after launch (e.g.
+   *  Claude Code's `SessionStart` hook) rather than from their own process. Advisory display data,
+   *  never a routing or access input. The pathname is kept byte for byte: a directory name may hold
+   *  or end in whitespace, so it is never trimmed or normalized. An empty string names no directory
+   *  and leaves the card unchanged. */
+  async setCardCwd(cwd: string): Promise<void> {
+    if (!cwd || this.card.meta?.cwd === cwd) return;
+    this.card.meta = { ...(this.card.meta ?? {}), cwd };
     await this.publishPresence();
   }
 
@@ -7148,17 +7163,6 @@ function describeStatusError(err: Error): Error {
   return err;
 }
 
-/** True when a failure is a NATS *permission denial* — the subject is forbidden to this
- *  endpoint's creds — rather than a missing responder or a timeout. The two need opposite
- *  fixes (grant the capability vs. start/await the service), so callers (e.g. a control
- *  request that can't reach the manager) must tell them apart instead of defaulting to
- *  "service down". Unwraps a wrapped `cause` and falls back to the server's error text, since
- *  a denied publish can surface either as the typed error or inside a request rejection. */
-export function isPermissionDenied(e: unknown): boolean {
-  if (e instanceof PermissionViolationError) return true;
-  if ((e as { cause?: unknown } | null)?.cause instanceof PermissionViolationError) return true;
-  return /permissions?\s+violation/i.test(String((e as { message?: unknown } | null)?.message ?? ""));
-}
 
 /** The ordered consumer behind a KV watch, which nats.js keeps on the iterator and the KV types hide. */
 function kvWatchConsumer(iter: Awaited<ReturnType<KV["watch"]>>): PushConsumer {

@@ -431,7 +431,21 @@ const SEAMS: Seam[] = [
   // reads the lease row back from the bucket and takes it over, so the fixture's renew and release
   // are judged from the broker rather than from the fixture's own bookkeeping. Under `smoke/`, so
   // both counts move by one. It states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 229, untypecheckedSites: 179 },
+  // 229/179 -> 234/184: five smoke-side calls in
+  // implementations/auth/smoke/issued-caller-expiry.smoke.ts, all under `smoke/`, so both counts
+  // move by five:
+  //   • `r5Opts`     — the short-lived manager-caller options that R51's `dial` publishes the
+  //                    initial `run-start` with before expiry and R52's reconnect probe reuses;
+  //   • `readerNc`   — the run-mediator connection in R54's failure-diagnostic arm that reads back
+  //                    an admitted `RunAdmission` if the delayed first admission were not refused;
+  //   • `opts`       — the short-lived manager-caller options that R55's `dial` uses to publish and
+  //                    admit a run while its caller's generation is live;
+  //   • `driverNc`   — the issued run-driver connection in R55 that writes the initial `RunSpec`
+  //                    and running `RunStatus` to the records bucket before the caller expires;
+  //   • `mediatorNc` — the renewed run-mediator connection in R55 that reads the admission back
+  //                    after the caller's generation has expired to verify it stays unrevoked.
+  // Each of the five calls states `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 234, untypecheckedSites: 184 },
 ];
 
 /**

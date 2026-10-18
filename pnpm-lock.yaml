@@ -765,6 +765,9 @@ importers:
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
+      acorn:
+        specifier: ^8.15.0
+        version: 8.18.0
       ajv:
         specifier: ^8.20.0
         version: 8.20.0

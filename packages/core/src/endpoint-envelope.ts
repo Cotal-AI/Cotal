@@ -13,9 +13,9 @@
  * registration-time `contract-invalid`).
  */
 import type { ValidateFunction } from "ajv/dist/2020.js";
-import { rawDigest, isContractDigest, isWellFormedUnicode } from "./canonical.js";
+import { isContractDigest, isWellFormedUnicode } from "./canonical-json.js";
 import { assertCommandToken, assertIdToken, assertLifecycleToken, endpointToken, type ParsedEpRequest } from "./endpoint-subjects.js";
-import { SCHEMA_PROFILE } from "./schema-profile.js";
+import { SCHEMA_PROFILE } from "./schema-bounds.js";
 import type { ControlReply, EndpointRef } from "./types.js";
 // The error catalog + EpEnvelopeError live in a node-free module so the browser session bundle can
 // use them without dragging in schema-profile's load-time digest (node:crypto). Re-exported here so
@@ -31,13 +31,19 @@ export const EP_ENVELOPE_V = 1;
 
 const EP_ERROR_SET = new Set<string>(EP_ERROR_CODES);
 
+/** UTF-8 byte length, for every byte bound in this module. The standard `TextEncoder`, not Node's
+ *  `Buffer`: the browser entries parse envelopes too. A lone surrogate counts as the 3-byte U+FFFD
+ *  it encodes to, as `Buffer.byteLength` counted it, so every bound is unchanged. */
+const UTF8 = new TextEncoder();
+const utf8Bytes = (s: string): number => UTF8.encode(s).length;
+
 const LABEL = "[a-z0-9]([a-z0-9-]*[a-z0-9])?";
 /** Reverse-DNS extension token: three or more DNS-shaped labels (`com.acme.throttled`). */
 const EXTENSION_CODE = new RegExp(`^${LABEL}(\\.${LABEL}){2,}$`);
 
 /** True iff `code` is a catalog token or a reverse-DNS extension token within the 64-byte bound. */
 export function isEpErrorCode(code: string): boolean {
-  if (typeof code !== "string" || Buffer.byteLength(code, "utf8") > 64) return false;
+  if (typeof code !== "string" || utf8Bytes(code) > 64) return false;
   return EP_ERROR_SET.has(code) || EXTENSION_CODE.test(code);
 }
 
@@ -175,16 +181,6 @@ export interface EndpointEvent {
 
 // ---- signed-artifact binding (§13.3/§13.7) --------------------------------------------------
 
-/** `authDigest`: `sha256:<hex>` over the UTF-8 bytes of the `auth` slot EXACTLY as carried. The
- *  slot is already a canonical signed artifact, so it is digested as bytes, never
- *  re-canonicalized; absent from the §13.4 fingerprint iff `auth` is absent. A malformed-UTF-16
- *  slot is refused (`bad-request`): a lone surrogate has no UTF-8 encoding, so its "digest"
- *  would be over a substituted value and two distinct slots could share one fingerprint. */
-export function authDigest(auth: string): string {
-  if (typeof auth !== "string" || !isWellFormedUnicode(auth))
-    throw new EpEnvelopeError("bad-request", "auth slot is not a well-formed Unicode string");
-  return rawDigest(auth);
-}
 
 // ---- consuming-boundary validators ----------------------------------------------------------
 
@@ -235,7 +231,7 @@ function pickCorrelation(v: unknown): EpCorrelation | undefined {
   const out: EpCorrelation = {};
   if (o.traceparent !== undefined) {
     const tp = asString(o.traceparent, "correlation.traceparent");
-    if (Buffer.byteLength(tp, "utf8") > MAX_TRACEPARENT_BYTES)
+    if (utf8Bytes(tp) > MAX_TRACEPARENT_BYTES)
       fail("bad-request", `correlation.traceparent exceeds ${MAX_TRACEPARENT_BYTES} bytes`);
     const m = TRACEPARENT.exec(tp);
     if (!m || m[1] === "ff" || /^0+$/.test(m[2]) || /^0+$/.test(m[3]))
@@ -247,7 +243,7 @@ function pickCorrelation(v: unknown): EpCorrelation | undefined {
   for (const k of ["tracestate", "baggage"] as const) {
     if (o[k] === undefined) continue;
     const s = asString(o[k], `correlation.${k}`);
-    if (Buffer.byteLength(s, "utf8") > CORRELATION_BYTE_BOUNDS[k])
+    if (utf8Bytes(s) > CORRELATION_BYTE_BOUNDS[k])
       fail("bad-request", `correlation.${k} exceeds ${CORRELATION_BYTE_BOUNDS[k]} bytes`);
     // eslint-disable-next-line no-control-regex
     if (/[\x00-\x1f\x7f]/.test(s)) fail("bad-request", `correlation.${k} carries a control character`);
@@ -485,7 +481,7 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
   const o = asRecord(raw, "event");
   assertVersion(o, "event");
   const topic = asString(o.topic, "topic");
-  if (Buffer.byteLength(topic, "utf8") > 256) fail("bad-request", "topic exceeds 256 bytes");
+  if (utf8Bytes(topic) > 256) fail("bad-request", "topic exceeds 256 bytes");
   const ts = asWireInt(o.ts, "ts");
   if (!("data" in o)) fail("bad-request", "event carries no data field");
   const correlation = pickCorrelation(o.correlation);
@@ -493,6 +489,9 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
 }
 
 // ---- invocation-time contract validation (§13.7, distinct from registration time) -----------
+
+/** Process CPU where the host has a process (Node). A browser has none, so it skips the report. */
+const cpuNow = (): NodeJS.CpuUsage | undefined => (typeof process === "undefined" ? undefined : process.cpuUsage());
 
 /**
  * Report — never refuse on — an over-budget validation on the REQUEST path.
@@ -554,7 +553,8 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
  * registered contract is costing more than the profile intended. Treat it as a hint to go look at
  * the contract, never as a verdict about this request.
  */
-function reportValidateBudget(what: "args" | "output", startedCpu: NodeJS.CpuUsage, startedMs: number): void {
+function reportValidateBudget(what: "args" | "output", startedCpu: NodeJS.CpuUsage | undefined, startedMs: number): void {
+  if (startedCpu === undefined) return;
   const cpu = process.cpuUsage(startedCpu);
   const cpuMs = Math.round((cpu.user + cpu.system) / 1000);
   if (cpuMs <= SCHEMA_PROFILE.validateBudgetMs) return;
@@ -591,7 +591,7 @@ function firstErrorDetail(first: { instancePath?: string; message?: string; para
  *  a false positive fails loudly instead of lying to a caller. */
 export function assertArgsValid(validate: ValidateFunction, args: Record<string, unknown> | null | undefined): unknown {
   const value = args === undefined ? null : args;
-  const startedCpu = process.cpuUsage();
+  const startedCpu = cpuNow();
   const started = Date.now();
   const okValid = validate(value);
   reportValidateBudget("args", startedCpu, started);
@@ -612,7 +612,7 @@ export function assertArgsValid(validate: ValidateFunction, args: Record<string,
  *  void schema, mirroring the args side. */
 export function assertOutputValid(validate: ValidateFunction, data: unknown): void {
   const value = data === undefined ? null : data;
-  const startedCpu = process.cpuUsage();
+  const startedCpu = cpuNow();
   const started = Date.now();
   const okValid = validate(value);
   reportValidateBudget("output", startedCpu, started);

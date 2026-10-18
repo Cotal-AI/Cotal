@@ -73,7 +73,7 @@ export function isLocalServer(servers: string): boolean {
 
 /** The display-only `AgentCard.meta` for a session. Agent-file metadata is preserved, then
  *  connector-owned fields are overlaid so files cannot spoof the hosting harness. */
-function buildMeta(config: AgentConfig): Record<string, string> | undefined {
+function buildMeta(config: AgentConfig, processCwd: boolean): Record<string, string> | undefined {
   const meta: Record<string, string> = { ...(config.meta ?? {}) };
   if (config.model) meta.model = config.model;
   if (config.variant) meta.variant = config.variant;
@@ -84,7 +84,20 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
   // answer — and, like `connector`, it is overlaid LAST so an agent file cannot declare a host it
   // is not on. Advisory display metadata, never an authorization or routing input.
   meta.host = hostname();
+  // Snapshot the connector process directory when the session is constructed. This is display
+  // metadata, not a model harness's later shell directory or a routing/authorization input. A
+  // connector whose process directory is not the session's leaves it unknown until the harness
+  // reports one (`setCwd`); an agent-file value never stands in for it.
+  if (processCwd) meta.cwd = process.cwd();
+  else delete meta.cwd;
   return Object.keys(meta).length ? meta : undefined;
+}
+
+/** Connector-owned construction options, never read from an agent file. */
+export interface MeshAgentOptions {
+  /** The connector process directory is not this session's (one process hosts several sessions),
+   *  so `meta.cwd` stays unknown until the harness reports it through {@link MeshAgent.setCwd}. */
+  withholdProcessCwd?: boolean;
 }
 
 /** A message that has arrived for us, normalized for the agent to read. */
@@ -518,7 +531,7 @@ export class MeshAgent extends EventEmitter {
   private presenceChain: Promise<void> = Promise.resolve();
 
   /** An explicit env scopes launch metadata and bearer subprocesses. Omitted preserves process inheritance. */
-  constructor(config: AgentConfig, env?: NodeJS.ProcessEnv) {
+  constructor(config: AgentConfig, env?: NodeJS.ProcessEnv, options: MeshAgentOptions = {}) {
     super();
     this.config = config;
     this.launchEnv = env === undefined ? undefined : { ...env };
@@ -560,7 +573,7 @@ export class MeshAgent extends EventEmitter {
         actor: config.userAuth?.actor,
         // Display-only discovery metadata so observers can show which harness an agent runs on
         // and (when pinned) which model. Each is omitted when unset rather than faked.
-        meta: buildMeta(config),
+        meta: buildMeta(config, !options.withholdProcessCwd),
       },
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta));
@@ -2745,6 +2758,11 @@ export class MeshAgent extends EventEmitter {
   async setModel(model: string, variant?: string, provider?: string): Promise<void> {
     if (this.config.model && provider === undefined) return; // operator pin is authoritative for the model
     await this.inOrder(() => this.ep.setCardModel(this.config.model ?? model, this.config.variant ?? variant, provider));
+  }
+
+  /** Report the session's working directory as its harness supplied it. Advisory display data. */
+  async setCwd(cwd: string): Promise<void> {
+    await this.inOrder(() => this.ep.setCardCwd(cwd));
   }
 
   // ---- channel registry ----------------------------------------------------

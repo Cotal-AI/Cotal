@@ -20,7 +20,7 @@
  * Watch only for OUR subject. The connection is shared, and another component's
  * denial or an unrelated transport error must not fail this call.
  */
-import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
+import { PermissionViolationError, type NatsConnection } from "@nats-io/nats-core";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 
 export type StatusStream = {

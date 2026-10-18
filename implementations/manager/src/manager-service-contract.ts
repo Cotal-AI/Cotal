@@ -33,6 +33,7 @@
  *   manager.run      run-start / run-resume / run-answer   (the `run` capability + privileged instrument)
  *                    run-status / run-ps ride manager.read
  */
+import type { BrowserContractSource } from "@cotal-ai/core/browser-validators-build";
 import {
   serviceContractTable,
   singleDocumentClosure,
@@ -1152,6 +1153,18 @@ export function managerClusterArtifacts(): {
   const document = managerClusterDocument();
   const { manifest, closureDigest } = singleDocumentClosure(document);
   return { document, rootDigest: manifest.root, manifest, closureDigest };
+}
+
+/** The manager's contract data as a host's build-time generator takes it (`generateBrowserContracts`
+ *  from `@cotal-ai/core/browser-validators-build`): the registered cluster document, its closure
+ *  digest and each DISTINCT schema root its commands name. The closure manifests published beside
+ *  the roots ({@link managerContractArtifactValues}) are not schemas and are not included; the
+ *  generator recomputes every digest from the document and roots and refuses any mismatch. */
+export function managerBrowserContractSource(): BrowserContractSource {
+  const { document, closureDigest } = managerClusterArtifacts();
+  const roots = new Map<string, unknown>();
+  for (const row of ROWS) for (const root of [row.input, row.output]) roots.set(singleDocumentClosure(root).manifest.root, root);
+  return { label: `${MANAGER_CLUSTER_URN}@${document.revision}`, clusterDigest: closureDigest, document, roots: [...roots.values()] };
 }
 
 /** The handlers the manager supplies to back each served command. Each receives the serve

@@ -75,11 +75,21 @@ See [the issuance design](design/user-auth-run-start.md#platform-supervisor-regi
 Everything below is a real export of a published package, reachable from the package root (each
 package publishes `.` via `dist/index.{js,d.ts}` and ships `files: ["dist"]`).
 `@cotal-ai/connector-claude-code` also publishes `./mcp`, which hosts managed Claude Code sessions
-in one process ([Connect Claude](connect-claude.md#host-sessions-in-one-process)). Type-only names
-are marked; import them with `import type`.
+in one process ([Connect Claude](connect-claude.md#host-sessions-in-one-process)).
+`@cotal-ai/core` also publishes `./browser-control` and `./browser-validators-build`
+([Browser control](#browser-control)). Type-only names are marked; import them with `import type`.
 
 `CotalEndpoint` accepts `environment` as an explicit presence label. Pass `null` to omit the label
 without reading `COTAL_ENVIRONMENT`. Omitting the option preserves the process environment default.
+
+Shared connector sessions report `card.meta.host` and `card.meta.cwd` from the connector process
+when the session is constructed. They override agent-file values and are advisory display data.
+The directory is a startup snapshot, not a model harness's later shell directory. Neither field
+changes routing or access, and the connector reads no command-line arguments or environment dump
+for these values. A connector whose process can host several sessions passes
+`{ withholdProcessCwd: true }` as `MeshAgent`'s third argument and reports each session's directory
+with `setCwd` (`CotalEndpoint.setCardCwd`) once the harness supplies it; until then the field is
+absent. The reported path is kept byte for byte, whitespace included; an empty string leaves it unchanged. Claude Code sessions do this from their `SessionStart` hook.
 
 **Daemon runners and lifecycle**
 
@@ -310,6 +320,17 @@ received, which it does when a client starts listening. `cotal_connect` adds `wa
 its reply. `GATEWAY_INSTRUCTIONS` is `GATEWAY_CONNECTING` followed by `GATEWAY_LISTENING`, so an
 embedder can say how its conversations listen and keep how they connect.
 
+### Browser control
+
+`@cotal-ai/core/browser-control` describes and invokes an endpoint from a strict-CSP page. The page
+compiles no code: the host passes validators it generated at build time with
+`generateBrowserContracts` from `@cotal-ai/core/browser-validators-build` (Node only). The generator
+takes each cluster document with its recorded digest and schema roots, recomputes every digest and
+refuses a mismatch or a missing root before writing anything. It supports single-document closures
+only, so a command whose closure spans several documents refuses. The generated module imports
+Ajv's runtime helpers (`ajv/dist/runtime/*.js`), so the host's bundler must resolve `ajv` from
+where the host writes that module.
+
 ### Remote manager client composition
 
 `@cotal-ai/manager` exports the `remoteManagerClient` namespace, containing the stock remote
@@ -326,6 +347,10 @@ registration. Pass its `[document, manifest]` pair as `contractArtifacts` to bot
 `remoteManagerClient.remoteManagerAuthorityRequest(state, actor, "activate", { registrationProof, contractArtifacts })`.
 The request builder takes each operation's coordinates as named fields of its last argument.
 The host still validates the artifact closure and current registration before activation.
+`managerBrowserContractSource()` returns the same document with its closure digest and each
+distinct schema root, the input `generateBrowserContracts` from
+`@cotal-ai/core/browser-validators-build` takes at a host's build. Its closure manifests are left
+out because they are not schemas; the generator recomputes every digest and refuses a mismatch.
 The namespace includes closed standing/run renewal, admission, maintenance, enrollment,
 retirement and goal-index scan helpers. `publicIdentities(state)` returns the `identities` record every request
 carries: the five public ids, in the order the host echoes them. `remoteRunHosting` builds the four `runHosting` callbacks from the registration

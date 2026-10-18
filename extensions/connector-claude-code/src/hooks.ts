@@ -321,6 +321,11 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // operator didn't pin one. A mid-session /model switch fires no hook, so this holds until the
           // next (re)start — acceptable for a display-only discovery field. setModel keeps the pin wins.
           if (typeof ev.model === "string") await agent.setModel(ev.model).catch(() => {});
+          // The session's directory, from the harness (`cwd` on every hook). Only a session start
+          // (startup, resume, fork) sets it: clear and compact carry the directory after any later
+          // `cd`, and the card shows where the session started, not a live shell path.
+          if (typeof ev.cwd === "string" && (ev.source === "startup" || ev.source === "resume" || ev.source === "fork"))
+            await agent.setCwd(ev.cwd).catch(() => {});
           // NOT a turn ending. `SessionStart` fires on compact, clear and resume, and a compaction
           // lands mid-turn: routed through the boundary this published `done` for a run turn the
           // model was still working on.

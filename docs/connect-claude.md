@@ -769,7 +769,9 @@ launches a stdio command, such as a small relay that pipes its stdio to the host
   includes, without reading the host repository config. Set `COTAL_FEEDBACK_EMAIL` or pass the
   feedback tool's `email` argument to choose another contact. Include the `PATH`, `HOME` and other OS
   variables subprocesses need; the host's environment is not merged into them. Subprocesses still
-  use the host process's working directory. A plain `claude` with no identity is served by `mcp.cjs` run directly. Sharing a process
+  use the host process's working directory. A session's card does not: its `meta.cwd` is the `cwd`
+  its own `SessionStart` hook reports on startup, resume or fork, absent until then, and unchanged by
+  clear or compact. It is advisory display data that every reader of the space's roster can see. A plain `claude` with no identity is served by `mcp.cjs` run directly. Sharing a process
   does not isolate untrusted tenants or their files.
 - **Streams.** `input` carries JSON-RPC from the client and `output` carries this session's replies
   and `claude/channel` pushes. The caller owns both streams. Input that has emitted `end` or is

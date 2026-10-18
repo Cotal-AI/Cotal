@@ -1,0 +1,33 @@
+{
+  "suite": [
+    "implementations/auth/smoke/issued-caller-expiry.smoke.ts"
+  ],
+  "command": "pnpm smoke:issued-caller-expiry",
+  "completionMarker": "issued-caller-expiry smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-caller-expiry.json",
+  "why": [
+    "The callout stages a user's manager-caller evidence with the credential's expiry, so",
+    "IssuedStore.resolve() refuses the generation after that expiry (SPEC 13.15) on every host path",
+    "that resolves it. Renewing an already-admitted run does not resolve the caller's generation, so",
+    "the run keeps renewing after it expires (SPEC 14.8). One mutation removes the recorded expiry,",
+    "the other makes renewal re-resolve the caller's generation; each must turn its own cell red."
+  ],
+  "mutations": [
+    {
+      "name": "the user-caller evidence is staged without the credential's expiry",
+      "file": "implementations/auth/src/service.ts",
+      "find": "permissions: importNativeSubjectPermissions(perms), expiresAt: t.exp,\n",
+      "replace": "permissions: importNativeSubjectPermissions(perms),\n",
+      "expectRed": "R54 expired generation must not authorize delayed first admission",
+      "cell": "R54 expired generation must not authorize delayed first admission"
+    },
+    {
+      "name": "run renewal re-resolves the admitted caller's generation",
+      "file": "implementations/auth/src/service.ts",
+      "find": "              throw new EpEnvelopeError(\"conflict\", \"manager-service run renewal authority moved before issuance\");\n",
+      "replace": "              throw new EpEnvelopeError(\"conflict\", \"manager-service run renewal authority moved before issuance\");\n            const { admission } = await readRunAdmission(recordsJsm, space, \"manager\", r.run!.runId);\n            if (admission.provenance.kind === \"issued\") {\n              const ref = admission.provenance.ref;\n              await withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, (session) => session.store.resolve(ref, composedSourceIsLive(session)));\n            }\n",
+      "expectRed": "R55 run admitted before its caller generation expired keeps renewing after expiry",
+      "cell": "R55 run admitted before its caller generation expired keeps renewing after expiry"
+    }
+  ]
+}

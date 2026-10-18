@@ -39,6 +39,14 @@
     "./launch-material": {
       "types": "./dist/launch-material.d.ts",
       "import": "./dist/launch-material.js"
+    },
+    "./browser-control": {
+      "types": "./dist/browser-control.d.ts",
+      "import": "./dist/browser-control.js"
+    },
+    "./browser-validators-build": {
+      "types": "./dist/browser-validators-build.d.ts",
+      "import": "./dist/browser-validators-build.js"
     }
   },
   "scripts": {
@@ -63,6 +71,7 @@
     "@nats-io/nats-core": "^3.4.0",
     "@nats-io/nkeys": "^2.0.3",
     "@nats-io/transport-node": "^3.4.0",
+    "acorn": "^8.15.0",
     "ajv": "^8.20.0",
     "json-canonicalize": "2.0.0",
     "yaml": "^2.9.0"
