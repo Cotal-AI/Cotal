@@ -279,8 +279,8 @@
       "file": "extensions/connector-core/src/gateway.ts",
       "find": "      if (c.agent.stopping) return refuse(CONNECTION_REQUIRED);\n",
       "replace": "",
-      "expectRed": "disconnecting ends a held wait as a closed connection",
-      "cell": "disconnecting ends a held wait as a closed connection"
+      "expectRed": "a wait on an already-stopped connection refuses at once",
+      "cell": "a wait on an already-stopped connection refuses at once"
     },
     {
       "name": "a wait on a stopped agent starts anyway",

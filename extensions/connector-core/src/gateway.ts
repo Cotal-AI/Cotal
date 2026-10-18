@@ -168,9 +168,10 @@ function wakeCount(agent: MeshAgent): number {
  * when the agent stops.
  *
  * The SDK aborts `signal` when the request's connection closes, so a wait its client gave up on
- * stops listening instead of taking the next message to a closed socket. The handler awaits the host
- * first, so the signal can already be aborted and the agent already stopped here, and neither then
- * fires an event.
+ * stops listening instead of taking the next message to a closed socket. The signal belongs to that
+ * one request, so its listener ends with the request and needs no removal. The handler awaits the
+ * host first, so the signal can already be aborted and the agent already stopped here, and neither
+ * then fires an event.
  */
 function waitForWake(agent: MeshAgent, ms: number, signal: AbortSignal): Promise<boolean> {
   if (signal.aborted || agent.stopping) return Promise.resolve(false);
@@ -190,7 +191,6 @@ function waitForWake(agent: MeshAgent, ms: number, signal: AbortSignal): Promise
       agent.off("incoming", check);
       agent.off("mention-wake", mentioned);
       agent.off("transport", stopped);
-      signal.removeEventListener("abort", abort);
       resolve(woke);
     }
     agent.on("incoming", check);
