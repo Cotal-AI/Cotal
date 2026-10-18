@@ -9,6 +9,8 @@
  * BEFORE compilation so a hostile descriptor cannot turn registration into a DoS.
  */
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+// CommonJS under NodeNext: the default import is `module.exports`, whose `default` is the function.
+import ajvStandalone from "ajv/dist/standalone/index.js";
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { assertSafePattern } from "./safe-pattern.js";
 import { buildContractClosureManifest, type ContractClosureManifest } from "./contract-manifest.js";
@@ -590,6 +592,18 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
 export function compileContract(bundle: SchemaBundle): CompiledContract {
   const closureDigest = assertClosureProfile(bundle);
   return makeCompiled(compileWithinBudget(bundle), closureDigest);
+}
+
+/** BUILD-TIME ONLY: the same profile walk and the same Ajv options as {@link compileContract}, with
+ *  the validator emitted as standalone ES module source instead of a function built at runtime. A
+ *  page under a strict CSP cannot run Ajv's runtime code generation, so the browser entry carries
+ *  validators generated here for the closures it supports (`scripts/gen-browser-contracts.ts`).
+ *  `code` selects the output form only; every option that decides a verdict is unchanged. */
+export function standaloneContractSource(bundle: SchemaBundle): { closureDigest: string; source: string } {
+  const closureDigest = assertClosureProfile(bundle);
+  const ajv = new Ajv2020({ ...AJV_PROFILE_OPTIONS, code: { source: true, esm: true } });
+  for (const [digest, member] of Object.entries(bundle.members ?? {})) ajv.addSchema(member as object, `cotal:${digest}`);
+  return { closureDigest, source: ajvStandalone.default(ajv, ajv.compile(bundle.root as object)) };
 }
 
 /** {@link compileContract} without the closure identity, kept for validation-only callers. */

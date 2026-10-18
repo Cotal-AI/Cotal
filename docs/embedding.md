@@ -306,6 +306,50 @@ observations, and any guarded foreign-holder repair.
 An embedding must preserve those checks and supply a supported runtime; the client exports alone
 do not provide a pooled runtime, an authority service or a complete hosted context.
 
+### Manager command contracts in a browser
+
+`@cotal-ai/core/browser` enforces Manager command contracts in a page that runs under a strict
+Content-Security-Policy such as `script-src 'self'`. It imports no Node built-in and no
+`@nats-io/transport-node`, and it never generates code at runtime.
+
+The package root compiles each resolved schema closure with Ajv when it resolves a service, and
+Ajv builds its validators with `new Function`, which such a policy forbids. The browser entry
+instead carries validators that `pnpm --filter @cotal-ai/core gen:browser-contracts` generates at
+build time, one per closure digest, with the same §13.7 profile and Ajv options as
+`compileContract`. A closure digest is the closure's identity, so the packaged validator for a
+digest is that closure's validator.
+
+- `packagedServiceSurface(descriptor)` builds the invocable surface from a `describe` descriptor the
+  way `resolveService` builds it from the store: clusters in descriptor order, commands narrowed to
+  the ones the view lists, and a later cluster's command replacing an earlier one of the same name.
+- `packagedContract(closureDigest)` returns one closure's verdict and its first violation.
+- `PACKAGED_MANAGER_CLUSTERS` lists the packaged cluster documents and the releases that ship them.
+
+A cluster or closure digest the build did not package refuses with `unsupported-version`. The
+entry never compiles, guesses or skips it. Packaged today:
+
+| Cluster digest | Revision | Commands | Manager releases |
+| --- | --- | --- | --- |
+| `sha256:dd7db8069ccab85fc32a8f8a81e9b49f23dbb6fd1dad209e8aba3da62fc00e02` | 27 | 34 | `@cotal-ai/manager` 0.82.2, and the 0.85.0 source this entry was generated from |
+
+To add a release, extract its contract from that release's own build, then regenerate:
+
+```sh
+cd packages/core
+tsx scripts/gen-browser-contracts.ts extract <release>/dist/manager-service-contract.js "@cotal-ai/manager@<version>" browser-contracts/manager-<version>.json
+pnpm gen:browser-contracts
+```
+
+The generator recomputes every digest with the current profile and refuses one that differs from
+what the release recorded.
+
+The entry opens no connection and holds no authority. Describing, invoking and following a goal
+still need the signed-in person's own authorized connection, and that connection is not part of
+this entry yet. The stock exchange serves no browser-origin request. An embedding obtains that
+person's own `manager-caller` view through its own identity bridge, from that person's current
+proof and with the Manager instance named explicitly. It never uses a service or administrator
+credential, and it never forwards Manager commands for the page.
+
 ### Long-lived endpoints take a bearer function
 
 `EndpointOptions.bearer` accepts either a string or a function, and the difference is not stylistic.
