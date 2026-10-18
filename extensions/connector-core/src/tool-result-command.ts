@@ -38,7 +38,12 @@ import {
   type EpServeHandle,
   dialerFor,
   standaloneConnectOpts,
+  toolResultConsentAnchorFileResolver,
+  consentSignerStillCurrent,
+  readToolResultServingFile,
+  toolResultServingFileResolver,
 } from "@cotal-ai/core";
+import { credsAuthenticator } from "@nats-io/transport-node";
 import type { ToolResultJournal } from "./tool-result-journal.js";
 
 export {
@@ -154,21 +159,36 @@ export function serveToolResults(
   ], { public: true });
 }
 
+/** How often a serving session rechecks the signer of every applied consent against the current
+ *  anchors: the bound on how long a withdrawn, rotated-out or unreadable anchor keeps an already
+ *  applied consent capturing. */
+export const TOOL_RESULT_ANCHOR_RECHECK_MS = 60_000;
+
+/** The resolver for a launch that registered no consent anchors: nothing resolves, so every
+ *  presented consent is refused as an unknown signer and the journal never turns on. */
+const NO_REGISTERED_CONSENT_ANCHORS: AnchorResolver = () => undefined;
+
 /**
  * Serve this session's journal from the launcher's serving material (SPEC 13.6): the agent's own
- * `endpoint-serve` creds, read from its 0600 launch-material file, and the serve grant they were
- * minted under. Opens ONE
- * dedicated connection with exactly those creds and serves the three handle-only commands on it.
- * Without material nothing is served. The grant must name this space, the `tool-results` endpoint
- * and this incarnation, or nothing is opened.
+ * `endpoint-serve` creds, read from its 0600 launch-material file, the serve grant they were
+ * minted under, and the path of the operator's registered consent-anchor file. Opens ONE dedicated
+ * connection with exactly those creds and serves the three handle-only commands on it. Without
+ * material nothing is served. The grant must name this space, the `tool-results` endpoint and this
+ * incarnation, or nothing is opened.
  *
- * No consents anchor registry is supplied to a launched session yet, so every presented consent is
- * refused as an unknown signer and the journal stays off: serving a consent command never applies a
- * consent by itself. `stop()` drains the serve subscriptions, retires the journal (discarding every
- * held result) and closes the connection.
+ * Every presented consent is verified against the anchor file read FRESH at that moment; with no
+ * anchor file every consent is refused. Serving a consent command never applies a consent by
+ * itself. Every {@link TOOL_RESULT_ANCHOR_RECHECK_MS} the signer of each applied consent is
+ * rechecked the same way, and a withdrawn or unreadable one is withdrawn here, discarding held
+ * results when none is left. When the serve connection closes for good (its credential expired or
+ * was evicted, or the session ended) the journal retires: capture stops and everything is
+ * discarded. `stop()` does the same deliberately.
  */
 export async function serveLaunchedToolResults(args: {
-  material: { creds: string; grant: EpServeGrant };
+  /** Static launch: creds, grant and the operator's anchor-file path. User-mode launch: the
+   *  launcher-maintained serving file, re-read for creds on every (re)connect and for the host's
+   *  anchors on every verification. */
+  material: { creds: string; grant: EpServeGrant; consentAnchors?: string } | { file: string };
   space: string;
   servers: string;
   tls: boolean;
@@ -176,25 +196,56 @@ export async function serveLaunchedToolResults(args: {
   self: ToolResultTarget;
 }): Promise<{ stop(): Promise<void> }> {
   const { material, space, journal, self } = args;
-  const g = material.grant;
+  const file = "file" in material ? material.file : undefined;
+  const initial = file !== undefined ? readToolResultServingFile(file) : (material as { creds: string; grant: EpServeGrant });
+  const g = initial.grant;
   if (g.space !== space || g.endpoint !== TOOL_RESULT_ENDPOINT || g.instanceId !== self.lifecycleUid)
     throw new EpEnvelopeError("failed-precondition", "the launch's tool-results grant does not name this space, endpoint and incarnation");
-  const nc = await dialerFor(args.servers)({ servers: args.servers, ...standaloneConnectOpts({ creds: material.creds, tls: args.tls }), name: `tool-results-${self.lifecycleUid}` });
+  const resolveAnchor = file !== undefined
+    ? toolResultServingFileResolver(file)
+    : "consentAnchors" in material && material.consentAnchors !== undefined ? toolResultConsentAnchorFileResolver(material.consentAnchors) : NO_REGISTERED_CONSENT_ANCHORS;
+  const enc = new TextEncoder();
+  const nc = await dialerFor(args.servers)({
+    servers: args.servers,
+    ...standaloneConnectOpts({ creds: initial.creds, tls: args.tls }),
+    // A user-mode serving file is renewed in place: every (re)connect presents its current creds,
+    // and a removed or unreadable file fails the connect instead of reusing the old credential.
+    ...(file !== undefined ? { authenticator: credsAuthenticator(() => enc.encode(readToolResultServingFile(file).creds)) } : {}),
+    name: `tool-results-${self.lifecycleUid}`,
+  });
   let handle: EpServeHandle;
   try {
-    handle = serveToolResults(nc, space, g, journal, self, () => undefined);
+    handle = serveToolResults(nc, space, g, journal, self, resolveAnchor);
   } catch (e) {
     await nc.close().catch(() => {});
     throw e;
   }
-  return {
-    stop: async () => {
-      try {
-        await handle.stop();
-      } finally {
-        journal.retire();
-        await nc.drain().catch(() => nc.close());
-      }
-    },
+  const stop = async (): Promise<void> => {
+    clearInterval(recheck);
+    try {
+      await handle.stop();
+    } finally {
+      journal.retire();
+      await nc.drain().catch(() => nc.close());
+    }
   };
+  // A user-mode serving file the launcher removed (a failed or unknown renewal) or let lapse ends
+  // serving and capture at the next tick; the broker already ends the connection at the JWT's expiry.
+  const servingFileCurrent = (): boolean => {
+    try {
+      return readToolResultServingFile(file!).notAfter > Date.now();
+    } catch {
+      return false;
+    }
+  };
+  const recheck = setInterval(() => {
+    if (file !== undefined && !servingFileCurrent()) return void stop().catch(() => {});
+    void journal.recheckSigners((c) => consentSignerStillCurrent(resolveAnchor, c));
+  }, TOOL_RESULT_ANCHOR_RECHECK_MS);
+  recheck.unref?.();
+  void nc.closed().then(() => {
+    clearInterval(recheck);
+    journal.retire();
+  });
+  return { stop };
 }

@@ -3027,9 +3027,17 @@ lifecycle UID, the three commands `handle`-only, owner = the operator) and hand 
 grant and its own `endpoint-serve` credential, bounded like its agent credential, through the 0600
 launch material only; retiring the incarnation deregisters the instance. A mesh with no issuer for
 that material (user-mode, open) refuses such a spawn rather than launching one that serves nothing.
-Registering the host's `consents` anchor and user-mode serve issuance are hosting-authority work not
-defined here; until a session is given anchors, every presented consent is refused and the journal
-stays off.
+The launcher registers the host's consent anchors from an operator file of PUBLIC records
+`{ keyId, publicKey, owner, validFrom, validTo, revoked? }`; each is registered as exactly
+`roles: ["consents"]`, `scope: { consents: ["tool-results"] }`, so the file cannot grant any other
+role, and a malformed, partial or duplicate file refuses. The serving session receives only the
+file's path and re-reads it on every consent verification, so rotation (a successor record, the
+predecessor's window closed) and withdrawal (`revoked: true` or removal) apply to the next
+verification; it rechecks the signer of every applied consent at least once a minute and withdraws
+any whose anchor is withdrawn or unreadable, discarding held results when none is left. When the
+serve connection closes for good (credential expiry, eviction, retirement) the journal retires.
+Without an anchor file every presented consent is refused and the journal stays off. User-mode serve
+issuance is hosting-authority work not defined here.
 
 ### 13.7 Contracts and discovery
 

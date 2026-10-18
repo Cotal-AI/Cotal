@@ -25,7 +25,10 @@ export interface LaunchOpts {
    *  creds (content) and its serve grant. Set only for a connector declaring
    *  {@link Connector.toolResults}; the connector forwards it only through the 0600
    *  launch-material file, never env or argv. */
-  toolResults?: { creds: string; grant: EpServeGrant };
+  toolResults?: { creds: string; grant: EpServeGrant; consentAnchors?: string };
+  /** User-mode tool-results serving: the launcher-maintained 0600 serving file. Set only for a
+   *  connector declaring {@link Connector.toolResults}. */
+  toolResultsServing?: { file: string };
   /** The incarnation's lifecycle UID (SPEC §13.1), minted by the launcher at spawn. The connector
    *  forwards it (`COTAL_LIFECYCLE_UID`) so the session's endpoint binds its lifecycle-keyed
    *  dm/dlv/chathist durables — the same exact names its credential pins. */
