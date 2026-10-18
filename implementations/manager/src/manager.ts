@@ -3214,12 +3214,19 @@ export class Manager {
   }
 
   /** Stop the v0.4 service-endpoint serve loop (drain subscriptions, await in-flight handlers)
-   *  and drop its dedicated connection. Best-effort so a graceful stop completes its remaining
-   *  teardown even when the broker is gone. */
+   *  and drop its dedicated connection, or only close the connection while its transport is down.
+   *  Best-effort so a graceful stop completes its remaining teardown even when the broker is gone. */
   private async stopServiceServe(): Promise<void> {
     const s = this.serviceServe;
     if (!s) return;
     this.serviceServe = undefined;
+    // A drain on a reconnecting connection does not fail: it waits for the reconnect, so the stop
+    // would last as long as the outage. A broker this connection cannot reach has nothing left to
+    // flush, so the retired connection is closed instead.
+    if (this.serveTransportDown.has(s.nc)) {
+      try { await s.nc.close(); } catch { /* best effort */ }
+      return;
+    }
     try { await s.handle.stop(); } catch { /* best effort */ }
     try { await s.nc.drain(); } catch { try { s.nc.close(); } catch { /* best effort */ } }
   }
