@@ -116,4 +116,4 @@ export function packagedServiceSurface(descriptor: { clusters: ReadonlyArray<{ d
   return surface;
 }
 
-export { openBrowserManagerCaller, type BrowserManagerAuthority, type BrowserManagerCaller, type BrowserManagerCallerOptions, type BrowserInvokeOptions } from "./browser-caller.js";
+export { openBrowserManagerCaller, verifyGoalResultFact, type BrowserManagerAuthority, type BrowserManagerCaller, type BrowserManagerCallerOptions, type BrowserInvokeOptions } from "./browser-caller.js";

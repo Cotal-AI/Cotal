@@ -484,6 +484,9 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
 
 // ---- invocation-time contract validation (§13.7, distinct from registration time) -----------
 
+/** Process CPU where the host has a process (Node). A browser has none, so it skips the report. */
+const cpuNow = (): NodeJS.CpuUsage | undefined => (typeof process === "undefined" ? undefined : process.cpuUsage());
+
 /**
  * Report — never refuse on — an over-budget validation on the REQUEST path.
  *
@@ -544,8 +547,6 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
  * registered contract is costing more than the profile intended. Treat it as a hint to go look at
  * the contract, never as a verdict about this request.
  */
-/** Process CPU where the host has a process (Node). A browser has none, so it skips the report. */
-const cpuNow = (): NodeJS.CpuUsage | undefined => (typeof process === "undefined" ? undefined : process.cpuUsage());
 
 function reportValidateBudget(what: "args" | "output", startedCpu: NodeJS.CpuUsage | undefined, startedMs: number): void {
   if (startedCpu === undefined) return;
