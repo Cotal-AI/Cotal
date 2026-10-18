@@ -85,7 +85,7 @@ try {
   ok(resolve("host-1") === undefined, "no serving file: no anchor resolves");
   writeToolResultServingFile(file, issued);
   ok(readToolResultServingFile(file).grant.epoch === 3, "the written file reads back");
-  ok(resolve("host-1")?.publicKey === host.getPublicKey(), "the host's anchor resolves while the credential is current");
+  ok((await resolve("host-1"))?.publicKey === host.getPublicKey(), "the host's anchor resolves while the credential is current");
   ok(resolve("stranger") === undefined, "an unregistered signer does not resolve");
   clock = issued.notAfter + 1;
   ok(resolve("host-1") === undefined, "past notAfter the snapshot is not current and nothing resolves");
