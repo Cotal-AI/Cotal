@@ -40,6 +40,7 @@ import {
   type GoalResultFact,
 } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
+import { TURN_POLL_MS } from "./turn-poll.js";
 import { attributionSafe } from "./framing.js";
 import { invokeUserManager } from "./manager-call.js";
 
@@ -232,11 +233,6 @@ const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
  *  suppression, oldest forgotten first, so a server producing novel error text on every request
  *  cannot grow the map. */
 const MAX_ENDPOINT_NOTICES = 16;
-/** Cadence of the turn-pending pull while connected. The relay is PULL-shaped by design (the
- *  manager holds no DM machinery and a pushed relay could not authenticate its sender), so this
- *  poll is the intake's whole latency: a fresh turn waits at most one interval plus one wake.
- *  Deadlines are minutes-scale; fifteen seconds of intake lag is invisible to a run. */
-const TURN_POLL_MS = 15_000;
 /** The manager's namespaced detail on an `inspect` miss that found a durable slot. The manager owns
  *  the shape; this keys only on the discriminator and the owning instance it may name. */
 const STATIC_SLOT_OBSERVATION_DETAIL = "ai.cotal.manager.static-slot-observation";
@@ -2315,8 +2311,16 @@ export class MeshAgent extends EventEmitter {
 
   // ---- the turn relay (seat side) ------------------------------------------------------------
 
+  /** Whether a manager launched this seat. A manager accepts a run turn only against a seat it
+   *  launched (`serveTurnGoal`), and every manager launch path (local spawn, restart, resume, and
+   *  `delegatedSeatCommand` → `cotal spawn` handoff) sets `COTAL_MANAGER_INSTANCE`
+   *  (`config.managerInstanceId`), so a directly connected session has no turn relay to poll. */
+  private hasTurnRelay(): boolean {
+    return this.config.managerInstanceId !== undefined;
+  }
+
   private ensureTurnPoll(): void {
-    if (this.turnPollTimer !== undefined) return;
+    if (!this.hasTurnRelay() || this.turnPollTimer !== undefined) return;
     const t = setInterval(() => {
       void this.pollTurns().catch((e: unknown) => this.notePullTrouble((e as Error).message));
     }, TURN_POLL_MS);
@@ -2324,11 +2328,11 @@ export class MeshAgent extends EventEmitter {
     this.turnPollTimer = t;
   }
 
-  /** Pull this seat's pending run turns from the manager (`turn-pending`, self-mode). New turns
-   *  request a wake so the payload surfaces on the next injectable frame; turns gone from the
-   *  reply were settled elsewhere (deadline, agent-down, a competing yield path) and are dropped.
-   *  A seat with no manager in its space, or no self-service reach, gets a refused invoke and
-   *  simply has no relay — silence, not an error, because most joined sessions are exactly that. */
+  /** Pull this seat's pending run turns from its launching manager (`turn-pending`, self-mode).
+   *  New turns request a wake so the payload surfaces on the next injectable frame; turns gone from
+   *  the reply were settled elsewhere (deadline, agent-down, a competing yield path) and are
+   *  dropped. Only a manager-launched seat (`hasTurnRelay`) arms this poll; any failure to reach
+   *  the launching manager is passed to {@link notePullTrouble}. */
   private async pollTurns(): Promise<void> {
     if (!this._connected || this._stopping || this.turnPollBusy) return;
     this.turnPollBusy = true;
@@ -2362,17 +2366,15 @@ export class MeshAgent extends EventEmitter {
   /**
    * A pull that did not come back, said ONCE.
    *
-   * The poll runs every few seconds for the life of the session, so a line per failure would be a
-   * torrent and there was none at all instead: a seat whose relay had gone quiet looked exactly
-   * like a seat with no relay, and neither the operator nor the agent could tell which. The
-   * ordinary shapes stay silent, because most joined sessions genuinely have no manager to pull
-   * from and that is not trouble. Everything else is said once per distinct reason, and saying it
-   * again waits for the reason to change or for a pull to succeed.
+   * Only a manager-launched seat polls (`hasTurnRelay`), so an unanswered pull means its own
+   * launching manager did not answer. The poll runs every few seconds for the life of the session,
+   * so a line per failure would be a torrent; instead each distinct reason is reported once and
+   * saying it again waits for the reason to change or for a pull to succeed. Only the manager's
+   * startup reconciliation window (`still reconciling`) stays silent because it resolves itself.
    */
   private notePullTrouble(reason: string): void {
-    // "Nobody answered" is the no-relay case this poll expects, and the boot window is a manager
-    // telling the seat to come back — both resolve themselves and neither is worth a line.
-    if (/no responder answered|still reconciling/i.test(reason)) return;
+    // The boot window is a manager telling the seat to come back once startup reconciliation finishes.
+    if (/still reconciling/i.test(reason)) return;
     if (this.pullTrouble === reason) return;
     this.pullTrouble = reason;
     this.log(`the run-turn pull is not answering (${reason}); retrying every ${TURN_POLL_MS}ms`);
@@ -2715,8 +2717,9 @@ export class MeshAgent extends EventEmitter {
 
   /** The working→idle boundary: yield `done` for every SURFACED turn (its payload was in the
    *  context of the turn that just ended; ending without an explicit yield IS the done signal),
-   *  then re-poll immediately so a queued turn wakes the seat without waiting out the cadence.
-   *  Fire-and-forget from the presence path — a yield must never block a status write. */
+   *  then re-poll immediately on a manager-launched seat (`hasTurnRelay`) so a queued turn wakes
+   *  the seat without waiting out the cadence. Fire-and-forget from the presence path — a yield
+   *  must never block a status write. */
   private onTurnBoundary(): void {
     for (const t of [...this.activeTurns.values()]) {
       if (!t.surfaced) continue;
@@ -2724,7 +2727,7 @@ export class MeshAgent extends EventEmitter {
         .then((r) => { if (!r.ok) this.log(`turn ${t.goalId} auto-yield: ${r.error ?? "refused"}`); })
         .catch((e) => this.log(`turn ${t.goalId} auto-yield: ${(e as Error).message}`));
     }
-    void this.pollTurns().catch(() => { /* the interval retries */ });
+    if (this.hasTurnRelay()) void this.pollTurns().catch(() => { /* the interval retries */ });
   }
 
   /** Record the host's actual model and optional variant learned after launch, so peers see the

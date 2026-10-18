@@ -69,13 +69,13 @@
       "note": "The poll runs for the life of the session and reported nothing at all, so a seat whose relay had gone quiet looked exactly like a seat that never had one."
     },
     {
-      "name": "every pull refusal is reported, including the ordinary ones",
+      "name": "every pull refusal is reported, including the boot reconciliation window",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    if (/no responder answered|still reconciling/i.test(reason)) return;",
+      "find": "    if (/still reconciling/i.test(reason)) return;",
       "replace": "    if (false) return;",
-      "expectRed": "the no-relay shape stays silent: most joined sessions have no manager to pull from",
-      "cell": "the no-relay shape stays silent: most joined sessions have no manager to pull from",
-      "note": "Most joined sessions genuinely have no manager to pull from, and a line every few seconds for that is a torrent that buries the reports worth reading."
+      "expectRed": "the boot reconciliation window stays silent: it resolves itself",
+      "cell": "the boot reconciliation window stays silent: it resolves itself",
+      "note": "The manager's startup reconciliation window resolves itself and stays silent."
     },
     {
       "name": "the same reason is reported on every poll",
@@ -94,6 +94,107 @@
       "expectRed": "the escalation is rendered after the context: the question, the step, and that it was escalated to this seat",
       "cell": "the escalation is rendered after the context: the question, the step, and that it was escalated to this seat",
       "note": "The runtime submits `{ checkpoint: { token, prompt, schema, deadlineAt, escalatedTo } }` and the seat read `ask` alone, so an addressee was woken with a context block and no question, auto-yielded done at its boundary, and the second pause ran to its own expiry over a question nobody was asked. The cell that covered the relay asserted what the runtime SUBMITTED; this one asserts what the seat RENDERS."
+    },
+    {
+      "name": "MP1: remove the manager-launched guard so an unpinned session polls a manager",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  private hasTurnRelay(): boolean {\n    return this.config.managerInstanceId !== undefined;\n  }",
+      "replace": "  private hasTurnRelay(): boolean {\n    return true;\n  }",
+      "expectRed": "T1: a session without COTAL_MANAGER_INSTANCE makes 0 manager invokes across 3 poll intervals and a turn boundary",
+      "cell": "T1: a session without COTAL_MANAGER_INSTANCE makes 0 manager invokes across 3 poll intervals and a turn boundary",
+      "note": "Without the guard, a directly connected session polls turn-pending every interval and at every turn boundary."
+    },
+    {
+      "name": "MP2: invert the manager-launched guard so a manager-launched seat stops polling",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  private hasTurnRelay(): boolean {\n    return this.config.managerInstanceId !== undefined;\n  }",
+      "replace": "  private hasTurnRelay(): boolean {\n    return this.config.managerInstanceId === undefined;\n  }",
+      "expectRed": "T2: a session with COTAL_MANAGER_INSTANCE polls on its cadence (4 invokes across 3 intervals and a turn boundary) with --manager-instance <id>",
+      "cell": "T2: a session with COTAL_MANAGER_INSTANCE polls on its cadence (4 invokes across 3 intervals and a turn boundary) with --manager-instance <id>",
+      "note": "With the guard inverted, a seat launched by a manager never polls for relayed turns."
+    },
+    {
+      "name": "MP3: drop COTAL_MANAGER_INSTANCE from delegatedSeatCommand so a delegated seat does not poll its launching manager",
+      "file": "packages/core/src/runtime.ts",
+      "find": "  return { args, env: { [MANAGED_HANDOFF_FILE_ENV]: files.handoff, COTAL_MANAGER_INSTANCE: managerInstanceId } };",
+      "replace": "  return { args, env: { [MANAGED_HANDOFF_FILE_ENV]: files.handoff } };",
+      "expectRed": "T3: delegatedSeatCommand sets COTAL_MANAGER_INSTANCE in env and the resulting seat polls (4 invokes across 3 intervals and a turn boundary) with --manager-instance <id>",
+      "cell": "T3: delegatedSeatCommand sets COTAL_MANAGER_INSTANCE in env and the resulting seat polls (4 invokes across 3 intervals and a turn boundary) with --manager-instance <id>",
+      "note": "Dropping COTAL_MANAGER_INSTANCE from delegatedSeatCommand leaves a delegated seat without managerInstanceId and breaks its run-turn polling.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:turn-intake",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "MP4: re-silence no responder answered on a manager-launched seat",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (/still reconciling/i.test(reason)) return;",
+      "replace": "    if (/no responder answered|still reconciling/i.test(reason)) return;",
+      "expectRed": "T2: a manager-launched seat whose manager does not answer reports no responder answered once across its polls",
+      "cell": "T2: a manager-launched seat whose manager does not answer reports no responder answered once across its polls",
+      "note": "Re-silencing no responder answered hides a launching manager that stopped answering its launched seat."
+    },
+    {
+      "name": "MP5 (MO1b): strip COTAL_MANAGER_INSTANCE in applyHandoffManagerInstance (spec.env = { ...spec.env })",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "  if (handoffManagerInstanceId !== undefined) {\n    spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: handoffManagerInstanceId };\n  }",
+      "replace": "  if (handoffManagerInstanceId !== undefined) {\n    spec.env = { ...spec.env };\n  }",
+      "expectRed": "N1a: cotal spawn handoff branch builds LaunchSpec via connector.buildLaunch and forwards COTAL_MANAGER_INSTANCE onto the launched child env (leaving a direct launch unpinned)",
+      "cell": "N1a: cotal spawn handoff branch builds LaunchSpec via connector.buildLaunch and forwards COTAL_MANAGER_INSTANCE onto the launched child env (leaving a direct launch unpinned)",
+      "note": "Dropping COTAL_MANAGER_INSTANCE when copying onto spec.env strips the launching manager instance id at the cotal spawn handoff boundary."
+    },
+    {
+      "name": "MO2 (MO8): delete the applyHandoffManagerInstance(spec, handoffManagerInstanceId) call at the cotal spawn handoff boundary",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "    applyHandoffManagerInstance(spec, handoffManagerInstanceId);\n    artifacts = spec.artifacts;",
+      "replace": "    artifacts = spec.artifacts;",
+      "expectRed": "N1a: cotal spawn handoff branch builds LaunchSpec via connector.buildLaunch and forwards COTAL_MANAGER_INSTANCE onto the launched child env (leaving a direct launch unpinned)",
+      "cell": "N1a: cotal spawn handoff branch builds LaunchSpec via connector.buildLaunch and forwards COTAL_MANAGER_INSTANCE onto the launched child env (leaving a direct launch unpinned)",
+      "note": "Deleting the applyHandoffManagerInstance call site in cotal spawn leaves spec.env without COTAL_MANAGER_INSTANCE on a managed-handoff launch."
+    },
+    {
+      "name": "MP6: drop managerInstanceId from Manager.startAgent delegated launch request",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        handle = this.requiredRuntime.spawnDelegated(\n          { agent, persona: readFileSync(configPath, \"utf8\"), managerInstanceId: this.managerInstanceId, role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events },\n          handoff,\n        );",
+      "replace": "        handle = this.requiredRuntime.spawnDelegated(\n          { agent, persona: readFileSync(configPath, \"utf8\"), role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events } as unknown as Parameters<NonNullable<typeof this.requiredRuntime.spawnDelegated>>[0],\n          handoff,\n        );",
+      "expectRed": "N1b: Manager.start() sets managerInstanceId from remoteAuthority and Manager.startAgent passes it in the DelegatedSeatLaunch handed to Runtime.spawnDelegated",
+      "cell": "N1b: Manager.start() sets managerInstanceId from remoteAuthority and Manager.startAgent passes it in the DelegatedSeatLaunch handed to Runtime.spawnDelegated",
+      "note": "Omitting managerInstanceId when Manager.startAgent calls Runtime.spawnDelegated leaves the delegated launch request without the launching manager instance id."
+    },
+    {
+      "name": "MP7: drop the COTAL_MANAGER_INSTANCE refusal from the cotal spawn handoff branch",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "      : !values.config ? `${MANAGED_HANDOFF_FILE_ENV} requires --config <persona-file>`\n      : !process.env.COTAL_MANAGER_INSTANCE?.trim() ? `${MANAGED_HANDOFF_FILE_ENV} requires COTAL_MANAGER_INSTANCE`\n      : undefined;",
+      "replace": "      : !values.config ? `${MANAGED_HANDOFF_FILE_ENV} requires --config <persona-file>`\n      : undefined;",
+      "expectRed": "N2: cotal spawn with COTAL_MANAGED_HANDOFF_FILE and no COTAL_MANAGER_INSTANCE unlinks the handoff file, writes nothing, and exits 1 with the exact one-line refusal before any plane is touched",
+      "cell": "N2: cotal spawn with COTAL_MANAGED_HANDOFF_FILE and no COTAL_MANAGER_INSTANCE unlinks the handoff file, writes nothing, and exits 1 with the exact one-line refusal before any plane is touched",
+      "note": "Dropping the COTAL_MANAGER_INSTANCE check lets a delegated handoff child proceed past the pre-plane refusal and fail with a TypeError at trim()."
+    },
+    {
+      "name": "MO4 (MP8): drop COTAL_MANAGER_INSTANCE from Manager.startAgent local spawn spec.env",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        spec = connector.buildLaunch(launchOpts);\n        if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);\n        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };",
+      "replace": "        spec = connector.buildLaunch(launchOpts);\n        if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);\n        spec.env = { ...spec.env };",
+      "expectRed": "R3a: Manager.startAgent local spawn sets COTAL_MANAGER_INSTANCE on spec.env when the connector buildLaunch does not",
+      "cell": "R3a: Manager.startAgent local spawn sets COTAL_MANAGER_INSTANCE on spec.env when the connector buildLaunch does not",
+      "note": "Dropping COTAL_MANAGER_INSTANCE on local spawn leaves a locally spawned seat without managerInstanceId when the connector buildLaunch does not set it."
+    },
+    {
+      "name": "MP9: drop COTAL_MANAGER_INSTANCE from Manager.recoverManagedSession replacement spec.env",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        const spec = connector.buildLaunch(opts);\n        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };\n        const wanted = this.managedPrincipal(a);",
+      "replace": "        const spec = connector.buildLaunch(opts);\n        spec.env = { ...spec.env };\n        const wanted = this.managedPrincipal(a);",
+      "expectRed": "R3b: Manager.recoverManagedSession sets COTAL_MANAGER_INSTANCE on the replacement spec.env when the connector buildLaunch does not",
+      "cell": "R3b: Manager.recoverManagedSession sets COTAL_MANAGER_INSTANCE on the replacement spec.env when the connector buildLaunch does not",
+      "note": "Dropping COTAL_MANAGER_INSTANCE in recoverManagedSession leaves a restarted seat without managerInstanceId."
+    },
+    {
+      "name": "MP10: drop COTAL_MANAGER_INSTANCE from Manager.resumePreservedAgent resumed spec.env",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        const spec = connector.buildLaunch(launchOpts);\n        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };\n        const value = { spec, launchOpts, ...authority, exact } satisfies PreparedResume;",
+      "replace": "        const spec = connector.buildLaunch(launchOpts);\n        spec.env = { ...spec.env };\n        const value = { spec, launchOpts, ...authority, exact } satisfies PreparedResume;",
+      "expectRed": "R3c: Manager.resumePreservedAgent sets COTAL_MANAGER_INSTANCE on the resumed spec.env when the connector buildLaunch does not",
+      "cell": "R3c: Manager.resumePreservedAgent sets COTAL_MANAGER_INSTANCE on the resumed spec.env when the connector buildLaunch does not",
+      "note": "Dropping COTAL_MANAGER_INSTANCE in resumePreservedAgent leaves a resumed seat without managerInstanceId."
     }
   ],
   "why": [

@@ -4680,15 +4680,20 @@ callout record, the auth service's loopback capability, the owner-derivation sec
 deprovisioner, delivery, membership, supervisor, or other manager credential, a control token, or a
 path on the manager's filesystem. A reader MUST refuse an unknown field. The runtime delivers the
 document into the child as one private (0600) file named by `COTAL_MANAGED_HANDOFF_FILE`, never in
-argv or in an inherited environment value. The child's entry point MUST read the file into memory,
+argv or in an inherited environment value, alongside `COTAL_MANAGER_INSTANCE` naming the launching
+manager. The child's entry point MUST read the file into memory,
 remove it, and drop the variable before it does anything else, including parsing or refusing its
 own arguments, printing help, loading extensions, or refusing an unsupported runtime version, so
 every outcome leaves no file. It MUST NOT forward the variable or the file into any process it starts.
 
 **Refusal before any plane.** The runtime passes the expected `space`, `owner`, `actor`, and
-`lifecycleUid` beside the file. The child MUST refuse, before any broker connection and before any
-exchange request, when the handoff's values differ from them or the document is malformed. A
-refusal MUST NOT echo the document's contents.
+`lifecycleUid` beside the file and sets `COTAL_MANAGER_INSTANCE` to the launching manager's
+instance id. The child MUST refuse, before any broker connection and before any exchange request,
+when `COTAL_MANAGER_INSTANCE` is absent (`COTAL_MANAGED_HANDOFF_FILE requires
+COTAL_MANAGER_INSTANCE`) or malformed, or when the handoff's values differ from them or the
+document is malformed. A newer CLI child under an older manager or runtime that omits
+`COTAL_MANAGER_INSTANCE` therefore refuses every delegated launch. A refusal MUST NOT echo the
+document's contents.
 
 **Launch choices.** The manager MUST refuse, before enrollment, a spawn choice that only its own host
 can honour, such as resuming a session held on that host, a working directory on its filesystem, or

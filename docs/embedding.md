@@ -716,7 +716,7 @@ material file are paths on that filesystem, so such a child needs this path inst
 
 The delegation boundary is one optional runtime method. A runtime that implements
 `Runtime.spawnDelegated(launch, handoff)` receives two values and no paths: a `DelegatedSeatLaunch`
-(connector name, persona text, model and the other launch choices) and a `ManagedLifecycleHandoff`
+(connector name, persona text, `managerInstanceId`, model and the other launch choices) and a `ManagedLifecycleHandoff`
 (space, owner, actor, the host-chosen `lifecycleUid`, broker and IdP pins, the pinned exchange base,
 the sentinel, the channel lists, and the raw actor token). The manager enrolls once, as it does
 today, and builds the handoff from what it holds. It never sends the token to the host, never copies
@@ -729,10 +729,10 @@ whether from `--share-tools` or the config default (`--share-tools none` passes)
 The runtime creates one provider resource under `managedRuntimeKey(target)`, writes the handoff into
 it as one 0600 file and the persona beside it, and runs the stock bootstrap there:
 `cotal spawn --config <persona-file> --space <space> --name <actor> --expect-owner <owner> --expect-lifecycle-uid <uid>`
-with `COTAL_MANAGED_HANDOFF_FILE` naming the file. `delegatedSeatCommand` builds that argv. The
+with `COTAL_MANAGED_HANDOFF_FILE` naming the file and `COTAL_MANAGER_INSTANCE` naming the launching manager. `delegatedSeatCommand` builds that argv and `env`. The
 `cotal` entry reads the file into memory, deletes it and drops the variable before it parses flags,
 prints help or loads extensions, so every outcome, a refusal of its own flags included, leaves no
-file. It refuses before any broker connection or exchange request when the
+file. It refuses before any broker connection or exchange request when `COTAL_MANAGER_INSTANCE` is absent (`COTAL_MANAGED_HANDOFF_FILE requires COTAL_MANAGER_INSTANCE`; a newer CLI child under an older manager or runtime refuses every delegated launch) or malformed, or when the
 space, owner, actor, or lifecycle UID differ from the expected values, and then runs the
 enrollment-redeem consumer: it registers the mesh in its own home, writes the token to its own 0600
 file, and exchanges it through `agent-bearer --exchange-url` unchanged. It never enrolls, redeems, or

@@ -21,6 +21,7 @@ import {
   DEV_OWNER,
   parseShareSelection,
   principalKey,
+  assertLifecycleToken,
   mintLifecycleUid,
   MANAGED_HANDOFF_FILE_ENV,
   parseManagedLifecycleHandoff,
@@ -149,6 +150,18 @@ export function scrubEnrollmentEnv(env: Record<string, string | undefined> | und
   for (const key of Object.keys(env)) {
     const normalized = key.toUpperCase();
     if (normalized === ENROLLMENT_URL_ENV || normalized === ENROLLMENT_FILE_ENV) delete env[key];
+  }
+}
+
+/** Carry the launching manager's validated `COTAL_MANAGER_INSTANCE` onto a managed-handoff
+ *  child's connector launch spec (`spawnProcess` passes `env: spec.env` only, and `launchEnv`
+ *  does not forward `COTAL_MANAGER_INSTANCE` from `process.env`). */
+export function applyHandoffManagerInstance(
+  spec: LaunchSpec,
+  handoffManagerInstanceId: string | undefined,
+): void {
+  if (handoffManagerInstanceId !== undefined) {
+    spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: handoffManagerInstanceId };
   }
 }
 
@@ -659,6 +672,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     scrubEnrollmentEnv(process.env);
   }
   let redeemedEnrollment: ReturnType<typeof checkEnrollmentBundle> | undefined;
+  let handoffManagerInstanceId: string | undefined;
   if (handoffText === undefined && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined)) {
     console.error(c.red(`✗ --expect-owner and --expect-lifecycle-uid apply only with ${MANAGED_HANDOFF_FILE_ENV}`));
     process.exit(1);
@@ -670,6 +684,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       : !values.space || !values.name || !values["expect-owner"] || !values["expect-lifecycle-uid"]
         ? `${MANAGED_HANDOFF_FILE_ENV} requires --space, --name, --expect-owner and --expect-lifecycle-uid`
       : !values.config ? `${MANAGED_HANDOFF_FILE_ENV} requires --config <persona-file>`
+      : !process.env.COTAL_MANAGER_INSTANCE?.trim() ? `${MANAGED_HANDOFF_FILE_ENV} requires COTAL_MANAGER_INSTANCE`
       : undefined;
     if (refusal) {
       console.error(c.red(`✗ ${refusal}`));
@@ -682,6 +697,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       process.exit(1);
     }
     try {
+      handoffManagerInstanceId = assertLifecycleToken(process.env.COTAL_MANAGER_INSTANCE!.trim(), "COTAL_MANAGER_INSTANCE");
       const handoff = parseManagedLifecycleHandoff(handoffText, {
         space: values.space!, owner: values["expect-owner"]!, actor: values.name!, lifecycleUid: values["expect-lifecycle-uid"]!,
       });
@@ -1261,6 +1277,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // construction because its write-ahead log had nowhere to live that a later start would look.
       workspaceRoot: target.root,
     });
+    applyHandoffManagerInstance(spec, handoffManagerInstanceId);
     artifacts = spec.artifacts;
     scrubEnrollmentEnv(spec.env);
 
