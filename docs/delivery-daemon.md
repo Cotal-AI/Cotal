@@ -30,7 +30,8 @@ read checks it must apply. A conformant deployment may realize the backstop diff
   and surfacing does not lose the message; the entry redelivers ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
   Each copy carries the reason the reader authorized it, `durable-channel` or `live-mention`, in a
   `Cotal-Delivery-Reason` header, and the member's endpoint reports it as `deliveryReason` on the
-  message metadata. A sender cannot set it: the reader writes fresh headers for every copy. A copy
+  message metadata. A consented recipient reports it as its delivery's `category`. A sender cannot
+  set it: the reader writes fresh headers for every copy. A copy
   from an older reader has no reason, and a reason the member does not recognize is reported as a
   warning while the copy is still delivered without one.
   An entry addressed to a retired lifecycle is dropped and removed from the store the first time

@@ -171,13 +171,9 @@ import {
   unicastSubject,
   unicastRecvFilter,
 } from "./subjects.js";
+import { PLANE3_FRAME_HEADER, dlvCopyHeaders, dlvCopyReason } from "./delivery-reason.js";
 
 export const DEFAULT_SERVER = "nats://127.0.0.1:4222";
-const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
-/** Set by the trusted reader beside the frame header: why it delivered this copy (SPEC §8). A header,
- *  not a frame key, so a recipient that predates it still accepts the version-1 frame unchanged. */
-const PLANE3_REASON_HEADER = "Cotal-Delivery-Reason";
-const isPlane3Reason = (value: unknown): value is Plane3Entry["reason"] => value === "durable-channel" || value === "live-mention";
 
 interface Plane3DeliveryFrame {
   version: 1;
@@ -5480,10 +5476,9 @@ export class CotalEndpoint extends EventEmitter {
         channel: entry.channel,
         msg: authenticatedChannelMessage(entry.msg, entry.channel),
       };
-      const frameHeaders = headers();
-      frameHeaders.set(PLANE3_FRAME_HEADER, "1");
-      // The reason this reader just re-authorized, never the publisher's `mentions` or text.
-      if (isPlane3Reason(entry.reason)) frameHeaders.set(PLANE3_REASON_HEADER, entry.reason);
+      // Fresh headers: the reason this reader just re-authorized, never the publisher's headers,
+      // `mentions` or text.
+      const frameHeaders = dlvCopyHeaders(entry.reason);
       // Lifecycle-keyed subject + msgID (ours): the DLV consumer filters on the lifecycle-scoped
       // subject (streams.ts filter_subject), and a predecessor's transferred copy must never suppress
       // a successor's under the same alias (disjoint lifecycles, stream-wide dedupe).
@@ -5555,12 +5550,12 @@ export class CotalEndpoint extends EventEmitter {
         // Like the frame header, the reason header is minted only by the trusted DLV writer. One this
         // endpoint does not know is a newer reader's: deliver without a reason and say so, never guess.
         // A warning, not an error: the copy is still delivered, and an unheard `error` would kill the host.
-        const reason = m.headers?.get(PLANE3_REASON_HEADER) ?? "";
-        if (reason !== "" && !isPlane3Reason(reason)) {
-          this.emitRecoverable(new Error(`plane-3 delivery: unrecognized delivery reason "${reason.slice(0, 64)}"; delivered without one`));
+        const { reason, unrecognized } = dlvCopyReason(m.headers);
+        if (unrecognized !== undefined) {
+          this.emitRecoverable(new Error(`plane-3 delivery: unrecognized delivery reason "${unrecognized}"; delivered without one`));
         }
         this.emit("message", msg, durableDelivery(m, ackWaitMs), {
-          historical: false, kind: "channel", ...(isPlane3Reason(reason) ? { deliveryReason: reason } : {}),
+          historical: false, kind: "channel", ...(reason !== undefined ? { deliveryReason: reason } : {}),
         } satisfies MessageMeta);
       }
     })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });

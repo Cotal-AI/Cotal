@@ -675,8 +675,9 @@ the member within retention; **leave is a hard read boundary for the backstop**)
 authorized each copy, `durable-channel` or `live-mention`, in a `Cotal-Delivery-Reason` header beside
 its `Cotal-Delivery-Frame: 1` header; the version-1 frame body is unchanged, so a recipient that does
 not read the header still accepts the copy. A recipient surfaces the reason only from that header
-(reference: `MessageMeta.deliveryReason`), never from payload `mentions`, text or the roster. A copy
-without the header, or with a value the recipient does not recognize, is still delivered and carries
+(reference: `MessageMeta.deliveryReason`, and a consented recipient's `RecipientDelivery.category`),
+never from payload `mentions`, text or the roster. A copy
+without the header, with more than one reason value, or with a value the recipient does not recognize, is still delivered and carries
 no reason, which means unknown, not "not a mention". The read MUST run in this trusted component
 the agent cannot bypass, because a self-bound consumer has no server-side per-message ACL/membership
 filter. The store's stream/subject layout, the fan-out writer, the trusted reader, and the membership

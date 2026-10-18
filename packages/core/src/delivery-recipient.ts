@@ -17,15 +17,19 @@
  * never consumes the only durable copy. An unconfirmed ACK reports `unknown`: JetStream may
  * redeliver, so the host's persist must be idempotent on `sourceId`.
  *
- * Categories are what the source plane proves, never guessed from text or rosters: a DM-stream
- * delivery is a `dm` (the unicast plane), and a DLV delivery stays `unknown` until a trusted
- * delivery reason is carried on the wire.
+ * Categories are what the source plane proves, never guessed from text or rosters. A DM-stream
+ * delivery is a `dm` (the unicast plane). A DLV delivery carries the trusted reader's reason for that
+ * one copy (`delivery-reason.ts`): `durable-channel` or `live-mention`, the native path the reader
+ * re-authorized, not the sender's intent. A DLV copy without the reader's frame header, without
+ * exactly one reason value, or with a value this build does not know is `unknown`. A header on a DM
+ * delivery is the sender's and is never read.
  */
 import { AckPolicy, DeliverPolicy, type ConsumerConfig, type JetStreamClient, type JetStreamManager, type JsMsg } from "@nats-io/jetstream";
 import { nanos } from "@nats-io/transport-node";
 import { consumeBindRows, type PreCreatedDurable } from "./endpoint-binding.js";
 import { isConsumerNotFound } from "./jetstream-missing.js";
 import { assertLifecycleToken, dlvStream, dlvSubject, dmStream, lifecycleNameKey, unicastRecvFilter } from "./subjects.js";
+import { dlvCopyReason, type DeliveredHeaders, type DeliveryReason } from "./delivery-reason.js";
 
 /** The recipient's in-flight bound: a recipient that stops persisting stops receiving, not losing. */
 export const RECIPIENT_MAX_ACK_PENDING = 64;
@@ -141,8 +145,9 @@ export function recipientBindGrants(durables: readonly PreCreatedDurable[]): str
   });
 }
 
-/** What the source plane proves about a delivery. */
-export type RecipientCategory = "dm" | "unknown";
+/** What the source plane proves about one delivery: `dm` (the DM stream), the trusted reader's
+ *  `durable-channel` or `live-mention` reason (a DLV copy), or `unknown`. */
+export type RecipientCategory = "dm" | DeliveryReason | "unknown";
 
 /** One delivery, addressed by its stable stream position. */
 export interface RecipientDelivery {
@@ -153,7 +158,11 @@ export interface RecipientDelivery {
   /** 1 on first delivery; more means a redelivery the host may already have persisted. */
   readonly deliveryCount: number;
   readonly subject: string;
+  /** Per delivery, never per batch: one `live-mention` says nothing about its neighbours. */
   readonly category: RecipientCategory;
+  /** A DLV reason value this build does not recognize (bounded), so the host can report it. The
+   *  category is then `unknown`. */
+  readonly unrecognizedReason?: string;
   readonly data: Uint8Array;
   /** The broker's receive time, ms since the epoch. */
   readonly timestampMs: number;
@@ -173,19 +182,28 @@ export async function nextRecipientDelivery(js: JetStreamClient, durable: PreCre
   const consumer = await js.consumers.get(durable.stream, durable.config.durable_name);
   const msg = await consumer.next({ expires: opts.expiresMs ?? 30_000 });
   if (!msg) return null;
-  return {
-    msg,
-    delivery: Object.freeze({
-      sourceId: `${durable.stream}:${msg.info.streamSequence}`,
-      stream: durable.stream,
-      streamSequence: msg.info.streamSequence,
-      deliveryCount: msg.info.deliveryCount,
-      subject: msg.subject,
-      category: durable.stream.startsWith("DM_") ? "dm" as const : "unknown" as const,
-      data: msg.data,
-      timestampMs: Math.floor(msg.info.timestampNanos / 1_000_000),
-    }),
-  };
+  return { msg, delivery: recipientDeliveryOf(durable.stream, msg) };
+}
+
+/** One fetched message as the recipient observes it. The category comes from the stream the durable
+ *  reads and, on DLV only, from the trusted reader's headers on that one message. */
+export function recipientDeliveryOf(
+  stream: string,
+  msg: { subject: string; data: Uint8Array; headers?: DeliveredHeaders; info: { streamSequence: number; deliveryCount: number; timestampNanos: number } },
+): RecipientDelivery {
+  const dlv = stream.startsWith("DLV_") ? dlvCopyReason(msg.headers) : {};
+  const category: RecipientCategory = stream.startsWith("DM_") ? "dm" : dlv.reason ?? "unknown";
+  return Object.freeze({
+    sourceId: `${stream}:${msg.info.streamSequence}`,
+    stream,
+    streamSequence: msg.info.streamSequence,
+    deliveryCount: msg.info.deliveryCount,
+    subject: msg.subject,
+    category,
+    ...(dlv.unrecognized !== undefined ? { unrecognizedReason: dlv.unrecognized } : {}),
+    data: msg.data,
+    timestampMs: Math.floor(msg.info.timestampNanos / 1_000_000),
+  });
 }
 
 /** How a commit settled: `committed` (persisted and ACK confirmed), `retry` (persist failed; NAKed,

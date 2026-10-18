@@ -11,7 +11,7 @@
  *  4. FAILED PERSIST: `commitThenAck` NAKs and reports `retry`; the delivery comes back and the store
  *     holds it only after a persist succeeds.
  *  5. COMMITTED: a confirmed ACK is not redelivered.
- *  6. CATEGORY INTEGRITY: a DM-stream delivery is `dm`; a DLV delivery stays `unknown`.
+ *  6. CATEGORY INTEGRITY: a DM-stream delivery is `dm`; an unframed DLV delivery is `unknown`.
  *  7. NEIGHBOUR: messages to another actor of the same owner and to another owner never arrive.
  *  8. REVOCATION: deprovisioning deletes both durables, a later bind refuses, and a repeat finds both
  *     already absent.
@@ -122,7 +122,7 @@ try {
   check("committed deliveries are not redelivered", (await nextRecipientDelivery(js, dlvDurable_, { expiresMs: 1_000 })) === null && (await nextRecipientDelivery(js, dmDurable_, { expiresMs: 1_000 })) === null);
 
   // 6. category integrity.
-  check("DM-stream deliveries are dm and DLV deliveries stay unknown", [...store.values()].every((d) => d.category === (d.stream.startsWith("DM_") ? "dm" : "unknown")));
+  check("DM-stream deliveries are dm and unframed DLV deliveries are unknown", [...store.values()].every((d) => d.category === (d.stream.startsWith("DM_") ? "dm" : "unknown")));
 
   // 7. neighbours.
   check("no message to another actor or another owner arrived", !dmTexts.includes("neighbour-actor") && !dlvTexts.includes("neighbour-owner"), { dmTexts, dlvTexts });

@@ -387,8 +387,19 @@ reader's ACK never consumes its copy, and the UI never loses one to it.
 | Commit | `commitThenAck(pending, persist)` | Persists, then ACKs. A failed persist NAKs (`retry`). A persisted delivery whose ACK is unconfirmed is `unknown` and may come back, so `persist` must be idempotent on `sourceId`. |
 | Revoke | `deprovisionRecipientDurables` | Deletes both durables by exact name. It stops further delivery but cannot recall a fetched one, so the host re-checks the grant before each persist. |
 
-A DM-stream delivery is category `dm`. A DLV delivery is `unknown`: this release carries no trusted
-delivery reason, and the category is never guessed from text or rosters.
+Each delivery's `category` is what its source plane proves, never guessed from text or rosters:
+
+| `category` | When |
+| --- | --- |
+| `dm` | A DM-stream delivery. Its headers are the sender's and are never read. |
+| `durable-channel` | A DLV copy the trusted reader delivered to a durable channel member. |
+| `live-mention` | A DLV copy the trusted reader delivered for an `@mention` on a `live` channel. |
+| `unknown` | Any other DLV copy: no reader frame header, no reason (an older reader), more than one value, or a value this build does not recognize. That value is in `unrecognizedReason`. |
+
+The reason names the native path the reader authorized for that one copy, not what the sender
+meant. A publisher cannot set it: the reader writes fresh headers for every copy, and only the
+delivery daemon's credential publishes to DLV. Read it per delivery: a batch that holds one
+`live-mention` is not a batch of mentions, and `unknown` is not "not a mention".
 
 The auth service holds the authority half (`@cotal-ai/auth`, `recipient-grant.ts`):
 
