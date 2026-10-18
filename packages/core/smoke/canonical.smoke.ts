@@ -52,6 +52,17 @@ throws("array hole rejected (would coerce to null)", () => { const a = [1]; a.le
 throws("non-index own property on array rejected", () => { const a = [1] as number[] & { x?: number }; a.x = 2; return canonicalJson({ a }); }, "non-index");
 ok("null-prototype plain object canonicalizes", canonicalJson(Object.assign(Object.create(null), { a: 1 })) === '{"a":1}');
 ok("JSON.parse-shaped data canonicalizes unchanged", canonicalJson(JSON.parse('{"b":[1,2],"a":"x"}')) === '{"a":"x","b":[1,2]}');
+ok("an own __proto__ key canonicalizes as a key", canonicalJson(JSON.parse('{"__proto__":{"a":1}}')) === '{"__proto__":{"a":1}}');
+
+// 5c) One read (#3264): the text and its digest encode the data the check inspected, never a later
+// read. Each Proxy reports plain data but answers `get` for one key with something else.
+const answering = <T extends object>(target: T, key: string, value: unknown) =>
+  new Proxy(target, { get: (t, k, r) => (k === key ? value : Reflect.get(t, k, r)) });
+ok("a string read as a lone surrogate is not serialized", canonicalJson(answering({ s: "ok" }, "s", "\uD800")) === '{"s":"ok"}');
+ok("a number read as Infinity is not serialized as null", canonicalJson(answering({ n: 1 }, "n", Infinity)) === '{"n":1}');
+ok("an array element read as a lone surrogate is not serialized", canonicalJson({ a: answering(["ok"], "0", "\uDC00") }) === '{"a":["ok"]}');
+ok("a Proxy answering toJSON serializes its own data", canonicalJson(answering({ a: 1 }, "toJSON", () => ({ b: 1, a: 2 }))) === '{"a":1}');
+ok("a digest covers the data the check inspected", contractDigest(answering({ s: "ok" }, "s", "\uD800")) === contractDigest({ s: "ok" }));
 
 // 6) Digest identity: shape, stability, and independence from key insertion order.
 const d1 = contractDigest({ x: 1, y: [true, "z"] });
