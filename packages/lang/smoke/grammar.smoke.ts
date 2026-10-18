@@ -391,6 +391,27 @@ rejects(
   "L2032",
   'let notes = "";\nconst a = await spawn("x");\nawait conclave([a], async (ch) => { notes = ch.channel; return 1; }, { name: "t" });\nlog(notes);',
 );
+// A `waitUntil` probe and its `terminal` run in each observation's own frame and are not called on
+// the replay of a settled wait, so they answer to the rule a `once` body does.
+rejects(
+  "a waitUntil probe may not write an outer binding",
+  "L2032",
+  'let seen = "none";\nawait waitUntil(async () => { seen = "x"; return "done"; }, { name: "c", every: "1m", deadline: "1h" });\nlog(seen);',
+);
+rejects(
+  "nor push onto an outer array",
+  "L2032",
+  'const seen = [];\nawait waitUntil(async () => { seen.push("x"); return "done"; }, { name: "c", every: "1m", deadline: "1h" });\nlog(seen);',
+);
+rejects(
+  "and neither may its terminal predicate",
+  "L2032",
+  'let looks = 0;\nawait waitUntil(async () => "done", { name: "c", every: "1m", deadline: "1h", terminal: (o) => { looks = looks + 1; return o === "done"; } });\nlog(looks);',
+);
+accepts(
+  "a probe writing its own binding is fine",
+  'const r = await waitUntil(async () => { let own = "x"; own = own + "y"; return own; }, { name: "c", every: "1m", deadline: "1h", terminal: (o) => o === "xy" });\nlog(r);',
+);
 
 // ---- 6) the Jessie diff --------------------------------------------------------------------
 
