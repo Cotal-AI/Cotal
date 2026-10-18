@@ -35,7 +35,7 @@
  *
  * Run: pnpm smoke:instrument-instance-pin
  */
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -826,6 +826,7 @@ try {
         "prepare-preservation": attempt,
         "commit-preservation": attempt,
         "abort-preservation": attempt,
+        "transcript-receive": { sha256: randomBytes(32).toString("hex"), size: 0, source: "no-such-session", sourceHost: "no-such-host" },
       };
       const notReached: string[] = [];
       const ranTwice: string[] = [];
