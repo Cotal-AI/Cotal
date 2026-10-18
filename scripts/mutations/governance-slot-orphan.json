@@ -104,6 +104,28 @@
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "note": "THE ROW THAT CLOSES A VACUOUS PROOF, and it exists because the suite once passed this exact mutant 30/30 green. A reclaim replaces `provisional` and must carry `commands` (the BINDING impositions) forward untouched; dropping them launders a published surface's obligations away, which is a worse outcome than the defect #1393 reports. Two things had to change before this row could grade anything. First, the staged descriptor carried NO governed trait, so `readGovernedDeclarations` recorded nothing, `serializeGovernanceCommands` dropped the empty set, and the binding map was `{}` for the whole suite: section 7 compared `{}` to `{}` and passed whatever the reclaim did. The descriptor now declares `ai.cotal.guarded` and the cells assert the map's CONTENTS. Second, the cell had to observe the right coordinate: a COMPLETED registration ends in `promoteHeldGovernance`, which merges the binding with the registrant's own provisional declarations, so a successor re-declaring the same commands rebuilds an identical map and hides the drop. Section 6's residue is where it is visible - C's slot-take COMMITTED and its ack was lost, so the head holds exactly what the slot-take wrote with nothing promoted over it. Measured, not predicted: this mutant reds on that one cell and no other."
+    },
+    {
+      "name": "REOPEN OUTCOMES FOLDED at Phase 4: a lost CAS and a thrown reopen share one 'left frozen' refusal (#3683)",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "  let reopened: boolean;\n  try {\n    reopened = await args.barrier.reopen(token, successorAt(newRev, processEpoch));\n  } catch (err) {\n    throw new EpEnvelopeError(\"unavailable\", `re-registration wrote the spec at revision ${newRev} but the reopen's outcome is unknown: it may have committed, or the gate is still frozen for reconciliation; re-read the gate before retrying (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);\n  }\n  if (!reopened)\n    throw new EpEnvelopeError(\"unavailable\", `re-registration wrote the spec at revision ${newRev} but the reopen lost its freeze token (a reconciler or newer barrier superseded this one), so this registration reopened nothing; re-read the gate and re-decide (SPEC 13.1)`);\n",
+      "replace": "  try {\n    if (!(await args.barrier.reopen(token, successorAt(newRev, processEpoch))))\n      throw new Error(\"the reopen CAS lost its freeze token (a reconciler or newer barrier superseded this one)\");\n  } catch (err) {\n    throw new EpEnvelopeError(\"unavailable\", `re-registration wrote the spec at revision ${newRev} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);\n  }\n",
+      "expectRed": "Phase 4: a reopen that committed and lost its ack is an UNKNOWN outcome, never a gate left frozen",
+      "cell": "Phase 4: a reopen that committed and lost its ack is an UNKNOWN outcome, never a gate left frozen",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "The replacement is the Phase-4 reopen before #3683, verbatim. The ack-lost cell reds first because it runs before the lost-CAS cell; the lost-CAS cell reds under the same mutant, since the folded refusal never says nothing was reopened."
+    },
+    {
+      "name": "REOPEN OUTCOMES FOLDED at the abort reopen: a lost CAS and a thrown reopen share one 'left frozen' refusal (#3683)",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "  let e: EpEnvelopeError;\n  try {\n    if (await barrier.reopen(token, successor)) return;\n    e = new EpEnvelopeError(\"unavailable\", \"registration aborted and the reopen lost its freeze token (a reconciler or newer barrier superseded this one), so this registration reopened nothing; re-read the gate and re-decide (SPEC 13.1)\");\n  } catch (err) {\n    e = new EpEnvelopeError(\"unavailable\", `registration aborted and the reopen's outcome is unknown: it may have committed, or the gate is still frozen for reconciliation; re-read the gate before retrying (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);\n  }\n  (e as Error & { cause?: unknown }).cause = cause;\n  throw e;\n",
+      "replace": "  try {\n    if (await barrier.reopen(token, successor)) return;\n    throw new Error(\"the reopen CAS lost its freeze token\");\n  } catch (err) {\n    const e = new EpEnvelopeError(\"unavailable\", `registration aborted and the issuance gate could not be reopened; it is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);\n    (e as Error & { cause?: unknown }).cause = cause;\n    throw e;\n  }\n",
+      "expectRed": "abort: a reopen that committed and lost its ack is an UNKNOWN outcome carrying the aborting cause",
+      "cell": "abort: a reopen that committed and lost its ack is an UNKNOWN outcome carrying the aborting cause",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:governance-slot-orphan",
+      "afterRestore": "pnpm --filter @cotal-ai/core build",
+      "note": "The replacement is reopenGateAfterAbort's body before #3683, verbatim. The two rows together restore the base registration's reopen handling, so grading them is the base half of the proof."
     }
   ],
   "suite": [

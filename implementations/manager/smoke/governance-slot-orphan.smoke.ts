@@ -76,7 +76,7 @@ import {
 import { reconcileEndpointGate } from "../src/reconcile-gate.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const EXPECTED_CELLS = 32;
+const EXPECTED_CELLS = 38;
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -400,6 +400,71 @@ try {
   const truthful = await withSeam(observeHolderGeneration);
   c("...while a TRUTHFUL observation of that same orphan reclaims it - the refusals above are the guard, not a block",
     truthful.message === "NO THROW", truthful);
+
+  // A registration's own reopen fails in two ways the barrier keeps apart: a lost CAS (nothing
+  // written, a newer barrier moved the gate) and a thrown write whose outcome is unknown. Each case
+  // here gets its own endpoint, so a Phase-4 failure's held slot never blocks the next case. The
+  // reopen is the one gate write that turns the row `open`; "lost-ack" lets it commit on the broker
+  // and then throws, "lost-cas" first rewrites the frozen row in place so the token pin is stale.
+  console.log("9. a registration's reopen: a lost CAS and an unknown outcome are reported apart (#3683)");
+  const reopenFault = (mode: "lost-ack" | "lost-cas"): KV => new Proxy(epKv, {
+    get(target, prop, recv) {
+      const v = Reflect.get(target, prop, recv);
+      if (prop === "update" && typeof v === "function") {
+        return async (key: string, value: Uint8Array, rev: number) => {
+          if (JSON.parse(dec.decode(value)).state !== "open") return target.update(key, value, rev);
+          if (mode === "lost-cas") {
+            const frozen = await target.get(key);
+            await target.update(key, frozen!.value, frozen!.revision);
+            return target.update(key, value, rev);
+          }
+          await target.update(key, value, rev);
+          throw new Error("simulated store fault: the reopen COMMITTED and its ack was lost");
+        };
+      }
+      return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+    },
+  });
+  const reopenCase = async (endpoint: string, opts: { fault?: "lost-ack" | "lost-cas"; authorized?: boolean }) => {
+    const iid = endpoint.padEnd(26, "r");
+    await provisionEndpointGateOpen(epKv, { endpoint, instanceId: iid, principal: principalKey(DEV_OWNER, `${endpoint}gov`).key });
+    let err: { code?: string; message: string; cause?: string } = { message: "NO THROW" };
+    try {
+      await registerServiceInstance(recordsKv, {
+        space: SPACE, spec: { ...specFor(), endpoint }, instanceId: iid, registrant: { owner: DEV_OWNER },
+        authority: { authorize: () => ({ authorized: opts.authorized ?? true, revision: 0 }) },
+        barrier: endpointRegistrationBarrier(opts.fault ? reopenFault(opts.fault) : epKv, SPACE, { endpoint, instanceId: iid, opId: mintLifecycleUid(), evict: async (holderPrincipals) => holderPrincipals.map(() => true) }),
+        readClusterArtifact,
+      });
+    } catch (e) {
+      err = { code: (e as EpEnvelopeError).code, message: (e as Error).message, cause: ((e as { cause?: EpEnvelopeError }).cause)?.code };
+    }
+    const row = await epKv.get(epgateKey(endpoint, iid));
+    return { err, gate: parseEndpointGate(row!.value, epgateKey(endpoint, iid)) };
+  };
+
+  const clean = await reopenCase("rpclean", {});
+  c("a clean registration reopens the gate at generation 1 (the control for the Phase-4 faults below)",
+    clean.err.message === "NO THROW" && clean.gate.state === "open" && clean.gate.generation === 1, clean);
+  const ack4 = await reopenCase("rpack", { fault: "lost-ack" });
+  c("Phase 4: a reopen that committed and lost its ack is an UNKNOWN outcome, never a gate left frozen",
+    ack4.err.code === "unavailable" && /but the reopen's outcome is unknown: it may have committed/.test(ack4.err.message)
+    && ack4.gate.state === "open" && ack4.gate.generation === 1, ack4);
+  const cas4 = await reopenCase("rpcas", { fault: "lost-cas" });
+  c("Phase 4: a reopen that lost its CAS says nothing was reopened, and the gate is still frozen",
+    cas4.err.code === "unavailable" && /but the reopen lost its freeze token .*so this registration reopened nothing/.test(cas4.err.message)
+    && cas4.gate.state === "frozen" && cas4.gate.generation === 0, cas4);
+  const abortClean = await reopenCase("rpabortclean", { authorized: false });
+  c("abort: a refused registration reopens the gate and keeps its own refusal (the control for the abort faults below)",
+    abortClean.err.code === "permission-denied" && abortClean.gate.state === "open" && abortClean.gate.generation === 1, abortClean);
+  const ackAbort = await reopenCase("rpabortack", { fault: "lost-ack", authorized: false });
+  c("abort: a reopen that committed and lost its ack is an UNKNOWN outcome carrying the aborting cause",
+    ackAbort.err.code === "unavailable" && /^registration aborted and the reopen's outcome is unknown: it may have committed/.test(ackAbort.err.message)
+    && ackAbort.err.cause === "permission-denied" && ackAbort.gate.state === "open" && ackAbort.gate.generation === 1, ackAbort);
+  const casAbort = await reopenCase("rpabortcas", { fault: "lost-cas", authorized: false });
+  c("abort: a reopen that lost its CAS says nothing was reopened, carries the aborting cause, and the gate is still frozen",
+    casAbort.err.code === "unavailable" && /^registration aborted and the reopen lost its freeze token .*so this registration reopened nothing/.test(casAbort.err.message)
+    && casAbort.err.cause === "permission-denied" && casAbort.gate.state === "frozen" && casAbort.gate.generation === 0, casAbort);
 
   await nc.drain().catch(() => nc.close());
 } finally {
