@@ -15,7 +15,10 @@ import { hostedCotalTool } from "./one-path.js";
 
 /** The line `cotal_connect` answers with (`registerCotalGatewayTools` in connector-core). */
 const CONNECTED = /^connection_id: (\S+)$/m;
-/** An id this hook will use as a file name. Anything else is never recorded or checked. */
+/**
+ * An id this hook will use as a file name. UUID and base64url ids fit; anything else is never
+ * recorded or checked.
+ */
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 export const FORKED_REASON =

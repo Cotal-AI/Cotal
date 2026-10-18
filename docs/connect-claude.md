@@ -692,6 +692,8 @@ plugin's data directory (`CLAUDE_PLUGIN_DATA`), and `cotal_disconnect` releases 
 id are refused and it is told to call `cotal_connect`. A resumed session and its subagents keep the
 session id and pass. An id the plugin never saw opened goes to the hosted connector, which checks
 the account.
+The guard runs only where the `cotal` plugin is installed. A Claude Code session with only the
+hosted connector has no hook, so nothing records its connections and its forks are not refused.
 
 ## Host sessions in one process
 

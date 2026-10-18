@@ -2,8 +2,8 @@
  * A hosted Cotal connection stays with the Claude Code session that opened it, through the shipped
  * hook bundle (`dist/hook.cjs`). The `cotal_connect` answer the hook records is the real gateway's,
  * served by `handleGatewayRequest` and read back over MCP, so a change to that text reddens here.
- * Another session using the id is refused; the opener, its subagents and an id the hook never saw
- * opened pass. Disconnect releases the record.
+ * Another session using the id is refused on every hosted tool; the opener, its subagents and an id
+ * the hook never saw opened pass. Only the opener's disconnect releases the record.
  *
  * Run: pnpm smoke:claude-connection-owner
  * Graded: node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/connection-owner.json
@@ -102,12 +102,15 @@ try {
   const fork = await runHook(PLAIN, pre("sess-b", "cotal_roster", id));
   check("another session (a fork) is refused the opener's connection_id", refused(fork), fork);
   check("another session is refused cotal_disconnect on it too", refused(await runHook(PLAIN, pre("sess-b", "cotal_disconnect", id))));
+  check("another session is refused cotal_send on it, as every hosted tool", refused(await runHook(PLAIN, pre("sess-b", "cotal_send", id))));
   check("an id no session here opened passes to the gateway", passed(await runHook(PLAIN, pre("sess-b", "cotal_roster", randomUUID()))));
   check("the local server's tools are not checked", passed(await runHook(PLAIN, { ...pre("sess-b", "cotal_send", id), tool_name: "mcp__plugin_cotal_cotal__cotal_send" })));
 
   await runHook(PLAIN, post("sess-a", "cotal_connect", { name: "x" }, [{ type: "text", text: "Connected as x.\nconnection_id: ../escape\n" }]));
   check("an id that is not a plain token is never written", !existsSync(join(data, "escape")) && !existsSync(join(data, "..", "escape")));
 
+  await runHook(PLAIN, post("sess-b", "cotal_disconnect", { connection_id: id }, [{ type: "text", text: `Disconnected ${id}.` }]));
+  check("another session's disconnect leaves the opener's record", existsSync(record) && readFileSync(record, "utf8") === "sess-a");
   await runHook(PLAIN, post("sess-a", "cotal_disconnect", { connection_id: id }, [{ type: "text", text: `Disconnected ${id}.` }]));
   check("the opener's disconnect releases the record", !existsSync(record));
   check("after that the id passes to the gateway again", passed(await runHook(PLAIN, pre("sess-b", "cotal_roster", id))));
