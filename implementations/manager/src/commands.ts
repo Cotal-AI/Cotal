@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Kvm } from "@nats-io/kv";
 import {
   dialerFor,
@@ -490,6 +490,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       wsPort,
       attachHost,
       maxSessions,
+      ...((args.values as Record<string, unknown>)["tool-results"] === true ? { toolResultServing: true } : {}),
+      ...(typeof v["tool-result-consent-anchors"] === "string" ? { toolResultConsentAnchors: resolve(v["tool-result-consent-anchors"]) } : {}),
       installedExtensions: true,
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken: v["resume-commit-token"],
@@ -811,6 +813,8 @@ const managerCommands: Command[] = [
       { name: "resume-attempt", type: "string", value: "<id>", description: "maintenance restore attempt accepted by resumePreserved" },
       { name: "resume-commit-token", type: "string", value: "<token>", description: "durable resume commit evidence for crash recovery" },
       { name: "spawn", type: "string", value: "<names>", description: "comma-separated personas to pre-spawn at startup" },
+      { name: "tool-results", type: "boolean", description: "static-auth meshes: register a tool-results serving instance for each Claude Code spawn (off by default)" },
+      { name: "tool-result-consent-anchors", type: "string", value: "<file>", description: "public consent-anchor records (consents role, tool-results scope) the serving sessions verify consents against; needs --tool-results" },
     ],
     requiredExtensions: (args) => {
       const runtime = args.values.runtime;

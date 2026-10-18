@@ -58,4 +58,16 @@ await refusedBeforeDial("a neighbour agent's grant", () => serve(grant(), { ...S
 assert.throws(() => serveToolResults(null as never, SPACE, grant({ instanceId: mintLifecycleUid() }), journal, SELF, () => undefined),
   (e: unknown) => (e as { code?: string }).code === "failed-precondition", "serving under any instance id but the lifecycle UID is refused"); checks++;
 
+// ---- registered anchors ride the material as a path; applied consents are rechecked -------------
+{
+  const env = materialEnv({ creds: "/dev/null", toolResults: { creds: SERVE_CREDS, grant: grant(), consentAnchors: "/etc/cotal/consent-anchors.json" } });
+  assert.equal(readLaunchMaterial(env[LAUNCH_MATERIAL_ENV]!).toolResults?.consentAnchors, "/etc/cotal/consent-anchors.json", "only the anchor file's path rides the material"); checks++;
+  const j = new ToolResultJournal();
+  j.applyConsent({ id: "c".repeat(22), holder: { id: "u_x.web" }, exp: Number.MAX_SAFE_INTEGER, issuer: { keyId: "host-1" }, iat: 0 });
+  assert.equal(j.sharing, "consented"); checks++;
+  assert.equal(await j.recheckSigners(async () => true), 0, "a current signer keeps its consent"); checks++;
+  assert.equal(await j.recheckSigners(async () => { throw new Error("refresh failed"); }), 1, "a failed recheck withdraws the consent"); checks++;
+  assert.equal(j.sharing, "off", "with no consent left capture stops and held results are discarded"); checks++;
+}
+
 console.log(`tool-result-serve smoke: ${checks} checks passed`);

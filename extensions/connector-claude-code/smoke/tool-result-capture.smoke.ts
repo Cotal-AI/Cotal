@@ -17,7 +17,7 @@ const THREAD = "5a1b2c3d-claude-session";
 const HOLDER = "u_owner.web";
 const journal = new ToolResultJournal();
 // Capture starts only under an applied consent (verified by the consent command in production).
-journal.applyConsent({ id: "consent-0123456789ab", holder: { id: HOLDER }, exp: Number.MAX_SAFE_INTEGER });
+journal.applyConsent({ id: "consent-0123456789ab", holder: { id: HOLDER }, exp: Number.MAX_SAFE_INTEGER, issuer: { keyId: "host" }, iat: 0 });
 const mapper = createClaudeMapper({ threadId: THREAD, mintRunId: () => "run-new", resumeRunId: "run-open", now: () => 0 });
 const map = captureToolResults(mapper.map, journal, THREAD);
 

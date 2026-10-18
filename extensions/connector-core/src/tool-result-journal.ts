@@ -35,6 +35,10 @@ export interface AppliedToolResultConsent {
   id: string;
   holder: { id: string };
   exp: number;
+  /** The signing anchor and signing time, so the consent can be rechecked against the current
+   *  anchors after it was applied. */
+  issuer: { keyId: string };
+  iat: number;
 }
 
 export const TOOL_RESULT_DEFAULTS = Object.freeze({
@@ -77,7 +81,7 @@ export class ToolResultJournal {
   private readonly dropped = new Map<string, number>();
   private retiredFlag = false;
   /** Applied consents by id: holder and expiry. */
-  private readonly consents = new Map<string, { holder: string; exp: number }>();
+  private readonly consents = new Map<string, { holder: string; exp: number; issuer: { keyId: string }; iat: number }>();
 
   constructor(opts: { maxEntries?: number; maxContentBytes?: number; ttlMs?: number; now?: () => number } = {}) {
     this.maxEntries = opts.maxEntries ?? TOOL_RESULT_DEFAULTS.maxEntries;
@@ -103,7 +107,24 @@ export class ToolResultJournal {
     if (this.retiredFlag) throw new Error("tool-result journal is retired");
     const at = this.now();
     if (!(consent.exp > at)) return;
-    this.consents.set(consent.id, { holder: consent.holder.id, exp: consent.exp });
+    this.consents.set(consent.id, { holder: consent.holder.id, exp: consent.exp, issuer: { keyId: consent.issuer.keyId }, iat: consent.iat });
+  }
+
+  /** Recheck every applied consent's signer with `stillCurrent` (a fresh anchor resolution) and
+   *  withdraw each one whose signer was withdrawn, rotated out of its window or can no longer be
+   *  read; a check that throws counts as withdrawn. The last withdrawal discards every held result.
+   *  Returns how many consents were withdrawn. */
+  async recheckSigners(stillCurrent: (consent: { issuer: { keyId: string }; iat: number }) => Promise<boolean>): Promise<number> {
+    let withdrawn = 0;
+    for (const [id, c] of [...this.consents]) {
+      const ok = await stillCurrent(c).catch(() => false);
+      if (!ok && this.consents.get(id) === c) {
+        this.consents.delete(id);
+        withdrawn++;
+      }
+    }
+    this.active(this.now());
+    return withdrawn;
   }
 
   /** Withdraw one consent. Only its holder may withdraw it; true when it was active. The last

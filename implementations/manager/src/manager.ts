@@ -77,6 +77,7 @@ import {
   digestIdToken,
   registerToolResultServing,
   deregisterToolResultServing,
+  readToolResultConsentAnchorFile,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
@@ -420,6 +421,11 @@ export interface ManagerOptions {
    *  creds through the launch material. Off by default: nothing is registered or served. A spawn on
    *  a user-mode or open mesh, which has no issuer for this material, is refused while it is on. */
   toolResultServing?: boolean;
+  /** Absolute path of the operator's tool-result consent-anchor file (public `consents` keys only,
+   *  see core `parseToolResultConsentAnchors`). Validated at construction and again at every spawn,
+   *  and handed to each serving session, which re-reads it on every verification. Requires
+   *  {@link toolResultServing}. Absent: no anchors are registered and every consent is refused. */
+  toolResultConsentAnchors?: string;
   /** Port for the console + attach HTTP/WS endpoint. 0 → ephemeral. */
   consolePort?: number;
   /** The broker's WebSocket listener port (loopback), allocated by `cotal up`. When set,
@@ -1219,6 +1225,7 @@ export class Manager {
   private readonly workspaceRoot: string;
   private readonly eventsRequired: boolean;
   private readonly toolResultServing: boolean;
+  private readonly toolResultConsentAnchors: string | undefined;
   /** The operator-set global live-session ceiling (see {@link ManagerOptions.maxSessions}). */
   private readonly maxSessions?: number;
   /** The ONE secret store for every kind this manager touches (daemon-cred remint + agent kinds).
@@ -1554,6 +1561,12 @@ export class Manager {
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
     this.eventsRequired = opts.eventsRequired === true;
     this.toolResultServing = opts.toolResultServing === true;
+    if (opts.toolResultConsentAnchors !== undefined) {
+      if (!this.toolResultServing)
+        throw new Error("toolResultConsentAnchors needs toolResultServing: anchors with nothing serving is a partial configuration");
+      readToolResultConsentAnchorFile(opts.toolResultConsentAnchors);
+    }
+    this.toolResultConsentAnchors = opts.toolResultConsentAnchors;
     this.maxSessions = opts.maxSessions;
     this.remoteAuthority = opts.remoteAuthority;
     this.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
@@ -6252,6 +6265,9 @@ export class Manager {
           // UID, the serve credential minted for its own identity with the same bounded expiry as
           // its agent credential. Registered after `provisioned` is armed, so a later throw rolls the
           // record back through the static retirement's deregistration.
+          // The registered anchors must still read before anything is registered: an operator file
+          // that broke since startup refuses the spawn rather than launching on a stale snapshot.
+          if (this.toolResultConsentAnchors !== undefined) readToolResultConsentAnchorFile(this.toolResultConsentAnchors);
           const serving = await registerToolResultServing({
             auth: this.auth!,
             servers: this.servers ?? DEFAULT_SERVER,
@@ -6261,7 +6277,7 @@ export class Manager {
             lifecycleUid,
             expiresAt: exp,
           });
-          toolResultMaterial = { creds: serving.creds, grant: serving.grant };
+          toolResultMaterial = { creds: serving.creds, grant: serving.grant, ...(this.toolResultConsentAnchors !== undefined ? { consentAnchors: this.toolResultConsentAnchors } : {}) };
         }
       }
       // Per-agent cwd overrides the manager's shared workspace root, so agents can be rooted at

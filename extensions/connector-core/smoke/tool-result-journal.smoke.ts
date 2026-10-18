@@ -13,7 +13,7 @@ import { ToolResultJournal, captureToolResults, TOOL_RESULT_DEFAULTS } from "../
 import { toolResultCommandDef, toolResultRevokeCommandDef, TOOL_RESULT_COMMAND } from "../src/tool-result-command.js";
 
 const HOLDER = "u_owner.web";
-const consent = (id = "c".repeat(22), exp = Number.MAX_SAFE_INTEGER, holder = HOLDER) => ({ id, holder: { id: holder }, exp });
+const consent = (id = "c".repeat(22), exp = Number.MAX_SAFE_INTEGER, holder = HOLDER) => ({ id, holder: { id: holder }, exp, issuer: { keyId: "host" }, iat: 0 });
 
 let checks = 0;
 const ok = (value: unknown, message: string): void => { assert.ok(value, message); checks++; };

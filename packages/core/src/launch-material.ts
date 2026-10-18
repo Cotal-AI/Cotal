@@ -38,7 +38,7 @@
  */
 import { mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { hardenPrivate, writeSecretFile } from "./secret-fs.js";
 import type { EpServeGrant } from "./endpoint-service.js";
 
@@ -72,7 +72,14 @@ export type LaunchMaterial = {
   /** This incarnation's `tool-results` serving material (SPEC 13.6): its own `endpoint-serve`
    *  creds (content, a secret held only in this 0600 file) and the serve grant they were minted
    *  under. Absent: the session serves no tool results. */
-  toolResults?: { creds: string; grant: EpServeGrant };
+  toolResults?: {
+    creds: string;
+    grant: EpServeGrant;
+    /** Absolute path of the operator's registered consent-anchor file (public keys only), which
+     *  the session re-reads on every verification and recheck. Absent: no anchors are registered
+     *  and every consent is refused. */
+    consentAnchors?: string;
+  };
 };
 
 /**
@@ -195,7 +202,9 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
     const g = t.grant as Record<string, unknown> | null;
     if (typeof g !== "object" || g === null || Array.isArray(g) || typeof g.endpoint !== "string" || typeof g.instanceId !== "string" || typeof g.epoch !== "number")
       throw new Error(`launch material: ${path} has a toolResults.grant that is not a serve grant`);
-    material.toolResults = { creds: t.creds, grant: g as unknown as EpServeGrant };
+    if (t.consentAnchors !== undefined && (typeof t.consentAnchors !== "string" || !isAbsolute(t.consentAnchors)))
+      throw new Error(`launch material: ${path} has a toolResults.consentAnchors that is not an absolute path`);
+    material.toolResults = { creds: t.creds, grant: g as unknown as EpServeGrant, ...(t.consentAnchors !== undefined ? { consentAnchors: t.consentAnchors as string } : {}) };
   }
   if (Object.keys(material).length === 0)
     throw new Error(
