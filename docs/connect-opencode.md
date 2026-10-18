@@ -136,6 +136,9 @@ in-process plugin does everything.
   connector then runs the same teardown as a stop and exits the server. Whenever the server exits,
   the launcher closes its TUI, killing it if it is still up 3 seconds later, so the manager sees the
   seat end.
+- **A refused setup joins nothing on 2.x.** The agent joins the mesh only after OpenCode has
+  accepted the plugin's session and tool hooks. If OpenCode refuses one, the plugin's setup fails
+  before the join, so no seat stays on the roster without the hooks that drive it.
 - **`/new` = context reset.** Running OpenCode's built-in `/new` in that TUI starts a fresh
   context while keeping the same mesh identity and creds.
 - **`/reconnect` = in-process recovery.** OpenCode has no host reconnect surface, so the connector

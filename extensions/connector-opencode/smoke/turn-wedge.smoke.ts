@@ -676,6 +676,35 @@ try {
     delete process.env.COTAL_MODEL;
     delete process.env.COTAL_MODEL_LIST_SETTLE_MS;
 
+    // 2.x registration refusal: a rejected host registration rejects `setup`, which then returns no
+    // teardown, so an agent that joined first would stay live with nothing to stop it.
+    for (const [refused, name] of [
+      ["session.hook(prompt)", "HookRefused2"],
+      ["tool.transform", "TransformRefused2"],
+    ] as const) {
+      process.env.COTAL_NAME = name;
+      process.env.COTAL_ID = name.toLowerCase();
+      delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
+      const ctxRefused = fakeOpenCode2Context();
+      const reject = async (): Promise<void> => {
+        throw new Error(`host refused ${refused}`);
+      };
+      if (refused === "tool.transform") ctxRefused.tool.transform = reject;
+      else ctxRefused.session.hook = reject;
+      let refusal = "";
+      await bootPlugin2(ctxRefused).catch((e: Error) => (refusal = e.message));
+      let joined = false;
+      for (let i = 0; i < 50 && !joined; i++) {
+        joined = pub2.getRoster().some((p) => p.card.name === name);
+        await sleep(100);
+      }
+      check(
+        `2.x: a rejected ${refused} registration refuses setup before join`,
+        refusal === `host refused ${refused}` && !joined,
+        { refusal, joined },
+      );
+    }
+
     modelListing = [{ providerID: "dead", modelID: "m" }];
     process.env.COTAL_NAME = "Otto2";
     process.env.COTAL_ID = "otto2";

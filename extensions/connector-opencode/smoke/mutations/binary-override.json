@@ -50,6 +50,24 @@
       "cell": "2.x: an empty listing is waited on, and the model check passes once the server lists it"
     },
     {
+      "name": "plugin2.ts queues the agent start before the host registrations, so a rejected one leaves a joined agent with no teardown",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "  const agent = new MeshAgent(config);\n",
+      "replace": "  const agent = new MeshAgent(config);\n  void modelReady.then(() => agent.start(), () => undefined);\n",
+      "command": "pnpm smoke:opencode",
+      "expectRed": "2.x: a rejected session.hook(prompt) registration refuses setup before join",
+      "cell": "2.x: a rejected session.hook(prompt) registration refuses setup before join"
+    },
+    {
+      "name": "plugin2.ts queues the agent start before the last host registration, tool.transform",
+      "file": "extensions/connector-opencode/src/plugin2.ts",
+      "find": "  await ctx.tool.transform((ed) => {\n",
+      "replace": "  void modelReady.then(() => agent.start(), () => undefined);\n  await ctx.tool.transform((ed) => {\n",
+      "command": "pnpm smoke:opencode",
+      "expectRed": "2.x: a rejected tool.transform registration refuses setup before join",
+      "cell": "2.x: a rejected tool.transform registration refuses setup before join"
+    },
+    {
       "name": "plugin2.ts never reads the operator's boot prompt off the environment",
       "file": "extensions/connector-opencode/src/plugin2.ts",
       "find": "  let bootPrompt = process.env.COTAL_OPENCODE_PROMPT?.trim() || undefined;",

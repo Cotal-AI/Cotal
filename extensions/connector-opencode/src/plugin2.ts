@@ -115,16 +115,6 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   })();
 
   const agent = new MeshAgent(config);
-  // Same non-blocking shape as plugin.ts: awaiting the model check INSIDE setup would deadlock the
-  // server if setup is running while answering the very request the check's fetch targets. Refuse
-  // loud and exit rather than wait forever or join with an unverified model.
-  void modelReady.then(
-    () => agent.start(),
-    (error: Error) => {
-      log(error.message);
-      process.exit(1);
-    },
-  );
 
   async function opencodeApi<T>(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<T> {
     const res = await fetch(`${serverUrl}${path}`, {
@@ -366,6 +356,19 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   await ctx.tool.transform((ed) => {
     for (const t of buildCotalTools2(agent, config)) ed.add(t);
   });
+
+  // Queued only once every host registration has resolved: a setup that rejects returns no
+  // teardown, so an agent started before then would stay on the mesh with nothing to stop it.
+  // Same non-blocking shape as plugin.ts: awaiting the model check INSIDE setup would deadlock the
+  // server if setup is running while answering the very request the check's fetch targets. Refuse
+  // loud and exit rather than wait forever or join with an unverified model.
+  void modelReady.then(
+    () => agent.start(),
+    (error: Error) => {
+      log(error.message);
+      process.exit(1);
+    },
+  );
 
   // The event stream — a detached loop, never awaited here (setup must return). Maps the measured
   // event names (fx105/measurements.md) to presence and turn-end/ack the same way plugin.ts's own
