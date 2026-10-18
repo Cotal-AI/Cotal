@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/gateway.smoke.ts"
   ],
-  "guard": "a remote conversation renames only on an authoritative collision of a valid name, an unauthenticated, missing or foreign call runs nothing, each call runs on its own connection's configuration, and the gateway offers and reports only its remote tool subset, and its own request handler serves POST as stateless JSON with the caller's authentication and refuses every other method, and cotal_wait returns a waiting or arriving message at once, follows attention, counts a focus @mention between waits, ignores a run turn it cannot surface, ends when its connection closes, honors the embedder's bound and cleans up, a wait or read whose client is gone clears nothing, and every other routed tool says when messages are waiting",
+  "guard": "a remote conversation renames only on an authoritative collision of a valid name, an unauthenticated, missing or foreign call runs nothing, each call runs on its own connection's configuration, and the gateway offers and reports only its remote tool subset, and its own request handler serves POST as stateless JSON with the caller's authentication and refuses every other method, and cotal_wait returns a waiting or arriving message at once, follows attention, counts a focus @mention between waits, ignores a run turn it cannot surface, ends when its connection closes or refuses at once when it already has, honors the embedder's bound and cleans up, a wait or read whose client is gone clears nothing, and every other routed tool says when messages are waiting",
   "command": "pnpm smoke:gateway",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/gateway.json",
   "why": [
@@ -223,8 +223,8 @@
       "file": "extensions/connector-core/src/gateway.ts",
       "find": "    signal.addEventListener(\"abort\", abort, { once: true });\n",
       "replace": "",
-      "expectRed": "a wait its client dropped does not take the next message",
-      "cell": "a wait its client dropped does not take the next message"
+      "expectRed": "a wait its client dropped stops listening",
+      "cell": "a wait its client dropped stops listening"
     },
     {
       "name": "a read whose client is gone still clears what it shows",
@@ -245,8 +245,8 @@
     {
       "name": "a wait whose client already left starts anyway",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "  if (signal.aborted) return Promise.resolve(false);\n",
-      "replace": "",
+      "find": "  if (signal.aborted || agent.stopping) return Promise.resolve(false);",
+      "replace": "  if (agent.stopping) return Promise.resolve(false);",
       "expectRed": "a wait whose client left before it began does not start",
       "cell": "a wait whose client left before it began does not start"
     },
@@ -281,6 +281,22 @@
       "replace": "",
       "expectRed": "disconnecting ends a held wait as a closed connection",
       "cell": "disconnecting ends a held wait as a closed connection"
+    },
+    {
+      "name": "a wait on a stopped agent starts anyway",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  if (signal.aborted || agent.stopping) return Promise.resolve(false);",
+      "replace": "  if (signal.aborted) return Promise.resolve(false);",
+      "expectRed": "a wait on an already-stopped connection refuses at once",
+      "cell": "a wait on an already-stopped connection refuses at once"
+    },
+    {
+      "name": "a read whose client left still clears the focus @mention count",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  if (spec.name === \"cotal_inbox\" && !args.peek && !signal.aborted) mentionsOf(c.agent).count = 0;",
+      "replace": "  if (spec.name === \"cotal_inbox\" && !args.peek) mentionsOf(c.agent).count = 0;",
+      "expectRed": "a read its client dropped keeps the focus @mention count",
+      "cell": "a read its client dropped keeps the focus @mention count"
     }
   ]
 }

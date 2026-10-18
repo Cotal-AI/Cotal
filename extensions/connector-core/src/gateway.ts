@@ -168,11 +168,12 @@ function wakeCount(agent: MeshAgent): number {
  * when the agent stops.
  *
  * The SDK aborts `signal` when the request's connection closes, so a wait its client gave up on
- * stops listening instead of taking the next message to a closed socket. A signal can already be
- * aborted here, because the handler awaits the host first, and an aborted signal fires no event.
+ * stops listening instead of taking the next message to a closed socket. The handler awaits the host
+ * first, so the signal can already be aborted and the agent already stopped here, and neither then
+ * fires an event.
  */
 function waitForWake(agent: MeshAgent, ms: number, signal: AbortSignal): Promise<boolean> {
-  if (signal.aborted) return Promise.resolve(false);
+  if (signal.aborted || agent.stopping) return Promise.resolve(false);
   if (wakeCount(agent) > 0) return Promise.resolve(true);
   return new Promise((resolve) => {
     const check = () => {

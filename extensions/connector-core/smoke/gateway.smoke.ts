@@ -377,9 +377,13 @@ try {
   await call(a, "cotal_send", { connection_id: talker, text: "focus-mention", channel: "lobby", mentions: ["listener"] });
   const focusResult = await focusWait;
   check("in focus attention, an @mention ends the wait and comes back with it", focusResult.text.includes("focus-mention") && Date.now() - started < 4000, focusResult);
+  const afterRead = await call(a, "cotal_wait", { connection_id: listener, seconds: 1 });
+  check("a read clears the focus @mentions it carried", afterRead.text.startsWith("No new messages"), afterRead);
   await call(a, "cotal_status", { connection_id: listener, attention: "open" });
 
-  // A client that gives up on a wait closes its request, as Claude Code does at its 60 s timer.
+  // A client that gives up on a wait closes its request, as Claude Code does at its 60 s timer. The
+  // transport listener is the wait's own, so its count shows whether the wait still holds.
+  const beforeDrop = listenerAgent.listenerCount("transport");
   const dropping = new AbortController();
   const dropped = fetch(url, {
     method: "POST",
@@ -391,6 +395,7 @@ try {
   dropping.abort();
   await dropped;
   await sleep(300);
+  check("a wait its client dropped stops listening", listenerAgent.listenerCount("transport") === beforeDrop);
   await call(a, "cotal_dm", { connection_id: talker, to: "listener", text: "after-a-dropped-wait" });
   check("a wait its client dropped does not take the next message", await peekFor("after-a-dropped-wait"));
   await call(a, "cotal_inbox", { connection_id: listener });
@@ -421,6 +426,7 @@ try {
   await call(a, "cotal_inbox", { connection_id: listener });
 
   // A client that leaves before the wait begins, while the host is still looking the connection up.
+  const beforeEarly = listenerAgent.listenerCount("transport");
   const early = new AbortController();
   const find = host.find;
   host.find = async (...args) => {
@@ -436,7 +442,7 @@ try {
   }).catch(() => undefined);
   await sleep(600);
   host.find = find;
-  check("a wait whose client left before it began does not start", listenerAgent.listenerCount("incoming") === Number(baseListeners.split(",")[0]));
+  check("a wait whose client left before it began does not start", listenerAgent.listenerCount("transport") === beforeEarly);
   await call(a, "cotal_dm", { connection_id: talker, to: "listener", text: "after-an-early-drop" });
   check("a wait whose client left before it began does not take the next message", await peekFor("after-an-early-drop"));
   await call(a, "cotal_inbox", { connection_id: listener });
@@ -450,12 +456,41 @@ try {
     between = await call(a, "cotal_roster", { connection_id: listener });
   }
   check("a focus @mention between waits shows in the unread line", between.text.includes("1 new message waiting"), between);
+  // A read whose client leaves during recall clears nothing, the count included.
+  const keptRead = new AbortController();
+  const recallAgain = listenerAgent.recallAmbient.bind(listenerAgent);
+  listenerAgent.recallAmbient = async (...args: Parameters<typeof recallAgain>) => {
+    keptRead.abort();
+    await sleep(300);
+    return recallAgain(...args);
+  };
+  await fetch(url, {
+    method: "POST",
+    signal: keptRead.signal,
+    headers: { authorization: "Bearer tok-a", "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 80, method: "tools/call", params: { name: "cotal_inbox", arguments: { connection_id: listener } } }),
+  }).catch(() => undefined);
+  await sleep(800);
+  Reflect.deleteProperty(listenerAgent, "recallAmbient");
+  const stillCounted = await call(a, "cotal_roster", { connection_id: listener });
+  check("a read its client dropped keeps the focus @mention count", stillCounted.text.includes("1 new message waiting"), stillCounted);
   const caughtAt = Date.now();
   const caught = await call(a, "cotal_wait", { connection_id: listener, seconds: 5 });
   check("a focus @mention between waits ends the next wait at once", caught.text.includes("mention-between-waits") && Date.now() - caughtAt < 2000, caught);
-  const afterRead = await call(a, "cotal_wait", { connection_id: listener, seconds: 1 });
-  check("a read clears the focus @mentions it carried", afterRead.text.startsWith("No new messages"), afterRead);
   await call(a, "cotal_status", { connection_id: listener, attention: "open" });
+
+  // A wait on a connection whose agent already stopped refuses at once. The host still finds it, as
+  // one can between a lookup and a close that runs beside it.
+  const stoppedSeat = idOf(await call(a, "cotal_connect", { name: "stopped_seat" }));
+  await live.get(stoppedSeat)!.conn.agent.stop();
+  const stoppedAt = Date.now();
+  const stoppedWait = await call(a, "cotal_wait", { connection_id: stoppedSeat });
+  check(
+    "a wait on an already-stopped connection refuses at once",
+    stoppedWait.isError && stoppedWait.text.startsWith("CONNECTION_REQUIRED") && Date.now() - stoppedAt < 2000,
+    stoppedWait,
+  );
+  await call(a, "cotal_disconnect", { connection_id: stoppedSeat });
 
   // Closing a connection ends a wait held on it.
   const closer = idOf(await call(a, "cotal_connect", { name: "closer" }));
