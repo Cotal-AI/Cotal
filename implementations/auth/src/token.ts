@@ -42,7 +42,7 @@ export const CLOCK_TOLERANCE_SEC = 5;
  *  instead of `agent`. A closed enum on BOTH the mint and validate side — an unknown view fails
  *  closed, never falls back to a profile. Deliberately NOT a generic `view=<profile>` passthrough:
  *  most profiles are daemon/provisioning surfaces that must never become human-requestable. */
-export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller", "session-caller", "tool-result-caller", "transfer-writer"] as const;
+export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller", "session-caller", "tool-result-caller", "transfer-writer", "inbox-recipient"] as const;
 export type UserTokenView = (typeof USER_TOKEN_VIEWS)[number];
 
 /** Views the public exchange face will mint (still ledger-gated). Every other
@@ -69,6 +69,9 @@ export const VIEW_REQUIRED_SCOPE: Record<UserTokenView, "admin" | "spawn" | "sup
   // No ledger scope either: a host-signed tool-result consent naming THIS principal as holder is
   // the authority, verified at the exchange and again at the callout mint (SPEC 13.6).
   "tool-result-caller": undefined,
+  // No ledger scope: a consented recipient grant over THIS interactive lifecycle is the authority,
+  // redeemed only by the grant's own secret and re-read at the exchange and the callout mint.
+  "inbox-recipient": undefined,
   // #1499: the bytes a carried resume uploads are announced by `transcript-receive`, a
   // `manager.admin` row, so writing them needs the same scope.
   "transfer-writer": "admin",
@@ -95,6 +98,23 @@ export interface UserTokenSession {
   sessionId: string;
   epoch: number;
   exp: number;
+}
+
+/** The ONE consented recipient grant an `inbox-recipient` bearer redeems: its id and its expiry
+ *  (unix milliseconds). The callout re-reads the grant; the claim only names it. */
+export interface UserTokenRecipient {
+  grantId: string;
+  exp: number;
+}
+
+/** Assert a `recipient` claim has the closed `{ grantId, exp }` shape. Shape only. THROWS. */
+export function assertRecipientClaim(v: unknown): asserts v is UserTokenRecipient {
+  const o = v as Record<string, unknown>;
+  if (!o || typeof o !== "object" || Array.isArray(o)) throw new Error("user token: act.recipient must be an object");
+  for (const k of Object.keys(o)) if (k !== "grantId" && k !== "exp") throw new Error(`user token: act.recipient carries the unknown field "${k}"`);
+  if (typeof o.grantId !== "string") throw new Error("user token: act.recipient.grantId is not a string");
+  assertLifecycleToken(o.grantId, "user token act.recipient.grantId");
+  if (typeof o.exp !== "number" || !Number.isSafeInteger(o.exp) || o.exp < 0) throw new Error("user token: act.recipient.exp is not an unsigned integer");
 }
 
 /** The server-authored actor claim. `owner` restates `sub` (cross-checked); `actor` is the
@@ -127,6 +147,8 @@ export interface UserTokenActor {
   /** The verified consent a tool-result-caller bearer redeems: the whole signed artifact, so the
    *  callout re-verifies it against the live lifecycle head and anchor registry at the mint. */
   toolResult?: ToolResultConsent;
+  /** The consented recipient grant an inbox-recipient bearer redeems. */
+  recipient?: UserTokenRecipient;
 }
 
 /** A fully validated user token, reduced to what the callout needs. */
@@ -293,6 +315,9 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
   if ((act.view === "tool-result-caller") !== (act.toolResult !== undefined))
     throw new Error('user token: view "tool-result-caller" and act.toolResult come together or not at all');
   if (act.toolResult !== undefined) assertToolResultClaim(act.toolResult);
+  if ((act.view === "inbox-recipient") !== (act.recipient !== undefined))
+    throw new Error('user token: view "inbox-recipient" and act.recipient come together or not at all');
+  if (act.recipient !== undefined) assertRecipientClaim(act.recipient);
   // Lifecycle claim (SPEC 13.1): grammar-asserted when present. Presence/absence POLICY lives at the
   // connect boundary (ledgerAuthorizeConnect requires it on EVERY bearer, views included) and the
   // mint boundary (the idp bridge and the agent exchange stamp it from the grant row); the validator
@@ -318,7 +343,7 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     owner,
     space: opts.audience,
     scope,
-    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, credentialId: act.credentialId, view: act.view, managerInstanceId: act.managerInstanceId, ...(act.session ? { session: act.session } : {}), ...(act.transferWriter ? { transferWriter: act.transferWriter } : {}), ...(act.toolResult ? { toolResult: act.toolResult } : {}) },
+    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, credentialId: act.credentialId, view: act.view, managerInstanceId: act.managerInstanceId, ...(act.session ? { session: act.session } : {}), ...(act.transferWriter ? { transferWriter: act.transferWriter } : {}), ...(act.toolResult ? { toolResult: act.toolResult } : {}), ...(act.recipient ? { recipient: act.recipient } : {}) },
     credentialId: act.credentialId,
     ver: USER_TOKEN_VER,
     exp: payload.exp,

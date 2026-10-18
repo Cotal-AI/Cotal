@@ -58,9 +58,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { CotalEndpoint, deprovisionAgent, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, epgateKey, isCasLoss, mintToolResultConsent, TOOL_RESULT_CONSENT_PROOF_MAX_AGE_MS, type AnchorResolver, type ToolResultConsent } from "@cotal-ai/core";
+import { CotalEndpoint, deprovisionAgent, deprovisionRecipientDurables, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, epgateKey, isCasLoss, mintToolResultConsent, TOOL_RESULT_CONSENT_PROOF_MAX_AGE_MS, type AnchorResolver, type ToolResultConsent } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
@@ -73,8 +73,9 @@ import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
 import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { verifyToolResultRedemption } from "./tool-result-redemption.js";
+import { consentRecipientGrant, revokeRecipientGrant, verifyRecipientGrant, type RecipientGrantDeps } from "./recipient-grant.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
-import { calloutPermissions, type ToolResultVerifier, type UserCallerIssuer } from "./permissions.js";
+import { calloutPermissions, type RecipientVerifier, type ToolResultVerifier, type UserCallerIssuer } from "./permissions.js";
 import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
@@ -207,6 +208,11 @@ export interface AuthAuthorityPlane {
    *  head (it must be active at the consent's incarnation) and re-verifies the artifact against the
    *  host's `consents` anchors; returns the verified consent or throws (SPEC 13.6). */
   verifyToolResult: ToolResultVerifier;
+  /** The consented recipient grants' host hooks (`recipient-grant.ts`): the ledger directory, the
+   *  space, and the scoped provisioner and grant-pinned deprovisioner authorities. */
+  recipientGrants: RecipientGrantDeps;
+  /** The callout's re-read of one recipient grant: refuses an ended, expired or lifecycle-stale one. */
+  verifyRecipient: RecipientVerifier;
   retireInteractiveLifecycle: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<{
     retired: boolean;
     lifecycleUid: string;
@@ -778,6 +784,22 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     const creds = await mintCreds(issuerAuth(), newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid, memberChannels } });
     await deprovisionAgent({ servers: server, space, targetId, lifecycleUid, memberChannels, creds });
   };
+  // A recipient grant's two broker authorities: the space's scoped provisioner (frontier read and
+  // durable pre-create) and a deprovisioner pinned to exactly that grant's durables.
+  const scopedJsm = async <T>(creds: string, fn: (jsm: JetStreamManager) => Promise<T>): Promise<T> => {
+    const nc = await connect({ servers: server, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+    try { return await fn(await jetstreamManager(nc)); } finally { await nc.drain(); }
+  };
+  const recipientGrants: RecipientGrantDeps = {
+    dir: opts.dir,
+    space,
+    log: opts.log,
+    withProvisioner: async (fn) => scopedJsm(await mintCreds(issuerAuth(), newIdentity(), "provisioner"), fn),
+    deprovision: async (durables) => scopedJsm(
+      await mintCreds(issuerAuth(), newIdentity(), "recipient-deprovisioner", { recipientDurables: durables }),
+      (jsm) => deprovisionRecipientDurables(jsm, durables.map((d) => ({ stream: d.stream, config: { durable_name: d.durable } }))),
+    ),
+  };
   return {
     authorizeConnect: async (t) => {
       refuseIfFenced();
@@ -847,6 +869,12 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         resolveAnchor: opts.toolResultConsentAnchors,
         readHead: async (owner, actor) => (await readLifecycleHeadForOperation(barrierReg, owner, actor))?.mapping,
       }, holder, raw);
+    },
+    recipientGrants,
+    verifyRecipient: async (grantId) => {
+      refuseIfFenced();
+      const { row, durables } = verifyRecipientGrant(recipientGrants, grantId);
+      return { owner: row.owner, actor: row.actor, lifecycleUid: row.lifecycleUid, expiresAt: row.expiresAt, durables };
     },
     retireInteractiveLifecycle: async (args) => {
       refuseIfFenced();
@@ -2127,7 +2155,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       space,
       token: { key: issuer.localKeySet(), issuer: issuer.issuer },
       authorizeActor: plane.authorizeConnect,
-      permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller, plane.verifySession, plane.issueUserCaller, plane.verifyToolResult),
+      permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller, plane.verifySession, plane.issueUserCaller, plane.verifyToolResult, plane.verifyRecipient),
       log: (l) => console.error(l),
     });
     // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a
@@ -2185,6 +2213,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       selectManagerInstance: plane.selectManagerInstance,
       verifySession: plane.verifySession,
       verifyToolResult: plane.verifyToolResult,
+      recipientGrants: plane.recipientGrants,
     };
     const loopback = createServer((req, res) => void handle(req, res, ctx));
     http = loopback;
@@ -2464,9 +2493,10 @@ interface HandlerCtx {
   selectManagerInstance: AuthAuthorityPlane["selectManagerInstance"];
   verifySession: AuthAuthorityPlane["verifySession"];
   verifyToolResult: AuthAuthorityPlane["verifyToolResult"];
+  recipientGrants: AuthAuthorityPlane["recipientGrants"];
 }
 
-type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "toolResultConsentSigner" | "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun">;
+type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "toolResultConsentSigner" | "recipientGrants" | "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun">;
 
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 /**
@@ -2530,6 +2560,10 @@ export async function dispatchManagerAuthorityRequest(
     throw new EpEnvelopeError("unimplemented", "managed agent runtime create and status must be handled by host platform interception");
   // A tool-result consent (SPEC 13.6) is the signed-in human's own act on one of their agents.
   if (request.kind === "tool-result-consent") return signToolResultConsentRequest(ctx, owner, body.request, proof);
+  // A background recipient consent is the signed-in human's own act on their own interactive
+  // lifecycle (fresh auth_time required); revoking one is theirs too.
+  if (request.kind === "inbox-recipient-consent") return consentRecipientGrant(ctx.recipientGrants, owner, body.request, proof);
+  if (request.kind === "inbox-recipient-revoke") return revokeRecipientGrant(ctx.recipientGrants, owner, body.request);
   // A delegated user intent creates and consumes a record in the host's intent store, which stock does not hold.
   if (request.kind === "delegated-user-intent" || request.kind === "manager-delegated-user-intent-execution")
     throw new EpEnvelopeError("unimplemented", "delegated user intent admission and execution must be handled by host platform interception");
@@ -2912,7 +2946,9 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   const peer = policy.peerKey(req);
   const peerThrottled = policy.throttled(ctx, peer);
   const body = await readJsonBody(req);
-  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter, toolResultConsent } = body as {
+  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter, toolResultConsent, recipientGrant, recipientToken } = body as {
+    recipientGrant?: unknown;
+    recipientToken?: unknown;
     idpToken?: unknown;
     actor?: unknown;
     actorToken?: unknown;
@@ -2945,6 +2981,41 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     if (peerThrottled)
       return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
     return send(res, 403, { error: reason });
+  }
+  // A consented background recipient redeems its own grant secret for the closed inbox-recipient
+  // view: no sign-in, no agent secret, no owner, actor or view of its choosing.
+  if (recipientGrant !== undefined || recipientToken !== undefined) {
+    if (idpToken !== undefined || actorToken !== undefined || actor !== undefined || owner !== undefined || view !== undefined
+      || managerInstanceId !== undefined || sessionGrant !== undefined || transferWriter !== undefined || toolResultConsent !== undefined)
+      return send(res, 400, { error: "a recipient exchange takes { recipientGrant, recipientToken, ttlSec? } only" });
+    if (typeof recipientGrant !== "string" || typeof recipientToken !== "string" || !recipientToken)
+      return send(res, 400, { error: "a recipient exchange needs { recipientGrant: string, recipientToken: string }" });
+    try {
+      const { row } = verifyRecipientGrant(ctx.recipientGrants, recipientGrant, recipientToken);
+      const remaining = Math.floor((row.expiresAt - Date.now()) / 1000);
+      if (!(remaining > 0)) throw new Error(`inbox recipient grant ${row.grantId} is expired`);
+      const credentialId = await ctx.mintConnectCredential({ owner: row.owner, actor: row.actor, lifecycleUid: row.lifecycleUid });
+      const token = await ctx.issuer.issue({
+        owner: row.owner,
+        space: ctx.space,
+        actor: row.actor,
+        scope: [],
+        lifecycleUid: row.lifecycleUid,
+        credentialId,
+        view: "inbox-recipient",
+        recipient: { grantId: row.grantId, exp: row.expiresAt },
+        // A short bearer that never outlives the grant; each renewal re-reads the grant.
+        ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC, remaining),
+      });
+      const { exp } = decodeJwt(token);
+      return send(res, 200, { token, owner: row.owner, exp });
+    } catch (e) {
+      policy.recordFailure(ctx, peer);
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(`auth-service: refused a recipient exchange: ${reason}`);
+      if (peerThrottled) return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
+      return send(res, 401, { error: reason });
+    }
   }
   // TWO grant types, disjoint by construction: a HUMAN exchange proves an IdP session
   // (idpToken), an AGENT exchange proves a spawn-time ledger secret (owner + actorToken).

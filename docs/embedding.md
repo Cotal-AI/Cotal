@@ -390,9 +390,20 @@ reader's ACK never consumes its copy, and the UI never loses one to it.
 A DM-stream delivery is category `dm`. A DLV delivery is `unknown`: this release carries no trusted
 delivery reason, and the category is never guessed from text or rosters.
 
-The authority half is not in this release. Nothing here records consent, mints the recipient's
-credential or checks its expiry and revocation at connect. Until the auth service issues that
-credential, a host must not run a background recipient.
+The auth service holds the authority half (`@cotal-ai/auth`, `recipient-grant.ts`):
+
+| Step | Where | What it checks |
+| --- | --- | --- |
+| Consent | `POST /manager-service-authority`, request `{ kind: "inbox-recipient-consent", actor, lifecycleUid, sources, ttlMs }` | An IdP proof whose `auth_time` is at most five minutes old, the owner's own interactive row at that exact lifecycle, sources from `dm` and `dlv`, and a lifetime of at most seven days. A host without scoped provisioning refuses. |
+| Journal | the 0600 grant row | Written `provisioning` with the frontier and durable names before the durables exist, and `active` only after both are created. A failed provision deletes what it made and grants nothing. |
+| Redeem | `POST /exchange { recipientGrant, recipientToken }` | The grant's own secret, returned once at consent and stored only as its hash. The answer is a bearer of the closed `inbox-recipient` view, at most five minutes long and never past the grant. |
+| Connect | the auth callout | The grant, its owner, actor, lifecycle and expiry, read again. The connection gets the grant's six info, fetch and ACK rows and its own reply inbox, nothing else. |
+| Revoke | `POST /manager-service-authority`, request `{ kind: "inbox-recipient-revoke", actor, grantId }` | Owner only. The grant ends first, then its durables are deleted under a `recipient-deprovisioner` credential pinned to them. |
+
+An expired grant, or one whose lifecycle the owner no longer holds, refuses at the next exchange or
+connect and has its durables deleted then. A connection already open keeps what it fetched until its
+bearer expires, so the host re-checks the grant before each persist. Agents cannot consent: the
+consent route takes only a signed-in human's IdP proof.
 
 ### delivery
 

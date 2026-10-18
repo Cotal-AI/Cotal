@@ -101,6 +101,38 @@ export async function deprovisionRecipientDurables(jsm: JetStreamManager, durabl
   return { deleted, absent };
 }
 
+/** A recipient grant only ever names `rdm_` durables on the DM stream and `rdlv_` durables on the
+ *  DLV stream: never a lifecycle's own `dm_`/`dlv_` durables, never another stream. */
+export function assertRecipientDurable(space: string, d: { stream: string; durable: string }): void {
+  const ok = (d.stream === dmStream(space) && d.durable.startsWith("rdm_")) || (d.stream === dlvStream(space) && d.durable.startsWith("rdlv_"));
+  if (!ok) throw new Error(`${d.durable} on ${d.stream} is not a recipient durable of space ${space}; a recipient grant never names a lifecycle's own durables`);
+}
+
+/** The `recipient-deprovisioner` set: info and delete of exactly one grant's durables, replies on
+ *  its own inbox, nothing else. */
+export function recipientDeprovisionerPermissions(space: string, connId: string, durables: ReadonlyArray<{ stream: string; durable: string }>): Record<string, unknown> {
+  for (const d of durables) assertRecipientDurable(space, d);
+  return {
+    pub: { allow: ["$JS.API.INFO", ...durables.flatMap((d) => [`$JS.API.CONSUMER.INFO.${d.stream}.${d.durable}`, `$JS.API.CONSUMER.DELETE.${d.stream}.${d.durable}`])] },
+    sub: { allow: [`_INBOX_${connId}.>`] },
+  };
+}
+
+/** The grantee's connection: {@link recipientBindGrants} on its grant's durables plus its own reply
+ *  rail. No chat, publish, create, delete, presence, KV or control row. */
+export function recipientConsumePermissions(space: string, connId: string, durables: readonly PreCreatedDurable[]): { pub: { allow: string[] }; sub: { allow: string[] } } {
+  for (const d of durables) assertRecipientDurable(space, { stream: d.stream, durable: d.config.durable_name ?? "" });
+  return { pub: { allow: recipientBindGrants(durables) }, sub: { allow: [`_INBOX_${connId}.>`] } };
+}
+
+/** The durables for exactly the consented sources: `dm` and/or `dlv`, at least one, no repeats. */
+export function recipientDurablesFor(scope: RecipientGrantScope, frontier: RecipientConsentFrontier, sources: readonly string[], opts: { ackWaitMs?: number } = {}): PreCreatedDurable[] {
+  if (sources.length === 0 || new Set(sources).size !== sources.length || sources.some((s) => s !== "dm" && s !== "dlv"))
+    throw new Error(`recipient sources must be a non-empty set of "dm" and "dlv", got ${JSON.stringify(sources)}`);
+  const [dm, dlv] = recipientDurableConfigs(scope, frontier, opts);
+  return [...(sources.includes("dm") ? [dm] : []), ...(sources.includes("dlv") ? [dlv] : [])];
+}
+
 /** The recipient credential's whole JetStream surface: info, fetch and ACK of its own durables. */
 export function recipientBindGrants(durables: readonly PreCreatedDurable[]): string[] {
   return durables.flatMap((d) => {

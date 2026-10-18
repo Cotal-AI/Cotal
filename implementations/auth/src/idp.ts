@@ -220,6 +220,8 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         throw new Error("idp bridge: authorizeActor must return a grant object - anything else is a deny");
       if (req.view === "manager-service")
         throw new Error('view "manager-service" is not a bearer profile; use the typed manager-service authority exchange');
+      if (req.view === "inbox-recipient")
+        throw new Error('view "inbox-recipient" is redeemed only with a consented grant\'s own secret, never with a sign-in');
       if (req.view !== undefined) {
         // An elevated view is authorized against the FRESH grant just read, per the central
         // policy table (admin-gated operator views; spawn-gated deployer). The refusal names the
