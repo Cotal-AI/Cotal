@@ -189,14 +189,15 @@ export function captureProcessIdentity(
   if (typeof effectivePid !== "number" || !Number.isInteger(effectivePid) || effectivePid <= 0) return undefined;
   const startToken = seatRecord?.childStart ?? processStartToken(effectivePid);
   const bootId = seatRecord?.bootId ?? bootToken();
+  if (!startToken || !bootId) return undefined;
   return {
     pid: effectivePid,
-    ...(startToken !== undefined ? { startToken } : {}),
+    startToken,
+    bootId,
     ...(seatRecord?.custodianPid !== undefined ? { custodianPid: seatRecord.custodianPid } : {}),
     ...(seatRecord?.custodianStart !== undefined ? { custodianStart: seatRecord.custodianStart } : {}),
     ...(seatRecord?.childPid !== undefined ? { childPid: seatRecord.childPid } : {}),
     ...(seatRecord?.childStart !== undefined ? { childStart: seatRecord.childStart } : {}),
-    ...(bootId !== undefined ? { bootId } : {}),
   };
 }
 
@@ -211,19 +212,6 @@ export function probeRecordedProcess(rec: RecordedProcessIdentity | undefined): 
   if (!currentBoot) return { state: "unknown", reason: `host publishes no boot identity for process ${rec.pid}` };
   if (fromEarlierBoot(rec, currentBoot)) return { state: "proved-dead" };
 
-  if (rec.custodianPid !== undefined) {
-    if (!rec.custodianStart) {
-      return { state: "unknown", reason: `custodian ${rec.custodianPid} carries no start identity` };
-    }
-    const custodianVerdict = identityVerdict(rec.custodianPid, rec.custodianStart);
-    if (custodianVerdict === "unknown") {
-      return { state: "unknown", reason: `custodian ${rec.custodianPid} process liveness is unknown (unreadable /proc stat)` };
-    }
-    if (custodianVerdict === "live") {
-      return { state: "live" };
-    }
-  }
-
   const childPid = rec.childPid ?? rec.pid;
   const childStart = rec.childStart ?? rec.startToken;
   if (!childStart) {
@@ -233,7 +221,19 @@ export function probeRecordedProcess(rec: RecordedProcessIdentity | undefined): 
   if (childVerdict === "unknown") {
     return { state: "unknown", reason: `process ${childPid} liveness is unknown (unreadable /proc stat)` };
   }
-  if (childVerdict === "live") {
+
+  let custodianVerdict: "live" | "gone" | "unknown" = "gone";
+  if (rec.custodianPid !== undefined) {
+    if (!rec.custodianStart) {
+      return { state: "unknown", reason: `custodian ${rec.custodianPid} carries no start identity` };
+    }
+    custodianVerdict = identityVerdict(rec.custodianPid, rec.custodianStart);
+    if (custodianVerdict === "unknown") {
+      return { state: "unknown", reason: `custodian ${rec.custodianPid} process liveness is unknown (unreadable /proc stat)` };
+    }
+  }
+
+  if (childVerdict === "live" || custodianVerdict === "live") {
     return { state: "live" };
   }
 
