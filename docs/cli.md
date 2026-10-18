@@ -2103,6 +2103,15 @@ not installed by it: on a shared broker an operator runs three units per space w
 edges (auth service, then manager, then delivery) and stops them in reverse. A broker-side `cotal
 up` unit is a separate unit documented in [Run a mesh](run-a-mesh.md).
 
+
+The workstation library exports `parseServiceDefinitionInput(json, selectedSpace)` and
+`serviceDefinitionName(name)` for service-definition input. The parser caps JSON content at 256 KiB,
+checks the version-1 local schema, selected-space agreement, native path syntax and loopback HTTP
+URL/port syntax. It opens no referenced file, resolves no environment values and loads no adapter.
+The returned input still needs path existence, protected-file ownership/access and installed adapter
+options/readiness checks in a controller before any action. These helpers leave the manager-only
+`cotal service` grammar above unchanged.
+
 ## reconcile-gate
 
 ```bash

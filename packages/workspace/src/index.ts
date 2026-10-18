@@ -40,3 +40,4 @@ export * from "./system-rotation.js";
 export * from "./win-cmd.js";
 export * from "./pid.js";
 export * from "./progress.js";
+export * from "./service-definition.js";

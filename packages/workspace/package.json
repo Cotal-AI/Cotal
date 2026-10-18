@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/workspace",
-  "description": "Cotal machine-local workstation layer: the ~/.cotal mesh registry, target resolution, preflight, on-disk auth-path I/O, and the command-copy renderer — operator concerns over a local checkout, kept separate from the wire protocol in @cotal-ai/core.",
+  "description": "Cotal machine-local workstation layer: the ~/.cotal mesh registry, target resolution, preflight, on-disk auth-path I/O, and the command-copy renderer \u2014 operator concerns over a local checkout, kept separate from the wire protocol in @cotal-ai/core.",
   "version": "0.81.1",
   "license": "Apache-2.0",
   "repository": {
@@ -20,12 +20,13 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/preflight.smoke.ts && tsx smoke/maintenance.smoke.ts && tsx smoke/manager-shutdown.smoke.ts",
+    "test": "tsx smoke/preflight.smoke.ts && tsx smoke/maintenance.smoke.ts && tsx smoke/manager-shutdown.smoke.ts && tsx smoke/service-definition.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
-    "string-width": "^8.2.1"
+    "string-width": "^8.2.1",
+    "ajv": "^8.20.0"
   },
   "devDependencies": {
     "@cotal-ai/smoke-kit": "workspace:*"

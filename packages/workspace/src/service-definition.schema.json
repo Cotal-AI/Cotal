@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Proposed CLI service definition version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "space", "launch", "readiness"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "space": {"type": "string", "minLength": 1, "maxLength": 200},
+    "launch": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["type", "executable", "args", "cwd"],
+          "properties": {
+            "type": {"const": "process"},
+            "executable": {"type": "string", "minLength": 1, "maxLength": 4096},
+            "args": {"type": "array", "maxItems": 256, "items": {"type": "string", "maxLength": 8192}},
+            "cwd": {"type": "string", "minLength": 1, "maxLength": 4096}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["type", "adapter", "options"],
+          "properties": {
+            "type": {"const": "adapter"},
+            "adapter": {"type": "string", "minLength": 1, "maxLength": 200},
+            "options": {"type": "object"}
+          }
+        }
+      ]
+    },
+    "readiness": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["type", "timeoutMs"],
+          "properties": {"type": {"const": "process"}, "timeoutMs": {"$ref": "#/$defs/timeout"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["type", "url", "expectedStatus", "timeoutMs"],
+          "properties": {
+            "type": {"const": "http"},
+            "url": {"type": "string", "format": "uri", "pattern": "^http://(127\\.0\\.0\\.1|\\[::1\\])(:[0-9]{1,5})?/"},
+            "expectedStatus": {"type": "integer", "minimum": 100, "maximum": 599},
+            "timeoutMs": {"$ref": "#/$defs/timeout"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["type", "timeoutMs"],
+          "properties": {"type": {"const": "adapter"}, "timeoutMs": {"$ref": "#/$defs/timeout"}}
+        }
+      ]
+    },
+    "envRefs": {
+      "type": "object", "maxProperties": 64,
+      "propertyNames": {"pattern": "^(?!COTAL_|CLAUDE_CODE_|CLAUDECODE$)[A-Za-z_][A-Za-z0-9_]*$"},
+      "additionalProperties": {"type": "string", "pattern": "^(?!COTAL_|CLAUDE_CODE_|CLAUDECODE$)[A-Za-z_][A-Za-z0-9_]*$"}
+    },
+    "credentialRef": {"$ref": "#/$defs/credential"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"launch": {"properties": {"type": {"const": "process"}}, "required": ["type"]}}},
+      "then": {"properties": {"readiness": {"properties": {"type": {"enum": ["process", "http"]}}}}},
+      "else": {"properties": {"readiness": {"properties": {"type": {"const": "adapter"}}}}}
+    }
+  ],
+  "$defs": {
+    "timeout": {"type": "integer", "minimum": 1, "maximum": 120000},
+    "credential": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "path"],
+      "properties": {"kind": {"const": "file"}, "path": {"type": "string", "minLength": 1, "maxLength": 4096}}
+    }
+  },
+  "$comment": "Proposed local-file schema, not a wire schema. Adapter options need their installed closed schema; absolute paths, file modes, references, native names, loopback/port parsing, identities and runtime support require semantic validation before effects. No protected file is opened by this JSON Schema."
+}
