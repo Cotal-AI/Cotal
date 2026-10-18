@@ -2493,7 +2493,8 @@ interface HandlerCtx {
   selectManagerInstance: AuthAuthorityPlane["selectManagerInstance"];
   verifySession: AuthAuthorityPlane["verifySession"];
   verifyToolResult: AuthAuthorityPlane["verifyToolResult"];
-  recipientGrants: AuthAuthorityPlane["recipientGrants"];
+  /** Absent on a host composed without them: every recipient consent, revoke and redemption refuses. */
+  recipientGrants?: AuthAuthorityPlane["recipientGrants"];
 }
 
 type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "toolResultConsentSigner" | "recipientGrants" | "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun">;
@@ -2562,8 +2563,12 @@ export async function dispatchManagerAuthorityRequest(
   if (request.kind === "tool-result-consent") return signToolResultConsentRequest(ctx, owner, body.request, proof);
   // A background recipient consent is the signed-in human's own act on their own interactive
   // lifecycle (fresh auth_time required); revoking one is theirs too.
-  if (request.kind === "inbox-recipient-consent") return consentRecipientGrant(ctx.recipientGrants, owner, body.request, proof);
-  if (request.kind === "inbox-recipient-revoke") return revokeRecipientGrant(ctx.recipientGrants, owner, body.request);
+  if (request.kind === "inbox-recipient-consent" || request.kind === "inbox-recipient-revoke") {
+    if (!ctx.recipientGrants) throw new EpEnvelopeError("unimplemented", "this host grants no background recipients");
+    return request.kind === "inbox-recipient-consent"
+      ? consentRecipientGrant(ctx.recipientGrants, owner, body.request, proof)
+      : revokeRecipientGrant(ctx.recipientGrants, owner, body.request);
+  }
   // A delegated user intent creates and consumes a record in the host's intent store, which stock does not hold.
   if (request.kind === "delegated-user-intent" || request.kind === "manager-delegated-user-intent-execution")
     throw new EpEnvelopeError("unimplemented", "delegated user intent admission and execution must be handled by host platform interception");
@@ -2990,6 +2995,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
       return send(res, 400, { error: "a recipient exchange takes { recipientGrant, recipientToken, ttlSec? } only" });
     if (typeof recipientGrant !== "string" || typeof recipientToken !== "string" || !recipientToken)
       return send(res, 400, { error: "a recipient exchange needs { recipientGrant: string, recipientToken: string }" });
+    if (!ctx.recipientGrants) return send(res, 404, { error: "this host grants no background recipients" });
     try {
       const { row } = verifyRecipientGrant(ctx.recipientGrants, recipientGrant, recipientToken);
       const remaining = Math.floor((row.expiresAt - Date.now()) / 1000);

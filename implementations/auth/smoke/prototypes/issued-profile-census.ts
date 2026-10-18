@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   CREDENTIAL_LIFETIMES, permissionsFor, epServeGrantRows, effectsBindGrants, poolOwnerBindGrants, patternCovers,
-  chatStream, dmStream, dlvStream, inboxStream, taskStream,
+  chatStream, dmStream, dlvStream, inboxStream, taskStream, recipientDurableConfigs,
   epcStreamName, epeStreamName, epfStreamName, epjStreamName, eprStreamName,
   eptStreamName, eptReqStreamName, epwStreamName,
   channelBucket, presenceBucket, membershipBucket, deliveryBucket, managerBucket,
@@ -16,7 +16,7 @@ import { deriveOwnerToken } from "../../src/derive.js";
 
 /** Every issued credential the census classifies: core's mint profiles plus the one callout view
  *  whose rows are not a core profile (`tool-result-caller`, minted from toolResultRedemptionRows). */
-export type CensusProfile = Profile | "tool-result-caller";
+export type CensusProfile = Profile | "tool-result-caller" | "inbox-recipient";
 
 export interface ProfileFixture {
   profile: CensusProfile;
@@ -110,7 +110,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     const scope = required === undefined ? ["spawn", "run", "admin"] : [required];
     const sessionClaim = { endpoint: "manager", sessionId: session, epoch: 1, exp: 2_000_000_000 };
     const consentClaim = { v: 1 as const, id: "c".repeat(22), space, scope: "tool-results" as const, target: { owner, actor: "census-target", lifecycleUid: instance }, holder: { id: `${owner}.census` }, proofAt: 1_999_999_000_000, iat: 1_999_999_000_000, exp: 2_000_000_000_000, issuer: { keyId: "host" }, sig: "x" };
-    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view, ...(view === "manager-caller" ? { managerInstanceId: instance } : {}), ...(view === "session-caller" ? { session: sessionClaim } : {}), ...(view === "transfer-writer" ? { transferWriter: { instanceId: instance, hex: "a".repeat(64) } } : {}), ...(view === "tool-result-caller" ? { toolResult: consentClaim } : {}) } };
+    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view, ...(view === "manager-caller" ? { managerInstanceId: instance } : {}), ...(view === "session-caller" ? { session: sessionClaim } : {}), ...(view === "transfer-writer" ? { transferWriter: { instanceId: instance, hex: "a".repeat(64) } } : {}), ...(view === "tool-result-caller" ? { toolResult: consentClaim } : {}), ...(view === "inbox-recipient" ? { recipient: { grantId: instance, exp: 2_000_000_000_000 } } : {}) } };
     // This fixture authorizes one coordinate to construct the shipped grant surface. Real gate
     // ownership and registration validation are graded by the live exchange suites, not this census.
     const produce = calloutPermissions(
@@ -129,6 +129,10 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
         assert.deepEqual(holder, { owner, actor: "census", lifecycleUid: uid });
         assert.deepEqual(claim, consentClaim);
         return consentClaim;
+      },
+      async (grantId) => {
+        assert.equal(grantId, instance);
+        return { owner, actor: "census", lifecycleUid: uid, expiresAt: 2_000_000_000_000, durables: recipientDurableConfigs({ space, owner, actor: "census", lifecycleUid: uid, grantId }, { dm: 0, dlv: 0 }) };
       },
     );
     if (view === "manager-service") {
