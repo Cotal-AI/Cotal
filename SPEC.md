@@ -2983,6 +2983,26 @@ epoch). The session binds the target's `(principal, lifecycleUid)` and the servi
 successor incarnation (advanced epoch) refuses old-epoch grants, and a same-name successor is a distinct
 session.
 
+**Private tool results** (connector-served, draft). A connector MAY keep the tool results its
+harness reported (never the arguments) in a private, bounded, in-process journal and serve them
+through one targeted command, `tool-result`, admitted **only in `handle` mode**: the request subject
+pins the full target triple from a redeemed, holder-bound capability handle, so the broker confines
+the read to the one holder the grant names, and a space boundary is still the account boundary. Every
+other mode is refused `permission-denied`; a handle on another alias is `target-mismatch`; a handle on
+another lifecycle, or after the journal retired, is `expired`. The input is the exact native pair
+`{ threadId, toolCallId }` and nothing else; there is no correlation by time, order or name. The answer
+is closed: `available` (`content` verbatim, `""`/`"0"`/`"false"`/`"null"` included, plus `truncated`,
+the full UTF-8 `bytes`, `isError`, `capturedAt`), `pending` (the call started, no result yet),
+`not-shared`, `missing` (never observed by this process) or `expired` (dropped by the age or capacity
+bound). Sharing defaults to `off`: nothing is captured and every lookup is `not-shared`. A result is
+kept as first observed, so a replayed transcript cannot rewrite it; content past the byte bound is cut
+on a code-point boundary. Retiring the lifecycle or revoking sharing discards every held result.
+Results never ride an event, chat or DM channel, and the `events.<owner>.<actor>` egress fence is
+unchanged. The journal is not redaction or complete history: content is the tool's own bytes, held only
+in the serving process, and a consumer renders it as inert text. Registering the command and issuing the
+agent's serve grant, and the flow by which a human mints the handle, belong to the hosting authority and
+are not defined here.
+
 ### 13.7 Contracts and discovery
 
 **Clusters.** An endpoint's surface is a set of composable **capability clusters**, each
