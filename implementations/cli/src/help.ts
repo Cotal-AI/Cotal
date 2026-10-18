@@ -103,7 +103,8 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
     out(c.bold("flags:"));
     flags.forEach((f, i) => out(`  ${left[i]!.padEnd(pad)}  ${c.dim(f.description ?? "")}`));
   }
-  if (cmd.outputs?.length) out(c.dim(`structured output: ${cmd.outputs.join(", ")}`));
+  const outputs = (sub ?? cmd).outputs ?? [];
+  if (outputs.length) out(c.dim(`structured output: ${outputs.join(", ")}`));
   const examples = (sub ?? cmd).examples ?? [];
   if (examples.length) {
     out(c.bold("examples:"));

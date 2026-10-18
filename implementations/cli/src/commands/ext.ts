@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { registry, type Command, type Connector, type ParsedArgs } from "@cotal-ai/core";
-import { RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, provenance, saveExtensionsManifest, seededCommandsMismatch, type InstalledExtension, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
+import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type LocalProcess, type LocalProcessContext, type Presentation, type Report } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
@@ -10,6 +10,16 @@ import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-m
 import { runSeed } from "../seed/reconcile.js";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { seedStoreDir } from "../seed/paths.js";
+
+export const extFlags = [
+  jsonFlag,
+  plainFlag,
+  { name: "repair", type: "boolean", description: "seed: recover a lost ever-seeded authority from its durable backup" },
+  { name: "reset", type: "boolean", description: "seed: discard the authority and re-seed all built-in connectors (resurrects removed ones)" },
+  { name: "force", type: "boolean", description: "seed: re-seed the built-in connectors even when the stamp is current or a downgrade" },
+] as const satisfies readonly FlagSpec[];
+
+const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
 
 /** Parent binding for update's internal isolated re-add. Ordinary `ext add` never reads it. */
 export const EXT_UPDATE_PARENT_ENV = "COTAL_EXT_UPDATE_PARENT";
@@ -41,12 +51,13 @@ export function isPathSpec(spec: string, absolute: (p: string) => boolean = isAb
 
 export async function ext(args: ParsedArgs): Promise<void> {
   const [sub, ...rest] = args.positionals;
-  const json = args.values.json === true;
-  if (json && sub !== undefined && sub !== "list") throw new Error(`ext ${sub}: --json is taken by the list only`);
+  const v = args.values as FlagValues<typeof extFlags>;
   // Bare `cotal ext` lists the inventory: it is the most natural probe for "what's installed / where",
   // and these extensions never appear in `npm list -g` (they live in a cotal-owned prefix, not npm's
   // global tree), so erroring here left the honest answer undiscoverable.
-  if (!sub) return list(json);
+  if (sub === undefined || (sub === "list" && !rest.length)) return list(presentationOf(v));
+  // `ext root` stays a raw path for `$(cotal ext root)`; a structured form of one path adds nothing.
+  if (v.json || v.plain) throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
   if (sub === "add" && rest[0]) return addExtension(rest[0]);
   if (sub === "__update-add" && rest[0] && rest[1]) {
     if (Number(process.env[EXT_UPDATE_PARENT_ENV]) !== process.ppid)
@@ -56,7 +67,6 @@ export async function ext(args: ParsedArgs): Promise<void> {
     return addExtension(rest[1], rest[0], true);
   }
   if (sub === "remove" && rest[0]) return remove(rest[0]);
-  if (sub === "list" && !rest.length) return list(json);
   // `cotal ext root` prints just the prefix path — a one-line scripting primitive (cf. `npm root -g`,
   // `brew --prefix`) so tooling can locate the store without parsing the human inventory.
   if (sub === "root" && !rest.length) {
@@ -67,7 +77,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
     const { repair, reset, force } = args.values as { repair?: boolean; reset?: boolean; force?: boolean };
     return runSeed({ repair, reset, force });
   }
-  throw new Error("usage: cotal ext <add <npm-package> | remove <name> | list [--json] | root | seed [--repair|--reset|--force]>");
+  throw usage("usage: cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force]");
 }
 
 async function npm(args: string[], cwd: string): Promise<{ status: number | null; output: string }> {
@@ -448,32 +458,52 @@ function describeProcess({ provider, context, pidPath }: ExtensionProcess): stri
   return `${provider.name} (${state}) in ${context.root} - run there: cotal down ${provider.name}`;
 }
 
-/** The installed extensions. `--json` prints one {@link extensionRow} per line and nothing else, so a
- *  line reader never meets the header or footer, and an empty prefix prints nothing. */
-function list(json: boolean): void {
-  const rows = loadExtensionsManifest().extensions.map(extensionRow);
-  if (json) {
-    for (const row of rows) console.log(JSON.stringify(row));
-    return;
-  }
-  // Lead with the store's real location and its ownership, so the inventory is self-explaining: these
-  // packages are cotal-managed and kept out of npm's global prefix by design, which is exactly why
-  // `npm list -g` never shows them. Resolve the path dynamically — never hard-code it.
-  console.log(c.dim(`Extension root: ${extensionsDir()}`));
-  console.log(c.dim("Managed by `cotal ext`; kept separate from npm's global prefix, so `npm list -g` does not include these."));
-  console.log("");
-  if (!rows.length) {
-    console.log(c.dim("(no extensions installed - add one with `cotal ext add <npm-package>`)"));
-    return;
-  }
-  for (const row of rows) console.log(`${c.bold(row.pkg)}@${row.version}  ${c.dim(row.provides.join(", "))}`);
-  console.log("");
-  console.log(c.dim("Manage with `cotal ext add`/`cotal ext remove`; `cotal ext --help` for all commands."));
+/** One installed extension as the listing reports it. */
+export interface ExtensionRow {
+  readonly pkg: string;
+  /** The manifest pin recorded at add time. */
+  readonly version: string;
+  /** What `ext add` was given. */
+  readonly spec: string;
+  /** Whether the built-in seed installed the entry. */
+  readonly seeded: boolean;
+  /** The `kind:name` refs the package registers. */
+  readonly provides: readonly string[];
 }
 
-/** One `cotal ext list --json` row: what the table shows, plus the spec `ext add` recorded and whether
- *  the built-in seed installed the entry, which the table leaves out. */
-function extensionRow(e: InstalledExtension) {
+/** The installed extensions, read from the manifest, under the cotal-owned install root. */
+function list(presentation: Presentation): void {
+  const items = loadExtensionsManifest().extensions.map(extensionRow);
+  writeResult(presentation, { command: "ext", target: null, result: { kind: "extensions", root: extensionsDir(), items } }, extensionsView);
+}
+
+function extensionsView(r: { readonly root: string; readonly items: readonly ExtensionRow[] }): Report {
+  return {
+    sections: [
+      {
+        // Lead with the store's real location and its ownership, so the inventory explains itself: these
+        // packages are cotal-managed and kept out of npm's global prefix by design, which is why
+        // `npm list -g` never shows them.
+        blocks: [
+          { kind: "fields", rows: [["Extension root", r.root]] },
+          { kind: "lines", lines: [{ text: "Managed by `cotal ext`; kept separate from npm's global prefix, so `npm list -g` does not include these.", tone: "hint" }] },
+        ],
+      },
+      {
+        blocks: r.items.length
+          ? [{
+              kind: "table",
+              columns: [{ key: "pkg", label: "PACKAGE" }, { key: "version", label: "VERSION" }, { key: "source", label: "SOURCE" }, { key: "provides", label: "PROVIDES" }],
+              rows: r.items.map((row) => ({ pkg: row.pkg, version: row.version, source: row.seeded ? "built in" : "added", provides: { text: row.provides.join(", "), tone: "hint" } })),
+            }]
+          : [{ kind: "lines", lines: [{ text: "no extensions installed - add one with `cotal ext add <npm-package>`", tone: "hint" }] }],
+      },
+      { blocks: [{ kind: "lines", lines: [{ text: "Manage with `cotal ext add` and `cotal ext remove`; `cotal ext --help` lists every subcommand.", tone: "hint" }] }] },
+    ],
+  };
+}
+
+function extensionRow(e: InstalledExtension): ExtensionRow {
   return {
     pkg: e.pkg,
     version: e.version,

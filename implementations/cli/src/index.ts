@@ -24,7 +24,7 @@ import { history, historyFlags } from "./commands/history.js";
 import { clean, cleanComplete } from "./commands/clean.js";
 import { feedback } from "./commands/feedback.js";
 import { send, sendComplete } from "./commands/send.js";
-import { ext } from "./commands/ext.js";
+import { ext, extFlags } from "./commands/ext.js";
 import { help, helpFlags, version, versionFlags } from "./commands/help.js";
 import { topology } from "./commands/topology.js";
 import { status, statusFlags } from "./commands/status.js";
@@ -82,22 +82,19 @@ const baseCommands: Command[] = [
     aliases: ["x"],
     group: "Setup",
     summary: "operator-installed extensions - add commands, runtimes, and local process providers",
-    usage: "ext [add <npm-package> | remove <name> | list [--json] | root | seed [--repair|--reset|--force]]",
+    usage: "cotal ext [list] [--json|--plain] | ext add <npm-package> | ext remove <name> | ext root | ext seed [--repair|--reset|--force]",
     positionals: "[add <npm-package> | remove <name> | list | root | seed]",
     subcommands: [
       { name: "add", summary: "install an extension package and register what it provides", usage: "cotal ext add <npm-package>" },
       { name: "remove", aliases: ["rm"], summary: "uninstall an extension", usage: "cotal ext remove <name>" },
-      { name: "list", summary: "list installed extensions", usage: "cotal ext list [--json]" },
+      { name: "list", summary: "list installed extensions (what bare `cotal ext` does)", usage: "cotal ext list [--json|--plain]", outputs: ["json", "plain"] },
       { name: "root", summary: "print the extension root directory", usage: "cotal ext root" },
       { name: "seed", summary: "reconcile the built-in connectors", usage: "cotal ext seed [--repair|--reset|--force]" },
       { name: "__update-add", summary: "re-add one extension for a running update", hidden: true },
     ],
-    flags: [
-      { name: "json", type: "boolean", description: "list: machine-readable, one JSON object per extension per line" },
-      { name: "repair", type: "boolean", description: "seed: recover a lost ever-seeded authority from its durable backup" },
-      { name: "reset", type: "boolean", description: "seed: discard the authority and re-seed all built-in connectors (resurrects removed ones)" },
-      { name: "force", type: "boolean", description: "seed: re-seed the built-in connectors even when the stamp is current or a downgrade" },
-    ],
+    flags: extFlags,
+    outputs: ["json", "plain"],
+    examples: ["cotal ext", "cotal ext --json", "cotal ext add @cotal-ai/orca", "cotal ext root"],
     run: ext,
   },
   {

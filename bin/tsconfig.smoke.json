@@ -1,6 +1,6 @@
 {
-  // Typecheck-only companion to tsconfig.json, which stays scoped to the two published
-  // entrypoints so `build`'s emit layout is untouched. This config exists because bin/smoke
+  // Typecheck-only companion to tsconfig.json, which stays scoped to the published entry
+  // modules so `build`'s emit layout is untouched. This config exists because bin/smoke
   // held 469 runnable scripts that no tsc ever read — a suite here could reference a variable
   // that did not exist and nobody heard about it until the suite ran (backup-restore-live did
   // exactly that, in 7 places). rootDir points at the repo root only because the smokes import

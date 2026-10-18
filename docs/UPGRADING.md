@@ -34,6 +34,28 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Extension listing output after 0.82.0 (unreleased)
+
+`cotal ext --json` and `cotal ext list --json` now write one JSON document instead of one JSON line
+per extension. Nothing on a running mesh changes, and there is no outage window. Upgrading the
+`cotal` binary is the whole operation.
+
+### What stops working
+
+- A script that reads `cotal ext list --json` line by line reads one envelope instead. The rows it
+  read are now `result.items`, each with the same fields, and `result.root` is the install prefix.
+  With `jq`, `cotal ext list --json | jq -c '.result.items[]'` prints the rows as before. An empty
+  prefix writes an envelope with no items instead of nothing.
+- A usage error from `cotal ext` exits 1 as one `refused` envelope under `--json`, and `--plain` or
+  `--json` on `ext add`, `ext remove`, `ext root` or `ext seed` is refused. `cotal ext root` still
+  prints the path alone.
+- The human listing is a table now. Human output is not a parsing target; use `--json`.
+
+### Before the upgrade
+
+Search scripts for `cotal ext list --json` and `cotal ext --json`, and change line-by-line reads to
+read `result.items` from the one document.
+
 ## History reads after 0.82.0 (unreleased)
 
 `cotal history [channel]` reads retained messages. Clearing is now `cotal history clear --force`.

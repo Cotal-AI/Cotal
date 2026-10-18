@@ -4,3 +4,4 @@
 smoke:who-roster
 smoke:cli-pty
 smoke:history-read
+smoke:docs-ext-read

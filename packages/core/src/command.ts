@@ -69,6 +69,9 @@ export interface Subcommand {
   readonly aliases?: readonly string[];
   /** Full example invocations shown in its help. */
   readonly examples?: readonly string[];
+  /** Structured outputs this mode implements. A mode that declares none reports as plain text with
+   *  the command's usual exit, whatever its command declares for the bare form. */
+  readonly outputs?: readonly OutputMode[];
 }
 
 /** A structured output a command implements, beside its human text: one JSON document, a stream of
@@ -89,7 +92,8 @@ export interface Command extends Extension {
   readonly aliases?: readonly string[];
   /** Declared modes, selected by the first positional. */
   readonly subcommands?: readonly Subcommand[];
-  /** Structured outputs this command implements; human text is always available. */
+  /** Structured outputs this command implements; human text is always available. In a command with
+   *  subcommands this covers the bare form, and each subcommand declares its own. */
   readonly outputs?: readonly OutputMode[];
   /** Full example invocations shown in its help. */
   readonly examples?: readonly string[];

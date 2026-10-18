@@ -85,9 +85,8 @@ runtimes ship this way.
 
 A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
 one JSON document on stdout. In this release those are `cotal version`, `cotal completion`,
-`cotal status`, `cotal ps`, `cotal who`, `cotal whoami`, `cotal history`, `cotal models` and
-`cotal runtimes`.
-`cotal version --json` writes:
+`cotal status`, `cotal ps`, `cotal who`, `cotal whoami`, `cotal history`, `cotal models`,
+`cotal runtimes`, bare `cotal ext` and `cotal docs`. `cotal version --json` writes:
 
 ```json
 {"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","extensions":[{"package":"@cotal-ai/web","version":"<version>"}]},"warnings":[]}
@@ -108,6 +107,11 @@ one JSON document on stdout. In this release those are `cotal version`, `cotal c
 Diagnostics stay on stderr. A usage error under `--json` is a `refused` envelope with code
 `USAGE_INVALID`, and the help it names stays off stdout. A command without a JSON output refuses
 `--json` as an unknown option.
+
+A subcommand's help has its own `structured output` line, and only the forms that show one write a
+document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ext root` and
+`ext seed` report as text, refuse `--json` and `--plain` with a usage error, and exit 1 on any
+failure.
 
 A command whose `structured output` line also names `plain` takes `--plain`, which writes the same
 report as plain lines: no color, no marks, ASCII labels. Pass one of `--json` and `--plain`; both is a
@@ -181,7 +185,8 @@ failure.
 | Auth & meshes | [`doctor`](#doctor) | Credential-health diagnosis and repair (`doctor auth`) |
 | Auth & meshes | [`join`](#join) | Join a space as your own presence (interactive) |
 | Manifest | [`topology`](#manifest-deploys) | Validate and view a mesh manifest's access graph (read-only) |
-| Extensions & misc | [`ext`](#ext) | Install / remove operator CLI extensions |
+| Extensions & misc | [`ext`](#ext) | List, install and remove operator CLI extensions |
+| Extensions & misc | [`docs`](#docs) | Read this version's protocol and CLI docs, offline |
 | Extensions & misc | [`completion`](#completion) | Report, print or install shell completion |
 | Extensions & misc | [`feedback`](#feedback) | Send feedback to the Cotal developers |
 | Extensions & misc | [`deliver`](#server-daemons) | Run the server-side Plane-3 delivery daemon |
@@ -2635,10 +2640,9 @@ renders its channel / role / ACL graph. See [Define a team](define-a-team.md) an
 ## ext
 
 ```bash
-cotal ext                 # same as `list`
+cotal ext [list] [--json | --plain]
 cotal ext add <npm-package>
 cotal ext remove <name>
-cotal ext list [--json]
 cotal ext root            # print just the install prefix (scriptable)
 cotal ext seed [--repair|--reset|--force]
 ```
@@ -2656,11 +2660,12 @@ root kept **separate** from npm's own global tree. These packages never show up 
 `cotal ext` (or the Extensions section of `cotal status`) is the canonical inventory. `cotal ext root`
 prints only the path, for scripts. The versions shown are the manifest pin recorded at add time.
 
-`ext list --json` (or bare `ext --json`) prints one JSON object per installed extension per line:
-`pkg`, `version`, `spec` (what `ext add` was given), `seeded` (`true` for an entry the built-in seed
-installed) and `provides` (the `kind:name` refs the table shows). No header or footer reaches stdout,
-and an empty prefix prints nothing and exits 0. The table is presentation and is not a stable parsing
-target. The other `ext` subcommands refuse `--json`.
+Bare `ext --json` (or `ext list --json`) writes one JSON document: `result.root` is the install
+prefix and `result.items` holds one row per installed extension with `pkg`, `version`, `spec` (what
+`ext add` was given), `seeded` (`true` for an entry the built-in seed installed) and `provides` (the
+`kind:name` refs the table shows). An empty prefix is an empty list. `--plain` writes the same report
+without color. The other `ext` subcommands refuse `--json` and `--plain` with `USAGE_INVALID`.
+`ext root` stays a raw path for `$(cotal ext root)`.
 
 An installed package whose directory is gone is reported as not installed. One whose `package.json`
 is not JSON or has no `version` is reported as corrupt, naming the package and its `package.json`.
@@ -2735,6 +2740,34 @@ generation (see [Plumbing](#plumbing)).
 `cotal completion` skips the seed as well, so a shell profile that sources its stub never reconciles
 and is never refused by the store's generation or the source-checkout guard. Printing a stub writes
 nothing, and `completion install` writes only shell configuration.
+
+## docs
+
+```bash
+cotal docs [<page>] [--refresh] [--json | --plain]
+cotal docs --search <query> [--json | --plain]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--search <query>` | none | Show the sections that best match a query, each naming its page |
+| `--refresh` | off | With a page: also try the version-pinned copy on docs.cotal.ai |
+| `--json` / `-j` | off | One JSON document |
+| `--plain` | off | The same report without color |
+
+Reads the docs bundled with this installed version, offline: the same pages agents read with
+`cotal_docs`. Bare `docs` lists the pages by category (`Start here`, `Concept`, `Guide`, `Reference`,
+`Project`), each with its title; `result.pages` holds each page's slug, title, kind and summary, and
+`result.sources` the normative `spec`, `lang` and `schema`. A page is named by its slug,
+ignoring case and a trailing `.md`; `result.body` holds its Markdown. An unknown page is refused with
+`USAGE_INVALID`, naming every page.
+
+`--refresh` fetches the page from the immutable path for this version on docs.cotal.ai.
+`result.source` says which copy was served, `bundled` or `docs.cotal.ai`, and `result.refresh` says
+what the fetch did: `served`, `not-published` (the path has no copy) or `unreachable`. The bundled
+copy is served whenever the fetch does not succeed. `--refresh` applies only to a page.
+
+`--search` ranks sections by the words of the query. A search with no match is an empty result.
 
 ## completion
 
