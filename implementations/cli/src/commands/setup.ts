@@ -128,7 +128,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
     }
     const provider = await availableSetupProvider(candidate.connector);
     if (provider?.connector) {
-      if (!(await runSteps([actionStep(provider.connector, undefined)], log, { yes, assists: connectorAssists }))) return abort();
+      if (!(await runSteps([actionStep(provider.connector, { cotal: selfArgv() })], log, { yes, assists: connectorAssists }))) return abort();
     } else {
       p.log.success(`${candidate.value} ready (auto-wired when you spawn it)`);
       log.line(`connector ${candidate.value}: ready (no install)`);
@@ -340,6 +340,7 @@ async function runEnsure(demo: boolean): Promise<void> {
   p.log.success(`Your agent: ${join(dest.dir, "default.md")}`);
   if (demo) seedDemoTeam(dest); // `cotal setup --demo` on a configured machine: add the team, then card
   await reconcileConnectorSkills();
+  for (const line of await refreshConnectorInstalls()) p.log.success(line);
   seedAgentSkills(); // reconcile the cross-vendor `.agents/skills` drop so an upgrade + re-run isn't stale
   // A repeat `npx cotal-ai setup` on an onboarded machine that still lacks a durable `cotal` must
   // ALSO get the global-install offer — the first-run stamp is written once, so without this any
@@ -398,6 +399,17 @@ async function reconcileConnectorSkills(): Promise<void> {
     const provider = await availableSetupProvider(connector);
     if (provider?.skills) await provider.skills.run(connectorSkillsInput());
   }
+}
+
+/** Run every present connector's refresh, so what an earlier setup installed in its harness moves to
+ *  this release. Returns one line per connector that declares one; a refresh that fails throws. */
+export async function refreshConnectorInstalls(): Promise<string[]> {
+  const lines: string[] = [];
+  for (const connector of await setupConnectorSurface()) {
+    const refresh = (await availableSetupProvider(connector))?.refresh;
+    if (refresh) lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv() })}`);
+  }
+  return lines;
 }
 
 /** The debug handoffs a failed step may offer: every connector on the setup surface whose provider

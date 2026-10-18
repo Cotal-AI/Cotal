@@ -231,7 +231,8 @@ the host's registered service records. Discovery and invocation both use that in
 route. This view grants no registry scan, class queue, or additional command capability. An absent,
 ambiguous or unauthorized selection refuses before the command is sent. An ambiguous one lists the
 owner's live manager instance ids and names the caller's way to pick one: `--on <instanceId>` for
-the CLI, the `instance` argument for an agent's tools.
+the CLI, `--manager-instance <instanceId>` for `cotal agent-bearer --manager-call`, and the
+`instance` argument for an agent's tools.
 
 Managed launches carry `COTAL_MANAGER_INSTANCE` so their tools address the manager that launched
 them; a tool's `instance` argument must name that same manager. The `cotal` commands run from their

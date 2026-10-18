@@ -174,10 +174,12 @@ type Values = Record<string, string | undefined>;
 /** Which exchange arm asks for a manager-caller view. */
 export type ManagerCaller = "human" | "agent";
 
-/** How each caller names one manager instance, for the refusal that needs it to. */
+/** How each caller names one manager instance, for the refusal that needs it to. The agent arm's
+ *  one client is `cotal agent-bearer`; a connector that runs it for a tool renames the flag to the
+ *  tool's `instance` argument. */
 const MANAGER_PIN_REMEDY: Record<ManagerCaller | "wire", string> = {
   human: "name one with --on <instanceId>",
-  agent: "name one with the instance argument",
+  agent: "name one with --manager-instance <instanceId>",
   wire: "name one as managerInstanceId",
 };
 
@@ -188,8 +190,8 @@ const MANAGER_PIN_REMEDY: Record<ManagerCaller | "wire", string> = {
 export interface AuthAuthorityPlane {
   authorizeConnect: (t: ValidatedUserToken) => Promise<void>;
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
-  /** `caller` picks the remedy an ambiguity refusal names: `--on` for the human (CLI) arm, the
-   *  tools' `instance` argument for a managed agent, the wire field otherwise. */
+  /** `caller` picks the remedy an ambiguity refusal names: `--on` for the human (CLI) arm,
+   *  `cotal agent-bearer`'s `--manager-instance` for the agent arm, the wire field otherwise. */
   selectManagerInstance: (owner: string, requested?: string, caller?: ManagerCaller) => Promise<string>;
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>;
   /** The callout's issuance of an interactive user's `manager-caller` view (SPEC 13.15): one

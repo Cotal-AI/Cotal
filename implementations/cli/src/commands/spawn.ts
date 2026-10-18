@@ -92,6 +92,7 @@ import {
   type SpaceMaterialComposition,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
+import { liveMeshNames } from "../lib/live-names.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS, withControlConnection } from "../lib/control.js";
@@ -343,44 +344,10 @@ export function spawnPersonaRef(configFlag: string | undefined, positionals: rea
  */
 async function uniqueMeshName(
   requested: string,
-  { space, server, auth }: { space: string; server: string; auth?: SpaceAuth },
+  target: { space: string; server: string; auth?: SpaceAuth },
 ): Promise<string> {
-  // Reading presence in auth mode needs a credential (the bucket is OPEN-only for agents): a
-  // short-lived least-privilege OPERATOR cred (presence/channel read + self-publish), the same throwaway
-  // `cotal dm`/`send` mints to resolve a name → id.
-  const creds = auth ? await mintCreds(auth, newIdentity(), "operator") : undefined;
-  if (!(await isReachable(server, { creds }))) return requested;
-  const ep = new CotalEndpoint({
-    space,
-    servers: server,
-    creds,
-    channels: [],
-    consume: false,
-    registerPresence: false, // an invisible probe — don't add ourselves to the roster we're reading
-    watchPresence: true,
-    card: { name: "spawn-probe", kind: "endpoint" },
-  });
-  ep.on("error", () => {}); // advisory: a presence-read hiccup must never block the spawn
-  const ignoreNameProbeWarning = () => {};
-  ep.on("warning", ignoreNameProbeWarning); // deliberate: this best-effort naming probe never owns spawn success
-  await ep.start();
-  try {
-    // Presence replays from the KV bucket right after connect; settle until the roster count holds
-    // steady across two polls (≤1s), then snapshot the names of the peers that are actually live.
-    let prev = -1;
-    for (let i = 0; i < 10; i++) {
-      await new Promise((r) => setTimeout(r, 100));
-      const n = ep.getRoster().length;
-      if (n === prev) break;
-      prev = n;
-    }
-    const taken = new Set(
-      ep.getRoster().filter((p) => p.status !== "offline").map((p) => p.card.name),
-    );
-    return firstFreeName(requested, (n) => taken.has(n));
-  } finally {
-    await ep.stop();
-  }
+  const taken = await liveMeshNames(target);
+  return taken ? firstFreeName(requested, (n) => taken.has(n)) : requested;
 }
 
 

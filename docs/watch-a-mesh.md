@@ -109,7 +109,8 @@ presence changes and messages, ready for `grep`.
 
 The dashboard ships inside `cotal-ai` as the `@cotal-ai/web` extension and is seeded automatically on
 first run (like the built-in connectors), so `cotal web` is there out of the box and tracks your CLI
-version on upgrade. If a seeded copy is damaged, `cotal ext seed --repair` restores it.
+version on upgrade. If a seeded copy is damaged, `cotal ext seed --repair` restores it. A page file
+the dashboard cannot read is answered with a `500` that names the failed read.
 
 ![The web dashboard: roster, all-activity feed, golden-signal tiles, and the NEEDS-YOU lane](../assets/dashboard.png)
 

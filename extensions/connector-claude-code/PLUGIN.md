@@ -10,11 +10,13 @@ This directory is generated at each release by `scripts/materialize-claude-plugi
 ## What it installs
 
 - One stdio MCP server, `node dist/mcp.cjs`, which provides the `cotal_*` tools.
+- One monitor, `node dist/monitor.cjs`, which starts a turn when a Cotal message arrives for a
+  session you started yourself.
 - 8 hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolBatch`, `Notification`,
   `Stop`, `StopFailure`, `SessionEnd`) running `node dist/hook.cjs`. They report the session's
   presence and deliver queued peer messages.
 
-Both bundles are prebuilt in this directory. Nothing is installed from npm at runtime.
+The bundles are prebuilt in this directory. Nothing is installed from npm at runtime.
 
 ## Requirements
 
@@ -38,15 +40,18 @@ Launch a session on the mesh with `cotal spawn`, then ask it things like:
 - "Ask a reviewer to look at my last commit."
 - "Post a status update to the general channel."
 
-## Without a mesh
+## Sessions you start yourself
 
-A session the Cotal CLI did not launch (no `COTAL_NAME`, `COTAL_LINK` or `COTAL_AGENT_FILE`) never
-joins. The MCP server lists one tool, `cotal_how_to_join`, and opens no network connection. The
-hooks exit without doing anything.
+A session the Cotal CLI did not launch (no `COTAL_NAME`, `COTAL_LINK` or `COTAL_AGENT_FILE`) joins
+only when the conversation calls `cotal_connect` with a name, as an identity of its own on your
+local mesh. Until then the MCP server opens no network connection. The server finds the Cotal CLI
+through the record `cotal setup` writes beside it, so install the plugin with `cotal setup`. Once a
+conversation is connected, the monitor starts a turn when a message arrives for it, and Claude
+reads the message with `cotal_inbox`.
 
 ## Data and network
 
-- Mesh traffic goes over NATS to the broker of the mesh the session was launched on.
+- Mesh traffic goes over NATS to the broker of the mesh the session was launched on or connected to.
 - `cotal_docs` serves docs bundled in this plugin. With `refresh: true` it also fetches
   docs.cotal.ai.
 - `cotal_feedback` sends a report only when the agent calls it: to `https://cotal.ai/v1/feedback`

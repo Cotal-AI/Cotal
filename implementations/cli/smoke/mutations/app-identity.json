@@ -1,0 +1,175 @@
+{
+  "suite": [
+    "implementations/cli/smoke/app-identity-live.smoke.ts"
+  ],
+  "guard": "a Claude app conversation's identity opens only under a name not live on the mesh and not on a per-user sign-in mesh, from the mesh's default persona, with its credential in an owner-only file and never on stdout; retire removes only what provision made, its broker footprint before its files; and the next provision retires what a host that died left behind",
+  "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/app-identity.json",
+  "why": [
+    "The smoke runs the command in-process from source against a live JWT-auth broker, so each mutation needs no build.",
+    "Each retire guard conjunct has its own cell: a directory of another name under the temp dir, a credential-named directory elsewhere, and a credential-named link.",
+    "The sweep has a cell each way: an orphan whose owner pid is dead goes, a directory whose owner is alive stays."
+  ],
+  "mutations": [
+    {
+      "name": "provision ignores a live name",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "  if (taken.has(name)) return { ok: false, taken: true };\n",
+      "replace": "",
+      "expectRed": "a second provision of a live name answers taken",
+      "cell": "a second provision of a live name answers taken",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "D1: a live name is answered as taken, never opened a second time."
+    },
+    {
+      "name": "provision forgets an unanswering mesh",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "  if (!taken) return { ok: false, error: `the mesh \"${t.space}\" at ${t.server} is not answering. Start it with \\`cotal up\\`.` };\n",
+      "replace": "",
+      "expectRed": "a mesh that is not answering is refused by name",
+      "cell": "a mesh that is not answering is refused by name",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "A mesh that does not answer is refused in a sentence that names it."
+    },
+    {
+      "name": "provision opens on a per-user sign-in mesh",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "  if (t.mode === \"user\")\n",
+      "replace": "  if (false)\n",
+      "expectRed": "a mesh that uses per-user sign-in is refused by name",
+      "cell": "a mesh that uses per-user sign-in is refused by name",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "A mesh that uses per-user sign-in is refused before anything dials it."
+    },
+    {
+      "name": "provision loses the missing-persona sentence",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "    if ((e as NodeJS.ErrnoException).code === \"ENOENT\")\n",
+      "replace": "    if (false)\n",
+      "expectRed": "a mesh with no default persona is refused, naming where it looked",
+      "cell": "a mesh with no default persona is refused, naming where it looked",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "A missing default persona is refused with where it looked and what to run."
+    },
+    {
+      "name": "provision drops the persona's channels",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "  const subscribe = def.subscribe ?? [];\n",
+      "replace": "  const subscribe: string[] = [];\n",
+      "expectRed": "the env carries the default persona's channels and role",
+      "cell": "the env carries the default persona's channels and role",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "The conversation's read and post sets come from the default persona."
+    },
+    {
+      "name": "provision writes a world-readable credential",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "    writeFileSync(join(dir, \"agent.creds\"), creds, { mode: 0o600 });\n",
+      "replace": "    writeFileSync(join(dir, \"agent.creds\"), creds, { mode: 0o644 });\n",
+      "expectRed": "  readable by its owner only",
+      "cell": "  readable by its owner only",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "The credential file is readable by its owner only."
+    },
+    {
+      "name": "retire removes a directory anywhere",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "  if (dirname(dir) !== resolve(tmpdir()) || !basename(dir).startsWith(CRED_DIR_PREFIX) || !lstatSync(dir, { throwIfNoEntry: false })?.isDirectory())\n",
+      "replace": "  if (!basename(dir).startsWith(CRED_DIR_PREFIX) || !lstatSync(dir, { throwIfNoEntry: false })?.isDirectory())\n",
+      "expectRed": "retire refuses a credential-named directory outside the temp directory",
+      "cell": "retire refuses a credential-named directory outside the temp directory",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "Retire removes only a directory directly under the OS temp dir."
+    },
+    {
+      "name": "retire removes a directory of any name",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "  if (dirname(dir) !== resolve(tmpdir()) || !basename(dir).startsWith(CRED_DIR_PREFIX) || !lstatSync(dir, { throwIfNoEntry: false })?.isDirectory())\n",
+      "replace": "  if (dirname(dir) !== resolve(tmpdir()) || !lstatSync(dir, { throwIfNoEntry: false })?.isDirectory())\n",
+      "expectRed": "retire refuses a directory provision did not make",
+      "cell": "retire refuses a directory provision did not make",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "Retire removes only a directory with provision's prefix."
+    },
+    {
+      "name": "retire follows a link",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "  if (dirname(dir) !== resolve(tmpdir()) || !basename(dir).startsWith(CRED_DIR_PREFIX) || !lstatSync(dir, { throwIfNoEntry: false })?.isDirectory())\n",
+      "replace": "  if (dirname(dir) !== resolve(tmpdir()) || !basename(dir).startsWith(CRED_DIR_PREFIX))\n",
+      "expectRed": "retire refuses a credential-named link to another directory",
+      "cell": "retire refuses a credential-named link to another directory",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "Retire refuses a link, so a credential-named link cannot point it at another directory's file."
+    },
+    {
+      "name": "retire leaves the credential directory",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "  rmSync(join(dir, \"agent.creds\"), { force: true });\n  rmSync(join(dir, RECORD), { force: true });\n  if (existsSync(dir)) rmdirSync(dir);\n",
+      "replace": "",
+      "expectRed": "  and removed the credential directory",
+      "cell": "  and removed the credential directory",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "Retire removes the credential, the record and the directory."
+    },
+    {
+      "name": "retire leaves the broker footprint",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "    await deprovisionAgent({ servers: t.server, space: t.space, targetId: record.id, lifecycleUid: record.lifecycleUid, creds });\n",
+      "replace": "    void creds;\n",
+      "expectRed": "  and removed its broker footprint",
+      "cell": "  and removed its broker footprint",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "Retire removes the identity's read-ACL row and both durables."
+    },
+    {
+      "name": "retire drops the credential before the footprint",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "  const t = await target(record.space);\n",
+      "replace": "  rmSync(join(dir, \"agent.creds\"), { force: true });\n  const t = await target(record.space);\n",
+      "expectRed": "  and keeps what a later retire needs",
+      "cell": "  and keeps what a later retire needs",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "A retire that cannot reach the broker keeps the files, so a later attempt still knows what to retire."
+    },
+    {
+      "name": "provision sweeps no orphans",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "  await retireOrphans();\n",
+      "replace": "",
+      "expectRed": "  and retired the identity whose host is gone",
+      "cell": "  and retired the identity whose host is gone",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "A provision retires what a host that died without retiring left behind."
+    },
+    {
+      "name": "the sweep retires live hosts' identities",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "      if (alive(record.owner)) continue;\n",
+      "replace": "",
+      "expectRed": "  and left the first identity, whose host is alive, in place",
+      "cell": "  and left the first identity, whose host is alive, in place",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "The sweep keeps every directory whose owning process is alive."
+    },
+    {
+      "name": "the sweep keeps the dead host's identity",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "      if (alive(record.owner)) continue;\n",
+      "replace": "      continue;\n",
+      "expectRed": "  and retired the identity whose host is gone",
+      "cell": "  and retired the identity whose host is gone",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "The sweep retires a directory whose owning process is gone."
+    },
+    {
+      "name": "provision records no owner",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "  const record: IdentityRecord = { space: t.space, id: identity.id, lifecycleUid, owner: process.ppid };\n",
+      "replace": "  const record: IdentityRecord = { space: t.space, id: identity.id, lifecycleUid, owner: process.pid };\n",
+      "expectRed": "a record beside it names the identity, its mesh and the process that asked",
+      "cell": "a record beside it names the identity, its mesh and the process that asked",
+      "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+      "note": "The record names the process that ran provision, the host whose death makes the identity an orphan."
+    }
+  ]
+}

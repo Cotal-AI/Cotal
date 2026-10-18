@@ -7,17 +7,18 @@
  *
  * Scope & Test Doubles:
  * - Real Components: Native `nats-server` with JetStream, live `startAuthCallout` daemon
- *   verifying EdDSA JWTs and issuing exact scoped NATS permissions per connection, and the
- *   exported shipped `runWorkflow` command.
+ *   verifying EdDSA JWTs and issuing exact scoped NATS permissions per connection through
+ *   the shipped `calloutPermissions` and `openAuthAuthorityPlane().issueUserCaller` path,
+ *   and the exported shipped `runWorkflow` command.
  * - Test Doubles:
  *   1. Fake AuthProvider: In user-auth mode, Cotal normally contacts an external IdP or auth
  *      service over HTTP to obtain signed user tokens. Here, an in-process AuthProvider double
  *      mints signed EdDSA user tokens directly with valid `manager-caller` claims, without
  *      real IdP HTTP infrastructure.
  *   2. Synthetic Instance Responder: A lightweight NATS responder test double responds on
- *      the instance rail (`ep.inst.manager.<IID>.describe.>` and `run-ps.>`) instead of running
- *      a full daemonized Manager process.
- *   3. Actor-Ledger / Gate Authorizer: The actor-ledger and gate authorizer in startAuthCallout
+ *      the versioned instance rail (`ep.v1.inst.manager.<IID>.describe.>` and `run-ps.>`)
+ *      instead of running a full daemonized Manager process.
+ *   3. Connect / Gate Authorizer: The connect and manager-gate authorizers in startAuthCallout
  *      are fixture no-ops (`authorizeActor: () => {}`), not a production authorization proof.
  * - Scoped Permissions: No broad wildcard grants (`sub.allow: [>]` or `pub.allow: [>]`). The
  *   callout grants only exact instance publish routes.
@@ -38,7 +39,6 @@ import {
   mintCreds,
   newIdentity,
   mintLifecycleUid,
-  permissionsFor,
   setupSpaceStreams,
   standaloneConnectOpts,
   isReachable,
@@ -48,6 +48,7 @@ import {
   contractStoreContext,
   publishContractArtifact,
   contractArtifactCanonicalBytes,
+  issuedUserCaller,
   resolveService,
   BASELINE_LIFECYCLE_ENDPOINT,
   type EpCaller,
@@ -55,7 +56,11 @@ import {
 } from "@cotal-ai/core";
 
 import {
+  calloutPermissions,
   createCalloutAuth,
+  grantActor,
+  ledgerAclResolver,
+  openAuthAuthorityPlane,
   startAuthCallout,
   USER_TOKEN_VER,
   deriveOwnerToken,
@@ -180,6 +185,7 @@ const origExit = process.exit;
 const origErr = console.error;
 
 // Tracked connections for reliable teardown
+let plane: Awaited<ReturnType<typeof openAuthAuthorityPlane>> | undefined;
 let calloutNc: any;
 let respNc: any;
 let pubNc: any;
@@ -203,6 +209,24 @@ try {
   const callerUid = mintLifecycleUid();
   const OWNER = deriveOwnerToken("s".repeat(32), "human-test-1");
 
+  grantActor(isolatedCotalRoot, {
+    owner: OWNER,
+    actor: CLI_USER_ACTOR,
+    lifecycleUid: callerUid,
+    scope: ["run", "spawn"],
+    allowSubscribe: [],
+    allowPublish: [],
+  });
+
+  plane = await openAuthAuthorityPlane({
+    server: SERVERS,
+    space,
+    dir: isolatedCotalRoot,
+    identityRoot: isolatedCotalRoot,
+    dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
+    log: () => {},
+  });
+
   // Connect callout service to the broker
   calloutNc = await dialer({
     servers: SERVERS,
@@ -218,23 +242,12 @@ try {
     space,
     token: { key: publicKey as never, issuer: ISS },
     authorizeActor: () => {},
-    permissionsFor: (t, connId) => {
-      const isManagerCaller = t.act.view === "manager-caller";
-      if (isManagerCaller) {
-        return permissionsFor(
-          "manager-caller",
-          space,
-          { owner: t.owner, actor: t.act.actor, connId, lifecycleUid: t.act.lifecycleUid },
-          { capabilities: ["run", "spawn"], lifecycleUid: t.act.lifecycleUid, managerInstanceId: t.act.managerInstanceId },
-        );
-      }
-      return permissionsFor(
-        "agent",
-        space,
-        { owner: t.owner, actor: t.act.actor, connId, lifecycleUid: t.act.lifecycleUid },
-        { capabilities: ["chat"], lifecycleUid: t.act.lifecycleUid },
-      );
-    },
+    permissionsFor: calloutPermissions(
+      ledgerAclResolver(isolatedCotalRoot),
+      async () => {},
+      plane.verifySession,
+      plane.issueUserCaller,
+    ),
     log: () => {},
   });
 
@@ -267,11 +280,12 @@ try {
     const now = Math.floor(Date.now() / 1000);
     return new SignJWT({
       sub: OWNER,
-      scope: ["run"],
+      scope: ["run", "spawn"],
       ver: USER_TOKEN_VER,
       act: {
         owner: OWNER,
         actor: CLI_USER_ACTOR,
+        scope: ["run", "spawn"],
         lifecycleUid: callerUid,
         ...(isManagerCaller ? { view: "manager-caller", managerInstanceId: TARGET_IID } : {}),
       },
@@ -328,15 +342,15 @@ try {
     fromPublic(responderId.id),
     fromPublic(auth.account.pub),
     {
-      pub: { allow: [`cotal.${space}.ep.reply.>`] },
-      sub: { allow: [`cotal.${space}.ep.inst.manager.${TARGET_IID}.>`] },
+      pub: { allow: [`cotal.${space}.ep.v1.reply.>`] },
+      sub: { allow: [`cotal.${space}.ep.v1.inst.manager.${TARGET_IID}.>`] },
     },
     { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)) },
   );
   const responderCreds = new TextDecoder().decode(fmtCreds(responderJwt, fromSeed(new TextEncoder().encode(responderId.seed))));
   respNc = await dialer({ servers: SERVERS, ...standaloneConnectOpts({ creds: responderCreds, tls: false }), maxReconnectAttempts: 0 });
 
-  respNc.subscribe(`cotal.${space}.ep.inst.manager.${TARGET_IID}.describe.>`, {
+  respNc.subscribe(`cotal.${space}.ep.v1.inst.manager.${TARGET_IID}.describe.>`, {
     callback: (err: unknown, msg: any) => {
       if (err || !msg) return;
       const parsed = parseEpSubject(msg.subject);
@@ -362,7 +376,7 @@ try {
     },
   });
 
-  respNc.subscribe(`cotal.${space}.ep.inst.manager.${TARGET_IID}.run-ps.>`, {
+  respNc.subscribe(`cotal.${space}.ep.v1.inst.manager.${TARGET_IID}.run-ps.>`, {
     callback: (err: unknown, msg: any) => {
       if (err || !msg) return;
       const parsed = parseEpSubject(msg.subject);
@@ -434,21 +448,25 @@ try {
 
   c("runtime askHost connects to instance-scoped manager with valid managerInstanceId", callerVerified, runWorkflowDiagnostic);
 
-  // CELL 2: Broker rejects class route (ep.one) publishes for manager-caller credentials
+  // CELL 2: Broker rejects class route (ep.v1.one) publishes for manager-caller credentials
   let classRouteRefused = false;
   try {
     const callerBearer = await mintUserToken("manager-caller");
+    const callerOpts = standaloneConnectOpts({ bearer: callerBearer, sentinelCreds: callout.sentinelCreds, tls: false });
     const callerNc = await dialer({
       servers: SERVERS,
-      ...standaloneConnectOpts({ bearer: callerBearer, sentinelCreds: callout.sentinelCreds, tls: false }),
+      ...callerOpts,
       maxReconnectAttempts: 0,
     });
     const callerTriple: EpCaller = { owner: OWNER, actor: CLI_USER_ACTOR, uid: callerUid };
     try {
-      await resolveService(callerNc, space, BASELINE_LIFECYCLE_ENDPOINT, callerTriple, { deadlineMs: 400 });
-    } catch (e: any) {
-      if (e.code === "permission-denied") {
-        classRouteRefused = true;
+      const caller = await issuedUserCaller(callerNc, space, String(callerOpts.name), callerTriple);
+      try {
+        await resolveService(callerNc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 400 });
+      } catch (e: any) {
+        if (e.code === "permission-denied") {
+          classRouteRefused = true;
+        }
       }
     } finally {
       await callerNc.drain();
@@ -491,6 +509,10 @@ try {
     await calloutNc.drain();
     calloutNc = undefined;
   }
+  if (plane) {
+    await plane.close();
+    plane = undefined;
+  }
 } finally {
   process.exit = origExit;
   console.error = origErr;
@@ -504,6 +526,11 @@ try {
         try { nc.close(); } catch {}
       }
     }
+  }
+  if (plane) {
+    try {
+      await plane.close();
+    } catch {}
   }
 
   // Restore environment variables: delete keys added during run and restore all originals

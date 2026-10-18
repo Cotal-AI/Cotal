@@ -31,49 +31,90 @@ import {
   ensureEventWalDir,
   resolveEventsStateRoot,
   controlFromEnv,
-  NO_TOOL_ARGS,
+  GATEWAY_CONNECTING,
+  GATEWAY_INSTRUCTIONS,
+  GATEWAY_LISTENING,
+  serveGatewayStdio,
   JsonlFileSource,
   type DurableSource,
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
-import { basename } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, parse } from "node:path";
 import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.js";
 import { createClaudeMapper, type ClaudeEntry, type ClaudeMapper } from "./agui-map.js";
 import { createBoundClaudeTranscriptSource } from "./agui-source.js";
+import { createAppHost } from "./app-host.js";
+import { readCliRecord } from "./cli-record.js";
+import { openWakeFeed } from "./wake-feed.js";
 
-/** What a plain session's one tool says. Static: an unmanaged process knows nothing about any mesh. */
-const HOW_TO_JOIN =
-  "This Claude Code session is not on a Cotal mesh, so the cotal_* mesh tools are off. " +
-  "The Cotal plugin stays off the mesh unless the session was launched with a mesh identity " +
-  "(COTAL_NAME, COTAL_LINK or COTAL_AGENT_FILE in its environment). To work on a mesh, launch the " +
-  "session through Cotal: `cotal setup` once, `cotal up` to start a local mesh, then `cotal spawn` " +
-  "to start a Claude session that joins it (`cotal spawn <name> --detach` runs it under the manager). " +
-  "Docs: https://docs.cotal.ai/getting-started/";
+/** What a plain session's local server tells the model ahead of the gateway's own steps. */
+const LOCAL =
+  "This is the Cotal server on this computer. It joins the person's local Cotal mesh. If a hosted " +
+  "Cotal connector is also available, use this one unless the person asks for the hosted one: a " +
+  "conversation uses one Cotal path. ";
 
-/** A plain `claude`: answer MCP with one static tool instead of closing stdio. Builds no MeshAgent
- *  and no control server, so nothing reaches a broker or binds a socket. */
-async function serveUnmanaged(): Promise<void> {
-  const server = new McpServer({ name: "cotal", version: "0.0.0" });
-  server.registerTool(
-    "cotal_how_to_join",
-    {
-      title: "How to join a Cotal mesh",
-      description: "Explains why this session has no Cotal mesh tools and how to launch one that does.",
-      inputSchema: NO_TOOL_ARGS,
-    },
-    async () => ({ content: [{ type: "text" as const, text: HOW_TO_JOIN }] }),
-  );
-  await server.connect(new StdioServerTransport());
+/** How a Claude Code conversation hears messages: the plugin's monitor wakes it, where it runs. */
+const CODE_LISTENING =
+  "In Claude Code this plugin's monitor starts a turn when a message arrives: the event begins with " +
+  '"Cotal:" and names the connection_id, and you read the message with cotal_inbox. cotal_connect says ' +
+  "whether the monitor runs in this session. Where it does not: " +
+  GATEWAY_LISTENING;
+
+
+/** A plain session, one the launcher did not start: a Claude Code session, or Claude Desktop through
+ *  its extension (`--desktop`). It serves the gateway surface over stdio with a local host, so a
+ *  conversation joins the local mesh only when it calls `cotal_connect`, as an identity of its own.
+ *  Nothing reaches a broker before that. */
+async function serveLocal(desktop: boolean): Promise<void> {
+  const host = createAppHost({
+    cotal: () => readCliRecord(dirname(process.argv[1] ?? "")),
+    // Claude Desktop's working directory is not the person's project, so the mesh is found from a
+    // directory that is no project: the `cotal use` mesh, else the only one running.
+    cwd: desktop ? parse(homedir()).root : process.cwd(),
+    env: process.env,
+  });
+  // Claude Desktop runs no plugin monitor, so only a Claude Code session gets the feed. Claude Code
+  // starts this server itself, so its parent is the Claude Code process the monitor names.
+  const feed = desktop ? undefined : await openWakeFeed(process.ppid);
+  const served = await serveGatewayStdio(host, {
+    source: "claude-local",
+    ...(feed
+      ? {
+          instructions: `${LOCAL}${GATEWAY_CONNECTING} ${CODE_LISTENING}`,
+          wake: {
+            signal: (c) => feed.send(c.id),
+            attach: (rewake) => feed.onReader(rewake),
+            listening: () =>
+              feed.watched()
+                ? "The Cotal monitor runs in this session: a new message starts a turn, so you do not need cotal_wait to hear it."
+                : "No Cotal monitor runs in this session, so messages reach you only when you call a tool: call cotal_wait to listen.",
+          },
+        }
+      : { instructions: `${LOCAL}${GATEWAY_INSTRUCTIONS}` }),
+  });
+  let ending: Promise<void> | undefined;
+  const end = () =>
+    (ending ??= host
+      .closeAll()
+      .then(() => served.close())
+      .finally(() => {
+        feed?.close();
+        process.exit(0);
+      }));
+  process.stdin.on("end", end);
+  process.on("SIGINT", end);
+  process.on("SIGTERM", end);
 }
 
 async function main(): Promise<void> {
-  // No identity → this is a plain `claude`, not a launcher-spawned agent. Stay
-  // off the mesh, so an installed plugin can't make the operator's own sessions
-  // join as stray peers, but still answer MCP so the client sees a working server.
+  // No identity → this is a plain `claude`, not a launcher-spawned agent. It stays
+  // off the mesh until the conversation calls `cotal_connect`, so an installed
+  // plugin can't make the operator's own sessions join as stray peers.
   if (!hasIdentity()) {
-    process.stderr.write("[cotal-connector] no COTAL_NAME — not a managed session; staying off the mesh\n");
-    await serveUnmanaged();
+    process.stderr.write("[cotal-connector] no COTAL_NAME — not a managed session; serving cotal_connect for this computer's meshes\n");
+    await serveLocal(process.argv.includes("--desktop"));
     return;
   }
   const session = await serveClaudeSession({

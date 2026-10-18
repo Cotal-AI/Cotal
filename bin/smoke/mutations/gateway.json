@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/gateway.smoke.ts"
   ],
-  "guard": "a remote conversation renames only on an authoritative collision of a valid name, an unauthenticated, missing or foreign call runs nothing, each call runs on its own connection's configuration, and the gateway offers and reports only its remote tool subset, and its own request handler serves POST as stateless JSON with the caller's authentication and refuses every other method",
+  "guard": "a remote conversation renames only on an authoritative collision of a valid name, an unauthenticated, missing or foreign call runs nothing, each call runs on its own connection's configuration, and the gateway offers and reports only its remote tool subset, and its own request handler serves POST as stateless JSON with the caller's authentication and refuses every other method, and cotal_wait returns a waiting or arriving message at once, follows attention, counts a focus @mention between waits, ignores a run turn it cannot surface, ends when its connection closes or refuses at once when it already has, honors the embedder's bound and cleans up, a wait or read whose client is gone clears nothing, and every other routed tool says when messages are waiting",
   "command": "pnpm smoke:gateway",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/gateway.json",
   "why": [
@@ -24,8 +24,8 @@
     {
       "name": "an unknown connection_id reports success instead of refusing",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "if (!c) return refuse(CONNECTION_REQUIRED);",
-      "replace": "if (!c) return toContent({ text: \"ok\" });",
+      "find": "        if (!c) return refuse(CONNECTION_REQUIRED);",
+      "replace": "        if (!c) return toContent({ text: \"ok\" });",
       "expectRed": "an unknown connection_id is refused",
       "cell": "an unknown connection_id is refused"
     },
@@ -129,6 +129,198 @@
       "expectRed": "the handler sends the default instructions",
       "cell": "the handler sends the default instructions",
       "note": "A client would then get no instruction to connect once per conversation and keep its connection_id."
+    },
+    {
+      "name": "cotal_wait never hears an arrival, so it ends only at its bound",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "    agent.on(\"incoming\", check);\n",
+      "replace": "",
+      "expectRed": "a direct message ends the wait and comes back with it",
+      "cell": "a direct message ends the wait and comes back with it"
+    },
+    {
+      "name": "cotal_wait ends on any arrival, ignoring attention",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "      if (wakeCount(agent) > 0) finish(true);",
+      "replace": "      finish(true);",
+      "expectRed": "in dnd attention, channel chatter does not end the wait",
+      "cell": "in dnd attention, channel chatter does not end the wait"
+    },
+    {
+      "name": "a message already waiting does not end the wait",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  if (wakeCount(agent) > 0) return Promise.resolve(true);\n",
+      "replace": "",
+      "expectRed": "a message already waiting is returned at once",
+      "cell": "a message already waiting is returned at once"
+    },
+    {
+      "name": "cotal_wait counts run turns the gateway cannot surface",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  return agent.inboxWake() + mentionsOf(agent).count;",
+      "replace": "  return agent.pendingWake() + mentionsOf(agent).count;",
+      "expectRed": "a run turn the gateway cannot surface does not end the wait",
+      "cell": "a run turn the gateway cannot surface does not end the wait"
+    },
+    {
+      "name": "a focus @mention does not end the wait",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "    agent.on(\"mention-wake\", mentioned);\n",
+      "replace": "",
+      "expectRed": "in focus attention, an @mention ends the wait and comes back with it",
+      "cell": "in focus attention, an @mention ends the wait and comes back with it"
+    },
+    {
+      "name": "cotal_wait reports an arrival without returning it",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "        return toContent(await runFor(inbox, c, {}, extra.signal));",
+      "replace": "        return toContent({ text: \"A message arrived. Read it with cotal_inbox.\" });",
+      "expectRed": "a direct message ends the wait and comes back with it",
+      "cell": "a direct message ends the wait and comes back with it"
+    },
+    {
+      "name": "a finished wait keeps its listener",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "      agent.off(\"incoming\", check);\n",
+      "replace": "",
+      "expectRed": "a finished wait leaves no listener on the agent",
+      "cell": "a finished wait leaves no listener on the agent"
+    },
+    {
+      "name": "routed tools no longer say messages are waiting",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "        const notice = spec.name === \"cotal_inbox\" ? undefined : waitingNotice(c.agent);",
+      "replace": "        const notice = undefined as { type: \"text\"; text: string } | undefined;",
+      "expectRed": "another tool's result says a message is waiting",
+      "cell": "another tool's result says a message is waiting"
+    },
+    {
+      "name": "the embedder's bound is ignored",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  const waitSeconds = options.waitSeconds ?? GATEWAY_WAIT_SECONDS;",
+      "replace": "  const waitSeconds = GATEWAY_WAIT_SECONDS;",
+      "expectRed": "cotal_wait is offered, needs connection_id and is bounded by the embedder",
+      "cell": "cotal_wait is offered, needs connection_id and is bounded by the embedder"
+    },
+    {
+      "name": "an embedder's bound below one second is accepted",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  if (!Number.isInteger(waitSeconds) || waitSeconds < 1) {",
+      "replace": "  if (false) {",
+      "expectRed": "an embedder's bound below one second is refused",
+      "cell": "an embedder's bound below one second is refused"
+    },
+    {
+      "name": "cotal_wait waits on an unknown connection_id instead of refusing",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "      if (!c) return refuse(CONNECTION_REQUIRED);\n      const inbox",
+      "replace": "      if (!c) return toContent({ text: \"ok\" });\n      const inbox",
+      "expectRed": "a wait on an unknown connection_id is refused",
+      "cell": "a wait on an unknown connection_id is refused"
+    },
+    {
+      "name": "a wait its client dropped keeps listening",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "    signal.addEventListener(\"abort\", abort, { once: true });\n",
+      "replace": "",
+      "expectRed": "a wait its client dropped stops listening",
+      "cell": "a wait its client dropped stops listening"
+    },
+    {
+      "name": "a read whose client is gone still clears what it shows",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        const keeps = () => peek === true || call?.signal?.aborted === true;",
+      "replace": "        const keeps = () => peek === true;",
+      "expectRed": "a read its client dropped clears nothing it could not hand over",
+      "cell": "a read its client dropped clears nothing it could not hand over"
+    },
+    {
+      "name": "the gateway runs a read without its request's signal",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  const result = await spec.run(c.agent, c.config, parseToolArgs(spec, args), { signal });",
+      "replace": "  const result = await spec.run(c.agent, c.config, parseToolArgs(spec, args));",
+      "expectRed": "a read its client dropped clears nothing it could not hand over",
+      "cell": "a read its client dropped clears nothing it could not hand over"
+    },
+    {
+      "name": "a wait whose client already left starts anyway",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  if (signal.aborted || agent.stopping) return Promise.resolve(false);",
+      "replace": "  if (agent.stopping) return Promise.resolve(false);",
+      "expectRed": "a wait whose client left before it began does not start",
+      "cell": "a wait whose client left before it began does not start"
+    },
+    {
+      "name": "focus @mentions are not counted",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "    agent.on(\"mention-wake\", () => (m.count += 1));\n",
+      "replace": "",
+      "expectRed": "a focus @mention between waits shows in the unread line",
+      "cell": "a focus @mention between waits shows in the unread line"
+    },
+    {
+      "name": "a read leaves the focus @mention count",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  if (spec.name === \"cotal_inbox\" && !args.peek && !signal.aborted) mentionsOf(c.agent).count = 0;\n",
+      "replace": "",
+      "expectRed": "a read clears the focus @mentions it carried",
+      "cell": "a read clears the focus @mentions it carried"
+    },
+    {
+      "name": "stopping the agent does not end a held wait",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "    agent.on(\"stopping\", stopped);\n",
+      "replace": "",
+      "expectRed": "disconnecting ends a held wait as a closed connection",
+      "cell": "disconnecting ends a held wait as a closed connection"
+    },
+    {
+      "name": "an agent whose transport is down stops without saying so",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    this.emit(\"stopping\");\n",
+      "replace": "    if (this._transportConnected) this.emit(\"stopping\");\n",
+      "expectRed": "disconnecting a connection whose transport is down ends its held wait",
+      "cell": "disconnecting a connection whose transport is down ends its held wait"
+    },
+    {
+      "name": "a wait on a stopped connection reads as quiet",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "      if (c.agent.stopping) return refuse(CONNECTION_REQUIRED);\n",
+      "replace": "",
+      "expectRed": "a wait on an already-stopped connection refuses at once",
+      "cell": "a wait on an already-stopped connection refuses at once"
+    },
+    {
+      "name": "a wait on a stopped agent starts anyway",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  if (signal.aborted || agent.stopping) return Promise.resolve(false);",
+      "replace": "  if (signal.aborted) return Promise.resolve(false);",
+      "expectRed": "a wait on an already-stopped connection refuses at once",
+      "cell": "a wait on an already-stopped connection refuses at once"
+    },
+    {
+      "name": "a read whose client left still clears the focus @mention count",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  if (spec.name === \"cotal_inbox\" && !args.peek && !signal.aborted) mentionsOf(c.agent).count = 0;",
+      "replace": "  if (spec.name === \"cotal_inbox\" && !args.peek) mentionsOf(c.agent).count = 0;",
+      "expectRed": "a read its client dropped keeps the focus @mention count",
+      "cell": "a read its client dropped keeps the focus @mention count"
+    },
+    {
+      "name": "the stdio server sends no default instructions",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  const server = new McpServer({ name: \"cotal\", version: \"0.0.0\" }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });",
+      "replace": "  const server = new McpServer({ name: \"cotal\", version: \"0.0.0\" });",
+      "expectRed": "the stdio server sends the default instructions",
+      "cell": "the stdio server sends the default instructions"
+    },
+    {
+      "name": "the stdio server ignores the streams it was given",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  await server.connect(new StdioServerTransport(o.input, o.output));",
+      "replace": "  await server.connect(new StdioServerTransport());",
+      "expectRed": "the stdio server sends the default instructions",
+      "cell": "the stdio server sends the default instructions"
     }
   ]
 }

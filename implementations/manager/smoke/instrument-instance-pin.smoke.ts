@@ -35,7 +35,7 @@
  *
  * Run: pnpm smoke:instrument-instance-pin
  */
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -533,9 +533,13 @@ try {
       const afterRead = cache.get(MANAGER_ENDPOINT)?.responder.instanceId;
       check("a READ with the same forced split self-heals inside ONE call: the guard did not widen",
         afterRead === IID1 || afterRead === IID2, { afterRead, threw: readThrew instanceof Error ? readThrew.message.slice(0, 120) : readThrew });
+      // Each re-issue rides the same class queue and can be refused again, so one call may recover
+      // several splits. The count is graded against the re-issues that left the caller: every
+      // `ps` request after the first is one recovered split.
       check("...and it healed through the REFUSAL, not the allowlist: the recovery counter moved",
-        ep.splitRecoveryCount === readSplitsBefore + 1,
-        { before: readSplitsBefore, after: ep.splitRecoveryCount });
+        ep.splitRecoveryCount > readSplitsBefore
+        && ep.splitRecoveryCount - readSplitsBefore === reqs(MANAGER_ENDPOINT, "ps") - readReqs - 1,
+        { before: readSplitsBefore, after: ep.splitRecoveryCount, psRequests: reqs(MANAGER_ENDPOINT, "ps") - readReqs });
       // A read is repeat-safe, so a duplicate would be harmless — which is exactly why it is the one
       // place a duplicate could hide. Counted anyway: under the fence the first attempt is refused
       // before the handler, so even here the effect lands once.
@@ -672,8 +676,11 @@ try {
       const rebound = cache.get(MANAGER_ENDPOINT)?.responder.instanceId;
       check("...and the stale bind did not survive the call: the handle is bound to a LIVE incarnation, not the ghost",
         rebound === undefined || rebound === IID1 || rebound === IID2, { rebound, ghost });
+      // Graded like the read arm: one recovered split per `purge` re-issue, however many it took.
       check("...and the recovery was counted, so a handled split is still a measurable one",
-        ep.splitRecoveryCount === purgeSplitsBefore + 1, { before: purgeSplitsBefore, after: ep.splitRecoveryCount });
+        ep.splitRecoveryCount > purgeSplitsBefore
+        && ep.splitRecoveryCount - purgeSplitsBefore === reqs(MANAGER_ENDPOINT, "purge") - purgeReqs - 1,
+        { before: purgeSplitsBefore, after: ep.splitRecoveryCount, purgeRequests: reqs(MANAGER_ENDPOINT, "purge") - purgeReqs });
       // The narrow-guard version of this code returned a SUCCESS here having purged TWICE. The
       // success is now legitimate and the difference is not visible in the reply at all — only in
       // the execution count above, which is exactly why that count had to exist before this cell
@@ -819,6 +826,7 @@ try {
         "prepare-preservation": attempt,
         "commit-preservation": attempt,
         "abort-preservation": attempt,
+        "transcript-receive": { sha256: randomBytes(32).toString("hex"), size: 0, source: "no-such-session", sourceHost: "no-such-host" },
       };
       const notReached: string[] = [];
       const ranTwice: string[] = [];

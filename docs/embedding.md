@@ -246,7 +246,7 @@ auth plane takes the claim. An absent or inconclusive oracle refuses the reclaim
 
 ### Remote MCP gateway
 
-`@cotal-ai/connector-core` exports `registerCotalGatewayTools(server, host, source?)` for
+`@cotal-ai/connector-core` exports `registerCotalGatewayTools(server, host, source?, options?)` for
 a service that serves Cotal to a hosted MCP client over HTTP. A hosted client can send many
 conversations through one bearer and one MCP session, so a request does not say which conversation
 sent it. Each conversation calls `cotal_connect` and passes the `connection_id` it returns on every
@@ -272,13 +272,43 @@ advertised text names one connection's channels. Each call runs against that con
 configuration. Authentication, credential issuance and revocation and durable connection records
 stay with the host.
 
-`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions? })` serves one HTTP
-request to the endpoint with the package's own MCP server, so the embedding service never imports an
-MCP SDK or a zod version of its own. The service authenticates the request, answers 401 itself when
-that fails, and passes the result as `auth`. A framework that already parsed the JSON body passes it
+A remote MCP client gives the server no way to start a turn, so the gateway adds `cotal_wait`. It
+returns at once when a message that should wake the agent is buffered, and otherwise as soon as one
+arrives, with the same reply `cotal_inbox` gives. Wake-worthy follows the agent's attention: direct
+messages, role requests and @mentions always, other channel traffic only in `open`. With none, it
+returns after `options.waitSeconds`, which defaults to `GATEWAY_WAIT_SECONDS` (50). Keep it under
+every proxy and client timeout in front of the service. The reply is one JSON body, so nothing is
+sent until the wait ends: Claude Code gives a remote server 60 seconds to the first byte, Cloudflare
+ends an origin response after about 100 seconds and claude.ai ends a tool call after 240. A wait
+whose client closes the request stops listening, and a read whose client is gone by the time it
+would clear messages clears nothing, so neither takes a message it cannot deliver. A wait ends
+when its connection closes, also while the broker is unreachable; it listens for `MeshAgent`'s
+`stopping` event. In `focus` an @mention is not buffered, so the gateway counts the ones
+since the last read, and a wait that starts after one returns it at once. Every other routed tool
+except `cotal_inbox` adds a line to its result when wake-worthy messages are waiting.
+
+`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, waitSeconds? })`
+serves one HTTP request to the endpoint with the package's own MCP server, so the embedding service
+never imports an MCP SDK or a zod version of its own. The service authenticates the request, answers
+401 itself when that fails, and passes the result as `auth`. A framework that already parsed the JSON body passes it
 as `body`. The endpoint is stateless: each POST gets a fresh server and a JSON response, and every
-other method answers 405. `GATEWAY_INSTRUCTIONS` is the server instructions text sent when
-`instructions` is omitted.
+other method answers 405. A `cotal_wait` call holds its POST open for up to `waitSeconds`.
+`GATEWAY_INSTRUCTIONS` is the server instructions text sent when `instructions` is omitted.
+
+`serveGatewayStdio(host, { input?, output?, source?, instructions?, waitSeconds?, wake? })` serves the same
+surface over stdio, for a local client such as Claude Desktop that launches one process for all of
+its conversations. A stdio request carries no authentication, so `host.account` receives `undefined`
+and names the local user. A client that cancels a call aborts its signal, so a cancelled wait stops
+listening. The streams default to the process's own, and stdout then carries only MCP.
+
+An embedder whose client can be woken passes `wake`, to `serveGatewayStdio` or in the options of
+`registerCotalGatewayTools`. The gateway calls `wake.signal(connection)` when a connection gets
+something that would end a `cotal_wait` while no wait holds it, and not again for that connection
+until `cotal_inbox` or `cotal_wait` reads. `signal` returns false when no client heard it. The
+gateway then signals that connection again when the embedder calls the function `wake.attach`
+received, which it does when a client starts listening. `cotal_connect` adds `wake.listening()` to
+its reply. `GATEWAY_INSTRUCTIONS` is `GATEWAY_CONNECTING` followed by `GATEWAY_LISTENING`, so an
+embedder can say how its conversations listen and keep how they connect.
 
 ### Remote manager client composition
 

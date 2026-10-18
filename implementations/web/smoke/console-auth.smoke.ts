@@ -24,7 +24,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { closeSync, fchmodSync, fstatSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fchmodSync, fstatSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +32,7 @@ import { isReachable, setupSpaceStreams } from "@cotal-ai/core";
 import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
-import { CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED, UNAUTHENTICATED, makeAuthGate, openDetachedLog, webProcess } from "../src/web.js";
+import { CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED, PAGE, UNAUTHENTICATED, makeAuthGate, openDetachedLog, webProcess } from "../src/web.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -847,6 +847,24 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
           { form, where, status: attack.status, log: output });
       }
     }
+
+    // 8b. A STATIC ROW PAST THE GATE ANSWERS WITH ITS FILE OR WITH THE CATCH'S 500 NAMING THE READ.
+    // The route wrote its 200 before reading, so a failed read reached the catch with the status
+    // already sent and the browser ran an empty script as a success (#3417). The vendor rows name
+    // copies the build makes under `dist/web/vendor`, so in this run from source they are real rows
+    // whose file is absent.
+    const absent = PAGE["/vendor/marked.umd.js"];
+    check("STATIC FIXTURE: in a run from source the vendor row names a file that does not exist",
+      absent !== undefined && !existsSync(absent.path), absent);
+    const served = await fetch(`http://127.0.0.1:${webPort}/app.js`, { headers: { cookie } });
+    const servedBody = Buffer.from(await served.arrayBuffer());
+    check("STATIC CONTROL: a row whose file reads is served whole, so the refusal below is about the read",
+      served.status === 200 && servedBody.equals(readFileSync(PAGE["/app.js"].path)), { status: served.status, bytes: servedBody.length });
+    const failed = await fetch(`http://127.0.0.1:${webPort}/vendor/marked.umd.js`, { headers: { cookie } });
+    const failedBody = await failed.text();
+    check("a static row whose file cannot be read answers 500 naming the failed read, never an empty 200",
+      failed.status === 500 && failed.headers.get("content-type") === "application/json" && failedBody.includes("ENOENT"),
+      { status: failed.status, body: failedBody });
   } finally {
     child?.kill("SIGTERM");
     broker.kill("SIGTERM");

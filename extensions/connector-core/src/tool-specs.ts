@@ -116,7 +116,14 @@ export interface CotalToolSpec {
    *  THIS; none of them re-derives an open object, and none of them can, because
    *  {@link cotalToolSpecs} is the only source and it closes every shape on the way out. */
   schema: CotalToolInput;
-  run(agent: MeshAgent, config: AgentConfig, args: any): Promise<ToolResult> | ToolResult;
+  run(agent: MeshAgent, config: AgentConfig, args: any, call?: ToolCall): Promise<ToolResult> | ToolResult;
+}
+
+/** What a surface knows about the request a tool runs for. */
+export interface ToolCall {
+  /** Aborts when the caller can no longer receive the result. A read that finds it aborted clears
+   *  nothing, so the messages stay for the next read. */
+  signal?: AbortSignal;
 }
 
 /** How a tool is AUTHORED: a raw shape, which reads better inline than a wrapped object, and
@@ -445,10 +452,10 @@ const partOffsets = new WeakMap<MeshAgent, Map<string, number>>();
 const inboxReads = new WeakMap<MeshAgent, Promise<unknown>>();
 
 function oneReadAtATime<A>(
-  read: (agent: MeshAgent, config: AgentConfig, args: A) => Promise<ToolResult>,
-): (agent: MeshAgent, config: AgentConfig, args: A) => Promise<ToolResult> {
-  return (agent, config, args) => {
-    const turn = (inboxReads.get(agent) ?? Promise.resolve()).then(() => read(agent, config, args));
+  read: (agent: MeshAgent, config: AgentConfig, args: A, call?: ToolCall) => Promise<ToolResult>,
+): (agent: MeshAgent, config: AgentConfig, args: A, call?: ToolCall) => Promise<ToolResult> {
+  return (agent, config, args, call) => {
+    const turn = (inboxReads.get(agent) ?? Promise.resolve()).then(() => read(agent, config, args, call));
     inboxReads.set(agent, turn.catch(() => undefined));
     return turn;
   };
@@ -901,8 +908,11 @@ export function cotalToolSpecs(
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },
-      run: oneReadAtATime(async (agent, _config, { peek, scope }: { peek?: boolean; scope?: "pull-only" }) => {
+      run: oneReadAtATime(async (agent, _config, { peek, scope }: { peek?: boolean; scope?: "pull-only" }, call) => {
         const inboxScope = scope ?? "all";
+        // Asked at each clear, not once: the caller can go while this read waits for the one before
+        // it or for focus recall, and what it never receives must stay for the next read.
+        const keeps = () => peek === true || call?.signal?.aborted === true;
         // SELECT, RENDER, THEN CLEAR EXACTLY WHAT WENT OUT (#603). The old order drained the whole
         // scope up front, so a payload too large for the host to deliver had already been marked
         // read, and a reconnect replay is both the largest payload and the one most likely to have
@@ -934,7 +944,7 @@ export function cotalToolSpecs(
               item: buffered.find((i) => stuck.has(i.recvKey)),
               offered: buffered,
               stuck,
-              peek: peek ?? false,
+              peek: keeps(),
               last: (i) => agent.drainInboxDeliveries([i.recvKey]),
             });
             if (part) return ok(part);
@@ -942,7 +952,7 @@ export function cotalToolSpecs(
           // The response exists before anything is acked: an ack is a claim that these messages were
           // handed over, so nothing may be cleared while the handing-over is still hypothetical. And
           // it is the ASSEMBLED response that decides, so what is acked is what a caller was handed.
-          if (!peek) agent.drainInboxDeliveries(shown.map((i) => i.recvKey));
+          if (!keeps()) agent.drainInboxDeliveries(shown.map((i) => i.recvKey));
           void held;
           return ok(text);
         }
@@ -1030,7 +1040,7 @@ export function cotalToolSpecs(
             item,
             offered: [...buffered, ...fresh],
             stuck,
-            peek: peek ?? false,
+            peek: keeps(),
             warning,
             last: (i) => {
               if (bufferedIds.has(i.recvKey)) agent.drainInboxDeliveries([i.recvKey]);
@@ -1042,7 +1052,7 @@ export function cotalToolSpecs(
         }
         // Render first, ack second, and only ever ids from the buffered lane: acking a recall id
         // would mark it handled, so a later live copy of that channel message would be dropped.
-        if (!peek) {
+        if (!keeps()) {
           agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.recvKey)).map((i) => i.recvKey));
           // THE MARK MOVES OVER AN UNBROKEN PREFIX, and stops at the first thing this reply did not
           // carry. Two recall items can share a millisecond, so the mark is a (timestamp, id) pair:

@@ -2,11 +2,12 @@
   "grades": "integration",
   "suite": ["implementations/cli/smoke/down-target.smoke.ts"],
   "guard": "bare cotal down names a live registered broker that has no pidfile and does not claim nothing is running",
-  "command": "pnpm build > /dev/null && pnpm smoke:down-target",
+  "command": "pnpm --filter @cotal-ai/cli... build > /dev/null && pnpm smoke:down-target",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-unowned-broker.json",
   "why": [
     "A broker this stack did not start has no nats.pid. Bare cotal down used to print Nothing running for the local stack while cotal meshes showed that space online. The first cell starts a real nats-server, records the mesh, and requires the unowned wording plus a still-live process.",
-    "Round 2: the probe was then gated on !any, so with an owned component pidfile present (a detached web) the same bare down stopped the web, exited 0, and never named the still-live broker. The second cell plants a real web.pid next to the live unowned broker and requires both outcomes at once: the web stops and clears its artifacts, the broker is named, left alive, its registration kept, exit 1."
+    "Round 2: the probe was then gated on !any, so with an owned component pidfile present (a detached web) the same bare down stopped the web, exited 0, and never named the still-live broker. The second cell plants a real web.pid next to the live unowned broker and requires both outcomes at once: the web stops and clears its artifacts, the broker is named, left alive, its registration kept, exit 1.",
+    "Every build is scoped to the @cotal-ai/cli dependency closure (core, lang, workspace, auth, cli). The suite imports cli and web source directly and reaches only the core and workspace dists by name; it spawns no repo binary, so building the rest of the repo changes nothing it loads."
   ],
   "mutations": [
     {
@@ -17,7 +18,7 @@
       "expectRed": "a live unowned broker is named and not stopped",
       "cell": "a live unowned broker is named and not stopped",
       "note": "Removing the probe restores the pidfile-only Nothing running line while the hand-started broker is still alive.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
     },
     {
       "name": "restore the !any guard so a mixed bare down exits 0 without naming the live broker",
@@ -27,7 +28,7 @@
       "expectRed": "an owned web plus a live unowned broker stops the web and names the broker",
       "cell": "an owned web plus a live unowned broker stops the web and names the broker",
       "note": "The round-2 reviewer's false success: with an owned web pidfile present, the gated probe never ran, the web stopped, and down exited 0 while the unowned broker stayed live and unmentioned.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
     }
   ]
 }

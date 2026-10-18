@@ -367,7 +367,8 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
  * (InboxItem) when a `focus`-mode agent is @-mentioned on a channel — the body was
  * acked-and-dropped (not buffered), so this
  * only asks the push layer to *wake* the agent to pull it; `"wake"` (no payload) to ask that
- * layer to wake the session now (the Stop→idle flush of held messages); `"error"` (Error) for
+ * layer to wake the session now (the Stop→idle flush of held messages); `"stopping"` (no payload)
+ * once, when {@link MeshAgent.stop} begins, whatever the transport's state; `"error"` (Error) for
  * endpoint faults.
  */
 export class MeshAgent extends EventEmitter {
@@ -911,6 +912,7 @@ export class MeshAgent extends EventEmitter {
 
   private async stopOnce(): Promise<void> {
     this._stopping = true;
+    this.emit("stopping");
     for (const key of [...this.renewals.keys()]) this.stopRenewal(key);
     if (this.turnPollTimer !== undefined) {
       clearInterval(this.turnPollTimer);
@@ -1672,7 +1674,14 @@ export class MeshAgent extends EventEmitter {
     // An unsurfaced run turn is directed-strength: it wakes regardless of attention, exactly like
     // a DM — a run is waiting on this seat, and holding it costs the run its deadline.
     const turns = [...this.activeTurns.values()].filter((t) => !t.surfaced).length;
-    return turns + this.inbox.filter((p) => {
+    return turns + this.inboxWake(skip);
+  }
+
+  /** The inbox half of {@link pendingWake}: buffered items that should wake the agent, without run
+   *  turns. A surface that cannot surface a run turn, such as the remote gateway, waits on this, so
+   *  a turn it can never clear does not end every wait at once. */
+  inboxWake(skip?: (item: InboxItem) => boolean): number {
+    return this.inbox.filter((p) => {
       const it = p.item;
       if (p.pullOnly || skip?.(it)) return false;
       if (it.kind !== "channel" || it.mentionsMe) return true;
@@ -2184,11 +2193,15 @@ export class MeshAgent extends EventEmitter {
           return { ok: false, error: `${command}: this agent's bearer comes from its host, which issues no manager-call bearer, so manager operations are unavailable` };
         const managerInstanceId = opts.instanceId ?? this.config.managerInstanceId;
         const { instanceId: _instanceId, follow, ...invokeOpts } = opts;
+        // An ambiguity refusal names the bearer command's own selector. This caller passes it from
+        // the tool's `instance` argument, so the tool's caller is told that argument instead.
         const bearer = (signal?: AbortSignal) => this.execBearerCmd([
           ...bearerCmd,
           "--manager-call",
           ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : []),
-        ], signal);
+        ], signal).catch((e: unknown) => {
+          throw e instanceof Error ? new Error(e.message.replace("--manager-instance <instanceId>", "the instance argument")) : e;
+        });
         // Subscribe before submission on the renewing main connection. A long accepted launch
         // must not inherit the short-lived control credential's expiry.
         r = await invokeUserManager({ ...this.config, managerInstanceId }, bearer, command, input, {

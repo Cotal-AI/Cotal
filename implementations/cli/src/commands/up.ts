@@ -130,7 +130,7 @@ import { detachedSystemdSupervisionWarning } from "../lib/systemd-supervision.js
 import { deliveryStoppedByDown, deliveryUp, ensureControlPlane, ensureDelivery, stopDelivery } from "../lib/delivery-proc.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { displayCmd } from "../lib/self-exec.js";
-import { liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
+import { clearManagerArtifacts, liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
@@ -1230,6 +1230,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     teardown = (async () => {
       try {
         await stopManager(space);
+        clearManagerArtifacts(space);
       } catch (e) {
         console.error(c.red(`! teardown: ${(e as Error).message}`));
         console.error(c.red(`the stack is still running; to take managed agents with it, run: cotal down --with-agents`));
@@ -1252,7 +1253,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // that one holds, so wait for a Ctrl-C teardown already running instead of racing it.
     await teardown;
     await stopDelivery(space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
-    await stopManager(space).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
+    await stopManager(space).then(() => clearManagerArtifacts(space)).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
     await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
     // Unrecording (and the exit code below) both depend on WHY the broker is gone. `stopping` is
     // true only for the intended shutdown `stop()` drives (Ctrl-C, SIGTERM) — everything else here
@@ -2156,6 +2157,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // lives at this address) would win the fresh mesh's lease and the launch manager would refuse.
   // Stop it, so the manager started below WITH the launch spec is THE manager.
   await stopManager(m.space);
+  clearManagerArtifacts(m.space);
   let pid: number;
   let controlPlane = false;
   let authService = true;

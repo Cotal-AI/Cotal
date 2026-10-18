@@ -2,7 +2,7 @@
   "suite": [
     "packages/lang/smoke/grammar.smoke.ts"
   ],
-  "guard": "The dead zone is refused when the program is read (L2004), a named function expression binds its own name, bigint literals are refused (L1030), and a literal worktree shared across branches of one concurrent scope is refused while one branch keeps its own tree (L3022). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "guard": "The dead zone is refused when the program is read (L2004), a named function expression binds its own name, bigint literals are refused (L1030), and a literal worktree shared across branches of one concurrent scope is refused while one branch keeps its own tree (L3022). A destructuring or for-of write to a `const` is refused statically (L2003). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-grammar",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/static-bindings.json",
   "mutations": [
@@ -105,6 +105,26 @@
       "completionMarker": "ok the array form resolves its named branches the same way",
       "cell": "a named fanOut function that spawns a literal worktree runs it in every branch",
       "note": "Same defect for fanOut's function argument. Measured 2026-09-03: the suite stops on 'a named fanOut function that spawns a literal worktree runs it in every branch', the program accepted where L3022 is owed."
+    },
+    {
+      "name": "a destructuring target is checked as a single node, the shipped defect",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "  patternTargets(target, targets);\n  for (const t of targets) {\n    if (t.type === \"Identifier\" && scope.lookup(t.name as string) === \"const\") {",
+      "replace": "  targets.push(target);\n  for (const t of targets) {\n    if (t.type === \"Identifier\" && scope.lookup(t.name as string) === \"const\") {",
+      "expectRed": "const cannot be an array destructuring target",
+      "completionMarker": "ok const cannot be reassigned",
+      "cell": "const cannot be an array destructuring target",
+      "note": "Only a bare identifier on the left is checked, so `[c] = [1]` against `const c` validates and the run fails with L2003 only when the line executes, the measured pre-fix behavior."
+    },
+    {
+      "name": "a non-declaration for-of target is not checked, the shipped defect",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "      if (node.type === \"ForOfStatement\" && (node.left as AnyNode).type !== \"VariableDeclaration\") {\n        checkConstWrite(node.left as AnyNode, scope, v);",
+      "replace": "      if (false) {\n        checkConstWrite(node.left as AnyNode, scope, v);",
+      "expectRed": "const cannot be a for-of target",
+      "completionMarker": "ok const cannot be an object destructuring target",
+      "cell": "const cannot be a for-of target",
+      "note": "The for-of left is walked as a read, so `for (c of [1]) {}` against `const c` validates, the measured pre-fix behavior."
     }
   ]
 }

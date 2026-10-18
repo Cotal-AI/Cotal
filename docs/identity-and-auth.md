@@ -150,6 +150,10 @@ reaches. Persona redefinition separates content from policy; the write path take
 and every connect is authorized live against the operator's **actor ledger**. No creds
 files to hand out, and revoking a grant actually bites.
 
+The first enable pins the space to that IdP. A later `--idp` naming a different IdP is refused,
+because the IdP is part of every derived owner. Two first enables that race on one state dir leave
+one pin: the other caller adopts it when it names the same IdP and is refused when it does not.
+
 **The flow.** Each person runs `cotal login --idp <url>` once per machine. The IdP URL, the JWKS
 URL pinned from it and the catalog link below must use HTTPS. Plain HTTP is accepted only on a
 loopback IP literal such as `127.0.0.1`, never on `localhost`, whose resolution would choose the

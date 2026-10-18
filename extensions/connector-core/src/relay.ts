@@ -11,6 +11,9 @@ import { connect } from "node:net";
 import { controlFromEnv, hasIdentity } from "./session-env.js";
 import { HANDOFF_RECEIPT } from "./control.js";
 
+/** Re-exported for a plugin process that must stay off the barrel, as a hook does. */
+export { hasIdentity };
+
 const TIMEOUT_MS = 2000;
 /** A startup hook may run before the MCP process has bound its socket. Stay inside the existing
  * hook budget, but do not turn one early ENOENT into a permanently lost lifecycle event. */

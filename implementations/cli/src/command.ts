@@ -118,6 +118,9 @@ function skipAutoReconcile(argv: string[]): boolean {
   // connector as a side effect of a credential exchange. The seat's env carries no
   // COTAL_SKIP_CONNECTOR_SEED (only an operator-set one is forwarded), so the skip is by name.
   if (name === "agent-bearer") return true;
+  // `app-identity` is machine-facing too: the Claude connector's local server runs it on every
+  // connection, so, like a credential exchange, it must not seed the store under a running connector.
+  if (name === "app-identity") return true;
   return false;
 }
 

@@ -16,6 +16,7 @@ import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
+import { refreshConnectorInstalls } from "./setup.js";
 import { c } from "../ui.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
@@ -54,6 +55,8 @@ export interface UpdateRuntime {
   readonly nodePath: string;
   version(): string;
   reconcile(): Promise<void>;
+  /** Bring what connectors installed in their harnesses to this release; one line per connector. */
+  refreshConnectors(): Promise<readonly string[]>;
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
   extensions(): readonly InstalledExtension[];
   claimUpdatePass(): () => void;
@@ -84,6 +87,7 @@ const runtime: UpdateRuntime = {
   nodePath: process.execPath,
   version: cliVersion,
   reconcile: () => runSeed({ force: true }),
+  refreshConnectors: refreshConnectorInstalls,
   reportRunningManager: (target) => reportRunningManagers(target),
   extensions: () => loadExtensionsManifest().extensions,
   claimUpdatePass: () => claimExtensionUpdatePass(),
@@ -169,6 +173,12 @@ async function reconcileCurrent(
     await rt.reconcile();
   } catch (e) {
     rt.err(c.red(`✗ built-in connectors: ${message(e)}`));
+    return finish(false);
+  }
+  try {
+    for (const line of await rt.refreshConnectors()) rt.out(c.green(`✓ ${line}`));
+  } catch (e) {
+    rt.err(c.red(`✗ connector installs: ${message(e)}`));
     return finish(false);
   }
 

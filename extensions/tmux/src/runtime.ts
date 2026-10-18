@@ -183,6 +183,10 @@ registry.register(tmuxRuntimeProvider);
 function tmuxLayout(session: string, label: string, tab: Tab): string {
   const [first, ...rest] = tab.panes;
   if (!first) throw new Error(`tmux layout "${label}": tab has no panes`);
+  if (rest.length > 0 && !tab.split)
+    throw new Error(
+      `tmux layout "${label}": ${tab.panes.length} panes need a split (direction + ratio)`,
+    );
 
   const firstCmd = tmux.privateLaunch(tmux.mergedCommand(first.env ?? {}, first.command, first.args ?? [])).command;
   // Drive splits/focus off the STABLE window ID returned here — never `session:label` (labels can
@@ -190,11 +194,6 @@ function tmuxLayout(session: string, label: string, tab: Tab): string {
   const { windowId } = tmux.openWindow(session, label, firstCmd, first.cwd ?? ".", {
     focus: false,
   });
-
-  if (rest.length > 0 && !tab.split)
-    throw new Error(
-      `tmux layout "${label}": ${tab.panes.length} panes need a split (direction + ratio)`,
-    );
 
   rest.forEach((pane) => {
     const cmd = tmux.privateLaunch(tmux.mergedCommand(pane.env ?? {}, pane.command, pane.args ?? [])).command;
