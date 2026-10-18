@@ -13,6 +13,13 @@ export interface ConnectorSetupAction<Input = void> {
   readonly run: (input: Input) => Promise<string> | string;
 }
 
+/** What a connector's install action receives. */
+export interface ConnectorSetupInput {
+  /** The argv that runs this Cotal CLI, `[node, ...loaderFlags, entry]` by absolute path, so an asset
+   *  the action installs can run the CLI without `cotal` on its PATH. */
+  readonly cotal: readonly string[];
+}
+
 /** Inputs shared by connector-specific skills installers. The authored skills themselves use the
  * cross-vendor Agent Skills format; a provider decides how its harness consumes them. */
 export interface ConnectorSkillsSetupInput {
@@ -66,7 +73,7 @@ export interface ConnectorSetupProvider extends Extension {
   /** Native executables required to run this provider. If none are present on PATH, setup skips this
    * provider while still reconciling the cross-vendor skills drop. */
   readonly requires?: readonly string[];
-  readonly connector?: ConnectorSetupAction;
+  readonly connector?: ConnectorSetupAction<ConnectorSetupInput>;
   readonly skills?: ConnectorSetupAction<ConnectorSkillsSetupInput>;
   /** Shares the MCP servers the user's own harness sessions load with the agents this connector
    * spawns. First-run setup runs it; a share list the cotal config already declares is kept. */

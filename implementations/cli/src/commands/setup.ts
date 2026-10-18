@@ -128,7 +128,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
     }
     const provider = await availableSetupProvider(candidate.connector);
     if (provider?.connector) {
-      if (!(await runSteps([actionStep(provider.connector, undefined)], log, { yes, assists: connectorAssists }))) return abort();
+      if (!(await runSteps([actionStep(provider.connector, { cotal: selfArgv() })], log, { yes, assists: connectorAssists }))) return abort();
     } else {
       p.log.success(`${candidate.value} ready (auto-wired when you spawn it)`);
       log.line(`connector ${candidate.value}: ready (no install)`);

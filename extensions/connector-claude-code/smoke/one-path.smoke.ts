@@ -74,7 +74,7 @@ try {
   const dead = await runHook(DEAD_SOCKET, preToolUse("mcp__claude_ai_Cotal__cotal_connect"));
   check("the refusal holds with a dead control socket and does not wait on it", dead.code === 0 && denied(dead.stdout) && dead.ms < 1500, dead);
 
-  for (const tool of ["mcp__cotal__cotal_send", "mcp__plugin_cotal_cotal__cotal_how_to_join", "Bash", "mcp__github__create_issue", "mcp__company__cotal_proxy__status"]) {
+  for (const tool of ["mcp__cotal__cotal_send", "mcp__plugin_cotal_cotal__cotal_connect", "Bash", "mcp__github__create_issue", "mcp__company__cotal_proxy__status"]) {
     const r = await runHook(MANAGED, preToolUse(tool));
     check(`a launched session passes ${tool} through`, r.code === 0 && r.stdout === "", r);
   }

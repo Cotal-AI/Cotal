@@ -14,6 +14,7 @@ import {
   type McpServerSpec,
 } from "@cotal-ai/core";
 import { ENV_REFERENCE } from "@cotal-ai/connector-core";
+import { CLI_RECORD } from "./cli-record.js";
 import { claudeUserMcpServers } from "./user-mcp.js";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -30,7 +31,7 @@ function marketplaceDir(): string {
   return join(cotalHome(), "claude-plugin");
 }
 
-function materialize(name: string, root: string, assets: readonly string[], version?: string): void {
+function materialize(name: string, root: string, assets: readonly string[], version?: string, files: Readonly<Record<string, string>> = {}): void {
   const market = marketplaceDir();
   mkdirSync(market, { recursive: true });
   const dest = join(market, name);
@@ -53,6 +54,7 @@ function materialize(name: string, root: string, assets: readonly string[], vers
       mkdirSync(join(destination, ".."), { recursive: true });
       cpSync(join(root, asset), destination, { recursive: true, dereference: true });
     }
+    for (const [path, text] of Object.entries(files)) writeFileSync(join(staging, path), text);
     if (version) {
       const manifestPath = join(staging, ".claude-plugin", "plugin.json");
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
@@ -217,10 +219,14 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     title: "Install the Claude Code plugin",
     explain: "Lets a Claude Code session join the web and wake on peer messages.",
     context: [DOCS_URL],
-    run() {
+    run({ cotal }) {
       for (const asset of ["dist/mcp.cjs", "dist/hook.cjs", ".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json"])
         if (!existsSync(join(PACKAGE_ROOT, asset))) throw new Error(`plugin asset missing: ${join(PACKAGE_ROOT, asset)}`);
-      materialize("cotal", PACKAGE_ROOT, [".claude-plugin", ".mcp.json", "hooks", "dist/mcp.cjs", "dist/hook.cjs"]);
+      // How the plugin's server runs the CLI for a plain session's `cotal_connect`, by absolute path:
+      // Claude Desktop starts a server with a minimal PATH.
+      materialize("cotal", PACKAGE_ROOT, [".claude-plugin", ".mcp.json", "hooks", "dist/mcp.cjs", "dist/hook.cjs"], undefined, {
+        [`dist/${CLI_RECORD}`]: `${JSON.stringify({ argv: cotal })}\n`,
+      });
       install("cotal", "local");
       return `cotal@${MARKETPLACE} (local scope)`;
     },
