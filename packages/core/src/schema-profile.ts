@@ -8,7 +8,7 @@
  * `contract-invalid` (distinct from invocation-time `bad-request`), and all bounds are enforced
  * BEFORE compilation so a hostile descriptor cannot turn registration into a DoS.
  */
-import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+import { Ajv2020, type AnySchema, type ValidateFunction } from "ajv/dist/2020.js";
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { assertSafePattern } from "./safe-pattern.js";
 import { buildContractClosureManifest, type ContractClosureManifest } from "./contract-manifest.js";
@@ -157,6 +157,27 @@ const AJV_PROFILE_OPTIONS = Object.freeze({
   // worth more than inlining's marginal speed.
   inlineRefs: false,
 } as const);
+
+/** The one instance every closure's compiler meta-validates through. A fresh Ajv compiles the
+ *  2020-12 meta-schema on its first meta-validation, which is most of a contract compile, so a
+ *  fresh instance per closure would pay it once per closure (#3949). This instance only reads caller
+ *  documents as data: it never adds or compiles one, so nothing a closure registers reaches it. */
+const META_AJV = new Ajv2020(AJV_PROFILE_OPTIONS);
+/** The meta-schema keys every profile instance is born with. Ajv refuses a later `$id` equal to
+ *  one, so a closure cannot shadow it, and `META_AJV` resolves it to the same meta-schema the
+ *  closure's own instance would. */
+const BORN_META_KEYS: ReadonlySet<string> = new Set([...Object.keys(META_AJV.schemas), ...Object.keys(META_AJV.refs)]);
+
+/** A per-closure compiler whose meta-validation of a document runs on {@link META_AJV} whenever
+ *  the document's `$schema` is absent or a born key. Any other `$schema` can name a closure member,
+ *  which only this instance holds, so it stays on Ajv's own path. */
+class ProfileAjv extends Ajv2020 {
+  override validateSchema(schema: AnySchema, throwOrLogError?: boolean): boolean | Promise<unknown> {
+    const $schema = typeof schema === "object" ? schema.$schema : undefined;
+    if ($schema !== undefined && !BORN_META_KEYS.has($schema)) return super.validateSchema(schema, throwOrLogError);
+    return META_AJV.validateSchema(schema, throwOrLogError);
+  }
+}
 
 /** The §13.7 closure of one self-contained document: the manifest naming it with no members, and
  *  that manifest's digest, the closure digest a registration or an `op` digest carries. It needs no
@@ -545,7 +566,7 @@ function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
   const started = Date.now();
   // Compile with deterministic local resolution only. Members register under their cotal: URI
   // so in-document `$ref: "cotal:sha256:…"` resolves from the bundle, never the network.
-  const ajv = new Ajv2020(AJV_PROFILE_OPTIONS);
+  const ajv = new ProfileAjv(AJV_PROFILE_OPTIONS);
   let validate: ValidateFunction;
   try {
     // Every member is reachable and digest-verified (assertClosureProfile refuses extras), so
