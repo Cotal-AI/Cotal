@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, renameSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -7,7 +7,7 @@ import {
   SEEDED_EXTENSIONS,
   connectorMetadataStale,
   extensionPackageDir,
-  installedExtensionVersion,
+  installedExtensionPackage,
   loadExtensionsManifest,
   quarantineExtensionsManifest,
   type InstalledExtension,
@@ -554,27 +554,19 @@ function verifyInstalled(name: string, generation: string): void {
   const pkg = SEEDED_EXTENSIONS[name].pkg;
   const entry = installedEntry(name);
   if (!entry) throw new Error(`connector "${name}" (${pkg}) was expected in the manifest after seeding but is absent - rerun \`cotal ext seed --repair\``);
-  const version = installedExtensionVersion(pkg);
-  if (!version)
+  const installed = installedExtensionPackage(pkg);
+  if (!installed)
     throw new Error(`connector "${name}" (${pkg}) is recorded but not installed on disk - rerun \`cotal ext seed --repair\``);
-  if (version !== generation)
-    throw new Error(`connector "${name}" (${pkg}) installed at version ${version} but the seed generation is ${generation} (a version-skewed payload) - rerun \`cotal ext seed --repair\``);
-  if (!mainEntryPresent(pkg))
+  if (installed.version !== generation)
+    throw new Error(`connector "${name}" (${pkg}) installed at version ${installed.version} but the seed generation is ${generation} (a version-skewed payload) - rerun \`cotal ext seed --repair\``);
+  if (!mainEntryPresent(pkg, installed.main))
     throw new Error(`connector "${name}" (${pkg}) is installed but its entry file is missing (a torn install) - rerun \`cotal ext seed --repair\``);
 }
 
 /** The package's declared main entry file exists on disk (`main`, else the CommonJS default). Used to
  *  detect a torn install where package.json survived a partial npm copy but the built dist did not. */
-function mainEntryPresent(pkg: string): boolean {
-  const dir = extensionPackageDir(pkg);
-  let main = "index.js";
-  try {
-    const declared = (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { main?: string }).main;
-    if (typeof declared === "string" && declared) main = declared;
-  } catch {
-    return false; // package.json unreadable ⇒ not intact
-  }
-  return existsSync(join(dir, main));
+function mainEntryPresent(pkg: string, main: string | undefined): boolean {
+  return existsSync(join(extensionPackageDir(pkg), main ?? "index.js"));
 }
 
 /** A seeded built-in's install on disk. It is intact only with a package.json carrying a version AND
@@ -582,13 +574,15 @@ function mainEntryPresent(pkg: string): boolean {
  *  is torn, which a maintenance run reinstalls rather than stopping on. */
 function installState(name: string): "absent" | "torn" | "intact" {
   const pkg = SEEDED_EXTENSIONS[name].pkg;
+  let installed: ReturnType<typeof installedExtensionPackage>;
   try {
-    if (installedExtensionVersion(pkg) === undefined) return "absent";
+    installed = installedExtensionPackage(pkg);
   } catch (e) {
     if (e instanceof CorruptExtensionPackageError) return "torn";
     throw e;
   }
-  return mainEntryPresent(pkg) ? "intact" : "torn";
+  if (!installed) return "absent";
+  return mainEntryPresent(pkg, installed.main) ? "intact" : "torn";
 }
 
 function installedEntry(name: string): InstalledExtension | undefined {
