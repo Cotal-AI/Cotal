@@ -3,3 +3,7 @@
 # keeps its usual home: an offline suite in its package's `test`, a broker-backed one in `smoke:ci`.
 smoke:who-roster
 smoke:cli-pty
+smoke:read-envelopes
+smoke:ps-user-mode
+smoke:cli-on-instance
+smoke:endpoint-warning-consumers
