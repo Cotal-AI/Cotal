@@ -119,6 +119,13 @@ const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
 /** Named error prefix when a persona prompt starts with `---` but is not a closed, valid agent file. */
 export const PROMPT_FRONTMATTER = "prompt-frontmatter";
 
+/** Frontmatter keys {@link AgentDef} models. The parser keeps them out of `meta`, and the writer
+ *  refuses a `meta` entry that names one, so a hint can never overwrite a field the file models. */
+const MODELED_KEYS = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "agent", "model", "variant", "launchOptions", "capabilities", "owner"]);
+
+/** Pre-ACL field names the parser refuses outright, so the writer must never emit them from `meta`. */
+const RENAMED_KEYS = ["channels", "publish"];
+
 /** Refuse a whitespace-only `model` or `variant`. Launchers and connectors read these as set or
  *  absent, and a blank value is neither, so letting one through leaves each of them to drop, render
  *  or refuse it on its own. */
@@ -169,7 +176,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
   // The pre-ACL field names were renamed (channels→subscribe, publish→allowPublish, +allowSubscribe).
   // Fail loud on the old names rather than silently sweeping them into meta and ignoring them —
   // an unmigrated file would otherwise lose its read/post scope without warning (no silent degrade).
-  for (const old of ["channels", "publish"])
+  for (const old of RENAMED_KEYS)
     if (old in fm)
       throw new Error(
         `agent file ${path}: "${old}" was renamed - use "subscribe"/"allowSubscribe" (read) and "allowPublish" (post)`,
@@ -232,9 +239,8 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 
   // Sweep every scalar frontmatter key we don't model into meta, verbatim — connector launcher
   // hints ride here so core stays ignorant of surface-specific keys.
-  const known = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "agent", "model", "variant", "launchOptions", "capabilities", "owner"]);
   const meta: Record<string, string> = {};
-  for (const [k, v] of Object.entries(fm)) if (!known.has(k) && v !== null && typeof v !== "object") meta[k] = String(v);
+  for (const [k, v] of Object.entries(fm)) if (!MODELED_KEYS.has(k) && v !== null && typeof v !== "object") meta[k] = String(v);
 
   return {
     name,
@@ -266,6 +272,9 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
   assertLaunchSelectors(def, "saveAgentFile");
+  for (const k of Object.keys(def.meta ?? {}))
+    if (MODELED_KEYS.has(k) || RENAMED_KEYS.includes(k))
+      throw new Error(`saveAgentFile: meta key "${k}" collides with a modeled frontmatter field`);
   // The read set must be SAID, not inferred. A persona saved without one used to inherit a channel
   // nobody chose, and the file gave a later reader no way to tell a deliberate silence from a
   // forgotten field. Refusing here rather than filling in an empty list keeps that distinction:

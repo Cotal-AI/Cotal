@@ -6547,7 +6547,7 @@ export class CotalEndpoint extends EventEmitter {
     }
     if (!isUsablePresence(p)) {
       this.presenceBindingDrops++;
-      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: not a record with a string card.name, a known status and a finite ts`));
+      this.emitRecoverable(new Error(`dropped presence entry for key ${JSON.stringify(e.key)}: not a record with a string card.name, a known status, a finite ts, string display fields and a condition with a string code`));
       return;
     }
     this.applyPresence(e.key, p);
@@ -6971,12 +6971,23 @@ const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: t
  *  such as `"nope"` makes the liveness arithmetic NaN, and a JSON `1e400` parses as `Infinity`;
  *  neither age is ever greater than the TTL, so the row would stay live after its key expired
  *  (#2612). `card.name` is the roster sort key: a non-string throws inside the watch loop and
- *  ends the watch. `status` decides offline and is what roster consumers read. `card.id` is left
- *  to the KV-key check, which rejects anything but the key string. */
+ *  ends the watch. `status` decides offline and is what roster consumers read. `card.role`,
+ *  `activity`, `attention` and `condition.code` are printed as text, and the peer writes its own
+ *  row: an object such as `{"toString":null,"valueOf":null}` throws on conversion and would fail
+ *  every reader's roster. A present `condition` must be an object with a string `code`, which SPEC
+ *  §6 makes required: `null`, a bare string or an object with no code is dropped too. `card.id` is
+ *  left to the KV-key check, which rejects anything but the key string. */
 function isUsablePresence(value: unknown): value is Presence {
   return isRecord(value) && isRecord(value.card) && typeof value.card.name === "string" &&
+    isOptionalString(value.card.role) &&
     typeof value.status === "string" && Object.hasOwn(PRESENCE_STATUSES, value.status) &&
-    typeof value.ts === "number" && Number.isFinite(value.ts);
+    typeof value.ts === "number" && Number.isFinite(value.ts) &&
+    isOptionalString(value.activity) && isOptionalString(value.attention) &&
+    (value.condition === undefined || (isRecord(value.condition) && typeof value.condition.code === "string"));
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
 }
 
 /** Shallow-equal two per-channel-mode maps (presence dedup): a change must re-emit, so an attention

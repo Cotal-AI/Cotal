@@ -232,14 +232,17 @@ function meshFile(space: string): string {
  *  records. Matched by each document's own `space` - never by decoding the filename, which would
  *  case-fold on this filesystem - so a legacy record can neither shadow nor resurrect a mesh the
  *  canonical file no longer records. A file that will not parse is left for {@link loadMeshes} to
- *  refuse by name. The scan reads every record, so a batch shares one. */
+ *  refuse by name. The scan reads every record, so a batch shares one. Only an absent registry
+ *  directory has nothing to sweep: one that cannot be listed throws, because a skipped sweep would
+ *  let a pre-hex record outlive the write or removal its caller just made. */
 function legacyMeshFiles(): Map<string, string[]> {
   const bySpace = new Map<string, string[]>();
   let files: string[];
   try {
     files = readdirSync(meshesDir());
-  } catch {
-    return bySpace; // no registry yet
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return bySpace; // no registry yet
+    throw e;
   }
   for (const f of files) {
     if (!f.endsWith(".json")) continue;

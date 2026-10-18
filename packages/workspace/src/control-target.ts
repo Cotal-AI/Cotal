@@ -9,6 +9,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import {
+  assertLifecycleToken,
   DEFAULT_SPACE,
   DEV_OWNER,
   dialerFor,
@@ -67,7 +68,8 @@ const TARGET_ABSENT_CODES: ReadonlySet<string> = new Set<MeshTargetErrorCode>(["
  *
  * `instanceId` (`--on <instanceId>`) is forwarded to the instrument mint so the one-shot credential
  * carries the exact `ep.inst.…` rows for that instance; a credential cannot gain a rail after it is
- * issued, so it has to arrive here rather than at the invoke.
+ * issued, so it has to arrive here rather than at the invoke. On a user-auth mesh with none, a
+ * managed seat's shell selects the manager that launched it.
  *
  * `onRefusal: "throw"` makes an unresolvable or unreachable mesh a thrown {@link ConnectRefusal}
  * instead of a printed sentence and `process.exit(1)`, for a loop that has to survive the broker
@@ -80,9 +82,12 @@ export async function resolveControlTarget(
   opts: { onRefusal?: "exit" | "throw"; endpoint?: string } = {},
 ): Promise<ControlTarget> {
   const connect_ = opts.onRefusal === "throw" ? connectOrThrow : connectOrExit;
+  // A credential-less resolve sweeps once when no space is named, unless the caller already swept
+  // for these flags, and the peek and the connect helper both resolve against that `offline` set,
+  // so they see one world and a kept dead record is a live candidate for neither.
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
-    : flags;
+    : { ...flags, offline: flags.offline ?? (flags.space ? [] : (await pruneStaleMeshes()).offline) };
   // USER MODE: manager calls exchange the current ledger authority for a concrete instance view.
   // `connectOrExit` refuses control-caller-* on a user mesh (those profiles carry freeze rows the
   // bearer does not hold), so the mode is peeked here and the user path taken explicitly.
@@ -93,25 +98,24 @@ export async function resolveControlTarget(
   // so absorbing it would let an explicit `--server` take the raw-open arm and connect a
   // misconfigured AUTH mesh with no credentials. Those codes rethrow and the command dies loud.
   if (!withSpace.creds) {
-    // Sweep first when no space is named, as the connect helper does before ITS resolve, so the
-    // peek and the connect see one world. The sweep's `offline` set is the liveness verdict:
-    // pass it through so a kept dead record is not a live candidate.
-    const offline = withSpace.space ? [] : (await pruneStaleMeshes()).offline;
     let mode: MeshTarget["mode"] | undefined;
     try {
       mode = resolveMeshTarget(process.cwd(), {
         server: withSpace.server,
         space: withSpace.space,
-        offline,
+        offline: withSpace.offline,
       }).mode;
     } catch (e) {
       if (!isWorkspaceTargetError(e) || !TARGET_ABSENT_CODES.has(e.code)) throw e;
     }
     if (mode === "user") {
       const conn = await (opts.onRefusal === "throw" ? connectUserControlOrThrow : connectUserControlOrExit)(withSpace);
+      // A managed seat's own shell defaults to the manager that launched it, as its tools do, so a
+      // second live manager for the owner does not make the seat's calls ambiguous. `--on` wins.
+      const pin = instanceId ?? seatManagerInstance(conn.space);
       const manager = (opts.endpoint === undefined || opts.endpoint === "manager") &&
           (profile === "control-caller-privileged" || profile === "control-caller-admin")
-        ? await userViewAuth(conn, "manager-caller", instanceId === undefined ? {} : { managerInstanceId: instanceId })
+        ? await userViewAuth(conn, "manager-caller", pin === undefined ? {} : { managerInstanceId: pin })
         : undefined;
       return {
         space: conn.space,
@@ -139,6 +143,14 @@ export async function resolveControlTarget(
     ...(conn.mode !== undefined ? { mode: conn.mode } : {}),
     ...(conn.policy ? { policy: conn.policy } : {}),
   };
+}
+
+/** The manager that launched the managed seat this process runs in (`COTAL_MANAGER_INSTANCE`, which
+ *  the manager sets on every launch), when the seat belongs to `space`; `undefined` outside one. */
+function seatManagerInstance(space: string): string | undefined {
+  const instanceId = process.env.COTAL_MANAGER_INSTANCE?.trim();
+  if (!instanceId || process.env.COTAL_SPACE?.trim() !== space) return undefined;
+  return assertLifecycleToken(instanceId, "COTAL_MANAGER_INSTANCE");
 }
 
 /**

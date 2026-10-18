@@ -2,13 +2,14 @@ import { type CompletionResult, type ConnectorModelCatalog, type FlagSpec, type 
 import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { extensionNames } from "../ext-loader.js";
-import { askManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
+import { askManager, failIfNotOk, onFlag, onInstanceOrExit, resolveControlTarget } from "../lib/control.js";
 import { completingFlagValue } from "../lib/completion.js";
 
 export const modelsFlags = [
   ...targetFlags,
   { name: "agent", type: "string", value: "<connector>", description: "connector to inspect (default: all registered connectors)" },
   { name: "refresh", type: "boolean", description: "ask the connector to refresh its provider cache" },
+  onFlag,
 ] as const satisfies readonly FlagSpec[];
 
 export function modelsComplete(argv: string[]): CompletionResult {
@@ -21,8 +22,9 @@ export function modelsComplete(argv: string[]): CompletionResult {
 
 export async function models(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof modelsFlags>;
-  const t = await resolveControlTarget(v, "control-caller-privileged");
-  const reply = await askManager(t.space, t.server, "models", { agent: v.agent, refresh: v.refresh === true }, t.auth, "owner");
+  const on = onInstanceOrExit(v.on, "cotal models");
+  const t = await resolveControlTarget(v, "control-caller-privileged", on);
+  const reply = await askManager(t.space, t.server, "models", { agent: v.agent, refresh: v.refresh === true }, t.auth, "owner", undefined, on === undefined ? {} : { instanceId: on });
   failIfNotOk(reply);
   const rows = Array.isArray(reply.data) ? reply.data as ConnectorModelCatalog[] : [reply.data as ConnectorModelCatalog];
   for (const row of rows) renderCatalog(row);

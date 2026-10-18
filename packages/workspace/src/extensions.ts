@@ -300,10 +300,11 @@ export class CorruptExtensionPackageError extends Error {
   }
 }
 
-/** The installed package's CURRENT version, read from disk (undefined when not installed). Only a
- *  missing package.json means not installed; one that cannot be reached or read throws, and one
- *  that is not JSON or has no version throws {@link CorruptExtensionPackageError}. */
-export function installedExtensionVersion(pkg: string): string | undefined {
+/** The installed package's CURRENT version and declared `main`, from one read of its package.json
+ *  (undefined when not installed; `main` is undefined when the package declares none). Only a missing
+ *  package.json means not installed; one that cannot be reached or read throws, and one that is not
+ *  JSON or has no version throws {@link CorruptExtensionPackageError}. */
+export function installedExtensionPackage(pkg: string): { version: string; main: string | undefined } | undefined {
   const path = join(extensionPackageDir(pkg), "package.json");
   let raw: string;
   try {
@@ -313,11 +314,17 @@ export function installedExtensionVersion(pkg: string): string | undefined {
     throw e;
   }
   let version: unknown;
+  let main: unknown;
   try {
-    version = (JSON.parse(raw) as { version?: unknown }).version;
+    ({ version, main } = JSON.parse(raw) as { version?: unknown; main?: unknown });
   } catch (e) {
     throw new CorruptExtensionPackageError(pkg, path, (e as Error).message);
   }
   if (typeof version !== "string" || !version) throw new CorruptExtensionPackageError(pkg, path, 'no "version" string');
-  return version;
+  return { version, main: typeof main === "string" && main ? main : undefined };
+}
+
+/** The installed package's CURRENT version, as {@link installedExtensionPackage} reads it. */
+export function installedExtensionVersion(pkg: string): string | undefined {
+  return installedExtensionPackage(pkg)?.version;
 }

@@ -1,0 +1,26 @@
+{
+  "suite": [
+    "implementations/delivery/smoke/delivery-store-boundary.smoke.ts"
+  ],
+  "guard": "an uninjected --dev-mint daemon signs its dev cred with the account of the space it serves, never the root's sole space",
+  "command": "pnpm --filter @cotal-ai/delivery build && pnpm smoke:delivery-store-boundary",
+  "completionMarker": "DELIVERY-STORE-BOUNDARY SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/delivery/smoke/mutations/delivery-dev-mint-space.json",
+  "why": [
+    "The --dev-mint branch picked its signer with soleSpaceOf while the daemon served --space, so a",
+    "two-space root refused a correct --space and a root holding one other space signed the cred with",
+    "that space's account. The child runs bin/cotal.ts, which loads the delivery package's dist, so the",
+    "command rebuilds it and afterRestore rebuilds it again from the restored source."
+  ],
+  "mutations": [
+    {
+      "name": "dev-mint picks the root's sole space instead of the served one",
+      "file": "implementations/delivery/src/delivery.ts",
+      "find": "    const auth = loadSpaceAuth(authDir(root), space);",
+      "replace": "    const sole = soleSpaceOf(authDir(root)); const auth = sole ? loadSpaceAuth(authDir(root), sole) : undefined;",
+      "expectRed": "--space b --dev-mint on a two-space root signs with b's account",
+      "cell": "--space b --dev-mint on a two-space root signs with b's account",
+      "afterRestore": "pnpm --filter @cotal-ai/delivery build"
+    }
+  ]
+}

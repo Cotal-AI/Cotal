@@ -6,9 +6,19 @@
  * never a fall-through to a local mint. Every case throws before any connection, so this needs no
  * broker. The fake store also proves a hosted store is never written to by the read path.
  *
+ * The uninjected `--dev-mint` cases then pin which account signs the dev cred: the real CLI runs in
+ * a scratch root against a listener that reads the user JWT out of the CONNECT and refuses it, so
+ * the signer is observed directly and no broker is needed there either.
+ *
  * Run: pnpm smoke:delivery-store-boundary
  */
-import type { ParsedArgs, SecretStore } from "@cotal-ai/core";
+import { spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createSpaceAccountAuth, createSpaceAuth, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
+import { authDir, saveSpaceAccountAuth, saveSpaceAuth } from "@cotal-ai/workspace";
 import { DELIVERY_CREDS_KIND, deliveryCredsKey, runDelivery } from "../src/delivery.js";
 
 let pass = 0, fail = 0;
@@ -67,6 +77,71 @@ await rejects(
   () => runDelivery(args({}), emptyStore),
   "--space is required",
 );
+
+// UNINJECTED --dev-mint SIGNS WITH THE SERVED SPACE'S ACCOUNT. `two` holds spaces a and b under one
+// operator, `one` holds only a. The child presents its dev cred to the listener, which records the
+// JWT's issuer account and refuses it; the child then stops at its own later startup refusal.
+const scratch = mkdtempSync(join(tmpdir(), "delivery-dev-mint-"));
+const jwts: string[] = [];
+const listener = createServer((c) => {
+  c.write(`INFO {"server_id":"dev-mint","version":"2.10.0","proto":1,"headers":true,"max_payload":1048576,"auth_required":true,"nonce":"ZGV2bWludA"}\r\n`);
+  let buf = "";
+  c.on("data", (d) => {
+    buf += d;
+    const m = /CONNECT (\{.*?\})\r\n/.exec(buf);
+    if (m) { jwts.push(JSON.parse(m[1]).jwt); c.end("-ERR 'Authorization Violation'\r\n"); }
+  });
+  c.on("error", () => undefined);
+});
+await new Promise<void>((r) => listener.listen(0, "127.0.0.1", r));
+const server = `nats://127.0.0.1:${(listener.address() as AddressInfo).port}`;
+try {
+  const seed = async (name: string, first: string, ...rest: string[]): Promise<Record<string, string>> => {
+    const root = join(scratch, name);
+    mkdirSync(join(root, ".cotal"), { recursive: true });
+    const base = await createSpaceAuth(first);
+    saveSpaceAuth(authDir(root), base);
+    const accounts: Record<string, string> = { [first]: base.account.pub };
+    for (const s of rest) {
+      const extra = await createSpaceAccountAuth(base, s);
+      saveSpaceAccountAuth(authDir(root), extra);
+      accounts[s] = extra.account.pub;
+    }
+    return accounts;
+  };
+  const two = await seed("two", "a", "b");
+  const one = await seed("one", "a");
+  // A source checkout refuses to seed the connector store, so the child skips seeding like the other CLI smokes.
+  const env = { ...process.env, HOME: join(scratch, "home"), XDG_CONFIG_HOME: join(scratch, "xdg"), COTAL_HOME: join(scratch, "cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" };
+  const repoRoot = join(import.meta.dirname, "..", "..", "..");
+  // Async so the listener in this process can answer the child's dial.
+  const deliver = (root: string, ...flags: string[]): Promise<{ out: string; signer?: string }> =>
+    new Promise((done) => {
+      jwts.length = 0;
+      const child = spawn(join(repoRoot, "node_modules", ".bin", "tsx"), [join(repoRoot, "bin", "cotal.ts"), "deliver", ...flags, "--dev-mint", "--server", server], { cwd: join(scratch, root), env });
+      let out = "";
+      child.stdout.on("data", (d) => (out += d));
+      child.stderr.on("data", (d) => (out += d));
+      child.on("close", () => {
+        const jwt = jwts.at(-1);
+        done({ out, signer: jwt ? JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString()).nats?.issuer_account : undefined });
+      });
+    });
+
+  const explicit = await deliver("two", "--space", "b");
+  check("--space b --dev-mint on a two-space root signs with b's account", explicit.signer === two.b, explicit.out);
+  const missing = await deliver("one", "--space", "b");
+  check("--space b --dev-mint on a root without b refuses before any dial", missing.signer === undefined && missing.out.includes(`no .cotal/auth for space "b"`), missing.out);
+  const matching = await deliver("one", "--space", "a");
+  check("--space a --dev-mint on a's root signs with a's account", matching.signer === one.a, matching.out);
+  const implicit = await deliver("one");
+  check("bare --dev-mint on a single-space root signs with that space's account", implicit.signer === one.a, implicit.out);
+  const ambiguous = await deliver("two");
+  check("bare --dev-mint on a two-space root refuses to pick a space", ambiguous.signer === undefined && ambiguous.out.includes("refuses to pick one"), ambiguous.out);
+} finally {
+  listener.close();
+  rmSync(scratch, { recursive: true, force: true });
+}
 
 console.log(`\nDELIVERY-STORE-BOUNDARY SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 if (fail) process.exitCode = 1;

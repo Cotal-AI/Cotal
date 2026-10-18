@@ -25,7 +25,8 @@
  * than this box's per-request overhead). Occupancy of the synthetic waits still collapses when
  * those waits overlap, and still sums to ~count × inject when they queue. Revert the memo and
  * phase 1 goes red on the refetch count; revert the concurrency and phase 2 goes red on
- * max-in-flight; revert either and the occupancy cell goes red.
+ * max-in-flight; revert either and the occupancy cell goes red. Phase 6 fails one early closure
+ * read and goes red if the pool starts any walk after the resolve has rejected (#3449).
  *
  * `deadlineMs` bounds the whole resolve: each closure walk is budgeted with what remains of it.
  *
@@ -82,7 +83,8 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 /** Wrap a connection so every `request` is COUNTED by subject, and optionally DELAYED by
  *  `delayMs` before it is issued — a synthetic caller->broker RTT. Concurrency is tracked so the
- *  sequential-vs-batched question is answered by observation, not by reading the source. */
+ *  sequential-vs-batched question is answered by observation, not by reading the source. A request
+ *  whose subject ends in `failHex` fails after 10ms instead, well before any delayed read answers. */
 interface Meter {
   total: number;
   bySubject: Map<string, number>;
@@ -91,7 +93,7 @@ interface Meter {
   /** Wall time during which at least one injected wait is open. Host/broker work after the wait is excluded. */
   delayOccupancyMs: number;
 }
-function meteredConnection(nc: NatsConnection, meter: Meter, delayMs: number): NatsConnection {
+function meteredConnection(nc: NatsConnection, meter: Meter, delayMs: number, failHex?: string): NatsConnection {
   let inFlight = 0;
   let delaying = 0;
   let delayOpenAt: number | null = null;
@@ -109,6 +111,10 @@ function meteredConnection(nc: NatsConnection, meter: Meter, delayMs: number): N
         inFlight++;
         if (inFlight > meter.maxInFlight) meter.maxInFlight = inFlight;
         try {
+          if (failHex !== undefined && subject.endsWith(failHex)) {
+            await wait(10);
+            throw new Error("injected contract-store read fault");
+          }
           if (delayMs > 0) {
             delaying++;
             if (delaying === 1) delayOpenAt = performance.now();
@@ -243,6 +249,33 @@ try {
     m3.delayOccupancyMs < slowSerialInject * 0.5 && m3.maxInFlight >= 8,
     { serialInject: slowSerialInject, delayOccupancyMs: Math.round(m3.delayOccupancyMs), maxInFlight: m3.maxInFlight, wallObserved: Math.round(slowTotal) });
   check("...and still resolves the full shipped command surface", outcome === `RESOLVED ${shipped.commandCount} commands`, outcome);
+
+  // ---- 6. A FAILED WALK STOPS THE POOL FROM STARTING MORE ---------------------------------------
+  // The command stage walks 16 commands at a time, so the rest of the surface queues behind the
+  // first window. Fail the first command's input-closure read: the resolve rejects at once, and a
+  // closure first read after that is a walk the pool started for a call that had already failed.
+  console.log("\n6. a failed closure walk stops the pool from starting more walks (100ms/read, one read failed)");
+  const declared = [...service.commands.values()];
+  const closures = new Set(declared.flatMap((rc) => [rc.contract.input.closureDigest, rc.contract.output.closureDigest].map((d) => d.slice("sha256:".length))));
+  const failHex = declared[0].contract.input.closureDigest.slice("sha256:".length);
+  const m4 = newMeter();
+  let rejection: unknown;
+  try {
+    await resolveService(meteredConnection(rawNc, m4, 100, failHex), space, MANAGER_ENDPOINT, caller, { deadlineMs: 60_000 });
+  } catch (e) { rejection = e; }
+  const readsAtRejection = m4.order.length;
+  await wait(2_000); // late walks start as the first window's reads answer, ~100-300ms after the rejection
+  const hexOf = (subject: string) => subject.slice(-64);
+  const readBefore = new Set(m4.order.slice(0, readsAtRejection).map(hexOf));
+  const lateWalks = new Set(m4.order.slice(readsAtRejection).map(hexOf).filter((h) => closures.has(h) && !readBefore.has(h)));
+  console.log(`   rejected: ${(rejection as Error | undefined)?.message?.slice(0, 100)}`);
+  console.log(`   reads before the rejection: ${readsAtRejection}, after it: ${m4.order.length - readsAtRejection}, closure walks started after it: ${lateWalks.size}`);
+  check("the surface queues commands behind the 16-wide command pool, so a late walk is observable",
+    declared.length > 16, { commands: declared.length });
+  check("the failed closure read rejects the resolve as unavailable",
+    (rejection as { code?: string } | undefined)?.code === "unavailable" && (rejection as Error).message.includes(failHex), rejection);
+  check("no closure walk starts after the resolve has rejected",
+    lateWalks.size === 0, { lateWalks: lateWalks.size, readsAfter: m4.order.length - readsAtRejection });
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
   await rawNc.drain().catch(() => rawNc.close());

@@ -66,7 +66,7 @@ if (subcommand === "seat") {
 }
 
 if (subcommand === "tool-seat") {
-  const { MeshAgent, configFromEnv, cotalToolSpecs } = await import("@cotal-ai/connector-core");
+  const { MeshAgent, configFromEnv, cotalToolSpecs, parseToolArgs } = await import("@cotal-ai/connector-core");
   const { appendFileSync, existsSync, readFileSync } = await import("node:fs");
   const { mintLifecycleUid } = await import("@cotal-ai/core");
   const config = configFromEnv();
@@ -90,6 +90,31 @@ if (subcommand === "tool-seat") {
     if (config.name === "toolbaseline") {
       const refused = await mesh.run("start", { source: 'log("missing-run must refuse");' });
       trace({ kind: "tool-missing-run", hidden: !tool, ok: refused.ok, error: refused.error });
+    } else if (config.name === "toolpin") {
+      // #3959: this seat's spawner is one of two live managers for its owner. Tool arguments pass
+      // the closed input an MCP host enforces before `run` is reached.
+      const { execFile } = await import("node:child_process");
+      const other = process.env.MC_OTHER_INSTANCE!;
+      const personas = cotalToolSpecs(config).find((s) => s.name === "cotal_personas")!;
+      const call = async (spec: typeof tool, args: Record<string, unknown>) => {
+        try { return await spec.run(mesh, config, parseToolArgs(spec, args)); }
+        catch (error) { return { isError: true, text: error instanceof Error ? error.message : String(error) }; }
+      };
+      // The seat's own shell, as when it runs a rendered `cotal run …` command: the environment it was launched with.
+      const shell = (args: string[]) => new Promise<Record<string, unknown>>((done) => execFile(process.execPath, [...process.execArgv, join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts"), ...args],
+        { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, timeout: 60_000 },
+        (error, stdout, stderr) => done({ code: error ? (typeof error.code === "number" ? error.code : -1) : 0, stdout: stdout.slice(0, 1500), stderr: stderr.slice(0, 1500) })));
+      trace({ kind: "pin-run-ps", ...await call(tool, { verb: "ps" }) });
+      trace({ kind: "pin-cli-run-ps", ...await shell(["run", "ps", "--space", config.space]) });
+      trace({ kind: "pin-cli-models-on", ...await shell(["models", "--space", config.space, "--agent", "u4-seat", "--on", other]) });
+      // What a user-mode seat launched without COTAL_MANAGER_INSTANCE (a foreground spawn) holds.
+      const spawner = config.managerInstanceId;
+      config.managerInstanceId = undefined;
+      trace({ kind: "unbound-run-ps", ...await call(tool, { verb: "ps" }) });
+      trace({ kind: "unbound-run-ps-on", ...await call(tool, { verb: "ps", instance: other }) });
+      trace({ kind: "unbound-personas-on", ...await call(personas, { instance: other }) });
+      config.managerInstanceId = spawner;
+      trace({ kind: "pin-done" });
     } else {
       const started = await tool.run(mesh, config, { verb: "start", source: 'await checkpoint("child-owned", "Native child decision", { timeout: "1m" }); await checkpoint("child-finish", "Finish resumed child run", { timeout: "1m" });' });
       trace({ kind: "tool-start", ...started });
@@ -145,7 +170,7 @@ if (subcommand === "tool-seat") {
 }
 
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -175,6 +200,7 @@ import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, killAndAwaitExit } from
 
 const here = import.meta.dirname;
 const self = resolve(here, "run-owned-agents.smoke.ts");
+const cotalBin = join(here, "..", "..", "..", "bin", "cotal.ts");
 const scratch = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}u4-`));
 const home = join(scratch, "home");
 const hostRoot = join(scratch, "host");
@@ -189,6 +215,9 @@ const hostDir = userAuthStateDir(hostRoot, space);
 const hostStore = workspaceSecretStore(hostRoot);
 const tracePath = join(scratch, "seat.jsonl");
 const releasePath = join(scratch, "release"), controlPath = join(scratch, "tool-control");
+// #3959: the owner's own CLI home (registry entry plus sign-in), and the second manager's instance.
+const cliHome = join(scratch, "cli-home");
+let otherInstance: string | undefined;
 writeFileSync(tracePath, "");
 let passed = 0, failed = 0;
 const check = (name: string, condition: unknown): void => {
@@ -208,6 +237,7 @@ const trace = (): Array<Record<string, unknown>> => readFileSync(tracePath, "utf
 let broker: ChildProcess | undefined;
 let authChild: ChildProcess | undefined;
 let manager: Manager | undefined;
+let managerB: Manager | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 let idpServer: ReturnType<typeof createServer> | undefined;
 const endpoints: CotalEndpoint[] = [];
@@ -279,7 +309,8 @@ try {
       assert(o.userAuth && o.lifecycleUid);
       const env: Record<string, string> = {};
       for (const key of ["PATH", "HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "COTAL_SKIP_CONNECTOR_SEED"]) if (process.env[key]) env[key] = process.env[key]!;
-      return { command: process.execPath, args: [...process.execArgv, self, o.name.startsWith("tool") ? "tool-seat" : "seat"], env: { ...env, COTAL_SPACE: o.space, COTAL_SERVERS: servers, COTAL_OWNER: o.userAuth.owner, COTAL_ACTOR: o.userAuth.actor, COTAL_NAME: o.name, COTAL_LIFECYCLE_UID: o.lifecycleUid, COTAL_SENTINEL_CREDS: o.userAuth.sentinelCredsPath, COTAL_BEARER_CMD: JSON.stringify(o.userAuth.bearerCmd), COTAL_MANAGER_INSTANCE: state.instanceId, COTAL_CAPABILITIES: (o.capabilities ?? []).join(","), U4_TRACE: tracePath, MC_RELEASE: releasePath, MC_CONTROL: controlPath } };
+      return { command: process.execPath, args: [...process.execArgv, self, o.name.startsWith("tool") ? "tool-seat" : "seat"], env: { ...env, COTAL_SPACE: o.space, COTAL_SERVERS: servers, COTAL_OWNER: o.userAuth.owner, COTAL_ACTOR: o.userAuth.actor, COTAL_NAME: o.name, COTAL_LIFECYCLE_UID: o.lifecycleUid, COTAL_SENTINEL_CREDS: o.userAuth.sentinelCredsPath, COTAL_BEARER_CMD: JSON.stringify(o.userAuth.bearerCmd), COTAL_MANAGER_INSTANCE: state.instanceId, COTAL_CAPABILITIES: (o.capabilities ?? []).join(","), U4_TRACE: tracePath, MC_RELEASE: releasePath, MC_CONTROL: controlPath,
+        ...(o.name === "toolpin" ? { COTAL_HOME: cliHome, MC_OTHER_INSTANCE: otherInstance! } : {}) } };
     },
   };
   registry.register(connector);
@@ -287,56 +318,62 @@ try {
   writeFileSync(join(root, ".cotal", "agents", "owned.md"), "---\nname: owned\nagent: u4-seat\ncapabilities: [spawn]\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nNative owned seat.\n");
   const callArgs = { store: hostStore, dir: hostDir };
   const callAuthority = (request: Parameters<NonNullable<typeof cotalAuthProvider.managerServiceAuthority>>[0]["request"]) => cotalAuthProvider.managerServiceAuthority!({ ...callArgs, request });
-  const prep = await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "prepare"));
-  const supervisorCreds = remote.materialCredential(prep, "supervisor", state.identities.supervisor);
-  const executorCreds = remote.materialCredential(prep, "executor", state.identities.executor);
-  const registered = await registerRemoteManagerAuthority({ space, server: servers, owner, instanceId: state.instanceId, serveActor: remoteManagerActors(state.instanceId).serve, prepareCreds: executorCreds, tlsRequired: false,
-    evict: async (principals) => {
-      const request = remote.remoteManagerMaintenanceRequest(state, "cli", "evict-family-principal", state.instanceId, [...principals]);
-      const result = await cotalAuthProvider.maintainRemoteManager!({ ...callArgs, request });
-      return remote.remoteManagerMaintenanceResult(result, request, owner).evictions!.map((e) => e.verifiedGone);
-    },
-  });
-  const artifacts = managerClusterArtifacts();
-  const contractArtifacts = [artifacts.document, artifacts.manifest];
-  const activate = await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "activate", { registrationProof: remoteManagerRegistrationProof(owner, state, contractArtifacts), contractArtifacts }));
-  const proof = remote.currentRegistrationProof(activate);
-  const standing = remote.remoteStandingBundleRenewal({ state, owner, registrationProof: proof, supervisorCreds, call: callAuthority });
-  const remoteAuthority: NonNullable<ManagerOptions["remoteAuthority"]> = {
-    ...standing, owner, actors: remoteManagerActors(state.instanceId), instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, identities: state.identities,
-    supervisorCreds, executorCreds, serveCreds: remote.materialCredential(activate, "serve", state.identities.serve), goalWriterCreds: remote.materialCredential(activate, "goalWriter", state.identities.goalWriter), sessionLedgerCreds: remote.materialCredential(activate, "sessionLedger", state.identities.sessionLedger), serveGrant: registered.serveGrant,
-    agentBearerExchangeUrl: info.publicUrl!,
-    renewExecutor: async () => remote.materialCredential(await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "renew", { registrationProof: proof })), "executor", state.identities.executor),
-    runHosting: remote.remoteRunHosting({ state, owner, registrationProof: proof, accountPublicKey: standing.accountPublicKey, processEpoch: registered.processEpoch,
-      requestRunAdmission: (request) => cotalAuthProvider.requestRemoteRunAdmission!({ ...callArgs, request }),
-      requestRunAttempt: (request) => cotalAuthProvider.requestRemoteRunAttempt!({ ...callArgs, request }), call: callAuthority,
-    }),
-    authorizeAdmin: async (caller) => {
-      const request = remote.remoteManagerAdminAuthorizationRequest(state, "cli", proof, registered.processEpoch, caller);
-      const response = await cotalAuthProvider.authorizeRemoteManagerAdmin!({ ...callArgs, request });
-      const authorized = remote.remoteManagerAdminAuthorized(response, request, owner);
-      adminRequests.push({ ...caller, authorized });
-      return authorized;
-    },
-    enrollManagedAgent: async ({ target }) => {
-      enrollments++;
-      const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target);
-      return remote.remoteManagedAgentEnrollmentMaterial(await cotalAuthProvider.enrollRemoteManagedAgent!({ ...callArgs, request }), request);
-    },
-    prepareAgentRetirement: async ({ target, opId }) => {
-      const request = remote.remoteManagedAgentPrepareRetirementRequest(state, "cli", proof, registered.processEpoch, target, opId);
-      remote.remoteManagedAgentRetirementPrepared(await cotalAuthProvider.prepareRemoteManagedAgentRetirement!({ ...callArgs, request }), request);
-    },
-    mintRetirementRequester: async ({ identity, target, opId, serveEpoch }) => remote.materialCredential(await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "retire", { registrationProof: remoteManagerRegistrationProof(owner, state), retirement: { id: identity.id, target, opId, serveEpoch } })), "retirementRequester", identity),
-    mintSessionServing: async () => { throw new Error("fixture does not request attach sessions"); },
-    validateRetainedAgent: async () => { throw new Error("fixture starts no retained seat"); },
-    scanGoalIndex: async () => {
-      const request = remote.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch);
-      return remote.remoteManagerGoalIndexEntries(await cotalAuthProvider.scanRemoteManagerGoalIndex!({ ...callArgs, request }), request, owner);
-    },
+  // One participant manager for `owner`, registered through the stock authority. #3959 boots a
+  // second one from another root, as an owner running a manager per host does.
+  const remoteManager = async (workspaceRoot: string, state: ReturnType<typeof remote.loadOrCreateRemoteManagerIdentity>): Promise<Manager> => {
+    const prep = await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "prepare"));
+    const supervisorCreds = remote.materialCredential(prep, "supervisor", state.identities.supervisor);
+    const executorCreds = remote.materialCredential(prep, "executor", state.identities.executor);
+    const registered = await registerRemoteManagerAuthority({ space, server: servers, owner, instanceId: state.instanceId, serveActor: remoteManagerActors(state.instanceId).serve, prepareCreds: executorCreds, tlsRequired: false,
+      evict: async (principals) => {
+        const request = remote.remoteManagerMaintenanceRequest(state, "cli", "evict-family-principal", state.instanceId, [...principals]);
+        const result = await cotalAuthProvider.maintainRemoteManager!({ ...callArgs, request });
+        return remote.remoteManagerMaintenanceResult(result, request, owner).evictions!.map((e) => e.verifiedGone);
+      },
+    });
+    const artifacts = managerClusterArtifacts();
+    const contractArtifacts = [artifacts.document, artifacts.manifest];
+    const activate = await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "activate", { registrationProof: remoteManagerRegistrationProof(owner, state, contractArtifacts), contractArtifacts }));
+    const proof = remote.currentRegistrationProof(activate);
+    const standing = remote.remoteStandingBundleRenewal({ state, owner, registrationProof: proof, supervisorCreds, call: callAuthority });
+    const remoteAuthority: NonNullable<ManagerOptions["remoteAuthority"]> = {
+      ...standing, owner, actors: remoteManagerActors(state.instanceId), instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, identities: state.identities,
+      supervisorCreds, executorCreds, serveCreds: remote.materialCredential(activate, "serve", state.identities.serve), goalWriterCreds: remote.materialCredential(activate, "goalWriter", state.identities.goalWriter), sessionLedgerCreds: remote.materialCredential(activate, "sessionLedger", state.identities.sessionLedger), serveGrant: registered.serveGrant,
+      agentBearerExchangeUrl: info.publicUrl!,
+      renewExecutor: async () => remote.materialCredential(await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "renew", { registrationProof: proof })), "executor", state.identities.executor),
+      runHosting: remote.remoteRunHosting({ state, owner, registrationProof: proof, accountPublicKey: standing.accountPublicKey, processEpoch: registered.processEpoch,
+        requestRunAdmission: (request) => cotalAuthProvider.requestRemoteRunAdmission!({ ...callArgs, request }),
+        requestRunAttempt: (request) => cotalAuthProvider.requestRemoteRunAttempt!({ ...callArgs, request }), call: callAuthority,
+      }),
+      authorizeAdmin: async (caller) => {
+        const request = remote.remoteManagerAdminAuthorizationRequest(state, "cli", proof, registered.processEpoch, caller);
+        const response = await cotalAuthProvider.authorizeRemoteManagerAdmin!({ ...callArgs, request });
+        const authorized = remote.remoteManagerAdminAuthorized(response, request, owner);
+        adminRequests.push({ ...caller, authorized });
+        return authorized;
+      },
+      enrollManagedAgent: async ({ target }) => {
+        enrollments++;
+        const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target);
+        return remote.remoteManagedAgentEnrollmentMaterial(await cotalAuthProvider.enrollRemoteManagedAgent!({ ...callArgs, request }), request);
+      },
+      prepareAgentRetirement: async ({ target, opId }) => {
+        const request = remote.remoteManagedAgentPrepareRetirementRequest(state, "cli", proof, registered.processEpoch, target, opId);
+        remote.remoteManagedAgentRetirementPrepared(await cotalAuthProvider.prepareRemoteManagedAgentRetirement!({ ...callArgs, request }), request);
+      },
+      mintRetirementRequester: async ({ identity, target, opId, serveEpoch }) => remote.materialCredential(await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "retire", { registrationProof: remoteManagerRegistrationProof(owner, state), retirement: { id: identity.id, target, opId, serveEpoch } })), "retirementRequester", identity),
+      mintSessionServing: async () => { throw new Error("fixture does not request attach sessions"); },
+      validateRetainedAgent: async () => { throw new Error("fixture starts no retained seat"); },
+      scanGoalIndex: async () => {
+        const request = remote.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch);
+        return remote.remoteManagerGoalIndexEntries(await cotalAuthProvider.scanRemoteManagerGoalIndex!({ ...callArgs, request }), request, owner);
+      },
   };
-  manager = new Manager({ space, servers, workspaceRoot: root, runtime: "pty", remoteAuthority, eventsRequired: true });
-  await manager.start();
+  const started = new Manager({ space, servers, workspaceRoot, runtime: "pty", remoteAuthority, eventsRequired: true });
+  await started.start();
+  return started;
+  };
+  manager = await remoteManager(root, state);
   const connectorBoundary = manager as unknown as { resolveConnector: (agent: string) => Promise<Connector> };
   const resolveConnector = connectorBoundary.resolveConnector.bind(manager);
   connectorBoundary.resolveConnector = async (agent) => { connectorResolutions++; return resolveConnector(agent); };
@@ -354,6 +391,71 @@ try {
   const start = async (source: string) => String(successful(await endpoint.invokeService("manager", "run-start", { source, file: "native-u4.cotal.js" }, { deadlineMs: 20_000 })).runId);
   const status = async (runId: string) => successful(await endpoint.invokeService("manager", "run-status", { runId }, { deadlineMs: 10_000 }));
   const runCount = async () => (successful(await endpoint.invokeService("manager", "run-ps")) as unknown as Array<{ runId: string }>).length;
+  // #3959: a second live remote manager for the same owner makes every unpinned manager-caller
+  // exchange ambiguous. The owner's CLI runs from the root `cotal up --user-auth` records, signed in
+  // as that owner; each manager counts the reads it serves, so a cell can name the one that answered.
+  const servedBy = (m: Manager) => {
+    const counts = { models: 0, runs: 0 };
+    const seams = m as unknown as { resolveConnector(agent: string): Promise<Connector>; runHost(): RunHosting };
+    const resolveConnector = seams.resolveConnector.bind(m), runHost = seams.runHost.bind(m);
+    seams.resolveConnector = async (agent) => { counts.models++; return resolveConnector(agent); };
+    seams.runHost = () => { counts.runs++; return runHost(); };
+    return counts;
+  };
+  const rootB = join(scratch, "participant-b");
+  mkdirSync(join(rootB, ".cotal"), { recursive: true });
+  const stateB = remote.loadOrCreateRemoteManagerIdentity(rootB, space);
+  otherInstance = stateB.instanceId;
+  managerB = await remoteManager(rootB, stateB);
+  const onA = servedBy(manager!), onB = servedBy(managerB);
+  mkdirSync(cliHome, { recursive: true });
+  process.env.COTAL_HOME = cliHome;
+  try {
+    recordMesh({ space, server: servers, root: hostRoot, mode: "user", policy: { events: "required" }, userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
+  } finally {
+    process.env.COTAL_HOME = home;
+  }
+  saveIdpSession(cliHome, idpUrl, { token: signup.token, sub: signup.user.id, expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+  const cliEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+  const cli = (args: string[]) => {
+    const argv = [...process.execArgv, cotalBin, ...args];
+    return new Promise<{ code: number; stdout: string; stderr: string }>((done) => execFile(process.execPath, argv,
+      { cwd: hostRoot, env: { ...cliEnv, COTAL_HOME: cliHome, COTAL_SKIP_CONNECTOR_SEED: "1" }, timeout: 60_000 },
+      (error, stdout, stderr) => done({ code: error ? (typeof error.code === "number" ? error.code : -1) : 0, stdout, stderr })));
+  };
+  const cell = (name: string, condition: boolean, detail: unknown): void => {
+    check(name, condition);
+    if (!condition) console.error(`    ${JSON.stringify(detail).replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+\b/g, "[redacted]").slice(0, 1500)}`);
+  };
+  const namesBoth = (text: unknown, remedy: string) => typeof text === "string" && text.includes(state.instanceId) && text.includes(stateB.instanceId) && text.includes(remedy);
+  const unpinnedModels = await cli(["models", "--space", space, "--agent", "u4-seat"]);
+  cell("#3959 unpinned `cotal models` refuses two live managers, lists both and names --on", unpinnedModels.code === 1 && namesBoth(unpinnedModels.stderr, "--on <instanceId>"), unpinnedModels);
+  const unpinnedRuns = await cli(["run", "ps", "--space", space]);
+  cell("#3959 unpinned `cotal run ps` refuses two live managers, lists both and names --on", unpinnedRuns.code === 1 && namesBoth(unpinnedRuns.stderr, "--on <instanceId>"), unpinnedRuns);
+  let before = { a: { ...onA }, b: { ...onB } };
+  const pinnedModels = await cli(["models", "--space", space, "--agent", "u4-seat", "--on", stateB.instanceId]);
+  cell("#3959 `cotal models --on <instance>` succeeds against the named instance", pinnedModels.code === 0 && onB.models === before.b.models + 1 && onA.models === before.a.models, { pinnedModels, before, onA, onB });
+  before = { a: { ...onA }, b: { ...onB } };
+  const pinnedRuns = await cli(["run", "ps", "--space", space, "--on", state.instanceId]);
+  cell("#3959 `cotal run ps --on <instance>` succeeds against the named instance", pinnedRuns.code === 0 && onA.runs > before.a.runs && onB.runs === before.b.runs, { pinnedRuns, before, onA, onB });
+  // A seat the first manager spawns, beside both managers.
+  writeFileSync(join(root, ".cotal", "agents", "toolpin.md"), "---\nname: toolpin\nagent: u4-seat\ncapabilities: [spawn, run]\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nManaged seat beside two live managers.\n");
+  assert.equal((await manager.startAgent({ name: "toolpin" }, `${owner}.cli`)).ok, true);
+  before = { a: { ...onA }, b: { ...onB } };
+  await until(() => trace().some((e) => e.actor === "toolpin" && (e.kind === "pin-done" || e.kind === "tool-failure")), "two-manager seat calls", 120_000);
+  const seat = (kind: string): Record<string, unknown> => trace().find((e) => e.actor === "toolpin" && e.kind === kind) ?? { kind, missing: true };
+  const answered = (kind: string) => seat(kind).missing !== true && seat(kind).isError !== true;
+  cell("#3959 a managed seat's MCP cotal_run ps succeeds with two live managers", answered("pin-run-ps"), seat("pin-run-ps"));
+  cell("#3959 a managed seat's own `cotal run ps` defaults to its spawner", seat("pin-cli-run-ps").code === 0, seat("pin-cli-run-ps"));
+  cell("#3959 an explicit --on from a managed seat wins over its spawner", seat("pin-cli-models-on").code === 0 && onB.models === before.b.models + 1, { call: seat("pin-cli-models-on"), before, onB });
+  cell("#3959 an unbound seat's cotal_run ps refuses, lists both and names the instance argument", seat("unbound-run-ps").isError === true && namesBoth(seat("unbound-run-ps").text, "instance argument"), seat("unbound-run-ps"));
+  cell("#3959 MCP cotal_run ps with instance succeeds against the named instance", answered("unbound-run-ps-on"), seat("unbound-run-ps-on"));
+  cell("#3959 MCP cotal_personas with instance reads the named instance's catalog", answered("unbound-personas-on") && seat("unbound-personas-on").text === "No personas in the manager catalog.", seat("unbound-personas-on"));
+  cell("#3959 each seat call reached the manager it named (runs: spawner 2, other 1)", onA.runs === before.a.runs + 2 && onB.runs === before.b.runs + 1, { before, onA, onB });
+  // The cells above leave one manager live and an empty trace, as the cells below expect.
+  await managerB.stop({ withAgents: true });
+  managerB = undefined;
+  writeFileSync(tracePath, "");
   writeFileSync(join(root, ".cotal", "agents", "toolowned.md"), "---\nname: toolowned\nagent: u4-seat\ncapabilities: [run]\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nNative connector workflow caller.\n");
   const toolParent = await start('await spawn("toolowned"); await checkpoint("tool-parent", "Keep managed tool child alive", { timeout: "1m" });');
   await until(() => trace().some((e) => e.actor === "toolowned" && (e.kind === "tool-status" || e.kind === "tool-failure")), "native tool child checkpoint status");
@@ -524,6 +626,7 @@ try {
 } finally {
   for (const connection of connections) await connection.close();
   for (const endpoint of endpoints.reverse()) await endpoint.stop().catch(() => {});
+  await managerB?.stop({ withAgents: true }).catch(() => {});
   await manager?.stop({ withAgents: true }).catch(() => {});
   if (authChild) await killAndAwaitExit(authChild).catch(() => {});
   await delivery?.stop().catch(() => {});

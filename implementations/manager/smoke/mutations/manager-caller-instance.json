@@ -1,0 +1,75 @@
+{
+  "suite": [
+    "implementations/manager/smoke/run-owned-agents.smoke.ts"
+  ],
+  "executes": [
+    "bin/cotal.ts"
+  ],
+  "guard": "with two live remote managers for one owner, every manager-caller surface can name an instance, a managed seat defaults to its spawner, and the refusal lists the candidates with the caller's own remedy",
+  "command": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/runtime build && pnpm --filter @cotal-ai/cli build && pnpm smoke:manager-run-owned-agents",
+  "completionMarker": "RUN OWNED AGENTS SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/manager-caller-instance.json",
+  "why": [
+    "#3959: the auth service refuses an unpinned manager-caller exchange when an owner has two live",
+    "remote managers, and `cotal models`, the hosted `cotal run` verbs and MCP `cotal_run` and",
+    "`cotal_personas` had no way to name one. Each mutation drops one forwarded instance, or the",
+    "seat's spawner default, or the per-caller remedy, and the cell for that surface goes red.",
+    "The command rebuilds every package a mutation edits, so one green baseline covers all six."
+  ],
+  "mutations": [
+    {
+      "name": "cotal models drops --on before the manager-caller exchange",
+      "file": "implementations/cli/src/commands/models.ts",
+      "find": "  const t = await resolveControlTarget(v, \"control-caller-privileged\", on);",
+      "replace": "  const t = await resolveControlTarget(v, \"control-caller-privileged\");",
+      "expectRed": "#3959 `cotal models --on <instance>` succeeds against the named instance",
+      "cell": "#3959 `cotal models --on <instance>` succeeds against the named instance",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "cotal run drops --on before the manager-caller exchange",
+      "file": "implementations/runtime/src/run-command.ts",
+      "find": "  const t = seat?.mode === \"auth\" ? seat : await resolveControlTarget(values, \"control-caller-privileged\", on);",
+      "replace": "  const t = seat?.mode === \"auth\" ? seat : await resolveControlTarget(values, \"control-caller-privileged\");",
+      "expectRed": "#3959 `cotal run ps --on <instance>` succeeds against the named instance",
+      "cell": "#3959 `cotal run ps --on <instance>` succeeds against the named instance",
+      "afterRestore": "pnpm --filter @cotal-ai/runtime build"
+    },
+    {
+      "name": "MCP cotal_run ps drops its instance argument",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "            const reply = await agent.run(\"ps\", { endpoint: a.endpoint }, a.instance);",
+      "replace": "            const reply = await agent.run(\"ps\", { endpoint: a.endpoint });",
+      "expectRed": "#3959 MCP cotal_run ps with instance succeeds against the named instance",
+      "cell": "#3959 MCP cotal_run ps with instance succeeds against the named instance",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "MCP cotal_personas list drops its instance argument",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          const reply = await agent.listPersonas(instance);",
+      "replace": "          const reply = await agent.listPersonas();",
+      "expectRed": "#3959 MCP cotal_personas with instance reads the named instance's catalog",
+      "cell": "#3959 MCP cotal_personas with instance reads the named instance's catalog",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "a managed seat's shell ignores the manager that launched it",
+      "file": "packages/workspace/src/control-target.ts",
+      "find": "      const pin = instanceId ?? seatManagerInstance(conn.space);",
+      "replace": "      const pin = instanceId;",
+      "expectRed": "#3959 a managed seat's own `cotal run ps` defaults to its spawner",
+      "cell": "#3959 a managed seat's own `cotal run ps` defaults to its spawner",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "the ambiguity refusal names the wire field for every caller",
+      "file": "implementations/auth/src/service.ts",
+      "find": "exactly one is required, so ${MANAGER_PIN_REMEDY[caller ?? \"wire\"]}`);",
+      "replace": "exactly one is required, so ${MANAGER_PIN_REMEDY.wire}`);",
+      "expectRed": "#3959 unpinned `cotal models` refuses two live managers, lists both and names --on",
+      "cell": "#3959 unpinned `cotal models` refuses two live managers, lists both and names --on",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    }
+  ]
+}

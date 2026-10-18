@@ -182,6 +182,17 @@ function statusGlyph(s: PresenceStatus): string {
   return s === "working" ? "●" : s === "waiting" ? "◐" : s === "idle" ? "○" : "·";
 }
 
+/** The manager-instance pin of the manager read and run tools: the same token `cotal_spawn`'s
+ *  `instance` takes. */
+const managerInstanceArg = z
+  .string()
+  .refine((value) => {
+    try { assertLifecycleToken(value, "instance"); return true; }
+    catch { return false; }
+  }, "instance must be a lifecycle token ([a-z0-9]{26,32})")
+  .optional()
+  .describe("Optional manager instance id for a multi-manager space. When omitted, a seat a manager launched uses that manager and any other caller lets the mesh select one; on a user-auth mesh with several of your managers live, that selection refuses and lists their ids. A pin that cannot be resolved is refused without falling back to another manager.");
+
 /** One-line meaning of each attention mode, echoed back on set/read so the agent always sees the
  *  effect of a mode it may have set turns ago (self-visibility is the escape hatch for `focus`). */
 const ATTENTION_DESC: Record<"open" | "dnd" | "focus", string> = {
@@ -1524,11 +1535,12 @@ export function cotalToolSpecs(
         value: z.unknown().optional().describe("answer only: supply the value requested by the open checkpoint or ask and match its answer shape. A checkpoint may resolve without a value; an ask must receive its requested record. Use null only when that is the intended answer."),
         artifact: z.string().min(1).optional().describe("answer only: a reference to what you reviewed before answering, recorded beside the answer."),
         endpoint: z.string().min(1).optional().describe("status/ps/answer: the endpoint the run record lives under. Omit for runs the manager hosts."),
+        instance: managerInstanceArg,
       },
       async run(
         agent,
         config,
-        a: { verb: "start" | "status" | "ps" | "answer" | "resume"; source?: string; file?: string; timeout?: string; runId?: string; stepKey?: string; value?: unknown; artifact?: string; endpoint?: string },
+        a: { verb: "start" | "status" | "ps" | "answer" | "resume"; source?: string; file?: string; timeout?: string; runId?: string; stepKey?: string; value?: unknown; artifact?: string; endpoint?: string; instance?: string },
       ) {
         const need = (field: keyof typeof a, verb: string): ToolResult | undefined =>
           a[field] === undefined ? err(`cotal_run ${verb}: \`${String(field)}\` is required`) : undefined;
@@ -1536,7 +1548,7 @@ export function cotalToolSpecs(
           if (a.verb === "start") {
             const missing = need("source", "start");
             if (missing) return missing;
-            const reply = await agent.run("start", { source: a.source, file: a.file, timeout: a.timeout });
+            const reply = await agent.run("start", { source: a.source, file: a.file, timeout: a.timeout }, a.instance);
             if (!reply.ok) return err(renderRunRefusal("start", reply));
             const { runId } = reply.data as { runId: string };
             return ok(`Started run ${runId} on the manager. It runs there until it completes or is held; cotal_run(verb="status", runId="${runId}") follows its steps, and an open checkpoint is answered with verb="answer".`);
@@ -1544,12 +1556,12 @@ export function cotalToolSpecs(
           if (a.verb === "resume") {
             const missing = need("runId", "resume");
             if (missing) return missing;
-            const reply = await agent.run("resume", { runId: a.runId, timeout: a.timeout });
+            const reply = await agent.run("resume", { runId: a.runId, timeout: a.timeout }, a.instance);
             if (!reply.ok) return err(renderRunRefusal("resume", reply));
             return ok(`Resumed run ${a.runId} on the manager from its recorded program.`);
           }
           if (a.verb === "ps") {
-            const reply = await agent.run("ps", { endpoint: a.endpoint });
+            const reply = await agent.run("ps", { endpoint: a.endpoint }, a.instance);
             if (!reply.ok) return err(renderRunRefusal("ps", reply));
             const rows = reply.data as Array<{ runId: string; endpoint: string; state?: string; holder?: string; journalHigh?: number; forkedFrom?: { run: string; step: string } }>;
             if (rows.length === 0) return ok("No workflow runs are recorded in this space.");
@@ -1558,7 +1570,7 @@ export function cotalToolSpecs(
           if (a.verb === "status") {
             const missing = need("runId", "status");
             if (missing) return missing;
-            const reply = await agent.run("status", { runId: a.runId, endpoint: a.endpoint });
+            const reply = await agent.run("status", { runId: a.runId, endpoint: a.endpoint }, a.instance);
             if (!reply.ok) return err(renderRunRefusal("status", reply));
             const v = reply.data as { runId: string; endpoint: string; status?: { state: string; holder: string; epoch: number }; journal: Array<{ n: number; kind: string; holder?: string; epoch?: number; replayedTo?: number; step?: string; outcome?: string; asks?: string; addressee?: string }> };
             const head = `run ${v.runId} on ${v.endpoint}: ${v.status ? `${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}` : "(no status)"}`;
@@ -1571,7 +1583,7 @@ export function cotalToolSpecs(
           if (missing) return missing;
           // The manager records the answerer from the caller's own credential (SPEC 14.5); the
           // tool sends no name, so it cannot answer as anyone else.
-          const reply = await agent.run("answer", { runId: a.runId, stepKey: a.stepKey, value: a.value, artifact: a.artifact, endpoint: a.endpoint });
+          const reply = await agent.run("answer", { runId: a.runId, stepKey: a.stepKey, value: a.value, artifact: a.artifact, endpoint: a.endpoint }, a.instance);
           if (!reply.ok) return err(renderRunRefusal("answer", reply));
           return ok(`Answered ${a.stepKey} on run ${a.runId} as ${config.name}: ${JSON.stringify(reply.data)}`);
         } catch (e) {
@@ -1668,11 +1680,12 @@ export function cotalToolSpecs(
           .regex(/^[A-Za-z0-9_-]+$/, "letters, digits, _ or - only")
           .optional()
           .describe("Persona to show. Omit to list the catalog."),
+        instance: managerInstanceArg,
       },
-      async run(agent, _config, { name }: { name?: string }) {
+      async run(agent, _config, { name, instance }: { name?: string; instance?: string }) {
         try {
           if (name) {
-            const reply = await agent.showPersona(name);
+            const reply = await agent.showPersona(name, instance);
             if (!reply.ok) return err(`Couldn't show ${name}: ${reply.error ?? "manager refused"}`);
             const row = (reply.data ?? {}) as {
               name?: string;
@@ -1696,7 +1709,7 @@ export function cotalToolSpecs(
             if (row.persona) lines.push("", row.persona);
             return ok(lines.join("\n"));
           }
-          const reply = await agent.listPersonas();
+          const reply = await agent.listPersonas(instance);
           if (!reply.ok) return err(`Couldn't list personas: ${reply.error ?? "manager refused"}`);
           const personas = ((reply.data as { personas?: Array<{
             name: string;

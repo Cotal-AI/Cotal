@@ -4,14 +4,13 @@ import { oneLine } from "./one-line.js";
 const PRESENCE_TEXT_MAX = 200;
 
 /** A condition code or an activity as a presence row shows it: on one line ({@link oneLine}) and at
- *  most {@link PRESENCE_TEXT_MAX} characters. The peer a row describes writes both and nothing checks
- *  them on ingest, while readers print one peer per line: a line break would start what reads as a
- *  second peer's row, and a 4000-character activity would flood the reader's view. A non-string is
- *  converted as interpolation converts it, so a numeric code still prints. */
+ *  most {@link PRESENCE_TEXT_MAX} characters. The peer a row describes writes both and ingest checks
+ *  only that they are strings, while readers print one peer per line: a line break would start what
+ *  reads as a second peer's row, and a 4000-character activity would flood the reader's view. */
 export function presenceText(text: string): string {
   // Escaped one character at a time so a cut falls between escapes: a cut inside one would show a
   // bare `\u00` that no longer names the character it replaced.
-  const shown = Array.from(String(text), oneLine);
+  const shown = Array.from(text, oneLine);
   const width = (s: string) => [...s].length;
   if (shown.reduce((n, s) => n + width(s), 0) <= PRESENCE_TEXT_MAX) return shown.join("");
   let kept = "";

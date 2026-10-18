@@ -596,7 +596,8 @@ async function postManagerAuthority(
   }).catch((error) => { throw new Error(`the ${what} endpoint did not answer at ${endpoint} (${error instanceof Error ? error.message : String(error)})`); });
   if (response.status >= 300 && response.status < 400)
     throw new Error(`the ${what} endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
-  const body = await response.json().catch(() => ({}));
+  // A stand-in object would reach the caller as a result the endpoint never sent.
+  const body = await response.json().catch(() => { throw new Error(`the ${what} endpoint at ${endpoint} answered HTTP ${response.status} with a body that could not be read as JSON`); });
   if (!response.ok) throw managerAuthorityRefusal(what, request, body, response.status);
   return body;
 }

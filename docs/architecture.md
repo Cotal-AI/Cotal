@@ -211,8 +211,9 @@ laterally; the manager only births and configures them.
 - **Instance addressing.** One space can hold more than one manager. Each keeps a stable
   logical instance id across restarts and advances its process epoch when it comes back, so
   peers address a specific manager without caring which process currently serves it. `cotal
-  spawn <persona> --detach --on <instance>` pins one instance (`ps`, `stop` and `attach` take
-  the same flag), and MCP `cotal_spawn` accepts the equivalent `instance` argument. An untargeted spawn rides class anycast and the acceptance records which
+  spawn <persona> --detach --on <instance>` pins one instance (`ps`, `stop`, `attach`, `models`
+  and the hosted `run` verbs take the same flag), and MCP `cotal_spawn`, `cotal_run` and
+  `cotal_personas` accept the equivalent `instance` argument. An untargeted spawn rides class anycast and the acceptance records which
   instance took it. `ps` and `status` scatter across every registered instance and label a
   non-answering one as registered with no answer within the deadline, never dropping it.
 - **A manager holds a liveness lease, and only losing it to another process ends the process.**

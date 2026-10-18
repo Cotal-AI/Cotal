@@ -241,7 +241,7 @@ function resolveCredsStore(v: Values, space: string, root: string, injected?: Se
  *  dev run with no stored cred can opt into `--dev-mint`, which loads the local signer and self-remints
  *  a scoped `delivery` cred (one stable identity) — LOUDLY flagged as dev-only, never the production
  *  contract. */
-async function loadDeliveryCreds(src: CredsSource, v: Values, root: string): Promise<{ initial: string; source: () => Promise<string> }> {
+async function loadDeliveryCreds(src: CredsSource, v: Values, root: string, space: string): Promise<{ initial: string; source: () => Promise<string> }> {
   const { store, key, where } = src;
   const initial = await store.get(key);
   if (initial !== undefined) {
@@ -271,11 +271,10 @@ async function loadDeliveryCreds(src: CredsSource, v: Values, root: string): Pro
       `delivery: no cred in the injected secret store under key "${key}" — the hosted composition must put it before starting the daemon (local sources are never consulted when a store is injected). The key is PER-SPACE as of P7; a cred put under the bare kind "${DELIVERY_CREDS_KIND}" is not read here.`,
     );
   if (v["dev-mint"] !== undefined) {
-    // Space-blind dev path: the root must name exactly one space (soleSpaceOf fails loud on several).
-    const devRoot = authDir(root);
-    const devSpace = soleSpaceOf(devRoot);
-    const auth = devSpace ? loadSpaceAuth(devRoot, devSpace) : undefined;
-    if (!auth) throw new Error("delivery --dev-mint: no .cotal/auth here to mint from");
+    // The signer is the served space's own account: on a multi-space root any other choice signs
+    // this daemon's cred with another tenant's authority.
+    const auth = loadSpaceAuth(authDir(root), space);
+    if (!auth) throw new Error(`delivery --dev-mint: no .cotal/auth for space "${space}" here to mint from`);
     console.error("⚠ delivery: --dev-mint — minting a scoped delivery cred from the LOCAL SIGNER (DEV ONLY; production mounts a pre-minted delivery.creds and the daemon never sees the signer)");
     const identity = newIdentity(); // stable across self-remints — the endpoint pins it
     const initial = await mintCreds(auth, identity, "delivery");
@@ -441,7 +440,7 @@ async function runStartedDelivery(
   const credsSrc = resolveCredsStore(v, space, root, store);
   if (v.creds !== undefined)
     assertUninjectedCredsSharesCwdRoot({ injected: credsSrc.injected, credsPath: resolve(v.creds), cwdRoot: root, via: v.root !== undefined ? "--root" : "process cwd" });
-  const creds = await loadDeliveryCreds(credsSrc, v, root); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
+  const creds = await loadDeliveryCreds(credsSrc, v, root, space); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   if (hosted !== undefined && accountFromCreds(creds.initial) !== hosted.context.accountPublicKey)
     throw new Error("delivery: scoped credential account does not match the assigned hosted context");
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it

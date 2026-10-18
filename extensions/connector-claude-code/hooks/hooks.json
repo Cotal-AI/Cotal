@@ -30,6 +30,17 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "^mcp__.+__cotal_(connect|disconnect)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\""
+          }
+        ]
+      }
+    ],
     "PostToolBatch": [
       {
         "hooks": [

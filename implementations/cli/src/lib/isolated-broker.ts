@@ -430,7 +430,8 @@ export async function startIsolatedBroker(options: {
         throw new Error(`${options.label} watchdog did not report a broker pid`);
       await delay(50);
     }
-    while (Date.now() < Math.min(options.deadline.getTime(), Date.now() + BOOT_TIMEOUT_MS)) {
+    const reachableDeadline = Math.min(options.deadline.getTime(), Date.now() + BOOT_TIMEOUT_MS);
+    while (Date.now() < reachableDeadline) {
       if (!alive(brokerOwner.pid))
         throw new Error(`${options.label} bootstrap broker exited during startup: ${readLogTail().trim()}`);
       if (await isReachable(server)) return {

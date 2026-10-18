@@ -116,8 +116,8 @@
     {
       "name": "S13 a record name that does not round-trip is read as a tenant",
       "file": "packages/workspace/src/local-process.ts",
-      "find": "  return space.length > 0 && spaceKey(space) === key ? space : undefined;",
-      "replace": "  return space.length > 0 ? space : undefined;",
+      "find": "  return spaceFromKey(name.slice(prefix.length, name.length - suffix.length));",
+      "replace": "  const key = name.slice(prefix.length, name.length - suffix.length);\n  if (key.length % 2 !== 0 || !/^[0-9a-f]+$/.test(key)) return undefined;\n  const space = Buffer.from(key, \"hex\").toString(\"utf8\");\n  return space === \".\" || space === \"..\" ? undefined : space;",
       "expectRed": "strays and pre-upgrade names are not read as spaces",
       "cell": "strays and pre-upgrade names are not read as spaces"
     },

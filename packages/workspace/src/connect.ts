@@ -26,7 +26,7 @@ import { c } from "./colors.js";
 import { findCotalRoot, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { findMesh, getCurrent, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
-import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget } from "./mesh-target.js";
+import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type ResolveFlags } from "./mesh-target.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError } from "./render.js";
 
@@ -42,9 +42,7 @@ import { renderWorkspaceError } from "./render.js";
  * creds to pass).
  */
 
-export interface ConnectFlags {
-  server?: string;
-  space?: string;
+export interface ConnectFlags extends ResolveFlags {
   /** Explicit creds file — triggers a raw off-registry connection (see {@link connectOrExit}). */
   creds?: string;
 }
@@ -360,7 +358,7 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     await reachableOrThrow(flags.server, {});
     return { server: flags.server, space: flags.space, tls: false };
   }
-  const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space });
+  const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline });
   // USER MODE is a HARD branch: it never mints from on-disk trust material (static creds DO work
   // on a user-auth broker — minting here would silently connect the operator on the wrong identity
   // plane) and never connects credlessly. Everything it needs comes from the login cache + the
@@ -487,7 +485,7 @@ export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Con
     );
     process.exit(1);
   }
-  const target = await resolveTargetOrExit({ server: flags.server, space: flags.space });
+  const target = await resolveTargetOrExit({ server: flags.server, space: flags.space, offline: flags.offline });
   if (target.mode !== "user") {
     console.error(
       c.red(
@@ -505,7 +503,7 @@ export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Con
 
 /** {@link connectUserControlOrExit} for a caller that must record a refusal before it fails, such
  *  as `up`'s same-principal resume, which degrades its maintenance journal with the reason. */
-export async function connectUserControlOrThrow(flags: { server?: string; space?: string }): Promise<Connection> {
+export async function connectUserControlOrThrow(flags: ResolveFlags): Promise<Connection> {
   const target = await resolveTargetOrThrow(flags);
   if (target.mode !== "user")
     throw new ConnectRefusal(`✗ connectUserControlOrThrow requires a user-auth mesh (resolved mode is "${target.mode}")`);
@@ -598,16 +596,15 @@ export async function reachableOrExit(server: string, auth: RawAuth = {}): Promi
 /** Resolve the mesh a command targets, exiting with one human sentence on an unresolved/ambiguous
  *  registry rather than a stack trace. Sweeps first when resolving without an explicit `--space`,
  *  and hands the sweep's `offline` set to the resolver so a crashed mesh's kept record does not
- *  count as running. A named `--space` is resolved + preflighted directly, so the sweep cannot
- *  hide a dead-recorded mesh the operator is recovering with a live `--server` override. */
-export async function resolveTargetOrThrow(flags: {
-  server?: string;
-  space?: string;
-}): Promise<MeshTarget> {
-  const sweep = flags.space ? { pruned: [] as string[], offline: [] as string[] } : await pruneStaleMeshes();
+ *  count as running. A caller that already swept for these flags passes its `offline` set instead,
+ *  so one resolve chain reads one liveness verdict. A named `--space` is resolved + preflighted
+ *  directly, so the sweep cannot hide a dead-recorded mesh the operator is recovering with a live
+ *  `--server` override. */
+export async function resolveTargetOrThrow(flags: ResolveFlags): Promise<MeshTarget> {
+  const offline = flags.offline ?? (flags.space ? [] : (await pruneStaleMeshes()).offline);
   let target: MeshTarget;
   try {
-    target = resolveMeshTarget(process.cwd(), { ...flags, offline: sweep.offline });
+    target = resolveMeshTarget(process.cwd(), { ...flags, offline });
   } catch (e) {
     // The target error rides as `cause`, so a caller that must tell "no mesh recorded at all" from
     // every other refusal can read its `code` instead of matching the rendered sentence. No mesh
@@ -623,7 +620,7 @@ export async function resolveTargetOrThrow(flags: {
   // or kept as offline) and we fell back to the only live one — say so. The N>1 case errors
   // loudly; this is the one spot that would otherwise quietly redirect a stale default.
   const cur = getCurrent();
-  if (cur && (!findMesh(cur) || sweep.offline.includes(cur)) && target.source === "registry")
+  if (cur && (!findMesh(cur) || offline.includes(cur)) && target.source === "registry")
     console.error(c.dim(`note: default mesh "${cur}" is down - using "${target.space}"`));
   return target;
 }
@@ -681,7 +678,7 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile, opts: Co
 }
 
 /** {@link resolveTargetOrThrow} with the exiting disposition. */
-export async function resolveTargetOrExit(flags: { server?: string; space?: string }): Promise<MeshTarget> {
+export async function resolveTargetOrExit(flags: ResolveFlags): Promise<MeshTarget> {
   try {
     return await resolveTargetOrThrow(flags);
   } catch (e) {

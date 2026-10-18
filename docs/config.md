@@ -181,7 +181,7 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 | Variable | Purpose |
 |---|---|
 | `COTAL_ID` | Stable agent id chosen by the launcher (static meshes) |
-| `COTAL_MANAGER_INSTANCE` | Stable instance id of the launching manager. User-auth managed calls request a separate control view for this instance; the issuer authorizes the selection. It carries no credential or grant. An unbound session uses the issuer's unique authorized selection |
+| `COTAL_MANAGER_INSTANCE` | Stable instance id of the launching manager. User-auth managed calls request a separate control view for this instance: the seat's tools always, and `cotal` commands in its shell unless `--on` names another. The issuer authorizes the selection. It carries no credential or grant. An unbound session uses the issuer's unique authorized selection |
 | `COTAL_ENVIRONMENT` | Opaque provider-issued environment reference published in presence. Read once when the endpoint is constructed; omitted when the launcher sets none |
 | `COTAL_LIFECYCLE_UID` | The incarnation's lifecycle UID, minted once per spawn; the session binds its lifecycle-keyed DM/delivery/history consumers by it (its credential pins the same names). Required for an authed launch (`COTAL_CREDS` or user-mode); config parsing fails loud without it. Open mode omits it (the endpoint self-mints per session) |
 | `COTAL_BACKFILL_FLOOR` | The CHAT stream sequence a resumed seat's prior incarnation had reached before its preservation cut; the boot backfill reads only what came after it. Set by the manager on a preserved resume, absent on a fresh spawn. Must parse as a non-negative integer; a broken launcher's malformed value fails loud rather than silently falling back to a full replay |

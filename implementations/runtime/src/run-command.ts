@@ -24,6 +24,7 @@ import { Kvm, type KV } from "@nats-io/kv";
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
+  assertLifecycleToken,
   LANG_PROBLEM_DETAIL_KIND,
   dialerFor,
   invokeRepairingSplit,
@@ -71,7 +72,7 @@ import { createRunRecordHost, runRecordView } from "./run-record-host.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
 
 const USAGE =
-  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] | journal <runId> [--endpoint <ep>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--space <s>] [--server <url>] [--creds <path>]';
+  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] | journal <runId> [--endpoint <ep>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--on <instance>] [--space <s>] [--server <url>] [--creds <path>]';
 
 interface RunValues {
   space?: string;
@@ -99,6 +100,8 @@ interface RunValues {
   "discard-approvals"?: boolean;
   /** `ps` and `journal` only: one JSON object per row per line on stdout. */
   json?: boolean;
+  /** Hosted verbs only: the manager instance to address, as `cotal ps` prints it. */
+  on?: string;
 }
 
 interface Planes {
@@ -647,10 +650,30 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
 /** A spawned static seat that shells out to the rendered `cotal run answer …` command must answer as
  *  THAT seat ({@link resolveSeatControlTarget}). An open mesh keeps the operator caller here, which
  *  holds the run capability's full answer reach. Outside a managed seat, keep the ordinary operator
- *  target resolution unchanged. */
+ *  target resolution unchanged. `--on` reaches the mint on every path and becomes the instance the
+ *  call addresses; a user-mode view already carries the instance its issuer bound. */
 async function resolveRunControlTarget(values: RunValues): Promise<ControlTarget> {
-  const seat = values.creds === undefined ? await resolveSeatControlTarget(values) : undefined;
-  return seat?.mode === "auth" ? seat : resolveControlTarget(values, "control-caller-privileged");
+  const on = onInstanceOrExit(values.on);
+  const seat = values.creds === undefined ? await resolveSeatControlTarget(values, on) : undefined;
+  const t = seat?.mode === "auth" ? seat : await resolveControlTarget(values, "control-caller-privileged", on);
+  if (on === undefined) return t;
+  if (t.auth.managerInstanceId !== undefined && t.auth.managerInstanceId !== on) {
+    console.error("run: the manager pin differs from this credential's instance authority");
+    process.exit(1);
+  }
+  return { ...t, auth: { ...t.auth, managerInstanceId: on } };
+}
+
+/** `--on <instance>`, checked as the CLI's other pinning commands check it: an empty value (an unset
+ *  shell variable) is refused rather than read as absent, and the id must be a lifecycle token. */
+function onInstanceOrExit(on: string | undefined): string | undefined {
+  if (on === undefined) return undefined;
+  try {
+    return assertLifecycleToken(on, "instanceId");
+  } catch (e) {
+    console.error(`run: ${(e as Error).message}. --on wants the whole manager instance id as \`cotal ps\` prints it`);
+    process.exit(1);
+  }
 }
 
 function renderLangProblem(d: EpErrorDetail): string {
@@ -824,6 +847,10 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
   }
   if (values.json === true && verb !== "ps" && verb !== "journal") {
     console.error(`run ${verb}: --json is taken by \`ps\` and \`journal\` only`);
+    process.exit(1);
+  }
+  if (values.on !== undefined && values.local === true) {
+    console.error(`run ${verb}: --on pins a hosted verb to one manager instance and --local drives in this process, so pass one of them`);
     process.exit(1);
   }
   if (verb === "revoke") {

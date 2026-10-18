@@ -356,8 +356,11 @@ try {
   const unavailableId = mintLifecycleUid();
   await putManager({ instanceId: unavailableId, principal: `${unavailableOwner}.${remoteManagerActors(unavailableId).serve}`, owner: unavailableOwner, state: "frozen" });
   const unavailable = await post(`${PUBLIC}/exchange`, { owner: unavailableOwner, actor: unavailableActor, actorToken: unavailableSecret.actorToken, view: "manager-caller" });
-  check("an unavailable owner remote manager refuses with the explicit-selector remedy instead of falling through local",
-    unavailable.status === 401 && String(unavailable.body.error).includes("unavailable") && String(unavailable.body.error).includes("managerInstanceId"), unavailable);
+  // Cloud #210: naming an instance cannot revive a dead gate, so the remedy is to start a manager.
+  // The live local manager above is still not selected.
+  check("an owner whose remote manager gates are all dead is refused with the start-a-manager remedy, not routed to the local manager",
+    unavailable.status === 401 && String(unavailable.body.error).includes("none live") && String(unavailable.body.error).includes("`cotal supervise`")
+      && !String(unavailable.body.error).includes("managerInstanceId"), unavailable);
   const wrongLocalOwner = "u_" + "y".repeat(26);
   const wrongLocalActor = "wronglocal";
   const wrongLocalSecret = newActorToken();

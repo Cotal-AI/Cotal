@@ -171,6 +171,16 @@ const serializedForAlias = <T>(dir: string, owner: string, actor: string, fn: ()
 
 type Values = Record<string, string | undefined>;
 
+/** Which exchange arm asks for a manager-caller view. */
+export type ManagerCaller = "human" | "agent";
+
+/** How each caller names one manager instance, for the refusal that needs it to. */
+const MANAGER_PIN_REMEDY: Record<ManagerCaller | "wire", string> = {
+  human: "name one with --on <instanceId>",
+  agent: "name one with the instance argument",
+  wire: "name one as managerInstanceId",
+};
+
 /** The service's AUTHORITY PLANE (R1, SPEC 13.1): the two self-minted data-account connections
  *  behind (a) the composed connect authorizer — the file-ledger arm PLUS the credential deny-new
  *  arm through the supervised, shape-proved reader — and (b) the exchange-time root-credential
@@ -178,7 +188,9 @@ type Values = Record<string, string | undefined>;
 export interface AuthAuthorityPlane {
   authorizeConnect: (t: ValidatedUserToken) => Promise<void>;
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
-  selectManagerInstance: (owner: string, requested?: string) => Promise<string>;
+  /** `caller` picks the remedy an ambiguity refusal names: `--on` for the human (CLI) arm, the
+   *  tools' `instance` argument for a managed agent, the wire field otherwise. */
+  selectManagerInstance: (owner: string, requested?: string, caller?: ManagerCaller) => Promise<string>;
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>;
   /** The callout's issuance of an interactive user's `manager-caller` view (SPEC 13.15): one
    *  issuer window that stages and releases evidence bound to the actor-ledger row and writes the
@@ -672,7 +684,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     if (status.observedSpecRevision < rec.revision || status.epoch !== gate.processEpoch) return "not registered";
     return "candidate";
   };
-  const selectManagerInstance = async (owner: string, requested?: string): Promise<string> => {
+  const selectManagerInstance = async (owner: string, requested?: string, caller?: ManagerCaller): Promise<string> => {
     refuseIfFenced();
     if (requested !== undefined) {
       const instanceId = assertLifecycleToken(requested, "managerInstanceId");
@@ -702,9 +714,9 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     remoteLive.sort();
     if (remoteLive.length === 1) return remoteLive[0];
     if (remoteLive.length > 1)
-      throw new Error(`manager-caller selection found ${remoteLive.length} live remote manager candidates for owner ${owner}; exactly one is required or name --manager-instance`);
+      throw new Error(`manager-caller selection found ${remoteLive.length} live remote manager candidates for owner ${owner} (${remoteLive.join(", ")}); exactly one is required, so ${MANAGER_PIN_REMEDY[caller ?? "wire"]}`);
     if (remoteInstances.length > 0)
-      throw new Error(`the remote manager for owner ${owner} is unavailable (${remoteInstances.length} gate${remoteInstances.length === 1 ? "" : "s"}, none live); pass managerInstanceId to select an instance explicitly rather than falling through to the local manager`);
+      throw new Error(`the remote manager for owner ${owner} is unavailable (${remoteInstances.length} gate${remoteInstances.length === 1 ? "" : "s"}, none live); start one with \`cotal supervise\` and retry, as this call is never routed to the local manager`);
     if (localCandidate !== undefined) return localCandidate;
     throw new Error(`manager-caller selection found no manager candidate for owner ${owner}`);
   };
@@ -2876,7 +2888,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
       // and rides act.credentialId — the connect arm requires it against the LIVE cred row.
       const credentialId = await ctx.mintConnectCredential({ owner, actor, lifecycleUid: grant.lifecycleUid });
       const selectedManagerInstanceId = view === "manager-caller"
-        ? await ctx.selectManagerInstance(owner, managerInstanceId as string | undefined)
+        ? await ctx.selectManagerInstance(owner, managerInstanceId as string | undefined, "agent")
         : undefined;
       const token = await ctx.issuer.issue({
         owner,
@@ -2913,6 +2925,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
       ? await ctx.selectManagerInstance(
           deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, (await verifyIdpToken(idpToken, ctx.bridgeIdp)).sub),
           managerInstanceId as string | undefined,
+          "human",
         )
       : undefined;
     // #2312: a session-caller bearer is signed only once the identity plane has decided that THIS

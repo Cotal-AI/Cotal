@@ -116,7 +116,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: true,
   },
-  models: { flags: [...TARGET, "agent:string", "refresh:boolean"], positionals: false },
+  // `--on` (2026-10, #3959): with several live managers for one owner, the exchange refuses an
+  // unpinned call.
+  models: { flags: [...TARGET, "agent:string", "on:string", "refresh:boolean"], positionals: false },
   personas: {
     flags: [
       ...TARGET, "force:boolean", "from:string", "model:string", "prompt:string", "role:string",
@@ -266,11 +268,12 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // with an orphan or a recorded decision; the checking verb refuses them.
   // `--json` (2026-10, #2369): `ps` and `journal` print one JSON object per row; any other verb
   // refuses it.
+  // `--on` (2026-10, #3959): a hosted verb addresses one manager instance; `--local` refuses it.
   run: {
     flags: [
       "admit-publish:string", "admit-read:string", "adopt:string", "artifact:string", "by:string",
       "creds:string", "discard-approvals:boolean", "endpoint:string", "file:string:f", "json:boolean",
-      "local:boolean", "reason:string", "release:string", "server:string", "space:string",
+      "local:boolean", "on:string", "reason:string", "release:string", "server:string", "space:string",
       "timeout:string", "value:string",
     ],
     positionals: true,

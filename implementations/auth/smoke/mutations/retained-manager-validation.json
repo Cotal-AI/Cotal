@@ -11,7 +11,8 @@
     "The result mutation reintroduces secret reflection. The host suite serializes the production result and names the exact assertion that both retained secrets stay absent.",
     "The participant mutation removes the closed result parser. The manager suite supplies an unknown field and names the refusal, proving an HTTP response cannot grow a second authority channel beside RetainedAgentAuthority.",
     "The activation-receipt mutation substitutes the caller-computable proof for the host receipt. The manager suite names that substitution and refuses it without fallback.",
-    "The remote-origin mutation restores the optional managerAuthorityUrl redirect. The client suite records an evil cross-origin value and requires the request to stay on the verified exchange origin."
+    "The remote-origin mutation restores the optional managerAuthorityUrl redirect. The client suite records an evil cross-origin value and requires the request to stay on the verified exchange origin.",
+    "The transport mutation restores the empty-object stand-in for a body that does not parse. The client suite answers every shared provider method from a loopback endpoint with bodies that are not JSON and names the refusal each must surface instead of a result the endpoint never sent."
   ],
   "mutations": [
     {
@@ -20,7 +21,7 @@
       "find": "    registrationRevision: current.registrationRevision,",
       "replace": "    registrationRevision: 0,",
       "command": "pnpm exec tsx implementations/auth/smoke/retained-manager-validation.smoke.ts",
-      "completionMarker": "manager retained validation smoke failed: 17/18 passed, 1 failed",
+      "completionMarker": "manager retained validation smoke failed: 20/21 passed, 1 failed",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "FAIL: a superseded registration revision is refused",
       "cell": "a superseded registration revision is refused"
@@ -31,7 +32,7 @@
       "find": "    authority,\n  };",
       "replace": "    authority,\n    actorToken: r.actorToken,\n  } as RemoteRetainedAgentValidationResult;",
       "command": "pnpm exec tsx implementations/auth/smoke/retained-manager-validation.smoke.ts",
-      "completionMarker": "manager retained validation smoke failed: 16/18 passed, 2 failed",
+      "completionMarker": "manager retained validation smoke failed: 19/21 passed, 2 failed",
       "expectRed": "FAIL: valid host validation returns only bound coordinates and non-secret authority",
       "cell": "valid host validation returns only bound coordinates and non-secret authority"
     },
@@ -61,9 +62,19 @@
       "find": "  return { endpoint: managerAuthorityUrl(ua.endpoints.url, space), idpUrl: ua.idp.url };",
       "replace": "  return { endpoint: ua.endpoints.managerAuthorityUrl ?? managerAuthorityUrl(ua.endpoints.url, space), idpUrl: ua.idp.url };",
       "command": "pnpm exec tsx implementations/auth/smoke/retained-manager-validation.smoke.ts",
-      "completionMarker": "manager retained validation smoke failed: 16/18 passed, 1 failed",
+      "completionMarker": "manager retained validation smoke failed: 19/21 passed, 1 failed",
       "expectRed": "FAIL: remote provider derives the fixed authority path and refuses insecure exchange pins before fetch",
       "cell": "remote provider derives the fixed authority path and refuses insecure exchange pins before fetch"
+    },
+    {
+      "name": "the manager-authority transport substitutes an empty object for a body that does not parse",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "  const body = await response.json().catch(() => { throw new Error(`the ${what} endpoint at ${endpoint} answered HTTP ${response.status} with a body that could not be read as JSON`); });",
+      "replace": "  const body = await response.json().catch(() => ({}));",
+      "command": "pnpm exec tsx implementations/auth/smoke/retained-manager-validation.smoke.ts",
+      "completionMarker": "manager retained validation smoke failed: 20/21 passed, 1 failed",
+      "expectRed": "FAIL: a manager-authority answer whose body is not JSON is refused by every shared provider method",
+      "cell": "a manager-authority answer whose body is not JSON is refused by every shared provider method"
     }
   ]
 }

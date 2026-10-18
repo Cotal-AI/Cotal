@@ -23,7 +23,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
+  authDir, canonicalLocalProcessPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
   refreshRegistrationPolicy,
   type MeshEntry,
@@ -160,11 +160,11 @@ export function superviseTarget(v: Values, root = findCotalRoot()): { space: str
     // `resolveMeshTarget(...,{space})` distinguishes every known registry fault. Only an absent
     // record gets the host-or-join wording; a corrupt/ambiguous record remains its own loud error.
     if (isWorkspaceTargetError(error) && error.code === "unknown-space") {
-      // A hosting root that predates a registry entry (or whose entry was pruned) still names its
-      // space on disk: `.cotal/auth` is the host proof `resolveMeshTarget` cannot see without a
-      // record. The broker address then comes from the flag/env, exactly what a service unit's
-      // EnvironmentFile supplies.
-      if (soleSpaceOf(authDir(root)) === localSpace)
+      // A hosting root that predates a registry entry (or whose entry was pruned) still holds this
+      // space's account record on disk, beside any other space it hosts: `.cotal/auth` is the host
+      // proof `resolveMeshTarget` cannot see without a record. The broker address then comes from
+      // the flag/env, exactly what a service unit's EnvironmentFile supplies.
+      if (loadSpaceAccountAuth(authDir(root), localSpace))
         return { space: localSpace, server: ve.server ?? DEFAULT_SERVER, remoteUser: false, tlsRequired: false, eventsRequired: false };
       throw new Error(`neither hosting '${localSpace}' (no cotal up root here) nor registered to it (no meshes entry) — \`cotal up\` to host, or \`cotal meshes add\` to join`);
     }
@@ -505,16 +505,19 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   // Signals and cooperative requests share the sparing default. Only the process-bound
   // `cotal down --with-agents` intent authorizes an agent reap.
   let shuttingDown = false;
+  // A start that failed under a pending stop leaves the exit to its own error once that stop settles.
+  let startFailed = false;
+  let stopped: Promise<void> | undefined;
   const shutdown = () => {
     if (shuttingDown) return;
     shuttingDown = true;
     const decision = consumeManagerShutdownIntent({ root: managerRoot, space });
     if (decision.warning) console.error(c.yellow(`! ${decision.warning}`));
-    void mgr.stop({ withAgents: decision.withAgents })
+    stopped = mgr.stop({ withAgents: decision.withAgents })
     .then(() => {
       publishManagerSpareCapability(managerContext, false);
       releasePidRecord?.();
-      process.exit(0);
+      if (!startFailed) process.exit(0);
     })
     .catch((e) => {
       // The record is NOT released here: the stop did not complete, so a seat may still be running
@@ -522,7 +525,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       // pidfile contract exists to prevent. The process still exits: stop() has closed what it could,
       // and the shuttingDown latch would otherwise leave it deaf to every later signal (#2290).
       console.error(c.red(`✗ ${(e as Error).message}`));
-      process.exit(1);
+      if (!startFailed) process.exit(1);
     });
   };
   const disposeLocalStop = process.platform === "win32"
@@ -531,8 +534,21 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       shutdown();
     })
     : undefined;
+  // Listen before start: start() acquires the liveness lease early, and a signal that took Node's
+  // default action there would strand the row for its whole TTL. stop() waits for start to settle.
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
   try { await mgr.start(); }
-  catch (error) { disposeLocalStop?.(); throw error; }
+  catch (error) {
+    disposeLocalStop?.();
+    // The CLI exits as soon as this throws. A stop requested during start runs only after start
+    // settles, so wait for it to release the lease first; the start error still decides the exit.
+    startFailed = true;
+    await stopped;
+    throw error;
+  }
+  // A stop that arrived during start owns the exit; this process never announces itself ready.
+  if (shuttingDown) return;
   // The control capability precedes the pid record, so a stop cannot observe a ready manager
   // before its cooperative endpoint exists. A failed start still publishes no pid record.
   releasePidRecord = recordManagerPid(managerRoot, space);
@@ -543,8 +559,6 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       `\n  console: ${mgr.consoleUrl}` +
       c.dim("\n  spawn: cotal spawn --detach <persona>   ·   stop: cotal stop --name <n>   (Ctrl-C to shut down)"),
   );
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
   // Declarative boot: bring up each rostered agent through the same spawn path as a detached spawn.
   // A failed entry is logged but non-fatal — healthy agents stay up and the operator can
   // fix the roster without the supervisor crash-looping.

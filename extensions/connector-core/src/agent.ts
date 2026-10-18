@@ -2283,12 +2283,30 @@ export class MeshAgent extends EventEmitter {
    *  manager has the drive; the run continues there. Their deadline outlives the manager's own
    *  activation wait, so a slow launch reads as the manager's "still launching" refusal and never
    *  as a manager that did not answer. */
-  async run(verb: "start" | "resume" | "answer" | "status" | "ps", args: Record<string, unknown>): Promise<ControlReply> {
+  async run(verb: "start" | "resume" | "answer" | "status" | "ps", args: Record<string, unknown>, instance?: string): Promise<ControlReply> {
     await this.requireConnected();
+    const pin = this.managerPin(instance);
+    if ("error" in pin) return pin.error;
     return this.managerInvoke(`run-${verb}`, args, {
       deadlineMs: RUN_LAUNCH_DEADLINE_MS,
       ...(verb === "answer" ? { target: { mode: "self" as const } } : {}),
+      ...pin,
     });
+  }
+
+  /** An explicit manager instance for a read or run call, under `spawn`'s rules: a lifecycle token,
+   *  and in user-auth mode no other instance than the one this session is bound to. */
+  private managerPin(instance: string | undefined): { instanceId?: string } | { error: ControlReply } {
+    if (instance === undefined) return {};
+    let instanceId: string;
+    try {
+      instanceId = assertLifecycleToken(instance, "instance");
+    } catch (e) {
+      return { error: { ok: false, error: (e as Error).message } };
+    }
+    if (this.config.userAuth && this.config.managerInstanceId !== undefined && instanceId !== this.config.managerInstanceId)
+      return { error: { ok: false, error: "the requested manager instance differs from this credential's instance authority" } };
+    return { instanceId };
   }
 
   // ---- the turn relay (seat side) ------------------------------------------------------------
@@ -2553,15 +2571,19 @@ export class MeshAgent extends EventEmitter {
 
   /** Mesh-side persona catalog list: name, role, model, description, scoped by the same
    *  ownership rule as `definePersona`. */
-  async listPersonas(): Promise<ControlReply> {
+  async listPersonas(instance?: string): Promise<ControlReply> {
     await this.requireConnected();
-    return this.managerInvoke("list-personas", undefined);
+    const pin = this.managerPin(instance);
+    if ("error" in pin) return pin.error;
+    return this.managerInvoke("list-personas", undefined, pin);
   }
 
   /** Mesh-side persona catalog show of one card. Unauthorized / missing names are not-found. */
-  async showPersona(name: string): Promise<ControlReply> {
+  async showPersona(name: string, instance?: string): Promise<ControlReply> {
     await this.requireConnected();
-    return this.managerInvoke("show-persona", { name });
+    const pin = this.managerPin(instance);
+    if ("error" in pin) return pin.error;
+    return this.managerInvoke("show-persona", { name }, pin);
   }
 
   // ---- presence ------------------------------------------------------------

@@ -1,8 +1,10 @@
 /** Closed remote retained-agent validation policy cells (broker-free). */
 import assert from "node:assert/strict";
-import { createSpaceAuth, mintLifecycleUid, newIdentity, remoteManagerActors, type RemoteRetainedAgentValidationRequest } from "@cotal-ai/core";
+import { createSpaceAuth, mintLifecycleUid, newIdentity, remoteManagerActors, resolveAuthProvider, type RemoteRetainedAgentValidationRequest } from "@cotal-ai/core";
 import { recordMesh, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cotalAuthProvider, ensurePinnedIdp, grantActor, saveAuthServiceInfo, saveIdpSession } from "../src/index.js";
@@ -247,7 +249,64 @@ await cell("remote provider derives the fixed authority path and refuses insecur
   }
 });
 
-const expected = 18;
+await cell("every shared provider method decodes manager-authority answers from a loopback endpoint", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cotal-authority-transport-"));
+  const priorEnv = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_HOME: process.env.COTAL_HOME };
+  let answer = { status: 200, type: "application/json", body: "{}", location: "" };
+  const server = createServer((req, res) => {
+    if (req.url === "/token") return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ token: "fresh-idp-jwt" }));
+    if (req.url !== "/manager-service-authority") return void res.writeHead(404).end();
+    res.writeHead(answer.status, { "content-type": answer.type, ...(answer.location ? { location: answer.location } : {}) }).end(answer.body);
+  });
+  await new Promise<void>((listening) => server.listen(0, "127.0.0.1", listening));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    for (const key of ["HOME", "XDG_CONFIG_HOME", "COTAL_HOME"] as const) process.env[key] = join(root, key);
+    recordMesh({
+      space, server: "nats://127.0.0.1:4222", root, mode: "user", origin: "manual", ts: new Date().toISOString(),
+      userAuth: { provider: "cotal", remote: true, idp: { url: base, issuer: base, audience: "cotal" }, endpoints: { url: base } },
+    });
+    saveIdpSession(process.env.COTAL_HOME!, base, { token: "session-secret", expiresAt: Math.floor(Date.now() / 1000) + 60, sub: "human" });
+    const provider = resolveAuthProvider();
+    assert.equal(provider, cotalAuthProvider);
+    const methods = [
+      "managerServiceAuthority", "maintainRemoteManager", "scanRemoteManagerGoalIndex", "authorizeRemoteManagerAdmin",
+      "validateRemoteRetainedAgent", "requestRemoteRunAdmission", "requestRemoteRunAttempt", "requestRemoteRunRevoke",
+      "enrollRemoteManagedAgent", "prepareRemoteManagedAgentRetirement", "requestRemoteManagedAgentRuntime",
+    ] as const;
+    const outcomes = (next: Partial<typeof answer>) => {
+      answer = { status: 200, type: "application/json", body: "{}", location: "", ...next };
+      return Promise.all(methods.map((method) => (provider[method]!({ store: workspaceSecretStore(root), dir: userAuthStateDir(root, space), request: { space } as never }) as Promise<unknown>)
+        .then((value) => ({ value }), (error: Error) => ({ error: error.message }))));
+    };
+    const route = `${base.replaceAll(".", "\\.")}/manager-service-authority`;
+    await cell("a manager-authority answer whose body is not JSON is refused by every shared provider method", async () => {
+      for (const next of [{ type: "text/plain", body: "not json" }, { body: "" }, { status: 502, type: "text/html", body: "<html>bad gateway</html>" }]) {
+        const refusal = new RegExp(`^the [a-z -]+ endpoint at ${route} answered HTTP ${next.status ?? 200} with a body that could not be read as JSON$`);
+        for (const outcome of await outcomes(next)) assert.match("error" in outcome ? outcome.error : "resolved", refusal);
+      }
+    });
+    await cell("valid JSON answers pass through verbatim and refusals keep the host reason", async () => {
+      assert.deepEqual(await outcomes({ body: JSON.stringify({ status: "authorized" }) }), methods.map(() => ({ value: { status: "authorized" } })));
+      assert.deepEqual(await outcomes({ body: "{}" }), methods.map(() => ({ value: {} })));
+      for (const outcome of await outcomes({ status: 403, body: JSON.stringify({ error: "denied by host" }) }))
+        assert.match("error" in outcome ? outcome.error : "resolved", /^signed in, but [a-z -]+ was refused: denied by host$/);
+      for (const outcome of await outcomes({ status: 502 }))
+        assert.match("error" in outcome ? outcome.error : "resolved", /^signed in, but [a-z -]+ was refused: HTTP 502$/);
+      for (const outcome of await outcomes({ status: 302, type: "text/plain", body: "", location: "https://other.example/steal" }))
+        assert.match("error" in outcome ? outcome.error : "resolved", /^the [a-z -]+ endpoint answered 302 with redirect Location "https:\/\/other\.example\/steal" - redirects are refused$/);
+    });
+  } finally {
+    server.close();
+    for (const [key, value] of Object.entries(priorEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const expected = 21;
 if (pass !== expected || fail !== 0) {
   console.error(`manager retained validation smoke failed: ${pass}/${expected} passed, ${fail} failed`);
   process.exit(1);

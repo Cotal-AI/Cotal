@@ -163,7 +163,10 @@ submitted it, so another caller's spawn under the same id is its own goal with i
 acceptance. A sibling instance or a restarted one
 answers it from the identity the accepting instance recorded before it replied, owner included.
 When that record names no owner because an older manager wrote it, the resubmission is refused
-`unavailable`.
+`unavailable`. Once the goal has ended, the accepting manager keeps its acceptance for five more
+minutes. After that, and at any other instance, the resubmission is answered from the goal's
+terminal and never accepted again: a `succeeded` terminal names the agent, so it returns the same
+acceptance, and any other outcome refuses it `failed-precondition` with that terminal attached.
 
 The name is the one actually allocated: a persona-derived collision is auto-numbered
 (`reviewer`, then `reviewer_2`), while a hard-pinned `--name` that collides with a live
@@ -216,7 +219,8 @@ epoch its own registration committed, never at the epoch of a later start of the
 On a static or open mesh,
 an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did).
 `cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")`
-pin one instance by its exact id. A foreground CLI spawn has no manager to pin and refuses the
+pin one instance by its exact id, as `--on` does for `cotal ps`, `cotal models` and every hosted
+`cotal run` verb, and `instance` for `cotal_run` and `cotal_personas`. A foreground CLI spawn has no manager to pin and refuses the
 flag. An MCP pin that does not resolve is refused without falling back to class anycast. There are no ordinal
 aliases and no short forms: wherever a display names an instance you can address, it prints
 the whole id, because both surfaces take nothing else.
@@ -225,10 +229,13 @@ On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view
 exchange. It authorizes one concrete manager instance using the caller's current actor grant and
 the host's registered service records. Discovery and invocation both use that instance's `inst`
 route. This view grants no registry scan, class queue, or additional command capability. An absent,
-ambiguous or unauthorized selection refuses before the command is sent.
+ambiguous or unauthorized selection refuses before the command is sent. An ambiguous one lists the
+owner's live manager instance ids and names the caller's way to pick one: `--on <instanceId>` for
+the CLI, the `instance` argument for an agent's tools.
 
 Managed launches carry `COTAL_MANAGER_INSTANCE` so their tools address the manager that launched
-them. Existing unbound sessions can use the exchange's unique authorized selection without
+them; a tool's `instance` argument must name that same manager. The `cotal` commands run from their
+shell select it too, unless `--on` names another instance. Existing unbound sessions can use the exchange's unique authorized selection without
 replacing their actor or conversation. The connector uses a separate control connection; the
 standing message connection and its credential source are unchanged. Accepted spawn goals are
 followed on that renewing connection, using its existing caller-scoped progress grant, so a long
@@ -296,7 +303,9 @@ readiness behavior.
 
 The describe and the contract store reads after it share the resolver's one deadline, so a slow
 store read fails the resolve with `deadline-exceeded` when that deadline expires. Cancelling a
-resolve settles a store read in flight instead of waiting for it to return.
+resolve settles a store read in flight instead of waiting for it to return. When one store read
+fails, the resolve fails with it and fetches no further command contracts; fetches already under
+way finish on their own.
 
 The resolve and the invoke are separate trips through the same anycast queue, so in a
 multi-manager space an unpinned call can land on an instance the caller did not resolve. Every

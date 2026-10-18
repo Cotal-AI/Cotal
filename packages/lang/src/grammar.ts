@@ -1184,6 +1184,17 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
     const thunks = branchThunks(args[spec.optionsAt - 1], v, scope);
     for (const thunk of thunks) checkCapturedWrites(thunk, name, v, seen);
   }
+  // A probe and the functions in its options bag run one level deeper too, in each observation's
+  // own frame, and a settled `waitUntil` is replayed without calling them, so a write from one of
+  // them happens on the live run only, as from a `once` body.
+  if (spec.probeAt !== undefined) {
+    const seen = new Set<AnyNode>();
+    const fns = [args[spec.probeAt], ...(spec.functionOptions ?? []).map((k) => given.get(k)?.value as AnyNode | undefined)];
+    for (const fn of fns) {
+      const body = fn === undefined ? undefined : resolveFunction(fn, v, scope);
+      if (body !== undefined) checkCapturedWrites(body, name, v, seen);
+    }
+  }
 }
 
 function isFunctionNode(node: AnyNode): boolean {

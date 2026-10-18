@@ -395,7 +395,10 @@ names the process holding it, and leaves that stop's `--with-agents` policy in p
 manager and delivery stops send an authenticated local cleanup request because Windows process
 signals terminate without running cleanup handlers. The request requires the process's private
 capability, its creation identity and the live stopper's identity and reservation. Other platforms
-use `SIGTERM`. A process still running after 20s on the Windows cooperative path, or 15s after
+use `SIGTERM`. A `cotal supervise` that receives `SIGTERM` or `SIGINT` while it is still starting
+lets the start settle, then runs the same stop and exits without printing `manager up`, so its
+liveness lease is released and an immediate restart is not refused. When that start fails, the stop
+still releases the lease before the process prints the start error and exits 1. A process still running after 20s on the Windows cooperative path, or 15s after
 `SIGTERM`, receives `SIGKILL`. Ctrl-C stops the manager first; when that
 stop is refused or the manager's exit cannot be confirmed, Ctrl-C signals nothing else, prints the
 refusal with the reap route, and leaves the stack running; end it with `cotal down --with-agents`.
@@ -642,7 +645,8 @@ unreachable exact endpoint from the recorded cut.
 That endpoint is probed immediately before cloning, so a live broker with a missing or stale pidfile
 is still refused. It claims the cut, reflink/copies the stopped source to a
 private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
-independent parent/deadline watchdog. It validates the canonical stream and pull-consumer inventory,
+independent parent/deadline watchdog. A bootstrap broker that does not accept connections within
+15 seconds fails the command. It validates the canonical stream and pull-consumer inventory,
 writes native snapshots with consumers excluded, and stores conservative contiguous ACK-floor
 checkpoints separately. The presence bucket is memory-backed, so it does not survive the cut and
 the clone may lack it. Every other stream must be present. The original store is never opened by
@@ -883,7 +887,9 @@ directory that exists but cannot be read, such as one without read permission or
 its place, also makes every command that reads the registry exit 1 with its path and the read
 error. Only an absent directory is an empty registry. A record removed between listing and reading
 is omitted from that listing. A keyed read also treats a record removed during its read as absent;
-parse, shape and other read failures still refuse by name.
+parse, shape and other read failures still refuse by name. Recording or removing a mesh also sweeps
+the directory for an older-format record of the same space. Any error listing the directory for
+that sweep, other than an absent directory, fails the operation with that error.
 
 An IdP may advertise a same-origin space catalog during login. Cotal reads the complete snapshot and
 adds every valid registration without a separate `meshes add`. A snapshot younger than five seconds
@@ -958,7 +964,8 @@ Nothing that merely *infers* a record is stale from a dead broker touches it: an
 unreachable broker is listed `offline` and stays, whether `cotal up` or `cotal meshes add`
 wrote the record; a foreground `up` whose broker exits unexpectedly keeps its record the same way.
 A bare command does not treat that offline record as a running mesh;
-name it with `--space` to restart it. `cotal down` / `cotal clean all` still drop an `up` record for the project
+name it with `--space` to restart it. When a bare control command resolves its target, it probes the
+recorded brokers once, and its mode check and its connect both read that one result. `cotal down` / `cotal clean all` still drop an `up` record for the project
 they tear down; a hand-added one they leave alone even when it shares a root, because nothing
 on this machine could write it back.
 
@@ -1242,7 +1249,7 @@ client observes an existing same-host consumer.
 ## models
 
 ```bash
-cotal models [--agent <connector>] [--refresh]
+cotal models [--agent <connector>] [--refresh] [--on <instance>]
 ```
 
 | Flag | Default | Meaning |
@@ -1250,6 +1257,7 @@ cotal models [--agent <connector>] [--refresh]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--agent <connector>` | all registered connectors | Connector whose catalog to list |
 | `--refresh` | off | Ask the connector to refresh its provider cache |
+| `--on <instance>` | class anycast | Ask one manager instance, by the whole id as `ps` prints it, with the same rules as [`ps`](#managed-seats). On a user-auth mesh where you run more than one live manager, an unpinned call is refused and `--on` picks one |
 
 Asks the running manager for each connector's model catalog (model ids plus their variants)
 for connectors that expose one. OpenCode and Codex query harness/provider surfaces; Jcode reads
@@ -1396,10 +1404,13 @@ address that instance directly. This happens by default; you do not need `--on`.
 
 `--on <instance>` remains the override, for when you already know where the seat lives or the
 lookup itself is degraded. On a **user-auth mesh**, the exchange selects one authorized manager
-for a short-lived `manager-caller` view. `--on` requests a specific instance; without it, selection
-must be unique. Discovery and the command use that instance route. The caller gains no registry
-read or scatter permission. An absent, ambiguous or unauthorized selection refuses before sending
-the command.
+for a short-lived `manager-caller` view. `--on` requests a specific instance. Without it, a command
+run from a managed seat's shell selects the manager that launched the seat (`COTAL_MANAGER_INSTANCE`),
+and any other caller's selection must be unique. Discovery and the command use that instance route.
+The caller gains no registry read or scatter permission. An absent, ambiguous or unauthorized
+selection refuses before sending the command. With several of your managers live, the refusal lists
+their instance ids so you can pass one to `--on`. When every manager you registered has exited, the
+refusal says to start one with [`supervise`](#supervise); the command is not sent to the local manager.
 
 A seat is reported as **not found** only when every reachable instance answered for itself. An
 instance that stayed silent past the deadline, or that refused the read rather than answering, said
@@ -1610,7 +1621,7 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--space <s>` | this folder's auth space | Space to supervise |
+| `--space <s>` | this folder's auth space | Space to supervise. On a root that hosts several spaces, name one of them here |
 | `--server <url>` | hosting mesh, or matching registered mesh | Broker URL. A registered mesh supplies it when omitted; a different explicit value is refused before anything is dialed. |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
 | `--console-port <n>` | none | Protocol-console port |
@@ -2592,12 +2603,12 @@ keyed beta intake; without one it goes to the public `cotal.ai` intake and requi
 Operate durable workflow runs (cotal-lang programs) from the terminal.
 
 ```bash
-cotal run start --file <program> [--timeout <dur>] [--local]
-cotal run resume <runId> [--local --file <program>]
-cotal run ps [--endpoint <ep>] [--json]
-cotal run journal <runId> [--endpoint <ep>] [--json]
-cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
-cotal run amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
+cotal run start --file <program> [--timeout <dur>] [--local] [--on <instance>]
+cotal run resume <runId> [--local --file <program>] [--on <instance>]
+cotal run ps [--endpoint <ep>] [--json] [--on <instance>]
+cotal run journal <runId> [--endpoint <ep>] [--json] [--on <instance>]
+cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
+cotal run amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
 cotal run migrate <runId> --local --file <program> [--endpoint <ep>]
 ```
 
@@ -2637,7 +2648,9 @@ only; the manager serves no run-migrate command): it prints whether the migratio
 every orphaned step with its verdict and code, and exits 0 on admissible and non-zero on not. It
 writes nothing: the commit that would file the migration is not reachable yet, and the report
 says so. `--timeout` sets the default
-checkpoint timeout for a drive (default 1h). `--local` drives in this process instead, over one
+checkpoint timeout for a drive (default 1h). `--on <instance>` sends a hosted verb to one manager
+instance, with the same rules as [`ps`](#managed-seats). On a user-auth mesh where you run more than one
+live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
 (`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
@@ -2669,9 +2682,9 @@ recover one by hand.
 
 `deliver` runs the server-side Plane-3 delivery daemon: the durable backstop and membership/ACL
 authority. It is auth-mode-only and single-instance (`--shard`/`--shards` accept only `N=1`);
-`--dev-mint` mints a scoped cred from the local signer for standalone dev. `--creds` can start a
-daemon that already looks healthy, but production renewal is not that file alone: the manager and
-the daemon must address one credential store. On a stock split host with two project roots, a
+`--dev-mint` mints a scoped cred for standalone dev, signed by the local account of the space the
+daemon serves. `--creds` can start a daemon that already looks healthy, but production renewal is
+not that file alone: the manager and the daemon must address one credential store. On a stock split host with two project roots, a
 direct `deliver` is not an independent repair; keep the daemon under `cotal up` on the broker
 host, or inject the same store into both processes ([embedding](embedding.md#supervisor-signing-authority)).
 Typed by hand on the workstation, `deliver` dials the broker recorded for `--space` in the mesh
