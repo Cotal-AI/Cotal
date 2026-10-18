@@ -171,9 +171,9 @@ import {
   unicastSubject,
   unicastRecvFilter,
 } from "./subjects.js";
+import { PLANE3_FRAME_HEADER, dlvCopyHeaders, dlvCopyReason } from "./delivery-reason.js";
 
 export const DEFAULT_SERVER = "nats://127.0.0.1:4222";
-const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
 
 interface Plane3DeliveryFrame {
   version: 1;
@@ -5476,8 +5476,9 @@ export class CotalEndpoint extends EventEmitter {
         channel: entry.channel,
         msg: authenticatedChannelMessage(entry.msg, entry.channel),
       };
-      const frameHeaders = headers();
-      frameHeaders.set(PLANE3_FRAME_HEADER, "1");
+      // Fresh headers: the reason this reader just re-authorized, never the publisher's headers,
+      // `mentions` or text.
+      const frameHeaders = dlvCopyHeaders(entry.reason);
       // Lifecycle-keyed subject + msgID (ours): the DLV consumer filters on the lifecycle-scoped
       // subject (streams.ts filter_subject), and a predecessor's transferred copy must never suppress
       // a successor's under the same alias (disjoint lifecycles, stream-wide dedupe).
@@ -5546,7 +5547,16 @@ export class CotalEndpoint extends EventEmitter {
         }
         const msg = authenticatedChannelMessage(raw.msg, raw.channel);
         if (msg.from?.id === this.card.id) { m.ack(); continue; } // own echo (defensive)
-        this.emit("message", msg, durableDelivery(m, ackWaitMs), { historical: false, kind: "channel" } satisfies MessageMeta);
+        // Like the frame header, the reason header is minted only by the trusted DLV writer. One this
+        // endpoint does not know is a newer reader's: deliver without a reason and say so, never guess.
+        // A warning, not an error: the copy is still delivered, and an unheard `error` would kill the host.
+        const { reason, unrecognized } = dlvCopyReason(m.headers);
+        if (unrecognized !== undefined) {
+          this.emitRecoverable(new Error(`plane-3 delivery: unrecognized delivery reason "${unrecognized}"; delivered without one`));
+        }
+        this.emit("message", msg, durableDelivery(m, ackWaitMs), {
+          historical: false, kind: "channel", ...(reason !== undefined ? { deliveryReason: reason } : {}),
+        } satisfies MessageMeta);
       }
     })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
   }

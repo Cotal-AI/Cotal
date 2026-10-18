@@ -94,6 +94,7 @@ import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
+import { recipientDeprovisionerPermissions } from "./delivery-recipient.js";
 import { environmentManagerPermissions, isEnvironmentManagerProfile, type EnvironmentManagerGrantPin } from "./environment-manager-grants.js";
 import { credsClaims, isUserNkey, type Identity } from "./identity.js";
 import {
@@ -112,6 +113,7 @@ export type Profile =
   | "supervisor"
   | "provisioner"
   | "deprovisioner" // ephemeral, TARGET-PINNED teardown of ONE departed agent's id-keyed footprint
+  | "recipient-deprovisioner" // ephemeral, GRANT-PINNED teardown of ONE recipient grant's own durables (never a lifecycle's)
   | "retirement-requester" // ephemeral request+reply on the auth-admin rail: asks the AUTH plane to retire a lifecycle; holds NO executing right
   | "lifecycle-executor" // ephemeral, LIFECYCLE-PINNED §13.1 state writes for the STATIC manager: exactly ONE incarnation's head/uid/gate/cred-row/slot keys
   | "endpoint-serve-executor" // ephemeral, ENDPOINT-INSTANCE-PINNED §13.1 endpoint-serve writes: exactly ONE (endpoint, instanceId)'s epgate + epcred family + eprepair cursor
@@ -269,6 +271,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "membership-rw": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "membership feed writer; seed-less - the manager re-signs the membership-rw.creds store key for the SAME nkey, the feed adopts it on a 75% preflight-proven renewal timer (its active self-heal), and delivery-admin reloadCreds is the explicit adoption on top" },
   provisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "setup/spawn provisioning window only" },
   deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
+  "recipient-deprovisioner": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one recipient grant's durable teardown window only" },
   "retirement-requester": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one despawn's retirement request window; request+reply only" },
   "lifecycle-executor": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one static lifecycle operation's 13.1 state-write window (activation / terminal / renewal ledger append)" },
   "endpoint-serve-executor": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one endpoint registration/serve-mint window (13.1 epgate CAS + epcred stage/revoke + eprepair cursor for one (endpoint, instanceId))" },
@@ -633,6 +636,10 @@ export interface MintOpts {
    *  never a peer's, never the role-shared `svc_<role>`, and structurally never a same-alias
    *  successor's (its names carry a different uid). Ignored by every other profile. */
   deprovisionTarget?: DeprovisionTarget;
+  /** `recipient-deprovisioner` profile only: the ONE recipient grant's own durables it may delete by
+   *  exact name. Every entry must be a recipient durable on its own stream (`rdm_` on DM, `rdlv_` on
+   *  DLV), so the credential can never name a lifecycle's `dm_`/`dlv_` durables. Ignored elsewhere. */
+  recipientDurables?: ReadonlyArray<{ stream: string; durable: string }>;
   /** `retirement-requester` profile only: the REQUESTING CALLER TRIPLE (the current space-manager's
    *  own `owner`/`actor`/`uid`) whose auth-endpoint request subject the credential may publish, and
    *  whose reply rail it may read. The subject IS the attribution: the auth plane's rail derives
@@ -1147,6 +1154,11 @@ export function permissionsFor(
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon
   if (profile === "provisioner") return provisionerPermissions(space, pr); // ephemeral onboarding authority
+  if (profile === "recipient-deprovisioner") {
+    if (!opts.recipientDurables?.length)
+      throw new Error("permissionsFor: recipient-deprovisioner requires opts.recipientDurables (the one grant's own durables)");
+    return recipientDeprovisionerPermissions(space, pr.connId, opts.recipientDurables);
+  }
   if (profile === "deprovisioner") {
     // Ephemeral, TARGET-PINNED teardown — the counterpart to `provisioner`. The target is a
     // full principal dot-form for user-mode agents, or a bare static/dev actor id (keyed under

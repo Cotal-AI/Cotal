@@ -271,8 +271,9 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         const inboxNonce = assertInboxConnId(req.connect_opts?.name ?? "");
         const { [SESSION_EXP]: sessionExp, ...perms } = await opts.permissionsFor(validated, inboxNonce);
         // #2312: a session-caller connection carries EXACTLY the static arm's expiry, the grant's,
-        // and only when the permission builder vouched for it from the live session row.
-        const exp = validated.act.view === "session-caller" ? sessionExp : validated.exp;
+        // and only when the permission builder vouched for it from the live session row. A
+        // tool-result-caller connection likewise carries the expiry the re-verified consent bounds.
+        const exp = validated.act.view === "session-caller" || validated.act.view === "tool-result-caller" ? sessionExp : validated.exp;
         if (typeof exp !== "number" || !Number.isSafeInteger(exp)) throw new Error("callout: no bound expiry for this connection");
         // Stamp the principal into the minted JWT so the live identity is recoverable server-side: the
         // connection's `user_nkey` is a per-connect ephemeral the SERVER generated, not the principal,

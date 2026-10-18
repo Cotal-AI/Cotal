@@ -434,6 +434,13 @@ export interface MessageMeta {
    *  `to`, but it cannot publish on your private DM subject — so directedness rides this,
    *  never the payload. */
   kind: "channel" | "dm" | "anycast";
+  /** Why the trusted Plane-3 reader delivered this copy to this lifecycle, read from the reader's own
+   *  `Cotal-Delivery-Reason` header on the member's DELIVER store (SPEC §8): `durable-channel` is a
+   *  durable channel member's backstop copy, `live-mention` an `@mention` copy on a `live` channel to
+   *  a target whose read ACL covers it. Present only on such a delivery from a reader that writes it.
+   *  Absent on live, DM, anycast and history deliveries and from an older reader, and absent means
+   *  unknown, not "not a mention". Payload `mentions`, text and the roster never set it. */
+  deliveryReason?: Plane3Entry["reason"];
 }
 
 /**

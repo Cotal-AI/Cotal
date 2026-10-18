@@ -12,7 +12,10 @@ import type { Readable, Writable } from "node:stream";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
+  captureToolResults,
   configFromEnv,
+  ToolResultJournal,
+  serveLaunchedToolResults,
   envFlag,
   eventPlaneArmed,
   hasIdentity,
@@ -179,6 +182,15 @@ async function startSession(
       else if (agent.connected && agent.transportConnected) finish();
     });
 
+  // Private tool results (SPEC §13.6): the mapper below shows every batch to this journal, which
+  // captures nothing until a verified human consent is applied through the handle-only
+  // `tool-result-consent` command, and serves reads only through `tool-result`. Both are served
+  // only when the launcher handed this incarnation its own serve grant and `endpoint-serve` creds
+  // (launch material `toolResults`); without them nothing is served. Results never ride the event
+  // channel.
+  const toolResults = new ToolResultJournal();
+  let toolResultServe: { stop(): Promise<void> } | undefined;
+
   if (eventPlaneArmed(config, env)) {
     // The mapper is built inside the emitter factory, because it is keyed on the thread the
     // transcript names and that is not known until a hook hands one over. It is HELD here because
@@ -246,7 +258,7 @@ async function startSession(
             wal,
             subjectFrontier,
             source: boundSource,
-            map: mapper.map,
+            map: captureToolResults(mapper.map, toolResults, threadId),
             // Claude writes the transcript, and a write it cut short (a full disk) leaves part of
             // one record glued to the next on a single line that never becomes readable. That line
             // is stepped over and named here; halting on it ended the plane, and on a space that
@@ -314,6 +326,8 @@ async function startSession(
       }
       wake?.stop();
       try {
+        await toolResultServe?.stop().catch((e: unknown) => process.stderr.write(`[cotal-connector] tool-results stop failed: ${String(e)}\n`));
+        toolResults.retire();
         await events?.close();
         await agent.stop();
       } finally {
@@ -345,6 +359,24 @@ async function startSession(
   if (opts.input.readableEnded || opts.input.destroyed)
     throw new Error("hosted MCP input ended before startup completed");
   agent.start(); // custody is claimed before background broker connect, after control bind
+  if (config.toolResults) {
+    const lifecycleUid = config.lifecycleUid;
+    if (!lifecycleUid) throw new Error("tool-results serving material arrived without this incarnation's lifecycle UID");
+    void serveLaunchedToolResults({
+      material: config.toolResults,
+      space: config.space,
+      servers: config.servers,
+      tls: config.tls,
+      journal: toolResults,
+      self: { owner: agent.ep.principal.owner, actor: agent.ep.principal.actor, lifecycleUid },
+    }).then(
+      (served) => {
+        if (shuttingDown) void served.stop();
+        else toolResultServe = served;
+      },
+      (e: unknown) => process.stderr.write(`[cotal-connector] tool-results not served: ${(e as Error).message}\n`),
+    );
+  }
 
   const server = new McpServer(
     { name: "cotal", version: "0.0.0" },

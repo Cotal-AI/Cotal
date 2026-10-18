@@ -46,6 +46,8 @@
     "build": "tsc -p tsconfig.json",
     "test": "tsx smoke/resolve.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts && pnpm smoke:schema-own-properties && pnpm smoke:schema-own-properties-controls",
     "smoke:backup": "tsx smoke/backup.smoke.ts",
+    "smoke:delivery-recipient": "tsx smoke/delivery-recipient.smoke.ts",
+    "smoke:delivery-reason": "tsx smoke/delivery-reason.smoke.ts",
     "smoke:backup:live": "tsx smoke/backup-live.smoke.ts",
     "prepublishOnly": "pnpm run build",
     "smoke:schema-own-properties": "node smoke/schema-own-properties.public.mjs --gate partial",
