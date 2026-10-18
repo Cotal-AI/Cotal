@@ -7,15 +7,17 @@
       "find": "      assertBoundIncarnation(env, identity);\n",
       "replace": "",
       "expectRed": "...and it healed through the REFUSAL, not the allowlist: the recovery counter moved",
+      "cell": "...and it healed through the REFUSAL, not the allowlist: the recovery counter moved",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
-      "name": "PREDICTED KILLED (2 red) - the client counts and drops but never re-issues, so the heal publishes no second request",
+      "name": "PREDICTED KILLED (4 red) - the client counts and drops but never re-issues, so the heal publishes no second request",
       "file": "packages/core/src/endpoint.ts",
-      "find": "          return await invokeResolved(reissueTarget, signal);",
-      "replace": "          return r;",
+      "find": "          r = await invokeResolved(reissueTarget, signal);",
+      "replace": "          break;",
       "expectRed": "...and that heal re-issued (more than one `ps` REQUEST left the caller, not merely more traffic)",
-      "note": "Re-pointed 2026-08-17 with the cell it grades. It previously read the connection's raw outMsgs (`> 1`), which across that window is ~51 on a healthy run, so it was satisfied by the scenario's own describes and KV traffic and could not fail for the reason it stated - measured SURVIVED at 51 marks with the call gutted and 51 without. The cells now count requests per (endpoint, command) off the shipped subject parser. The `purge` cell reds too; the third arm does NOT, because its re-issue target is resolved before this line and its describe still goes out.",
+      "cell": "...and that heal re-issued (more than one `ps` REQUEST left the caller, not merely more traffic)",
+      "note": "Re-pointed 2026-08-17 with the cell it grades. It previously read the connection's raw outMsgs (`> 1`), which across that window is ~51 on a healthy run, so it was satisfied by the scenario's own describes and KV traffic and could not fail for the reason it stated - measured SURVIVED at 51 marks with the call gutted and 51 without. The cells now count requests per (endpoint, command) off the shipped subject parser. Re-pointed again when the re-issue became a loop bounded by BIND_SPLIT_REISSUES: `break` keeps the counted refusal and sends no second request. Measured 4 red: the `ps` and `purge` re-issue cells, and the two recovery-count cells, the `ps` one a line before the named cell, because a counted split no longer has a re-issue to match. The third arm does NOT, because its re-issue target is resolved before this line and its describe still goes out.",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
@@ -24,6 +26,7 @@
       "find": "          this.splitsRecovered++;\n",
       "replace": "",
       "expectRed": "...and the recovery was counted, so a handled split is still a measurable one",
+      "cell": "...and the recovery was counted, so a handled split is still a measurable one",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
@@ -32,6 +35,7 @@
       "find": "      sent.set(k, (sent.get(k) ?? 0) + 1);\n",
       "replace": "",
       "expectRed": "...and that heal re-issued (more than one `ps` REQUEST left the caller, not merely more traffic)",
+      "cell": "...and that heal re-issued (more than one `ps` REQUEST left the caller, not merely more traffic)",
       "note": "The instrument's own guard. Without it the three re-pointed cells could be re-pointed onto a counter that never moves and still read as passing, which is the failure the old outMsgs proxy actually had."
     }
   ],
