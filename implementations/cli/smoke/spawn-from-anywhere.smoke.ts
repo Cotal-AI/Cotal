@@ -201,9 +201,21 @@ try {
   setCurrent("teamA");
   const oneSelected = resolveMeshTarget(projB);
   check("1 mesh + current: selection wins inside another project", oneSelected.source === "current" && oneSelected.root === projA, oneSelected);
+  // A selected space whose broker the sweep found down is still the target, not another mesh.
+  const downSelected = resolveMeshTarget(projB, { offline: ["teamA"] });
+  check("an offline current stays the target", downSelected.source === "current" && downSelected.space === "teamA", downSelected);
   setCurrent("gone");
-  const danglingLocal = resolveMeshTarget(projA);
-  check("dangling current: local project remains the fallback", danglingLocal.source === "local-recorded" && danglingLocal.root === projA, danglingLocal);
+  let dangling: unknown;
+  try {
+    resolveMeshTarget(projA);
+  } catch (e) {
+    dangling = e;
+  }
+  check(
+    "dangling current refuses rather than falling back to the local project",
+    isWorkspaceTargetError(dangling) && dangling.code === "unknown-space" && dangling.details.requested === "gone" && dangling.details.selected === true,
+    String(dangling),
+  );
   clearCurrent();
 
   // 2 meshes, no current → ambiguous: error names both spaces AND their roots.

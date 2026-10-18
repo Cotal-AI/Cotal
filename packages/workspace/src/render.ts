@@ -38,7 +38,9 @@ function renderTargetError(err: MeshTargetError): string {
     case "no-meshes":
       return "✗ no mesh running - run `cotal up` in a project, or pass `--server`";
     case "unknown-space":
-      return `✗ no mesh named "${d.requested}" is running - see \`cotal meshes\``;
+      return d.selected
+        ? `✗ the selected space "${d.requested}" is not registered here - select one with \`cotal use <name>\` (\`cotal space\` lists them), or name one with \`--space\``
+        : `✗ no mesh named "${d.requested}" is running - see \`cotal meshes\``;
     case "ambiguous-target":
       return `✗ multiple meshes running - ${(d.available ?? []).join(", ")}. Pick one with \`--space <name>\` or set a default with \`cotal use <name>\`.`;
     case "default-occupied":

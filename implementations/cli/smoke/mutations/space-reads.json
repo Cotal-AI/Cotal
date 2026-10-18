@@ -1,0 +1,114 @@
+{
+  "suite": [
+    "implementations/cli/smoke/space-reads.smoke.ts"
+  ],
+  "guard": "cotal space lists the registered spaces with each broker's state and never dials a discovered one, space show gives one in full without its credential path, cotal use selects any registered space without probing it and refuses an unregistered name, and a command run under the selection targets it when its broker is down and refuses a selection that names no registration",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/space-reads.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/space-reads.json",
+  "why": [
+    "The suite drives the built binary against a real broker, a dead port and a listener that counts dials, so each mutation rebuilds it and the restore rebuilds it back.",
+    "The resolver entries restore the old behavior, where a selected space whose broker was down, or one no longer registered, let the command reach another mesh."
+  ],
+  "mutations": [
+    {
+      "name": "a broker that does not answer lists as reachable",
+      "file": "implementations/cli/src/commands/space.ts",
+      "find": "offline.has(m.space) ? \"unreachable\" : \"reachable\"",
+      "replace": "\"reachable\"",
+      "expectRed": "a broker that does not answer reads as unreachable and keeps its registration",
+      "cell": "a broker that does not answer reads as unreachable and keeps its registration",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the listing checks a discovered space",
+      "file": "implementations/cli/src/commands/space.ts",
+      "find": "loadMeshes().map((m) => row(m, current, m.origin === \"catalog\" ? \"not-checked\" : offline",
+      "replace": "loadMeshes().map((m) => row(m, current, offline",
+      "expectRed": "a discovered space is not checked and keeps its catalog name",
+      "cell": "a discovered space is not checked and keeps its catalog name",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "show dials a discovered space's broker",
+      "file": "implementations/cli/src/commands/space.ts",
+      "find": "const check: Check = m.origin === \"catalog\" ? \"not-checked\" : (await brokerAnswers(m.server))",
+      "replace": "const check: Check = (await brokerAnswers(m.server))",
+      "expectRed": "show never dials a discovered space's broker",
+      "cell": "show never dials a discovered space's broker",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "show copies the whole user-auth record",
+      "file": "implementations/cli/src/commands/space.ts",
+      "find": "userAuth: m.userAuth ? { provider: m.userAuth.provider, idp: { ...m.userAuth.idp }, remote: m.userAuth.remote === true } : null,",
+      "replace": "userAuth: m.userAuth ? { ...m.userAuth, remote: m.userAuth.remote === true } : null,",
+      "expectRed": "show leaves the credential path out",
+      "cell": "show leaves the credential path out",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "bare show ignores the selection",
+      "file": "implementations/cli/src/commands/space.ts",
+      "find": "const name = rest[0] ?? current;",
+      "replace": "const name = rest[0] ?? null;",
+      "expectRed": "bare show shows the selected space",
+      "cell": "bare show shows the selected space",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a dangling selection gets no warning",
+      "file": "implementations/cli/src/commands/space.ts",
+      "find": "if (result.current === null || result.currentRecorded) return [];",
+      "replace": "if (result.current === null || result.currentRecorded || result.items.length > 0) return [];",
+      "expectRed": "a selection that names no registration is reported with a warning",
+      "cell": "a selection that names no registration is reported with a warning",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "use selects an unregistered name",
+      "file": "implementations/cli/src/commands/use.ts",
+      "find": "if (!m) throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\", `no space named \"${name}\" is registered here`, { remedy: \"see the registered spaces with `cotal space`\" });",
+      "replace": "if (!m) {\n    setCurrent(name);\n    return;\n  }",
+      "expectRed": "use refuses an unregistered name with TARGET_NOT_FOUND and keeps the selection",
+      "cell": "use refuses an unregistered name with TARGET_NOT_FOUND and keeps the selection",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "selecting the selected space again is reported as a change",
+      "file": "implementations/cli/src/commands/use.ts",
+      "find": "noOp: !changed",
+      "replace": "noOp: false",
+      "expectRed": "selecting the selected space again is a no-op",
+      "cell": "selecting the selected space again is a no-op",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a selected space whose broker is down is skipped",
+      "file": "packages/workspace/src/mesh-target.ts",
+      "find": "return targetFromEntry(cur, cur.server, \"current\");",
+      "replace": "if (!offline.has(cur.space)) return targetFromEntry(cur, cur.server, \"current\");",
+      "expectRed": "a command run with the selected space down refuses with TARGET_UNAVAILABLE naming its broker",
+      "cell": "a command run with the selected space down refuses with TARGET_UNAVAILABLE naming its broker",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a selection that names no registration falls through",
+      "file": "packages/workspace/src/mesh-target.ts",
+      "find": "if (current) {\n    const cur = meshes.find((m) => m.space === current);\n    if (!cur)",
+      "replace": "if (current && meshes.some((m) => m.space === current)) {\n    const cur = meshes.find((m) => m.space === current);\n    if (!cur)",
+      "expectRed": "a command run under that selection refuses with TARGET_NOT_FOUND rather than reaching another space",
+      "cell": "a command run under that selection refuses with TARGET_NOT_FOUND rather than reaching another space",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the refusal for a dangling selection loses its remedy",
+      "file": "packages/workspace/src/render.ts",
+      "find": "return d.selected\n        ?",
+      "replace": "return false\n        ?",
+      "expectRed": "the refusal tells how to select a registered space",
+      "cell": "the refusal tells how to select a registered space",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

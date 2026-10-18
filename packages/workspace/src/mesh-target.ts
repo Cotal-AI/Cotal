@@ -75,8 +75,8 @@ export interface ResolveFlags {
   /**
    * Spaces whose broker the last liveness sweep already found dead. Their records
    * stay (that is the registry's job); they are not live candidates for unflagged
-   * resolution. Named `--space` still resolves a dead record so preflight can
-   * name its root. Callers that do not sweep omit this; TAB completion must.
+   * resolution. Named `--space` and the selected `current` still resolve a dead record so
+   * preflight can name its root. Callers that do not sweep omit this; TAB completion must.
    */
   offline?: readonly string[];
 }
@@ -112,6 +112,8 @@ export interface MeshTargetErrorDetails {
   spaces?: string[];
   /** What the caller asked for that didn't match (e.g. an unknown `--space`). */
   requested?: string;
+  /** For `unknown-space`: the name came from the `cotal use` selection, not from `--space`. */
+  selected?: boolean;
   /** For `stale-auth-root`: the space the on-disk auth now claims, diverging from the record. */
   found?: string;
   /** For `stale-auth-root`: whether the diverging record was actually removed. An operator-registered
@@ -305,11 +307,12 @@ function isGenuineSpace(root: string): boolean {
  * Resolve the mesh target by precedence (first match wins):
  *  1. `--space` — registry lookup (errors if that space isn't running).
  *  2. `--server` — registry entry on that server (for creds/personas), else the local project.
- *  3. The live `current` selected by `cotal use` — from any directory.
+ *  3. The `current` selected by `cotal use`, from any directory. It stays the target when its broker
+ *     is down, and a selection that names no registration refuses rather than reaching another mesh.
  *  4. A genuine local project (`cwd` walks up to a real `.cotal/`).
  *  5. The registry's *running* meshes: 0 ⇒ error; 1 ⇒ use it; N ⇒ error naming
- *     each + its root. `flags.offline` (from a sweep) is excluded here and from
- *     a dangling `current`; a named `--space` is not filtered.
+ *     each + its root. `flags.offline` (from a sweep) is excluded here; a named `--space` and
+ *     the selected `current` are not filtered.
  * No silent fallback — an unresolved target throws one human sentence.
  */
 export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTarget {
@@ -354,11 +357,14 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
 
   const meshes = loadMeshes();
   const current = getCurrent();
-  const cur = current ? meshes.find((m) => m.space === current) : undefined;
-  // A `current` whose broker the sweep already found dead is not a live target.
-  // Fall through so one remaining running mesh can still resolve, the way a
-  // deleted record used to; the record itself stays.
-  if (cur && !offline.has(cur.space)) return targetFromEntry(cur, cur.server, "current");
+  if (current) {
+    const cur = meshes.find((m) => m.space === current);
+    if (!cur)
+      throw new MeshTargetError("unknown-space", `the selected space "${current}" is not registered here`, { requested: current, selected: true });
+    // A selected space whose broker is down is still the target: the preflight reports it not
+    // running, the way it does for a named `--space`, rather than another mesh answering instead.
+    return targetFromEntry(cur, cur.server, "current");
+  }
 
   const root = findCotalRoot(cwd);
   if (isGenuineSpace(root)) {

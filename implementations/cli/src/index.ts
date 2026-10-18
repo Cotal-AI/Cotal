@@ -7,8 +7,9 @@ import { MANAGER_PROCESS } from "./lib/manager-proc.js";
 import { up, upComplete, upFlags } from "./commands/up.js";
 import { runtimes, runtimesFlags } from "./commands/runtimes.js";
 import { down, downComplete } from "./commands/down.js";
-import { use, useComplete } from "./commands/use.js";
+import { use, useComplete, useFlags } from "./commands/use.js";
 import { meshes, meshesComplete, meshesFlags } from "./commands/meshes.js";
+import { space, spaceComplete, spaceFlags } from "./commands/space.js";
 import { setup, setupFlags } from "./commands/setup.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
@@ -249,6 +250,22 @@ const baseCommands: Command[] = [
   },
   {
     kind: "command",
+    name: "space",
+    group: "Mesh",
+    summary: "the spaces this machine can reach, which one is selected and whether each broker answers",
+    usage: "cotal space [--json|--plain] | space show [<name>] [--json|--plain]",
+    positionals: "[show [<name>]]",
+    subcommands: [
+      { name: "show", summary: "one space in full: broker, mode, root, origin and login; the selected one when no name is given", usage: "cotal space show [<name>] [--json|--plain]", outputs: ["json", "plain"] },
+    ],
+    flags: spaceFlags,
+    outputs: ["json", "plain"],
+    examples: ["cotal space", "cotal space show", "cotal space show research --json"],
+    run: space,
+    complete: spaceComplete,
+  },
+  {
+    kind: "command",
     name: "sync",
     group: "Mesh",
     summary: "refresh signed-in space catalogs and report registry changes",
@@ -280,8 +297,12 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "use",
     group: "Mesh",
-    summary: "set the default mesh for a bare `cotal spawn` from any directory",
-    positionals: "<space>",
+    summary: "select the space commands target when none is named, from any directory; bare `use` shows the selection",
+    usage: "cotal use [<space>] [--json|--plain]",
+    positionals: "[<space>]",
+    flags: useFlags,
+    outputs: ["json", "plain"],
+    examples: ["cotal use", "cotal use research"],
     run: use,
     complete: useComplete,
   },

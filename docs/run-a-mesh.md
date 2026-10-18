@@ -452,8 +452,11 @@ running mesh with the right credentials instead of mistaking the cwd for a space
   requirement, is kept as the record stands when the refresh writes it, so a change another
   command made during the refresh survives. If the record was removed during the refresh, `up`
   fails instead of writing it back.
-- With no live selected default, a project with its own `.cotal/` resolves to that project's
-  mesh; otherwise one running mesh is used automatically and several are an error.
+- A selected space stays the target when its broker is down, so the command reports it not up,
+  and a selection that names a space no longer registered is refused with `TARGET_NOT_FOUND`.
+  Neither reaches another mesh.
+- With nothing selected, a project with its own `.cotal/` resolves to that project's mesh;
+  otherwise one running mesh is used automatically and several are an error.
 - `cotal meshes` lists them (a `*` marks the default); `cotal down` removes the entry.
 
 The registry stores a *path*, never a secret; trust material stays in each project's

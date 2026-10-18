@@ -34,6 +34,31 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Space selection after 0.82.0 (unreleased)
+
+`cotal use` and the target a command picks without `--space` change. Nothing on a running mesh
+changes, and there is no outage window. Upgrading the `cotal` binary is the whole operation.
+
+### What stops working
+
+- `cotal use <space>` no longer checks the broker. It selects any registered space, including a
+  stopped one, and the command that targets it reports the space not up. A name that is not
+  registered exits 2 with `TARGET_NOT_FOUND` instead of 1. Bare `cotal use` reports the selection
+  instead of exiting 1 with its usage, and `--json` writes one envelope.
+- A command run without `--space` stays on the selected space when its broker is down and refuses
+  with `TARGET_UNAVAILABLE`, exit 2. It used to fall back to the one other running mesh and print
+  a note that the default mesh was down. A selection that names a space no longer registered now
+  refuses with `TARGET_NOT_FOUND` instead of falling back to the local project or the one running
+  mesh.
+- `cotal space` lists the registered spaces. `cotal meshes` still lists them, and its `--json`
+  lines keep their shape.
+
+### Before the upgrade
+
+A script that relied on the fallback names the space it means with `--space`, or selects it with
+`cotal use <space>`. A script that read `cotal use` exiting 1 for a stopped space checks the
+broker with `cotal space show <space> --json` and reads `result.check`.
+
 ## Extension listing output after 0.82.0 (unreleased)
 
 `cotal ext --json` and `cotal ext list --json` now write one JSON document instead of one JSON line
