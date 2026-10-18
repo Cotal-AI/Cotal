@@ -21,7 +21,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, assertSmokeSandboxTargetDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, readWebSession, WEB_READINESS_HEADER, WEB_SESSION_FILE } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned ports: no fixed-port collision across back-to-back / concurrent runs.
 const AUTH_PORT = await freePort();
@@ -115,13 +115,12 @@ try {
     // `web.session` is written only after listen() succeeded, so its appearance is the readiness
     // signal. Polling the port cannot be one any more: it answers before and after the console is
     // ready, with the same refusal either way.
-    const sessionPath = join(root, ".cotal", "web.session");
-    let launch: { launchUrl?: unknown } | undefined;
-    for (let i = 0; i < 30 && launch === undefined; i++) {
+    const sessionPath = join(root, ".cotal", WEB_SESSION_FILE);
+    let launchUrl: string | undefined;
+    for (let i = 0; i < 30 && launchUrl === undefined; i++) {
       await sleep(1000);
-      if (existsSync(sessionPath)) launch = JSON.parse(readFileSync(sessionPath, "utf8"));
+      launchUrl = readWebSession(sessionPath)?.launchUrl;
     }
-    const launchUrl = typeof launch?.launchUrl === "string" ? launch.launchUrl : undefined;
     ok("the console publishes its single-use launch link", launchUrl !== undefined, webErr.slice(-400));
     const unauthenticated = await fetch(`http://127.0.0.1:${WEB_PORT}/`);
     ok("the dashboard refuses a request with no session", unauthenticated.status === 401, unauthenticated.status);
@@ -179,8 +178,8 @@ try {
     ownPids.push(webPid);
     // The readiness nonce, not a session: this is the detached PARENT's own path, a header that is
     // never consumed precisely because the parent may poll many times.
-    const readiness = JSON.parse(readFileSync(join(root, ".cotal", "web.session"), "utf8")).readiness as string;
-    const detachedMeta = await (await fetch(`http://127.0.0.1:${WEB_PORT}/api/meta`, { headers: { "x-cotal-readiness": readiness } })).json() as { space?: string; pid?: number };
+    const readiness = readWebSession(sessionPath)!.readiness;
+    const detachedMeta = await (await fetch(`http://127.0.0.1:${WEB_PORT}/api/meta`, { headers: { [WEB_READINESS_HEADER]: readiness } })).json() as { space?: string; pid?: number };
     ok("detached child preserves the implicit parent target across same-root registry ambiguity", detachedMeta.space === SPACE && detachedMeta.pid === webPid && reportedPid === webPid && alive(webPid), detachedMeta);
     ok("detached launch creates a private diagnostic log", existsSync(logPath) && (statSync(logPath).mode & 0o777) === 0o600 && /Cotal web/.test(readFileSync(logPath, "utf8")));
 
