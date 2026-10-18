@@ -55,7 +55,7 @@ import { Kvm } from "@nats-io/kv";
 import {
   isReachable, EpEnvelopeError, createEndpointStreams, openRecordsBucket,
   actionContext, bindGoal, createGoal, commitGoalResult, readGoalResult, settleGoalUncertain,
-  recordGoalIndex, readGoalIndex,
+  recordGoalIndex, readGoalIndex, clearGoalIndex, requestGoalCancel,
   projectGoalTerminal, goalResultSubject, goalRefOf, readLastFact, epfStreamName,
   type EpCaller, type GoalRef, type ParsedEpRequest, type ActionContext,
 } from "../src/index.js";
@@ -209,6 +209,38 @@ try {
     const g = await newGoal(ctx, "g-hollow", 0);
     await rejects("a hollow acceptance floor (empty component) is refused as garbled, never served",
       () => recordGoalIndex(ctx, g, MGR, { name: "", actor: "act", uid: "uid" }), "internal");
+  }
+  {
+    // clearGoalIndex ends every entry with a DEL marker, which is the store's healthy end state. A
+    // same-goal record over it used to be refused `internal` "reconcile the store" (#4040).
+    const floor = { name: "agent-a", actor: "act-a", uid: "uid-a" };
+    const committer = { instanceId: MGR, epoch: 0 };
+    const settle: Record<string, (g: GoalRef) => Promise<unknown>> = {
+      succeeded: (g) => commitGoalResult(ctx, { ref: g, now: NOW + 11, cause: "complete", state: "succeeded", committer }),
+      failed: (g) => commitGoalResult(ctx, { ref: g, now: NOW + 11, cause: "complete", state: "failed", committer }),
+      uncertain: (g) => settleGoalUncertain(ctx, { ref: g, now: NOW + 30_012, committer }),
+      cancelled: async (g) => {
+        await requestGoalCancel(ctx, { request: reqOf(g.goalId), goalId: g.goalId, mode: "graceful" });
+        return commitGoalResult(ctx, { ref: g, now: NOW + 11, cause: "cancel", committer });
+      },
+    };
+    for (const [state, end] of Object.entries(settle)) {
+      const g = await newGoal(ctx, `g-cleared-${state}`, 0);
+      await recordGoalIndex(ctx, g, MGR, floor);
+      await end(g);
+      await clearGoalIndex(ctx, g);
+      c(`the ${state} goal's terminal outlives its cleared index entry`,
+        (await readGoalResult(ctx, g))?.state === state && (await readGoalIndex(ctx, g)) === undefined);
+      await rejects(`a same-goal record after a ${state} goal's entry is cleared is refused as settled, never as corruption`,
+        () => recordGoalIndex(ctx, g, MGR, floor), "failed-precondition");
+    }
+    // The turn path withdraws an entry with no terminal, so the refusal must not assume one exists.
+    const g = await newGoal(ctx, "g-cleared-unsettled", 0);
+    await recordGoalIndex(ctx, g, MGR, floor);
+    await clearGoalIndex(ctx, g);
+    c("a withdrawn entry leaves no terminal", (await readGoalResult(ctx, g)) === undefined);
+    await rejects("a same-goal record after a withdrawn entry is refused as cleared, never as corruption",
+      () => recordGoalIndex(ctx, g, MGR, floor), "failed-precondition");
   }
 
   // ── THE CORPSE CASE, asserted rather than papered over ──

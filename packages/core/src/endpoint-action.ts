@@ -1323,7 +1323,8 @@ export function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
  *  of a crash — a crash AFTER this write and BEFORE the bind leaves an index entry whose goal
  *  status is absent (the sweep treats it as a no-goal and clears it); a crash BEFORE it leaves no
  *  entry, so the acceptance was never durable. `iid` is the accepting incarnation's instanceId.
- *  Idempotent for an adopted or concurrent same-goalId retry (a byte-identical pointer). */
+ *  Idempotent for an adopted or concurrent same-goalId retry (a byte-identical pointer). A goal
+ *  whose entry {@link clearGoalIndex} already deleted is refused `failed-precondition`. */
 export async function recordGoalIndex(
   ctx: ActionContext, ref: GoalRef, iid: string, allocated?: GoalIndexEntry["allocated"], note?: string,
 ): Promise<{ recorded: true } | { recorded: false; existing: GoalIndexEntry }> {
@@ -1335,10 +1336,13 @@ export async function recordGoalIndex(
     return { recorded: true };
   } catch (e) {
     if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e;
-    // A non-PUT marker is corruption, never reusable absence.
     const existing = await ctx.kv.get(key);
+    // DEL is the normal end clearGoalIndex gives a settled or withdrawn goal's entry. Nothing in core
+    // purges a records key or leaves a lost CAS reading absent, so those two are store corruption.
+    if (existing?.operation === "DEL")
+      throw new EpEnvelopeError("failed-precondition", `goal-index entry ${key} was cleared when its goal settled or its acceptance was withdrawn; a cleared entry is never recorded again (SPEC 13.6)`);
     if (!existing || existing.operation !== "PUT")
-      throw new EpEnvelopeError("internal", `goal-index entry ${key} lost its create-only CAS but is absent/deleted; reconcile the store (SPEC 13.6)`);
+      throw new EpEnvelopeError("internal", `goal-index entry ${key} lost its create-only CAS but is absent or purged; reconcile the store (SPEC 13.6)`);
     const entry = parseGoalIndexEntry(JSON.parse(new TextDecoder().decode(existing.value)), key);
     // H2: the loss is only an IDEMPOTENT RETRY when the winner is the same incarnation. A FOREIGN
     // `iid` means another instance accepted this goalId, which this function must not silently
