@@ -204,9 +204,11 @@ status-card hints so they match how you ran it.
 
 The first-party connectors (`claude`, `opencode`, `codex`, `hermes`, `pi`) are **not** static-imported by
 the binary. The composition root (`bin/cotal.ts`) registers no connector; they self-register only when
-imported, and they are imported only once installed. On the first real command of each boot the CLI
-**seeds** them through the same `cotal ext add` path a third party uses, so they are ordinary
-extensions you can `cotal ext remove`. Code lives in [`implementations/cli/src/seed/`](../implementations/cli/src/seed/);
+imported, and they are imported only once installed. Before the first command of each boot that is
+not a read, the CLI **seeds** them through the same `cotal ext add` path a third party uses, so they
+are ordinary extensions you can `cotal ext remove`. A command or subcommand that declares `reads`
+installs and refreshes nothing, and the CLI never imports a built-in whose installed version differs
+from the binary's: it names the package with `cotal ext seed` instead. Code lives in [`implementations/cli/src/seed/`](../implementations/cli/src/seed/);
 the entry is `reconcileSeededConnectors()`, gated in `runCli` before the manifest overlay so
 `ext seed --repair` survives a corrupt manifest.
 

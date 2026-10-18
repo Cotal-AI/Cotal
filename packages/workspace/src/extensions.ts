@@ -22,9 +22,8 @@ import { localProcessPath, type LocalProcess } from "./local-process.js";
  *    prescribing `cotal ext add` again — never a silent re-cache.
  */
 
-/** One cached command: the JSON-serializable display surface of a {@link Command} (its `run` /
- *  `complete` functions stay in the package — the cache can render help and offer flag names,
- *  nothing more). */
+/** Serializable command declarations for help, completion and read-only boot policy. The `run` and
+ *  `complete` callbacks stay in their package; command arguments are parsed against the live specs. */
 export interface CachedCommand {
   readonly name: string;
   readonly summary: string;
@@ -37,6 +36,8 @@ export interface CachedCommand {
   readonly subcommands?: readonly Subcommand[];
   readonly outputs?: readonly OutputMode[];
   readonly examples?: readonly string[];
+  /** The bare command opts out of connector seeding before materialization. */
+  readonly reads?: true;
 }
 
 /** One registry contribution of an installed package, with the aliases it claims in its kind. */
@@ -140,7 +141,7 @@ export function quarantineExtensionsManifest(): string | undefined {
   return aside;
 }
 
-/** Strip a live {@link Command} down to its serializable display surface for the cache. */
+/** Cache a command's serializable help and read-only boot declarations. */
 export function cacheCommand(cmd: Command): CachedCommand {
   return {
     name: cmd.name,
@@ -154,6 +155,7 @@ export function cacheCommand(cmd: Command): CachedCommand {
     subcommands: cmd.subcommands,
     outputs: cmd.outputs,
     examples: cmd.examples,
+    reads: cmd.reads,
   };
 }
 

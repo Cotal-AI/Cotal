@@ -116,6 +116,7 @@ const docsCommand: Command = {
   flags: docsFlags,
   outputs: ["json", "plain"],
   examples: ["cotal docs", "cotal docs architecture", "cotal docs --search allowSubscribe", "cotal docs spec --refresh"],
+  reads: true,
   run: docs,
 };
 

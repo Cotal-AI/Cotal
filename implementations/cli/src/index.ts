@@ -89,14 +89,15 @@ const baseCommands: Command[] = [
     subcommands: [
       { name: "add", summary: "install an extension package and register what it provides", usage: "cotal ext add <npm-package>" },
       { name: "remove", aliases: ["rm"], summary: "uninstall an extension", usage: "cotal ext remove <name>" },
-      { name: "list", summary: "list installed extensions (what bare `cotal ext` does)", usage: "cotal ext list [--json|--plain]", outputs: ["json", "plain"] },
-      { name: "root", summary: "print the extension root directory", usage: "cotal ext root" },
+      { name: "list", summary: "list installed extensions (what bare `cotal ext` does)", usage: "cotal ext list [--json|--plain]", outputs: ["json", "plain"], reads: true },
+      { name: "root", summary: "print the extension root directory", usage: "cotal ext root", reads: true },
       { name: "seed", summary: "reconcile the built-in connectors", usage: "cotal ext seed [--repair|--reset|--force]" },
       { name: "__update-add", summary: "re-add one extension for a running update", hidden: true },
     ],
     flags: extFlags,
     outputs: ["json", "plain"],
     examples: ["cotal ext", "cotal ext --json", "cotal ext add @cotal-ai/orca", "cotal ext root"],
+    reads: true,
     run: ext,
   },
   {
@@ -107,13 +108,14 @@ const baseCommands: Command[] = [
     usage: "cotal config [--user | --space <name>] [--json|--plain] | config get <key> | config set <key> <value> | config unset <key>",
     positionals: "[get <key> | set <key> <value> | unset <key>]",
     subcommands: [
-      { name: "get", summary: "show one key's value, where it comes from and what it outranks", usage: "cotal config get <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
+      { name: "get", summary: "show one key's value, where it comes from and what it outranks", usage: "cotal config get <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
       { name: "set", summary: "save a value for you, or for one space with --space", usage: "cotal config set <key> <value> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
       { name: "unset", summary: "remove a saved value", usage: "cotal config unset <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
     ],
     flags: configFlags,
     outputs: ["json", "plain"],
     examples: ["cotal config", "cotal config get harness", "cotal config set harness opencode", "cotal config set persona reviewer --space demo", "cotal config unset color"],
+    reads: true,
     run: config,
   },
   {
@@ -171,6 +173,7 @@ const baseCommands: Command[] = [
     flags: runtimesFlags,
     outputs: ["json", "plain"],
     examples: ["cotal runtimes", "cotal runtimes --json"],
+    reads: true,
     run: runtimes,
   },
   {
@@ -256,7 +259,7 @@ const baseCommands: Command[] = [
     usage: "cotal space [--json|--plain] | space show [<name>] | space add [<name>] | space create <name> | space forget <name>",
     positionals: "[show [<name>] | add [<name>] | create <name> | forget <name>]",
     subcommands: [
-      { name: "show", summary: "one space in full: broker, mode, root, origin and login; the selected one when no name is given", usage: "cotal space show [<name>] [--json|--plain]", outputs: ["json", "plain"] },
+      { name: "show", summary: "one space in full: broker, mode, root, origin and login; the selected one when no name is given", usage: "cotal space show [<name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
       {
         name: "add",
         summary: "register a space that runs elsewhere, after checking its broker and trust; the selection is unchanged",
@@ -269,6 +272,7 @@ const baseCommands: Command[] = [
     flags: spaceFlags,
     outputs: ["json", "plain"],
     examples: ["cotal space", "cotal space show research --json", "cotal space add research --server nats://100.90.12.34:4222 --root ~/research", "cotal space add --file hosted.json", "cotal space create demo --root ~/demo", "cotal space forget research"],
+    reads: true,
     run: space,
     complete: spaceComplete,
   },
@@ -292,6 +296,7 @@ const baseCommands: Command[] = [
     flags: statusFlags,
     outputs: ["json", "plain"],
     examples: ["cotal status", "cotal status --all", "cotal status --json", "cotal status --components"],
+    reads: true,
     run: status,
   },
   {
@@ -408,6 +413,7 @@ const baseCommands: Command[] = [
     flags: historyFlags,
     outputs: ["json", "ndjson", "plain"],
     examples: ["cotal history general", "cotal history --since 2h --grep deploy", "cotal history general --follow --json", "cotal history clear --force"],
+    reads: true,
     run: history,
   },
   {
@@ -451,6 +457,7 @@ const baseCommands: Command[] = [
     flags: modelsFlags,
     outputs: ["json", "plain"],
     examples: ["cotal models", "cotal models --agent claude --refresh", "cotal models --json"],
+    reads: true,
     run: models,
     complete: modelsComplete,
   },
@@ -491,6 +498,7 @@ const baseCommands: Command[] = [
     flags: psFlags,
     outputs: ["json", "plain"],
     examples: ["cotal ps", "cotal ps --wide", "cotal ps --json", "cotal ps --on <instance>"],
+    reads: true,
     run: ps,
   },
   {
@@ -541,6 +549,7 @@ const baseCommands: Command[] = [
     group: "Observe",
     summary: "list every endpoint in the live presence roster, including the manager",
     flags: [...targetFlags],
+    reads: true,
     run: endpoints,
   },
   {
@@ -552,6 +561,7 @@ const baseCommands: Command[] = [
     flags: whoFlags,
     outputs: ["json", "plain"],
     examples: ["cotal who", "cotal who --waiting", "cotal who --all --json"],
+    reads: true,
     run: who,
   },
   {
@@ -564,6 +574,7 @@ const baseCommands: Command[] = [
     prepareMeshTarget: false,
     outputs: ["json", "plain"],
     examples: ["cotal whoami", "cotal whoami --json"],
+    reads: true,
     run: whoami,
   },
   {
@@ -574,6 +585,7 @@ const baseCommands: Command[] = [
     usage: "describe <endpoint>  [--space <s>] [--server <url>]",
     positionals: "<endpoint>",
     flags: describeFlags,
+    reads: true,
     run: describeCmd,
     complete: describeComplete,
   },

@@ -594,6 +594,7 @@
     "smoke:cli-kernel": "tsx implementations/cli/smoke/command-kernel.smoke.ts",
     "smoke:cli-entry": "pnpm --filter cotal-ai... build && tsx bin/smoke/cli-entry.smoke.ts",
     "smoke:read-envelopes": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/read-envelopes.smoke.ts",
+    "smoke:read-no-seed": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/read-no-seed.smoke.ts",
     "smoke:status-report": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/status-report.smoke.ts",
     "smoke:who-roster": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/who-roster.smoke.ts",
     "smoke:history-read": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/history-read.smoke.ts",

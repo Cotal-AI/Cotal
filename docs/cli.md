@@ -2803,9 +2803,14 @@ appear in `cotal ext list` like any other extension. So you can remove one you d
 across upgrades. `cotal ext add <your-package>` adds a third-party connector the same way. The web
 dashboard (`@cotal-ai/web`, providing `command:web`) is the seventh built-in seeded on the same path.
 
-`cotal ext seed` is the maintenance entry for that seeding (it runs automatically on the first real
-command of each boot, so you rarely call it). Each seeded connector's `✓ added` line goes to stderr,
-so the command that triggered the seed keeps stdout to itself:
+`cotal ext seed` is the maintenance entry for that seeding (it runs automatically before the first
+command of each boot that is not a read, so you rarely call it). A read, such as `status`, `ps`,
+`ext list` or `docs`, installs and refreshes nothing. An installed extension's `reads` declaration is
+cached when it is added. A bare read and a read subcommand skip that seed prelude; a subcommand
+without the declaration still seeds. After an upgrade, a read that would load a
+built-in still at another version names the package and its version with `cotal ext seed` instead
+of loading it. Each seeded connector's `✓ added` line goes to stderr, so the command that triggered
+the seed keeps stdout to itself:
 
 | Flag | Meaning |
 |---|---|
