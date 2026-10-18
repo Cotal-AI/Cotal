@@ -30,7 +30,7 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { mkSecretDir, writeSecretFileAtomic, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFileAtomic, writeSecretFileCreateOnly, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import { identityOf, loadAuthInstanceIdentity, removeAuthInstanceIdentity, spaceSegment, type AuthInstanceIdentity } from "@cotal-ai/workspace";
 import { createCalloutAuth, type CalloutAuth, type CalloutProvisionInput } from "./callout.js";
 import { normalizeIdpUrl } from "./login.js";
@@ -310,7 +310,13 @@ export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
   const origin = new URL(url).origin;
   const pin: PinnedIdp = { url, issuer: origin, audience: origin, jwksUri: `${url}/jwks` };
   mkSecretDir(dir);
-  writeSecretFileAtomic(join(dir, IDP_FILE), JSON.stringify({ ver: STORE_VER, ...pin } satisfies IdpFile, null, 2));
+  try {
+    writeSecretFileCreateOnly(join(dir, IDP_FILE), JSON.stringify({ ver: STORE_VER, ...pin } satisfies IdpFile, null, 2));
+  } catch (e) {
+    // Another process pinned between our read and this create: its pin decides, as for a later call.
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return ensurePinnedIdp(dir, idpUrl);
+    throw e;
+  }
   return pin;
 }
 
