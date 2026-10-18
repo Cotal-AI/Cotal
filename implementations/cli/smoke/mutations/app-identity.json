@@ -146,8 +146,8 @@
       "file": "implementations/cli/src/commands/app-identity.ts",
       "find": "      if (alive(record.owner)) continue;\n",
       "replace": "",
-      "expectRed": "  and kept the one whose host is alive",
-      "cell": "  and kept the one whose host is alive",
+      "expectRed": "  and left the first identity, whose host is alive, in place",
+      "cell": "  and left the first identity, whose host is alive, in place",
       "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",
       "note": "The sweep keeps every directory whose owning process is alive."
     },

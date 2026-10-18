@@ -197,6 +197,7 @@ try {
   check("another name provisions beside it", other.code === 0 && other.reply?.ok === true && other.reply.env.COTAL_NAME === "claude_app_2", other.out);
   const otherRecord = JSON.parse(readFileSync(join(other.reply.retire.dir, "identity.json"), "utf8"));
   check("  as an identity of its own", otherRecord.id !== record.id && other.reply.env.COTAL_CREDS !== env.COTAL_CREDS);
+  check("  and left the first identity, whose host is alive, in place", existsSync(env.COTAL_CREDS) && existsSync(recordPath));
 
   // ── retire: the credential directory and the broker footprint go ─────────────────────────────
   const foreign = mkdtempSync(join(tmpdir(), "not-an-app-identity-"));
