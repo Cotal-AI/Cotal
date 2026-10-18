@@ -2499,7 +2499,6 @@ interface HandlerCtx {
 
 type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "toolResultConsentSigner" | "recipientGrants" | "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun">;
 
-/** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 /**
  * Sign one tool-result consent for the signed-in human (SPEC 13.6). The caller has already verified
  * the IdP token and derived `owner` from its subject; this requires the token's `auth_time` to show
@@ -2537,6 +2536,7 @@ function signToolResultConsentRequest(
   }, signer.keyPair);
 }
 
+/** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 export async function dispatchManagerAuthorityRequest(
   ctx: ManagerAuthorityDispatchCtx,
   owner: string,
