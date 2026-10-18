@@ -9,7 +9,10 @@
  * NOT delivered (leave is a hard read boundary for the backstop), and the security boundary holds —
  * the agent cannot read the mixed INBOX store, cannot publish into its own dinbox/dlv, and a peer
  * cannot bind another agent's dlv durable. Also proves two distinct id-less posts both reach the
- * member (#673) while a real id's fan-out copies still collapse under retry.
+ * member (#673) while a real id's fan-out copies still collapse under retry. Every Plane-3 copy reports
+ * the reason the trusted reader authorized it (`MessageMeta.deliveryReason`): `durable-channel` for a
+ * durable member, `live-mention` for an `@mention` on a `live` channel, never one a sender's payload
+ * claims, and an unmarked or unrecognized reason is delivered with none.
  *
  * Run: pnpm smoke:plane3:auth   (needs `nats-server` on PATH; auth/JetStream, local-only)
  */
@@ -18,7 +21,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, headers, type MsgHdrs } from "@nats-io/transport-node";
 import { jetstreamManager, jetstream, AckPolicy } from "@nats-io/jetstream";
 import {
   CotalEndpoint,
@@ -30,6 +33,7 @@ import {
   serverConfig,
   newIdentity,
   setupSpaceStreams,
+  seedChannelRegistry,
   DEV_OWNER,
   chatSubject,
   inboxStream,
@@ -99,6 +103,8 @@ try {
   const mgrId = newIdentity();
   const mgrCreds = await mintCreds(auth, mgrId, "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: mgrCreds });
+  // Two `live` channels for the @mention reason: alice may read `standup`, not `ops`.
+  await seedChannelRegistry({ servers: SERVERS, space, creds: mgrCreds, file: { channels: { standup: { deliveryClass: "live" }, ops: { deliveryClass: "live" } } } });
   const mgr = new CotalEndpoint({
     space, servers: SERVERS, creds: mgrCreds,
     card: { id: mgrId.id, name: "mgr", kind: "endpoint" },
@@ -123,7 +129,7 @@ try {
   const uidA = mintLifecycleUid(); // alice's one lifecycle uid (SPEC §13.1)
   const aCreds = await provisionAgent(mgr, auth, aId, {
     subscribe: ["general"],
-    allowSubscribe: ["general", "review"],
+    allowSubscribe: ["general", "review", "standup"],
     lifecycleUid: uidA,
   });
   // The reader re-auths against the owner's CURRENT ACL — supply it the way the manager does from its
@@ -135,7 +141,7 @@ try {
   const aPrincipal = `${DEV_OWNER}.${aId.id}`;
   const bPrincipal = `${DEV_OWNER}.${bId.id}`;
   const aclFor = (id: string): string[] | undefined =>
-    id === aPrincipal ? ["general", "review"] : id === bPrincipal ? ["general"] : undefined;
+    id === aPrincipal ? ["general", "review", "standup"] : id === bPrincipal ? ["general"] : undefined;
   // Plane-3 host = the server-side delivery daemon (scoped `delivery` cred), NOT the manager — the
   // manager cred no longer carries the Plane-3 inject grants (closure (i): no `dinbox`/`dlv`/members
   // write, no `ctl.delivery`). The manager stays provisioner (provisionAgent above) + publisher (the
@@ -155,13 +161,15 @@ try {
     card: { id: aId.id, name: "alice", kind: "agent" },
     channels: ["general"], lifecycleUid: uidA, heartbeatMs: 500, ttlMs: 2000,
   });
-  const got: { ch?: string; text: string; kind: string; durable: boolean }[] = [];
+  const got: { ch?: string; text: string; kind: string; durable: boolean; reason?: string }[] = [];
   const agentErrors: string[] = [];
+  const agentWarnings: string[] = [];
+  a.on("warning", (e: Error) => agentWarnings.push(e.message));
   a.on("error", (e: Error) => console.error("  ! alice", e.message));
   a.on("error", (e: Error) => agentErrors.push(e.message));
   a.on("message", (m: CotalMessage, d: Delivery, meta: MessageMeta) => {
     got.push({
-      ch: m.channel, kind: meta.kind, durable: d.durable,
+      ch: m.channel, kind: meta.kind, durable: d.durable, reason: meta.deliveryReason,
       text: m.parts.map((p) => (p.kind === "text" ? p.text : "")).join(""),
     });
     d.ack();
@@ -183,6 +191,7 @@ try {
   check("delivered on the right channel (review)", h?.ch === "review");
   check("kind=channel (path-derived from the DELIVER durable, not a header — SPEC §4)", h?.kind === "channel");
   check("durable:true (real JetStream backstop ack, coalesces with any live copy)", h?.durable === true);
+  check("the reader's reason for a durable member's copy is durable-channel", h?.reason === "durable-channel", h);
 
   // The payload channel is advisory. A raw publisher cannot relabel a #review post as #general to
   // bypass connector attention after fan-out: Plane-3 carries the subject-derived channel in its
@@ -219,7 +228,7 @@ try {
     parts: [{ kind: "text", text: "legacy-unversioned-dlv" }],
   };
   const dlvJs = (dlv as unknown as {
-    js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> };
+    js: { publish(subject: string, data: string, opts: { msgID: string; headers?: MsgHdrs }): Promise<unknown> };
   }).js;
   await dlvJs.publish(dlvSubject(space, DEV_OWNER, aId.id, uidA), JSON.stringify(legacy), { msgID: legacy.id });
   check("unversioned persisted DLV entries terminate loudly", await until(() =>
@@ -284,6 +293,46 @@ try {
   check("an `artifact` part with a malformed digest terminates at the frame", await until(() =>
     agentErrors.filter((message) => message.includes("malformed versioned DLV entry terminated")).length >= 2),
     agentErrors);
+
+  // ---- delivery reason: only the trusted reader names it ----
+  // A sender's payload cannot claim a mention on a durable channel: the copy is a member's backstop.
+  await poster.multicast("forged-live-mention", { channel: "review", mentions: ["alice"] });
+  check("a durable post naming alice in payload mentions arrives", await until(() => got.some((g) => g.text === "forged-live-mention")), got);
+  check("payload mentions never set the reason: a durable copy stays durable-channel",
+    got.filter((g) => g.text === "forged-live-mention").every((g) => g.reason === "durable-channel"), got);
+
+  // alice is not live-subscribed to `standup`, so an @mention there reaches her only as a Plane-3 copy.
+  await poster.multicast("live-mention-standup", { channel: "standup", mentions: ["alice"] });
+  check("an @mention on a live channel alice may read reaches her via Plane-3", await until(() =>
+    got.some((g) => g.text === "live-mention-standup")), got);
+  const lm = got.find((g) => g.text === "live-mention-standup");
+  check("the live @mention copy reports reason live-mention on its subject channel",
+    lm?.reason === "live-mention" && lm.ch === "standup" && lm.kind === "channel" && lm.durable === true, lm);
+  await poster.multicast("live-no-mention", { channel: "standup" });
+  await poster.multicast("live-mention-outside-acl", { channel: "ops", mentions: ["alice"] });
+  await wait(900); // settle: prove ABSENCE beside the positive above
+  check("a live post without a mention is not backstopped, so no reason is invented", !got.some((g) => g.text === "live-no-mention"), got);
+  check("an @mention cannot bypass the read ACL: a live channel outside it delivers nothing",
+    !got.some((g) => g.text === "live-mention-outside-acl"), got);
+
+  // Version boundary: the frame stays version 1 and the reason rides a header, so a copy from a
+  // reader that predates the header is delivered with no reason, and a reason this endpoint does not
+  // know is delivered with none and reported, never guessed and never dropped.
+  const frameCopy = async (text: string, reason?: string): Promise<void> => {
+    const copy: CotalMessage = { id: randomUUID(), ts: Date.now(), space, from: poster.card, channel: "review", parts: [{ kind: "text", text }] };
+    const hdrs = headers();
+    hdrs.set("Cotal-Delivery-Frame", "1");
+    if (reason !== undefined) hdrs.set("Cotal-Delivery-Reason", reason);
+    await dlvJs.publish(dlvSubject(space, DEV_OWNER, aId.id, uidA), JSON.stringify({ version: 1, channel: "review", msg: copy }), { msgID: copy.id, headers: hdrs });
+  };
+  await frameCopy("older-reader-copy");
+  check("a version-1 copy without a reason header is still delivered", await until(() => got.some((g) => g.text === "older-reader-copy")), got);
+  check("a copy without a reason header reports no reason", got.find((g) => g.text === "older-reader-copy")?.reason === undefined, got);
+  await frameCopy("newer-reader-copy", "future-reason");
+  check("a copy with an unrecognized reason is still delivered", await until(() => got.some((g) => g.text === "newer-reader-copy")), got);
+  check("an unrecognized reason is not surfaced", got.find((g) => g.text === "newer-reader-copy")?.reason === undefined, got);
+  check("an unrecognized reason is reported as a warning, not a fatal error", agentWarnings.some((message) => message.includes('unrecognized delivery reason "future-reason"'))
+    && !agentErrors.some((message) => message.includes("unrecognized delivery reason")), { agentWarnings, agentErrors });
 
   // a second post arrives too (steady-state fan-out, seq > activationFence)
   await poster.multicast("second", { channel: "review" });

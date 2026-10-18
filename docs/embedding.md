@@ -81,6 +81,12 @@ are marked; import them with `import type`.
 `CotalEndpoint` accepts `environment` as an explicit presence label. Pass `null` to omit the label
 without reading `COTAL_ENVIRONMENT`. Omitting the option preserves the process environment default.
 
+Shared connector sessions report `card.meta.host` and `card.meta.cwd` from the connector process
+when the session is constructed. They override agent-file values and are advisory display data.
+The directory is a startup snapshot, not a model harness's later shell directory. Neither field
+changes routing or access, and the connector reads no command-line arguments or environment dump
+for these values.
+
 **Daemon runners and lifecycle**
 
 | symbol | package | purpose |
@@ -306,6 +312,121 @@ observations, and any guarded foreign-holder repair.
 An embedding must preserve those checks and supply a supported runtime; the client exports alone
 do not provide a pooled runtime, an authority service or a complete hosted context.
 
+### Manager command contracts in a browser
+
+`@cotal-ai/core/browser` enforces Manager command contracts in a page that runs under a strict
+Content-Security-Policy such as `script-src 'self'`. It imports no Node built-in and no
+`@nats-io/transport-node`, and it never generates code at runtime.
+
+The package root compiles each resolved schema closure with Ajv when it resolves a service, and
+Ajv builds its validators with `new Function`, which such a policy forbids. The browser entry
+instead carries validators that `pnpm --filter @cotal-ai/core gen:browser-contracts` generates at
+build time, one per closure digest, with the same §13.7 profile and Ajv options as
+`compileContract`. A closure digest is the closure's identity, so the packaged validator for a
+digest is that closure's validator.
+
+- `packagedServiceSurface(descriptor)` builds the invocable surface from a `describe` descriptor the
+  way `resolveService` builds it from the store: clusters in descriptor order, commands narrowed to
+  the ones the view lists, and a later cluster's command replacing an earlier one of the same name.
+- `packagedContract(closureDigest)` returns one closure's verdict and its first violation.
+- `PACKAGED_MANAGER_CLUSTERS` lists the packaged cluster documents and the releases that ship them.
+
+A cluster or closure digest the build did not package refuses with `unsupported-version`. The
+entry never compiles, guesses or skips it. Packaged today:
+
+| Cluster digest | Revision | Commands | Manager releases |
+| --- | --- | --- | --- |
+| `sha256:dd7db8069ccab85fc32a8f8a81e9b49f23dbb6fd1dad209e8aba3da62fc00e02` | 27 | 34 | `@cotal-ai/manager` 0.82.2, and the 0.85.0 source this entry was generated from |
+
+To add a release, extract its contract from that release's own build, then regenerate:
+
+```sh
+cd packages/core
+tsx scripts/gen-browser-contracts.ts extract <release>/dist/manager-service-contract.js "@cotal-ai/manager@<version>" browser-contracts/manager-<version>.json
+pnpm gen:browser-contracts
+```
+
+The generator recomputes every digest with the current profile and refuses one that differs from
+what the release recorded.
+
+`openBrowserManagerCaller(options)` opens a caller for one explicitly named Manager instance over
+the signed-in person's own connection. It composes the stock caller path: the `manager-caller`
+binding check, the callout-shaped user-mode connect over `wsconnect`, the issued caller read
+(SPEC 13.15, its token derived with Web Crypto), `describeEndpoint` pinned to the instance rail, and
+`invokeCommand`. The surface comes from the packaged contracts above.
+
+| Concern | What the browser caller does |
+| --- | --- |
+| Authority | `acquire()` returns that person's own stock-issued `manager-caller` bearer for the instance and the space's deny-all sentinel. Both stay in memory for one connection. |
+| Pins | The bearer must name the configured space, principal, lifecycle and instance, or the open refuses before any connect. A describe answered by another instance refuses. |
+| Reconnect | None. `reopen()` closes the connection and calls `acquire()` again under the same pins, so a refresh cannot switch account, principal, lifecycle or Manager. |
+| Repeats | A refusal before effect re-resolves and invokes once more, as the stock connector does. Nothing else repeats. |
+| Goals | `submitGoal()` and `followGoal()` need the caller's own envelope `id` and refuse up front when the Manager serves no `goal-result`. An accepted or unknown goal is never resubmitted; `reconcileGoal()` reads it back through `goal-result`. |
+| Follow | `followGoal()` is the stock goal follow, the code the root's `submitAndFollowGoal` runs: it subscribes to the caller's own progress subject before the one submission and reconciles through `goal-result`. `verifyGoalResultFact` runs the root's fact checks with the outcome digest computed through Web Crypto. A stop, timeout or lost connection reports `not-executed` before the submission and `unknown` after it. |
+| Contracts | Only packaged digests. Any other cluster or closure refuses with `unsupported-version`. |
+
+Browser memory is not durable, and a follow lives only as long as its page. Before `submitGoal()`
+or `followGoal()`, persist the envelope `id` with the instance id in storage your application
+controls. The Manager binds the goal under that id, so it is also the `goalId`. After a reload,
+reopen the caller for that same instance and call `reconcileGoal(id)`. Nothing resumes the live
+follow: a recorded terminal is the only outcome a reload can see, and no record means the outcome
+is still unknown, not that the goal was never accepted. A manual resubmission must reuse the
+persisted `id`, and outside the idempotency horizon even that is a new submission.
+
+The stock exchange serves no browser-origin request. An embedding obtains the person's own
+`manager-caller` view through its own identity bridge, from that person's current proof and with
+the Manager instance named explicitly. It never uses a service or administrator credential, and it
+never forwards Manager commands for the page.
+
+The Manager surface has no command that lists the instances a person may call. The auth service
+lists them instead: `POST /manager-instances` with `{ idpToken }` verifies the same IdP proof the
+human exchange verifies, derives the owner from `[issuer, sub]` the same way, and answers that
+owner's Manager gates in the space the service serves.
+
+```json
+{ "v": 1, "owner": "u_...", "observedAt": 1760000000000, "complete": true,
+  "instances": [{ "instanceId": "...", "placement": "remote", "state": "candidate" }] }
+```
+
+| Field | What it proves |
+| --- | --- |
+| `state` | The verdict instance selection reads: `candidate` (registered, open and this owner's), `not open`, `not registered`, `not this owner's` or `unknown` (the record could not be read). Selection without a named instance is built on the same list, so the two cannot disagree. |
+| `observedAt`, `complete` | When the gates were read, and that every gate of the owner was read. A failed read answers 503, never an empty list. An empty list is a complete read that found none. |
+| Liveness | Not proven. A record is registration evidence. Only a describe pinned to the instance proves that it answers, and with which epoch. |
+
+The route serves no browser origin and no other person's instances. It lists nothing beyond what
+the gates record: hostname, working directory, runtime and capabilities are not part of a record,
+and an embedding that shows them reads them from a pinned describe as observations.
+
+An embedding that serves a page composes both routes through its own identity bridge, from the
+person's current proof and current session: the bridge forwards the person's own `idpToken` to
+`/manager-instances` and to the `manager-caller` exchange with the instance the person picked, from
+its server and without a browser `Origin`. It forwards nothing else. It never uses a service or
+administrator credential, never stores the issued view beyond the page's connection, and never
+proxies Manager commands for the page.
+
+### Tool results in a browser
+
+`openBrowserToolResultCaller(options)` reads one agent incarnation's private tool results
+(SPEC 13.6, "Private tool results") from the same browser entry. It calls the three native
+commands, `tool-result`, `tool-result-consent` and `tool-result-revoke`, in `handle` mode on the
+serving instance, whose id is the target's lifecycle UID. It needs the `tool-results` contract this
+entry packages, which `extract <module> <label> <out.json> tool-results` reads from the module that
+registers the cluster.
+
+| Concern | What the tool-result caller does |
+| --- | --- |
+| Authority | `acquire()` returns the holder's own stock-issued `tool-result-caller` bearer, the space's deny-all sentinel and the serving instance's current epoch. No other view is used, a `manager-caller`, agent or admin bearer included. |
+| Pins | The bearer must name the configured space, the holder's principal and lifecycle, and a consent for the configured target owner, actor and lifecycle that names this holder. A missing epoch refuses. Every refusal comes before any connect. |
+| Epoch | The holder's grants carry no describe and no registry read, so the host supplies the epoch it read. Every call binds it, so another incarnation refuses before effect. An answer from another epoch invalidates the caller. |
+| Repeats | A refusal before effect is sent once more. A consent or revoke that was accepted, or whose outcome is unknown, is never sent again. |
+| Answers | Returned unchanged: `available`, `pending`, `not-shared`, `missing` and `expired` stay distinct, and `""`, `0` and `false` are values. Render `content` as inert text. Nothing is cached. |
+| Lifecycle | `close()`, an aborted open or a closed connection invalidates the caller. `reopen()` acquires fresh authority under the same pins. A different viewer, space or target is a new caller. |
+
+The page holds the bearer only for its connection. A host signs consents only after a fresh
+interactive proof for the target's owner, so an embedding without an IdP-issued `auth_time` cannot
+offer this caller.
+
 ### Long-lived endpoints take a bearer function
 
 `EndpointOptions.bearer` accepts either a string or a function, and the difference is not stylistic.
@@ -370,6 +491,51 @@ await runAuthService(
   store,
 );
 ```
+
+### Consented background recipient
+
+`@cotal-ai/core` exports the delivery half of a background recipient: a server-held reader that keeps
+receiving one lifecycle's DMs and Plane-3 deliveries after its page closes, under that person's
+consent. It reads through its own durables, never the lifecycle's `dm_`/`dlv_` durables, so a UI
+reader's ACK never consumes its copy, and the UI never loses one to it.
+
+| Step | Export | What it does |
+| --- | --- | --- |
+| Consent | `captureRecipientFrontier(jsm, space)` | Reads the DM and DLV last sequences when consent is recorded. Delivery starts after them, so nothing earlier is captured. |
+| Provision | `recipientDurableConfigs(scope, frontier)`, `provisionRecipientDurables` | Pre-creates `rdm_…-<grantId>` and `rdlv_…-<grantId>` with the lifecycle's filters, explicit ACK, 64 in flight and no delivery limit. |
+| Grant | `recipientBindGrants(durables)` | The recipient's whole JetStream surface: info, fetch and ACK of those two durables. No create, delete, stream or writer row. |
+| Read | `nextRecipientDelivery(js, durable)` | One delivery with a stable `sourceId` (`<stream>:<sequence>`) and its delivery count. |
+| Commit | `commitThenAck(pending, persist)` | Persists, then ACKs. A failed persist NAKs (`retry`). A persisted delivery whose ACK is unconfirmed is `unknown` and may come back, so `persist` must be idempotent on `sourceId`. |
+| Revoke | `deprovisionRecipientDurables` | Deletes both durables by exact name. It stops further delivery but cannot recall a fetched one, so the host re-checks the grant before each persist. |
+
+Each delivery's `category` is what its source plane proves, never guessed from text or rosters:
+
+| `category` | When |
+| --- | --- |
+| `dm` | A DM-stream delivery. Its headers are the sender's and are never read. |
+| `durable-channel` | A DLV copy the trusted reader delivered to a durable channel member. |
+| `live-mention` | A DLV copy the trusted reader delivered for an `@mention` on a `live` channel. |
+| `unknown` | Any other DLV copy: no reader frame header, no reason (an older reader), more than one value, or a value this build does not recognize. That value is in `unrecognizedReason`. |
+
+The reason names the native path the reader authorized for that one copy, not what the sender
+meant. A publisher cannot set it: the reader writes fresh headers for every copy, and only the
+delivery daemon's credential publishes to DLV. Read it per delivery: a batch that holds one
+`live-mention` is not a batch of mentions, and `unknown` is not "not a mention".
+
+The auth service holds the authority half (`@cotal-ai/auth`, `recipient-grant.ts`):
+
+| Step | Where | What it checks |
+| --- | --- | --- |
+| Consent | `POST /manager-service-authority`, request `{ kind: "inbox-recipient-consent", actor, lifecycleUid, sources, ttlMs }` | An IdP proof whose `auth_time` is at most five minutes old, the owner's own interactive row at that exact lifecycle, sources from `dm` and `dlv`, and a lifetime of at most seven days. A host without scoped provisioning refuses. |
+| Journal | the 0600 grant row | Written `provisioning` with the frontier and durable names before the durables exist, and `active` only after both are created. A failed provision deletes what it made and grants nothing. |
+| Redeem | `POST /exchange { recipientGrant, recipientToken }` | The grant's own secret, returned once at consent and stored only as its hash. The answer is a bearer of the closed `inbox-recipient` view, at most five minutes long and never past the grant. |
+| Connect | the auth callout | The grant, its owner, actor, lifecycle and expiry, read again. The connection gets the grant's six info, fetch and ACK rows and its own reply inbox, nothing else. |
+| Revoke | `POST /manager-service-authority`, request `{ kind: "inbox-recipient-revoke", actor, grantId }` | Owner only. The grant ends first, then its durables are deleted under a `recipient-deprovisioner` credential pinned to them. |
+
+An expired grant, or one whose lifecycle the owner no longer holds, refuses at the next exchange or
+connect and has its durables deleted then. A connection already open keeps what it fetched until its
+bearer expires, so the host re-checks the grant before each persist. Agents cannot consent: the
+consent route takes only a signed-in human's IdP proof.
 
 ### delivery
 

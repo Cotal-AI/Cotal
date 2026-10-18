@@ -36,6 +36,10 @@
       "types": "./dist/session-browser.d.ts",
       "import": "./dist/session-browser.js"
     },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
+    },
     "./launch-material": {
       "types": "./dist/launch-material.d.ts",
       "import": "./dist/launch-material.js"
@@ -44,8 +48,11 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
+    "gen:browser-contracts": "tsx scripts/gen-browser-contracts.ts generate",
     "test": "tsx smoke/resolve.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts && pnpm smoke:schema-own-properties && pnpm smoke:schema-own-properties-controls",
     "smoke:backup": "tsx smoke/backup.smoke.ts",
+    "smoke:delivery-recipient": "tsx smoke/delivery-recipient.smoke.ts",
+    "smoke:delivery-reason": "tsx smoke/delivery-reason.smoke.ts",
     "smoke:backup:live": "tsx smoke/backup-live.smoke.ts",
     "prepublishOnly": "pnpm run build",
     "smoke:schema-own-properties": "node smoke/schema-own-properties.public.mjs --gate partial",

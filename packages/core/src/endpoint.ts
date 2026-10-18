@@ -171,9 +171,12 @@ import {
   unicastSubject,
   unicastRecvFilter,
 } from "./subjects.js";
+import { PLANE3_FRAME_HEADER, dlvCopyHeaders, dlvCopyReason } from "./delivery-reason.js";
+
+import { isPermissionDenied } from "./permission-denied.js";
+export { isPermissionDenied };
 
 export const DEFAULT_SERVER = "nats://127.0.0.1:4222";
-const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
 
 interface Plane3DeliveryFrame {
   version: 1;
@@ -5476,8 +5479,9 @@ export class CotalEndpoint extends EventEmitter {
         channel: entry.channel,
         msg: authenticatedChannelMessage(entry.msg, entry.channel),
       };
-      const frameHeaders = headers();
-      frameHeaders.set(PLANE3_FRAME_HEADER, "1");
+      // Fresh headers: the reason this reader just re-authorized, never the publisher's headers,
+      // `mentions` or text.
+      const frameHeaders = dlvCopyHeaders(entry.reason);
       // Lifecycle-keyed subject + msgID (ours): the DLV consumer filters on the lifecycle-scoped
       // subject (streams.ts filter_subject), and a predecessor's transferred copy must never suppress
       // a successor's under the same alias (disjoint lifecycles, stream-wide dedupe).
@@ -5546,7 +5550,16 @@ export class CotalEndpoint extends EventEmitter {
         }
         const msg = authenticatedChannelMessage(raw.msg, raw.channel);
         if (msg.from?.id === this.card.id) { m.ack(); continue; } // own echo (defensive)
-        this.emit("message", msg, durableDelivery(m, ackWaitMs), { historical: false, kind: "channel" } satisfies MessageMeta);
+        // Like the frame header, the reason header is minted only by the trusted DLV writer. One this
+        // endpoint does not know is a newer reader's: deliver without a reason and say so, never guess.
+        // A warning, not an error: the copy is still delivered, and an unheard `error` would kill the host.
+        const { reason, unrecognized } = dlvCopyReason(m.headers);
+        if (unrecognized !== undefined) {
+          this.emitRecoverable(new Error(`plane-3 delivery: unrecognized delivery reason "${unrecognized}"; delivered without one`));
+        }
+        this.emit("message", msg, durableDelivery(m, ackWaitMs), {
+          historical: false, kind: "channel", ...(reason !== undefined ? { deliveryReason: reason } : {}),
+        } satisfies MessageMeta);
       }
     })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
   }
@@ -7103,17 +7116,6 @@ function describeStatusError(err: Error): Error {
   return err;
 }
 
-/** True when a failure is a NATS *permission denial* — the subject is forbidden to this
- *  endpoint's creds — rather than a missing responder or a timeout. The two need opposite
- *  fixes (grant the capability vs. start/await the service), so callers (e.g. a control
- *  request that can't reach the manager) must tell them apart instead of defaulting to
- *  "service down". Unwraps a wrapped `cause` and falls back to the server's error text, since
- *  a denied publish can surface either as the typed error or inside a request rejection. */
-export function isPermissionDenied(e: unknown): boolean {
-  if (e instanceof PermissionViolationError) return true;
-  if ((e as { cause?: unknown } | null)?.cause instanceof PermissionViolationError) return true;
-  return /permissions?\s+violation/i.test(String((e as { message?: unknown } | null)?.message ?? ""));
-}
 
 /** The ordered consumer behind a KV watch, which nats.js keeps on the iterator and the KV types hide. */
 function kvWatchConsumer(iter: Awaited<ReturnType<KV["watch"]>>): PushConsumer {

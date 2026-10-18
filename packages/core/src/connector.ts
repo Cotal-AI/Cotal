@@ -1,6 +1,7 @@
 import type { Extension, ExtensionRef } from "./registry.js";
 import type { McpServerSpec } from "./connector-config.js";
 import type { StartupReply } from "./startup-confirm.js";
+import type { EpServeGrant } from "./endpoint-service.js";
 
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
 export interface LaunchOpts {
@@ -20,6 +21,14 @@ export interface LaunchOpts {
    *  argv) — like {@link creds}, host-local pointers, opaque to core. Mutually exclusive with
    *  `creds`/`id` (the principal IS the identity; connectors throw on a conflicting combination). */
   userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  /** This incarnation's `tool-results` serving material (SPEC 13.6): its own `endpoint-serve`
+   *  creds (content) and its serve grant. Set only for a connector declaring
+   *  {@link Connector.toolResults}; the connector forwards it only through the 0600
+   *  launch-material file, never env or argv. */
+  toolResults?: { creds: string; grant: EpServeGrant; consentAnchors?: string };
+  /** User-mode tool-results serving: the launcher-maintained 0600 serving file. Set only for a
+   *  connector declaring {@link Connector.toolResults}. */
+  toolResultsServing?: { file: string };
   /** The incarnation's lifecycle UID (SPEC §13.1), minted by the launcher at spawn. The connector
    *  forwards it (`COTAL_LIFECYCLE_UID`) so the session's endpoint binds its lifecycle-keyed
    *  dm/dlv/chathist durables — the same exact names its credential pins. */
@@ -253,6 +262,10 @@ export interface Connector extends Extension {
    *  `eventChannel`, so the grant the manager mints here and the subject the session publishes to
    *  are the same derivation and cannot drift. */
   eventChannel?(principal: { owner: string; actor: string }): string;
+  /** Present only as `true`: this connector's session serves its own consented tool results
+   *  (SPEC 13.6) from launch material, so a launcher that registers serving may hand it some.
+   *  Absent: the launcher registers nothing for it. */
+  toolResults?: true;
   /** External executables this connector invokes beyond `LaunchSpec.command` (e.g. the
    *  `claude` / `opencode` CLI). A preflight PATH hint, not a full environment validator: the
    *  manager resolves each at boot, passes the absolute path through {@link LaunchOpts.resolvedBinaries},

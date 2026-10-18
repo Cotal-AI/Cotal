@@ -84,6 +84,9 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
   // answer — and, like `connector`, it is overlaid LAST so an agent file cannot declare a host it
   // is not on. Advisory display metadata, never an authorization or routing input.
   meta.host = hostname();
+  // Snapshot the connector process directory when the session is constructed. This is display
+  // metadata, not a model harness's later shell directory or a routing/authorization input.
+  meta.cwd = process.cwd();
   return Object.keys(meta).length ? meta : undefined;
 }
 

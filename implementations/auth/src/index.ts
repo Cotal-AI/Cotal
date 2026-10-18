@@ -67,7 +67,9 @@ export {
   type DeviceLoginOpts,
   type DeviceLoginPrompt,
 } from "./login.js";
-export { calloutPermissions, type AclResolver, type UserCallerIssuer } from "./permissions.js";
+export { calloutPermissions, SESSION_EXP, type AclResolver, type RecipientVerifier, type ToolResultVerifier, type UserCallerIssuer } from "./permissions.js";
+export { RECIPIENT_GRANT_MAX_TTL_MS, RECIPIENT_CONSENT_PROOF_MAX_AGE_MS, consentRecipientGrant, listRecipientGrants, readRecipientGrant, revokeRecipientGrant, verifyRecipientGrant, type RecipientGrantDeps, type RecipientGrantRow, type RecipientGrantState, type RecipientSource } from "./recipient-grant.js";
+export { verifyToolResultRedemption, type ToolResultRedemptionReads } from "./tool-result-redemption.js";
 export {
   USER_AUTH_TRUST_SCHEME,
   userAuthTrustFingerprint,

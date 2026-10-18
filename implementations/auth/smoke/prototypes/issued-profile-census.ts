@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   CREDENTIAL_LIFETIMES, permissionsFor, epServeGrantRows, effectsBindGrants, poolOwnerBindGrants, patternCovers,
-  chatStream, dmStream, dlvStream, inboxStream, taskStream,
+  chatStream, dmStream, dlvStream, inboxStream, taskStream, recipientDurableConfigs,
   epcStreamName, epeStreamName, epfStreamName, epjStreamName, eprStreamName,
   eptStreamName, eptReqStreamName, epwStreamName,
   channelBucket, presenceBucket, membershipBucket, deliveryBucket, managerBucket,
@@ -14,8 +14,12 @@ import { calloutPermissions } from "../../src/permissions.js";
 import { USER_TOKEN_VER, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE } from "../../src/token.js";
 import { deriveOwnerToken } from "../../src/derive.js";
 
+/** Every issued credential the census classifies: core's mint profiles plus the one callout view
+ *  whose rows are not a core profile (`tool-result-caller`, minted from toolResultRedemptionRows). */
+export type CensusProfile = Profile | "tool-result-caller" | "inbox-recipient";
+
 export interface ProfileFixture {
-  profile: Profile;
+  profile: CensusProfile;
   variant: string;
   permissions: Record<string, unknown>;
   producer: "permissionsFor" | "epServeGrantRows" | "calloutPermissions";
@@ -50,6 +54,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     },
     provisioner: () => one("provisioner"),
     deprovisioner: () => one("deprovisioner", { deprovisionTarget: { principal: "local.worker", lifecycleUid: uid } }),
+    "recipient-deprovisioner": () => one("recipient-deprovisioner", { recipientDurables: [{ stream: dmStream(space), durable: `rdm_local-worker-${uid}-${uid}` }] }),
     "retirement-requester": () => one("retirement-requester", { retirementRequester: { owner: "local", actor: "census", uid, target: { owner: "local", actor: "worker", lifecycleUid: uid } } }),
     "lifecycle-executor": () => one("lifecycle-executor", { lifecycleExecutor: { owner: "local", actor: "worker", lifecycleUid: uid, alias: "worker" } }),
     "endpoint-serve-executor": () => one("endpoint-serve-executor", { endpointServeExecutor: { endpoint: "manager", instanceId: instance } }),
@@ -104,7 +109,8 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     const required = VIEW_REQUIRED_SCOPE[view];
     const scope = required === undefined ? ["spawn", "run", "admin"] : [required];
     const sessionClaim = { endpoint: "manager", sessionId: session, epoch: 1, exp: 2_000_000_000 };
-    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view, ...(view === "manager-caller" ? { managerInstanceId: instance } : {}), ...(view === "session-caller" ? { session: sessionClaim } : {}), ...(view === "transfer-writer" ? { transferWriter: { instanceId: instance, hex: "a".repeat(64) } } : {}) } };
+    const consentClaim = { v: 1 as const, id: "c".repeat(22), space, scope: "tool-results" as const, target: { owner, actor: "census-target", lifecycleUid: instance }, holder: { id: `${owner}.census` }, proofAt: 1_999_999_000_000, iat: 1_999_999_000_000, exp: 2_000_000_000_000, issuer: { keyId: "host" }, sig: "x" };
+    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view, ...(view === "manager-caller" ? { managerInstanceId: instance } : {}), ...(view === "session-caller" ? { session: sessionClaim } : {}), ...(view === "transfer-writer" ? { transferWriter: { instanceId: instance, hex: "a".repeat(64) } } : {}), ...(view === "tool-result-caller" ? { toolResult: consentClaim } : {}), ...(view === "inbox-recipient" ? { recipient: { grantId: instance, exp: 2_000_000_000_000 } } : {}) } };
     // This fixture authorizes one coordinate to construct the shipped grant surface. Real gate
     // ownership and registration validation are graded by the live exchange suites, not this census.
     const produce = calloutPermissions(
@@ -117,6 +123,16 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
         assert.deepEqual(selectedPrincipal, { owner, actor: "census", lifecycleUid: uid });
         assert.deepEqual(claim, { endpoint: sessionClaim.endpoint, sessionId: sessionClaim.sessionId, epoch: sessionClaim.epoch });
         return sessionClaim;
+      },
+      undefined,
+      async (holder, claim) => {
+        assert.deepEqual(holder, { owner, actor: "census", lifecycleUid: uid });
+        assert.deepEqual(claim, consentClaim);
+        return consentClaim;
+      },
+      async (grantId) => {
+        assert.equal(grantId, instance);
+        return { owner, actor: "census", lifecycleUid: uid, expiresAt: 2_000_000_000_000, durables: recipientDurableConfigs({ space, owner, actor: "census", lifecycleUid: uid, grantId }, { dm: 0, dlv: 0 }) };
       },
     );
     if (view === "manager-service") {
@@ -237,7 +253,7 @@ function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
  * pairing is expected in the trusted infrastructure profiles (they ARE the trusted plane), and is the
  * condition the issued rail's origin assumption cannot survive in a peer-held credential.
  */
-export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller"]);
+export const PEER_HELD_PROFILES: readonly CensusProfile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller", "tool-result-caller"]);
 
 /**
  * The rest, classified as trusted infrastructure or operator credentials. Peer-heldness is a
@@ -246,7 +262,7 @@ export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "o
  * adds it to decide, instead of drifting into "trusted" by default.
  */
 export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
-  "supervisor", "operator", "provisioner", "deprovisioner", "admin", "purger", "probe", "delivery",
+  "supervisor", "operator", "provisioner", "deprovisioner", "recipient-deprovisioner", "admin", "purger", "probe", "delivery",
   "teardown", "channel-writer", "channel-purger", "membership-rw", "deployer", "goal-writer",
   "session-ledger", "session-serving", "run-mediator", "run-operator", "remote-manager",
   "lifecycle-executor", "endpoint-serve-executor", "endpoint-serve", "control-caller-privileged",

@@ -30,7 +30,8 @@
 import { randomBytes } from "node:crypto";
 import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
-import { assertIdToken, digestIdToken, endpointToken } from "./endpoint-subjects.js";
+import { assertIdToken, endpointToken } from "./endpoint-subjects.js";
+import { digestIdToken } from "./digest-id.js";
 import { RECORD_KINDS, createRecordEntry, recordAtomicKey } from "./endpoint-records.js";
 import { canonicalJson } from "./canonical.js";
 import { walkKvEntries } from "./kv-scan.js";

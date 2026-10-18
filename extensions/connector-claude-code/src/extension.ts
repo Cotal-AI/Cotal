@@ -158,6 +158,8 @@ export const claudeConnector: Connector = {
   // here would be a second place the subject is decided, and the two would drift the first time
   // either changed.
   eventChannel,
+  // mcp.ts serves its own journal when the launch material carries serving material.
+  toolResults: true,
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
@@ -197,7 +199,7 @@ export const claudeConnector: Connector = {
       ...aclEnv(opts),
       // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
       // shells, builds and third-party CLIs this session runs no longer inherit live authority.
-      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }),
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth, toolResults: opts.toolResults, toolResultsServing: opts.toolResultsServing }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the

@@ -541,6 +541,13 @@ function parseManagedAgentEnvelope(o: Record<string, unknown>, what: string, kin
   return { ...envelope, serveEpoch: o.serveEpoch };
 }
 
+/** The same closed envelope (manager authorization actor, instance, lifecycle, request id,
+ *  registration proof, public identities, serve epoch) for another host-routed managed-agent
+ *  request kind, so its host check binds exactly what the enrollment check binds. */
+export function parseManagedAgentAuthorityEnvelope(o: Record<string, unknown>, what: string, kind: string): RemoteManagerEnvelope & { serveEpoch: number } {
+  return parseManagedAgentEnvelope(o, what, kind);
+}
+
 /** One optional channel/pattern list on an enrollment target: bounded, string-only, in-grammar. */
 function parseEnrollmentList(value: unknown, what: string, field: string): string[] | undefined {
   if (value === undefined) return undefined;

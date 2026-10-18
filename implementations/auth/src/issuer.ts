@@ -25,7 +25,8 @@
 import { SignJWT, calculateJwkThumbprint, createRemoteJWKSet, exportJWK, generateKeyPair, importJWK } from "jose";
 import type { CryptoKey, JWK, JWTVerifyGetKey } from "jose";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, isLoopbackLiteral } from "@cotal-ai/core";
-import { USER_TOKEN_VER, USER_TOKEN_VIEWS, assertCredentialIdClaim, assertSessionClaim, assertTransferWriterClaim, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
+import type { ToolResultConsent } from "@cotal-ai/core";
+import { USER_TOKEN_VER, USER_TOKEN_VIEWS, assertCredentialIdClaim, assertSessionClaim, assertRecipientClaim, assertToolResultClaim, assertTransferWriterClaim, viewTtlCapSec, type UserTokenRecipient, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 
 /** The one signing algorithm — Ed25519. Pinned on both mint and verify. */
 export const USER_TOKEN_ALG = "EdDSA";
@@ -109,6 +110,10 @@ export interface IssueClaims {
   session?: UserTokenSession;
   /** The one object bound to the transfer-writer view (#1499). */
   transferWriter?: UserTokenTransferWriter;
+  /** The verified consent bound to the tool-result-caller view, already checked upstream. */
+  toolResult?: ToolResultConsent;
+  /** The consented recipient grant bound to the inbox-recipient view, already verified upstream. */
+  recipient?: UserTokenRecipient;
   /** Requested lifetime; capped at the view's {@link viewTtlCapSec} (an overlong ask THROWS). */
   ttlSec?: number;
 }
@@ -179,6 +184,12 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     if ((claims.view === "transfer-writer") !== (claims.transferWriter !== undefined))
       throw new Error('issue: view "transfer-writer" and a transferWriter claim come together or not at all');
     if (claims.transferWriter !== undefined) assertTransferWriterClaim(claims.transferWriter);
+    if ((claims.view === "tool-result-caller") !== (claims.toolResult !== undefined))
+      throw new Error('issue: view "tool-result-caller" and a toolResult claim come together or not at all');
+    if (claims.toolResult !== undefined) assertToolResultClaim(claims.toolResult);
+    if ((claims.view === "inbox-recipient") !== (claims.recipient !== undefined))
+      throw new Error('issue: view "inbox-recipient" and a recipient claim come together or not at all');
+    if (claims.recipient !== undefined) assertRecipientClaim(claims.recipient);
     const cap = viewTtlCapSec(claims.view);
     const ttl = claims.ttlSec ?? cap;
     if (typeof ttl !== "number" || !Number.isFinite(ttl) || !(ttl > 0) || ttl > cap)
@@ -189,7 +200,7 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     return new SignJWT({
       scope: claims.scope ?? [],
       ver: USER_TOKEN_VER,
-      act: { owner: claims.owner, actor: claims.actor, ...(claims.scope ? { scope: claims.scope } : {}), ...(claims.parent ? { parent: claims.parent } : {}), ...(claims.lifecycleUid ? { lifecycleUid: claims.lifecycleUid } : {}), ...(claims.credentialId ? { credentialId: claims.credentialId } : {}), ...(claims.view ? { view: claims.view } : {}), ...(claims.managerInstanceId ? { managerInstanceId: claims.managerInstanceId } : {}), ...(claims.session ? { session: claims.session } : {}), ...(claims.transferWriter ? { transferWriter: claims.transferWriter } : {}) },
+      act: { owner: claims.owner, actor: claims.actor, ...(claims.scope ? { scope: claims.scope } : {}), ...(claims.parent ? { parent: claims.parent } : {}), ...(claims.lifecycleUid ? { lifecycleUid: claims.lifecycleUid } : {}), ...(claims.credentialId ? { credentialId: claims.credentialId } : {}), ...(claims.view ? { view: claims.view } : {}), ...(claims.managerInstanceId ? { managerInstanceId: claims.managerInstanceId } : {}), ...(claims.session ? { session: claims.session } : {}), ...(claims.transferWriter ? { transferWriter: claims.transferWriter } : {}), ...(claims.toolResult ? { toolResult: claims.toolResult } : {}), ...(claims.recipient ? { recipient: claims.recipient } : {}) },
     })
       .setProtectedHeader({ alg: USER_TOKEN_ALG, kid: signer.kid })
       .setSubject(claims.owner)

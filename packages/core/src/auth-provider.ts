@@ -189,6 +189,20 @@ export interface AuthProvider extends Extension {
     request: RemoteManagedAgentEnrollmentRequest;
   }): Promise<RemoteManagedAgentEnrollmentResult>;
   /**
+   * Ask the host to issue or renew one admitted managed incarnation's tool-results serve credential
+   * and grant (SPEC 13.9), proved by this manager's current registration (the request's own
+   * manager-authority envelope). The host checks the
+   * ledger row, enrollment, parent manager, space and lifecycle at every call, registers the
+   * agent's `tool-results` endpoint instance when absent (undoing a partial registration), and
+   * answers with {@link import("./tool-result-serve-authority.js").ToolResultServeAuthorityMaterial}.
+   * Optional: absent, a user-mode spawn with tool-results serving enabled refuses.
+   */
+  issueRemoteToolResultServe?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: import("./tool-result-serve-authority.js").ToolResultServeAuthorityRequest;
+  }): Promise<unknown>;
+  /**
    * Ask the host to PREPARE one managed agent's terminal retirement (#1972 phase P0/P1): revoke the
    * managed grant UID-exactly and commit the resumable release while preserving the UID. Success
    * means the terminal auth barrier may start. Never a retirement itself.
