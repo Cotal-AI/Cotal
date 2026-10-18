@@ -74,6 +74,9 @@ export interface ConnectorSetupProvider extends Extension {
    * provider while still reconciling the cross-vendor skills drop. */
   readonly requires?: readonly string[];
   readonly connector?: ConnectorSetupAction<ConnectorSetupInput>;
+  /** Brings what {@link connector} installed earlier up to this release and installs nothing new. A
+   * repeat `cotal setup` and `cotal update` run it, so an upgrade reaches the harness's own copy. */
+  readonly refresh?: ConnectorSetupAction<ConnectorSetupInput>;
   readonly skills?: ConnectorSetupAction<ConnectorSkillsSetupInput>;
   /** Shares the MCP servers the user's own harness sessions load with the agents this connector
    * spawns. First-run setup runs it; a share list the cotal config already declares is kept. */

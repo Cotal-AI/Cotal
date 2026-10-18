@@ -40,6 +40,7 @@ function updateRuntime(opts: {
     nodePath: "/node",
     version: () => opts.version ?? "0.13.1",
     reconcile: async () => void events.push("reconcile"),
+    refreshConnectors: async () => (events.push("refresh-connectors"), []),
     reportRunningManager: async () => {
       events.push("report-running-manager");
       return await opts.reportRunningManager?.() ?? "none";
@@ -272,6 +273,19 @@ async function completionOut(positionals: string[]): Promise<string> {
   );
   assert.ok(events.some((event) => event.includes("third-party-ext@1.2.3 - not auto-updated")));
   assert.ok(events.indexOf("reconcile") < events.findIndex((event) => event.startsWith("npm:view")), "default reconciles before npm check");
+  assert.ok(
+    events.indexOf("reconcile") < events.indexOf("refresh-connectors"),
+    "update refreshes what connectors installed in their harnesses, after the connectors themselves",
+  );
+}
+
+// --- a connector refresh that fails fails the update ----------------------------------------------
+{
+  const failing = updateRuntime({});
+  failing.rt = { ...failing.rt, refreshConnectors: async () => { throw new Error("plugin update failed (cotal, /p)"); } };
+  const code = await executeUpdate(false, failing.rt);
+  assert.equal(code, 1, "a stale harness copy is not reported as a finished update");
+  assert.ok(failing.events.some((event) => event.includes("✗ connector installs: plugin update failed (cotal, /p)")));
 }
 
 // --- a running legacy manager is reported, then blocks an update before replay --------------------

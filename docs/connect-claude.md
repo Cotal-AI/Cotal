@@ -30,6 +30,8 @@ cotal up         # brings up the mesh + delivery daemon + a detached manager
 tools), shares your own MCP servers with spawned sessions on its first run (see
 [Sharing your MCP servers](#sharing-your-mcp-servers)), and seeds one `default` persona; `cotal up` brings up the local stack so
 `cotal spawn --detach` / `cotal_spawn` work right away. Re-running either is idempotent.
+The plugin's version is the release plus a digest of its files, so a repeat `cotal setup` and
+`cotal update` move every project's install to the new copy, and `cotal status` names a stale one.
 The install mechanics and the invariants behind them are in
 [setup internals](setup-internals.md).
 
