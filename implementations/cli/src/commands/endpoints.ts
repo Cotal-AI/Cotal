@@ -1,4 +1,4 @@
-import { peerLabel, presenceText, type ParsedArgs, type Presence } from "@cotal-ai/core";
+import { peerLabel, presenceText, unaddressableByName, type ParsedArgs, type Presence } from "@cotal-ai/core";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
 
@@ -19,20 +19,14 @@ export function printEndpoints(roster: Presence[], space: string): void {
     return;
   }
 
-  const counts = new Map<string, number>();
-  for (const presence of roster) {
-    const name = presence.card.name.toLowerCase();
-    counts.set(name, (counts.get(name) ?? 0) + 1);
-  }
+  // `cotal send dm` resolves from a transient that never joins the roster, so no row is self.
+  const needsId = unaddressableByName(roster);
   const rows = roster
-    .map((presence) => {
-      const duplicate = (counts.get(presence.card.name.toLowerCase()) ?? 0) > 1;
-      return {
-        presence,
-        label: `${peerLabel(presence.card)}${duplicate ? ` [${presence.card.id}]` : ""}`,
-        kind: presence.card.kind ?? "endpoint",
-      };
-    })
+    .map((presence) => ({
+      presence,
+      label: `${peerLabel(presence.card)}${needsId.has(presence.card.id) ? ` [${presence.card.id}]` : ""}`,
+      kind: presence.card.kind ?? "endpoint",
+    }))
     .sort((a, b) => a.label.localeCompare(b.label));
   const labelWidth = Math.max(...rows.map((row) => row.label.length));
   const kindWidth = Math.max(...rows.map((row) => row.kind.length));

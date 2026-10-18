@@ -105,6 +105,28 @@ export function resolvePeer(
 }
 
 /**
+ * The ids of the peers on `roster` whose own name does not address them: {@link resolvePeer}, given
+ * the same `opts`, refuses that name or resolves it to another peer. A surface that lists peers
+ * prints the id beside those rows, because the id is then the only address that reaches them. Asking
+ * resolvePeer itself keeps every surface on its one comparison. `opts.selfId` is skipped, as
+ * resolvePeer skips it: a session does not address itself.
+ */
+export function unaddressableByName(roster: Presence[], opts: { selfId?: string } = {}): Set<string> {
+  const ids = new Set<string>();
+  for (const p of roster) {
+    if (p.card.id === opts.selfId) continue;
+    let resolved: Presence | undefined;
+    try {
+      resolved = resolvePeer(roster, p.card.name, opts);
+    } catch {
+      // resolvePeer throws only to refuse the name, so the name addresses no one.
+    }
+    if (resolved !== p) ids.add(p.card.id);
+  }
+  return ids;
+}
+
+/**
  * Is every UTF-16 surrogate in `s` properly paired?
  *
  * `String.prototype.isWellFormed()` does exactly this, but it is ES2024 and this package targets an

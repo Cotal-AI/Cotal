@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, unaddressableByName, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -862,18 +862,15 @@ export function cotalToolSpecs(
         const preface = presence.live ? "" : `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: ${presence.detail}.\n\n`;
         const roster = agent.roster();
         if (!roster.length) return ok(`${preface}No one is present in "${config.space}" yet.`);
-        // Names aren't unique. Where one repeats, append the instance id so a DM can target the
-        // exact peer (the id is the only authoritative address); keep unique rows clean.
-        const counts = new Map<string, number>();
-        for (const p of roster) {
-          const n = p.card.name.toLowerCase();
-          counts.set(n, (counts.get(n) ?? 0) + 1);
-        }
+        // Names aren't unique. Where cotal_dm by a row's name would not reach that row, append the
+        // instance id so a DM can target the exact peer (the id is the only authoritative address);
+        // keep the other rows clean.
+        const needsId = unaddressableByName(roster, { selfId: agent.id });
         const lines = roster.map((p) => {
           const who = peerLabel(p.card);
           const isMe = p.card.id === agent.id;
           const me = isMe ? ` (you${agent.attention !== "open" ? `, ${agent.attention}` : ""})` : "";
-          const id = (counts.get(p.card.name.toLowerCase()) ?? 0) > 1 ? ` — id: ${p.card.id}` : "";
+          const id = needsId.has(p.card.id) ? ` — id: ${p.card.id}` : "";
           // A peer's attention is advisory (presence-published): show their global mode and any
           // LOCALLY-MUTED channels so you know to DM rather than @-mention. Wording per the privacy
           // model — "locally muted", never "blocked"/"unreachable" (the broker still delivers).

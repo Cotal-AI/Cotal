@@ -276,7 +276,9 @@ Three identity layers, in increasing permanence
   `cotal endpoints` and the console): `name/role`, or the bare name when it has no role. A
   control character, Unicode line or paragraph separator, or bracket in either part prints as a
   space. That label is not an address, because `/` is reserved for `owner/name` handles: a target
-  written that way is refused, and the refusal gives the bare name.
+  written that way is refused, and the refusal gives the bare name. Where a peer's name does not
+  resolve to that peer, such as a name two live peers share or an offline peer whose name a live
+  peer also holds, `cotal_roster` and `cotal endpoints` print the instance id beside the label.
 - **`role`** is the addressable service, which makes it the anycast address:
   `svc.reviewer` reaches "whoever is a reviewer", so the label carries routing meaning.
 - **The instance id** is the authoritative address: the presence key, the unicast target,
