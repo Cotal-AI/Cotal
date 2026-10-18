@@ -270,6 +270,7 @@
     "smoke:opencode": "tsx extensions/connector-opencode/smoke/turn-wedge.smoke.ts",
     "smoke:opencode-coop": "tsx extensions/connector-opencode/smoke/cooperative-stop.smoke.ts",
     "smoke:opencode-boot-prompt": "tsx extensions/connector-opencode/smoke/boot-prompt.smoke.ts",
+    "smoke:opencode-teardown-before-model": "tsx extensions/connector-opencode/smoke/teardown-before-model.smoke.ts",
     "smoke:attach": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/core --filter @cotal-ai/workspace --filter @cotal-ai/manager --filter @cotal-ai/cmux --filter @cotal-ai/tmux build && tsx implementations/manager/smoke/attach.smoke.ts",
     "smoke:mesh-attach": "tsx implementations/manager/smoke/mesh-attach.smoke.ts",
     "smoke:mesh-attach-plane": "tsx implementations/manager/smoke/mesh-attach-plane.smoke.ts",

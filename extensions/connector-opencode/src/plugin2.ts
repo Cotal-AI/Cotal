@@ -115,12 +115,19 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   })();
 
   const agent = new MeshAgent(config);
+  const controller = new AbortController(); // aborted when teardown begins
   // Same non-blocking shape as plugin.ts: awaiting the model check INSIDE setup would deadlock the
   // server if setup is running while answering the very request the check's fetch targets. Refuse
-  // loud and exit rather than wait forever or join with an unverified model.
+  // loud and exit rather than wait forever or join with an unverified model. A teardown that lands
+  // before the check settles owns what is queued here: it must neither start the stopped agent nor
+  // exit the host process over a refusal nobody is waiting for.
   void modelReady.then(
-    () => agent.start(),
+    () => {
+      if (controller.signal.aborted) return;
+      return agent.start();
+    },
     (error: Error) => {
+      if (controller.signal.aborted) return;
       log(error.message);
       process.exit(1);
     },
@@ -158,7 +165,6 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   let ended: OpenCode2Event["durable"]; // log position of the event that ended the last turn
   let started: OpenCode2Event["durable"]; // log position of the running execution's start
   let submitting: Promise<void> | undefined; // the prompt POST in flight; what it carries settles when it answers
-  const controller = new AbortController(); // aborted when teardown begins
 
   /** Create the session this agent owns and announce its id to the serve shim, exactly as
    *  plugin.ts's `sessionReady` does (the shim scans stderr for this exact line to find which
