@@ -133,6 +133,22 @@ async function resolvePinned(nc: NatsConnection, space: string, caller: EpCaller
   return { endpoint: answer.descriptor.endpoint, owner: answer.descriptor.owner, caller, responder, commands, pinnedInstanceId: instanceId };
 }
 
+/** The callout-shaped connect (`standaloneConnectOpts` user mode): the sentinel lands the connection
+ *  in the callout account, the bearer rides `auth_token`, a fresh inbox nonce is the `name`, and the
+ *  connection never reconnects. */
+export async function dialCalloutConnection(servers: string | string[], authority: { bearer: string; sentinelCreds: string }, deadlineMs: number): Promise<{ nc: NatsConnection; connId: string }> {
+  const connId = `ibx${globalThis.crypto.randomUUID().replace(/-/g, "")}`;
+  const nc = await wsconnect({
+    servers,
+    name: connId,
+    inboxPrefix: `_INBOX_${connId}`,
+    authenticator: [credsAuthenticator(new TextEncoder().encode(authority.sentinelCreds)), tokenAuthenticator(authority.bearer)],
+    maxReconnectAttempts: 0,
+    timeout: Math.min(deadlineMs, 5_000),
+  });
+  return { nc, connId };
+}
+
 /** Open a caller for one explicitly selected Manager instance. */
 export async function openBrowserManagerCaller(opts: BrowserManagerCallerOptions, signal?: AbortSignal): Promise<BrowserManagerCaller> {
   signal?.throwIfAborted();
@@ -142,17 +158,7 @@ export async function openBrowserManagerCaller(opts: BrowserManagerCallerOptions
   const bound = managerCallerBinding(authority.bearer, {
     space: opts.space, owner: opts.owner, actor: opts.actor, lifecycleUid: opts.lifecycleUid, instanceId: opts.instanceId,
   });
-  // The callout-shaped connect (`standaloneConnectOpts` user mode): the sentinel lands the connection
-  // in the callout account, the bearer rides `auth_token`, and a fresh inbox nonce is the `name`.
-  const connId = `ibx${globalThis.crypto.randomUUID().replace(/-/g, "")}`;
-  const nc = await wsconnect({
-    servers: opts.servers,
-    name: connId,
-    inboxPrefix: `_INBOX_${connId}`,
-    authenticator: [credsAuthenticator(new TextEncoder().encode(authority.sentinelCreds)), tokenAuthenticator(authority.bearer)],
-    maxReconnectAttempts: 0,
-    timeout: Math.min(deadlineMs, 5_000),
-  });
+  const { nc, connId } = await dialCalloutConnection(opts.servers, authority, deadlineMs);
   try {
     signal?.throwIfAborted();
     let caller: EpCaller = bound.caller;

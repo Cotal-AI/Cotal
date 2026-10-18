@@ -1,0 +1,159 @@
+{
+  "label": "@cotal-ai/core 0648a15c source",
+  "clusterDigest": "sha256:ef0787904664e6ce21ef37762ccd0a05a63cdee5d6f2863dcbd7702d6035f12f",
+  "document": {
+    "urn": "urn:cotal:tool-results",
+    "revision": 1,
+    "attributes": [],
+    "events": [],
+    "commands": [
+      {
+        "name": "tool-result",
+        "class": "ephemeral",
+        "targeted": true,
+        "modes": [
+          "handle"
+        ],
+        "capability": "tool-results",
+        "inputDigest": "sha256:0927354c18e243c580ad24fd250181aa6cefbad712ce2a0124664992b7aa67a6",
+        "outputDigest": "sha256:5be59aeca3699788f26be64086d223ea551140a85320cb801aee64e9fef8243a"
+      },
+      {
+        "name": "tool-result-consent",
+        "class": "ephemeral",
+        "targeted": true,
+        "modes": [
+          "handle"
+        ],
+        "capability": "tool-results",
+        "inputDigest": "sha256:b3cd953f7a34fe8dc2c0f589d1eeac18d6792375eea10a6138ab96836adab0e6",
+        "outputDigest": "sha256:721460f099cec95ea6299834e7616c9a4419cea88363378b5c1e329aaaa6642f"
+      },
+      {
+        "name": "tool-result-revoke",
+        "class": "ephemeral",
+        "targeted": true,
+        "modes": [
+          "handle"
+        ],
+        "capability": "tool-results",
+        "inputDigest": "sha256:76b643a7cb82cbd80411871fd550785e31074d12b3ab5cd9691814c350ec3ccf",
+        "outputDigest": "sha256:721460f099cec95ea6299834e7616c9a4419cea88363378b5c1e329aaaa6642f"
+      }
+    ]
+  },
+  "roots": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "toolCallId"
+      ],
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "toolCallId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "available",
+            "pending",
+            "not-shared",
+            "missing",
+            "expired"
+          ]
+        },
+        "threadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "toolCallId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "content": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "isError": {
+          "type": "boolean"
+        },
+        "capturedAt": {
+          "type": "number"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "active",
+            "revoked",
+            "unknown"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "exp": {
+          "type": "number"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 64
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "consent"
+      ],
+      "properties": {
+        "consent": {
+          "type": "object"
+        }
+      }
+    }
+  ]
+}
