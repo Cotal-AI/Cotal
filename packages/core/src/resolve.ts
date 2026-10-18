@@ -140,6 +140,17 @@ function isWellFormedUtf16(s: string): boolean {
 export const MAX_NAME_LENGTH = 128;
 
 /**
+ * Every code point a line splitter may honour, which is more than what JavaScript splits on.
+ *
+ * Measured through the host frame a model is handed (an MCP text content part, stringified and
+ * parsed back): U+2028, U+2029 and U+0085 survive JSON transport intact, and a Unicode-aware
+ * splitter breaks a line on them where a JavaScript split on a newline and `wc -l` do not. A name
+ * or message body holding one is therefore not a single line. Not global: a shared `/g` regex
+ * carries `lastIndex` from one `test()` to the next.
+ */
+export const LINE_BREAK = /\r\n?|[\n\v\f\u0085\u2028\u2029]/;
+
+/**
  * Validate a display name. A name must be non-empty, single-line, and free of surrounding
  * whitespace; `/` is reserved as the future `owner/name` separator (and already means "a path"
  * to the agent-file loader). Throws — no silent rewrite (per AGENTS.md, no fallbacks). Internal
@@ -153,7 +164,7 @@ export function assertValidName(name: string): void {
       `invalid name ${JSON.stringify(name.slice(0, 32))}…: ${name.length} characters exceeds the ` +
         `${MAX_NAME_LENGTH}-character limit (the CONNECT line budget that carries it)`,
     );
-  if (/[\r\n]/.test(name))
+  if (LINE_BREAK.test(name))
     throw new Error(`invalid name ${JSON.stringify(name)}: must be a single line`);
   if (name.includes("/"))
     throw new Error(`invalid name ${JSON.stringify(name)}: "/" is reserved (the owner/name separator)`);
