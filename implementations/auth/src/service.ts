@@ -2573,7 +2573,7 @@ type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "toolResultConsentSigner" | 
 /**
  * Sign one tool-result consent for the signed-in human (SPEC 13.6). The caller has already verified
  * the IdP token and derived `owner` from its subject; this requires the token's `auth_time` to show
- * an interactive sign-in at most five minutes old, the holder (`actor`) and the target agent to be
+ * an interactive sign-in at most five minutes old and not in the future, the holder (`actor`) and the target agent to be
  * rows of that owner's own ledger, and a configured signer. The target's lifecycle is bound as
  * given: the serving connector refuses a consent for any incarnation but its own.
  */
@@ -2593,14 +2593,18 @@ function signToolResultConsentRequest(
     throw new EpEnvelopeError("bad-request", "a tool-result consent request needs target { actor, lifecycleUid }");
   if (typeof o.ttlMs !== "number") throw new EpEnvelopeError("bad-request", "a tool-result consent request needs ttlMs");
   const now = Date.now();
-  if (proof.authTime === undefined || now - proof.authTime * 1000 > TOOL_RESULT_CONSENT_PROOF_MAX_AGE_MS)
-    throw new EpEnvelopeError("permission-denied", "a tool-result consent needs a fresh interactive sign-in (IdP auth_time within the last five minutes)");
+  // `auth_time` is integer SECONDS (OIDC). A future value, or one in milliseconds (which reads as
+  // far future), refuses; it is never clamped to now, so a forged-fresh proof cannot pass.
+  const authTime = proof.authTime;
+  if (authTime === undefined || !Number.isSafeInteger(authTime) || authTime < 0 || authTime * 1000 > now
+    || now - authTime * 1000 > TOOL_RESULT_CONSENT_PROOF_MAX_AGE_MS)
+    throw new EpEnvelopeError("permission-denied", "a tool-result consent needs a fresh interactive sign-in (IdP auth_time, in seconds, within the last five minutes and not in the future)");
   ledgerAuthorizeGrant(ctx.dir)(owner, t.actor);
   return mintToolResultConsent({
     space: ctx.space,
     target: { owner, actor: t.actor, lifecycleUid: t.lifecycleUid },
     holder: `${owner}.${o.actor as string}`,
-    proofAt: Math.min(proof.authTime * 1000, now),
+    proofAt: authTime * 1000,
     ttlMs: o.ttlMs,
     issuerKeyId: signer.keyId,
     now,
