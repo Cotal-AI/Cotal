@@ -295,11 +295,20 @@ as `body`. The endpoint is stateless: each POST gets a fresh server and a JSON r
 other method answers 405. A `cotal_wait` call holds its POST open for up to `waitSeconds`.
 `GATEWAY_INSTRUCTIONS` is the server instructions text sent when `instructions` is omitted.
 
-`serveGatewayStdio(host, { input?, output?, source?, instructions?, waitSeconds? })` serves the same
+`serveGatewayStdio(host, { input?, output?, source?, instructions?, waitSeconds?, wake? })` serves the same
 surface over stdio, for a local client such as Claude Desktop that launches one process for all of
 its conversations. A stdio request carries no authentication, so `host.account` receives `undefined`
 and names the local user. A client that cancels a call aborts its signal, so a cancelled wait stops
 listening. The streams default to the process's own, and stdout then carries only MCP.
+
+An embedder whose client can be woken passes `wake`, to `serveGatewayStdio` or in the options of
+`registerCotalGatewayTools`. The gateway calls `wake.signal(connection)` when a connection gets
+something that would end a `cotal_wait` while no wait holds it, and not again for that connection
+until `cotal_inbox` or `cotal_wait` reads. `signal` returns false when no client heard it. The
+gateway then signals that connection again when the embedder calls the function `wake.attach`
+received, which it does when a client starts listening. `cotal_connect` adds `wake.listening()` to
+its reply. `GATEWAY_INSTRUCTIONS` is `GATEWAY_CONNECTING` followed by `GATEWAY_LISTENING`, so an
+embedder can say how its conversations listen and keep how they connect.
 
 ### Remote manager client composition
 

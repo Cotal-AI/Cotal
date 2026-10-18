@@ -29,7 +29,7 @@ const legal = [
 // [source, destination inside the plugin directory]
 const plugins = {
   cotal: [
-    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "dist/mcp.cjs", "dist/hook.cjs"].map((asset) => [join(connector, asset), asset]),
+    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "monitors/monitors.json", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"].map((asset) => [join(connector, asset), asset]),
     [join(connector, "PLUGIN.md"), "README.md"],
     ...legal,
   ],
@@ -44,7 +44,7 @@ const plugins = {
 /** Every `${CLAUDE_PLUGIN_ROOT}/<path>` an installed plugin will run, read from its own configs. */
 function referencedPaths(dir) {
   const refs = [];
-  for (const config of [".mcp.json", "hooks/hooks.json"]) {
+  for (const config of [".mcp.json", "hooks/hooks.json", "monitors/monitors.json"]) {
     if (!existsSync(join(dir, config))) continue;
     for (const match of readFileSync(join(dir, config), "utf8").matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([^"\\\s]+)/g)) refs.push(match[1]);
   }

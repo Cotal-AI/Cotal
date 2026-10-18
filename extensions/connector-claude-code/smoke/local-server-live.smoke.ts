@@ -183,6 +183,9 @@ function monitor(claudePid: number, extra: NodeJS.ProcessEnv = {}): Monitor {
 }
 const wakeFor = (id: string) => `Cotal: a new message for connection_id ${id}. Read it with cotal_inbox.`;
 
+/** `exited`, or "running" when it has not settled within `ms`. */
+const within = <T>(exited: Promise<T>, ms = 20_000): Promise<T | "running"> => Promise.race([exited, sleep(ms).then(() => "running" as const)]);
+
 async function until(cond: () => boolean | Promise<boolean>, ms = 10_000): Promise<boolean> {
   for (const end = Date.now() + ms; Date.now() < end; await sleep(200)) if (await cond()) return true;
   return cond();
@@ -303,11 +306,11 @@ try {
   const reader = monitor(stand.pid!);
   check("a monitor turns only a connection id into an event, and drops any other text", (await until(() => reader.lines.length > 0)) && JSON.stringify(reader.lines) === JSON.stringify([wakeFor("abc-123")]), reader.lines);
   stand.kill("SIGKILL");
-  check("  and exits once its Claude Code process is gone", (await Promise.race([reader.exited, sleep(10_000).then(() => "running")])) === 0);
+  check("  and exits once its Claude Code process is gone", (await within(reader.exited)) === 0);
   forged.close();
   rmSync(forgedPath, { force: true });
   const launched = monitor(process.pid, { COTAL_NAME: "seat" });
-  check("in a session Cotal launched, the monitor exits at once and prints nothing", (await launched.exited) === 0 && launched.lines.length === 0);
+  check("in a session Cotal launched, the monitor exits at once and prints nothing", (await within(launched.exited, 5_000)) === 0 && launched.lines.length === 0);
 
   // ── leaving ──────────────────────────────────────────────────────────────────────────────────
   const before = heldBy(desktop.p.pid);
@@ -343,10 +346,10 @@ try {
 
   // ── the server ending retires what it held ───────────────────────────────────────────────────
   desktop.p.stdin!.end();
-  check("Desktop closing the server's stdin ends it cleanly", (await desktop.exited) === 0, desktop.stderr().slice(-400));
+  check("Desktop closing the server's stdin ends it cleanly", (await within(desktop.exited)) === 0, desktop.stderr().slice(-400));
   check("  and every credential directory it held is retired", heldBy(desktop.p.pid).length === 0, heldBy(desktop.p.pid));
   code.p.kill("SIGTERM");
-  check("a signalled server ends cleanly", (await code.exited) === 0, code.stderr().slice(-400));
+  check("a signalled server ends cleanly", (await within(code.exited)) === 0, code.stderr().slice(-400));
   check("  and retires its conversation's credential directory", heldBy(code.p.pid).length === 0, heldBy(code.p.pid));
 
   const torn = cotal(ROOT, "down");

@@ -124,8 +124,8 @@
     {
       "name": "retire drops the credential before the footprint",
       "file": "implementations/cli/src/commands/app-identity.ts",
-      "find": "  const t = target(record.space);\n",
-      "replace": "  rmSync(join(dir, \"agent.creds\"), { force: true });\n  const t = target(record.space);\n",
+      "find": "  const t = await target(record.space);\n",
+      "replace": "  rmSync(join(dir, \"agent.creds\"), { force: true });\n  const t = await target(record.space);\n",
       "expectRed": "  and keeps what a later retire needs",
       "cell": "  and keeps what a later retire needs",
       "command": "pnpm exec tsx implementations/cli/smoke/app-identity-live.smoke.ts",

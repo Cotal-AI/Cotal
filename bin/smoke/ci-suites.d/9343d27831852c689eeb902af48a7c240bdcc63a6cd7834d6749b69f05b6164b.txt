@@ -1,0 +1,5 @@
+# The Claude plugin's server in a session Cotal did not launch, against a sandbox cotal up: cotal_connect
+# opens an identity of its own, the plugin monitor wakes the session once per unread message, and the end
+# of the server retires every identity it held.
+# Mutation-proofed - extensions/connector-claude-code/smoke/mutations/local-server.json.
+smoke:claude-local:live

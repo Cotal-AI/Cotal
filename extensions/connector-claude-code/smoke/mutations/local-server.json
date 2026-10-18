@@ -1,0 +1,169 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/local-server-live.smoke.ts"
+  ],
+  "guard": "a Claude Code or Desktop session Cotal did not launch joins only on cotal_connect, as an identity of its own on the mesh cotal spawn would pick, retires it on disconnect or exit, and in Claude Code is woken by the plugin's monitor once per unread message, never while a cotal_wait holds it, with no socket text reaching the model",
+  "command": "pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm --filter @cotal-ai/cli build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/local-server.json",
+  "why": [
+    "The suite drives the built dist/mcp.cjs and dist/monitor.cjs and runs the built CLI, as Claude Code and cotal setup's record do, so each mutation rebuilds the package it changes before the run and after the restore.",
+    "The W cells were reproduced live in a real interactive Claude Code session on 2.1.295: an idle session woke from the monitor's event, read its inbox and replied by DM, and two plain sessions exchanged a question and an answer with no input.",
+    "W6 is the first design, which the twin-server cell found: a second server under one Claude Code process removed the first one's socket, so a monitor that started later heard nothing."
+  ],
+  "mutations": [
+    {
+      "name": "W1 a wake repeats before the read",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "      if (c.agent.stopping || signalled.has(c.agent) || (holding.get(c.agent) ?? 0) > 0 || wakeCount(c.agent) === 0) return;",
+      "replace": "      if (c.agent.stopping || (holding.get(c.agent) ?? 0) > 0 || wakeCount(c.agent) === 0) return;",
+      "expectRed": "a second DM before the first is read adds no second wake",
+      "cell": "a second DM before the first is read adds no second wake",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build",
+      "note": "One wake per unread batch, so a busy channel does not start a turn per message."
+    },
+    {
+      "name": "W2 a held cotal_wait is woken too",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "      if (c.agent.stopping || signalled.has(c.agent) || (holding.get(c.agent) ?? 0) > 0 || wakeCount(c.agent) === 0) return;",
+      "replace": "      if (c.agent.stopping || signalled.has(c.agent) || wakeCount(c.agent) === 0) return;",
+      "expectRed": "a DM that a held cotal_wait returns wakes nothing",
+      "cell": "a DM that a held cotal_wait returns wakes nothing",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build",
+      "note": "A message a held wait returns must not also start a second turn."
+    },
+    {
+      "name": "W3 cotal_inbox does not rearm the wake",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "        if (spec.name === \"cotal_inbox\") signalled.delete(c.agent);\n",
+      "replace": "",
+      "expectRed": "after the read, the next DM wakes the session again",
+      "cell": "after the read, the next DM wakes the session again",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build",
+      "note": "After a read, the next message wakes the session again."
+    },
+    {
+      "name": "W4 an unheard wake counts as heard",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "      if (wake.signal(c)) signalled.add(c.agent);",
+      "replace": "      wake.signal(c);\n      signalled.add(c.agent);",
+      "expectRed": "a monitor that starts after the message still gets its wake, as one fixed line",
+      "cell": "a monitor that starts after the message still gets its wake, as one fixed line",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build",
+      "note": "A wake sent before any monitor reads is not lost."
+    },
+    {
+      "name": "W5 the server never rewakes when a monitor attaches",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "            attach: (rewake) => feed.onReader(rewake),\n",
+      "replace": "",
+      "expectRed": "a monitor that starts after the message still gets its wake, as one fixed line",
+      "cell": "a monitor that starts after the message still gets its wake, as one fixed line",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build",
+      "note": "A monitor that starts late still hears what arrived before it."
+    },
+    {
+      "name": "W6 one shared socket per Claude Code process, as first written",
+      "file": "extensions/connector-claude-code/src/wake-feed.ts",
+      "find": "      if (server && !alive(Number(server))) rmSync(join(dir, name), { force: true });\n    }\n  }\n  const path = wakeSocketPath(claudePid);",
+      "replace": "      if (server && (!alive(Number(server)) || Number(server) === claudePid)) rmSync(join(dir, name), { force: true });\n    }\n  }\n  const path = wakeSocketPath(claudePid, claudePid);",
+      "expectRed": "a monitor that starts after the message still gets its wake, as one fixed line",
+      "cell": "a monitor that starts after the message still gets its wake, as one fixed line",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build",
+      "note": "The bug the smoke found: a second server under one Claude Code process removed the first one's socket."
+    },
+    {
+      "name": "W7 the monitor prints whatever the socket sends",
+      "file": "extensions/connector-claude-code/src/monitor.ts",
+      "find": "        if (WAKE_ID.test(id)) process.stdout.write(`${wakeEvent(id)}\\n`);",
+      "replace": "        if (id) process.stdout.write(`${id}\\n`);",
+      "expectRed": "a monitor turns only a connection id into an event, and drops any other text",
+      "cell": "a monitor turns only a connection id into an event, and drops any other text",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build",
+      "note": "No text from a socket reaches the model."
+    },
+    {
+      "name": "W8 the monitor runs in a launched session",
+      "file": "extensions/connector-claude-code/src/monitor.ts",
+      "find": "  if (hasIdentity()) return;\n",
+      "replace": "",
+      "expectRed": "in a session Cotal launched, the monitor exits at once and prints nothing",
+      "cell": "in a session Cotal launched, the monitor exits at once and prints nothing",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build",
+      "note": "A launched session has its own push."
+    },
+    {
+      "name": "W9 the monitor outlives its Claude Code process",
+      "file": "extensions/connector-claude-code/src/monitor.ts",
+      "find": "      process.exit(0);\n",
+      "replace": "",
+      "expectRed": "  and exits once its Claude Code process is gone",
+      "cell": "  and exits once its Claude Code process is gone",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build",
+      "note": "A monitor whose session is gone must not linger."
+    },
+    {
+      "name": "W10 cotal_connect always says no monitor runs",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "              feed.watched()\n                ? ",
+      "replace": "              false\n                ? ",
+      "expectRed": "a conversation that connects while the monitor reads is told it will be woken",
+      "cell": "a conversation that connects while the monitor reads is told it will be woken",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build",
+      "note": "cotal_connect tells the model whether it will be woken."
+    },
+    {
+      "name": "A1 cotal_disconnect does not retire",
+      "file": "extensions/connector-claude-code/src/app-host.ts",
+      "find": "    await h.conn.agent.stop();\n    await retire(h.dir);",
+      "replace": "    await h.conn.agent.stop();",
+      "expectRed": "  and retires its credential directory, leaving the other one",
+      "cell": "  and retires its credential directory, leaving the other one",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build",
+      "note": "A disconnected conversation's identity is retired."
+    },
+    {
+      "name": "A2 the end of stdin does not end the server",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "  process.stdin.on(\"end\", end);\n",
+      "replace": "",
+      "expectRed": "Desktop closing the server's stdin ends it cleanly",
+      "cell": "Desktop closing the server's stdin ends it cleanly",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build",
+      "note": "Desktop ends a server by closing its stdin."
+    },
+    {
+      "name": "A3 Desktop reads its working directory",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "    cwd: desktop ? parse(homedir()).root : process.cwd(),",
+      "replace": "    cwd: process.cwd(),",
+      "expectRed": "a Desktop conversation started in that project joins the one running mesh",
+      "cell": "a Desktop conversation started in that project joins the one running mesh",
+      "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code build",
+      "note": "Desktop's working directory is not the person's project."
+    },
+    {
+      "name": "A4 provision counts a down mesh as running",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "  return resolveTargetOrThrow(space ? { space } : {});",
+      "replace": "  return resolveTargetOrThrow(space ? { space } : { offline: [] });",
+      "expectRed": "a Desktop conversation started in that project joins the one running mesh",
+      "cell": "a Desktop conversation started in that project joins the one running mesh",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "note": "Reproduced: with one mesh up and another recorded but down, provision was refused as ambiguous."
+    }
+  ]
+}

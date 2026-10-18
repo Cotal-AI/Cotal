@@ -169,11 +169,11 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   `cotal-skills` plugin installs from that same marketplace at user scope (`claude plugin install
   cotal-skills@cotal-mesh --scope user`); its manifest and install behavior ship inside the Claude connector, and
   its version tracks the CLI release so updates land.
-- **Identity-gated.** Connector code requires `COTAL_NAME`, `COTAL_LINK` or `COTAL_AGENT_FILE`.
-  A plain `claude` with none of them never joins, so your own sessions in a repo do not appear
-  as stray peers. Its MCP server still answers `initialize` and lists one static tool,
-  `cotal_how_to_join`, which explains how to launch a session on a mesh. It builds no mesh
-  agent, opens no broker connection and binds no control socket.
+- **Identity-gated.** A launched session joins under the identity in `COTAL_NAME`, `COTAL_LINK`
+  or `COTAL_AGENT_FILE`. A plain `claude` with none of them joins only when its conversation calls
+  `cotal_connect`, so your own sessions in a repo do not appear as stray peers. Until then its MCP
+  server builds no mesh agent and opens no broker connection. See
+  [Sessions Cotal did not launch](#sessions-cotal-did-not-launch).
 - **Hands-free.** The dev-channels flag prints a one-time confirm prompt. The runtime waits for the
   dialog title in normalized terminal text and presses Enter once when it appears, so startup speed
   does not affect a supervised launch. Claude skips that prompt when channels are off for the
@@ -212,6 +212,35 @@ before the broker connection and never removes an existing socket path.
 This is cooperative same-host containment. Other hosts, broker URL aliases and older clients
 are not fenced. Preserve the existing session before choosing a distinct actor for a new
 launch. An uncertain shutdown keeps custody until the consuming process exits.
+
+## Sessions Cotal did not launch
+
+A Claude Code session you start yourself, where the `cotal` plugin is installed, gets the tools the
+hosted connector offers: `cotal_connect`, `cotal_wait`, `cotal_disconnect` and the routed mesh tools.
+Nothing joins until the conversation calls `cotal_connect` with a name. The plugin's server then runs
+`cotal app-identity provision` with the CLI that `cotal setup` recorded beside the plugin
+(`dist/cli.json`), so it does not need `cotal` on `PATH`. Each conversation gets an identity of its
+own on the mesh a bare `cotal spawn` from the session's directory would pick. A name that a live peer
+holds moves to `<name>_2`, `<name>_3` and so on. The identity's channels and role come from the mesh's
+default persona. `cotal_disconnect`, the end of the session or a signal retires it, and the next
+provision retires one whose server was killed. A plugin that `cotal setup` did not install has no
+record, and `cotal_connect` names that remedy.
+
+A message for a connected conversation starts a turn. The plugin declares a
+[monitor](https://code.claude.com/docs/en/plugins/components#monitors), which Claude Code runs for
+the whole of an interactive session. Each local server writes the connection id of each wake to a
+socket of its own, in a directory only your user can enter, and the monitor turns each id into the
+event `Cotal: a new message for connection_id <id>. Read it with cotal_inbox.`. No other text from a
+socket reaches the model. A wake follows the rule `cotal_wait` follows. It comes once until the
+conversation reads its messages, and not at all while a `cotal_wait` holds the connection. A wake
+that no monitor heard is sent again when one starts reading. `cotal_connect` says whether the monitor
+runs in the session. Where it does not, as in a `claude -p` run, the conversation listens with
+`cotal_wait`.
+
+Claude Desktop runs the same server with `--desktop`. Its working directory is not your project, so
+its mesh is the `cotal use` mesh, else the only one running. Desktop runs no plugin monitor, so a
+Desktop conversation hears messages when it calls a tool, and keeps calling `cotal_wait` when you
+ask it to keep listening.
 
 ## How messages reach the session
 
@@ -683,7 +712,8 @@ also give it a hosted Cotal connector, which would join the same session a secon
 another name. The plugin's `PreToolUse` hook refuses every `cotal_*` tool of any server other than
 the local one in a session Cotal launched, with the reason in the refusal. It decides in the hook
 process, so the refusal holds when the control socket is down. A Claude Code session that Cotal did
-not launch has no local path and keeps the hosted connector.
+not launch keeps the hosted connector. Where the plugin is installed, its local server's
+instructions tell the model to use the local path unless you ask for the hosted one.
 
 In such a session the plugin also keeps each hosted connection with the session that opened it. A
 `PostToolUse` hook on the hosted `cotal_connect` records the returned `connection_id` under the
