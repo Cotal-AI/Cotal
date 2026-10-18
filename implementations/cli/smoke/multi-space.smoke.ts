@@ -227,6 +227,14 @@ try {
   writeFileSync(join(home, "meshes", "legacyname.json"), JSON.stringify(meshEntry("legacyname")));
   removeMesh("legacyname");
   check("removeMesh removes canonical AND pre-hex forms (no resurrection)", !loadMeshes().some((m) => m.space === "legacyname"));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    writeFileSync(join(home, "meshes", "legacyname.json"), JSON.stringify(meshEntry("legacyname")));
+    chmodSync(join(home, "meshes"), 0o311); // traversable for the unlink, not listable for the sweep
+    const sweepMsg = await refusal(() => removeMesh("legacyname"));
+    chmodSync(join(home, "meshes"), 0o700);
+    check("removeMesh THROWS when the pre-hex sweep cannot list the registry", sweepMsg.includes("EACCES"), sweepMsg);
+    removeMesh("legacyname");
+  }
   for (const s of ["gamma", "Gamma"]) removeMesh(s);
 
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
