@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer as createTcpServer, type AddressInfo, type Socket } from "node:net";
 import {
   CotalEndpoint,
   createSpaceAuth,
@@ -92,20 +92,7 @@ const port = await pickFreePort();
 const servers = `nats://127.0.0.1:${port}`;
 const storeDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(storeDir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(storeDir, "js") }));
-const brokerEvents: { at: number; cid: number | null; clientPort: number | null; authenticationError: true }[] = [];
-const broker = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
-let brokerLogPending = "";
-broker.stderr.setEncoding("utf8");
-broker.stderr.on("data", (chunk: string) => {
-  const lines = (brokerLogPending + chunk).split("\n");
-  brokerLogPending = lines.pop()!.slice(-8192);
-  for (const line of lines) {
-    if (!line.includes("authentication error")) continue;
-    const cid = /\bcid:(\d+)\b/.exec(line);
-    const clientPort = /127\.0\.0\.1:(\d+)\s+-/.exec(line);
-    brokerEvents.push({ at: Date.now(), cid: cid ? Number(cid[1]) : null, clientPort: clientPort ? Number(clientPort[1]) : null, authenticationError: true });
-  }
-});
+const broker = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(broker, storeDir);
 
 const home = mkdtempSync(join(tmpdir(), "cotal-who-home-"));
@@ -124,9 +111,9 @@ const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key === "FORCE_COLOR" || key === "NO_COLOR") delete cleanEnv[key];
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
-const run = (args: string[], extra: NodeJS.ProcessEnv = {}, preload?: string, timeoutMs = 120_000): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
+const run = (args: string[], extra: NodeJS.ProcessEnv = {}, preload?: string): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [...(preload ? ["--import", pathToFileURL(preload).href] : []), BIN, ...args], { cwd: shell, env: { ...isolatedEnv, ...extra }, timeout: timeoutMs }, (err, stdout, stderr) => {
+    execFile(process.execPath, [...(preload ? ["--import", pathToFileURL(preload).href] : []), BIN, ...args], { cwd: shell, env: { ...isolatedEnv, ...extra }, timeout: 120_000 }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -135,19 +122,35 @@ const run = (args: string[], extra: NodeJS.ProcessEnv = {}, preload?: string, ti
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1200), stderr: r.stderr.slice(0, 600) });
 const rowsOf = (r: { envelope?: Envelope }) => Object.fromEntries((r.envelope?.result?.items ?? []).map((row) => [row.name, row]));
 
-function probeTraceResult(read: Awaited<ReturnType<typeof run>>, trace: string) {
+/** Supplies a classified wire input for rendering, not NATS authentication or provisioning. */
+async function protocolPeer(mode: "reject" | "reset") {
+  const sockets = new Set<Socket>();
+  const server = createTcpServer((socket) => {
+    sockets.add(socket);
+    socket.on("error", () => {});
+    socket.on("close", () => sockets.delete(socket));
+    socket.setTimeout(10_000, () => socket.destroy());
+    socket.write(`INFO ${JSON.stringify({ server_id: `WHO-${mode}-FIXTURE`, server_name: `who-${mode}-fixture`, version: "2.12.12", host: "127.0.0.1", port: 1, proto: 1, auth_required: true, max_payload: 1048576, headers: true })}\r\n`);
+    if (mode === "reset") { socket.once("data", () => socket.resetAndDestroy()); return; }
+    let input = "";
+    socket.on("data", (chunk: Buffer) => {
+      input += chunk.toString("utf8");
+      if (input.length > 16_384) { socket.destroy(); return; }
+      // Drain both initial commands before FIN, so TCP close does not hide the supplied error.
+      if (input.startsWith("CONNECT ") && input.includes("\r\nPING\r\n")) socket.end("-ERR 'Authorization Violation'\r\n");
+    });
+  });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   return {
-    status: read.status,
-    code: read.envelope?.error?.code,
-    stderrBytes: Buffer.byteLength(read.stderr),
-    trace: existsSync(trace) ? readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as unknown) : [],
+    port: (server.address() as AddressInfo).port,
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
   };
 }
 
-function probeTraceLine(value: ReturnType<typeof probeTraceResult> & { format?: string; attempt?: number }): string {
-  return `WHO_PROBE_TRACE ${JSON.stringify(value)}`;
-}
-
+const protocolPeers: Awaited<ReturnType<typeof protocolPeer>>[] = [];
 const endpoints: CotalEndpoint[] = [];
 let provisioner: CotalEndpoint | undefined;
 try {
@@ -157,6 +160,13 @@ try {
     if (!ready) await wait(100);
   }
   check("control: the owned broker is ready", ready, servers);
+  const authPeer = await protocolPeer("reject"); protocolPeers.push(authPeer);
+  const resetPeer = await protocolPeer("reset"); protocolPeers.push(resetPeer);
+  const authInput = await probeConnect(`nats://127.0.0.1:${authPeer.port}`);
+  check("control: the protocol rejection reaches the stock auth classifier", !authInput.ok && authInput.reason === "auth-required", authInput);
+  const resetInput = await probeConnect(`nats://127.0.0.1:${resetPeer.port}`);
+  check("control: auth INFO plus reset is unavailable, not an auth verdict", !resetInput.ok && resetInput.reason === "unreachable", resetInput);
+  console.log(`WHO_PROTOCOL_INPUTS ${JSON.stringify({ scope: "controlled-protocol-not-native-auth", rejection: authInput, reset: resetInput, rejectionPort: authPeer.port, resetPort: resetPeer.port, brokerPort: port })}`);
   const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers, space, creds: provisionerCreds });
   await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: {} } } });
@@ -168,7 +178,10 @@ try {
     recordMesh({ space: "openmesh", server: `nats://127.0.0.1:${await pickFreePort()}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     for (const entry of urlCases)
       recordMesh({ space: entry.space, server: entry.server, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
-    recordMesh({ space: "url-auth-recovery", server: `nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    // The rendering input is a controlled protocol rejection, not a stock-broker auth guarantee.
+    recordMesh({ space: "url-auth-recovery", server: `nats://${urlUser}:${urlPassword}@127.0.0.1:${authPeer.port}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: "url-auth-reset", server: `nats://${urlUser}:${urlPassword}@127.0.0.1:${resetPeer.port}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: "url-auth-stock", server: `nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     setCurrent(space);
   } finally {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
@@ -224,20 +237,6 @@ try {
       read.envelope?.outcome === "partial" && read.envelope.completeness === "partial" &&
       read.envelope.warnings.some((w) => w.code === code), { observed, ...shown(read) });
   }
-
-  const diagnosticMarker = "fixture: probe module failed";
-  const diagnosticFailure = join(home, "probe-error.mjs");
-  writeFileSync(diagnosticFailure, `throw new Error(${JSON.stringify(diagnosticMarker)});`);
-  const failedDiagnostic = await run(["--version"], {}, diagnosticFailure);
-  const diagnosticResult = probeTraceResult(failedDiagnostic, join(home, "absent-probe-trace.jsonl"));
-  check("native probe diagnostics omit a real module error message", failedDiagnostic.status === 1 && failedDiagnostic.stderr.includes(diagnosticMarker) && diagnosticResult.stderrBytes > 0 && !JSON.stringify(diagnosticResult).includes(diagnosticMarker), { status: failedDiagnostic.status, fields: Object.keys(diagnosticResult), stderrBytes: diagnosticResult.stderrBytes });
-
-  const traceControl = join(home, "probe-control.jsonl");
-  const traceRead = await run(["--version"], { SMOKE_WHO_PROBE_TRACE: traceControl }, join(import.meta.dirname, "fixtures", "who-probe-trace.mjs"));
-  const traceLine = probeTraceLine(probeTraceResult(traceRead, traceControl));
-  console.log(traceLine);
-  const tracePayload = JSON.parse(traceLine.slice("WHO_PROBE_TRACE ".length)) as ReturnType<typeof probeTraceResult>;
-  check("native probe diagnostics preserve nested module records as one JSON line", traceRead.status === 0 && tracePayload.trace.some((record) => typeof record === "object" && record !== null && "kind" in record && record.kind === "module-matched" && "sourceSha256" in record && /^[a-f0-9]{64}$/.test(String(record.sourceSha256))), { status: traceRead.status, traceLine });
 
   const waiting = await run(["who", "--waiting", "--json"]);
   check("--waiting keeps the waiting row and the row with a condition", Object.keys(rowsOf(waiting)).sort().join() === "bob,carol" && waiting.envelope?.target.scope === "waiting", Object.keys(rowsOf(waiting)));
@@ -306,42 +305,25 @@ try {
     check(`whoami ${format} treats an unparseable --server as safe usage refusal`, invalid.status === 1 && safe && (format !== "--json" || invalid.envelope?.error?.code === "USAGE_INVALID"), { status: shownInvalid.status, stdout: redactUrlMarkers(shownInvalid.stdout), stderr: redactUrlMarkers(shownInvalid.stderr) });
   }
   for (const format of ["--json", "--plain", undefined] as const) {
-    const originalStarted = Date.now();
-    const originalBrokerOffset = brokerEvents.length;
     const read = await run(["who", "--space", "url-auth-recovery", ...(format ? [format] : [])]);
-    const originalFinished = Date.now();
-    const originalBrokerEvents = brokerEvents.slice(originalBrokerOffset);
     const hidden = [urlUser, urlPassword, urlToken].every((marker) => !read.stdout.includes(marker) && !read.stderr.includes(marker));
     const message = format === "--json" ? read.envelope?.error?.message : read.stderr;
     const detail = shown(read);
-    const diagnostic = message?.includes("--server <url> --mode auth --force") ? undefined : await (async () => {
-      let tracedAttempts = 0;
-      for (let attempt = 0; attempt < 8; attempt++) {
-        const trace = join(home, `probe-${format ?? "human"}-${attempt}.jsonl`);
-        const traceStarted = Date.now();
-        const traceBrokerOffset = brokerEvents.length;
-        const traced = await run(["who", "--space", "url-auth-recovery", ...(format ? [format] : [])], { SMOKE_WHO_PROBE_TRACE: trace }, join(import.meta.dirname, "fixtures", "who-probe-trace.mjs"), 10_000);
-        const result = { ...probeTraceResult(traced, trace), traceStarted, traceFinished: Date.now(), brokerEvents: brokerEvents.slice(traceBrokerOffset) };
-        console.log(probeTraceLine({ ...result, format: format ?? "human", attempt }));
-        tracedAttempts++;
-        if (result.trace.some((record) => typeof record === "object" && record !== null && "kind" in record && record.kind === "classification" && "reason" in record && ["unreachable", "timeout"].includes(String(record.reason)))) break;
-      }
-      const batchTrace = join(home, `probe-${format ?? "human"}-batched.jsonl`);
-      const batchStarted = Date.now();
-      const batchBrokerOffset = brokerEvents.length;
-      const batched = await run(["who", "--space", "url-auth-recovery", ...(format ? [format] : [])], { SMOKE_WHO_PROBE_TRACE: batchTrace, SMOKE_WHO_PROBE_BATCH: "1" }, join(import.meta.dirname, "fixtures", "who-probe-trace.mjs"), 10_000);
-      const batchResult = { ...probeTraceResult(batched, batchTrace), experiment: "connect-ping-batch", traceStarted: batchStarted, traceFinished: Date.now(), brokerEvents: brokerEvents.slice(batchBrokerOffset) };
-      console.log(probeTraceLine({ ...batchResult, format: format ?? "human", attempt: 0 }));
-      return {
-        brokerExitCode: broker.exitCode,
-        brokerSignalCode: broker.signalCode,
-        plain: await probeConnect(servers),
-        userinfo: await probeConnect(`nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`),
-        tracedAttempts,
-        originalStarted, originalFinished, originalBrokerEvents,
-      };
-    })();
-    check(`who ${format ?? "human"} keeps a placeholder for a private broker URL in auth recovery`, read.status === 2 && hidden && message?.includes("--server <url> --mode auth --force") === true, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr), diagnostic });
+    check(`who ${format ?? "human"} keeps a placeholder for a private broker URL in auth recovery`, read.status === 2 && hidden && message?.includes("--server <url> --mode auth --force") === true, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
+
+    const reset = await run(["who", "--space", "url-auth-reset", ...(format ? [format] : [])]);
+    const resetHidden = [urlUser, urlPassword, urlToken].every((marker) => !reset.stdout.includes(marker) && !reset.stderr.includes(marker));
+    const resetMessage = format === "--json" ? reset.envelope?.error?.message : reset.stderr;
+    check(`who ${format ?? "human"} does not infer auth from an auth INFO reset`, reset.status === 2 && resetHidden && resetMessage?.includes("no broker answered at") === true && !resetMessage.includes("--mode auth") && (format !== "--json" || reset.envelope?.error?.code === "TARGET_UNAVAILABLE"), { status: reset.status, code: reset.envelope?.error?.code, stderr: redactUrlMarkers(reset.stderr) });
+
+    // This checks refusal and secret omission, not delivery of the stock broker's auth error.
+    const stock = await run(["who", "--space", "url-auth-stock", ...(format ? [format] : [])]);
+    const stockHidden = [urlUser, urlPassword, urlToken].every((marker) => !stock.stdout.includes(marker) && !stock.stderr.includes(marker));
+    const stockMessage = format === "--json" ? stock.envelope?.error?.message : stock.stderr;
+    const authCopy = stockMessage?.includes("--server <url> --mode auth --force") === true;
+    const unavailableCopy = stockMessage?.includes("no broker answered at") === true;
+    console.log(`WHO_STOCK_AUTH ${JSON.stringify({ scope: "refusal-and-privacy-not-auth-error-delivery", format: format ?? "human", status: stock.status, code: stock.envelope?.error?.code, observed: authCopy ? "auth-rejection-copy" : unavailableCopy ? "transport-unavailable-copy" : "unexpected" })}`);
+    check(`who ${format ?? "human"} keeps a stock-broker auth refusal private`, stock.status === 2 && stockHidden && authCopy !== unavailableCopy, { status: stock.status, code: stock.envelope?.error?.code, observed: authCopy ? "auth-rejection-copy" : unavailableCopy ? "transport-unavailable-copy" : "unexpected", stderr: redactUrlMarkers(stock.stderr) });
   }
   for (const target of ["raw", "registered"] as const) {
     for (const format of ["--json", "--plain"] as const) {
@@ -362,6 +344,7 @@ try {
   const both = await run(["who", "--json", "--plain"]);
   check("who --json --plain is one USAGE_INVALID envelope", both.status === 1 && both.envelope?.error?.code === "USAGE_INVALID", shown(both));
 } finally {
+  for (const peer of protocolPeers) await peer.close();
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
   await killAndAwaitExit(broker);

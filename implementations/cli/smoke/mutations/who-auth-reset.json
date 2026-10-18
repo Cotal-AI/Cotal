@@ -1,0 +1,23 @@
+{
+  "suite": [
+    "implementations/cli/smoke/who-roster.smoke.ts"
+  ],
+  "guard": "an auth INFO advertisement and TCP reset must not become an authentication verdict or auth recovery instruction",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/cli/smoke/who-roster.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/who-auth-reset.json",
+  "mutations": [
+    {
+      "name": "a connection reset is misclassified as an auth rejection",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "  if (e instanceof AuthorizationError) return { ok: false, reason: \"auth-required\" };",
+      "replace": "  if (e instanceof AuthorizationError || (e instanceof Error && (e as Error & { code?: string }).code === \"ECONNRESET\")) return { ok: false, reason: \"auth-required\" };",
+      "cell": "who --json does not infer auth from an auth INFO reset",
+      "expectRed": "who --json does not infer auth from an auth INFO reset",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ],
+  "why": [
+    "The actual CLI dials an owned TCP peer that advertises auth and resets after client data without sending an auth rejection. Roster/provisioning/grant cases still use the actual owned nats-server. Controlled auth-copy checks are protocol input tests, not proof that stock Windows receives a broker rejection."
+  ]
+}

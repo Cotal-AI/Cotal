@@ -1380,6 +1380,10 @@ A part `who` could not read makes the run `partial` (exit 4): a roster snapshot 
 `ps` names). A credential that may not read the roster is refused with `PERMISSION_DENIED` (exit 2),
 never shown an empty roster.
 
+A connection reset does not establish the broker's authentication state. `who` reports
+`TARGET_UNAVAILABLE` when its probe cannot finish. An auth recovery remedy requires a received auth
+rejection; the INFO greeting alone is not an auth verdict.
+
 ## whoami
 
 ```bash
