@@ -355,23 +355,49 @@ binding check, the callout-shaped user-mode connect over `wsconnect`, the issued
 | Pins | The bearer must name the configured space, principal, lifecycle and instance, or the open refuses before any connect. A describe answered by another instance refuses. |
 | Reconnect | None. `reopen()` closes the connection and calls `acquire()` again under the same pins, so a refresh cannot switch account, principal, lifecycle or Manager. |
 | Repeats | A refusal before effect re-resolves and invokes once more, as the stock connector does. Nothing else repeats. |
-| Goals | `submitGoal()` needs the caller's own envelope `id` and refuses up front when the Manager serves no `goal-result`. An accepted or unknown goal is never resubmitted; `reconcileGoal()` reads it back through `goal-result`. |
+| Goals | `submitGoal()` and `followGoal()` need the caller's own envelope `id` and refuse up front when the Manager serves no `goal-result`. An accepted or unknown goal is never resubmitted; `reconcileGoal()` reads it back through `goal-result`. |
+| Follow | `followGoal()` is the stock goal follow, the code the root's `submitAndFollowGoal` runs: it subscribes to the caller's own progress subject before the one submission and reconciles through `goal-result`. `verifyGoalResultFact` runs the root's fact checks with the outcome digest computed through Web Crypto. A stop, timeout or lost connection reports `not-executed` before the submission and `unknown` after it. |
 | Contracts | Only packaged digests. Any other cluster or closure refuses with `unsupported-version`. |
 
-Browser memory is not durable. Before `submitGoal()`, persist the envelope `id` with the instance
-id in storage your application controls. After a reload, reopen the caller for that same instance
-and call `reconcileGoal()`. A manual resubmission must reuse the persisted `id`, and outside the
-idempotency horizon even that is a new submission.
+Browser memory is not durable, and a follow lives only as long as its page. Before `submitGoal()`
+or `followGoal()`, persist the envelope `id` with the instance id in storage your application
+controls. The Manager binds the goal under that id, so it is also the `goalId`. After a reload,
+reopen the caller for that same instance and call `reconcileGoal(id)`. Nothing resumes the live
+follow: a recorded terminal is the only outcome a reload can see, and no record means the outcome
+is still unknown, not that the goal was never accepted. A manual resubmission must reuse the
+persisted `id`, and outside the idempotency horizon even that is a new submission.
 
 The stock exchange serves no browser-origin request. An embedding obtains the person's own
 `manager-caller` view through its own identity bridge, from that person's current proof and with
 the Manager instance named explicitly. It never uses a service or administrator credential, and it
 never forwards Manager commands for the page.
 
-The Manager surface has no command that lists the instances a person may call, and the issuer's
-`manager-caller` exchange selects or refuses one instance without listing the others. The caller
-therefore starts from an instance the embedding already knows to be authorized. An authorized list
-needs a separate issuer-served, read-only catalog of that person's Manager instances.
+The Manager surface has no command that lists the instances a person may call. The auth service
+lists them instead: `POST /manager-instances` with `{ idpToken }` verifies the same IdP proof the
+human exchange verifies, derives the owner from `[issuer, sub]` the same way, and answers that
+owner's Manager gates in the space the service serves.
+
+```json
+{ "v": 1, "owner": "u_...", "observedAt": 1760000000000, "complete": true,
+  "instances": [{ "instanceId": "...", "placement": "remote", "state": "candidate" }] }
+```
+
+| Field | What it proves |
+| --- | --- |
+| `state` | The verdict instance selection reads: `candidate` (registered, open and this owner's), `not open`, `not registered`, `not this owner's` or `unknown` (the record could not be read). Selection without a named instance is built on the same list, so the two cannot disagree. |
+| `observedAt`, `complete` | When the gates were read, and that every gate of the owner was read. A failed read answers 503, never an empty list. An empty list is a complete read that found none. |
+| Liveness | Not proven. A record is registration evidence. Only a describe pinned to the instance proves that it answers, and with which epoch. |
+
+The route serves no browser origin and no other person's instances. It lists nothing beyond what
+the gates record: hostname, working directory, runtime and capabilities are not part of a record,
+and an embedding that shows them reads them from a pinned describe as observations.
+
+An embedding that serves a page composes both routes through its own identity bridge, from the
+person's current proof and current session: the bridge forwards the person's own `idpToken` to
+`/manager-instances` and to the `manager-caller` exchange with the instance the person picked, from
+its server and without a browser `Origin`. It forwards nothing else. It never uses a service or
+administrator credential, never stores the issued view beyond the page's connection, and never
+proxies Manager commands for the page.
 
 ### Long-lived endpoints take a bearer function
 
