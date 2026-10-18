@@ -5,11 +5,12 @@
     "packages/workspace/smoke/manager-shutdown.smoke.ts"
   ],
   "guard": "both cotal down policy branches signal a live pre-pin manager after the documented legacy warning, bare down never reports a historical destructive handler's reaped agent as spared, and a pinned manager without spare-capability evidence receives only a working route without being signalled",
-  "command": "pnpm build > /dev/null && pnpm smoke:down-target && pnpm exec tsx packages/workspace/smoke/manager-shutdown.smoke.ts",
+  "command": "pnpm --filter @cotal-ai/cli... build > /dev/null && pnpm smoke:down-target && pnpm exec tsx packages/workspace/smoke/manager-shutdown.smoke.ts",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-legacy-manager.json",
   "why": [
     "A manager launched before identity pins existed, or on a platform whose injected start-token reader returns undefined, has no token for the full identity-pinned handoff. The documented upgrade contract still signals that live record after warning. Bare down cannot verify which SIGTERM handler the running binary carries, so it prints only uncertainty and never reports the pre-signal inventory as confirmed spared; --with-agents publishes the reduced-guarantee pid-and-reservation-inode handoff so an intent-aware manager selects destructive teardown.",
-    "The mutations restore each tokenless refusal that shipped at the blocked head plus its false affirmative spare report. The smoke plants real unpinned manager records and drives both real down policy branches. Its historical handler actually kills a real child on SIGTERM and the named cell rejects every confirmed-spared rendering. The new mutations restore the misleading missing-capability text and bypass its pre-signal assertion; named workspace and public-command cells reject both. The same public suite observes pinned mismatch refusal, while bin/smoke/mutations/pid-identity.json remains its dedicated mechanical guard."
+    "The mutations restore each tokenless refusal that shipped at the blocked head plus its false affirmative spare report. The smoke plants real unpinned manager records and drives both real down policy branches. Its historical handler actually kills a real child on SIGTERM and the named cell rejects every confirmed-spared rendering. The new mutations restore the misleading missing-capability text and bypass its pre-signal assertion; named workspace and public-command cells reject both. The same public suite observes pinned mismatch refusal, while bin/smoke/mutations/pid-identity.json remains its dedicated mechanical guard.",
+    "Every build is scoped to the @cotal-ai/cli dependency closure (core, lang, workspace, auth, cli). Both suites import cli and workspace source directly and reach only the core and workspace dists by name; they spawn no repo binary, so building the rest of the repo changes nothing they load."
   ],
   "mutations": [
     {
@@ -20,7 +21,7 @@
       "expectRed": "a legacy unpinned manager reaches SIGTERM on bare down and its pidfile is removed",
       "cell": "a legacy unpinned manager reaches SIGTERM on bare down and its pidfile is removed",
       "note": "Restores the blocked-head behavior exactly: both live legacy records stop before SIGTERM, remain alive, and keep their pidfiles. The suite executes bare and --with-agents first, then the named bare cell is the first red.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
     },
     {
       "name": "M2 restore the tokenless destructive-intent refusal",
@@ -30,7 +31,7 @@
       "expectRed": "a legacy unpinned manager reaches SIGTERM on --with-agents and its pidfile is removed",
       "cell": "a legacy unpinned manager reaches SIGTERM on --with-agents and its pidfile is removed",
       "note": "Restores the stale helper throw. The public --with-agents branch still calls the helper, so the live legacy manager is not signalled and its pidfile remains, reddening the destructive-path cell.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
     },
     {
       "name": "M3 report a tokenless manager's pre-signal inventory as confirmed spared",
@@ -40,7 +41,7 @@
       "expectRed": "bare down never reports a historical destructive manager's reaped agent as spared",
       "cell": "bare down never reports a historical destructive manager's reaped agent as spared",
       "note": "Restores the false affirmative output from the blocked head. The fixture's historical SIGTERM handler actually kills its agent, so rendering even an empty confirmed-spared inventory is a named red rather than a prose-only check.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
     },
     {
       "name": "M4 restore the dead routes in the missing-capability refusal",
@@ -51,7 +52,7 @@
       "expectRed": "a missing capability names the one legacy-safe stop route and none of the dead routes",
       "cell": "a missing capability names the one legacy-safe stop route and none of the dead routes",
       "note": "Restores the exact old refusal. The named workspace cell requires the combined explicit-agent-stop plus whole-stack route and rejects both ambiguous old remedies.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
     },
     {
       "name": "M5 signal a pinned manager without spare-capability evidence",
@@ -61,7 +62,7 @@
       "expectRed": "a pinned manager without a capability prints the legacy-safe route and is not signalled",
       "cell": "a pinned manager without a capability prints the legacy-safe route and is not signalled",
       "note": "Bypasses the fail-closed assertion on the shipped down path. The planted pinned manager then receives SIGTERM and loses its pidfile, so the named integration cell goes red.",
-      "afterRestore": "pnpm build > /dev/null"
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
     }
   ]
 }

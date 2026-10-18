@@ -22,12 +22,19 @@
  *  7. DEPROVISION — the delete half of the pair: `deprovisionSecrets` removes exactly the four
  *     canonical keys, attempts every key even when one fails (then throws naming the failures),
  *     and absent keys are idempotent no-ops.
+ *  8. IDP PIN — the first pin is stored normalized, the same IdP is accepted again and a different
+ *     one refused; two PROCESSES that both read no pin and then race the first pin leave one
+ *     winner, and the loser adopts it (same IdP) or is refused (different IdP). A name that
+ *     exists but holds no readable pin (a dangling link) is refused, never retried.
  *
  * Run: pnpm smoke:auth-store
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import fs, { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ParsedArgs, SecretStore } from "@cotal-ai/core";
 import { userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import {
@@ -37,8 +44,10 @@ import {
   authServiceKeysKey,
   ensureIssuer,
   ensureOwnerSecret,
+  ensurePinnedIdp,
   loadIssuer,
   loadOwnerSecret,
+  loadPinnedIdp,
   loadServiceKeys,
   saveServiceKeys,
 } from "../src/store.js";
@@ -59,6 +68,32 @@ const rejects = async (name: string, fn: () => Promise<unknown>, msgPart: string
     check(name, (e as Error).message.includes(msgPart), (e as Error).message);
   }
 };
+
+// Section 8's race worker: this file re-run as one of two processes pinning a first IdP in one
+// dir. It holds right after reading no pin until the parent releases both, so each has seen the dir
+// unpinned before either writes.
+const raceWorker = process.env.COTAL_AUTHSTORE_IDP_RACE;
+if (raceWorker) {
+  const { dir, url, ready, go } = JSON.parse(raceWorker) as { dir: string; url: string; ready: string; go: string };
+  const realExists = fs.existsSync;
+  fs.existsSync = ((p: fs.PathLike) => {
+    const found = realExists(p);
+    if (!found && String(p) === join(dir, "idp.json") && !realExists(ready)) {
+      writeFileSync(ready, "");
+      while (!realExists(go)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+    return found;
+  }) as typeof fs.existsSync;
+  syncBuiltinESMExports();
+  let out: { ok: true; url: string } | { ok: false; message: string };
+  try {
+    out = { ok: true, url: ensurePinnedIdp(dir, url).url };
+  } catch (e) {
+    out = { ok: false, message: (e as Error).message };
+  }
+  process.stdout.write(JSON.stringify(out));
+  process.exit(0);
+}
 
 const root = mkdtempSync(join(tmpdir(), "cotal-authstore-"));
 const startCwd = process.cwd();
@@ -243,6 +278,57 @@ try {
     !existsSync(join(userAuthStateDir(root, SPACE), "owner-secret.json")) &&
     !existsSync(join(userAuthStateDir(root, SPACE), "issuer.json")) &&
     !existsSync(join(userAuthStateDir(root, SPACE), "service-keys.json")));
+
+  // ---------- 8. the IdP pin ----------
+  console.log("8) the IdP pin is normalized, frozen, and a first-pin race leaves one winner");
+  const IDP_A = "https://a.example/api/auth", IDP_B = "https://b.example/api/auth";
+  const seqDir = join(root, "idp-seq");
+  check("a first pin is stored normalized", ensurePinnedIdp(seqDir, `${IDP_A}//`).url === IDP_A && loadPinnedIdp(seqDir)?.url === IDP_A);
+  check("the same IdP again returns the pin", ensurePinnedIdp(seqDir, IDP_A).url === IDP_A);
+  await rejects("a different IdP is refused", async () => ensurePinnedIdp(seqDir, IDP_B),
+    `this space's IdP is pinned to ${IDP_A}; --idp ${IDP_B} would re-key every derived owner.`);
+  if (process.platform !== "win32") {
+    const danglingDir = join(root, "idp-dangling");
+    mkdirSync(danglingDir);
+    symlinkSync(join(danglingDir, "absent.json"), join(danglingDir, "idp.json"));
+    await rejects("a dangling idp.json link is refused by name, not retried", async () => ensurePinnedIdp(danglingDir, IDP_A),
+      `idp-pin-create-lost: ${join(danglingDir, "idp.json")} exists but holds no readable IdP pin`);
+    check("…and the link is left in place", lstatSync(join(danglingDir, "idp.json")).isSymbolicLink());
+  }
+  const tsx = join(fileURLToPath(new URL("../../../", import.meta.url)), "node_modules", ".bin", "tsx");
+  const race = async (name: string, urls: [string, string]) => {
+    const dir = join(root, `idp-race-${name}`);
+    const go = join(root, `idp-race-${name}.go`);
+    mkdirSync(dir);
+    const readies = urls.map((_, i) => join(root, `idp-race-${name}.ready-${i}`));
+    const runs = urls.map((url, i) => new Promise<{ ok: boolean; url?: string; message?: string }>((resolve, reject) => {
+      const child = spawn(tsx, [fileURLToPath(import.meta.url)], {
+        env: { ...process.env, COTAL_AUTHSTORE_IDP_RACE: JSON.stringify({ dir, url, ready: readies[i], go }) },
+        stdio: ["ignore", "pipe", "inherit"],
+      });
+      let out = "";
+      child.stdout.on("data", (c: Buffer) => { out += c; });
+      child.on("error", reject);
+      child.on("exit", (code) => (code === 0 ? resolve(JSON.parse(out)) : reject(new Error(`race worker exit ${code}`))));
+    }));
+    const deadline = Date.now() + 30_000;
+    while (!readies.every((r) => existsSync(r))) {
+      if (Date.now() > deadline) throw new Error(`idp race ${name}: workers never read the absent pin`);
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const unpinned = !existsSync(join(dir, "idp.json"));
+    writeFileSync(go, "");
+    return { unpinned, results: await Promise.all(runs), file: loadPinnedIdp(dir)?.url };
+  };
+  const diff = await race("different", [IDP_A, IDP_B]);
+  const won = diff.results.filter((r) => r.ok);
+  const lost = diff.results.find((r) => !r.ok);
+  check("racing first pins for different IdPs: one wins, the file names it, the other is refused",
+    diff.unpinned && won.length === 1 && won[0]!.url === diff.file &&
+      lost?.message?.startsWith(`this space's IdP is pinned to ${diff.file}; --idp `) === true, diff);
+  const same = await race("same", [IDP_A, `${IDP_A}/`]);
+  check("racing first pins for the same IdP: both return the one normalized pin",
+    same.unpinned && same.results.every((r) => r.ok && r.url === IDP_A) && same.file === IDP_A, same);
 } finally {
   process.chdir(startCwd); // chdir OUT before cleanup (win32 EBUSY on rmdir-of-cwd)
   rmSync(root, { recursive: true, force: true });

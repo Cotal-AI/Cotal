@@ -937,7 +937,8 @@ function consumeCreateRow(stream: string, cfg: Partial<ConsumerConfig>): string 
   // is what stops a body-selected filter.
   return `${JSAPI}.CONSUMER.CREATE.${assertGrantName(stream, "grant stream")}.${assertGrantName(cfg.durable_name, "grant durable")}.${assertGrantFilter(cfg.filter_subject, "consume-create")}`;
 }
-function consumeBindRows(stream: string, durable: string): string[] {
+/** The bind-only rows for one pre-created durable: info, fetch and ACK, never create or delete. */
+export function consumeBindRows(stream: string, durable: string): string[] {
   assertGrantName(stream, "grant stream");
   assertGrantName(durable, "grant durable");
   return [

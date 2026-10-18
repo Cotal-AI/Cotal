@@ -5,7 +5,7 @@
  * enforces the token-specific invariants (derived owner, `act.scope` as the single capability authority)
  * and resolves the agent's channel ACL server-side, then hands core a `MintPrincipal`.
  */
-import { permissionsFor, assertDerivedOwnerToken, toolResultRedemptionRows, type MintPrincipal, type MintOpts, type ToolResultConsent } from "@cotal-ai/core";
+import { permissionsFor, assertDerivedOwnerToken, recipientConsumePermissions, toolResultRedemptionRows, type MintPrincipal, type MintOpts, type PreCreatedDurable, type ToolResultConsent } from "@cotal-ai/core";
 import { VIEW_REQUIRED_SCOPE } from "./token.js";
 import type { UserTokenSession, ValidatedUserToken } from "./token.js";
 
@@ -14,6 +14,10 @@ export type SessionVerifier = (
   principal: { owner: string; actor: string; lifecycleUid?: string },
   claim: { endpoint: string; sessionId: string; epoch: number },
 ) => Promise<UserTokenSession>;
+
+/** The callout's re-read of one consented recipient grant (`recipient-grant.ts`): the grant's
+ *  principal, lifecycle and expiry, and its exact durables. Refuses an ended or stale grant. */
+export type RecipientVerifier = (grantId: string) => Promise<{ owner: string; actor: string; lifecycleUid: string; expiresAt: number; durables: PreCreatedDurable[] }>;
 
 /** The identity plane's consent decision for a tool-result-caller holder: re-verifies the signed
  *  consent against the live lifecycle head and anchor registry and returns it, or throws. */
@@ -89,10 +93,19 @@ export function calloutPermissions(
 ): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
+  authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
+  verifySession: SessionVerifier,
+  issueUserCaller: UserCallerIssuer | undefined,
+  verifyToolResult: ToolResultVerifier,
+  verifyRecipient: RecipientVerifier,
+): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+export function calloutPermissions(
+  resolveAcl: AclResolver,
   authorizeManagerCaller?: (owner: string, instanceId: string) => Promise<void>,
   verifySession?: SessionVerifier,
   issueUserCaller?: UserCallerIssuer,
   verifyToolResult?: ToolResultVerifier,
+  verifyRecipient?: RecipientVerifier,
 ): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
   return (t, connId) => {
     assertDerivedOwnerToken(t.owner); // user-mode owners are derived — never `local`, never an nkey
@@ -170,6 +183,19 @@ export function calloutPermissions(
             throw new Error("callout permissions: the re-verified consent is not the bearer's consent claim");
           const rows = toolResultRedemptionRows(t.space, c, { owner: t.owner, actor: t.act.actor, uid: t.act.lifecycleUid! }, { instanceId: c.target.lifecycleUid });
           return { pub: { allow: rows.pub }, sub: { allow: rows.sub }, [SESSION_EXP]: Math.min(t.exp, Math.floor(c.exp / 1000)) };
+        });
+      }
+      if (t.act.view === "inbox-recipient") {
+        // A consented background recipient: the identity plane re-reads the grant and the
+        // interactive row here (a revoked, expired or lifecycle-stale grant refuses at this mint),
+        // and the connection gets exactly the grant's info/fetch/ACK rows plus its own reply rail.
+        const claim = t.act.recipient!;
+        if (!verifyRecipient)
+          throw new Error("callout permissions: inbox-recipient needs the server-side grant verifier");
+        return verifyRecipient(claim.grantId).then((g) => {
+          if (g.owner !== t.owner || g.actor !== t.act.actor || g.lifecycleUid !== t.act.lifecycleUid || g.expiresAt !== claim.exp)
+            throw new Error("callout permissions: the current recipient grant is not the bearer's grant claim");
+          return { ...recipientConsumePermissions(t.space, connId, g.durables), [SESSION_EXP]: Math.min(t.exp, Math.floor(g.expiresAt / 1000)) };
         });
       }
       if (t.act.view === "transfer-writer")
