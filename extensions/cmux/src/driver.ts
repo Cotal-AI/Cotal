@@ -88,12 +88,13 @@ export function closeWorkspace(workspace: string, opts: { timeoutMs?: number } =
   }
 }
 
-/** All open workspace lines (name + ref), or `[]` if cmux can't be reached. */
+/** All open workspace lines (name + ref). Bounded like the exit probe; a socket or provider failure
+ *  throws rather than reading as no workspaces. */
 export function listWorkspaces(): string[] {
   try {
-    return cmux(["list-workspaces"]).split("\n").map((l) => l.trim()).filter(Boolean);
-  } catch {
-    return [];
+    return cmux(["list-workspaces"], { timeoutMs: EXIT_PROBE_MS }).split("\n").map((l) => l.trim()).filter(Boolean);
+  } catch (err) {
+    throw new Error(`cmux: couldn't list workspaces: ${(err as Error).message}`, { cause: err });
   }
 }
 
