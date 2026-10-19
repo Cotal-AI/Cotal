@@ -39,7 +39,9 @@
  * failures are bucketed per peer (`--exchange-trusted-proxy` opts into the last X-Forwarded-For
  * hop as the peer key; otherwise the socket remote address) in a bounded LRU, under a global
  * concurrent-admission cap and a hard request deadline — all of it pools SEPARATE from the
- * loopback face's budgets, and peer probing buckets never refuse a request that would succeed (only a principal's own full public pinned or unpinned selection-refusal window sheds that class).
+ * loopback face's budgets, and peer probing buckets never refuse a request that would
+ * succeed (only a principal's own full public pinned or unpinned selection-refusal window
+ * sheds that class).
  *
  * Both trust boundaries authorize against the SAME actor ledger, read fresh per request — a revoke
  * bites at the next exchange AND the next connect with no restart.
