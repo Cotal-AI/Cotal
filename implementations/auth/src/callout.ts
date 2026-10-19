@@ -263,6 +263,8 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           issuer: opts.token.issuer,
           audience: opts.space,
         });
+        if (validated.act.view === "service-endpoint")
+          throw new Error("callout: service-endpoint requires dedicated native service authority; ordinary actor hooks refuse it");
         await opts.authorizeActor(validated);
         // The private reply-inbox (`_INBOX_<connId>.>`) must scope on a token the CLIENT knows pre-connect
         // — but under the callout the connection nkey (`req.user_nkey`) is minted per-connect by NATS, so

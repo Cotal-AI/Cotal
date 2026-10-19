@@ -19,7 +19,7 @@
  */
 import { decodeProtectedHeader, jwtVerify } from "jose";
 import type { CryptoKey, JWTVerifyGetKey } from "jose";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, credentialLifetime } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, credentialLifetime, SERVICE_ACCESS_TTL_SECONDS, parseServiceRegistrationWitness, type ServiceRegistrationWitness } from "@cotal-ai/core";
 
 /** Current normative token-shape version. Bump only with a SPEC change; validators reject
  *  anything else (older = downgrade, newer = from-the-future misconfig). */
@@ -44,7 +44,7 @@ export const CLOCK_TOLERANCE_SEC = 5;
  *  instead of `agent`. A closed enum on BOTH the mint and validate side — an unknown view fails
  *  closed, never falls back to a profile. Deliberately NOT a generic `view=<profile>` passthrough:
  *  most profiles are daemon/provisioning surfaces that must never become human-requestable. */
-export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller", "session-caller", "transfer-writer"] as const;
+export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller", "session-caller", "transfer-writer", "service-endpoint"] as const;
 export type UserTokenView = (typeof USER_TOKEN_VIEWS)[number];
 
 /** Views the public exchange face will mint (still ledger-gated). Every other
@@ -71,12 +71,14 @@ export const VIEW_REQUIRED_SCOPE: Record<UserTokenView, "admin" | "spawn" | "sup
   // #1499: the bytes a carried resume uploads are announced by `transcript-receive`, a
   // `manager.admin` row, so writing them needs the same scope.
   "transfer-writer": "admin",
+  "service-endpoint": undefined, // dedicated service authority only, never ordinary exchange
 };
 
 /** The longest a bearer of `view` may live. A transfer-writer bearer is the user-mode form of the
  *  one-shot `transfer-writer` credential, so it carries that profile's five minutes, and so does the
  *  broker credential the callout binds to the bearer's expiry. */
 export function viewTtlCapSec(view: UserTokenView | undefined): number {
+  if (view === "service-endpoint") return SERVICE_ACCESS_TTL_SECONDS;
   return view === "transfer-writer" ? credentialLifetime("transfer-writer").defaultTtlSeconds! : MAX_TOKEN_TTL_SEC;
 }
 
@@ -94,6 +96,12 @@ export interface UserTokenSession {
   sessionId: string;
   epoch: number;
   exp: number;
+}
+
+/** Exact service registration carried by a serve-only access bearer. */
+export interface UserTokenService {
+  duty: "serve";
+  witness: ServiceRegistrationWitness;
 }
 
 /** The server-authored actor claim. `owner` restates `sub` (cross-checked); `actor` is the
@@ -123,6 +131,8 @@ export interface UserTokenActor {
   session?: UserTokenSession;
   /** The one object a transfer-writer bearer may upload (#1499). */
   transferWriter?: UserTokenTransferWriter;
+  /** Service-only registration binding, never an ordinary agent profile. */
+  service?: UserTokenService;
 }
 
 /** A fully validated user token, reduced to what the callout needs. */
@@ -289,6 +299,29 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
   // present claim is a well-formed, KV-safe id, so no garbled id reaches that read.
   if (act.credentialId !== undefined) assertCredentialIdClaim(act.credentialId);
 
+  if ((act.view === "service-endpoint") !== (act.service !== undefined))
+    throw new Error("user token: service-endpoint view and service claim must occur together");
+  let service: UserTokenService | undefined;
+  if (act.view === "service-endpoint") {
+    const closed = (value: unknown, fields: string[]): value is Record<string, unknown> =>
+      value !== null && typeof value === "object" && !Array.isArray(value)
+      && fields.every((k) => Object.hasOwn(value, k)) && Object.keys(value).every((k) => fields.includes(k));
+    if (!closed(header, ["alg", "kid"]) || typeof header.kid !== "string" || !header.kid || header.kid.length > 256
+      || !closed(payload, ["iss", "aud", "sub", "iat", "nbf", "exp", "scope", "ver", "act"])
+      || !closed(act, ["owner", "actor", "scope", "lifecycleUid", "credentialId", "view", "service"])
+      || !closed(act.service, ["duty", "witness"]) || act.service.duty !== "serve"
+      || !Array.isArray(payload.scope) || payload.scope.length !== 0 || !Array.isArray(act.scope) || act.scope.length !== 0
+      || payload.aud !== opts.audience || !Number.isSafeInteger(payload.iat) || !Number.isSafeInteger(payload.exp)
+      || payload.iat < 0 || payload.nbf !== payload.iat || payload.exp <= payload.iat
+      || payload.exp <= Math.floor(Date.now() / 1000))
+      throw new Error("user token: invalid closed service access claims");
+    const witness = parseServiceRegistrationWitness(act.service.witness);
+    if (witness.space !== opts.audience || witness.principal.owner !== owner || witness.principal.actor !== act.actor
+      || witness.principal.lifecycleUid !== act.lifecycleUid || witness.rootCredentialId !== act.credentialId)
+      throw new Error("user token: service witness does not bind the bearer principal and root");
+    service = { duty: "serve", witness };
+  }
+
   const scope = payload.scope === undefined ? [] : payload.scope;
   if (!(Array.isArray(scope) && scope.every((s) => typeof s === "string")))
     throw new Error("user token: scope must be a string list when present");
@@ -297,7 +330,7 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     owner,
     space: opts.audience,
     scope,
-    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, credentialId: act.credentialId, view: act.view, managerInstanceId: act.managerInstanceId, ...(act.session ? { session: act.session } : {}), ...(act.transferWriter ? { transferWriter: act.transferWriter } : {}) },
+    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, credentialId: act.credentialId, view: act.view, managerInstanceId: act.managerInstanceId, ...(act.session ? { session: act.session } : {}), ...(act.transferWriter ? { transferWriter: act.transferWriter } : {}), ...(service ? { service } : {}) },
     credentialId: act.credentialId,
     ver: USER_TOKEN_VER,
     exp: payload.exp,

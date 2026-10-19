@@ -21,6 +21,7 @@ export {
   PUBLIC_EXCHANGE_VIEWS,
   VIEW_REQUIRED_SCOPE,
   type UserTokenActor,
+  type UserTokenService,
   type UserTokenView,
   type ValidatedUserToken,
   type ValidateUserTokenOpts,
@@ -35,6 +36,7 @@ export {
   type SigningKey,
   type SerializedSigningKey,
   type IssueClaims,
+  type ServiceAccessClaims,
   type UserTokenIssuer,
   type CreateIssuerOpts,
 } from "./issuer.js";

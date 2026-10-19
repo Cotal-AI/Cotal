@@ -119,6 +119,10 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
         return sessionClaim;
       },
     );
+    if (view === "service-endpoint") {
+      assert.throws(() => produce(token, principal.connId), /native service authorization/);
+      continue; // Service authority never becomes an ordinary core Profile.
+    }
     if (view === "manager-service") {
       assert.throws(() => produce(token, principal.connId), /typed material exchange/);
       continue; // Explicit refused view, represented separately from Profile in the report.
@@ -126,7 +130,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     rows.push({ profile: view, variant: `callout-view:${view}`, permissions: await produce(token, principal.connId), producer: "calloutPermissions" });
   }
   assert.deepEqual(rows.filter((row) => row.producer === "calloutPermissions").map((row) => row.variant).sort(),
-    USER_TOKEN_VIEWS.filter((view) => view !== "manager-service").map((view) => `callout-view:${view}`).sort(),
+    USER_TOKEN_VIEWS.filter((view) => view !== "manager-service" && view !== "service-endpoint").map((view) => `callout-view:${view}`).sort(),
     "every generic callout view must have a producer");
   return rows;
 }

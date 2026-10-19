@@ -63,6 +63,12 @@ deleted records, and release rechecks fixed expiry after asynchronous work.
 It is not a connect bearer. These primitives do not authenticate a current approval or native root;
 the host must do that before issuing or accepting authority. No client refresh loop is provided yet.
 
+`UserTokenIssuer.issueServiceAccess` signs a serve-only user bearer with the full registration
+witness and a fixed deadline of at most 60 seconds. Validation requires empty scope and rejects
+ordinary parent, manager, session and transfer claims. Ordinary exchange, callout and permission construction
+refuse this view before actor lookup. The dedicated native callout path is not implemented yet,
+so signing this bearer does not enable a service connection.
+
 `parseEndpointCapabilities` normalizes the native caller capability shape. `endpointCapabilitiesWithin`
 checks route, instance, target and journal containment using the native grant builders. The host
 still authenticates the granter and checks current grantee, parent and approval records.

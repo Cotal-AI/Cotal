@@ -928,6 +928,8 @@ profile for that one object of that one instance's transfer bucket (§8).
 On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`, `session-caller`, and
 `transfer-writer` MAY be issued. `admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A
 managed-agent secret exchange MUST refuse every view other than `manager-caller`.
+The service-only `service-endpoint` view (§13.1) is not selectable on either ordinary exchange
+face. Its dedicated authority path checks native service custody rather than an enrolled actor row.
 
 ---
 
@@ -1359,6 +1361,19 @@ staging and commit; expired material is refused and never given a new expiry. A 
 approval does not authorize serving release. Standalone service authority does not support
 sibling credential duties. Native root validation, owner consent, activation and coordinated
 retirement remain requirements of the trusted host; parsing this value does not establish them.
+
+A service access bearer uses the user-token shape with `act.view: "service-endpoint"`.
+Its closed payload has `iss`, scalar `aud`, `sub`, `iat`, `nbf`, `exp`, `ver`, `scope` and `act`.
+Its protected header has only `alg: "EdDSA"` and `kid`. The closed actor has `owner`, `actor`,
+`scope`, `lifecycleUid`, `credentialId`, `view` and `service`. Both scopes are empty lists.
+The closed service claim is `{duty: "serve", witness}`. The complete witness binds the same
+space, owner, actor, native lifecycle UID and root credential as the outer bearer. Parent, manager,
+session and transfer claims are forbidden. Times are integer Unix seconds, `nbf` equals `iat`,
+and the fixed expiry is at most 60 seconds after issuance. Validation refuses at the original
+expiry, without extending it through clock tolerance. Ordinary exchange and profile construction
+MUST refuse this view. Only a dedicated service authority path may issue and authorize it after
+current native root, approval and registration checks. Signature validation alone does not
+establish that authority.
 
 A service renewal proof is a separate EdDSA JWT class with protected `typ:
 "cotal-service-renewal+jwt"`, `alg` and `kid` headers. Its closed claims are `ver: 1`,
