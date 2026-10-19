@@ -243,11 +243,11 @@ export function searchDocs(query: string, limit = 5): DocHit[] {
   const perPage = new Map<string, number>();
   const hits: DocHit[] = [];
   for (const { s, score } of scored) {
+    if (hits.length >= limit) break;
     const seen = perPage.get(s.slug) ?? 0;
     if (seen >= 2) continue; // don't let one page crowd out the rest
     perPage.set(s.slug, seen + 1);
     hits.push({ slug: s.slug, pageTitle: s.pageTitle, heading: s.heading, text: s.text, score });
-    if (hits.length >= limit) break;
   }
   return hits;
 }
