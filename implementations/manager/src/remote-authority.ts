@@ -6,6 +6,7 @@ import {
   type RemoteRunRevokeRequest,
   type RemoteRunRevokeResult,
   accountFromCreds,
+  isLoopbackLiteral,
   managedRetirementOpId,
   mintLifecycleUid,
   newIdentity,
@@ -680,7 +681,7 @@ export function remoteManagedAgentEnrollmentMaterial(
   let url: URL;
   try { url = new URL(m.agentBearerExchangeUrl); }
   catch { throw new Error(`managed agent enrollment returned no usable agent bearer exchange URL (got ${JSON.stringify(m.agentBearerExchangeUrl)})`); }
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]")))
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackLiteral(url.hostname)))
     throw new Error(`managed agent enrollment returned a non-HTTPS agent bearer exchange URL (${url.protocol}//) - the actor token must never cross plaintext off this machine`);
   return m;
 }
