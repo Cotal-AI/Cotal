@@ -1389,10 +1389,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       const { lifecycleUid, row } = await serializedForAlias(opts.dir, owner, t.actor, async () => {
         // The token digest names one enrollment. A held row with this request's digest is that
         // enrollment retried, so it answers the same uid; any other held row is a lifecycle that
-        // still runs, and taking its grant would strand it.
+        // still runs, and taking its grant would strand it. `already-exists` distinguishes this
+        // definitive tokenHash refusal from `conflict` (stale serve epoch or CAS concurrency).
         const held = findManagedActor(opts.dir, owner, t.actor);
         if (held !== undefined && held.tokenHash !== t.tokenHash)
-          throw new EpEnvelopeError("conflict", `managed agent "${t.actor}" is enrolled at lifecycle ${held.lifecycleUid}; prepare that lifecycle's retirement before enrolling a successor`);
+          throw new EpEnvelopeError("already-exists", `managed agent "${t.actor}" is enrolled at lifecycle ${held.lifecycleUid}; prepare that lifecycle's retirement before enrolling a successor`);
         // A fresh uid is never one a retirement tombstoned, and only the host can make that promise.
         const lifecycleUid = held?.lifecycleUid ?? mintLifecycleUid();
         // The grant first: its envelope walk against the supervising actor refuses an over-wide
@@ -1412,6 +1413,12 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           tokenHash: t.tokenHash,
         });
         try {
+          await activateLifecycleAtUid(registry, {
+            owner,
+            actor: t.actor,
+            lifecycleUid,
+            managerInstance: `auth-service:${space}`,
+          });
           const identity = newIdentity();
           const provisioner = new CotalEndpoint({
             space,
@@ -1440,6 +1447,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             await deprovisionManagedFootprint(owner, t.actor, lifecycleUid, []).catch((err) =>
               opts.log(`auth-service: refused enrollment of ${owner}/${t.actor} left durables at ${lifecycleUid}: ${err instanceof Error ? err.message : String(err)}`));
           }
+          // Keep `already-exists` on the enrollment door exclusive to the tokenHash refusal above:
+          // an activation-saga `already-exists` means the alias head is still active at another uid
+          // (e.g. a releasing predecessor whose grant was revoked before its terminal barrier ran).
+          if (e instanceof EpEnvelopeError && e.code === "already-exists")
+            throw new EpEnvelopeError("failed-precondition", e.message, e.details, e.outcome);
           throw e;
         }
         return { lifecycleUid, row };
@@ -3101,7 +3113,10 @@ export async function handleManagerServiceAuthority(req: IncomingMessage, res: S
     console.error(`auth-service: refused manager-service authority: ${reason}`);
     if (peerThrottled)
       return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
-    return send(res, 403, { error: reason });
+    return send(res, 403, {
+      error: reason,
+      ...(e instanceof EpEnvelopeError ? { code: e.code } : {}),
+    });
   }
 }
 

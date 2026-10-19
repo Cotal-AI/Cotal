@@ -87,20 +87,37 @@ export function bootToken(): string | undefined {
   }
 }
 
-/** The Linux process start token: `/proc/<pid>/stat` field 22 (starttime, in clock ticks since
- *  boot), parsed after the final `)` because comm may hold spaces and parentheses. A zombie still
- *  reports it, so a child that exited before its custodian reaped it is still readable. Undefined
- *  when the pid has no `/proc` entry. */
-export function processStartToken(pid: number): string | undefined {
+/** Three-valued outcome of inspecting `/proc/<pid>/stat` field 22 (starttime). */
+export type ProcessStartInspection =
+  | { state: "present"; token: string }
+  | { state: "absent" }
+  | { state: "unknown"; reason: string };
+
+/** Three-valued inspection of `/proc/<pid>/stat` field 22 (starttime). Returns `absent` only when
+ *  the `/proc` entry does not exist (`ENOENT`/`ESRCH`), `present` when readable and well-formed,
+ *  and `unknown` for any other read failure (`EACCES`, `EPERM`, etc.) or malformed stat content so
+ *  callers fail closed rather than treating an unreadable live process as gone. */
+export function inspectProcessStart(pid: number): ProcessStartInspection {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const after = stat.lastIndexOf(") ");
-    if (after < 0) return undefined;
+    if (after < 0) return { state: "unknown", reason: `malformed /proc/${pid}/stat` };
     const token = stat.slice(after + 2).split(" ")[19];
-    return token || undefined;
-  } catch {
-    return undefined;
+    return token ? { state: "present", token } : { state: "unknown", reason: `missing starttime in /proc/${pid}/stat` };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ESRCH") return { state: "absent" };
+    return { state: "unknown", reason: (e as Error).message };
   }
+}
+
+/** The Linux process start token: `/proc/<pid>/stat` field 22 (starttime, in clock ticks since
+ *  boot), parsed after the final `)` because comm may hold spaces and parentheses. A zombie still
+ *  reports it, so a child that exited before its custodian reaped it is still readable. Undefined
+ *  when the pid has no `/proc` entry or cannot be read. */
+export function processStartToken(pid: number): string | undefined {
+  const res = inspectProcessStart(pid);
+  return res.state === "present" ? res.token : undefined;
 }
 
 export function writeRecord(path: string, record: SeatRecord): void {

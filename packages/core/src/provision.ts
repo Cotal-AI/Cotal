@@ -1800,6 +1800,7 @@ function remoteManagerPermissions(
         `$JS.API.CONSUMER.DELETE.KV_${AUTH}.>`,
         ...recordKeys.map((key) => `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${key}`),
         `$JS.API.STREAM.MSG.GET.KV_${REC}`,
+        ...(isSupervisorActor ? [`$KV.${REC}.${STATIC_SLOT_PREFIX}.${pr.owner}.*`, `$JS.API.DIRECT.GET.KV_${REC}.$KV.${REC}.${STATIC_SLOT_PREFIX}.${pr.owner}.*`] : []),
         // LIVENESS REPLIES for the MANAGER plane (#1577), bounded to the `.reply.` leaf under a
         // caller's own request subject — the same row and the same bound as the local supervisor
         // profile holds.

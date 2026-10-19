@@ -17,7 +17,7 @@ import { isLoopbackLiteral, registry, type AuthPrepareInput, type AuthPrepared, 
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { acquireLock, AgentGrantConflictError } from "@cotal-ai/core";
+import { acquireLock, AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, type EpErrorCode } from "@cotal-ai/core";
 import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, hashActorToken, newActorToken, revokeManagedActor, revokeManagedActorAt } from "./ledger.js";
@@ -606,16 +606,23 @@ async function postManagerAuthority(
  *  version of the manager whose requests this client sends. */
 const COTAL_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
+const EP_ERROR_SET = new Set<string>(EP_ERROR_CODES);
+
 /** A manager-authority refusal, with the host's reason verbatim. The protocol is closed, so a host
  *  that names a field this request carries as unknown predates that field: say it is version skew
  *  and which side has to move. The field is never dropped to fit the older host. */
 function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number): Error {
   const reason = (body as { error?: string }).error ?? `HTTP ${status}`;
+  const code = (body as { code?: unknown }).code;
   const field = /unknown field "?([A-Za-z_$][\w$]*)"?/.exec(reason)?.[1];
   const skew = field !== undefined && carriesField(request, field)
     ? ` - version skew: this manager runs Cotal ${COTAL_VERSION} and the host's auth service predates the field "${field}" it sends; it needs a host at Cotal ${COTAL_VERSION} or later`
     : "";
-  return new Error(`signed in, but ${what} was refused: ${reason}${skew}`);
+  const message = `signed in, but ${what} was refused: ${reason}${skew}`;
+  if (typeof code === "string" && EP_ERROR_SET.has(code)) {
+    return new EpEnvelopeError(code as EpErrorCode, message);
+  }
+  return new Error(message);
 }
 
 function carriesField(value: unknown, field: string): boolean {

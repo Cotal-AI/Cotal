@@ -144,8 +144,12 @@ function projectStaticSlotObservation(
  *  `ownerInstanceId` predates multi-manager ownership and counts as this instance's. Every reader
  *  that decides ownership calls this one rule, because the boot sweep terminalizes the rows it
  *  believes are its own and `inspect`, `slots` and reconcile must agree with it. */
-export function ownedBySibling(row: StaticManagedSlotRow, managerInstanceId: string): boolean {
-  return row.ownerInstanceId !== undefined && row.ownerInstanceId !== managerInstanceId;
+export function ownedBySibling(
+  row: { ownerInstanceId?: string; managerInstanceId?: string },
+  managerInstanceId: string,
+): boolean {
+  const instanceId = row.ownerInstanceId ?? row.managerInstanceId;
+  return instanceId !== undefined && instanceId !== managerInstanceId;
 }
 
 /** Point-read one durable slot, then its principal-keyed lifecycle head. Absence is returned only

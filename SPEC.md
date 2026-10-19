@@ -4664,7 +4664,15 @@ parent, through the same writer, managed-agent envelope walk, lifecycle-keyed du
 membership the host uses for that user's own managed-agent enrollment, with the host selecting the
 lifecycle UID. It MUST NOT be enrolled under a platform owner token or any owner other than the
 record's, and the manager MUST refuse material naming another owner. The holder is not on the
-agent's delegation chain and gains no ledger row, scope or grant from the launch.
+agent's delegation chain and gains no ledger row, scope or grant from the launch. When the holder
+records durable slot custody in `KV_cotal_records_<space>`, it writes under its own holder prefix
+`mgrslot.<holderOwner>.<targetOwner>-<actor>` (and its index key `mgrslot.<holderOwner>._index`),
+validated with `assertPrincipalOwnerToken` for `<holderOwner>`, `assertDerivedOwnerToken` for
+`<targetOwner>`, and `assertValidOwnerToken` for `<actor>` so `-` is the sole separator; the remote
+supervisor credential grants only `$KV.<REC>.mgrslot.<holderOwner>.*` and
+`$JS.API.DIRECT.GET.KV_<REC>.$KV.<REC>.mgrslot.<holderOwner>.*` (never `CONSUMER.CREATE` on
+`KV_<REC>` or a cross-owner `mgrslot.<targetOwner>.*` grant), and manager startup reconciliation
+leaves a delegated slot held until a user retirement intent confirms retirement.
 
 **Retirement.** A delegated retirement runs in order: revoke the managed grant at the target
 lifecycle UID only and complete the resumable release with that UID unchanged; close the provider
@@ -4678,6 +4686,37 @@ through the same sequence; a retirement bound to a holder that is gone before it
 unexecuted. Once a holder's execution has consumed a record, the host MUST finish the sequence
 whether or not the holder remains. A failed or uncertain step keeps the alias held, and a retry is
 the same operation.
+
+**User-mode slot custody.** Every user-mode manager (both a non-delegated user manager where
+`<holderOwner> === <targetOwner>` and a delegated platform holder where `<holderOwner>` is `p_…`
+and `<targetOwner>` is `u_…`) records durable per-seat custody in `KV_cotal_records_<space>` at
+`mgrslot.<holderOwner>.<targetOwner>-<actor>` (indexed at `mgrslot.<holderOwner>._index` via
+`DIRECT.GET` and locally in `mgrslots.json` written before the KV write, with no `CONSUMER.CREATE`
+grant on `KV_<REC>`). Every slot write MUST be a revision-pinned compare-and-set (`create` when
+absent, or `update` against the prior revision); a same-name retry after an interrupted `enrolling`
+write MUST converge on the existing `enrolling` row's `provisionalUid` and `tokenHash` rather than
+overwriting it with a newly minted token. When `/manager-service-authority` refuses with HTTP 403 on
+an `EpEnvelopeError`, its JSON body carries `code: EpErrorCode` alongside `error` (reconstructed by
+the client only when `code` is in `EP_ERROR_CODES`), and `enrollManagedAgent` raises
+`code: "already-exists"` exclusively when the alias is already enrolled under a different
+`tokenHash` (an activation-saga `already-exists` when the lifecycle head is still active at another
+UID maps to `code: "failed-precondition"`, and `conflict` remains the code for a stale manager
+serve epoch or CAS concurrency). Startup convergence of an `enrolling` row retires the row at its
+`provisionalUid` (after shredding local staged secret files) ONLY on `code: "already-exists"`;
+every other failure (including `conflict` on a stale serve epoch, `failed-precondition` on an
+unretired head, `unauthenticated`, network failure, or a 403 omitting a valid catalog `code`) MUST
+leave the row in `enrolling`, count as `failed`, and retry on the next start. Startup
+reconciliation classifies only rows whose `managerInstanceId` matches the reconciling manager
+instance (preserving sibling instances' rows untouched), defers `active`/`preserved` rows when
+`resumeRequired` is set until post-adoption reconciliation, and evaluates process liveness
+fail-closed (`live`, `proved-dead`, or `unknown`; on a `hidepid` host where `/proc` stat or process
+group reads fail with `EACCES`/`EPERM`, every reap and liveness probe refuses as `unknown` and
+retains custody). `driveDeprovision` is the single custody gate: a hold that keeps custody
+(`delegated`, `live`, `unknown` liveness, or an `enrolling` row missing convergence material) MUST
+NOT be retired when a same-name spawn or resume re-drives `deprovision`. A released live seat is
+watched while the manager runs (bounding `unknown` re-probes and backing off failed retirement
+retries exponentially up to 30 s) and retired once its recorded process and process group are proved
+dead.
 
 **What stays.** Under the `platform-control` view itself the holder still enrolls, retires,
 validates and authorizes only same-owner descendants, and a `u_` principal's spawn request or admin
