@@ -21,16 +21,16 @@
     {
       "name": "the pid slot is claimed before the entry is validated, as #1641 shipped it",
       "file": "implementations/cli/src/lib/auth-proc.ts",
-      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadLegacyPid(space);\n  const slot = claimAuthPidSlot(space);\n  if (slot === undefined) return 0;\n  if (\"livePid\" in slot) return slot.livePid;\n  try {\n    const fd = openSync(LOG_PATH(space), \"a\");\n",
-      "replace": "  reclaimDeadLegacyPid(space);\n  const slot = claimAuthPidSlot(space);\n  if (slot === undefined) return 0;\n  if (\"livePid\" in slot) return slot.livePid;\n  try {\n    const [node, ...self] = selfArgv();\n    const fd = openSync(LOG_PATH(space), \"a\");\n",
+      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(AUTH_PROCESS.pidFile, ctx(space));\n  const slot = claimAuthPidSlot(space);\n  if (slot === undefined) return 0;\n  if (\"livePid\" in slot) return slot.livePid;\n  try {\n    const fd = openSync(LOG_PATH(space), \"a\");\n",
+      "replace": "  reclaimDeadPreUpgradeRecord(AUTH_PROCESS.pidFile, ctx(space));\n  const slot = claimAuthPidSlot(space);\n  if (slot === undefined) return 0;\n  if (\"livePid\" in slot) return slot.livePid;\n  try {\n    const [node, ...self] = selfArgv();\n    const fd = openSync(LOG_PATH(space), \"a\");\n",
       "cell": "the refused start published no pid slot",
       "expectRed": "the refused start published no pid slot"
     },
     {
       "name": "the dead pre-hex record is reclaimed before the entry is validated",
       "file": "implementations/cli/src/lib/auth-proc.ts",
-      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadLegacyPid(space);\n",
-      "replace": "  reclaimDeadLegacyPid(space);\n  const [node, ...self] = selfArgv();\n",
+      "find": "  const [node, ...self] = selfArgv();\n  reclaimDeadPreUpgradeRecord(AUTH_PROCESS.pidFile, ctx(space));\n",
+      "replace": "  reclaimDeadPreUpgradeRecord(AUTH_PROCESS.pidFile, ctx(space));\n  const [node, ...self] = selfArgv();\n",
       "cell": "the refused start left the dead pre-hex record where it was",
       "expectRed": "the refused start left the dead pre-hex record where it was"
     }
