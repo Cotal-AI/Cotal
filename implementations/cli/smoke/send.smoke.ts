@@ -38,7 +38,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 36;
+const EXPECTED = 37;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -330,6 +330,13 @@ try {
     "`deliver pending dave` by name (live card) prints dave's exact durable, pending 1 and one candidate id",
     daveLive.code === 0 && daveLive.stdout.split("\n")[0] === daveDurable && daveLive.stdout.split("\n")[1] === "pending 1" && daveIds.length === 1,
     { code: daveLive.code, stdout: daveLive.stdout, stderr: daveLive.stderr, daveDurable },
+  );
+  // The candidate line names the sender by its display label and its subject-pinned principal,
+  // never by interpolating the `from` object.
+  check(
+    "`deliver pending dave` names the candidate's sender by label and principal",
+    new RegExp(`^\\s+[0-9a-f-]{36}  from=${expectedSender.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}  principal=${DEV_OWNER}\\.[A-Z0-9]{56}  ts=\\d+$`, "m").test(daveLive.stdout),
+    daveLive.stdout,
   );
   // M2b: `--durable <name>` reads the exact consumer the by-name read printed, skipping name
   // resolution, and reports the same pending count and candidate.

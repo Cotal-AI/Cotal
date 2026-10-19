@@ -12,9 +12,12 @@ import {
   dmStream,
   isConsumerNotFound,
   parsePrincipalKey,
+  parseSubject,
+  peerLabel,
   resolvePeer,
   standaloneConnectOpts,
   unicastSubject,
+  type EndpointRef,
   type ParsedArgs,
   type Presence,
 } from "@cotal-ai/core";
@@ -171,8 +174,12 @@ export async function runPending(args: ParsedArgs): Promise<void> {
           let seen = 0;
           try {
             for await (const m of iter) {
-              const body = JSON.parse(new TextDecoder().decode(m.data)) as { id: string; from: string; ts: number };
-              console.log(`  ${body.id}  from=${body.from}  ts=${body.ts}`);
+              const body = JSON.parse(new TextDecoder().decode(m.data)) as { id: string; from: EndpointRef; ts: number };
+              // The label is the sender's own display text; the principal comes from the subject's
+              // sender tokens, which the broker pins to the publishing credential.
+              const sender = parseSubject(m.subject)?.sender;
+              if (!sender) throw new Error(`unparseable DM subject ${JSON.stringify(m.subject)}`);
+              console.log(`  ${body.id}  from=${peerLabel(body.from)}  principal=${sender}  ts=${body.ts}`);
               seen++;
               if (seen >= pendingCandidates) break;
             }

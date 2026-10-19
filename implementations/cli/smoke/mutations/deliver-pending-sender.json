@@ -1,0 +1,33 @@
+{
+  "suite": [
+    "implementations/cli/smoke/send.smoke.ts"
+  ],
+  "guard": "deliver pending names each candidate's sender by its display label and its subject-pinned principal instead of interpolating the from object",
+  "command": "pnpm --filter @cotal-ai/delivery build && pnpm smoke:send",
+  "proveWith": "pnpm mutation-proof --config implementations/cli/smoke/mutations/deliver-pending-sender.json",
+  "why": [
+    "The CLI imports @cotal-ai/delivery through its dist output, so the command rebuilds delivery before the suite and each mutation rebuilds it after restore. No dist compiled from a mutant is left behind."
+  ],
+  "mutations": [
+    {
+      "name": "the candidate line interpolates the from object again",
+      "file": "implementations/delivery/src/pending.ts",
+      "find": "from=${peerLabel(body.from)}",
+      "replace": "from=${body.from}",
+      "expectRed": "`deliver pending dave` names the candidate's sender by label and principal",
+      "cell": "`deliver pending dave` names the candidate's sender by label and principal",
+      "note": "This restores the shipped defect: the line reads from=[object Object].",
+      "afterRestore": "pnpm --filter @cotal-ai/delivery build"
+    },
+    {
+      "name": "the candidate line drops the sender principal",
+      "file": "implementations/delivery/src/pending.ts",
+      "find": "  principal=${sender}",
+      "replace": "",
+      "expectRed": "`deliver pending dave` names the candidate's sender by label and principal",
+      "cell": "`deliver pending dave` names the candidate's sender by label and principal",
+      "note": "The display label alone is sender-chosen text; the principal is the identity the broker pinned.",
+      "afterRestore": "pnpm --filter @cotal-ai/delivery build"
+    }
+  ]
+}
