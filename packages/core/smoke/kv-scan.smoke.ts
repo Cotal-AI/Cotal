@@ -26,7 +26,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager, type ConsumerMessages, type PushConsumer } from "@nats-io/jetstream";
-import { Kvm } from "@nats-io/kv";
+import { Kvm, type KV } from "@nats-io/kv";
+import type { Bucket } from "@nats-io/kv/internal";
 import { IncompleteKvScan, isReachable, liveKvEntries, walkKvEntries } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
@@ -41,6 +42,16 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// A view of `kv` whose push consumer passes through `transform`. It has to interpose where
+// `liveKvEntries` binds (`bucket.js.consumers.getPushConsumer`), and a per-cell copy that drifted
+// from that binding would stop interposing without failing, so the cells share this one.
+const interposeConsumer = (kv: KV, transform: (oc: PushConsumer) => PushConsumer | Promise<PushConsumer>): KV => {
+  const js = (kv as Bucket).js;
+  const victim = Object.create(kv) as KV;
+  const getPushConsumer = async (...a: Parameters<typeof js.consumers.getPushConsumer>) => transform(await js.consumers.getPushConsumer(...a));
+  Object.defineProperty(victim, "js", { value: { ...js, consumers: { ...js.consumers, getPushConsumer } } });
+  return victim;
+};
 
 const srv = spawn("nats-server", ["-p", String(PORT), "-js", "-sd", store], { stdio: "ignore" });
 // The `finally` below stays and still does the work on every normal exit; ownership only covers the
@@ -159,26 +170,21 @@ try {
   ] as const) {
     const src = await kvm.create(`truncated_${cut}_${filter ? "f" : "u"}`, { history: 1 });
     for (let i = 0; i < 40; i++) await src.put(`a.k${i}`, enc("v"));
-    const victim = Object.create(src) as typeof src;
-    const rjs = (src as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
-    Object.defineProperty(victim, "js", {
-      value: { ...rjs, consumers: { ...rjs.consumers, getPushConsumer: async (...a: unknown[]) => {
-        const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-        const realConsume = (oc.consume as PushConsumer["consume"]).bind(oc);
-        // Real consumer, real bind-time num_pending; the ONLY thing altered is that the iterator
-        // stops early and cleanly, exactly as the client does when the connection drops.
-        return Object.assign(Object.create(oc as object), {
-          consume: async () => {
-            const inner = await realConsume();
-            const gen = (async function* () {
-              let n = 0;
-              for await (const m of inner) { if (n++ >= cut) return; yield m; }
-            })();
-            // The helper closes the iterator in its finally, so the stand-in must carry `close` too.
-            return Object.assign(gen, { close: () => inner.close() });
-          },
-        });
-      } } },
+    const victim = interposeConsumer(src, (oc) => {
+      const realConsume = oc.consume.bind(oc);
+      // Real consumer, real bind-time num_pending; the ONLY thing altered is that the iterator
+      // stops early and cleanly, exactly as the client does when the connection drops.
+      return Object.assign(Object.create(oc), {
+        consume: async () => {
+          const inner = await realConsume();
+          const gen = (async function* () {
+            let n = 0;
+            for await (const m of inner) { if (n++ >= cut) return; yield m; }
+          })();
+          // The helper closes the iterator in its finally, so the stand-in must carry `close` too.
+          return Object.assign(gen, { close: () => inner.close() });
+        },
+      });
     });
     let threw: unknown;
     await liveKvEntries(victim, filter).then(
@@ -287,35 +293,24 @@ try {
     // Mid-scan abort
     const acMid = new AbortController();
     let midErr: unknown;
-    const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
-    const victim = Object.create(k) as typeof k;
-    Object.defineProperty(victim, "js", {
-      value: {
-        ...rjs,
-        consumers: {
-          ...rjs.consumers,
-          getPushConsumer: async (...a: unknown[]) => {
-            const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-            const realConsume = (oc.consume as PushConsumer["consume"]).bind(oc);
-            return Object.assign(Object.create(oc as object), {
-              consume: async () => {
-                const inner = await realConsume();
-                const gen = (async function* () {
-                  for await (const m of inner) {
-                    acMid.abort(new Error("aborted mid-scan"));
-                    yield m;
-                  }
-                })();
-                // The helper calls `stop` only from the abort listener a signal registers, and this is the one stand-in cell that passes a signal.
-                return Object.assign(gen, {
-                  stop: (err?: Error) => inner.stop(err),
-                  close: () => inner.close(),
-                });
-              },
-            });
-          },
+    const victim = interposeConsumer(k, (oc) => {
+      const realConsume = oc.consume.bind(oc);
+      return Object.assign(Object.create(oc), {
+        consume: async () => {
+          const inner = await realConsume();
+          const gen = (async function* () {
+            for await (const m of inner) {
+              acMid.abort(new Error("aborted mid-scan"));
+              yield m;
+            }
+          })();
+          // The helper calls `stop` only from the abort listener a signal registers, and this is the one stand-in cell that passes a signal.
+          return Object.assign(gen, {
+            stop: (err?: Error) => inner.stop(err),
+            close: () => inner.close(),
+          });
         },
-      },
+      });
     });
     try {
       await liveKvEntries(victim, ">", { signal: acMid.signal });
@@ -337,38 +332,27 @@ try {
     const base = (await jsm.streams.info(stream)).state.consumer_count;
 
     // Controlled reset interposition over a real broker consumer, not a naturally observed rotation.
-    const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
-    const victim = Object.create(k) as typeof k;
     let rotatedName: string | undefined;
-    Object.defineProperty(victim, "js", {
-      value: {
-        ...rjs,
-        consumers: {
-          ...rjs.consumers,
-          getPushConsumer: async (...a: unknown[]) => {
-            const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-            const realConsume = (oc.consume as PushConsumer["consume"]).bind(oc);
-            return Object.assign(oc, {
-              consume: async () => {
-                // The client's iterator carries `reset` and `consumer`; its public type does not.
-                const inner = await realConsume() as ConsumerMessages & { reset: () => void; consumer: { name: string } };
-                let didReset = false;
-                const gen = (async function* () {
-                  for await (const m of inner) {
-                    if (!didReset) {
-                      didReset = true;
-                      inner.reset();
-                      rotatedName = inner.consumer.name;
-                    }
-                    yield m;
-                  }
-                })();
-                return Object.assign(gen, { close: () => inner.close() });
-              },
-            });
-          },
+    const victim = interposeConsumer(k, (oc) => {
+      const realConsume = oc.consume.bind(oc);
+      return Object.assign(oc, {
+        consume: async () => {
+          // The client's iterator carries `reset` and `consumer`; its public type does not.
+          const inner = await realConsume() as ConsumerMessages & { reset: () => void; consumer: { name: string } };
+          let didReset = false;
+          const gen = (async function* () {
+            for await (const m of inner) {
+              if (!didReset) {
+                didReset = true;
+                inner.reset();
+                rotatedName = inner.consumer.name;
+              }
+              yield m;
+            }
+          })();
+          return Object.assign(gen, { close: () => inner.close() });
         },
-      },
+      });
     });
 
     const entries = await liveKvEntries(victim);
@@ -387,21 +371,9 @@ try {
 
     let deleteAttempted = false;
     let observedTtlNanos: number | undefined;
-    const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
-    const victim = Object.create(k) as typeof k;
-    Object.defineProperty(victim, "js", {
-      value: {
-        ...rjs,
-        consumers: {
-          ...rjs.consumers,
-          getPushConsumer: async (...a: unknown[]) => {
-            const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-            const ci = await (oc as { info: (cached?: boolean) => Promise<{ config: { inactive_threshold?: number } }> }).info(true);
-            observedTtlNanos = ci.config.inactive_threshold;
-            return oc;
-          },
-        },
-      },
+    const victim = interposeConsumer(k, async (oc) => {
+      observedTtlNanos = (await oc.info(true)).config.inactive_threshold;
+      return oc;
     });
 
     let scanResult: unknown;
@@ -439,25 +411,12 @@ try {
     const jsm = await jetstreamManager(nc);
     const base = (await jsm.streams.info("KV_incomplete_not_empty")).state.consumer_count;
 
-    const rjs = (k as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<Record<string, unknown>> } } }).js;
-    const victim = Object.create(k) as typeof k;
-    Object.defineProperty(victim, "js", {
-      value: {
-        ...rjs,
-        consumers: {
-          ...rjs.consumers,
-          getPushConsumer: async (...a: unknown[]) => {
-            const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-            return Object.assign(Object.create(oc as object), {
-              consume: async () => {
-                const gen = (async function* () {})();
-                return Object.assign(gen, { close: async () => {} });
-              },
-            });
-          },
-        },
+    const victim = interposeConsumer(k, (oc) => Object.assign(Object.create(oc), {
+      consume: async () => {
+        const gen = (async function* () {})();
+        return Object.assign(gen, { close: async () => {} });
       },
-    });
+    }));
 
     let res: unknown;
     try {
