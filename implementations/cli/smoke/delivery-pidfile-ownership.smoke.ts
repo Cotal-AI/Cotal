@@ -27,7 +27,7 @@ import { join, resolve } from "node:path";
 import { createSpaceAuth, isReachable, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import {
   canonicalLocalProcessPath, DELIVERY_PIDFILE, identityPinPath, parsePid, probeLiveness,
-  readProcessCommand, spaceMaterialDir, type LocalProcess,
+  readProcessCommand, spaceMaterialDir,
 } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -54,12 +54,6 @@ const releaseBroker = teardownOnSignal(srv, dir);
 const wsRoot = join(dir, "ws");
 mkdirSync(join(wsRoot, ".cotal"), { recursive: true });
 const PID_PATH = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root: wsRoot, space: SPACE });
-/** The registered `delivery` lifecycle row, as `implementations/cli/src/index.ts` declares it — the
- *  descriptor `cotal down`'s own guards are asked about. */
-const DELIVERY_ROW: LocalProcess = {
-  kind: "local-process", name: "delivery", label: "delivery daemon", order: 20,
-  pidFile: DELIVERY_PIDFILE,
-};
 const ctx = { root: wsRoot, space: SPACE };
 
 let daemon: ChildProcess | undefined;
@@ -85,10 +79,10 @@ try {
   // record is absent and the fail-closed guard is clear. It is also the baseline the cells below
   // are a change FROM, so a suite that died early could not have produced it.
   const { mayBeRunning } = await import("../src/commands/down.js");
-  const { deliveryLiveness } = await import("../src/lib/delivery-proc.js");
+  const { DELIVERY_PROCESS, deliveryLiveness } = await import("../src/lib/delivery-proc.js");
   process.chdir(wsRoot); // the shipped readers resolve their root by walking up from cwd
   check("CONTROL: with no daemon and no record, the record is absent and the down guard is clear",
-    !existsSync(PID_PATH) && deliveryLiveness(undefined, SPACE) === "absent" && mayBeRunning(DELIVERY_ROW, ctx) === false);
+    !existsSync(PID_PATH) && deliveryLiveness(undefined, SPACE) === "absent" && mayBeRunning(DELIVERY_PROCESS, ctx) === false);
 
   // ---- THE SUBJECT: a daemon started on the NON-LAUNCHER path, as a container entrypoint would ----
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -143,7 +137,7 @@ try {
   // THE GUARD THE ISSUE IS ABOUT. `mayBeRunning` must block a `cotal down nats` while this daemon
   // is live; over an absent or stale record it returns false and the broker goes out from under it.
   check("CELL: the fail-closed down guard sees the live daemon (mayBeRunning is TRUE)",
-    mayBeRunning(DELIVERY_ROW, ctx) === true, mayBeRunning(DELIVERY_ROW, ctx));
+    mayBeRunning(DELIVERY_PROCESS, ctx) === true, mayBeRunning(DELIVERY_PROCESS, ctx));
 
   // ---- THE READER HALF: a live pid alone is not proof the process is a delivery daemon ----
   // A record that outlived its daemon is eventually re-pointed at an unrelated process by pid reuse.
@@ -174,7 +168,7 @@ try {
   check("CELL: and the identity pin goes with it",
     recordWasThere && !existsSync(identityPinPath(PID_PATH)), existsSync(identityPinPath(PID_PATH)));
   check("CONTROL: with the daemon gone the down guard is clear again",
-    mayBeRunning(DELIVERY_ROW, ctx) === false && deliveryLiveness(undefined, SPACE) === "absent");
+    mayBeRunning(DELIVERY_PROCESS, ctx) === false && deliveryLiveness(undefined, SPACE) === "absent");
 
   console.log(`\nDELIVERY-PIDFILE-OWNERSHIP SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;

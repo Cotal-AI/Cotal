@@ -646,14 +646,14 @@ try {
   // also runs, so the same attribution contract must hold there or a real `down` orphans a live
   // signer behind a torn pidfile at exit 0. Drive stopLocalProcess directly on the auth descriptor.
   const { stopLocalProcess } = await import("../src/lib/local-process-stop.js");
-  const authComponent = { kind: "local-process" as const, name: "auth", label: "user-auth service", pidFile: "auth-service.{space}.pid" };
+  const { AUTH_PROCESS } = await import("../src/lib/auth-proc.js");
   const dpRoot = await makeRoot("downpath", []);
   roots.push(dpRoot);
   const dpCtx = { root: dpRoot, space: "dp25", userAuth: true };
   const dpPid = join(authDir(dpRoot), "..", `auth-service.${spaceKey("dp25")}.pid`);
   for (const bad of ["not-a-pid", "1.5", "2147483648", "0", "-5"]) {
     writeFileSync(dpPid, bad);
-    const msg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+    const msg = await refusal(() => stopLocalProcess(AUTH_PROCESS, dpCtx));
     check(`down/stopLocalProcess REFUSES an unattributable auth pidfile ${JSON.stringify(bad)} and PRESERVES it (no clean-report orphan)`,
       msg.includes("unattributable") && existsSync(dpPid), { msg, kept: existsSync(dpPid) });
   }
@@ -670,7 +670,7 @@ try {
       if (p === UNKNOWN_PID) { const err = new Error("EIO") as NodeJS.ErrnoException; err.code = "EIO"; throw err; }
       return realKill(p, sig as never);
     }) as typeof process.kill;
-    unkMsg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+    unkMsg = await refusal(() => stopLocalProcess(AUTH_PROCESS, dpCtx));
   } finally {
     (process as unknown as { kill: typeof process.kill }).kill = realKill;
   }
@@ -684,13 +684,13 @@ try {
   rmSync(dpPid, { force: true });
 
   writeFileSync(dpPid, ""); // empty husk: safe to clear
-  await stopLocalProcess(authComponent as never, dpCtx as never);
+  await stopLocalProcess(AUTH_PROCESS, dpCtx);
   check("down/stopLocalProcess CLEARS an empty husk (no process behind it)", !existsSync(dpPid));
   // Over-refusal negative: a valid pid PROVEN dead (ESRCH) still clears normally - the contract
   // refuses UNATTRIBUTABLE/UNKNOWN records, it does not break the ordinary stop of a gone process.
   writeFileSync(dpPid, "999999");
   check("down/stopLocalProcess still CLEARS a valid ESRCH-dead pid (normal stop, no over-refusal)",
-    (await stopLocalProcess(authComponent as never, dpCtx as never)) === true && !existsSync(dpPid));
+    (await stopLocalProcess(AUTH_PROCESS, dpCtx)) === true && !existsSync(dpPid));
 
   // The stop-MARKER (`.stopping`) mutual-exclusion reservation. The ATOMIC publish (temp+link) means
   // a LIVE `down` holding the marker always wrote its own POSITIVE pid - a live holder is never
@@ -702,7 +702,7 @@ try {
   const marker = `${dpPid}.stopping`;
   writeFileSync(dpPid, "999999");
   writeFileSync(marker, String(process.pid)); // a LIVE holder's reservation
-  const liveMarkerMsg = await refusal(() => stopLocalProcess(authComponent as never, dpCtx as never));
+  const liveMarkerMsg = await refusal(() => stopLocalProcess(AUTH_PROCESS, dpCtx));
   check("stop-marker with a LIVE owner is NOT reclaimed (mutual exclusion holds)",
     liveMarkerMsg.includes("already being stopped") && existsSync(marker) && existsSync(dpPid), { liveMarkerMsg });
   rmSync(marker, { force: true });
@@ -710,7 +710,7 @@ try {
     writeFileSync(dpPid, "999999");
     writeFileSync(marker, stale); // stale/unattributable reservation, cannot be a live holder
     check(`a stale ${stale === "999999" ? "ESRCH-dead" : stale === "" ? "EMPTY" : JSON.stringify(stale)} marker is reclaimed and the stop proceeds (crashed `+"`down`"+` never wedges the next)`,
-      (await stopLocalProcess(authComponent as never, dpCtx as never)) === true && !existsSync(marker) && !existsSync(dpPid));
+      (await stopLocalProcess(AUTH_PROCESS, dpCtx)) === true && !existsSync(marker) && !existsSync(dpPid));
   }
 
   console.log("\n26) the PRE-STOP `stopLast` dependant guard fails CLOSED on an unattributable dependant (mayBeRunning)");
@@ -723,21 +723,20 @@ try {
   const guardRoot = await makeRoot("stoplast", ["downtenant"]);
   roots.push(guardRoot);
   const guardSpace = resolveDpSpace(guardRoot);
-  const authComp = { kind: "local-process" as const, name: "auth", label: "user-auth service", pidFile: "auth-service.{space}.pid" };
   const guardCtx = { root: guardRoot, space: guardSpace, userAuth: true };
   const authPidAt = join(guardRoot, ".cotal", `auth-service.${spaceKey(guardSpace)}.pid`);
   // mayBeRunning contract, directly:
-  check("mayBeRunning: absent pidfile ⇒ false", mayBeRunning(authComp as never, guardCtx as never) === false);
+  check("mayBeRunning: absent pidfile ⇒ false", mayBeRunning(AUTH_PROCESS, guardCtx) === false);
   for (const bad of ["not-a-pid", "1.5", "2147483648"]) {
     writeFileSync(authPidAt, bad);
-    check(`mayBeRunning: unattributable ${JSON.stringify(bad)} ⇒ TRUE (fail-closed, may be running)`, mayBeRunning(authComp as never, guardCtx as never) === true);
+    check(`mayBeRunning: unattributable ${JSON.stringify(bad)} ⇒ TRUE (fail-closed, may be running)`, mayBeRunning(AUTH_PROCESS, guardCtx) === true);
   }
   writeFileSync(authPidAt, "999999");
-  check("mayBeRunning: ESRCH-dead pid ⇒ false (provably gone)", mayBeRunning(authComp as never, guardCtx as never) === false);
+  check("mayBeRunning: ESRCH-dead pid ⇒ false (provably gone)", mayBeRunning(AUTH_PROCESS, guardCtx) === false);
   writeFileSync(authPidAt, "");
-  check("mayBeRunning: empty husk ⇒ false", mayBeRunning(authComp as never, guardCtx as never) === false);
+  check("mayBeRunning: empty husk ⇒ false", mayBeRunning(AUTH_PROCESS, guardCtx) === false);
   writeFileSync(authPidAt, String(process.pid));
-  check("mayBeRunning: a LIVE pid ⇒ true", mayBeRunning(authComp as never, guardCtx as never) === true);
+  check("mayBeRunning: a LIVE pid ⇒ true", mayBeRunning(AUTH_PROCESS, guardCtx) === true);
   // The REAL command path: `cotal down nats` with an unattributable live-ish auth dependant must
   // REFUSE (stop-last guard) and stop nothing.
   // The REAL command path: `cotal down nats` with an unattributable auth dependant must throw the
