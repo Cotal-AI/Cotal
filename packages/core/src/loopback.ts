@@ -15,3 +15,10 @@ export function isLoopbackLiteral(hostname: string): boolean {
   if (isIPv4(host)) return LOOPBACK.check(host, "ipv4");
   return isIPv6(host) && LOOPBACK.check(host, "ipv6");
 }
+
+/** May this URL carry a credential? Only over `https:`, or plain `http:` on a loopback IP literal.
+ *  Every other scheme is refused on loopback too, so `ftp:` or `ws:` to `127.0.0.1` never passes.
+ *  Callers keep their own error text. */
+export function isCredentialTransportUrl(url: URL): boolean {
+  return url.protocol === "https:" || (url.protocol === "http:" && isLoopbackLiteral(url.hostname));
+}

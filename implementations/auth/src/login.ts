@@ -31,7 +31,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeJwt } from "jose";
-import { isLoopbackLiteral, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
+import { isCredentialTransportUrl, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
 import { acquireLock } from "@cotal-ai/workspace";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
@@ -102,7 +102,7 @@ export function normalizeIdpUrl(idpUrl: string): string {
   }
   // `localhost` gets no exception: this base also derives the pinned JWKS origin, and a hosts
   // entry would then choose the key the callout trusts.
-  if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopbackLiteral(u.hostname)))
+  if (!isCredentialTransportUrl(u))
     throw new Error(`idp url must be https (or http on a loopback IP literal such as 127.0.0.1 for local dev) - got "${idpUrl}"`);
   // A query/hash would be silently DROPPED by the normalization below — and a silently altered
   // auth base is a different IdP than the operator asked for. Refuse instead.
@@ -390,8 +390,7 @@ function catalogUrlFromLink(idpUrl: string, link: string | null): string | undef
     } catch {
       return undefined;
     }
-    const loopback = url.protocol === "http:" && isLoopbackLiteral(url.hostname);
-    if (url.origin !== origin || (url.protocol !== "https:" && !loopback) || url.username || url.password)
+    if (url.origin !== origin || !isCredentialTransportUrl(url) || url.username || url.password)
       return undefined;
     return url.toString();
   }

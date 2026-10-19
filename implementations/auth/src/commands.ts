@@ -6,7 +6,7 @@
  * logged in as YOU across every repo on this box.
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { assertLifecycleToken, isLoopbackLiteral, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
+import { assertLifecycleToken, isCredentialTransportUrl, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import { CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
@@ -343,7 +343,7 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
       // Match the remote-registration and enrollment transport rule: HTTPS, except a loopback HTTP
       // literal where the actor token never leaves this machine. Names such as localhost get no
       // exception because name resolution chooses where the credential goes.
-      if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopbackLiteral(u.hostname)))
+      if (!isCredentialTransportUrl(u))
         throw new Error(`agent-bearer: --exchange-url must be https://, except for a loopback HTTP literal (got ${u.protocol}//) - the actor token must never cross plaintext off this machine`);
       u.pathname = `${u.pathname.replace(/\/$/, "")}/exchange`;
       u.search = "";

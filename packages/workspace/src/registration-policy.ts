@@ -1,5 +1,5 @@
+import { isCredentialTransportUrl } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, recordMesh, type MeshEntry, type UserAuthInfo } from "./mesh-registry.js";
-import { isLoopbackHost } from "./join-target.js";
 
 /** A rule's verdict: the value it produced, or the operator-facing sentence explaining the refusal. */
 export type Check<T> = { ok: true; value: T } | { ok: false; message: string };
@@ -108,14 +108,13 @@ const EXCHANGE_PROBE_TIMEOUT_MS = 5_000;
  * must be `https:`.
  */
 export function assertPinnedFetchUrl(u: URL, what: string): string | undefined {
-  if (u.protocol === "https:") return undefined;
   // The loopback exception is decided by PARSING the host as an address, never by how the text
   // begins: `/^127\./` also matched `127.evil.com`, `127.0.0.1.nip.io` and `127.com`, which anyone
-  // can register, and it missed real spellings like `0177.0.0.1`. `isLoopbackHost` is the one
-  // authority for the question, canonicalization included. A name that does not parse as an IP is
-  // a NAME and gets no exception, however it starts — `localhost` included, since a hosts entry or
-  // a poisoned lookup can point it anywhere.
-  if (u.protocol === "http:" && isLoopbackHost(u.hostname)) return undefined;
+  // can register, and it missed real spellings like `0177.0.0.1`, which the URL parser has already
+  // canonicalized here. Core's `isCredentialTransportUrl` is the one authority for the rule. A name
+  // that does not parse as an IP is a NAME and gets no exception, however it starts — `localhost`
+  // included, since a hosts entry or a poisoned lookup can point it anywhere.
+  if (isCredentialTransportUrl(u)) return undefined;
   // Name the ACTUAL rule. "must be https://" alone misleads the developer whose local flow used
   // http://localhost: it blames the scheme, when the same scheme on 127.0.0.1 would have passed.
   return (

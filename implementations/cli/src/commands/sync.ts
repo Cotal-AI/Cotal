@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { isLoopbackLiteral, mkSecretDir, registry, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult, type FlagSpec, type FlagValues, type ParsedArgs, type SpaceCatalogConsumer } from "@cotal-ai/core";
+import { isCredentialTransportUrl, mkSecretDir, registry, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult, type FlagSpec, type FlagValues, type ParsedArgs, type SpaceCatalogConsumer } from "@cotal-ai/core";
 import {
   clearCurrent,
   getCurrent,
@@ -60,7 +60,7 @@ function canonicalIdpUrl(raw: string, what: string): string {
   } catch {
     throw new Error(`${what} is not a valid URL`);
   }
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackLiteral(url.hostname)))
+  if (!isCredentialTransportUrl(url))
     throw new Error(`${what} must be https (or http on a loopback IP literal for local development)`);
   if (url.username || url.password || url.search || url.hash)
     throw new Error(`${what} must not contain credentials, a query, or a fragment`);
