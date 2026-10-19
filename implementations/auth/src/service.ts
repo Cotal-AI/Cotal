@@ -1319,10 +1319,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       const { lifecycleUid, row } = await serializedForAlias(opts.dir, owner, t.actor, async () => {
         // The token digest names one enrollment. A held row with this request's digest is that
         // enrollment retried, so it answers the same uid; any other held row is a lifecycle that
-        // still runs, and taking its grant would strand it.
+        // still runs, and taking its grant would strand it. `already-exists` distinguishes this
+        // definitive tokenHash refusal from `conflict` (stale serve epoch or CAS concurrency).
         const held = findManagedActor(opts.dir, owner, t.actor);
         if (held !== undefined && held.tokenHash !== t.tokenHash)
-          throw new EpEnvelopeError("conflict", `managed agent "${t.actor}" is enrolled at lifecycle ${held.lifecycleUid}; prepare that lifecycle's retirement before enrolling a successor`);
+          throw new EpEnvelopeError("already-exists", `managed agent "${t.actor}" is enrolled at lifecycle ${held.lifecycleUid}; prepare that lifecycle's retirement before enrolling a successor`);
         // A fresh uid is never one a retirement tombstoned, and only the host can make that promise.
         const lifecycleUid = held?.lifecycleUid ?? mintLifecycleUid();
         // The grant first: its envelope walk against the supervising actor refuses an over-wide

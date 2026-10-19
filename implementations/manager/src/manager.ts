@@ -1535,7 +1535,7 @@ export class Manager {
   private userReconcileSweepsInFlight = 0;
   private userReconcileLastSweep?: ManagerUserReconciliationSweep;
   private readonly userReconcileFailures = new Map<string, ManagerUserReconciliationFailure>();
-  private readonly releasedSeatWatches = new Map<string, { row: ManagerSlotRecord; unknownProbes: number; nextProbeAt: number }>();
+  private readonly releasedSeatWatches = new Map<string, { row: ManagerSlotRecord; unknownProbes: number; retireFailures: number; nextProbeAt: number }>();
   private releasedSeatWatchTimer?: ReturnType<typeof setInterval>;
   private releasedSeatPollInFlight = false;
 
@@ -4661,60 +4661,60 @@ export class Manager {
 
   /** The actual footprint teardown (wrapped by {@link deprovision}'s single-flight). */
   private async driveDeprovision(a: TeardownTarget): Promise<void> {
-      const held = this.retiring.get(a.name);
-      if (a.delegated) {
-        // The agent is its user's: only that user's retirement intent retires it, so the name stays
-        // held until retireDelegatedAgent confirms the host retired this UID.
-        if (held?.target.lifecycleUid === a.lifecycleUid)
-          held.lastError = `"${a.name}" was launched under a delegated user intent and retires only through its user's retirement intent`;
-        return;
-      }
-      if (a.keepCustody || held?.keepCustody) {
-        return;
-      }
-      if (a.reapRequired || a.released) {
-        if (a.released) {
-          const probe = probeRecordedProcess(a.process);
-          if (probe.state !== "proved-dead") {
-            const reason =
-              probe.state === "unknown"
-                ? `seat liveness is unknown (${probe.reason}); keeping custody`
-                : "released seat process is still alive; keeping custody";
-            if (held?.target.lifecycleUid === a.lifecycleUid) {
-              held.keepCustody = true;
-              held.target.keepCustody = true;
-              held.lastError = reason;
-            }
-            throw new Error(reason);
+    const held = this.retiring.get(a.name);
+    if (a.delegated) {
+      // The agent is its user's: only that user's retirement intent retires it, so the name stays
+      // held until retireDelegatedAgent confirms the host retired this UID.
+      if (held?.target.lifecycleUid === a.lifecycleUid)
+        held.lastError = `"${a.name}" was launched under a delegated user intent and retires only through its user's retirement intent`;
+      return;
+    }
+    if (a.keepCustody || held?.keepCustody) {
+      return;
+    }
+    if (a.reapRequired || a.released) {
+      if (a.released) {
+        const probe = probeRecordedProcess(a.process);
+        if (probe.state !== "proved-dead") {
+          const reason =
+            probe.state === "unknown"
+              ? `seat liveness is unknown (${probe.reason}); keeping custody`
+              : "released seat process is still alive; keeping custody";
+          if (held?.target.lifecycleUid === a.lifecycleUid) {
+            held.keepCustody = true;
+            held.target.keepCustody = true;
+            held.lastError = reason;
           }
+          throw new Error(reason);
         }
-        if (a.runtime && isCustodialRuntime(this.requiredRuntime) && a.runtime.kind === this.requiredRuntime.kind) {
-          try {
-            await this.reapOrphanSeat({ name: a.name, runtime: a.runtime });
-          } catch (e) {
-            const reason = rejectionText(e);
-            if (held?.target.lifecycleUid === a.lifecycleUid) {
-              held.keepCustody = true;
-              held.target.keepCustody = true;
-              held.lastError = reason;
-            }
-            throw e;
-          }
-        } else if (a.process !== undefined) {
-          const probe = probeRecordedProcess(a.process);
-          if (probe.state !== "proved-dead") {
-            const reason = probe.state === "unknown" ? probe.reason : "process is still alive";
-            if (held?.target.lifecycleUid === a.lifecycleUid) {
-              held.keepCustody = true;
-              held.target.keepCustody = true;
-              held.lastError = reason;
-            }
-            throw new Error(reason);
-          }
-        }
-        a.reapRequired = false;
-        a.released = false;
       }
+      if (a.runtime && isCustodialRuntime(this.requiredRuntime) && a.runtime.kind === this.requiredRuntime.kind) {
+        try {
+          await this.reapOrphanSeat({ name: a.name, runtime: a.runtime });
+        } catch (e) {
+          const reason = rejectionText(e);
+          if (held?.target.lifecycleUid === a.lifecycleUid) {
+            held.keepCustody = true;
+            held.target.keepCustody = true;
+            held.lastError = reason;
+          }
+          throw e;
+        }
+      } else if (a.process !== undefined) {
+        const probe = probeRecordedProcess(a.process);
+        if (probe.state !== "proved-dead") {
+          const reason = probe.state === "unknown" ? probe.reason : "process is still alive";
+          if (held?.target.lifecycleUid === a.lifecycleUid) {
+            held.keepCustody = true;
+            held.target.keepCustody = true;
+            held.lastError = reason;
+          }
+          throw new Error(reason);
+        }
+      }
+      a.reapRequired = false;
+      a.released = false;
+    }
     if (this.remoteAuthority) {
       // A hosted composition owns grant revocation and resumable footprint release. It calls this
       // prerequisite before the terminal rail. The callback must preserve this UID and its pending
@@ -6170,9 +6170,7 @@ export class Manager {
       return { ok: false, error: `the name "${identityName}" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };
     const held = this.retiring.get(identityName);
     if (held !== undefined) {
-      if (!held.keepCustody && !held.target.keepCustody && !held.target.delegated) {
-        void this.deprovision(held.target).catch(() => {});
-      }
+      void this.deprovision(held.target).catch(() => {});
       const err = lifecycleBlocked("failed-precondition",
         `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name.`,
         { blockedOp: "retirement", opId: held.opId, remedy: "retry" });
@@ -6749,9 +6747,7 @@ export class Manager {
         // already removed the hold, so fresh-lifecycle resume still reaches the fail-closed roster gate.
         const held = this.retiring.get(entry.name);
         if (held) {
-          if (!held.keepCustody && !held.target.keepCustody && !held.target.delegated) {
-            void this.deprovision(held.target).catch(() => {});
-          }
+          void this.deprovision(held.target).catch(() => {});
           return {
             ok: false,
             agents: [],
@@ -10499,7 +10495,7 @@ export class Manager {
   }
 
   private watchReleasedUserSeat(row: ManagerSlotRecord): void {
-    this.releasedSeatWatches.set(row.actor, { row, unknownProbes: 0, nextProbeAt: 0 });
+    this.releasedSeatWatches.set(row.actor, { row, unknownProbes: 0, retireFailures: 0, nextProbeAt: 0 });
     if (this.releasedSeatWatchTimer || this.staticReconcileStopping) return;
     this.releasedSeatWatchTimer = setInterval(() => {
       void this.pollReleasedUserSeats();
@@ -10567,7 +10563,9 @@ export class Manager {
           this.releasedSeatWatches.delete(actor);
           if (!afterHold) this.userReconcileFailures.delete(actor);
         } else {
-          entry.nextProbeAt = Date.now() + 250;
+          const delayMs = Math.min(250 * 2 ** entry.retireFailures, 30_000);
+          entry.retireFailures++;
+          entry.nextProbeAt = Date.now() + delayMs;
         }
       }
       if (this.releasedSeatWatches.size === 0 && this.releasedSeatWatchTimer) {
@@ -10725,13 +10723,12 @@ export class Manager {
               const reason = `enrolling slot "${row.actor}" cannot be converged (missing ${!row.tokenHash ? "tokenHash" : !row.enrollSpec ? "enrollSpec" : "remote enrollManagedAgent"}); keeping alias held`;
               const fallbackUid = row.lifecycleUid ?? row.provisionalUid;
               if (fallbackUid) {
-                const target = this.holdUserSlotTarget(row, {
+                this.holdUserSlotTarget(row, {
                   lifecycleUid: fallbackUid,
                   keepCustody: true,
                   includeSecrets: true,
                   lastError: reason,
                 });
-                await this.deprovision(target);
               }
               this.userReconcileFailures.set(row.actor, {
                 actor: row.actor,
@@ -10756,7 +10753,7 @@ export class Manager {
               row.lifecycleUid = material.lifecycleUid;
             } catch (enrollErr) {
               const isHostRefusal =
-                enrollErr instanceof EpEnvelopeError && enrollErr.code === "conflict";
+                enrollErr instanceof EpEnvelopeError && enrollErr.code === "already-exists";
               if (isHostRefusal && row.provisionalUid) {
                 const unshredded: string[] = [];
                 const staged = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, row.actor, row.provisionalUid);

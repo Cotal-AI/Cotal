@@ -582,6 +582,7 @@ try {
   registry.register(custodialProvider);
 
   const seatControls = new Map<string, { pidFile: string; exitFile: string }>();
+  const onBuildLaunch = new Map<string, (o: { name: string; lifecycleUid?: string }) => void>();
   const connector: Connector = {
     kind: "connector",
     name: "u4005-seat",
@@ -589,6 +590,7 @@ try {
     eventChannel,
     buildLaunch: (o) => {
       assert(o.userAuth && o.lifecycleUid);
+      onBuildLaunch.get(o.name)?.(o);
       const ctl = seatControls.get(o.name) ?? {
         pidFile: join(scratch, `${o.name}.pid.json`),
         exitFile: join(scratch, `${o.name}.exit`),
@@ -690,7 +692,7 @@ Seat ${seatName}.
     runtime: "pty" | "custodial-pty",
     resumeAttemptId?: string,
     onAfterHostEnrollmentCommit?: (material: { actor: string; lifecycleUid: string }) => void,
-    opts?: { deferStart?: boolean },
+    opts?: { deferStart?: boolean; beforeHostEnrollment?: (target: { actor: string; tokenHash: string }) => void },
   ) {
     const state = remote.loadOrCreateRemoteManagerIdentity(wsRoot, space);
     const prep = await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "prepare"));
@@ -746,6 +748,7 @@ Seat ${seatName}.
         return remote.remoteManagerAdminAuthorized(response, request, owner);
       },
       enrollManagedAgent: async ({ target }) => {
+        opts?.beforeHostEnrollment?.(target);
         const request = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target);
         const material = remote.remoteManagedAgentEnrollmentMaterial(
           await cotalAuthProvider.enrollRemoteManagedAgent!({ ...callArgs, request }),
@@ -2210,6 +2213,273 @@ Seat ${seatName}.
   }
 
   // =========================================================================
+  // Probe C3 (F1): stale-serve-epoch conflict during convergence keeps enrolling row and retries
+  // =========================================================================
+  if (shouldRunCell("probe-c3-stale-epoch-conflict") || shouldRunCell("cell-e5-stale-epoch-conflict")) {
+    const cell = "probe-c3-stale-epoch-conflict";
+    console.log(`\n=== Probe (${cell}): lost enrollment reply, then the restart's convergence call gets a stale-serve-epoch conflict ===`);
+    const seatName = "seat_c_epoch";
+    const ws = createWorkspaceRoot("c-epoch", [seatName]);
+    let committedUid = "";
+    const { mgr: mgr1 } = await bootRemoteManagerOnRoot(ws, "pty", undefined, (material) => {
+      if (material.actor === seatName && !committedUid) {
+        committedUid = material.lifecycleUid;
+        throw new Error("simulated lost enrollment response after host commit");
+      }
+    });
+    const slotKey = `mgrslot.${owner}.${owner}-${seatName}`;
+    const readRow = async () => {
+      const e = await recordsKv.get(slotKey);
+      return e ? (JSON.parse(new TextDecoder().decode(e.value)) as { phase?: string; tokenHash?: string; lifecycleUid?: string; provisionalUid?: string }) : undefined;
+    };
+    const first = await mgr1.startAgent({ name: seatName, agent: "u4005-seat" });
+    const firstRow = await readRow();
+    checkSetup(cell, "first spawn loses the enrollment reply after the host committed", !first.ok && committedUid.length > 0, { first, committedUid });
+    checkSetup(cell, "the slot row is enrolling with a recorded tokenHash", firstRow?.phase === "enrolling" && typeof firstRow?.tokenHash === "string", firstRow);
+    await mgr1.stop();
+    const before = await inspectLifecycleState(seatName, committedUid);
+    checkSetup(cell, "before restart: the host-committed lifecycle is active, granted, with durables", before.headState === "active" && before.grantUnrevoked === true && before.dmPresent && before.dlvPresent, before);
+    let conflictCalls = 0;
+    const { mgr: mgr2 } = await bootRemoteManagerOnRoot(ws, "pty", undefined, (material) => {
+      if (material.actor !== seatName) return;
+      conflictCalls++;
+      throw new EpEnvelopeError("conflict", "manager serve epoch 1 is stale; current is 2");
+    });
+    const row2 = await readRow();
+    const after2 = await inspectLifecycleState(seatName, committedUid);
+    const rec2 = mgr2.status().userReconciliation;
+    checkSetup(cell, "the restart's convergence call was made and refused with the stale-epoch conflict", conflictCalls > 0, { conflictCalls });
+    checkGuard(
+      cell,
+      "a stale-serve-epoch conflict does not mark the slot retired while the host-committed lifecycle is still active",
+      row2?.phase === "enrolling" &&
+        after2.headState === "active" &&
+        rec2?.state === "failed" &&
+        rec2?.lastSweep?.failed === 1 &&
+        rec2?.lastSweep?.succeeded === 0,
+      { row2, after2, rec2 },
+    );
+    await mgr2.stop();
+    const { mgr: mgr3 } = await bootRemoteManagerOnRoot(ws, "pty");
+    const row3 = await readRow();
+    const after3 = await inspectLifecycleState(seatName, committedUid);
+    await mgr3.stop();
+    checkContract(
+      cell,
+      "once the host answers again, the next start retires the host-committed lifecycle (head retired, grant revoked, durables removed)",
+      row3?.phase === "retired" &&
+        after3.headState === "retired" &&
+        !after3.grantUnrevoked &&
+        !after3.dmPresent &&
+        !after3.dlvPresent,
+      { row3, after3 },
+    );
+  }
+
+  // =========================================================================
+  // Edge (e6 / F1 & F5a): real host HTTP 403 already-exists retires enrolling row at provisionalUid; omitted code keeps enrolling
+  // =========================================================================
+  console.log("\n=== Edge (e6 / F1 & F5a): real host HTTP 403 already-exists retires enrolling row at provisionalUid; omitted code keeps enrolling ===");
+  if (shouldRunCell("cell-e6-host-403-tokenhash-refusal")) {
+    const cell = "cell-e6-host-403-tokenhash-refusal";
+    const seatName = "seat_e6_refused";
+    const ws = createWorkspaceRoot("e6-host-403", [seatName]);
+    let abortBeforeHost = true;
+    const { mgr: mgr1, remoteAuthority: auth1 } = await bootRemoteManagerOnRoot(ws, "pty", undefined, undefined, {
+      beforeHostEnrollment: (t) => {
+        if (abortBeforeHost && t.actor === seatName) throw new Error("simulated crash before host received enrollment");
+      },
+    });
+    const first = await mgr1.startAgent({ name: seatName, agent: "u4005-seat" });
+    abortBeforeHost = false;
+    // Enroll a live incarnation under the same actor name on the real host with a different tokenHash
+    const liveTokenHash = "e".repeat(64);
+    const liveMaterial = await auth1.enrollManagedAgent!({
+      target: {
+        actor: seatName,
+        tokenHash: liveTokenHash,
+        allowSubscribe: [],
+        allowPublish: [],
+      },
+    });
+    const liveUid = liveMaterial.lifecycleUid;
+    await mgr1.stop();
+    const slotKey = userSlotKey(owner, owner, seatName);
+    const readRow = async () => {
+      const e = await recordsKv.get(slotKey);
+      return e
+        ? (JSON.parse(new TextDecoder().decode(e.value)) as {
+            phase?: string;
+            tokenHash?: string;
+            lifecycleUid?: string;
+            provisionalUid?: string;
+          })
+        : undefined;
+    };
+    const firstRow = await readRow();
+    const provisionalUid = firstRow?.provisionalUid ?? "";
+    const stagedFiles = provisionalUid ? agentLifecycleSecretFilePaths(ws, space, seatName, provisionalUid) : undefined;
+    checkSetup(
+      cell,
+      "interrupted enrollment before host commit leaves an enrolling row with provisionalUid, tokenHash, and staged actorToken file",
+      !first.ok &&
+        firstRow?.phase === "enrolling" &&
+        provisionalUid.length > 0 &&
+        typeof firstRow?.tokenHash === "string" &&
+        stagedFiles !== undefined &&
+        existsSync(stagedFiles.actorToken),
+      { first, firstRow },
+    );
+    const liveBefore = await inspectLifecycleState(seatName, liveUid);
+    checkSetup(
+      cell,
+      "real host holds an active enrollment for the same actor under a different tokenHash",
+      liveUid.length > 0 &&
+        liveUid !== provisionalUid &&
+        liveBefore.headState === "active" &&
+        liveBefore.grantUnrevoked === true &&
+        liveBefore.dmPresent === true &&
+        liveBefore.dlvPresent === true,
+      { liveUid, provisionalUid, liveBefore },
+    );
+
+    // Sub-cell 1: real host returns HTTP 403, but `code` is omitted from the wire body -> row stays enrolling
+    const realFetch = globalThis.fetch;
+    let observedStatus = 0;
+    let observedCode: unknown;
+    let mgr2: Manager | undefined;
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const res = await realFetch(input, init);
+        const urlStr = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (urlStr.endsWith("/manager-service-authority") && res.status === 403) {
+          const body = (await res.clone().json()) as { error?: string; code?: unknown };
+          if (typeof body.error === "string" && body.error.includes(seatName)) {
+            observedStatus = res.status;
+            observedCode = body.code;
+            return new Response(JSON.stringify({ error: body.error }), {
+              status: res.status,
+              headers: res.headers,
+            });
+          }
+        }
+        return res;
+      }) as typeof globalThis.fetch;
+      ({ mgr: mgr2 } = await bootRemoteManagerOnRoot(ws, "pty"));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    const rowNoCode = await readRow();
+    const recNoCode = mgr2!.status().userReconciliation;
+    checkGuard(
+      cell,
+      "when the host omits `code` from its HTTP 403 refusal, convergence leaves the row enrolling, counts failed=1, and keeps staged secrets",
+      observedStatus === 403 &&
+        observedCode === "already-exists" &&
+        rowNoCode?.phase === "enrolling" &&
+        rowNoCode?.provisionalUid === provisionalUid &&
+        recNoCode?.state === "failed" &&
+        recNoCode?.lastSweep?.failed === 1 &&
+        recNoCode?.lastSweep?.succeeded === 0 &&
+        existsSync(stagedFiles!.actorToken),
+      { observedStatus, observedCode, rowNoCode, recNoCode },
+    );
+    await mgr2!.stop();
+
+    // Sub-cell 2: real host returns HTTP 403 with `code: "already-exists"` -> row is retired at provisionalUid and staged secrets shredded
+    const { mgr: mgr3 } = await bootRemoteManagerOnRoot(ws, "pty");
+    const rowWithCode = await readRow();
+    const recWithCode = mgr3.status().userReconciliation;
+    const liveStateAfter = await inspectLifecycleState(seatName, liveUid);
+    await mgr3.stop();
+    checkContract(
+      cell,
+      "when the real host returns HTTP 403 with code already-exists, convergence shreds staged secrets and retires the enrolling row at provisionalUid",
+      rowWithCode?.phase === "retired" &&
+        rowWithCode?.lifecycleUid === provisionalUid &&
+        !existsSync(stagedFiles!.actorToken) &&
+        recWithCode?.state === "idle" &&
+        recWithCode?.lastSweep?.succeeded === 1 &&
+        recWithCode?.lastSweep?.failed === 0 &&
+        recWithCode?.failures.length === 0,
+      { rowWithCode, recWithCode },
+    );
+    checkGuard(
+      cell,
+      "retiring the un-committed enrolling row at provisionalUid leaves the host's live enrollment at liveUid active and unrevoked",
+      liveStateAfter.headState === "active" &&
+        liveStateAfter.headUid === liveUid &&
+        liveStateAfter.grantUnrevoked === true &&
+        liveStateAfter.dmPresent === true &&
+        liveStateAfter.dlvPresent === true,
+      liveStateAfter,
+    );
+  }
+
+  // =========================================================================
+  // Edge (e7 / F5b): post-launch recordActiveUserSlot failure stops the launched handle and tears down the orphan
+  // =========================================================================
+  console.log("\n=== Edge (e7 / F5b): post-launch recordActiveUserSlot failure stops the launched handle and tears down the orphan ===");
+  if (shouldRunCell("cell-e7-post-launch-active-slot-write-failure")) {
+    const cell = "cell-e7-post-launch-active-slot-write-failure";
+    const seatName = "seat_e7_active_fail";
+    const ws = createWorkspaceRoot("e7-active-fail", [seatName]);
+    let enrolledUid = "";
+    const { mgr: mgr1 } = await bootRemoteManagerOnRoot(ws, "pty", undefined, (material) => {
+      if (material.actor === seatName) enrolledUid = material.lifecycleUid;
+    });
+    const spaceDir = join(ws, ".cotal", `space.${Buffer.from(space, "utf8").toString("hex")}`);
+    const indexFile = join(spaceDir, "mgrslots.json");
+    const realReadFileSync = fsDefault.readFileSync;
+    let failNextIndexRead = false;
+    let injectedActiveWriteFault = false;
+    onBuildLaunch.set(seatName, () => {
+      failNextIndexRead = true;
+    });
+    let failedStart: { ok: boolean; error?: string };
+    try {
+      fsDefault.readFileSync = ((path: Parameters<typeof realReadFileSync>[0], ...rest: unknown[]) => {
+        if (failNextIndexRead && String(path) === indexFile) {
+          failNextIndexRead = false;
+          injectedActiveWriteFault = true;
+          throw new Error("simulated post-launch recordActiveUserSlot write failure");
+        }
+        return (realReadFileSync as (...a: unknown[]) => unknown)(path, ...rest);
+      }) as typeof realReadFileSync;
+      syncBuiltinESMExports();
+      failedStart = await mgr1.startAgent({ name: seatName, agent: "u4005-seat" });
+    } finally {
+      onBuildLaunch.delete(seatName);
+      fsDefault.readFileSync = realReadFileSync;
+      syncBuiltinESMExports();
+    }
+    const orphanDeadline = Date.now() + 5_000;
+    while (Date.now() < orphanDeadline && (await inspectLifecycleState(seatName, enrolledUid)).headState !== "retired") {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const afterOrphan = await inspectLifecycleState(seatName, enrolledUid);
+    const ctl = seatControls.get(seatName);
+    const launchedPid = ctl && existsSync(ctl.pidFile) ? (JSON.parse(readFileSync(ctl.pidFile, "utf8")) as { pid: number }).pid : undefined;
+    if (launchedPid !== undefined) {
+      await until(() => !pidAlive(launchedPid), `${seatName} stopped after recordActiveUserSlot failure`, 5_000);
+    }
+    await mgr1.stop();
+    checkContract(
+      cell,
+      "when post-launch recordActiveUserSlot throws, startAgent stops the launched handle, tears down the orphaned lifecycle, and returns the failure",
+      injectedActiveWriteFault &&
+        !failedStart.ok &&
+        /simulated post-launch recordActiveUserSlot write failure/.test(failedStart.error ?? "") &&
+        !pidAlive(launchedPid) &&
+        afterOrphan.headState === "retired" &&
+        !afterOrphan.grantUnrevoked &&
+        !afterOrphan.dmPresent &&
+        !afterOrphan.dlvPresent,
+      { injectedActiveWriteFault, failedStart, launchedPidAlive: pidAlive(launchedPid), afterOrphan },
+    );
+  }
+
+  // =========================================================================
   // Guard (g7 / N-D): enrolling row missing tokenHash/enrollSpec is held by keepCustody alone
   // =========================================================================
   console.log("\n=== Guard (g7 / N-D): enrolling row missing tokenHash/enrollSpec is held by keepCustody alone ===");
@@ -2266,7 +2536,7 @@ Seat ${seatName}.
     const afterStart = await inspectLifecycleState(seatName, uid);
     checkGuard(
       cell,
-      "after manager2.start() on enrolling row missing tokenHash: reconcile records refused failure and keepCustody prevents driveDeprovision from retiring the lifecycle",
+      "after manager2.start() on enrolling row missing tokenHash: reconcile records refused failure and holds the alias with keepCustody",
       rec2?.state === "failed" &&
         rec2?.lastSweep?.failed === 1 &&
         rec2?.failures.some((f) => f.actor === seatName && f.disposition === "refused") === true &&
@@ -2280,21 +2550,14 @@ Seat ${seatName}.
       { rec2, afterStart },
     );
 
-    let deprovisionCallsOnRespawn = 0;
-    const mgr2Internal = mgr2 as unknown as { deprovision: (t: unknown) => Promise<void> };
-    const origDeprovision = mgr2Internal.deprovision.bind(mgr2);
-    mgr2Internal.deprovision = (t: unknown) => {
-      deprovisionCallsOnRespawn++;
-      return origDeprovision(t);
-    };
     const respawn = await mgr2.startAgent({ name: seatName, agent: "u4005-seat" });
     await new Promise((r) => setTimeout(r, 500));
     const afterRespawn = await inspectLifecycleState(seatName, uid);
     checkGuard(
       cell,
-      "same-name spawn while enrolling keepCustody hold stands is refused without invoking deprovision at the alias gate",
-      !respawn.ok && deprovisionCallsOnRespawn === 0,
-      { respawn, deprovisionCallsOnRespawn },
+      "same-name spawn while enrolling keepCustody hold stands is refused and re-drives deprovision into driveDeprovision's single keepCustody gate",
+      !respawn.ok && /reserved pending retirement/.test(respawn.error ?? ""),
+      respawn,
     );
     checkGuard(
       cell,
@@ -2313,9 +2576,9 @@ Seat ${seatName}.
   }
 
   // =========================================================================
-  // Guard (g8 / N-E): released-seat watch bounds unknown /proc re-probes and retries failed retirement after proved-dead
+  // Guard (g8 / N-E & F5d & F6): released-seat watch bounds unknown /proc re-probes, backs off failed retirement retries, and drains on stop()
   // =========================================================================
-  console.log("\n=== Guard (g8 / N-E): released-seat watch bounds unknown /proc re-probes and retries failed retirement after proved-dead ===");
+  console.log("\n=== Guard (g8 / N-E & F5d & F6): released-seat watch bounds unknown /proc re-probes, backs off failed retirement retries, and drains on stop() ===");
   if (shouldRunCell("cell-g8-released-seat-watch-bounds-and-retry")) {
     const cell = "cell-g8-released-seat-watch-bounds-and-retry";
     const seatName = "seat_g8_watch";
@@ -2330,7 +2593,7 @@ Seat ${seatName}.
     checkSetup(cell, "seat_g8_watch remains alive after manager1.stop() released it", pidAlive(seatPid), { seatPid });
 
     // Start manager2: seat_g8_watch is adopted as a released live seat and added to releasedSeatWatches
-    const { mgr: mgr2, remoteAuthority: auth2 } = await bootRemoteManagerOnRoot(ws, "custodial-pty");
+    const { mgr: mgr2 } = await bootRemoteManagerOnRoot(ws, "custodial-pty");
     const watches = (mgr2 as unknown as { releasedSeatWatches: Map<string, unknown> }).releasedSeatWatches;
     checkSetup(cell, "manager2 watches released seat_g8_watch after startup adoption", watches.has(seatName), { size: watches.size });
 
@@ -2352,49 +2615,79 @@ Seat ${seatName}.
       fsDefault.readFileSync = realReadFileSync;
       syncBuiltinESMExports();
     }
+    const mgr2Retiring = (mgr2 as unknown as { retiring: Map<string, { keepCustody?: boolean; lastError?: string }> }).retiring.get(seatName);
+    const mgr2Rec = mgr2.status().userReconciliation;
     checkGuard(
       cell,
-      "released-seat watch bounds unknown /proc re-probes (<= 4 probes over 2.2s and drops the watch entry while keeping custody)",
-      watchStatReads > 0 && watchStatReads <= 4 && !watches.has(seatName),
-      { watchStatReads, stillWatched: watches.has(seatName) },
+      "released-seat watch bounds unknown /proc re-probes (<= 4 probes over 2.2s, drops the watch entry, and records a keepCustody hold)",
+      watchStatReads > 0 &&
+        watchStatReads <= 4 &&
+        !watches.has(seatName) &&
+        mgr2Retiring?.keepCustody === true &&
+        mgr2Rec?.failures.some((f) => f.actor === seatName && f.disposition === "held" && /seat liveness is unknown/.test(f.lastError)) === true,
+      { watchStatReads, stillWatched: watches.has(seatName), mgr2Retiring, mgr2Rec },
     );
 
-    // Re-arm the watch on manager3 while seat_g8_watch is still alive, then fail the first prepareAgentRetirement after exit
+    // Re-arm the watch on manager3 while seat_g8_watch is still alive, then fail the first 2 prepareAgentRetirement calls after exit
     await mgr2.stop();
     const { mgr: mgr3, remoteAuthority: auth3 } = await bootRemoteManagerOnRoot(ws, "custodial-pty");
     let transientPrepareFailures = 0;
+    const prepareAttemptTimes: number[] = [];
+    let reentrantPollSkipped = false;
+    let stopSettledWhileDeprovisionInFlight = true;
+    let stopPromise: Promise<void> | undefined;
     const origPrepare = auth3.prepareAgentRetirement.bind(auth3);
     auth3.prepareAgentRetirement = async (args) => {
-      if (args.target.actor === seatName && transientPrepareFailures === 0) {
-        transientPrepareFailures++;
-        throw new Error("simulated transient prepareAgentRetirement failure on watched released seat");
+      if (args.target.actor === seatName) {
+        prepareAttemptTimes.push(Date.now());
+        if (transientPrepareFailures < 2) {
+          transientPrepareFailures++;
+          throw new Error(`simulated transient prepareAgentRetirement failure #${transientPrepareFailures}`);
+        }
+        // 3rd attempt: test the releasedSeatPollInFlight guard and Manager.stop() draining this tracked retirement
+        const m3Internal = mgr3 as unknown as { releasedSeatPollInFlight: boolean; pollReleasedUserSeats(): Promise<void> };
+        const attemptsBeforeReentrant = prepareAttemptTimes.length;
+        await m3Internal.pollReleasedUserSeats();
+        reentrantPollSkipped = m3Internal.releasedSeatPollInFlight === true && prepareAttemptTimes.length === attemptsBeforeReentrant;
+        let stopDone = false;
+        stopPromise = mgr3.stop().then(() => {
+          stopDone = true;
+        });
+        await new Promise((r) => setTimeout(r, 80));
+        stopSettledWhileDeprovisionInFlight = stopDone;
       }
       return origPrepare(args);
     };
     writeFileSync(ctl.exitFile, "exit");
     await until(() => !pidAlive(seatPid), "seat_g8_watch exit cleanup");
-    const watchDeadline = Date.now() + 4_000;
+    const watchDeadline = Date.now() + 6_000;
     while (Date.now() < watchDeadline && (await inspectLifecycleState(seatName, uid)).headState !== "retired") {
       await new Promise((r) => setTimeout(r, 100));
     }
+    if (stopPromise) await stopPromise;
+    else await mgr3.stop();
     const afterWatchedRetry = await inspectLifecycleState(seatName, uid);
+    const secondRetryDelayMs = prepareAttemptTimes.length >= 3 ? prepareAttemptTimes[2]! - prepareAttemptTimes[1]! : 0;
     checkContract(
       cell,
-      "after a transient retirement failure on proved-dead, the released-seat watch keeps the entry and retries to retire the lifecycle",
-      transientPrepareFailures === 1 &&
+      "after transient retirement failures on proved-dead, the released-seat watch backs off exponentially, skips re-entrant polls, drains on stop(), and retires the lifecycle",
+      transientPrepareFailures === 2 &&
+        prepareAttemptTimes.length === 3 &&
+        secondRetryDelayMs >= 400 &&
+        reentrantPollSkipped &&
+        !stopSettledWhileDeprovisionInFlight &&
         afterWatchedRetry.headState === "retired" &&
         !afterWatchedRetry.grantUnrevoked &&
         !afterWatchedRetry.dmPresent &&
         !afterWatchedRetry.dlvPresent,
-      { transientPrepareFailures, afterWatchedRetry },
+      { transientPrepareFailures, prepareAttemptTimes, secondRetryDelayMs, reentrantPollSkipped, stopSettledWhileDeprovisionInFlight, afterWatchedRetry },
     );
-    await mgr3.stop();
   }
 
   // =========================================================================
-  // Local (h1 / N-A): local user-mode slot custody writes mgrslot rows with owner-scoped grant and keeps local index consistent
+  // Local (h1 / N-A & F3): local user-mode slot custody writes local index before KV row and skips phantom suffixes
   // =========================================================================
-  console.log("\n=== Local (h1 / N-A): local user-mode slot custody writes mgrslot rows with owner-scoped grant ===");
+  console.log("\n=== Local (h1 / N-A & F3): local user-mode slot custody writes local index before KV row and skips phantom suffixes ===");
   if (shouldRunCell("cell-h1-local-user-slot-custody")) {
     const cell = "cell-h1-local-user-slot-custody";
     const wsLocal = createWorkspaceRoot("h1-local-slot", ["seat_h1_local"]);
@@ -2423,7 +2716,7 @@ Seat ${seatName}.
         { userMode: m1.userMode, remote: m1.remoteAuthority !== undefined, store: m1.hasUserSlotStore() },
       );
 
-      // Verify writeUserSlot does not record a local index suffix before the KV write succeeds
+      // Verify provisioner is denied mgrslot KV writes while writeUserSlot records the local suffix before the KV write
       const deniedCreds = await mintCreds(auth, newIdentity(), "provisioner");
       const deniedNc = await connect({ servers, ...standaloneConnectOpts({ creds: deniedCreds, tls: false }), maxReconnectAttempts: 0 });
       try {
@@ -2452,11 +2745,14 @@ Seat ${seatName}.
           deniedErr = e;
         }
         const suffixesAfterDenied = readLocalSlotSuffixes(wsLocal, space);
+        const deniedRow = await readUserSlot(recordsKv, space, owner, owner, "denied_actor");
         checkGuard(
           cell,
-          "a rejected KV write leaves no phantom suffix in the local mgrslots.json index",
-          deniedErr !== undefined && !suffixesAfterDenied.includes(`${owner}-denied_actor`),
-          { deniedErr: String(deniedErr), suffixesAfterDenied },
+          "writeUserSlot records the local mgrslots.json suffix before the KV write, and provisioner is denied mgrslot KV writes",
+          deniedErr !== undefined &&
+            deniedRow === undefined &&
+            suffixesAfterDenied.includes(`${owner}-denied_actor`),
+          { deniedErr: String(deniedErr), deniedRow, suffixesAfterDenied },
         );
       } finally {
         await deniedNc.close().catch(() => {});
@@ -2507,8 +2803,8 @@ Seat ${seatName}.
       }
       checkContract(
         cell,
-        "a successor manager in local user mode starts cleanly on the same root and scans the recorded slot",
-        start2Error === undefined && (mgrLocal2.status().userReconciliation?.lastSweep?.examined ?? 0) >= 1,
+        "a successor manager in local user mode skips the absent suffix and examines the durable row whose suffix is present in mgrslots.json",
+        start2Error === undefined && (mgrLocal2.status().userReconciliation?.lastSweep?.examined ?? 0) === 1,
         { start2Error, userReconciliation: mgrLocal2.status().userReconciliation },
       );
     } finally {
@@ -2518,6 +2814,113 @@ Seat ${seatName}.
         process.kill(seatProc.pid!, "SIGKILL");
       } catch {
         /* gone */
+      }
+    }
+  }
+
+  // =========================================================================
+  // Local (h3 / F3 & F5c): local user-mode multi-owner preserved/released writes and next local sweep
+  // =========================================================================
+  console.log("\n=== Local (h3 / F3 & F5c): local user-mode multi-owner preserved/released writes and next local sweep ===");
+  if (shouldRunCell("cell-h3-local-multi-owner-and-index-sweep")) {
+    const cell = "cell-h3-local-multi-owner-and-index-sweep";
+    const wsLocalMulti = createWorkspaceRoot("h3-local-multi", ["seat_h3_o1", "seat_h3_o2"]);
+    saveSpaceAuth(authDir(wsLocalMulti), auth);
+    const localAuthDir = userAuthStateDir(wsLocalMulti, space);
+    mkdirSync(localAuthDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(localAuthDir, "idp.json"), readFileSync(join(hostDir, "idp.json")));
+
+    const owner2 = deriveOwnerForIdpSubject(secret, pin.issuer, "second-local-owner-u4005");
+    const proc1 = spawn("sleep", ["900"], { detached: true, stdio: "ignore" });
+    proc1.unref();
+    const proc2 = spawn("sleep", ["900"], { detached: true, stdio: "ignore" });
+    proc2.unref();
+    let mgrLocal1: Manager | undefined;
+    let mgrLocal2: Manager | undefined;
+    try {
+      mgrLocal1 = new Manager({ space, servers, runtime: "pty", workspaceRoot: wsLocalMulti });
+      await mgrLocal1.start();
+      const m1 = mgrLocal1 as unknown as {
+        recordPreservedUserSlots(agents: unknown[], attemptId: string): Promise<void>;
+        recordReleasedUserSlots(agents: unknown[]): Promise<void>;
+      };
+      const uid1 = mintLifecycleUid();
+      const uid2 = mintLifecycleUid();
+      const managed1 = {
+        name: "seat_h3_o1",
+        id: `${owner}.seat_h3_o1`,
+        userOwner: owner,
+        lifecycleUid: uid1,
+        delegated: false,
+        handle: { pid: proc1.pid },
+      };
+      const managed2 = {
+        name: "seat_h3_o2",
+        id: `${owner2}.seat_h3_o2`,
+        userOwner: owner2,
+        lifecycleUid: uid2,
+        delegated: false,
+        handle: { pid: proc2.pid },
+      };
+
+      await m1.recordPreservedUserSlots([managed1, managed2], "attempt-h3");
+      const pres1 = await readUserSlot(recordsKv, space, owner, owner, "seat_h3_o1");
+      const pres2 = await readUserSlot(recordsKv, space, owner2, owner2, "seat_h3_o2");
+      const suffixesPres = readLocalSlotSuffixes(wsLocalMulti, space);
+      checkContract(
+        cell,
+        "recordPreservedUserSlots in local mode groups across two owners and records both KV rows and both mgrslots.json suffixes",
+        pres1?.row.phase === "preserved" &&
+          pres1?.row.preserveAttemptId === "attempt-h3" &&
+          pres2?.row.phase === "preserved" &&
+          pres2?.row.preserveAttemptId === "attempt-h3" &&
+          suffixesPres.includes(`${owner}-seat_h3_o1`) &&
+          suffixesPres.includes(`${owner2}-seat_h3_o2`),
+        { pres1, pres2, suffixesPres },
+      );
+
+      await m1.recordReleasedUserSlots([managed1, managed2]);
+      const rel1 = await readUserSlot(recordsKv, space, owner, owner, "seat_h3_o1");
+      const rel2 = await readUserSlot(recordsKv, space, owner2, owner2, "seat_h3_o2");
+      checkContract(
+        cell,
+        "recordReleasedUserSlots in local mode updates both owners' durable rows to active with released=true",
+        rel1?.row.phase === "active" &&
+          rel1?.row.released === true &&
+          rel2?.row.phase === "active" &&
+          rel2?.row.released === true,
+        { rel1, rel2 },
+      );
+
+      await mgrLocal1.stop({ withAgents: true });
+      mgrLocal1 = undefined;
+      for (const p of [proc1.pid, proc2.pid]) {
+        try {
+          if (p) process.kill(p, "SIGKILL");
+        } catch {
+          /* gone */
+        }
+      }
+      await until(() => !pidAlive(proc1.pid) && !pidAlive(proc2.pid), "h3 processes exit");
+
+      mgrLocal2 = new Manager({ space, servers, runtime: "pty", workspaceRoot: wsLocalMulti });
+      await mgrLocal2.start();
+      const sweep2 = mgrLocal2.status().userReconciliation?.lastSweep;
+      checkContract(
+        cell,
+        "the next local sweep reads mgrslots.json, groups by owner across both owners, and examines both durable rows",
+        sweep2?.examined === 2,
+        { sweep2, userReconciliation: mgrLocal2.status().userReconciliation },
+      );
+    } finally {
+      await mgrLocal1?.stop({ withAgents: true }).catch(() => {});
+      await mgrLocal2?.stop({ withAgents: true }).catch(() => {});
+      for (const p of [proc1.pid, proc2.pid]) {
+        try {
+          if (p) process.kill(p, "SIGKILL");
+        } catch {
+          /* gone */
+        }
       }
     }
   }

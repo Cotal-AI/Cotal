@@ -4659,18 +4659,28 @@ the same operation.
 `<holderOwner> === <targetOwner>` and a delegated platform holder where `<holderOwner>` is `p_…`
 and `<targetOwner>` is `u_…`) records durable per-seat custody in `KV_cotal_records_<space>` at
 `mgrslot.<holderOwner>.<targetOwner>-<actor>` (indexed at `mgrslot.<holderOwner>._index` via
-`DIRECT.GET`, with no `CONSUMER.CREATE` grant on `KV_<REC>`). Every slot write MUST be a
-revision-pinned compare-and-set (`create` when absent, or `update` against the prior revision); a
-same-name retry after an interrupted `enrolling` write MUST converge on the existing `enrolling`
-row's `provisionalUid` and `tokenHash` rather than overwriting it with a newly minted token. Startup
+`DIRECT.GET` and locally in `mgrslots.json` written before the KV write, with no `CONSUMER.CREATE`
+grant on `KV_<REC>`). Every slot write MUST be a revision-pinned compare-and-set (`create` when
+absent, or `update` against the prior revision); a same-name retry after an interrupted `enrolling`
+write MUST converge on the existing `enrolling` row's `provisionalUid` and `tokenHash` rather than
+overwriting it with a newly minted token. When `/manager-service-authority` refuses with HTTP 403 on
+an `EpEnvelopeError`, its JSON body carries `code: EpErrorCode` alongside `error`, and
+`enrollManagedAgent` raises `code: "already-exists"` when the alias is already enrolled under a
+different `tokenHash` (`conflict` remains the code for a stale manager serve epoch or CAS
+concurrency). Startup convergence of an `enrolling` row retires the row at its `provisionalUid`
+(after shredding local staged secret files) ONLY on `code: "already-exists"`; every other failure
+(including `conflict` on a stale serve epoch, `unauthenticated`, network failure, or a 403 omitting
+`code`) MUST leave the row in `enrolling`, count as `failed`, and retry on the next start. Startup
 reconciliation classifies only rows whose `managerInstanceId` matches the reconciling manager
 instance (preserving sibling instances' rows untouched), defers `active`/`preserved` rows when
 `resumeRequired` is set until post-adoption reconciliation, and evaluates process liveness
 fail-closed (`live`, `proved-dead`, or `unknown`; on a `hidepid` host where `/proc` stat or process
 group reads fail with `EACCES`/`EPERM`, every reap and liveness probe refuses as `unknown` and
-retains custody). A hold that keeps custody (`delegated`, `live`, or `unknown` liveness) MUST NOT
-be re-driven into retirement by a same-name spawn or resume attempt; a released live seat is
-watched while the manager runs and retired once its recorded process and process group are proved
+retains custody). `driveDeprovision` is the single custody gate: a hold that keeps custody
+(`delegated`, `live`, `unknown` liveness, or an `enrolling` row missing convergence material) MUST
+NOT be retired when a same-name spawn or resume re-drives `deprovision`. A released live seat is
+watched while the manager runs (bounding `unknown` re-probes and backing off failed retirement
+retries exponentially up to 30 s) and retired once its recorded process and process group are proved
 dead.
 
 **What stays.** Under the `platform-control` view itself the holder still enrolls, retires,

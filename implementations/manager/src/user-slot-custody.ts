@@ -284,10 +284,9 @@ export async function writeUserSlot(
     throw new Error(`writeUserSlot requires a non-negative integer expectedRevision (got ${String(expectedRevision)})`);
   const suffix = userSlotSuffix(row.targetOwner, row.actor);
   parseManagerSlotRecord(enc.encode(JSON.stringify(row)), space, row.managerOwner, suffix);
+  recordLocalSlotSuffix(workspaceRoot, space, suffix);
   await ensureKvSlotSuffix(kv, space, row.managerOwner, suffix);
   const key = userSlotKey(row.managerOwner, row.targetOwner, row.actor);
   const payload = enc.encode(JSON.stringify(row));
-  const rev = expectedRevision === 0 ? await kv.create(key, payload) : await kv.update(key, payload, expectedRevision);
-  recordLocalSlotSuffix(workspaceRoot, space, suffix);
-  return rev;
+  return expectedRevision === 0 ? await kv.create(key, payload) : await kv.update(key, payload, expectedRevision);
 }
