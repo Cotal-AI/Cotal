@@ -424,7 +424,7 @@ try {
   // 1. Platform-Local Manager identity (registered in KV to test routing between local and remote)
   const localManagerInstanceId = mintLifecycleUid();
   const localServe = newIdentity();
-  createManagerInstanceIdentity(serverRoot, SPACE, { instanceId: localManagerInstanceId, serveIdentity: localServe });
+  createManagerInstanceIdentity(serverRoot, SPACE, () => ({ instanceId: localManagerInstanceId, serveIdentity: localServe }));
 
   // Publish manager service contract schema to EPC stream using endpoint-serve-executor
   const execCreds = await mintCreds(auth, newIdentity(), "endpoint-serve-executor", {

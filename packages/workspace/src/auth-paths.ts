@@ -440,10 +440,11 @@ export function loadManagerInstanceIdentity(root: string, space: string): Manage
   return readManagerInstanceRecord(managerInstanceFile(root, space));
 }
 
-/** First-start identity mint through {@link claimIdentityRecord}: of N concurrent creators on a
- *  fresh root, exactly one creates the file and the others adopt the winner. */
-export function createManagerInstanceIdentity(root: string, space: string, candidate: ManagerInstanceIdentity): ManagerInstanceIdentity {
-  return claimIdentityRecord(managerInstanceFile(root, space), MANAGER_INSTANCE, instanceIdentityOf, () => candidate);
+/** This root's manager instance identity for `space`, minted by `mint` on the first start and read
+ *  back on every later one through {@link claimIdentityRecord}: of N concurrent creators on a fresh
+ *  root, exactly one creates the file and the others adopt the winner. */
+export function createManagerInstanceIdentity(root: string, space: string, mint: () => ManagerInstanceIdentity): ManagerInstanceIdentity {
+  return claimIdentityRecord(managerInstanceFile(root, space), MANAGER_INSTANCE, instanceIdentityOf, mint);
 }
 
 /** The manager's goal-writer and session-ledger nkeys for `space`. Both are siblings of the serve
@@ -499,9 +500,9 @@ export function loadAuthInstanceIdentity(root: string, space: string): AuthInsta
   return readIdentityRecord(authInstanceFile(root, space), AUTH_INSTANCE, instanceIdentityOf);
 }
 
-/** First-start identity mint for the auth plane, as {@link createManagerInstanceIdentity}. */
-export function createAuthInstanceIdentity(root: string, space: string, candidate: AuthInstanceIdentity): AuthInstanceIdentity {
-  return claimIdentityRecord(authInstanceFile(root, space), AUTH_INSTANCE, instanceIdentityOf, () => candidate);
+/** This root's auth-plane instance identity for `space`, as {@link createManagerInstanceIdentity}. */
+export function createAuthInstanceIdentity(root: string, space: string, mint: () => AuthInstanceIdentity): AuthInstanceIdentity {
+  return claimIdentityRecord(authInstanceFile(root, space), AUTH_INSTANCE, instanceIdentityOf, mint);
 }
 
 /** Remove this root's auth-plane instance record for `space`. A hosted context calls it once its

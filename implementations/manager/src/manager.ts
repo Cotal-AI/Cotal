@@ -76,7 +76,7 @@ import {
   invokeCommand,
   digestIdToken,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -1822,18 +1822,12 @@ export class Manager {
         this.managerInstanceId = this.remoteAuthority.instanceId;
         this.managerServeIdentity = this.remoteAuthority.identities.serve;
       } else {
-      const persisted = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
-      if (persisted !== undefined) {
-        this.managerInstanceId = persisted.instanceId;
-        this.managerServeIdentity = persisted.serveIdentity;
-      } else {
-        const claimed = createManagerInstanceIdentity(this.workspaceRoot, this.space, {
+        const claimed = createManagerInstanceIdentity(this.workspaceRoot, this.space, () => ({
           instanceId: mintLifecycleUid(),
           serveIdentity: newIdentity(),
-        });
+        }));
         this.managerInstanceId = claimed.instanceId;
         this.managerServeIdentity = claimed.serveIdentity;
-      }
       }
     }
     let creds: (() => Promise<string>) | undefined;

@@ -316,7 +316,7 @@ try {
   const beforeLocalFile = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
   check("without a persisted local manager identity and no remote gate, manager-caller refuses none",
     beforeLocalFile.status === 401 && String(beforeLocalFile.body.error).includes("no manager candidate"), beforeLocalFile);
-  createManagerInstanceIdentity(root, SPACE, { instanceId: localManagerInstanceId, serveIdentity: localServe });
+  createManagerInstanceIdentity(root, SPACE, () => ({ instanceId: localManagerInstanceId, serveIdentity: localServe }));
   const localManagerCall = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
   check("manager-caller re-reads a newly created local identity file and selects its live manager",
     localManagerCall.status === 200 && localManagerCall.body.managerInstanceId === localManagerInstanceId, localManagerCall);

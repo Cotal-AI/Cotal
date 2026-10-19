@@ -34,6 +34,22 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Instance identity mint functions in 0.86.0
+
+`createManagerInstanceIdentity` and `createAuthInstanceIdentity` from `@cotal-ai/workspace` take a
+`mint` function as their third argument in place of an identity. They call it only when the root
+holds no record and otherwise return the stored record, as before. Stored records and a running mesh
+are unaffected. Only code of your own that calls either function needs a change.
+
+### What stops working
+
+A call that passes an identity object no longer compiles. In plain JavaScript the same call throws a
+`TypeError` on a root that holds no record yet.
+
+### Before the upgrade
+
+Pass `() => identity` where you passed `identity`.
+
 ## Native key issuance recording after 0.85.0
 
 Before upgrading, take a consistent backup of broker JetStream state and the auth host's private
