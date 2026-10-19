@@ -56,86 +56,27 @@ check("G5 STILL exits on `taken`, the single-holder guarantee is preserved", lea
 check("G6 the incident's own case (wrong last sequence: 0 -> key gone) does not exit", leaseAction({ kind: "gone" }) === "reacquire");
 
 const INTERVAL_MS = 2_000;
+// The accumulated lag, read through the daemon's own accessor with a span that never clamps it.
+const starved = (m: LoopLagMeter) => m.starvedMsWithin(Number.POSITIVE_INFINITY);
 console.log("\nH. the lag meter, it measures scheduling, and only scheduling");
 const meter = new LoopLagMeter(INTERVAL_MS);
-check("H1 the first firing has no gap to measure and contributes nothing", meter.tick(1_000) === 0 && meter.starvedMs === 0);
-check("H2 an on-time firing contributes no lag", meter.tick(1_000 + INTERVAL_MS) === 0 && meter.starvedMs === 0);
+check("H1 the first firing has no gap to measure and contributes nothing", meter.tick(1_000) === 0 && starved(meter) === 0);
+check("H2 an on-time firing contributes no lag", meter.tick(1_000 + INTERVAL_MS) === 0 && starved(meter) === 0);
 // A 30s gap on a 2s interval: 28s of it is time this process was not on the runqueue.
 check("H3 a 30s gap on a 2s interval reports 28s of lag", meter.tick(1_000 + INTERVAL_MS + 30_000) === 28_000);
-check("H3b and it accumulates across firings", meter.starvedMs === 28_000, meter.starvedMs);
+check("H3b and it accumulates across firings", starved(meter) === 28_000, starved(meter));
 // REFUSING case: a timer can fire late, never early. A backwards clock must not CREDIT the process
 // with time it actually had, which would make a real outage look like starvation.
 const backwards = new LoopLagMeter(INTERVAL_MS);
 backwards.tick(10_000);
-check("H4 a backwards clock step contributes zero lag, never negative", backwards.tick(5_000) === 0 && backwards.starvedMs === 0);
+check("H4 a backwards clock step contributes zero lag, never negative", backwards.tick(5_000) === 0 && starved(backwards) === 0);
 // REFUSING case for accumulation: positive evidence restarts the budget, so lag from a PREVIOUS
 // window cannot be spent excusing a later one.
 const reset = new LoopLagMeter(INTERVAL_MS);
 reset.tick(0);
 reset.tick(30_000);
-check("H5 lag accrued before positive evidence is discarded on reset", reset.starvedMs === 28_000 && (reset.reset(), (reset.starvedMs as number) === 0));
+check("H5 lag accrued before positive evidence is discarded on reset", starved(reset) === 28_000 && (reset.reset(), starved(reset) === 0));
 check("H6 and measurement continues after a reset rather than restarting blind", reset.tick(60_000) === 28_000);
-
-// H7-H12: `credit` AND THE CLAMP, neither of which appeared in any cell in this tree until now.
-// `.credit(` has exactly one call site, and both large suites stayed green while a stall was charged
-// twice - a reviewer measured 17s of credit out of a 10s stall. That is the definition of grading
-// nothing, so these are written to FAIL against the broken forms rather than to describe the fixed
-// one. TWO forms are wrong here and the pair below separates them:
-//   charge-both  (shipped)  - 17000 for a 10000 stall, impossible
-//   drop-tick    (rejected) - discards a stall the timer really measured
-// H8 reddens the first, H9 the second. A fix that passes only one of them is the other bug.
-const solo = new LoopLagMeter(INTERVAL_MS);
-check("H7 a probe late on its own, with no concurrent interval gap, is credited in full",
-  (solo.credit(900, 900), solo.starvedMs === 900), solo.starvedMs);
-// (i) THE REVIEWER'S CASE. One stall seen twice: the timer fires late by it AND the probe in flight
-// across it answers late by it. Charging both exceeds the span, which is impossible on its face.
-const both = new LoopLagMeter(INTERVAL_MS);
-both.tick(0);
-both.tick(10_000 + INTERVAL_MS);      // charges the interval [10000, 12000+...] as ONE dated stall
-both.credit(10_000, 10_000 + INTERVAL_MS);   // the SAME wall-clock interval, seen by the probe
-// The reviewers' exact arithmetic: this read 17000 for a 10000ms stall before the repair. It is now
-// the extent of the union, not the sum, so one interval of time is one charge no matter how many
-// instruments saw it.
-check("H8 one stall seen by both the timer and a probe is charged ONCE, as the union of the two",
-  both.starvedMs === 10_000, both.starvedMs);
-// (ii) THE CASE THAT REJECTS THE LOSSY FIX, and the reason the meter does NOT net internally. Over a
-// 4000ms span the timer fires 2000ms late (a stall happening NOW) while a probe issued at the
-// PREVIOUS tick answers 2500ms late (the stall before it). These are two adjacent stalls, not one
-// seen twice, and the meter cannot tell which it is holding. Suppressing the tick charge here
-// credits 2500 and throws away 2000ms the process genuinely measured - in exactly the mechanism
-// `credit` exists for. Keeping both and bounding by the span credits the whole 4000.
-const adjacent = new LoopLagMeter(2_000);
-adjacent.tick(0);
-adjacent.tick(4_000);              // a stall NOW: the interval [2000, 4000]
-adjacent.credit(2_500, 2_000);     // the stall BEFORE it: a probe answering at 2000, late by 2500
-// DISJOINT INTERVALS, so the union is the sum and BOTH are charged. This is the case that rejects
-// the lossy repair: netting or dropping the tick reports 2500 here and silently discards a 2000ms
-// stall the timer genuinely measured, in the very mechanism `credit` exists for.
-check("H9 two ADJACENT stalls are both charged in full, because they do not overlap in time",
-  adjacent.starvedMs === 4_500 && adjacent.starvedMs > 2_500, adjacent.starvedMs);
-// ...and the union is decided by the timestamps, not by the magnitudes. Same two numbers, overlapping
-// instants: one charge. Nothing about 2000 and 2500 says which case it is; only WHEN says.
-const sameNumbers = new LoopLagMeter(2_000);
-sameNumbers.tick(0);
-sameNumbers.tick(4_000);           // [2000, 4000]
-sameNumbers.credit(2_500, 4_000);  // [1500, 4000] - OVERLAPS the above
-check("H10 the same two magnitudes overlapping in time are charged as one interval, not two",
-  sameNumbers.starvedMs === 2_500, sameNumbers.starvedMs);
-const afterOnTime = new LoopLagMeter(INTERVAL_MS);
-afterOnTime.tick(0);
-afterOnTime.tick(10_000 + INTERVAL_MS);
-afterOnTime.credit(4_000, 20_000); // disjoint from the [0,10000] stall above
-check("H11 disjoint stalls across a window accumulate", afterOnTime.starvedMs === 14_000, afterOnTime.starvedMs);
-check("H12 a backwards probe measurement credits nothing, as with tick",
-  (afterOnTime.credit(-5_000, 20_000), afterOnTime.starvedMs === 14_000), afterOnTime.starvedMs);
-// THE INVARIANT THE WHOLE REPAIR EXISTS FOR, and the one a scalar accumulator cannot hold: charges
-// are intervals of real time, so no sequence of them can claim more time than actually passed.
-const soak = new LoopLagMeter(2_000);
-soak.tick(0);
-soak.tick(30_000);
-for (let i = 0; i < 20; i++) soak.credit(30_000, 30_000);   // twenty probes, all spanning that stall
-check("H12b twenty overlapping probes over one 30s stall still charge 30s, never 600s",
-  soak.starvedMs === 30_000, soak.starvedMs);
 
 // ── N. MAY THIS PROCESS SERVE?, the quiesce gate, which is NOT the stay-alive gate ─────────────
 //
@@ -181,40 +122,25 @@ check("N8 the incident's reading keeps the daemon alive AND stops it serving unt
 check("N9 nothing may serve that must exit",
   allReadings.every((r) => !mayServeOn(r) || leaseAction(r) !== "exit"));
 
-// I3-I4: THE INVARIANT THAT MAKES THE EXCUSE COHERENT, `tick` and `credit` composed over ONE stall
-// of known length.
+// I3-I4: THE INVARIANT THAT MAKES THE EXCUSE COHERENT, `tick` over ONE stall of known length.
 const ELAPSED = 30_000;
-const composed = new LoopLagMeter(INTERVAL_MS);
-composed.tick(0);
-composed.tick(ELAPSED + INTERVAL_MS);   // the timer saw the whole stall
-// ON THE DAEMON'S OWN TIMELINE. The runtime calls `credit(lagMs, endedAt)` with the clock reading
-// from the probe that just answered, so the charge lands on the SAME timeline as the ticks. Passing
-// no `endedAt` defaults to `Date.now()`, which in a suite whose ticks are synthetic zero-based
-// numbers puts the probe's interval decades away from them - disjoint by construction, so the union
-// sums instead of overlapping and the composed reading is 60000 for a 30000ms stall. A reviewer
-// caught these two call sites still written the old way after the union landed; the cells were
-// grading an arrangement the daemon never produces. Compose it the way the caller does.
-composed.credit(ELAPSED, ELAPSED + INTERVAL_MS);   // so did the probe that spanned it
+const oneStall = new LoopLagMeter(INTERVAL_MS);
+oneStall.tick(0);
+oneStall.tick(ELAPSED + INTERVAL_MS);   // the timer saw the whole stall
 check("I3 lag measured over one stall never exceeds the time that actually passed",
-  composed.starvedMsWithin(ELAPSED) <= ELAPSED,
-  { raw: composed.starvedMs, clamped: composed.starvedMsWithin(ELAPSED), elapsed: ELAPSED });
-// I3b: the composed reading is the stall ITSELF, not a multiple of it. This is the cell that would
-// have caught the defect above: `<= ELAPSED` is satisfied by any under-count too, so it cannot tell
-// a correct union from a lossy one, and it was satisfied by the 60000 reading only because the clamp
-// hid it. Pinning the exact value is what makes the two instruments' agreement observable.
-check("I3b one stall seen by BOTH instruments is charged ONCE, on the daemon's own timeline",
-  composed.starvedMs === ELAPSED, { raw: composed.starvedMs, elapsed: ELAPSED });
-// WHAT THE CLAMP ACTUALLY GUARANTEES, stated as narrowly as it is true. Unstarved time can no longer
-// go NEGATIVE, which is the property the evidence clause needs: a negative can never be cleared by
-// any amount of real outage, so a dead broker stopped being detectable at all. Non-negative is a
-// weaker claim than "the evidence clause always fires".
+  oneStall.starvedMsWithin(ELAPSED) <= ELAPSED,
+  { raw: starved(oneStall), clamped: oneStall.starvedMsWithin(ELAPSED), elapsed: ELAPSED });
+// WHAT THE CLAMP GUARANTEES, stated as narrowly as it is true: the reading never exceeds the span it
+// is compared against, so unstarved time is never negative. That is a weaker claim than "the
+// evidence clause always fires".
 const SPAN = 50_000;
-const clamped = composed.starvedMsWithin(SPAN);
+const clamped = oneStall.starvedMsWithin(SPAN);
 check("I4 unstarved time is never negative, so real outage can always accumulate against it",
   SPAN - clamped >= 0, { clamped, span: SPAN, unstarved: SPAN - clamped });
 
 // 105 -> 36: the probe verdict, classifier and sampler cells left with the code they graded.
-const EXPECTED_CELLS = 36;
+// 36 -> 28: the `credit` and span-union cells left with the code they graded.
+const EXPECTED_CELLS = 28;
 check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
 
 console.log(`\nDELIVERY-WATCHDOG-EVIDENCE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

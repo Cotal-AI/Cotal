@@ -95,9 +95,6 @@ export function mayServeOn(reading: LeaseReading): boolean {
 export class LoopLagMeter {
   private last: number | undefined;
   private accumulated = 0;
-  /** Disjoint, sorted [start, end] intervals of measured non-running time in the current window.
-   *  Bounded: overlapping charges merge, and `reset` clears them on every positive. */
-  private spans: Array<[number, number]> = [];
   constructor(private readonly intervalMs: number) {}
 
   /** Record a firing at `now`; returns the lag this particular gap contributed.
@@ -107,93 +104,30 @@ export class LoopLagMeter {
    *  measurement of the local scheduler, never of the broker - a timer we own fired late, which says
    *  the runqueue did not reach us and says nothing at all about the server.
    *
-   *  It is also NOT the only such charge. {@link credit} adds lateness observed on a probe answer,
-   *  and the two can describe the same stall or two adjacent ones; nothing in either number reveals
-   *  which. Neither method deduplicates, deliberately, because suppressing a charge on the guess
-   *  that it overlaps discards real stalls. The sum is bounded instead, at the point of comparison,
-   *  by {@link starvedMsWithin}. */
+   *  The charges are summed. Each one measures the gap between two consecutive firings, and those
+   *  gaps never overlap in real time, so no charge repeats another. Comparing their wall-clock
+   *  timestamps instead would merge two separate stalls whenever the clock stepped backwards between
+   *  them. */
   tick(now: number): number {
     const previous = this.last;
     this.last = now;
     if (previous === undefined) return 0; // first firing has no gap to measure
     const lag = Math.max(0, now - previous - this.intervalMs);
-    // Charged as a DATED INTERVAL, not a scalar. The stall ended when this firing ran, so it
-    // occupied [now - lag, now]. Recording WHEN lets an overlapping probe charge be unioned with it
-    // instead of added to it, which is the whole of the double-count repair.
-    this.chargeSpan(now - lag, now);
+    this.accumulated += lag;
     return lag;
   }
 
-  /** Add lag measured somewhere OTHER than the interval gap, in practice, a probe answer that
-   *  arrived past its own deadline. Interval gaps alone miss the case where the process IS being
-   *  scheduled often enough to fire the timer but not often enough to finish a handshake, which is
-   *  the third of the issue's three mechanisms and the one that produces a completed `false` from a
-   *  perfectly live server. Clamped at zero for the same reason `tick` is: a measurement that ran
-   *  backwards must never credit time the process actually had. */
-  credit(lagMs: number, endedAt: number = Date.now()): void {
-    // BOTH MEASUREMENTS ARE KEPT. An earlier repair here netted this against the most recent interval
-    // gap, on the theory that the two always observe ONE stall. They do not, and a reviewer produced
-    // the separating case: over a 4000ms span a timer can fire 2000ms late (a stall happening NOW)
-    // while a probe issued at the PREVIOUS tick answers 2500ms late (the stall before it). Netting
-    // credited 2500ms there and threw away a 2000ms stall the process had actually measured - which
-    // is the very mechanism this method exists for, a process scheduled often enough to fire a timer
-    // but not to finish a handshake. I measured my own netting against that case and it produced the
-    // lossy answer, so it is gone.
-    this.chargeSpan(endedAt - Math.max(0, lagMs), endedAt);
-  }
-
-  /** Charge [from, to] as time this process was not running, UNIONED with what is already charged.
-   *
-   *  This is the double-count repair, and it is why both call sites can stay. A stall observed by
-   *  the interval timer and by a probe answering across it is ONE interval of wall-clock time seen
-   *  by two instruments. Summing scalars charges it twice (measured: 17s for a 10s stall). Summing
-   *  INTERVALS cannot, because the union of overlapping intervals is their extent.
-   *
-   *  It also keeps what netting threw away. Two ADJACENT stalls (a timer late by one, a probe from
-   *  the previous tick late by another) do not overlap, so the union is their sum and both are
-   *  charged in full. Overlap is decided by the timestamps rather than guessed from the magnitudes,
-   *  which is the thing neither scalar arithmetic nor a span clamp can do. */
-  private chargeSpan(from: number, to: number): void {
-    if (!(to > from)) return;                       // zero or backwards: never credits time we had
-    const merged: Array<[number, number]> = [];
-    let lo = from, hi = to;
-    for (const [s, e] of this.spans) {
-      if (e < lo || s > hi) { merged.push([s, e]); continue; }   // disjoint: keep as-is
-      lo = Math.min(lo, s); hi = Math.max(hi, e);                // touching: absorb
-    }
-    merged.push([lo, hi]);
-    merged.sort((a, b) => a[0] - b[0]);
-    this.spans = merged;
-    this.accumulated = merged.reduce((n, [s, e]) => n + (e - s), 0);
-  }
-
-  /** Accumulated lag CLAMPED to the span it is about to be compared against.
-   *
-   *  This is the honest way to stop double counting, and the reason the meter cannot do it by
-   *  arithmetic alone: whether a tick charge and a probe charge describe the same stall or two
-   *  adjacent ones is not knowable from the two numbers. What IS knowable is that time the process
-   *  did not have can never exceed time that passed. Overlap is removed by that bound and nothing
-   *  else is discarded, so the sum stays as informative as its parts allow.
-   *
-   *  Load-bearing, not hygiene: `DeliveryTransportHealth` SUBTRACTS this from elapsed time.
-   *  Unclamped, a stall charged twice drives unstarved time negative, and NO amount of real outage
-   *  can then clear the evidence clause - a genuinely dead broker stops being detectable by evidence
-   *  and survives to the backstop instead. Measured: a 30s stall moved an exit from 44s to 62s. */
+  /** Accumulated lag CLAMPED to the span it is about to be compared against: time the process did
+   *  not have can never exceed time that passed. On a steady clock the sum already stays within the
+   *  time since the first firing. A wall clock that steps backwards shortens the span the caller
+   *  measures without undoing the charges taken before the step, and the clamp bounds that case. */
   starvedMsWithin(spanMs: number): number {
     return Math.min(this.accumulated, Math.max(0, spanMs));
-  }
-
-
-  /** Lag accumulated since the last {@link reset}. */
-  get starvedMs(): number {
-    return this.accumulated;
   }
 
   /** Called when positive evidence arrives: the window restarts, so its lag budget does too. The
    *  firing baseline is deliberately KEPT, so a stall spanning a reset is still measured. */
   reset(): void {
     this.accumulated = 0;
-    this.spans = [];   // the intervals ARE the accumulator now; clearing one without the other
-                       // would let a pre-reset stall be re-charged by a later overlapping probe.
   }
 }

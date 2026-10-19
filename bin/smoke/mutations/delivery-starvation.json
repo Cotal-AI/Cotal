@@ -9,7 +9,7 @@
   "completionMarker": "DELIVERY-WATCHDOG-EVIDENCE SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/delivery-starvation.json",
   "why": [
-    "Pure-suite entries grade the lease decision, the loop-lag meter and the transport's own probe budget.",
+    "Pure-suite entries grade the lease decision and the transport's own probe budget.",
     "Live M1 targets the resident transport health lag-credit guard. Its real daemon must survive a bounded scheduling burst, recover, and still fence prolonged transport loss.",
     "Live lease, startup signal and caught-startup-failure mutations keep their real broker and daemon entrypoints. Build before each mutation and rebuild restored source."
   ],
@@ -123,26 +123,6 @@
       "completionMarker": "DELIVERY-STARVATION SMOKE",
       "afterRestore": "pnpm --filter @cotal-ai/delivery... build > /dev/null",
       "note": "A REVIEWER FINDING, and it disproved a claim this repair was already making. `uncaughtException` and `unhandledRejection` do not see a start-up rejection on the path that ships: `runCli` awaits the command inside its OWN try/catch, so the rejection is HANDLED, the CLI prints one line and exits 1, and neither listener ever runs. Deleting this catch body restores exactly that state, leaving the process-level guards in place and the shard stranded for the bucket TTL with the replacement refused. Measured: X4, X5 and X6 redden while all 90 other cells stay green, so the cells grade the caught-rejection door specifically rather than start-up failure in general."
-    },
-    {
-      "name": "M21 CONTROL: the union sums overlapping charges, so one stall seen by two instruments is charged twice",
-      "file": "implementations/delivery/src/watchdog.ts",
-      "find": "      lo = Math.min(lo, s); hi = Math.max(hi, e);",
-      "replace": "      merged.push([s, e]);",
-      "expectRed": "I3b one stall seen by BOTH instruments is charged ONCE, on the daemon's own timeline",
-      "cell": "I3b one stall seen by BOTH instruments is charged ONCE, on the daemon's own timeline",
-      "command": "pnpm smoke:delivery-watchdog-evidence",
-      "note": "This is the ORIGINAL #1318 defect expressed in the union's vocabulary: a timer gap and a probe answer that describe the SAME stretch of wall-clock time are charged as two. Without absorption the meter reports 60000 for a 30000ms stall and the daemon's excuse outlives the outage. The clamp that preceded the union did NOT catch this: it converted the impossible number into a merely wrong one and changed zero verdicts across 28920 swept shapes, which is why this anchor sits on the absorb branch and not on the clamp."
-    },
-    {
-      "name": "M22 CONTROL: the union merges disjoint charges, crediting the calm time between two separate stalls",
-      "file": "implementations/delivery/src/watchdog.ts",
-      "find": "      if (e < lo || s > hi) { merged.push([s, e]); continue; }",
-      "replace": "      if (false) { merged.push([s, e]); continue; }",
-      "expectRed": "H11 disjoint stalls across a window accumulate",
-      "cell": "H11 disjoint stalls across a window accumulate",
-      "command": "pnpm smoke:delivery-watchdog-evidence",
-      "note": "The opposite error from M21 and the reason the fix had to be intervals rather than arithmetic. Treating every charge as overlapping collapses two genuinely SEPARATED stalls into the span from the first start to the last end, crediting the daemon for the calm time in between: H11's 4000ms stall at [16000,20000] and its 10000ms stall at [0,10000] read as 20000 rather than 14000. Anchored on H11 rather than on H9 deliberately: H9's two stalls ABUT at a single instant, and merging abutting intervals is measure-preserving, so H9 stays green under this mutant and would have been a false anchor. Overlap is a question about TIMESTAMPS, and a meter that cannot answer it is wrong in one of these two directions whatever it does with the magnitudes."
     }
   ]
 }
