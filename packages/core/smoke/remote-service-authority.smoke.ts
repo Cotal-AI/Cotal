@@ -94,6 +94,23 @@ assert.throws(() => parseServiceAuthorityResult({ ...credential, state: "ready" 
 assert.throws(() => parseServiceAuthorityResult({ ...credential, nativeJwt: "fixture" }, activate), /unsupported fields/);
 assert.throws(() => parseServiceAuthorityResult({ ...credential, snapshot: { ...snapshot, name: { authorized: true, revision: 4 } } }, activate), /disagrees/);
 assert.throws(() => parseServiceAuthorityResult({ ...common, operation: "register", state: "registered", witness, snapshot }, { ...registration, requestId: common.requestId }), /another operation/);
+const registered = { ...common, operation: "register", requestId: registration.requestId, state: "registered", witness, snapshot };
+assert.doesNotThrow(() => parseServiceAuthorityResult(registered, registration));
+const otherRoot = { v: 1, commands: [], label: "different-surface" };
+assert.throws(() => parseServiceAuthorityResult({ ...registered, snapshot: {
+  ...snapshot, spec: { ...snapshot.spec, value: { ...snapshot.spec.value, clusterDigests: [contractDigest(otherRoot)] } },
+  contractArtifacts: [otherRoot],
+} }, registration), /submitted closure/);
+assert.throws(() => parseServiceAuthorityResult({ ...registered, snapshot: {
+  ...snapshot, spec: { ...snapshot.spec, value: { ...snapshot.spec.value, clusterDigests: [contractDigest(root), contractDigest(otherRoot)] } },
+  contractArtifacts: [root, otherRoot],
+} }, registration), /submitted closure/);
+const both = { ...registration, registration: { clusterDigests: [contractDigest(root), contractDigest(otherRoot)], contractArtifacts: [root, otherRoot] } };
+assert.throws(() => parseServiceAuthorityResult(registered, both), /submitted closure/);
+assert.doesNotThrow(() => parseServiceAuthorityResult({ ...registered, snapshot: {
+  ...snapshot, spec: { ...snapshot.spec, value: { ...snapshot.spec.value, clusterDigests: [...both.registration.clusterDigests].reverse() } },
+  contractArtifacts: [root, otherRoot],
+} }, both));
 for (const operation of ["ready", "revoke"] as const) {
   const request: ServiceAuthorityRequest = { ...common, operation, witness };
   const response = operation === "ready"

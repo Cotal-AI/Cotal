@@ -8,9 +8,8 @@ import { parseServiceSpec, type ServiceSpec } from "./endpoint-service.js";
 import { isAccountNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, spacePrefix } from "./subjects.js";
 
-export const SERVICE_ACCESS_TTL_SECONDS = 60;
-export const SERVICE_RENEWAL_TTL_SECONDS = 24 * 60 * 60;
-export const SERVICE_AUTHORITY_MAX_BYTES = 2 * 1024 * 1024;
+import { SERVICE_AUTHORITY_MAX_BYTES } from "./service-authority-limits.js";
+export { SERVICE_ACCESS_TTL_SECONDS, SERVICE_RENEWAL_TTL_SECONDS, SERVICE_AUTHORITY_MAX_BYTES } from "./service-authority-limits.js";
 
 /** Non-authorizing account metadata read through the client's already-pinned authority origin. */
 export interface ServiceAuthorityInfo {
@@ -185,8 +184,12 @@ function boundedJson(raw: unknown): string {
   return bytes!;
 }
 
-function artifacts(raw: unknown): void {
-  if (!Array.isArray(raw) || raw.length === 0 || raw.length > CONTRACT_CLOSURE_MAX_ARTIFACTS)
+function artifacts(raw: unknown, closureCount: number): void {
+  // Each native closure counts documents separately from its manifest. The HTTP byte bound
+  // still caps the union, and the host must verify each closure's own walk limits.
+  if (!Number.isSafeInteger(closureCount) || closureCount < 1 || closureCount > CONTRACT_CLOSURE_MAX_ARTIFACTS)
+    invalid("clusterDigests must be a bounded nonempty array");
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > closureCount * (CONTRACT_CLOSURE_MAX_ARTIFACTS + 1))
     invalid("contractArtifacts must be a bounded nonempty array");
   const seen = new Set<string>();
   for (const artifact of raw) {
@@ -251,7 +254,7 @@ export function parseServiceAuthorityRequest(raw: unknown): ServiceAuthorityRequ
         invalid("clusterDigests must be a bounded nonempty array");
       digests.forEach((d) => digest(d, "cluster digest"));
       if (new Set(digests).size !== digests.length) invalid("duplicate cluster digest");
-      artifacts(registration.contractArtifacts);
+      artifacts(registration.contractArtifacts, digests.length);
       const expected = record(o.expected, "expected registration");
       if (expected.state === "unregistered") closed(expected, ["state"]);
       else if (expected.state === "registered") {
@@ -290,7 +293,7 @@ export function parseServiceAuthorityEnvelope(raw: unknown): ServiceAuthorityEnv
   return { request, proof: { kind: proof.kind, token: proof.token } as ServiceAuthorityProof };
 }
 
-function snapshot(raw: unknown, witness: ServiceRegistrationWitness): void {
+function snapshot(raw: unknown, witness: ServiceRegistrationWitness): ServiceSpec {
   const o = record(raw, "registration snapshot");
   closed(o, ["spec", "name", "processEpoch", "contractArtifacts"]);
   const spec = record(o.spec, "spec snapshot"), name = record(o.name, "name snapshot");
@@ -300,7 +303,8 @@ function snapshot(raw: unknown, witness: ServiceRegistrationWitness): void {
   if (value.owner !== witness.principal.owner || spec.revision !== witness.registrationRevision ||
     name.authorized !== true || name.revision !== witness.nameAuthorityRevision || o.processEpoch !== witness.processEpoch)
     invalid("snapshot disagrees with the registration witness");
-  artifacts(o.contractArtifacts);
+  artifacts(o.contractArtifacts, value.clusterDigests.length);
+  return value;
 }
 
 function status(raw: unknown, outer: Record<string, unknown>): void {
@@ -360,7 +364,10 @@ export function parseServiceAuthorityResult(raw: unknown, expected: ServiceAutho
       closed(o, [...common, "witness", "snapshot"]);
       const witness = boundWitness(o.witness, o);
       if (witness.registrationRequestId !== request.requestId) invalid("registered result belongs to another operation");
-      snapshot(o.snapshot, witness); break;
+      const spec = snapshot(o.snapshot, witness);
+      if (request.operation !== "register" || canonicalJson([...spec.clusterDigests].sort()) !== canonicalJson([...request.registration.clusterDigests].sort()))
+        invalid("registered result does not bind the submitted closure set");
+      break;
     }
     case "credential": {
       closed(o, [...common, "witness", "snapshot", "duty", "accessBearer", "accessExpiresAt", "renewalProof", "renewalExpiresAt"]);

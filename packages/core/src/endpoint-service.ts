@@ -10,6 +10,8 @@
  * scatter set. The helpers below run inside the trusted writer principals the §13.9 writer
  * table names (`provisioner-registration` for spec, `instance-commit-epoch-fenced` for status).
  */
+import { SERVICE_ACCESS_TTL_SECONDS } from "./service-authority-limits.js";
+import { serviceGateApprovalLive, type ServiceGateAuthority } from "./service-gate.js";
 import type { KV } from "@nats-io/kv";
 import type { JetStreamManager } from "@nats-io/jetstream";
 import { spacePrefix, principalKey } from "./subjects.js";
@@ -1742,7 +1744,8 @@ export function assertServeGrantMintable(serve: EpServeGrant, mint: { space: str
  *  `revision` is the KV store revision the mint's CAS and every barrier's freeze pin. */
 export type EpGateState = GateStateOp & {
   /** The host-only family discriminator from the persisted endpoint gate. */
-  authorityFamily?: "environment-manager";
+  authorityFamily?: "environment-manager" | "service";
+  serviceAuthority?: ServiceGateAuthority;
   /** The gate's space. In production the gate physically lives in the per-space
    *  `KV_cotal_auth_<space>` bucket (§13.12), so the space is the bucket and cannot be crossed;
    *  carrying it here is defense-in-depth for the in-memory seam/fake, so a mint/registration
@@ -1967,6 +1970,15 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
     throw new EpEnvelopeError("internal", `the issuance gate is for "${obs.space}/${obs.endpoint}/${obs.lifecycleUid}", not the authorized instance "${snap.space}/${snap.endpoint}/${snap.instanceId}"; a serve credential mints only against its OWN gate (SPEC 13.1)`);
   if (obs.state !== "open")
     throw new EpEnvelopeError("expired", `the issuance gate for "${snap.endpoint}/${snap.instanceId}" is ${obs.state}; minting is closed (SPEC 13.1)`);
+  if (obs.authorityFamily === "service") {
+    const authority = obs.serviceAuthority;
+    const now = Math.floor(Date.now() / 1000);
+    if (!authority || !authority.activationIssued || !serviceGateApprovalLive(authority, now)
+      || credential.exp === undefined || credential.exp <= now || credential.exp > now + SERVICE_ACCESS_TTL_SECONDS
+      || credential.exp > authority.rootExpiresAt!
+      || (authority.approvalExpiresAt !== null && credential.exp > authority.approvalExpiresAt))
+      throw new EpEnvelopeError("expired", "service approval does not authorize this bounded serving credential");
+  }
   // JOINT currency on ONE key: a takeover advances processEpoch, a re-registration advances
   // registrationRevision, a name transfer advances nameAuthorityRevision; any one that has
   // already frozen+reopened the gate supersedes the branded surface or its owner, and the read

@@ -1325,6 +1325,26 @@ liveness precondition, MAY skip only holders in a cursor whose complete binding 
 restart from empty progress on any mismatch, and MUST reopen only after every current holder
 verifies. Cleanup occurs after reopen; a cursor that
 cannot be deleted cannot authorize a later freeze because that freeze has a different gate revision.
+
+A standalone user-authorized service gate adds `authorityFamily: "service"` and a required
+`serviceAuthority` value. Its closed fields are `v: 1`, `assignmentDigest`, native
+`lifecycleUid`, `state: pending-root | approved | revoked`, `rootCredentialId`, `rootExpiresAt`,
+`approvalDigest`, `approvalExpiresAt`, `callerCeiling`, `activationIssued`, and optional
+`registration: {requestId, requestDigest, registrationProof}`. Expiries use Unix seconds.
+A pending-root value has null root and approval fields, an empty ceiling, no registration and
+`activationIssued: false`. An approved value binds the native root and immutable approval;
+only approval expiry may be null. Revocation retains any existing binding. An activated value
+requires the registration stamp. A service value without its family, or the family without
+its value, is invalid. Existing nonservice gates do not acquire this authority.
+
+Service registration freeze requires live approval and `activationIssued: false` at the gate CAS.
+Gate transitions retain the complete service value. Serving release requires live approval,
+recorded activation and a finite credential expiry bounded by the service access lifetime,
+native root expiry and approval expiry. A registration recovery that reopens an already revoked
+approval does not authorize serving release. Standalone service authority does not support
+sibling credential duties. Native root validation, owner consent, activation and coordinated
+retirement remain requirements of the trusted host; parsing this value does not establish them.
+
 **`holderPrincipal` is ALWAYS a CONNZ-attributable `<owner>.<actor>` in
 BOTH families** (the barrier KICKs it; an endpoint NAME is not attributable and never sits
 there): in `cred.` it is the caller principal; in `epcred.` it is the serving instance's own

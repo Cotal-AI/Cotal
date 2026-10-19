@@ -40,13 +40,19 @@ runtime parsers. The parsers bind a result to the submitted request and registra
 `AuthProvider.serviceEndpointAuthority` is an optional provider hook for this protocol. A provider
 without the hook must refuse service setup. The user-auth provider implements the HTTP client,
 including `serviceEndpointInfo` for the DATA-account binding. It uses the pinned exchange origin,
-refuses redirects and does not retry an unknown mutation outcome. The client does not transmit
+refuses redirects and does not retry an unknown mutation outcome. Server-side HTTP failures
+remain unconfirmed even when their bodies resemble a protocol denial. A registered snapshot must
+name the submitted closure set. Inline artifacts include each closure manifest as well as its
+documents, within the envelope byte limit; native per-closure walk limits still apply. The client does not transmit
 the local host capability or read callout signing material. Local setup needs the client sentinel
 projection written by `prepareServer`; a missing projection refuses rather than reading server secrets.
 
 `@cotal-ai/auth` exports host request and view types with `parseServiceHostRequest`. Parsing checks
 structure only, not owner consent, current grants or admission state. The host handlers and native
 service lifecycle are not implemented yet, so these interfaces do not enable service registration.
+The native endpoint gate also carries service approval and activation fields. Registration and
+serving guards retain those fields and refuse expired or revoked approval; these guards are not
+a replacement for the missing host lifecycle.
 
 `parseEndpointCapabilities` normalizes the native caller capability shape. `endpointCapabilitiesWithin`
 checks route, instance, target and journal containment using the native grant builders. The host

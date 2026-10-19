@@ -43,7 +43,7 @@ const server = createServer(async (req, res) => {
   res.setHeader("content-type", "application/json");
   const { operation, requestId, space, accountPublicKey, endpoint, instanceId, v, kind } = expectedEnvelope.request;
   const echo = { operation, requestId, space, accountPublicKey, endpoint, instanceId, v, kind };
-  if (mode === "denied") { res.writeHead(403); res.end(JSON.stringify({ ...echo, state: "denied", reason: "permission-denied" })); return; }
+  if (mode === "denied" || mode === "denied502" || mode === "denied503") { res.writeHead(mode === "denied" ? 403 : Number(mode.slice(6))); res.end(JSON.stringify({ ...echo, state: "denied", reason: "permission-denied" })); return; }
   if (mode === "mismatch") { res.end(JSON.stringify({ ...echo, requestId: "b".repeat(32), state: "denied", reason: "permission-denied" })); return; }
   if (mode === "wrong-space") { res.end(JSON.stringify({ ...info, space: "other" })); return; }
   res.end(JSON.stringify(info));
@@ -69,6 +69,11 @@ try {
     const before = requests;
     await assert.rejects(postRemoteServiceAuthority(target, envelope), transportError("unknown"));
     assert.equal(requests, before + 1, `${mode}: no hidden retries`);
+  }
+  for (mode of ["denied502", "denied503"]) {
+    const before = requests;
+    await assert.rejects(postRemoteServiceAuthority(target, envelope), (error: unknown) => transportError("unknown")(error) && error instanceof ServiceAuthorityTransportError && error.httpStatus === Number(mode.slice(6)), `${mode}: HTTP failure is not a confirmed denial`);
+    assert.equal(requests, before + 1);
   }
   assert.equal(redirectRequests, 0);
   const before = requests;

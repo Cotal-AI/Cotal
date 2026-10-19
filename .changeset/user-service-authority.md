@@ -5,4 +5,4 @@
 "cotal-ai": minor
 ---
 
-Define closed service-authority contracts, provider HTTP client hooks, host control types and native caller-capability policy checks. Add focused transport and structural checks and document the read-only serving-grant reader. Native service registration remains unavailable until host lifecycle support is implemented.
+Define closed service-authority contracts, provider HTTP client hooks, host control types, native service gate approval guards and caller-capability policy checks. Add focused transport and structural checks and document the read-only serving-grant reader. Native service registration remains unavailable until host lifecycle support is implemented.

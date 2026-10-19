@@ -19,8 +19,8 @@
  *  6. FAIL BEFORE MUTATION — a degenerate space is refused at the ENTRY POINTS
  *     (`runAuthService`, `prepareServer`) before any non-seam state is touched: a planted
  *     discovery-file sentinel at the aliased path survives, and no IdP pin is written.
- *  7. DEPROVISION — the delete half of the pair: `deprovisionSecrets` removes exactly the four
- *     canonical keys, attempts every key even when one fails (then throws naming the failures),
+ *  7. DEPROVISION — the delete half of the pair: `deprovisionSecrets` removes the four secret keys and client sentinel
+ *     projection, attempts every key even when one fails (then throws naming the failures),
  *     and absent keys are idempotent no-ops.
  *  8. IDP PIN — the first pin is stored normalized, the same IdP is accepted again and a different
  *     one refused; two PROCESSES that both read no pin and then race the first pin leave one

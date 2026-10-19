@@ -114,3 +114,5 @@ export * from "./run-host.js";
 export * from "./issued-authority.js";
 export * from "./run-admission.js";
 export * from "./issuer-session.js";
+
+export * from "./service-gate.js";

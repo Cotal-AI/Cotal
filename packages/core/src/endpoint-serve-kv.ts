@@ -11,6 +11,7 @@
  * bucket). The KEY GRAMMAR + row parsers stay in `lifecycle-state.ts`; this module is the CAS
  * operations over them.
  */
+import { serviceGateApprovalLive } from "./service-gate.js";
 import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { isCasLoss as isRawCasLoss } from "./endpoint-records.js";
@@ -143,7 +144,10 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
     commit: async (expectedRevision: number) => {
       const entry = await kv.get(key);
       if (!entry || entry.operation !== "PUT" || entry.revision !== expectedRevision) return false;
-      if (parseEndpointGate(entry.value, key).state !== "open") return false;
+      const current = parseEndpointGate(entry.value, key);
+      if (current.state !== "open") return false;
+      if (current.serviceAuthority && (!current.serviceAuthority.activationIssued
+        || !serviceGateApprovalLive(current.serviceAuthority, Math.floor(Date.now() / 1000)))) return false;
       try {
         await kv.update(key, entry.value, expectedRevision);
         return true;
@@ -191,6 +195,8 @@ export async function commitSiblingIssuance(
   row: EpServeLedgerRow,
 ): Promise<void> {
   const at = `${observed.endpoint}/${observed.lifecycleUid}`;
+  if (observed.authorityFamily === "service")
+    throw new EpEnvelopeError("failed-precondition", "standalone service authority does not support sibling credential duties");
   if (observed.state !== "open")
     throw new EpEnvelopeError("expired", `the issuance gate for "${at}" is ${observed.state}; a sibling credential never mints against a closed gate (SPEC 13.1)`);
   await gate.stage(row);
@@ -380,6 +386,8 @@ export function endpointRegistrationBarrier(
     freeze: async (expectedRevision: number) => {
       const cur = await observed();
       if (cur === null || cur.revision !== expectedRevision || cur.row.state !== "open") return null;
+      if (cur.row.serviceAuthority && (cur.row.serviceAuthority.activationIssued
+        || !serviceGateApprovalLive(cur.row.serviceAuthority, Math.floor(Date.now() / 1000)))) return null;
       const frozen: import("./lifecycle-state.js").EndpointGateRow = { ...cur.row, state: "frozen", op: { opId, kind: "registration" } };
       try {
         return await kv.update(key, enc.encode(JSON.stringify(frozen)), expectedRevision); // the fencing TOKEN

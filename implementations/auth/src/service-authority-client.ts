@@ -72,6 +72,10 @@ export async function postRemoteServiceAuthority(base: string, raw: ServiceAutho
   const response = await send(url, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(envelope),
   }, mutation);
+  if (response.status >= 500) {
+    await response.body?.cancel().catch(() => {});
+    throw new ServiceAuthorityTransportError("service authority HTTP failure leaves the request unconfirmed; retain the existing request identity", mutation ? "unknown" : "not-executed", response.status);
+  }
   let result: ServiceAuthorityResult;
   try { result = parseServiceAuthorityResult(await readBoundedJson(response), envelope.request); }
   catch {
