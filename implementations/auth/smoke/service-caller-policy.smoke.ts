@@ -64,6 +64,13 @@ try {
     { ...policy.row, grants: [{ ...grant, capabilities: [{ endpoint: "org.example.other", command: "read" }] }] },
     { ...policy.row, grants: [{ ...grant, parentRefs: [{ principal: binding.grantee, grants: [{ granteeUid: mintLifecycleUid(), grantId: grant.grantId }] }] }] },
   ]) assert.throws(() => parseNativeServiceCallerPolicy(bad));
+  const firstBinding = { ...binding, grantee: { ...binding.grantee, lifecycleUid: mintLifecycleUid() } };
+  const firstCreates = await Promise.allSettled([
+    appendNativeServiceCallerGrant(reg, firstBinding, { expectedRevision: 0, grant }),
+    appendNativeServiceCallerGrant(otherWriter, firstBinding, { expectedRevision: 0, grant: { ...grant, grantId: "8".repeat(32) } }),
+  ]);
+  assert.equal(firstCreates.filter((r) => r.status === "fulfilled").length, 1, "concurrent first creation has one winner");
+  assert.equal((await readNativeServiceCallerPolicy(reg, firstBinding))!.row.grants.length, 1);
   const recreationFailures: string[] = [];
   for (const marker of ["DEL", "PURGE"] as const) {
     const raceBinding = { ...binding, grantee: { ...binding.grantee, lifecycleUid: mintLifecycleUid() } };
