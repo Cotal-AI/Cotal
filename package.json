@@ -424,6 +424,7 @@
     "smoke:ep-grants": "tsx packages/core/smoke/endpoint-grants.smoke.ts",
     "smoke:native-service-gate": "tsx implementations/auth/smoke/native-service-gate.smoke.ts",
     "smoke:service-access-callout:auth": "tsx implementations/auth/smoke/service-access-callout.smoke.ts",
+    "smoke:service-caller-policy": "tsx implementations/auth/smoke/service-caller-policy.smoke.ts",
     "smoke:service-access": "tsx implementations/auth/smoke/service-access.smoke.ts",
     "smoke:service-renewal": "tsx implementations/auth/smoke/service-renewal.smoke.ts",
     "smoke:service-registration": "tsx packages/core/smoke/service-registration.smoke.ts",

@@ -1362,6 +1362,22 @@ approval does not authorize serving release. Standalone service authority does n
 sibling credential duties. Native root validation, owner consent, activation and coordinated
 retirement remain requirements of the trusted host; parsing this value does not establish them.
 
+Native service caller policy is stored at `servicepolicy.<granteeUid>` in the primary auth store.
+Its closed value is `{v:1,accountPublicKey,space,grantee,grants}`; grantee is the exact owner, actor
+and lifecycle UID. A grant contains its immutable id, endpoint and source instance, approval digest,
+normalized capabilities, source and parent references, and status. Source and parent references
+name immutable grant ids at their original grantee UIDs. Source instance is provenance; native
+capability route and instance fields still determine request reach.
+
+A new grant is appended at the observed policy revision. An existing id cannot change its capability
+or provenance and cannot become active again after revocation starts. Revocation first records
+`{state:"revoking",operationId,phase:"cutoff-required"}` at that revision. Unrelated writes preserve
+this intent. Repeated same-operation reads do not advance it or establish terminal retirement.
+Deleted, malformed or unreadable policies are not empty policies. Stored syntax and successful CAS
+do not establish current grantee, service, granter or ancestor authority; the native host must verify
+those before committing or using a grant. Neither a policy row nor a deny-new intent proves live
+connection absence.
+
 A service access bearer uses the user-token shape with `act.view: "service-endpoint"`.
 Its closed payload has `iss`, scalar `aud`, `sub`, `iat`, `nbf`, `exp`, `ver`, `scope` and `act`.
 Its protected header has only `alg: "EdDSA"` and `kid`. The closed actor has `owner`, `actor`,

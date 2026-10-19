@@ -69,6 +69,12 @@ ordinary parent, manager, session and transfer claims. Ordinary exchange, callou
 refuse this view before actor lookup. The dedicated native callout path is not implemented yet,
 so signing this bearer does not enable a service connection.
 
+Internal caller-policy storage uses the sealed native registry and binds each row to one account,
+space and grantee UID. Grant ids are immutable; an append cannot replace or reactivate one.
+Revocation begins with a revision-pinned deny-new intent that unrelated appends preserve.
+These are storage operations, not entitlement checks. The effective policy resolver, host operations,
+cutoff evidence and terminal caller revocation are not implemented yet.
+
 `parseEndpointCapabilities` normalizes the native caller capability shape. `endpointCapabilitiesWithin`
 checks route, instance, target and journal containment using the native grant builders. The host
 still authenticates the granter and checks current grantee, parent and approval records.
