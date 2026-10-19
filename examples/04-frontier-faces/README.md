@@ -121,7 +121,8 @@ node tools/serve-wall.mjs      # then open the printed URL
 `face-term.mjs` flags: `--persona <key>` (`--list` prints all, and any other key is refused),
 `--server`, `--model <provider/id>`, `--session <id>` to attach to an existing session,
 `--password` (default: the `OPENCODE_SERVER_PASSWORD` env) for password-protected servers,
-`--dump` to print the grid as ASCII.
+`--dump` to print the grid as ASCII (`--expr <mood>` picks one of the five expressions). An
+unknown flag, or a flag with no value, is refused.
 
 ## What's here
 
