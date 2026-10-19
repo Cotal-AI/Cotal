@@ -170,9 +170,12 @@ try {
   await wait(3_300);
   m = s.mark();
   await s.command("status w2");
-  const idle = await s.waitFor(/w2\/worker.*mesh idle/, 20_000, m);
+  const idleNoticeRe = /w2\/worker · seat · pty · running · mesh idle[^│\n]*? · up \d+m/;
+  const idle = await s.waitFor(idleNoticeRe, 20_000, m);
+  const idleNoticeRows = clean(s.out.slice(m)).match(/w2\/worker · seat · pty · running · mesh idle[^│\n]*? · up \d+m/g) ?? [];
   check("...while an idle seat is reported plainly, so the qualifier is not printed unconditionally",
-    idle, clean(s.out.slice(m)).match(/status: [^│\n]*/)?.[0] ?? clean(s.out.slice(m)).slice(-200));
+    idle && idleNoticeRows.length > 0 && idleNoticeRows.every((row) => !row.includes("progress unknown")),
+    idleNoticeRows.length ? idleNoticeRows : clean(s.out.slice(m)).slice(-200));
   m = s.mark();
   await s.command("status nobody");
   const t0 = Date.now();
