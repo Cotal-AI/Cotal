@@ -43,14 +43,10 @@ async function rejects(label: string, fn: () => Promise<unknown>, pattern?: RegE
 }
 
 const SECRET = "leak-canary-cmux-DO-NOT-LEAK";
-const cmd = paneCommand(
-  { command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_TOKEN: SECRET }, cwd: "/tmp" },
-  false,
-  true, // isolate (P3): the agent gets ONLY the connector-declared env
-).command;
+const cmd = paneCommand({ command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_TOKEN: SECRET }, cwd: "/tmp" }).command;
 
 ok("paneCommand returns a `bash <path>` invocation", /^bash '\/.*\/launch\.sh'$/.test(cmd));
-const scriptPath = cmd.replace(/^bash\s+(?:-l\s+)?'|'$/g, "");
+const scriptPath = cmd.replace(/^bash\s+'|'$/g, "");
 ok("launcher script is 0o600 (owner-only, never world-readable)", (statSync(scriptPath).mode & 0o777) === 0o600);
 ok("launcher dir is 0o700 (owner-only)", (statSync(dirname(scriptPath)).mode & 0o777) === 0o700);
 ok("returned command does NOT contain the secret (no argv leak)", !cmd.includes(SECRET));

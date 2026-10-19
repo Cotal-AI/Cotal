@@ -68,6 +68,28 @@ and credential claims cannot be recorded and are refused; use the supported enro
 path for the selected release. These records alone do not provide persistent native-key cutoff or
 complete revocation. Reintroducing an old responder also reopens the recording gap.
 
+## Terminal layout contract removed after 0.85.0
+
+`@cotal-ai/core` no longer exports the `terminal` extension kind, so `TerminalLayout`, `Tab` and
+`Pane` are gone. `@cotal-ai/tmux` and `@cotal-ai/cmux` no longer export or register
+`tmuxTerminalProvider` and `cmuxTerminalProvider`. `cotal setup` was the only code that resolved a
+terminal provider, and it stopped opening tabs when it became configure-only, so nothing in Cotal
+reads the kind. A running mesh needs nothing. Spawned agents are unaffected, because the tmux and
+cmux runtimes never used these providers.
+
+### What stops working
+
+Importing `TerminalLayout`, `Tab` or `Pane` from `@cotal-ai/core`, or either provider from its
+package, fails to compile with TS2305. Plain JavaScript that imports either provider by name fails to
+load. `registry.resolve("terminal", "tmux")` and `registry.resolve("terminal", "cmux")` throw,
+because nothing registers that kind.
+
+### Before the upgrade
+
+Remove those imports. A host that opened tmux windows or cmux tabs through a provider can call the
+driver each package still exports, `tmux.openWindow` and `tmux.splitWindow`, or
+`cmux.openWorkspace` with its own layout JSON.
+
 ## Native Claude MCP discovery after 0.82.2
 
 Before upgrading, snapshot Cotal configuration and the Claude profile on each launch host.

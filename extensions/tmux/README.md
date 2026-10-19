@@ -1,9 +1,8 @@
 # @cotal-ai/tmux
 
 The tmux integration: a thin driver over the tmux CLI (open/close a window, send keys) plus a
-self-registering `tmux` `Runtime` and `TerminalLayout` provider. Importing it registers both
-with the core `Registry`, so the manager can spawn agents into tmux windows without depending
-on this package.
+self-registering `tmux` `Runtime` provider. Importing it registers the runtime with the core
+`Registry`, so the manager can spawn agents into tmux windows without depending on this package.
 
 **Tier:** `extensions/`. Peer-depends [`@cotal-ai/core`](../../packages/core); self-registers on
 import.
@@ -25,12 +24,6 @@ import.
   still holds it, even when the agent's pane already exited. It refuses a pane that has moved out of
   that window, whether it still runs or has exited, and a window that has moved out of the session,
   including one that moves while the reap runs.
-
-- **`TerminalLayout` (`tmux`)** — opens/closes tmux windows for host-side orchestration
-  (e.g. `cotal setup`). Detects the current session from `$TMUX`; must be called from inside
-  a tmux session. Supports multi-pane tabs via `split-window`; a tab with more than one pane
-  needs a `split`, and one without it is refused before any window opens. Looking up tabs by
-  label throws when tmux cannot be queried.
 
 ## Usage
 

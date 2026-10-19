@@ -9,8 +9,6 @@ import {
   type Runtime,
   type RuntimeProvider,
   type RuntimeReference,
-  type Tab,
-  type TerminalLayout,
 } from "@cotal-ai/core";
 import * as tmux from "./driver.js";
 
@@ -176,51 +174,3 @@ export const tmuxRuntimeProvider: RuntimeProvider = {
 };
 
 registry.register(tmuxRuntimeProvider);
-
-/** Translate a backend-agnostic {@link Tab} into a sequence of tmux commands on `session`.
- *  One pane → a bare window; several → a window + splits. These panes inherit the caller's
- *  env (setup panes run further `cotal` subcommands), so no `-i` isolation here. */
-function tmuxLayout(session: string, label: string, tab: Tab): string {
-  const [first, ...rest] = tab.panes;
-  if (!first) throw new Error(`tmux layout "${label}": tab has no panes`);
-  if (rest.length > 0 && !tab.split)
-    throw new Error(
-      `tmux layout "${label}": ${tab.panes.length} panes need a split (direction + ratio)`,
-    );
-
-  const firstCmd = tmux.privateLaunch(tmux.mergedCommand(first.env ?? {}, first.command, first.args ?? [])).command;
-  // Drive splits/focus off the STABLE window ID returned here — never `session:label` (labels can
-  // collide or be renamed) or pane indexes `.0`/`.1` (shift under `pane-base-index`).
-  const { windowId } = tmux.openWindow(session, label, firstCmd, first.cwd ?? ".", {
-    focus: false,
-  });
-
-  rest.forEach((pane) => {
-    const cmd = tmux.privateLaunch(tmux.mergedCommand(pane.env ?? {}, pane.command, pane.args ?? [])).command;
-    tmux.splitWindow(windowId, cmd, pane.cwd ?? ".", tab.split!.direction, tab.split!.ratio);
-  });
-
-  return windowId;
-}
-
-/** Self-registering terminal-layout provider — lets a caller (e.g. `cotal setup`) open/close
- *  tmux windows by resolving `registry.resolve("terminal","tmux")`, so an implementation
- *  drives tmux without importing this package. The session is detected from the ambient `$TMUX`
- *  environment; throws if not inside tmux (per AGENTS.md: no silent fallback). */
-export const tmuxTerminalProvider: TerminalLayout = {
-  kind: "terminal",
-  name: "tmux",
-  available: () => tmux.available(),
-  open: (label, tab, opts) => {
-    const session = tmux.currentSession();
-    const windowId = tmuxLayout(session, label, tab);
-    if (opts?.focus) tmux.selectWindow(windowId);
-    // Return the exact window ID we created (stable across renames) — not a label re-lookup, which
-    // could resolve a different same-label window.
-    return windowId;
-  },
-  close: (ref) => tmux.closeWindow(ref),
-  refs: (label) => tmux.windowRefs(tmux.currentSession(), label),
-};
-
-registry.register(tmuxTerminalProvider);

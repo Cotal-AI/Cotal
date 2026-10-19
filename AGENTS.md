@@ -123,9 +123,9 @@ user's own pi, no bundled runtime) that embeds `MeshAgent` in the session's proc
 drives it off the inbox with true mid-turn steering; also covers agents built on pi's SDK.
 See [docs/connect-pi.md](docs/connect-pi.md).
 - `**@cotal-ai/cmux**` (`extensions/cmux`): the cmux integration: a driver over the cmux CLI
-plus a self-registering `cmux` Runtime and `TerminalLayout` provider.
+plus a self-registering `cmux` Runtime provider.
 - `**@cotal-ai/tmux**` (`extensions/tmux`): the tmux integration: a driver over the tmux CLI
-plus a self-registering `tmux` Runtime and `TerminalLayout` provider.
+plus a self-registering `tmux` Runtime provider.
 - `**@cotal-ai/orca**` (`extensions/orca`): the Orca integration: a driver over the public Orca
 CLI plus a self-registering `orca` Runtime provider.
 - `**@cotal-ai/herdr**` (`extensions/herdr`): the Herdr integration: a driver over the herdr CLI

@@ -247,7 +247,7 @@ export function openWindow(
 }
 
 /** Split `target` (a window ID `@N`, or session:window) creating a new pane running `command`.
- *  Returns the new pane's stable ID (`%N`). Direction convention matches {@link Tab.split.direction}:
+ *  Returns the new pane's stable ID (`%N`). Direction:
  *  `"horizontal"` → stacked top/bottom rows (tmux `-v`, the default);
  *  `"vertical"` → side-by-side columns (tmux `-h`).
  *  `ratio` is the first pane's fraction — the new pane gets `(1 - ratio)`. */

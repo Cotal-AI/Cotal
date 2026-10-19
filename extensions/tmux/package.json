@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/tmux",
-  "description": "Cotal tmux integration: a tmux Runtime and TerminalLayout provider for spawning agents into tmux windows.",
+  "description": "Cotal tmux integration: a tmux Runtime provider for spawning agents into tmux windows.",
   "version": "0.85.0",
   "license": "Apache-2.0",
   "repository": {
