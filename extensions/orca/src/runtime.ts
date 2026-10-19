@@ -185,7 +185,7 @@ export class OrcaRuntime implements Runtime {
         try {
           orca.sendTerminal(current().handle, { interrupt: true });
         } catch (err) {
-          if (err instanceof orca.OrcaCliError && /not_found|stale|closed|not_writable/i.test(err.code)) return;
+          if (err instanceof orca.OrcaCliError && (orca.isGoneCode(err.code) || /not_writable/i.test(err.code))) return;
           throw err;
         }
       },

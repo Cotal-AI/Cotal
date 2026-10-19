@@ -66,6 +66,11 @@ export class OrcaCliError extends Error {
   }
 }
 
+/** True for an Orca error code that means the terminal or its handle no longer exists. */
+export function isGoneCode(code: string): boolean {
+  return /not_found|stale|closed/i.test(code);
+}
+
 let selectedBin: string | undefined;
 let availableCache: { at: number; value: boolean } | undefined;
 let terminalCache: { at: number; terminals: OrcaTerminal[] } | undefined;
@@ -294,6 +299,33 @@ export function showTerminal(
   return request<TerminalResult>(["terminal", "show", "--terminal", handle, "--json"], { timeoutMs });
 }
 
+/** What `terminal list` says about `terminal`, by the one rule the status probe and the exit wait
+ * share. ptyId is stable across handle rotation, so a terminal that has one is gone (`{}`) when it is
+ * not listed. One without a ptyId is matched by handle, and undefined means only `terminal show` on
+ * that handle can tell. */
+function fromList(
+  terminal: Pick<OrcaTerminal, "handle" | "ptyId">,
+  terminals: OrcaTerminal[],
+): { terminal?: OrcaTerminal } | undefined {
+  const listed = terminals.find((candidate) =>
+    terminal.ptyId ? candidate.ptyId === terminal.ptyId : candidate.handle === terminal.handle,
+  );
+  if (listed) return { terminal: { ...terminal, ...listed } };
+  return terminal.ptyId ? {} : undefined;
+}
+
+/** What `terminal show` says about `handle`: its terminal, or undefined when Orca reports it gone. An
+ * ok answer with no terminal is not an answer, so it throws. */
+function fromShow(handle: string, shown: OrcaEnvelope<TerminalResult>): OrcaTerminal | undefined {
+  if (shown.ok === false) {
+    const code = shown.error?.code ?? "";
+    if (isGoneCode(code)) return undefined;
+    throw new OrcaCliError(code, `orca terminal show failed: ${shown.error?.message ?? code}`);
+  }
+  if (!shown.result?.terminal) throw new Error(`orca terminal show returned no authoritative state for ${handle}`);
+  return shown.result.terminal;
+}
+
 /** Resolve the current handle for a terminal. Orca handles are runtime-scoped, while ptyId stays
  * stable across handle rotation. */
 export function currentTerminal(
@@ -304,18 +336,9 @@ export function currentTerminal(
     const listed = requireOk<TerminalListResult>(["terminal", "list", "--json"], { timeoutMs }).terminals ?? [];
     terminalCache = { at: Date.now(), terminals: listed };
   }
-  const listed = terminal.ptyId
-    ? terminalCache.terminals.find((candidate) => candidate.ptyId === terminal.ptyId)
-    : terminalCache.terminals.find((candidate) => candidate.handle === terminal.handle);
-  if (listed) return { ...terminal, ...listed };
-
-  const shown = showTerminal(terminal.handle, { timeoutMs });
-  if (shown.ok === false) {
-    const code = shown.error?.code ?? "";
-    if (/not_found|stale|closed/i.test(code)) return undefined;
-    throw new OrcaCliError(code, `orca terminal show failed: ${shown.error?.message ?? code}`);
-  }
-  return shown.result?.terminal ?? terminal;
+  const listed = fromList(terminal, terminalCache.terminals);
+  if (listed) return listed.terminal;
+  return fromShow(terminal.handle, showTerminal(terminal.handle, { timeoutMs }));
 }
 
 export function terminalAlive(terminal: Pick<OrcaTerminal, "handle" | "ptyId">): boolean {
@@ -363,11 +386,8 @@ async function currentTerminalForWait(
     const code = listedResult.error?.code ?? "unknown_error";
     throw new OrcaCliError(code, `orca terminal list failed: ${listedResult.error?.message ?? code}`);
   }
-  const listed = (listedResult.result?.terminals ?? []).find((candidate) =>
-    terminal.ptyId ? candidate.ptyId === terminal.ptyId : candidate.handle === terminal.handle,
-  );
-  if (listed) return { ...terminal, ...listed };
-  if (terminal.ptyId) return undefined;
+  const listed = fromList(terminal, listedResult.result?.terminals ?? []);
+  if (listed) return listed.terminal;
 
   remaining = deadline - Date.now();
   if (remaining <= 0) throw new Error(`orca: timed out while resolving terminal ${terminal.handle}`);
@@ -375,14 +395,7 @@ async function currentTerminalForWait(
     ["terminal", "show", "--terminal", terminal.handle, "--json"],
     { timeoutMs: remaining },
   );
-  if (shown.ok === false) {
-    const code = shown.error?.code ?? "";
-    if (/not_found|stale|closed/i.test(code)) return undefined;
-    throw new OrcaCliError(code, `orca terminal show failed: ${shown.error?.message ?? code}`);
-  }
-  if (!shown.result?.terminal)
-    throw new Error(`orca terminal show returned no authoritative state for ${terminal.handle}`);
-  return shown.result.terminal;
+  return fromShow(terminal.handle, shown);
 }
 
 /** Await Orca's provider-native terminal exit condition, following one or more handle rotations by
@@ -401,7 +414,7 @@ export async function waitManagedTerminalExit(
       terminalCache = undefined;
       return;
     } catch (err) {
-      if (!(err instanceof OrcaCliError) || !/not_found|stale|closed/i.test(err.code)) throw err;
+      if (!(err instanceof OrcaCliError) || !isGoneCode(err.code)) throw err;
       terminalCache = undefined;
       const rotated = await currentTerminalForWait(terminal, deadline);
       if (!rotated) return;
@@ -437,7 +450,7 @@ export function closeTerminal(handle: string, opts: { timeoutMs?: number } = {})
     const r = request<Record<string, unknown>>(["terminal", "close", "--terminal", handle, "--json"], opts);
     if (r.ok === false) {
       const code = r.error?.code ?? "";
-      if (/not_found|stale|closed/i.test(code)) return false;
+      if (isGoneCode(code)) return false;
       throw new Error(`orca terminal close failed for ${handle}: ${r.error?.message ?? code}`);
     }
     return true;
