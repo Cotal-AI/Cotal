@@ -73,11 +73,11 @@
     {
       "name": "the presence watch is dropped: a dead seat is never observed by the run",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (!rows.some((pr) => pr.card?.name === name && pr.lifecycleUid === uid)) {",
+      "find": "      if (!rows.some((p) => p.card.name === name && p.lifecycleUid === uid)) {",
       "replace": "      if (false) {",
       "expectRed": "the client observes the death itself and throws L4002, naming the reason",
       "cell": "the client observes the death itself and throws L4002, naming the reason",
-      "note": "Under the executor-currency rule a dead target has no early goal terminal, so this watch is the run's SOLE L4002 authority; dropped, the orphaned turn parks to its bounded deadline. Measured 2026-09-02: three reds — the block's bounded deadline, the L4002 cell, and the death's pause claim; 32 passed, 3 failed."
+      "note": "Under the executor-currency rule a dead target has no early goal terminal, so this watch is the run's SOLE L4002 authority; dropped, the orphaned turn parks to its bounded deadline. Measured 2026-09-02: three reds — the block's bounded deadline, the L4002 cell, and the death's pause claim; 32 passed, 3 failed. Re-anchored 2026-10-19 on the one death watch `wait(down)` and `turn` now share; not re-measured."
     },
     {
       "name": "the deny's turn-deadline reason stops mapping to L4003",
