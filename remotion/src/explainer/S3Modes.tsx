@@ -45,17 +45,11 @@ const B3 = [140, 210] as const; // anycast
 
 const ALICE: Pt = { x: 420, y: 560 };
 const PILL: Pt = { x: 960, y: 470 };
-const PEERS: Pt[] = [
-  { x: 1460, y: 380 }, // bob, builder (busy)
-  { x: 1460, y: 560 }, // carol, reviewer (free -> claims in anycast)
-  { x: 1460, y: 740 }, // dave, builder (busy)
-];
-const CAST = [
-  { name: "bob", role: "builder", status: "working" },
-  { name: "carol", role: "reviewer", status: "idle" },
-  { name: "dave", role: "builder", status: "working" },
+const PEERS = [
+  { name: "bob", role: "builder", status: "working", at: { x: 1460, y: 380 } },
+  { name: "carol", role: "reviewer", status: "idle", at: { x: 1460, y: 560 } },
+  { name: "dave", role: "builder", status: "working", at: { x: 1460, y: 740 } },
 ] as const;
-const CLAIMER = 1; // carol is the free peer who claims the anycast role
 
 // --- wires ----------------------------------------------------------------------
 
@@ -75,14 +69,14 @@ const outCtrl = (r: Pt): [Pt, Pt] => [
   { x: r.x - 150, y: r.y },
 ];
 const OUT_END = (r: Pt): Pt => ({ x: r.x - 56, y: r.y });
-const OUT_PATHS = PEERS.map((r) => cubicPath(OUT_START, outCtrl(r)[0], outCtrl(r)[1], OUT_END(r)));
+const OUT_PATHS = PEERS.map(({ at }) => cubicPath(OUT_START, outCtrl(at)[0], outCtrl(at)[1], OUT_END(at)));
 const outPos = (r: Pt) => (t: number): Pt =>
   bez(OUT_START, outCtrl(r)[0], outCtrl(r)[1], OUT_END(r), t);
 
 // alice -> bob, a direct point-to-point route (unicast), no hub; it arcs over
 // the channel so it reads as a separate, dedicated lane.
 const DIRECT_START: Pt = { x: ALICE.x + 50, y: ALICE.y - 16 };
-const DIRECT_END: Pt = { x: PEERS[0]!.x - 50, y: PEERS[0]!.y + 14 };
+const DIRECT_END: Pt = { x: PEERS[0].at.x - 50, y: PEERS[0].at.y + 14 };
 const DIRECT_CTRL: [Pt, Pt] = [
   { x: lerp(DIRECT_START, DIRECT_END, 0.4).x, y: 430 },
   { x: lerp(DIRECT_START, DIRECT_END, 0.6).x, y: 360 },
@@ -104,6 +98,11 @@ const emitPulse = (frame: number, at: number): number =>
 export const S3Modes: React.FC = () => {
   const frame = useCurrentFrame();
   const rootOpacity = loopEnvelope(frame, MODES_DURATION);
+  // the first idle peer claims the anycast role, so presence decides who. Checked
+  // here, not at import: Root imports every snippet, so a module-scope throw would
+  // also refuse the compositions that never mount this one.
+  const claimer = PEERS.findIndex((p) => p.status === "idle");
+  if (claimer < 0) throw new Error("S3Modes: no idle peer in PEERS to claim the anycast role");
 
   // which beat are we in, for global dimming of the header while a beat runs.
   const inB1 = frame < B2[0];
@@ -139,7 +138,7 @@ export const S3Modes: React.FC = () => {
   const u_dimOthers = u_vis;
 
   // ------------------------------------------------------------------ beat 3
-  // anycast: alice addresses a role; one FREE peer (carol) claims it.
+  // anycast: alice addresses a role; one FREE peer (the claimer) claims it.
   const a_send = [B3[0] + 10, B3[0] + 32] as const;
   const a_claim = [B3[0] + 36, B3[0] + 60] as const;
   const a_tIn = prog(frame, a_send[0], a_send[1]);
@@ -156,30 +155,30 @@ export const S3Modes: React.FC = () => {
   const a_breath = a_probing
     ? 0.5 + 0.5 * Math.sin(((frame - a_send[1]) / 18) * Math.PI * 2)
     : 0;
-  // carol flips idle->working once she claims; bob/dave stay dimmed.
-  const a_carolWorking = frame >= a_claim[1];
+  // the claimer flips idle->working once it claims; the others stay dimmed.
+  const a_claimerWorking = frame >= a_claim[1];
   const a_dimOthers = a_vis * (a_probing || a_tClaim > 0 ? 1 : fade(frame, a_send[0], a_send[1]));
 
   // ----------------------------------------------------------- per-peer state
   // status + flash + dim folded across the three beats.
-  const peerStatus: ("idle" | "working")[] = CAST.map((c, i) => {
+  const peerStatus: ("idle" | "working")[] = PEERS.map((c, i) => {
     if (inB1) return c.status;
     if (inB2) return c.status; // unicast leaves presence unchanged
-    // anycast: carol becomes working on claim; others keep their base status.
-    if (i === CLAIMER) return a_carolWorking ? "working" : "idle";
+    // anycast: the claimer becomes working on claim; others keep their base status.
+    if (i === claimer) return a_claimerWorking ? "working" : "idle";
     return c.status;
   });
-  const peerFlash = CAST.map((_c, i) => {
+  const peerFlash = PEERS.map((_c, i) => {
     let f = 0;
     if (m_vis > 0.01) f = Math.max(f, m_flash * m_vis); // all flash in multicast
     if (i === 0) f = Math.max(f, u_flash * u_vis); // bob flashes in unicast
-    if (i === CLAIMER) f = Math.max(f, a_claimFlash * a_vis); // carol in anycast
+    if (i === claimer) f = Math.max(f, a_claimFlash * a_vis); // the claimer in anycast
     return f;
   });
-  const peerDim = CAST.map((_c, i) => {
+  const peerDim = PEERS.map((_c, i) => {
     let d = 0;
     if (i !== 0) d = Math.max(d, u_dimOthers); // unicast: non-bob dim
-    if (i !== CLAIMER) d = Math.max(d, a_dimOthers); // anycast: non-carol dim
+    if (i !== claimer) d = Math.max(d, a_dimOthers); // anycast: non-claimer dim
     return d;
   });
 
@@ -233,10 +232,10 @@ export const S3Modes: React.FC = () => {
           flash={Math.max(m_emit * m_vis, u_emit * u_vis, a_emit * a_vis)}
         />
         <ChannelPill at={PILL} label="#general" glow={Math.max(m_pillGlow * m_vis, a_pillGlow * a_vis)} />
-        {CAST.map((c, i) => (
+        {PEERS.map((c, i) => (
           <AgentNode
             key={c.name}
-            at={PEERS[i]!}
+            at={c.at}
             name={c.name}
             role={c.role}
             status={peerStatus[i]!}
@@ -248,11 +247,11 @@ export const S3Modes: React.FC = () => {
         {/* beat 1 — multicast beams: alice -> pill, then pill -> all peers */}
         <div style={{ opacity: m_vis }}>
           <BeamLine d={IN_PATH} pos={inPos} t={m_tIn} visible={m_tIn > 0 && m_tIn < 1} />
-          {PEERS.map((r, i) => (
+          {PEERS.map(({ at }, i) => (
             <BeamLine
               key={`m${i}`}
               d={OUT_PATHS[i]!}
-              pos={outPos(r)}
+              pos={outPos(at)}
               t={m_tOut}
               visible={m_tOut > 0 && m_tOut < 1}
             />
@@ -269,13 +268,13 @@ export const S3Modes: React.FC = () => {
           />
         </div>
 
-        {/* beat 3 — anycast: alice -> pill (role), then one beam to carol */}
+        {/* beat 3 — anycast: alice -> pill (role), then one beam to the claimer */}
         <div style={{ opacity: a_vis }}>
           <BeamLine d={IN_PATH} pos={inPos} t={a_tIn} visible={a_tIn > 0 && a_tIn < 1} />
           {a_probing && <GoldDot at={PILL} breath={a_breath} />}
           <BeamLine
-            d={OUT_PATHS[CLAIMER]!}
-            pos={outPos(PEERS[CLAIMER]!)}
+            d={OUT_PATHS[claimer]!}
+            pos={outPos(PEERS[claimer]!.at)}
             t={a_tClaim}
             visible={a_tClaim > 0 && a_tClaim < 1}
           />
@@ -283,7 +282,7 @@ export const S3Modes: React.FC = () => {
 
         {/* anycast wire afterglow on the claimed route */}
         <div style={{ opacity: a_vis }}>
-          <WireLines paths={[OUT_PATHS[CLAIMER]!]} glow={[a_claimGlow]} />
+          <WireLines paths={[OUT_PATHS[claimer]!]} glow={[a_claimGlow]} />
         </div>
 
         {/* bottom captions, one per beat, cross-faded */}
