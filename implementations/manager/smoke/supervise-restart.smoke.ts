@@ -135,11 +135,11 @@ try {
   };
 
   const unknown = await call("spawn", { name: "seat", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 1, windowMs: 1000, extra: true } }).then((r) => r.reply, asValue);
-  c("opStart refuses an unknown supervise key",
-    /unknown key|additional propert/i.test(JSON.stringify(unknown)), unknown);
+  c("the spawn schema refuses an unknown supervise key",
+    /additional propert/i.test(JSON.stringify(unknown)), unknown);
 
   const missing = await call("spawn", { name: "seat", agent: "supervise-stub", cwd: repoRoot, supervise: { restarts: 1 } }).then((r) => r.reply, asValue);
-  c("opStart refuses a policy without windowMs",
+  c("the spawn schema refuses a policy without windowMs",
     /windowMs/i.test(JSON.stringify(missing)), missing);
 
   const spawnGoal = "spawn-seat".padEnd(43, "s");

@@ -5241,44 +5241,9 @@ export class Manager {
     return false;
   }
 
-  /** Parse an untyped control-plane `start` request into {@link StartAgentOpts}. */
+  /** Map a `spawn` request into {@link StartAgentOpts}. The served command validates `args` against
+   *  `SPAWN_INPUT_SCHEMA` before this runs, so each field is read as the schema admitted it. */
   private opStart(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst", authenticatedCaller?: EpCaller): Promise<ControlReply> {
-    // Opaque launch options, when present, must be a mapping — a raw control message could send a
-    // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
-    if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
-      return Promise.resolve({ ok: false, error: "launchOptions: expected a key:value mapping" });
-    let supervise: { restarts: number; windowMs: number } | undefined;
-    if (args.supervise !== undefined) {
-      const raw = args.supervise;
-      if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-        return Promise.resolve({ ok: false, error: "supervise: expected { restarts, windowMs }" });
-      const rec = raw as Record<string, unknown>;
-      const extra = Object.keys(rec).filter((k) => k !== "restarts" && k !== "windowMs");
-      if (extra.length > 0)
-        return Promise.resolve({ ok: false, error: `supervise: unknown key ${extra[0]}; it takes restarts and windowMs` });
-      if (typeof rec.restarts !== "number" || !Number.isInteger(rec.restarts) || rec.restarts < 1)
-        return Promise.resolve({ ok: false, error: "supervise.restarts: expected a positive integer" });
-      if (typeof rec.windowMs !== "number" || !Number.isInteger(rec.windowMs) || rec.windowMs < 1)
-        return Promise.resolve({ ok: false, error: "supervise.windowMs: expected a positive integer" });
-      supervise = { restarts: rec.restarts, windowMs: rec.windowMs };
-    }
-    // ACL overrides arrive as string arrays or not at all — a malformed value is a bad request,
-    // not something to coerce (no fallbacks).
-    const strList = (v: unknown, flag: string): string[] | undefined => {
-      if (v === undefined) return undefined;
-      if (!Array.isArray(v) || v.some((s) => typeof s !== "string"))
-        throw new Error(`${flag}: expected an array of strings`);
-      return v as string[];
-    };
-    let subscribe: string[] | undefined, allowSubscribe: string[] | undefined, allowPublish: string[] | undefined, shareTools: string[] | undefined;
-    try {
-      subscribe = strList(args.subscribe, "subscribe");
-      allowSubscribe = strList(args.allowSubscribe, "allowSubscribe");
-      allowPublish = strList(args.allowPublish, "allowPublish");
-      shareTools = strList(args.shareTools, "shareTools");
-    } catch (e) {
-      return Promise.resolve({ ok: false, error: rejectionText(e) });
-    }
     // #373: the event-plane admission gate. `startAgent` resolves `eventsRequired || opts.events
     // !== false`, so omission ARMS the plane — a gate on the explicit bit alone is bypassed by
     // omitting it. The gate is on the DECISION, and it runs before connector resolution and
@@ -5329,11 +5294,11 @@ export class Manager {
         eventsNotice,
         cwd: args.cwd as string | undefined,
         prompt: args.prompt as string | undefined,
-        subscribe,
-        allowSubscribe,
-        allowPublish,
-        shareTools,
-        ...(supervise !== undefined ? { supervise } : {}),
+        subscribe: args.subscribe as string[] | undefined,
+        allowSubscribe: args.allowSubscribe as string[] | undefined,
+        allowPublish: args.allowPublish as string[] | undefined,
+        shareTools: args.shareTools as string[] | undefined,
+        supervise: args.supervise as StartAgentOpts["supervise"],
         route,
       },
       caller,
