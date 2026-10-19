@@ -14,9 +14,10 @@
  * inventory is refused before anything is sent upstream.
  */
 import {
-  contractDigest,
   EpEnvelopeError,
   serviceContractTable,
+  singleDocumentClosure,
+  type ContractClosureManifest,
   type EpCommandDef,
   type EpErrorCode,
   type EpServeContext,
@@ -277,10 +278,6 @@ export function resultOrThrow(reply: UpstreamReply): { result: Record<string, un
 
 const TABLE = serviceContractTable(ROWS);
 
-function closureDigestOfSource(root: unknown): string {
-  return contractDigest({ v: 1, root: contractDigest(root), members: [] });
-}
-
 /** Every contract artifact a registration publishes: each distinct schema root and its manifest. */
 export const linearContractArtifactValues = TABLE.artifactValues;
 
@@ -295,8 +292,8 @@ export function linearClusterDocument() {
       class: "ephemeral" as const,
       targeted: false,
       capability: LINEAR_CAPABILITY,
-      inputDigest: closureDigestOfSource(r.input),
-      outputDigest: closureDigestOfSource(r.output),
+      inputDigest: singleDocumentClosure(r.input).closureDigest,
+      outputDigest: singleDocumentClosure(r.output).closureDigest,
     })),
   };
 }
@@ -304,13 +301,12 @@ export function linearClusterDocument() {
 export function linearClusterArtifacts(): {
   document: ReturnType<typeof linearClusterDocument>;
   rootDigest: string;
-  manifest: { v: 1; root: string; members: string[] };
+  manifest: ContractClosureManifest;
   closureDigest: string;
 } {
   const document = linearClusterDocument();
-  const rootDigest = contractDigest(document);
-  const manifest = { v: 1 as const, root: rootDigest, members: [] as string[] };
-  return { document, rootDigest, manifest, closureDigest: contractDigest(manifest) };
+  const { manifest, closureDigest } = singleDocumentClosure(document);
+  return { document, rootDigest: manifest.root, manifest, closureDigest };
 }
 
 /** The `EpCommandDef[]` `serveEndpoint` consumes. The call deadline bounds the upstream request. */
