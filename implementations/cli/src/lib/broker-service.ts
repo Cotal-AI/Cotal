@@ -26,7 +26,6 @@ export const brokerPreset: ServicePreset = {
 };
 
 const CONFIG_LIMIT = 1024 * 1024;
-
 interface BrokerTarget { root: string; space: string; server: string; host: string; port: number; scheme: "nats" | "tls"; config: string; binary: string }
 
 const refuse = (code: "CONFLICT" | "LIFECYCLE_BLOCKED" | "UNSUPPORTED" | "TARGET_UNAVAILABLE", message: string, target?: unknown, remedy?: string): never => {
@@ -362,6 +361,7 @@ export const brokerService: LocalProcess = {
       config: { type: "string", minLength: 1, maxLength: 4096, description: "explicitly prepared nats-server configuration inside that root's .cotal directory; it is never generated here" },
       binary: { type: "string", minLength: 1, maxLength: 4096, description: "absolute nats-server executable; no PATH lookup is made" },
       server: { type: "string", minLength: 1, maxLength: 4096, description: "the one broker URL this configuration serves" },
+      logFile: { type: "string", minLength: 1, maxLength: 4096, description: "native nats-server log_file path prepared by cotal up" },
     } },
   },
   async buildServiceLaunch(context) {
