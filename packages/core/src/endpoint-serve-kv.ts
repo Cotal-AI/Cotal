@@ -12,7 +12,8 @@
  * operations over them.
  */
 import { walkKvLatest } from "./kv-scan.js";
-import { serviceGateApprovalLive } from "./service-gate.js";
+import { contractDigest } from "./canonical.js";
+import { parseServiceRegistrationIdentity, serviceGateApprovalLive } from "./service-gate.js";
 import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { isCasLoss as isRawCasLoss } from "./endpoint-records.js";
@@ -378,7 +379,9 @@ export async function provisionEndpointGateOpen(
 export function endpointRegistrationBarrier(
   kv: KV,
   space: string,
-  args: { endpoint: string; instanceId: string; opId: string; evict?: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[] },
+  args: { endpoint: string; instanceId: string; opId: string;
+    serviceRegistration?: { requestId: string; requestDigest: string };
+    evict?: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[] },
 ): import("./endpoint-service.js").EpIssuanceBarrier {
   const { endpoint } = args;
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
@@ -390,6 +393,10 @@ export function endpointRegistrationBarrier(
     const current = await observed();
     if (!current?.row.serviceAuthority || current.row.state !== "frozen" || current.row.op.kind !== "registration" || current.row.op.opId !== opId)
       throw new EpEnvelopeError("failed-precondition", "service issuance evidence cannot be checked outside its owned registration freeze");
+    const pending = current.row.serviceAuthority.pendingRegistration;
+    if (!pending || pending.operationId !== opId || (args.serviceRegistration &&
+      (pending.requestId !== args.serviceRegistration.requestId || pending.requestDigest !== args.serviceRegistration.requestDigest)))
+      throw new EpEnvelopeError("conflict", "pending registration request identity does not match the held operation");
     if (current.row.serviceAuthority.activationIssued)
       throw new EpEnvelopeError("failed-precondition", "activated service issuance evidence cannot be reconciled as pre-activation registration");
     // The existing leader walk carries tombstones and propagates incomplete reads. A live-key
@@ -408,10 +415,17 @@ export function endpointRegistrationBarrier(
         || !serviceGateApprovalLive(cur.row.serviceAuthority, Math.floor(Date.now() / 1000)))) return null;
       const frozen: import("./lifecycle-state.js").EndpointGateRow = { ...cur.row, state: "frozen", op: { opId, kind: "registration" } };
       if (frozen.serviceAuthority) {
-        const { registration: _registration, ...authority } = frozen.serviceAuthority;
-        void _registration;
-        frozen.serviceAuthority = authority;
+        if (!args.serviceRegistration)
+          throw new EpEnvelopeError("failed-precondition", "service registration requires its request identity before freezing");
+        if (frozen.serviceAuthority.registration?.requestId === args.serviceRegistration.requestId)
+          throw new EpEnvelopeError("conflict", "completed registration request must be recovered without another barrier");
+        const pendingRegistration = parseServiceRegistrationIdentity({ operationId: opId,
+          requestId: args.serviceRegistration.requestId, requestDigest: args.serviceRegistration.requestDigest });
+        frozen.serviceAuthority = { ...frozen.serviceAuthority, pendingRegistration };
+      } else if (args.serviceRegistration) {
+        throw new EpEnvelopeError("failed-precondition", "service request identity cannot bind a nonservice gate");
       }
+      parseEndpointGate(enc.encode(JSON.stringify(frozen)), key);
       try {
         const token = await kv.update(key, enc.encode(JSON.stringify(frozen)), expectedRevision);
         if (frozen.serviceAuthority) await assertEmptyServiceFamily();
@@ -463,6 +477,23 @@ export function endpointRegistrationBarrier(
         generation: successor.generation, processEpoch: successor.processEpoch,
         registrationRevision: successor.registrationRevision, nameAuthorityRevision: successor.nameAuthorityRevision,
       };
+      if (reopened.serviceAuthority) {
+        const { pendingRegistration, ...authority } = reopened.serviceAuthority;
+        if (!pendingRegistration || pendingRegistration.operationId !== opId)
+          throw new EpEnvelopeError("conflict", "pending registration identity is absent at completion");
+        const completed = successor.processEpoch !== cur.row.processEpoch || successor.registrationRevision !== cur.row.registrationRevision
+          || successor.nameAuthorityRevision !== cur.row.nameAuthorityRevision;
+        if (completed) {
+          const registration = { ...pendingRegistration, processEpoch: successor.processEpoch,
+            registrationRevision: successor.registrationRevision, nameAuthorityRevision: successor.nameAuthorityRevision };
+          authority.registration = { ...registration, registrationProof: contractDigest({ v: 1, kind: "service-registration",
+            space, endpoint, instanceId, assignmentDigest: authority.assignmentDigest, principal: cur.row.principal,
+            lifecycleUid: authority.lifecycleUid, rootCredentialId: authority.rootCredentialId, approvalDigest: authority.approvalDigest,
+            ...registration }) };
+        }
+        reopened.serviceAuthority = authority;
+      }
+      parseEndpointGate(enc.encode(JSON.stringify(reopened)), key);
       try {
         await kv.update(key, enc.encode(JSON.stringify(reopened)), token);
         return true;

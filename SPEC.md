@@ -1330,7 +1330,12 @@ A standalone user-authorized service gate adds `authorityFamily: "service"` and 
 `serviceAuthority` value. Its closed fields are `v: 1`, `assignmentDigest`, native
 `lifecycleUid`, `state: pending-root | approved | revoked`, `rootCredentialId`, `rootExpiresAt`,
 `approvalDigest`, `approvalExpiresAt`, `callerCeiling`, `activationIssued`, and optional
-`registration: {requestId, requestDigest, registrationProof}`. Expiries use Unix seconds.
+`registration: {operationId, requestId, requestDigest, processEpoch, registrationRevision,
+nameAuthorityRevision, registrationProof}` and
+`pendingRegistration: {operationId, requestId, requestDigest}`. Expiries use Unix seconds.
+The completion stamp's coordinates must equal the gate's. A positive registration revision
+requires a completion stamp. A pending identity is present only under its matching registration
+freeze, and activation cannot be recorded while that identity is pending.
 A pending-root value has null root and approval fields, an empty ceiling, no registration and
 `activationIssued: false`. An approved value binds the native root and immutable approval;
 only approval expiry may be null. Revocation retains any existing binding. An activated value
@@ -1341,8 +1346,12 @@ Service registration freeze requires live approval and `activationIssued: false`
 Under that freeze, a complete leader read must prove the issuance family empty. Active, revoked,
 malformed or deleted credential evidence is inconsistent with pre-activation state and blocks
 registration and recovery. Failed or partial reads never prove emptiness.
-Gate transitions retain approval, root and activation fields. A new registration freeze clears
-the previous completion stamp; the new stamp is written only after that registration completes.
+Gate transitions retain approval, root and activation fields. A new registration freeze retains
+the prior completion stamp and records the new operation's request identity and digest. Successful
+reopen writes the new completion stamp and resulting coordinates in the same CAS. A definite
+abort-reopen preserves the prior stamp. Both paths remove the pending identity. Recovery binds
+the recorded operation; an open surface alone cannot establish which request completed.
+A separate post-reopen writer cannot attach a completion stamp.
 Serving release requires live approval,
 recorded activation and a finite credential expiry bounded by the service access lifetime,
 native root expiry and approval expiry. Release rechecks the fixed expiry after asynchronous

@@ -384,7 +384,16 @@ export function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow
   if (o.authorityFamily !== undefined && o.authorityFamily !== "environment-manager" && o.authorityFamily !== "service")
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} carries an invalid authorityFamily (closed schema, SPEC 13.1)`);
   if (o.authorityFamily === "service") {
-    parseServiceGateAuthority(o.serviceAuthority);
+    const service = parseServiceGateAuthority(o.serviceAuthority);
+    if (o.registrationRevision !== 0 && !service.registration)
+      throw new EpEnvelopeError("internal", `the service gate ${key} has registered coordinates without completion provenance`);
+    if (service.registration && (service.registration.processEpoch !== o.processEpoch
+      || service.registration.registrationRevision !== o.registrationRevision || service.registration.nameAuthorityRevision !== o.nameAuthorityRevision))
+      throw new EpEnvelopeError("internal", `the service gate ${key} completion stamp disagrees with its coordinates`);
+    const registrationOp = o.state === "frozen" && isRec(o.op) && o.op.kind === "registration";
+    if (registrationOp !== (service.pendingRegistration !== undefined)
+      || (service.pendingRegistration && (!isRec(o.op) || service.pendingRegistration.operationId !== o.op.opId)))
+      throw new EpEnvelopeError("internal", `the service gate ${key} pending registration does not bind its freeze`);
     if (!isPrincipalOwnerToken(principal.owner, { allowLocal: false, allowPlatform: false }))
       throw new EpEnvelopeError("internal", `the service gate ${key} requires a derived user owner`);
   } else if (o.serviceAuthority !== undefined) {

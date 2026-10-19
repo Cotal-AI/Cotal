@@ -100,12 +100,14 @@ async function rootExpiry(reg: LifecycleRegistry, binding: ServiceAssignmentBind
 
 /** Final approval CAS. The host must first verify the proposal, owner consent and operator target policy. */
 export async function approveNativeServiceGate(reg: LifecycleRegistry, binding: ServiceAssignmentBinding, args: {
-  expectedRevision: number; rootCredentialId: string; approvalDigest: string;
+  expectedRevision: number; rootCredentialId: string; approvalDigest: string; nameAuthorityRevision: number;
   approvalExpiresAt: number | null; callerCeiling: EpCapability[];
 }): Promise<ServiceGateRead> {
   const found = await current(reg, binding, args.expectedRevision);
   if (found.row.state !== "open" || found.row.serviceAuthority.state !== "pending-root")
     conflict("only the pending root assignment can receive its first approval");
+  if (!Number.isSafeInteger(args.nameAuthorityRevision) || args.nameAuthorityRevision <= 0)
+    throw new EpEnvelopeError("failed-precondition", "service approval requires its native name binding revision");
   const now = Date.now();
   const authority: ServiceGateAuthority = {
     ...found.row.serviceAuthority, state: "approved", rootCredentialId: args.rootCredentialId,
@@ -114,27 +116,7 @@ export async function approveNativeServiceGate(reg: LifecycleRegistry, binding: 
   };
   if (!serviceGateApprovalLive(authority, Math.floor(now / 1000)))
     throw new EpEnvelopeError("expired", "service approval has already expired");
-  return replace(reg, binding, found, { ...found.row, serviceAuthority: authority });
-}
-
-/** Stamp only the coordinates produced by the completed native registration barrier. */
-export async function stampNativeServiceRegistration(reg: LifecycleRegistry, binding: ServiceAssignmentBinding, args: {
-  expectedRevision: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number;
-  requestId: string; requestDigest: string; registrationProof: string;
-}): Promise<ServiceGateRead> {
-  const found = await current(reg, binding, args.expectedRevision), row = found.row, authority = row.serviceAuthority;
-  if (row.state !== "open" || authority.activationIssued || !serviceGateApprovalLive(authority, Math.floor(Date.now() / 1000))
-    || row.processEpoch !== args.processEpoch || row.registrationRevision !== args.registrationRevision
-    || row.nameAuthorityRevision !== args.nameAuthorityRevision || row.registrationRevision === 0 || row.nameAuthorityRevision === 0)
-    conflict("registration stamp does not match a live pre-activation gate");
-  const registration = { requestId: args.requestId, requestDigest: args.requestDigest, registrationProof: args.registrationProof };
-  if (authority.registration) {
-    if (authority.registration.requestId !== registration.requestId || authority.registration.requestDigest !== registration.requestDigest
-      || authority.registration.registrationProof !== registration.registrationProof)
-      conflict("a completed registration stamp cannot be rebound without a new barrier");
-    return found;
-  }
-  return replace(reg, binding, found, { ...row, serviceAuthority: { ...authority, registration } });
+  return replace(reg, binding, found, { ...found.row, nameAuthorityRevision: args.nameAuthorityRevision, serviceAuthority: authority });
 }
 
 /** The host withholds both access and renewal material until this monotonic activation CAS wins. */

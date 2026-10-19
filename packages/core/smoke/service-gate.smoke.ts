@@ -54,7 +54,8 @@ try {
   const kv = await new Kvm(nc).open(epAuthBucket(space));
   await kv.create(key, bytes(row));
   const gate = serveIssuanceGateKv(kv, space, { endpoint, instanceId });
-  const barrier = endpointRegistrationBarrier(kv, space, { endpoint, instanceId, opId: mintLifecycleUid() });
+  const barrier = endpointRegistrationBarrier(kv, space, { endpoint, instanceId, opId: mintLifecycleUid(),
+    serviceRegistration: { requestId: "a".repeat(32), requestDigest: contractDigest({ request: 1 }) } });
   let observed = (await gate.observe())!;
   assert.equal(await gate.commit(observed.revision), false, "pending root cannot release");
   assert.equal(await barrier.freeze(observed.revision), null, "pending root cannot register");
@@ -65,11 +66,11 @@ try {
   const next = { generation: 1, processEpoch: 1, registrationRevision: 1, nameAuthorityRevision: 1 };
   assert.equal(await barrier.reopen(token!, next), true);
   observed = (await gate.observe())!;
-  assert.deepEqual(observed.serviceAuthority, approved, "registration preserves approval");
+  const { registration: completed, ...retainedApproval } = observed.serviceAuthority!;
+  assert.deepEqual(retainedApproval, approved, "registration preserves approval");
+  assert.equal(completed!.requestId, "a".repeat(32));
   assert.equal(await gate.commit(observed.revision), false, "approval alone is not activation");
-  const activated = { ...approved, activationIssued: true, registration: {
-    requestId: "a".repeat(32), requestDigest: contractDigest({ request: 1 }), registrationProof: contractDigest({ registration: 1 }),
-  } };
+  const activated = { ...observed.serviceAuthority!, activationIssued: true };
   await kv.update(key, bytes({ ...row, ...next, serviceAuthority: activated }), observed.revision);
   observed = (await gate.observe())!;
   assert.equal(await barrier.freeze(observed.revision), null, "activated registration cannot be superseded");

@@ -32,7 +32,7 @@ try {
     rootExpiresAt: Math.floor(Date.now() / 1000) + 600, approvalDigest: contractDigest({ approval: 1 }),
     approvalExpiresAt: null, callerCeiling: [], activationIssued: false });
   const row = (auth: ServiceGateAuthority): EndpointGateRow => ({ state: "open", generation: 0,
-    processEpoch: 1, registrationRevision: 1, nameAuthorityRevision: 1, principal: `${owner}.${actor}`,
+    processEpoch: 1, registrationRevision: 0, nameAuthorityRevision: 1, principal: `${owner}.${actor}`,
     authorityFamily: "service", serviceAuthority: auth });
   const doc = { urn: "org.example.release", revision: 1, attributes: [], events: [], commands: [{
     name: "read", class: "ephemeral", targeted: false, capability: "orders.read",
@@ -48,7 +48,8 @@ try {
       holderPrincipal: `${owner}.${actor}`, lifecycleUid: instanceId, endpoint, sourceChain: ["root"],
       state: evidence === "revoked" ? "revoked" : "active", exp: Math.floor(Date.now() / 1000) + 60 }));
     if (evidence === "deleted") await kv.delete(credentialKey);
-    const barrier = endpointRegistrationBarrier(kv, space, { endpoint, instanceId, opId: mintLifecycleUid() });
+    const barrier = endpointRegistrationBarrier(kv, space, { endpoint, instanceId, opId: mintLifecycleUid(),
+      serviceRegistration: { requestId: "a".repeat(32), requestDigest: contractDigest({ evidence }) } });
     try { await barrier.freeze((await barrier.observe())!.revision); failures.push(`${evidence}: freeze accepted issuance evidence`); }
     catch (error) { assert.match(String(error), /issuance evidence/); }
     assert.equal(parseEndpointGate((await kv.get(key))!.value, key).state, "frozen");
@@ -73,7 +74,8 @@ try {
   const readKv = await new Kvm(readConnection).open(epAuthBucket(space));
   const failedInstance = mintLifecycleUid(), failedKey = epgateKey(endpoint, failedInstance);
   await kv.create(failedKey, bytes(row(authority())));
-  const failedBarrier = endpointRegistrationBarrier(readKv, space, { endpoint, instanceId: failedInstance, opId: mintLifecycleUid() });
+  const failedBarrier = endpointRegistrationBarrier(readKv, space, { endpoint, instanceId: failedInstance, opId: mintLifecycleUid(),
+    serviceRegistration: { requestId: "a".repeat(32), requestDigest: contractDigest({ failedInstance }) } });
   assert.notEqual(await failedBarrier.freeze((await failedBarrier.observe())!.revision), null);
   await readConnection.close();
   await assert.rejects(async () => failedBarrier.enumerate(), "failed evidence read is not an empty family");
@@ -82,7 +84,7 @@ try {
   const revision = await records.create(recordSpecKey(RECORD_KINDS.svc, [endpoint, instanceId]), bytes({ endpoint, owner,
     clusterDigests: [contractDigest(manifest)], protocol: { v: 1 } }));
   const active = authority(); active.activationIssued = true;
-  active.registration = { requestId: "a".repeat(32), requestDigest: contractDigest({ request: 1 }), registrationProof: contractDigest({ registration: 1 }) };
+  active.registration = { operationId: mintLifecycleUid(), processEpoch: 1, registrationRevision: revision, nameAuthorityRevision: 1, requestId: "a".repeat(32), requestDigest: contractDigest({ request: 1 }), registrationProof: contractDigest({ registration: 1 }) };
   await kv.create(key, bytes({ ...row(active), registrationRevision: revision }));
   const grant = await authorizeServeGrant(records, { space, endpoint, instanceId, epoch: 1, holder: { owner },
     authority: { authorize: () => ({ authorized: true, revision: 1 }) }, readProcessEpoch: () => 1,

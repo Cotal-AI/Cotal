@@ -53,7 +53,8 @@ service lifecycle are not implemented yet, so these interfaces do not enable ser
 The native endpoint gate also carries service approval and activation fields. Registration and
 serving guards retain those fields and refuse expired or revoked approval; these guards are not
 a replacement for the missing host lifecycle. Internal host gate transitions bind approval to a
-current native root and make activation monotonic. They do not provide consent, public handlers
+current native root and make activation monotonic. Registration completion is stamped in the
+reopen CAS; a definite abort preserves the previous stamp. They do not provide consent, public handlers
 or terminal retirement. Pre-activation registration requires an empty issuance family, including
 deleted records, and release rechecks fixed expiry after asynchronous work.
 
