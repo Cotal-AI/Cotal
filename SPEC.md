@@ -1117,8 +1117,8 @@ Interop scenario:
 4. Alice multicasts on `team.backend`; Bob receives with `kind=channel`.
 5. Alice unicasts to Bob; Bob receives with `kind=dm`.
 6. Alice anycasts to `reviewer`; exactly one reviewer receives with `kind=anycast`.
-7. A late joiner joins `team.backend`; replayed messages arrive with `historical=true` and
-   live-tail duplicates at or below the join watermark are ack-dropped.
+7. A late joiner joins `team.backend`; replayed messages arrive with `historical=true`, and the
+   live subscription, opened after the join watermark was recorded, repeats none of them.
 
 ---
 

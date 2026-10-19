@@ -7,8 +7,8 @@
  *     skips the illegal `>` KV get WITHOUT no-op'ing the backfill. The reference's wildcard block
  *     only tests LIVE delivery (its backfilled count is structurally 0).
  *   - 8B NO-REPLAY WILDCARD TAIL-DROP: with `defaults.replay = false`, a pre-join message on a
- *     concrete sub-channel (`tld.security`) is SUPPRESSED on a wildcard (`tld.>`) join via
- *     `dropWatermark` matching `subjectMatches('tld.>','tld.security')`, and post-join live still
+ *     concrete sub-channel (`tld.security`) is SUPPRESSED on a wildcard (`tld.>`) join (the
+ *     backfill is off and the live subscription opens after it), and post-join live still
  *     flows. The reference tail-drop block only exercises a CONCRETE channel pattern, never the
  *     wildcard pattern-match form.
  *
@@ -117,11 +117,11 @@ try {
 
   // ============================================================================================
   // ITEM 8B — NO-REPLAY WILDCARD TAIL-DROP (defaults.replay = false)
-  // Pre-seed a concrete sub-channel BEFORE joining the wildcard; the wildcard dropWatermark must
-  // suppress it via subjectMatches('tld.>','tld.security').
+  // Pre-seed a concrete sub-channel BEFORE joining the wildcard; the wildcard join must not
+  // surface it.
   // ============================================================================================
   // Flip the SPACE default to no-replay (merge-on-write). A wildcard join reads space defaults only,
-  // so this is what gates the backfill off — and arms the live tail-drop instead.
+  // so this is what gates the backfill off.
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false } } });
   await A.multicast("tld-sec-prejoin", { channel: "tld.security" }); // pre-join history on a concrete leaf
   await sleep(300);
@@ -130,14 +130,14 @@ try {
   await TD.ep.start();
   await sleep(600); // ABSENCE assertion: cannot poll for non-arrival — settle then assert nothing leaked.
   // Two regressions in one line: (a) a wildcard backfill that ignored the no-replay default would
-  // emit the pre-join message as historical (backfilled > 0); (b) if dropWatermark didn't match the
-  // wildcard pattern against the concrete channel, the pre-join live message would leak un-dropped.
+  // emit the pre-join message as historical (backfilled > 0); (b) a live read that replayed retained
+  // history would leak the pre-join message as live.
   check("no-replay wildcard boot: pre-join concrete message is dropped (not backfilled, not leaked live)",
     has(TD.got, "tld-sec-prejoin").length === 0,
     { got: TD.got.map((g) => g.text) });
 
   // Post-join live on the SAME concrete sub-channel must still flow through the wildcard sub —
-  // proving the drop is watermark-scoped (seq <= join frontier), not a blanket suppression.
+  // proving the suppression covers only pre-join messages, not the whole leaf.
   await A.multicast("tld-sec-postjoin", { channel: "tld.security" });
   await until(() => has(TD.got, "tld-sec-postjoin").length === 1);
   check("post-join live on the concrete leaf flows through the wildcard sub",

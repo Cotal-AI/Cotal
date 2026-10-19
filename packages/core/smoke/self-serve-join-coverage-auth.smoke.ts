@@ -8,7 +8,7 @@
  *      The base test only exercises classify/spoof via the DURABLE pump, never the manager-free core-sub callback.
  *  #5  auth-mode WILDCARD live core-sub: joinChannel("team.>") delivers team.security + team.deep.x exactly
  *      once under sub.allow — the auth-mode combination of confirm-of-wildcard + coverage-partition-with-wildcard.
- *  #7B leave-then-REJOIN: a left core-sub channel can be re-joined (joinSeq re-armed) and delivers again.
+ *  #7B leave-then-REJOIN: a left core-sub channel can be re-joined and delivers again.
  *  #7A fully-open ['>'] ACL: an agent self-joins arbitrary unrelated channels with no enumeration, yet the
  *      open chat grant does NOT widen past chat.* (the space firehose stays denied).
  *  #6  reconnect: MULTIPLE manager-free core-subs reopen across a broker restart; an on-demand join of a
@@ -170,7 +170,7 @@ try {
   await a.leaveChannel("rev.api");
   got.length = 0;
   const rj = await a.joinChannel("rev.api");
-  check("re-join after leave succeeds (joinSeq re-armed)", rj.joined === true && rj.durable === false, rj);
+  check("re-join after leave succeeds", rj.joined === true && rj.durable === false, rj);
   await poster.multicast("rejoined-live", { channel: "rev.api" });
   check("re-joined channel delivers again, exactly once",
     await until(() => got.filter((g) => g === "#rev.api:rejoined-live").length === 1)

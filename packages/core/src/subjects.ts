@@ -186,11 +186,7 @@ export function assertValidChannel(channel: string): string {
 export const MAX_CHANNEL_LENGTH = 4096;
 
 /** Validate an **owner or actor token** of the owner+actor grammar (the per-user-auth cutover).
- *  Defined AHEAD of use: today this has no call sites — persisted owner-bearing keys
- *  ({@link memberKey}, {@link aclKey}, {@link dinboxSubject}, {@link dlvSubject}) still ride raw
- *  nkeys through `token()`/`routeToken()` (a no-op on base32) — the cutover wires this in at every
- *  mint/callout boundary and persisted owner/actor-bearing key. STRICTER than
- *  {@link assertValidChannel}: a token is exactly ONE NATS-safe segment — `[A-Za-z0-9_]+`, with NO
+ *  STRICTER than {@link assertValidChannel}: a token is exactly ONE NATS-safe segment — `[A-Za-z0-9_]+`, with NO
  *  dots, NO `*`, NO `>`, and NO `-`. Dots/wildcards in an id are lane breakout or aliasing (they would
  *  let one owner's grant span, or collide with, another's); `-` is excluded because it is reserved as
  *  the sole separator of {@link principalKey}'s JetStream-name form — a `-` *inside* a token would

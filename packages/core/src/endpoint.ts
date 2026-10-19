@@ -567,11 +567,6 @@ export class CotalEndpoint extends EventEmitter {
   /** Live local cache of the channel registry (key = channel token), kept by a KV watch. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
   private channelDefaults: ChannelDefaults = {};
-  /** Per-subscription join watermark: the stream frontier captured when a channel was joined.
-   *  The tail ack-drops chat messages with `seq <= watermark` (suppresses pre-join history for
-   *  a lagging joiner + dedups the backfill overlap). Keyed by the subscription pattern (may be
-   *  wildcard), so the drop matches every concrete channel the pattern subsumes. */
-  private readonly joinSeq = new Map<string, number>();
   /** Serializes history reads ({@link collectHistory}): they share the fixed per-instance
    *  `chathist_<id>` consumer, so overlapping reads would delete/recreate it under one another. */
   private histLock: Promise<unknown> = Promise.resolve();
@@ -1638,7 +1633,6 @@ export class CotalEndpoint extends EventEmitter {
     this.presenceWatchEmpty = false;
     this.presenceSnapshotPopulated = false;
     this.emitPresenceViewIfChanged();
-    this.joinSeq.clear();
     this.channelConfigs.clear();
     this.channelDefaults = {};
     for (const watch of this.membershipFeedWatches)
@@ -2914,13 +2908,11 @@ export class CotalEndpoint extends EventEmitter {
       // returning as if it were confirmed (a reconnect re-confirms from this.channels, which we never
       // pushed to). unsubscribeChat clears chatSubs + confirmingChatSubs.
       this.unsubscribeChat(channel);
-      this.joinSeq.delete(channel);
       throw new Error(`cannot join "${channel}": live subscription could not be confirmed (${(e as Error).message})`);
     }
     this.confirmingChatSubs.delete(chatSubject(this.space, "*", "*", channel));
     if (this.chatSubDenied.has(channel)) {
       this.unsubscribeChat(channel);
-      this.joinSeq.delete(channel);
       throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
     }
     this.channels.push(channel);
@@ -2978,7 +2970,6 @@ export class CotalEndpoint extends EventEmitter {
     this.unsubscribeChat(channel);
     const i = this.channels.indexOf(channel);
     if (i >= 0) this.channels.splice(i, 1);
-    this.joinSeq.delete(channel);
     return { left: true };
   }
 
@@ -3971,7 +3962,7 @@ export class CotalEndpoint extends EventEmitter {
   /**
    * Privileged: pre-create a role's shared TASK work-queue durable (auth mode), so agents
    * of that role can BIND it without holding CONSUMER.CREATE on TASK_<space>. The creator
-   * sets the filter to svc.<role>.* — agents never choose it, which stops cross-role drain.
+   * sets the filter to svc.<role>.> — agents never choose it, which stops cross-role drain.
    * Idempotent per role. The caller must be permissive on TASK_<space>.
    */
   async provisionTaskQueue(role: string): Promise<void> {
@@ -5859,23 +5850,6 @@ export class CotalEndpoint extends EventEmitter {
           );
           continue;
         }
-        // No-replay + dedup (chat only): drop a message at/below this channel's join watermark
-        // — pre-join history the New tail still carries for a *lagging* joiner (cursor behind the
-        // frontier), and the overlap a replay backfill already delivered. Must ack, or JetStream
-        // redelivers it forever. The drop is here, before the message becomes model context.
-        if (parsed.kind === "chat") {
-          const wm = this.dropWatermark(parsed.rest);
-          if (wm !== undefined && m.seq <= wm) {
-            m.ack();
-            continue;
-          }
-          // No pre-commit dedup here: the durable is the at-least-once path, so it must NEVER ack a copy
-          // just because an id was "seen" — that would drop an unhandled message (the security/critic
-          // HIGH). Steady state is single-path (coverage-partition: the core-sub drops durable-covered
-          // channels). The only overlap is the brief live-first transition window, and a duplicate there
-          // is coalesced downstream by the receiver's commit-aware id-dedup (MeshAgent.ingest keeps ONE
-          // entry and takes THIS durable ack handle) — so the durable copy is acked only once handled.
-        }
         this.emit("message", authenticatedMessage(msg, parsed), durableDelivery(m, ackWaitMs), {
           historical: false,
           kind: kindFromParsed(parsed.kind),
@@ -5912,7 +5886,6 @@ export class CotalEndpoint extends EventEmitter {
           const i = this.channels.indexOf(channel);
           if (i >= 0) {
             this.channels.splice(i, 1);
-            this.joinSeq.delete(channel);
             // A late sub.allow refusal forces this agent out of the channel (the broker revoked its live
             // read). If it held a Plane-3 durable membership, the §7 boundary must close too. This sub
             // callback can't await, so a fail-closed async helper RETRIES the tombstone (backoff) UNTIL it
@@ -5977,16 +5950,6 @@ export class CotalEndpoint extends EventEmitter {
     await new Promise((r) => setTimeout(r, 50));
   }
 
-  /** The highest join watermark among the joined subscriptions that cover `concreteChannel`
-   *  (a wildcard sub like `team.>` covers `team.backend`), or undefined if none — the tail
-   *  drops a chat message with `seq <= ` this. */
-  private dropWatermark(concreteChannel: string): number | undefined {
-    let wm: number | undefined;
-    for (const [pattern, seq] of this.joinSeq)
-      if (subjectMatches(pattern, concreteChannel) && (wm === undefined || seq > wm)) wm = seq;
-    return wm;
-  }
-
   /** The durable's info (rebind) or null (fresh — 404). Gates create/backfill to the join event
    *  and exposes the current `filter_subjects` for restart reconciliation. */
   private async consumerInfo(stream: string, durable: string): Promise<ConsumerInfo | null> {
@@ -6020,15 +5983,14 @@ export class CotalEndpoint extends EventEmitter {
     return (await jsm.streams.info(chatStream(this.space))).state.last_seq;
   }
 
-  /** Phase 1 of a join — arm each channel's tail-drop watermark at the current frontier. MUST run
-   *  BEFORE opening the core subscription so the live tail can never carry a just-joined message
-   *  un-watermarked — which would double-emit it (live + backfill).
+  /** Phase 1 of a join: capture each channel's join watermark at the current frontier. MUST run
+   *  BEFORE opening the core subscription. The frontier bounds the backfill read, and the live
+   *  subscription opened after it carries only later messages, so the two never emit the same one.
    *  Returns the per-channel frontiers for {@link backfillArmed}. */
   private async armJoin(channels: string[]): Promise<Map<string, number>> {
     const frontiers = new Map<string, number>();
     for (const ch of channels) {
       const frontier = await this.chatFrontier();
-      this.joinSeq.set(ch, frontier);
       frontiers.set(ch, frontier);
     }
     return frontiers;

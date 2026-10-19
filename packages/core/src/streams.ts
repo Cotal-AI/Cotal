@@ -284,7 +284,7 @@ export function dmDurableConfig(
  * The TASK work-queue durable for a role — ONE definition, shared by the privileged
  * pre-create (auth mode) and the endpoint's open-mode self-create. The durable is shared
  * across all instances of a role (queue group); the privileged creator sets the
- * filter_subject to svc.<role>.* so an agent can't bind a consumer filtered to another
+ * filter_subject to svc.<role>.> so an agent can't bind a consumer filtered to another
  * role's queue (the same create-time-filter attack surface as DM). Idempotent per role.
  */
 export function taskDurableConfig(
