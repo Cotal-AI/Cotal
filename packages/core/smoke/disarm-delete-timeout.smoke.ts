@@ -13,8 +13,10 @@
  * Run: pnpm smoke:disarm-delete-timeout
  */
 import { CotalEndpoint } from "../src/endpoint.js";
-import type { PushConsumer } from "@nats-io/jetstream";
-import { TimeoutError } from "@nats-io/transport-node";
+import { newIdentity } from "../src/identity.js";
+import { createSpaceAuth, mintCreds } from "../src/provision.js";
+import type { Consumer, PushConsumer } from "@nats-io/jetstream";
+import { PermissionViolationError, TimeoutError } from "@nats-io/transport-node";
 
 let pass = 0;
 let fail = 0;
@@ -105,7 +107,63 @@ const missingWatch = {
 await disarm(missingWatch);
 check("a 404 delete still clears consumer identity", missingWatch.consumerStream === undefined && missingWatch.consumerName === undefined, missingWatch);
 
-const EXPECTED = 5;
+const spaceAuth = await createSpaceAuth("disarm-timeout");
+const observerCreds = await mintCreds(spaceAuth, newIdentity(), "observer");
+const adminCreds = await mintCreds(spaceAuth, newIdentity(), "admin");
+const observerEp = new CotalEndpoint({
+  space: "disarm-timeout",
+  servers: "nats://127.0.0.1:1",
+  creds: observerCreds,
+  card: { name: "obs-cred", kind: "endpoint" },
+  registerPresence: false,
+  watchPresence: false,
+  consume: false,
+});
+const adminEp = new CotalEndpoint({
+  space: "disarm-timeout",
+  servers: "nats://127.0.0.1:1",
+  creds: adminCreds,
+  card: { name: "adm-cred", kind: "endpoint" },
+  registerPresence: false,
+  watchPresence: false,
+  consume: false,
+});
+type DeleteHooks = {
+  deleteOwnConsumer(c: Consumer | PushConsumer, stream?: string): Promise<void>;
+  deleteOwnScanConsumer(stream: string, name: string, del: () => Promise<boolean>): Promise<boolean>;
+};
+let ungrantedDeletes = 0;
+const ungrantedConsumer = {
+  delete: async () => { ungrantedDeletes++; return true; },
+} as unknown as Consumer;
+await (observerEp as unknown as DeleteHooks).deleteOwnConsumer(ungrantedConsumer, "CHAT_disarm-timeout");
+await (observerEp as unknown as DeleteHooks).deleteOwnScanConsumer("KV_cotal_membership_disarm-timeout", "oc_probe_1", async () => {
+  ungrantedDeletes++;
+  return true;
+});
+await (adminEp as unknown as DeleteHooks).deleteOwnConsumer(ungrantedConsumer, "CHAT_disarm-timeout");
+await (adminEp as unknown as DeleteHooks).deleteOwnConsumer(ungrantedConsumer, "DM_disarm-timeout");
+await (adminEp as unknown as DeleteHooks).deleteOwnScanConsumer("KV_cotal_membership_disarm-timeout", "oc_probe_1", async () => {
+  ungrantedDeletes++;
+  return true;
+});
+check("observer and admin creds skip ungranted ephemeral consumer deletes on chat, dm, and membership streams", ungrantedDeletes === 0, ungrantedDeletes);
+
+let deniedStreamCalls = 0;
+const deniedConsumer = {
+  delete: async () => {
+    deniedStreamCalls++;
+    throw Object.assign(
+      new PermissionViolationError("Permissions Violation for Publish to \"$JS.API.CONSUMER.DELETE.CHAT_disarm-timeout.oc_1\""),
+      { operation: "publish" as const },
+    );
+  },
+} as unknown as Consumer;
+await (ep as unknown as DeleteHooks).deleteOwnConsumer(deniedConsumer, "CHAT_disarm-timeout");
+await (ep as unknown as DeleteHooks).deleteOwnConsumer(deniedConsumer, "CHAT_disarm-timeout");
+check("a publish permission denial on an ephemeral consumer delete caches the stream for subsequent reads", deniedStreamCalls === 1, deniedStreamCalls);
+
+const EXPECTED = 7;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(`DISARM-DELETE-TIMEOUT SMOKE ${fail === 0 ? "OK" : "FAILED"}`);

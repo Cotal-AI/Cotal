@@ -616,6 +616,8 @@ export class CotalEndpoint extends EventEmitter {
   /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches,
    *  running membership scans and running history reads (see {@link recordOwnWatchConsumer}). */
   private readonly ownWatchDeletePrefixes = new Set<string>();
+  /** Streams whose ephemeral `$JS.API.CONSUMER.DELETE` row this connection was refused (#4123). */
+  private readonly consumerDeleteDeniedStreams = new Set<string>();
   /** True until the first successful connect completes its boot backfill — distinguishes first-connect
    *  (backfill the boot channels' history) from a reconnect (reopen the core-subs, no re-backfill).
    *  Persists across reconnect (NOT connection-scoped). Replaces the legacy chat-durable consumed-cursor
@@ -1626,6 +1628,7 @@ export class CotalEndpoint extends EventEmitter {
     this.chatSubDenied.clear();
     this.confirmingChatSubs.clear();
     this.ownWatchDeletePrefixes.clear();
+    this.consumerDeleteDeniedStreams.clear();
     this.roster.clear();
     // #1356: the presence-refusal record is connection-scoped like everything else torn down here.
     // It says "the broker on THIS connection refuses writes to this bucket", so it cannot outlive the
@@ -3096,6 +3099,7 @@ export class CotalEndpoint extends EventEmitter {
     let scanPrefix: string | undefined;
     const entries = await liveKvEntries(kv, {
       onConsumer: (info) => { scanPrefix = this.recordOwnWatchConsumer(info); },
+      deleteOwnConsumer: (stream, name, del) => this.deleteOwnScanConsumer(stream, name, del),
     }).finally(() => {
       // The scan's own last delete goes out after nats.js closed its consumer, so every predecessor
       // delete the library sent is answered ahead of it on this connection.
@@ -3230,12 +3234,42 @@ export class CotalEndpoint extends EventEmitter {
     return /^\d+$/.test(subject.slice(cut)) && this.ownWatchDeletePrefixes.has(subject.slice(0, cut));
   }
 
+  /** Whether this connection holds `$JS.API.CONSUMER.DELETE` for an ephemeral consumer on `stream` (#691, #4123). */
+  private canDeleteStreamConsumers(stream: string, name = "_probe"): boolean {
+    if (this.consumerDeleteDeniedStreams.has(stream)) return false;
+    if (this.currentCreds) {
+      try {
+        const pub = credsClaims(this.currentCreds).nats?.pub;
+        const subject = `$JS.API.CONSUMER.DELETE.${stream}.${name}`;
+        if (pub?.deny?.some((pattern) => subjectMatches(pattern, subject))) return false;
+        if (Array.isArray(pub?.allow)) return pub.allow.some((pattern) => subjectMatches(pattern, subject));
+      } catch { /* fall through to wire truth */ }
+    }
+    return true;
+  }
+
+  /** Delete one ephemeral consumer owned by a KV scan when this connection holds the delete row (#691, #4123). */
+  private async deleteOwnScanConsumer(stream: string, name: string, del: () => Promise<boolean>): Promise<boolean> {
+    if (!this.canDeleteStreamConsumers(stream, name)) return false;
+    try { return await del(); }
+    catch (e) {
+      if (isPublishPermissionDenied(e)) {
+        this.consumerDeleteDeniedStreams.add(stream);
+        return false;
+      }
+      if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) return false;
+      throw e;
+    }
+  }
+
   /** Delete one of this connection's own ephemeral consumers, a history reader's or a KV watch's. A
    *  refused delete is the designed outcome for a profile without a stream-wide CONSUMER.DELETE
    *  (#691): the broker reaps the consumer at its inactive threshold. */
-  private async deleteOwnConsumer(consumer: Consumer | PushConsumer): Promise<void> {
+  private async deleteOwnConsumer(consumer: Consumer | PushConsumer, stream?: string): Promise<void> {
+    if (stream !== undefined && !this.canDeleteStreamConsumers(stream)) return;
     try { await consumer.delete(); }
     catch (e) {
+      if (stream !== undefined && isPublishPermissionDenied(e)) this.consumerDeleteDeniedStreams.add(stream);
       if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound) && !isPublishPermissionDenied(e)) throw e;
     }
   }
@@ -3652,7 +3686,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      await this.deleteOwnConsumer(consumer);
+      await this.deleteOwnConsumer(consumer, stream);
     }
   }
 
@@ -3694,7 +3728,7 @@ export class CotalEndpoint extends EventEmitter {
       // exists to stop.
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      await this.deleteOwnConsumer(consumer);
+      await this.deleteOwnConsumer(consumer, stream);
     }
   }
 
@@ -3772,7 +3806,7 @@ export class CotalEndpoint extends EventEmitter {
       // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
       // The observer and admin profiles may not delete (#691), so the dashboard's readers do live out
       // that threshold; only a profile holding the delete row reclaims them here.
-      await this.deleteOwnConsumer(consumer).finally(() => { this.ownWatchDeletePrefixes.delete(readerPrefix); });
+      await this.deleteOwnConsumer(consumer, stream).finally(() => { this.ownWatchDeletePrefixes.delete(readerPrefix); });
     }
   }
 
