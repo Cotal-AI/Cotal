@@ -202,6 +202,19 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
   };
 }
 
+/** The credentials each operation's issued phase must carry. Keyed by the core operation type, so
+ * an operation added there does not compile until it has an entry here. */
+const REQUIRED_CREDENTIALS: Readonly<Record<RemoteManagerAuthorityRequest["operation"], readonly string[]>> = Object.freeze({
+  prepare: ["supervisor", "executor"],
+  activate: ["serve", "goalWriter", "sessionLedger"],
+  renew: ["supervisor", "executor"],
+  session: ["sessionServing"],
+  retire: ["retirementRequester"],
+  renewStandingBundle: REMOTE_MANAGER_IDENTITY_NAMES,
+  renewRunDriver: ["runDriver", "runMediator"],
+  transferReader: ["transferReader"],
+});
+
 /** Issue one lifecycle phase after the IdP proof and interactive row were fresh-read. */
 export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthorityArgs): Promise<RemoteManagerAuthorityMaterial> {
   const r = parseRemoteManagerAuthorityRequest(args.request, { allowPlatform: args.holder === "platform" });
@@ -220,23 +233,7 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
   }
   const issued = await args.issue({ owner: args.owner, actors, request: r });
   const credentials = issued.credentials;
-  const required = r.operation === "renewStandingBundle"
-    ? REMOTE_MANAGER_IDENTITY_NAMES
-    : r.operation === "renewRunDriver"
-      ? ["runDriver", "runMediator"]
-      : r.operation === "prepare"
-    ? ["supervisor", "executor"]
-    : r.operation === "activate"
-      ? ["serve", "goalWriter", "sessionLedger"]
-      : r.operation === "renew"
-        ? ["supervisor", "executor"]
-      : r.operation === "session"
-        ? ["sessionServing"]
-        : r.operation === "retire"
-          ? ["retirementRequester"]
-        : r.operation === "transferReader"
-          ? ["transferReader"]
-        : REMOTE_MANAGER_IDENTITY_NAMES;
+  const required = REQUIRED_CREDENTIALS[r.operation];
   for (const name of required)
     if (!(name in credentials))
       throw new EpEnvelopeError("internal", `manager-service ${r.operation} did not issue required credential ${name}`);
