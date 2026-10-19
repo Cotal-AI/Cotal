@@ -414,10 +414,11 @@ export async function waitManagedTerminalExit(
 /** The text terminal `handle` renders now. `--screen` reads the rendered frame, so a prompt a TUI
  *  draws with cursor moves reads whole instead of as stacked repaint fragments. */
 export function readScreen(handle: string, { timeoutMs = PROBE_MS }: { timeoutMs?: number } = {}): string {
-  return requireOk<{ terminal: { tail: string[] } }>(
-    ["terminal", "read", "--terminal", handle, "--screen", "--json"],
-    { timeoutMs },
-  ).terminal.tail.join("\n");
+  const args = ["terminal", "read", "--terminal", handle, "--screen", "--json"];
+  const tail = requireOk<{ terminal?: { tail?: unknown } } | null>(args, { timeoutMs })?.terminal?.tail;
+  if (!Array.isArray(tail) || !tail.every((line) => typeof line === "string"))
+    throw new Error(`orca ${args.join(" ")} returned a malformed screen: terminal.tail is not a list of strings`);
+  return tail.join("\n");
 }
 
 export function sendTerminal(
