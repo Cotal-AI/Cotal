@@ -768,6 +768,14 @@ seats outside its host MUST refuse it with `failed-precondition` before any file
 The refusal MUST be independent of the requested path's existence, type and symlink target,
 and MUST NOT return a host name or canonical path. Such a runtime cannot use a manager-host cwd.
 
+On such a runtime, a caller-supplied persona `config` override MUST be refused before resolving,
+checking or reading its host path. Every path shape MUST receive `failed-precondition` and the
+same message: `delegated execution cannot use a manager-host persona config path; select a named persona`.
+This applies to `resolve-agent` and `spawn`, including starts submitted through library or workflow
+hosts. A named persona remains subject to the manager's catalog visibility rules. A validated
+resolved manifest may use its own host-materialized persona resource; public requests MUST NOT
+be able to supply that internal resolved authority as a config override.
+
 DM and TASK confidentiality, and the CHAT read boundary, close the leak paths:
 
 1. Replies and pull responses ride a per-connection inbox prefix, `_INBOX_<connId>.>`, which

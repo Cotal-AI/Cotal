@@ -844,6 +844,13 @@ manager path crosses. A spawn choice that only the manager's host can honour is 
 enrollment: `--resume`, a manifest agent's `continuity: exact`, `--cwd`, and any shared MCP server,
 whether from `--share-tools` or the config default (`--share-tools none` passes).
 
+A delegated manager also refuses a caller-supplied persona `config` override in `resolve-agent`,
+`spawn` and direct `Manager.startAgent` calls. The shared persona resolver refuses before checking
+or reading that path, with `failed-precondition` on the wire and one fixed execution-mode message.
+Pass a named catalog persona instead. This does not change locally executing managers. A resolved
+manifest can still use its own validated, host-materialized persona resource. The wire schemas
+accept no internal `resolved` field that could bypass the config refusal.
+
 The runtime creates one provider resource under `managedRuntimeKey(target)`, writes the handoff into
 it as one 0600 file and the persona beside it, and runs the stock bootstrap there:
 `cotal spawn --config <persona-file> --space <space> --name <actor> --expect-owner <owner> --expect-lifecycle-uid <uid>`

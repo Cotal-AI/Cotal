@@ -214,6 +214,7 @@
     "smoke:manager-invoke-verdict": "tsx extensions/connector-core/smoke/manager-invoke-verdict.smoke.ts",
     "smoke:manager-caller-transport": "tsx implementations/runtime/smoke/manager-caller-transport.smoke.ts",
     "smoke:manager-launch-reads": "tsx implementations/manager/smoke/launch-reads.smoke.ts",
+    "smoke:manager-delegated-config": "tsx implementations/manager/smoke/delegated-config.smoke.ts",
     "smoke:goal-submit-order": "tsx packages/core/smoke/goal-submit-order.smoke.ts",
     "smoke:goal-follow-cancellation": "tsx packages/core/smoke/goal-follow-cancellation.smoke.ts",
     "smoke:user-bearer-goal-lifetime": "tsx implementations/manager/smoke/user-bearer-goal-lifetime.smoke.ts",

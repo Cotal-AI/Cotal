@@ -5745,6 +5745,11 @@ export class Manager {
     spawner: string | undefined,
     authenticatedCaller: EpCaller | undefined,
   ): Promise<{ ref: string; configPath: string; def: AgentDef | undefined; agent: string } | { error: string }> {
+    // Both config-taking wire commands and direct/roster starts enter here before interpreting
+    // a path. A resolved manifest is host-built authority over its own materialized resource,
+    // never a wire-supplied config override (the public schemas accept no `resolved` field).
+    if (this.execution === "runtime" && this.requiredRuntime.spawnDelegated && opts.config !== undefined && !opts.resolved)
+      return { error: "delegated execution cannot use a manager-host persona config path; select a named persona" };
     // The spawn argument is a persona REF — a filename in `.cotal/agents` (the unique spawn KEY), or
     // a path via `--config`. It is NOT the mesh identity: the identity comes from inside the file
     // (`name:`), so a persona can be filed descriptively (review-critic.md) yet present under a

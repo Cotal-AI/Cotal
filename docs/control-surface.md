@@ -77,6 +77,12 @@ the persona with the same visibility check as `spawn` and launches nothing. A de
 without `--agent` asks it before carrying a session, and a manager that does not serve it refuses
 the call.
 
+On a delegated runtime, both `resolve-agent` and `spawn` refuse an explicit persona `config`
+before any lookup of that path. Absolute, relative and bare-name config overrides receive the
+same `failed-precondition` refusal. Select a named catalog persona through `name` instead.
+Locally executing managers retain their config-path behavior. A resolved manifest uses its own
+validated, host-materialized persona resource and is not a caller-selected config override.
+
 `spawn` refuses an empty or whitespace-only value in any of its optional string fields, such as
 `role`, `agent` or `identity`, with `bad-request` naming the field. To take the persona file's value,
 omit the field.
