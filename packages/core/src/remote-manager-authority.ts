@@ -454,7 +454,8 @@ export function remoteManagerRegistrationProof(
 }
 
 /** The one terminal operation identity for a managed lifecycle. It is derived, never selected:
- * manager retries, hosted authority issuance, and the auth barrier therefore converge on one op. */
+ * manager retries, hosted authority issuance, and the auth barrier therefore converge on one op.
+ * The id is 26 hex chars, so it is itself a lifecycle token (`[a-z0-9]{26,32}`). */
 export function managedRetirementOpId(lifecycleUid: string): string {
   return rawDigest(`retire:${assertLifecycleToken(lifecycleUid)}`).slice("sha256:".length, "sha256:".length + 26);
 }

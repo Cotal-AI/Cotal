@@ -307,14 +307,6 @@ type StaticReconcileItem = ManagerStaticReconciliationFailure & {
   retryFlight?: Promise<void>;
 };
 
-/** The STABLE retirement opId for one lifecycle (#29 piece 3): deterministic from the uid, so a
- *  despawn retry, a same-name-spawn nudge, and the auth service's boot resume all drive the SAME
- *  operation (the rail's idempotence table needs exactly one op per retiring incarnation). 26 hex
- *  chars = in the lifecycle-token grammar `[a-z0-9]{26,32}`, collision-resistant. */
-function retireOpId(lifecycleUid: string): string {
-  return managedRetirementOpId(lifecycleUid);
-}
-
 /** Sentinel owner-filter value that matches NO agent's `userOwner` (owner tokens never contain a
  *  dash) — what {@link Manager.psOwnerFilter} returns for an unparseable caller so a malformed
  *  principal fail-closes to an empty `ps` instead of an unbounded one. */
@@ -4479,13 +4471,13 @@ export class Manager {
     // this, but the intent is "user mode only", not "any principal-shaped id").
     if (this.userMode) {
       const p = parsePrincipalKey(a.id);
-      if (p) this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), owner: p.owner, actor: p.actor, target, startedAt: Date.now() });
+      if (p) this.retiring.set(a.name, { opId: managedRetirementOpId(a.lifecycleUid), owner: p.owner, actor: p.actor, target, startedAt: Date.now() });
     } else if (this.auth) {
       // Unit B: a STATIC lifecycle now also holds its name pending its own terminal (the F1
       // static retirement the detached deprovision below drives) — the alias frees only when the
       // gate+head terminal completes, exactly the user-mode discipline. The wire principal is the
       // incarnation-unique nkey (F5-bind); owner is the dev owner.
-      this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), owner: DEV_OWNER, actor: a.id, target, startedAt: Date.now() });
+      this.retiring.set(a.name, { opId: managedRetirementOpId(a.lifecycleUid), owner: DEV_OWNER, actor: a.id, target, startedAt: Date.now() });
     }
     // Auth mode: tear down the departed agent's minted broker footprint + creds file (#159 B2). The
     // process is already gone, so this must never block the slot free or throw into the caller — it runs
@@ -4541,7 +4533,7 @@ export class Manager {
       if (!target) throw new Error(`hosted retirement cannot derive the managed principal ${a.id}`);
       await this.remoteAuthority.prepareAgentRetirement({
         target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid },
-        opId: retireOpId(a.lifecycleUid),
+        opId: managedRetirementOpId(a.lifecycleUid),
       });
       // A delegated seat's fenced close runs only now, after the grant is revoked so its child can
       // obtain no fresh bearer, and before the barrier, which must never run ahead of a create that
@@ -4710,7 +4702,7 @@ export class Manager {
         : { owner: DEV_OWNER, actor: serveIdentity.id, uid: this.managerLifecycleUid };
       const requestIdentity = newIdentity();
       const retirementTarget = { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid };
-      const opId = retireOpId(a.lifecycleUid);
+      const opId = managedRetirementOpId(a.lifecycleUid);
       const serveEpoch = this.serviceServe?.grant.epoch ?? 0;
       const creds = this.remoteAuthority
         ? await this.remoteAuthority.mintRetirementRequester({ identity: requestIdentity, target: retirementTarget, opId, serveEpoch })
@@ -6493,7 +6485,7 @@ export class Manager {
         // The host enrolled this UID for the intent's user, so only that user's retirement intent
         // retires it, and its name stays held for retireDelegatedAgent.
         const p = orphan.delegated ? parsePrincipalKey(orphan.id) : null;
-        if (p) this.retiring.set(orphan.name, { opId: retireOpId(orphan.lifecycleUid), owner: p.owner, actor: p.actor, target: orphan, startedAt: Date.now() });
+        if (p) this.retiring.set(orphan.name, { opId: managedRetirementOpId(orphan.lifecycleUid), owner: p.owner, actor: p.actor, target: orphan, startedAt: Date.now() });
         this.trackDeprovision(orphan, "(orphaned spawn)");
       }
     }
@@ -7431,7 +7423,7 @@ export class Manager {
       const target = { owner: principal.owner, actor: principal.actor, lifecycleUid };
       try {
         const result = await execute({ intentId, operation: "retire", target });
-        if (result.operation !== "retire" || result.intentId !== intentId || result.opId !== retireOpId(target.lifecycleUid) ||
+        if (result.operation !== "retire" || result.intentId !== intentId || result.opId !== managedRetirementOpId(target.lifecycleUid) ||
             result.target.owner !== target.owner || result.target.actor !== target.actor || result.target.lifecycleUid !== target.lifecycleUid)
           throw new Error(`the host answered delegated intent ${intentId} with another execution`);
         if (result.retired !== true)
@@ -9458,7 +9450,7 @@ export class Manager {
     // material; a failed renewal must not block retirement because it may still have staged an id.
     const acceptedRenewal = a.staticCredentialRenewal;
     if (acceptedRenewal) await acceptedRenewal.catch(() => {});
-    const opId = retireOpId(a.lifecycleUid);
+    const opId = managedRetirementOpId(a.lifecycleUid);
     const evict = this.staticLifecycleEvict ?? makeManagerEndpointEvictionEvidence({
       space: this.space,
       servers: this.servers ?? DEFAULT_SERVER,
@@ -9740,7 +9732,7 @@ export class Manager {
           if (fresh?.lifecycleUid === item.lifecycleUid && fresh.actor === item.actor) item.phase = fresh.phase;
         } catch { /* the terminal error remains primary; the next retry re-reads authoritatively */ }
         const blocked = lifecycleBlockedFrom(error);
-        const ownOp = retireOpId(item.lifecycleUid);
+        const ownOp = managedRetirementOpId(item.lifecycleUid);
         const foreign = blocked !== undefined && (blocked.blockedOp !== "retirement" || blocked.opId !== ownOp);
         if (foreign) {
           item.disposition = "refused-foreign";
