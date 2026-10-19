@@ -25,6 +25,7 @@
 import { SignJWT, calculateJwkThumbprint, createRemoteJWKSet, exportJWK, generateKeyPair, importJWK } from "jose";
 import type { CryptoKey, JWK, JWTVerifyGetKey } from "jose";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, isLoopbackLiteral } from "@cotal-ai/core";
+import { issueServiceRenewalProof, type ServiceRenewalClaims } from "./service-renewal.js";
 import { USER_TOKEN_VER, USER_TOKEN_VIEWS, assertCredentialIdClaim, assertSessionClaim, assertTransferWriterClaim, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 
 /** The one signing algorithm — Ed25519. Pinned on both mint and verify. */
@@ -121,6 +122,8 @@ export interface UserTokenIssuer {
   activeKid(): string;
   /** Mint a bearer for a validated (owner, actor). Returns the compact JWS. */
   issue(claims: IssueClaims): Promise<string>;
+  /** Service registration-bound renewal proof, never a connect bearer. */
+  issueServiceRenewal(claims: ServiceRenewalClaims): Promise<string>;
   /** The public JWK Set to publish for offline verification (all live kids, public members only). */
   jwks(): { keys: JWK[] };
   /** Add a key and make it the active signer; prior keys stay published until {@link retire}. */
@@ -205,6 +208,11 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     issuer: opts.issuer,
     activeKid: () => active,
     issue,
+    issueServiceRenewal: (claims) => {
+      const signer = keys.get(active);
+      if (!signer) throw new Error("issue: no active signing key");
+      return issueServiceRenewalProof(signer, opts.issuer, claims);
+    },
     jwks: () => ({ keys: [...keys.values()].map((k) => k.publicJwk) }),
     rotate: (key: SigningKey) => { keys.set(key.kid, key); active = key.kid; },
     retire: (kid: string) => {

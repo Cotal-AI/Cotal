@@ -58,6 +58,11 @@ reopen CAS; a definite abort preserves the previous stamp. They do not provide c
 or terminal retirement. Pre-activation registration requires an empty issuance family, including
 deleted records, and release rechecks fixed expiry after asynchronous work.
 
+`UserTokenIssuer.issueServiceRenewal` signs a separate registration-bound renewal proof.
+`validateServiceRenewalProof` checks its signature, fixed expiry and full witness binding.
+It is not a connect bearer. These primitives do not authenticate a current approval or native root;
+the host must do that before issuing or accepting authority. No client refresh loop is provided yet.
+
 `parseEndpointCapabilities` normalizes the native caller capability shape. `endpointCapabilitiesWithin`
 checks route, instance, target and journal containment using the native grant builders. The host
 still authenticates the granter and checks current grantee, parent and approval records.

@@ -199,3 +199,5 @@ export {
 export type { AuthConnectionState, AuthServiceClosed } from "./owned-connections.js";
 
 export * from "./service-host-contract.js";
+
+export { SERVICE_RENEWAL_TYP, validateServiceRenewalProof, type ServiceRenewalClaims, type ValidatedServiceRenewal } from "./service-renewal.js";

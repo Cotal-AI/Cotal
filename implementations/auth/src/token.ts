@@ -25,6 +25,9 @@ import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, c
  *  anything else (older = downgrade, newer = from-the-future misconfig). */
 export const USER_TOKEN_VER = 1;
 
+/** A renewal proof is a distinct JWT class, never a user/connect bearer. */
+export const SERVICE_RENEWAL_TYP = "cotal-service-renewal+jwt";
+
 /** Default cap on `exp - iat`. 15 minutes: long enough for connect + retries, short enough that
  *  re-mint is the working revocation path. */
 export const MAX_TOKEN_TTL_SEC = 900;
@@ -190,6 +193,7 @@ export interface ValidateUserTokenOpts {
  *  connection). */
 export async function validateUserToken(token: string, opts: ValidateUserTokenOpts): Promise<ValidatedUserToken> {
   const header = decodeProtectedHeader(token);
+  if (header.typ === SERVICE_RENEWAL_TYP) throw new Error("user token: a service renewal proof is not a connect bearer");
   if (header.jku !== undefined || header.jwk !== undefined || header.x5u !== undefined || header.x5c !== undefined)
     throw new Error("user token: embedded key material (jku/jwk/x5u/x5c) is rejected - keys resolve only via the pinned JWKS");
   if (header.alg !== "EdDSA") throw new Error(`user token: alg must be EdDSA (got ${String(header.alg)})`);

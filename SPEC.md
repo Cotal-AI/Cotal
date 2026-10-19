@@ -1360,6 +1360,22 @@ approval does not authorize serving release. Standalone service authority does n
 sibling credential duties. Native root validation, owner consent, activation and coordinated
 retirement remain requirements of the trusted host; parsing this value does not establish them.
 
+A service renewal proof is a separate EdDSA JWT class with protected `typ:
+"cotal-service-renewal+jwt"`, `alg` and `kid` headers. Its closed claims are `ver: 1`,
+`kind: "service-renewal"`, the complete registration `witness`, its canonical `witnessDigest`,
+and `iss`, `aud`, `sub`, `iat`, `nbf`, `exp`. Issuer and key resolution are pinned by the host;
+audience is the one space and subject is the witness owner. `nbf` equals `iat`; expiry is a fixed
+Unix-second deadline no more than 24 hours after issuance. Validation rejects the proof at its
+original expiry and binds every witness coordinate, not just the service name. User/connect token
+validation rejects this JWT class even if it carries actor-like claims. A normal user bearer is
+not a service renewal proof.
+
+The signature primitive does not establish current authority. Before issuing or accepting service
+authority, the host checks the current native root, approval, registration and operation eligibility.
+It bounds expiry by root and approval expiry. Signing cannot extend a supplied fixed deadline;
+material that expires while signing is not released. Renewal proofs contain no ordinary capability
+scope and are never native DATA-account credentials.
+
 **`holderPrincipal` is ALWAYS a CONNZ-attributable `<owner>.<actor>` in
 BOTH families** (the barrier KICKs it; an endpoint NAME is not attributable and never sits
 there): in `cred.` it is the caller principal; in `epcred.` it is the serving instance's own
