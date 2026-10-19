@@ -24,6 +24,19 @@ export interface EpErrorDetail {
   [key: string]: unknown;
 }
 
+/** A caught value's text for a refusal or a log line: its `message`, or the value itself when it has
+ *  none. A store, runtime, provider or callback may reject with any value, including `null` or one
+ *  whose `message` is a Symbol or whose `message` getter or `toString` throws. A handler that throws
+ *  while building its text skips the work after it, and on a detached chain ends the process with an
+ *  unhandled rejection, so the coercion to text runs inside the guard. */
+export function rejectionText(e: unknown): string {
+  try {
+    return String((e as Error)?.message ?? e);
+  } catch {
+    return "an unreadable rejection";
+  }
+}
+
 /**
  * `details[].kind` for a refusal raised because a responder ANSWERED but was not the incarnation
  * this handle resolved against (§13.2): `failed-precondition` for a DIFFERENT instance, `expired`

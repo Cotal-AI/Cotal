@@ -42,6 +42,7 @@ export * from "./resolve.js";
 export * from "./presence-ages.js";
 export * from "./presence-text.js";
 export * from "./one-line.js";
+export * from "./cleanup.js";
 export * from "./link.js";
 export * from "./identity.js";
 export * from "./secret-store.js";

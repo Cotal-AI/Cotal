@@ -125,6 +125,10 @@ import {
   sessionsBucket,
   SESSION_GRANT_MAX_TTL_MS,
   REMOTE_MANAGER_IDENTITY_NAMES,
+  attemptCleanup,
+  describeCleanupFailures,
+  rejectionText,
+  type CleanupFailure,
   type LifecycleStateTransport,
   type StaticManagedSlotRow,
   type SignerAnchor,
@@ -320,19 +324,6 @@ function retireOpId(lifecycleUid: string): string {
  *  principal fail-closes to an empty `ps` instead of an unbounded one. */
 const NO_OWNER_MATCHES = "-no-owner-";
 
-/** A caught value's text for a refusal or a log line. A host-supplied store, runtime or callback may
- *  reject with any value, including `null` or one whose `message` is a Symbol or whose `message`
- *  getter or `toString` throws. A handler that throws while building its text skips the work after
- *  it, and on a detached chain ends the manager with an unhandled rejection, so the coercion to text
- *  runs inside the guard. */
-function rejectionText(e: unknown): string {
-  try {
-    return String((e as Error)?.message ?? e);
-  } catch {
-    return "an unreadable rejection";
-  }
-}
-
 /** A caught value as a lifecycle envelope, or undefined when it is not one. A thrown Proxy can throw
  *  from `instanceof` itself, so the test runs inside the guard. */
 function caughtEnvelope(e: unknown): EpEnvelopeError | undefined {
@@ -359,16 +350,6 @@ function failedTerminal(error: string, source: { details?: unknown } | undefined
     }
   } catch { /* unreadable or not interchangeable */ }
   return { error: text };
-}
-
-/** Run one cleanup step, recording its failure in `failed` as `<what>: <reason>`. A step that threw
- *  would otherwise skip every step after it, and a swallowed one would leave nothing to report. */
-async function attemptCleanup(failed: string[], what: string, step: () => unknown): Promise<void> {
-  try {
-    await step();
-  } catch (err) {
-    failed.push(`${what}: ${rejectionText(err)}`);
-  }
 }
 
 /** Reject `p` with `Error(msg)` if it hasn't settled within `ms`; clears the timer when `p` settles so it
@@ -4205,11 +4186,11 @@ export class Manager {
       // delete) that fresh spawn's just-provisioned durables. deprovision shreds the secret family
       // and revokes the grant, but only logs a failed revoke, so the revoke is attempted here first.
       // Each failure joins the refusal, so the caller learns what this spawn left behind.
-      const failed: string[] = [];
+      const failed: CleanupFailure[] = [];
       await attemptCleanup(failed, "revoke agent grant", () => provider.revokeAgent({ dir, owner, actor: name }));
       await attemptCleanup(failed, "deprovision", () =>
         this.deprovision({ id: principalKey(owner, name).key, name, lifecycleUid: opts.lifecycleUid, userOwner: owner, secretPaths: files }));
-      const leftover = failed.length ? `; cleanup failed: ${failed.join("; ")}` : "";
+      const leftover = failed.length ? `; cleanup failed: ${describeCleanupFailures(failed)}` : "";
       return { error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}` };
     }
   }
@@ -4316,17 +4297,17 @@ export class Manager {
       // durable it never authored. A retry with the same requestId re-enters the same enrollment.
       // A failed removal joins the refusal instead of throwing, so every removal is attempted and
       // the refusal still reaches the caller.
-      const unshredded: string[] = [];
+      const unshredded: CleanupFailure[] = [];
       for (const family of files.actorToken === staged.actorToken ? [staged] : [staged, files])
         await this.shredUserSecrets(unshredded, family);
-      const leftover = unshredded.length ? `; cleanup failed: ${unshredded.join("; ")}` : "";
+      const leftover = unshredded.length ? `; cleanup failed: ${describeCleanupFailures(unshredded)}` : "";
       return { error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}` };
     }
   }
 
   /** Shred a user agent's secret family from the store and from disk. Every removal is attempted,
    *  and each failure joins `unshredded`, so one fault cannot leave the rest of the family behind. */
-  private async shredUserSecrets(unshredded: string[], family: { actorToken?: string; sentinelCreds?: string; health?: string }): Promise<void> {
+  private async shredUserSecrets(unshredded: CleanupFailure[], family: { actorToken?: string; sentinelCreds?: string; health?: string }): Promise<void> {
     for (const path of [family.actorToken, family.sentinelCreds])
       if (path) await attemptCleanup(unshredded, `secret ${path}`, () => this.secrets.delete(agentSecretKeyForFile(path, this.space)));
     for (const path of [family.actorToken, family.sentinelCreds, family.health])
@@ -4578,7 +4559,7 @@ export class Manager {
     const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
     // Every removal is attempted, and a failed one is thrown only after the broker teardown below,
     // so a file fault cannot strand the agent's durables and ACL row on the broker.
-    const unshredded: string[] = [];
+    const unshredded: CleanupFailure[] = [];
     if (files.creds) {
       const creds = files.creds;
       await attemptCleanup(unshredded, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.space)));
@@ -4614,7 +4595,7 @@ export class Manager {
         console.error(`revoke agent grant ${a.name}: ${rejectionText(e)}`);
       }
     }
-    const shredFailure = unshredded.length ? `could not shred "${a.name}": ${unshredded.join("; ")}` : undefined;
+    const shredFailure = unshredded.length ? `could not shred "${a.name}": ${describeCleanupFailures(unshredded)}` : undefined;
     try {
       const res = await this.deprovisionBroker(a);
       const h = this.retiring.get(a.name);
@@ -6175,9 +6156,9 @@ export class Manager {
           } catch (e) {
             // A refused accept rolls the enrollment back: the host's grant through `provisioned`, and
             // this participant's secret family here, because the hosted retirement leaves it on disk.
-            const unshredded: string[] = [];
+            const unshredded: CleanupFailure[] = [];
             await this.shredUserSecrets(unshredded, prep.files);
-            if (unshredded.length) throw new Error(`${rejectionText(e)}; cleanup failed: ${unshredded.join("; ")}`, { cause: e });
+            if (unshredded.length) throw new Error(`${rejectionText(e)}; cleanup failed: ${describeCleanupFailures(unshredded)}`, { cause: e });
             throw e;
           }
         }
@@ -7448,10 +7429,10 @@ export class Manager {
       if (slot?.lifecycleUid === target.lifecycleUid) this.despawnAuthorized(slot, true, false, `delegated retirement ${intentId}`);
       // The host owns the grant and the footprint, but the secret family enrollUserAgent wrote here
       // is this participant's, and no teardown arm of a delegated seat removes it.
-      const unshredded: string[] = [];
+      const unshredded: CleanupFailure[] = [];
       await this.shredUserSecrets(unshredded, (live ?? held?.target)?.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, target.lifecycleUid));
       if (unshredded.length) {
-        const error = `the host retired "${name}" at ${target.lifecycleUid}, but cleanup failed: ${unshredded.join("; ")}; the name stays held until a retried retirement intent removes it`;
+        const error = `the host retired "${name}" at ${target.lifecycleUid}, but cleanup failed: ${describeCleanupFailures(unshredded)}; the name stays held until a retried retirement intent removes it`;
         const hold = this.retiring.get(name);
         if (hold?.target.lifecycleUid === target.lifecycleUid) hold.lastError = error;
         return { ok: false, error };
@@ -9476,14 +9457,14 @@ export class Manager {
       const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
       // The broker teardown mints its own credential, so a creds file that cannot be removed must not
       // skip it. The failures are thrown together, so the terminal still stops at an incomplete cleanup.
-      const failed: string[] = [];
+      const failed: CleanupFailure[] = [];
       if (files.creds) {
         const creds = files.creds;
         await attemptCleanup(failed, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.space)));
         await attemptCleanup(failed, `file ${creds}`, () => rmSync(creds, { force: true }));
       }
       await attemptCleanup(failed, "broker teardown", () => this.deprovisionBroker(a));
-      if (failed.length) throw new Error(`cleanup failed: ${failed.join("; ")}`);
+      if (failed.length) throw new Error(`cleanup failed: ${describeCleanupFailures(failed)}`);
     };
     // The process goes before its footprint: reap the orphan seat by reference, then tear down.
     const reapThenCleanup = async (): Promise<void> => {
