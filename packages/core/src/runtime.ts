@@ -1,6 +1,7 @@
 import type { Extension } from "./registry.js";
 import type { LaunchSpec } from "./connector.js";
 import { MANAGED_HANDOFF_FILE_ENV, type ManagedLifecycleHandoff, type ManagedLifecycleTarget } from "./managed-handoff.js";
+import { assertLifecycleToken } from "./subjects.js";
 
 /** Which backend a manager spawns through. Open-ended: `pty` ships with the manager; every other
  *  name is contributed by a {@link RuntimeProvider}. */
@@ -177,6 +178,8 @@ export interface DelegatedSeatLaunch {
   readonly agent: string;
   /** The agent-definition file text the manager resolved for this spawn. */
   readonly persona: string;
+  /** The launching manager's stable instance id (`COTAL_MANAGER_INSTANCE`). */
+  readonly managerInstanceId: string;
   /** The role the manager resolved (the `--role` override, else the persona's `role:`), the same
    *  value the enrollment carried. */
   readonly role?: string;
@@ -196,6 +199,7 @@ export function delegatedSeatCommand(
   target: ManagedLifecycleTarget,
   files: { readonly handoff: string; readonly persona: string },
 ): { readonly args: readonly string[]; readonly env: Readonly<Record<string, string>> } {
+  const managerInstanceId = assertLifecycleToken(launch.managerInstanceId, "COTAL_MANAGER_INSTANCE");
   const args = [
     "spawn", "--config", files.persona, "--space", target.space, "--name", target.actor, "--agent", launch.agent,
     "--expect-owner", target.owner, "--expect-lifecycle-uid", target.lifecycleUid,
@@ -206,7 +210,7 @@ export function delegatedSeatCommand(
   if (launch.prompt !== undefined) args.push("--prompt", launch.prompt);
   for (const [k, v] of Object.entries(launch.launchOptions ?? {})) args.push("--opt", `${k}=${v}`);
   if (launch.events !== undefined) args.push(launch.events ? "--events" : "--no-events");
-  return { args, env: { [MANAGED_HANDOFF_FILE_ENV]: files.handoff } };
+  return { args, env: { [MANAGED_HANDOFF_FILE_ENV]: files.handoff, COTAL_MANAGER_INSTANCE: managerInstanceId } };
 }
 
 
