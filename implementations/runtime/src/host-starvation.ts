@@ -172,9 +172,7 @@ class TickLoopLag implements LoopLagObserver {
       this.ticks += 1;
       this.schedule();
     }, this.tickMs);
-    // `unref` is present on Node's timer and absent on the DOM's; the host here is Node, and the
-    // optional call keeps this file loadable under a bundler that types it the other way.
-    timer.unref?.();
+    timer.unref();
     this.timer = timer;
   }
 
