@@ -5,18 +5,14 @@
  *
  * ```
  * <workspaceRoot>/.cotal/events/<h(space)>/<h(principal)>/
- *     .lock                       one emitter per PRINCIPAL (not per thread), HELD not computed
+ *     .lock                       held by one emitter per PRINCIPAL (not per thread)
  *     <h(threadId)>/wal.json      ONE file per thread, atomically replaced
  * ```
  *
- * **`.lock` IS ACQUIRED, AND THE WORD "HELD" ABOVE IS THERE BECAUSE IT ONCE WAS NOT.** This comment
- * claimed single-emitter exclusion from the day it was written while `lockPath` was only computed:
- * no acquire anywhere, and the suites asserted the path's SHAPE rather than that anyone held it. A
- * reviewer opened two logs on one file and watched the second one's stale handle rewrite the first
- * one's folded frontier to a tip the broker never assigned. {@link acquirePrincipalLock} is the
- * exclusion; the generation guard in `EventWal.write` is what refuses the stale write itself. Both,
- * because a lock cannot see a handle that predates it and a generation cannot tell an operator that
- * a second emitter is already running.
+ * **One emitter per principal takes two guards.** {@link acquirePrincipalLock} is the exclusion, and
+ * the generation guard in `EventWal.write` refuses a stale handle's write. Both, because a lock
+ * cannot see a handle that predates it and a generation cannot tell an operator that a second
+ * emitter is already running.
  *
  * **Every path component is hashed, and none of the unhashed values is a trusted path component.**
  * A space, a principal key and a native session id all come from outside this process, and a
