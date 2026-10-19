@@ -235,7 +235,7 @@ type BearerClaims = { sub?: unknown; act?: { actor?: unknown; lifecycleUid?: unk
  *  requires the principal pinned at construction, and the caller triple (1c.2c: the v0.4 ep-rail
  *  subjects the callout-minted rows pin) needs the ledger lifecycle claim too — the bearer is the
  *  one authoritative place all three live. */
-function principalFromBearer(bearer: string): { owner: string; actor: string; lifecycleUid: string } {
+export function principalFromBearer(bearer: string): { owner: string; actor: string; lifecycleUid: string } {
   try {
     const mid = bearer.split(".")[1];
     if (!mid) throw new Error("not a compact JWS");

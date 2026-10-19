@@ -24,7 +24,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, preflightTarget, probeLiveness, probeWebReadiness, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_SESSION_FILE, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
+import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, preflightTarget, principalFromBearer, probeLiveness, probeWebReadiness, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_SESSION_FILE, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -826,28 +826,11 @@ type ComponentCredential =
   | { kind: "user"; bearer: string; sentinelCreds: string; caller: { owner: string; actor: string; uid: string } }
   | { kind: "unavailable"; reason: string };
 
-/** The `(owner, actor, lifecycleUid)` a user bearer is bound to, read client side the same way the
- *  workspace connect layer reads it (the JWT payload without verification; the broker verifies).
- *  The service caller triple is part of the manager's authenticated control surface, so the probe's
- *  triple must be the bearer's own — a random actor would turn an authorized manager into a false
- *  no-answer, the same trap the static arm's mint comment below names. */
-function principalFromBearer(bearer: string): { owner: string; actor: string; uid: string } {
-  const mid = bearer.split(".")[1];
-  if (!mid) throw new Error("not a compact JWS");
-  const payload = JSON.parse(Buffer.from(mid, "base64url").toString("utf8")) as {
-    sub?: string;
-    act?: { actor?: string; lifecycleUid?: string };
-  };
-  if (typeof payload.sub !== "string" || !payload.sub || typeof payload.act?.actor !== "string" || !payload.act.actor)
-    throw new Error("missing sub/act.actor");
-  if (typeof payload.act.lifecycleUid !== "string" || !payload.act.lifecycleUid)
-    throw new Error("missing act.lifecycleUid (lifecycle-bound bearers are the v0.4 hard cut)");
-  return { owner: payload.sub, actor: payload.act.actor, uid: payload.act.lifecycleUid };
-}
-
 /** The probe credential for the components pass, per target mode. Static/open meshes keep the exact
  *  mint they had; a user-mode target gets the signed-in login's bearer, or the one-sentence reason
- *  it cannot be had. */
+ *  it cannot be had. The caller triple is the bearer's own: the service caller triple is part of the
+ *  manager's authenticated control surface, so a random actor would turn an authorized manager into
+ *  a false no-answer, the same trap the static arm's mint comment below names. */
 async function componentCredential(target: MeshTarget): Promise<ComponentCredential> {
   if (target.mode !== "user") return { kind: "static", auth: target.auth };
   try {
@@ -857,7 +840,8 @@ async function componentCredential(target: MeshTarget): Promise<ComponentCredent
       space: target.space,
       actor: CLI_USER_ACTOR,
     });
-    return { kind: "user", bearer, sentinelCreds, caller: principalFromBearer(bearer) };
+    const { owner, actor, lifecycleUid } = principalFromBearer(bearer);
+    return { kind: "user", bearer, sentinelCreds, caller: { owner, actor, uid: lifecycleUid } };
   } catch (e) {
     return { kind: "unavailable", reason: e instanceof Error ? e.message : String(e) };
   }
