@@ -606,11 +606,11 @@ async function postManagerAuthority(
  *  version of the manager whose requests this client sends. */
 const COTAL_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
+const EP_ERROR_SET = new Set<string>(EP_ERROR_CODES);
+
 /** A manager-authority refusal, with the host's reason verbatim. The protocol is closed, so a host
  *  that names a field this request carries as unknown predates that field: say it is version skew
  *  and which side has to move. The field is never dropped to fit the older host. */
-const EP_ERROR_SET = new Set<string>(EP_ERROR_CODES);
-
 function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number): Error {
   const reason = (body as { error?: string }).error ?? `HTTP ${status}`;
   const code = (body as { code?: unknown }).code;

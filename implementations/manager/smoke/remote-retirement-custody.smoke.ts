@@ -2389,6 +2389,7 @@ Seat ${seatName}.
 
     // Sub-cell 1b (N4): real host returns HTTP 403 with an off-set non-catalog `code` -> provider ignores off-set code and row stays enrolling
     let mgrOffSet: Manager | undefined;
+    let clientOffSetErr: unknown;
     try {
       globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         const res = await realFetch(input, init);
@@ -2404,7 +2405,20 @@ Seat ${seatName}.
         }
         return res;
       }) as typeof globalThis.fetch;
-      ({ mgr: mgrOffSet } = await bootRemoteManagerOnRoot(ws, "pty"));
+      const bootedOffSet = await bootRemoteManagerOnRoot(ws, "pty");
+      mgrOffSet = bootedOffSet.mgr;
+      try {
+        await bootedOffSet.remoteAuthority.enrollManagedAgent!({
+          target: {
+            actor: seatName,
+            tokenHash: firstRow!.tokenHash!,
+            allowSubscribe: [],
+            allowPublish: [],
+          },
+        });
+      } catch (err) {
+        clientOffSetErr = err;
+      }
     } finally {
       globalThis.fetch = realFetch;
     }
@@ -2413,12 +2427,22 @@ Seat ${seatName}.
     checkGuard(
       cell,
       "when the host returns an off-set `code` outside EP_ERROR_CODES, provider does not construct EpEnvelopeError and convergence leaves the row enrolling",
-      rowOffSet?.phase === "enrolling" &&
+      clientOffSetErr instanceof Error &&
+        !(clientOffSetErr instanceof EpEnvelopeError) &&
+        clientOffSetErr.message.includes(`managed agent "${seatName}" is enrolled at lifecycle ${liveUid}`) &&
+        rowOffSet?.phase === "enrolling" &&
         rowOffSet?.provisionalUid === provisionalUid &&
         recOffSet?.state === "failed" &&
         recOffSet?.lastSweep?.failed === 1 &&
+        recOffSet?.lastSweep?.succeeded === 0 &&
         existsSync(stagedFiles!.actorToken),
-      { rowOffSet, recOffSet },
+      {
+        clientOffSetErrIsError: clientOffSetErr instanceof Error,
+        clientOffSetErrIsEpEnvelopeError: clientOffSetErr instanceof EpEnvelopeError,
+        clientOffSetErrMessage: clientOffSetErr instanceof Error ? clientOffSetErr.message : String(clientOffSetErr),
+        rowOffSet,
+        recOffSet,
+      },
     );
     await mgrOffSet!.stop();
 
