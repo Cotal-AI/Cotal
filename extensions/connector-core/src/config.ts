@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, resolveReadAcl, type AgentDef, type ChannelMode, type EndpointKind } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, assertValidKind, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, resolveReadAcl, type AgentDef, type ChannelMode, type EndpointKind } from "@cotal-ai/core";
 import { readMaterial } from "./session-env.js";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
@@ -363,7 +363,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     eventsRequired,
     quiet: resolvedQuiet,
     muted: resolvedMuted,
-    kind: (env.COTAL_KIND?.trim() as EndpointKind) || def?.kind || "agent",
+    kind: assertValidKind(env.COTAL_KIND?.trim() || def?.kind || "agent"),
     token: material?.token || env.COTAL_TOKEN?.trim() || link?.token,
     user: link?.user,
     pass: link?.pass,

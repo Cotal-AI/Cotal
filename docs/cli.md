@@ -2408,7 +2408,7 @@ cotal join --link <url> | --token <t>
 | `--name <n>` | none | Your presence name |
 | `--role <r>` | none | Your role |
 | `--channel <c>` | none | Channel to join |
-| `--kind <k>` | `agent` | Endpoint kind |
+| `--kind <k>` | `agent` | Endpoint kind: `agent` or `endpoint`. Any other value is refused |
 | `--link <url>` | none | Join link (`cotal://…`) |
 | `--token <t>` | none | Join token |
 | `--lifecycle-uid <uid>` | none | Required with `--creds`: the lifecycle UID minted alongside the credential (`COTAL_LIFECYCLE_UID` works too). A credential's durable grants name exact lifecycle-keyed resources, so `join` refuses to invent one |

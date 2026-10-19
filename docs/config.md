@@ -146,7 +146,7 @@ other value when it starts, naming the variable.
 | `COTAL_ALLOW_SUBSCRIBE` | connector session | Read ACL (channels the agent *may* read). Set but empty means the read set alone | agent file's, else = `COTAL_SUBSCRIBE` |
 | `COTAL_ALLOW_PUBLISH` | connector session | Post ACL (channels the agent *may* post to). Set but empty means deny | agent file's, else deny (empty) |
 | `COTAL_MODEL` | connector session | Model label (display metadata), set by the launcher | none |
-| `COTAL_KIND` | connector session | Endpoint kind | `agent` |
+| `COTAL_KIND` | connector session | Endpoint kind: `agent` or `endpoint`. Any other value is refused | `agent` |
 | `COTAL_TLS` | connector session | Connect over TLS (`1`); off keeps the join link's choice | off (or the link's) |
 | `COTAL_TOKEN` | connector session | Auth token (token / open modes) | none |
 | `COTAL_CAPABILITIES` | connector session | Control-plane capabilities (e.g. `spawn`) that gate manager tools | agent file's `capabilities:` |

@@ -49,7 +49,7 @@ import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
-import { assertValidName } from "./resolve.js";
+import { assertValidKind, assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS, TTL_RECONCILE_CANARY_KEY, PRESENCE_STORAGE } from "./streams.js";
 import {
@@ -781,9 +781,10 @@ export class CotalEndpoint extends EventEmitter {
     // A display name is the client-side handle a peer is addressed by; reject the reserved `/`
     // (the future owner/name separator) and surrounding whitespace at the one identity choke
     // point every join/spawn path flows through. A role is an address too, refused here before
-    // presence can advertise it.
+    // presence can advertise it. The kind selects the incarnation proof, so it is checked here too.
     assertValidName(opts.card.name);
     if (opts.card.role !== undefined) assertValidRole(opts.card.role);
+    assertValidKind(opts.card.kind);
     // Auth mode is EITHER static creds (dev/no-login) OR a user bearer (login → callout) — never both.
     if (opts.bearer) {
       if (opts.creds || opts.token || opts.user || opts.pass)

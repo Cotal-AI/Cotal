@@ -10,7 +10,7 @@
  * `/` is reserved in a name ({@link assertValidName}) so they slot in without a migration.
  * See .internal/plans/peer-addressing.md.
  */
-import type { Presence, PresenceStatus } from "./types.js";
+import type { EndpointKind, Presence, PresenceStatus } from "./types.js";
 
 /** A peer that matched an ambiguous name — structural, so each surface renders it itself.
  *  The full `id` is the authoritative, routable address. */
@@ -177,4 +177,13 @@ export function assertValidName(name: string): void {
         `cannot survive UTF-8 encoding — it is replaced with U+FFFD — so distinct names would ` +
         `silently become one identity.`,
     );
+}
+
+/** Validate an endpoint kind: `agent` or `endpoint`, refused otherwise rather than recased or
+ *  defaulted. The endpoint runs its incarnation proof only for `agent`, so a misspelled agent would
+ *  otherwise join as infrastructure. Returns the kind so callers can use it inline. */
+export function assertValidKind(kind: string): EndpointKind {
+  if (kind !== "agent" && kind !== "endpoint")
+    throw new Error(`invalid kind ${JSON.stringify(kind)}: must be "agent" or "endpoint"`);
+  return kind;
 }
