@@ -1,9 +1,10 @@
 # Private tool results
 
-**PROPOSAL. NOT IMPLEMENTED. NOT NORMATIVE OR ACCEPTED.** This page proposes a design for review.
-No released or source component implements it, and nothing here changes SPEC.md, a package API or
-a deployment. Every rule below stays inactive until the Core/SPEC owner accepts it and the owners
-named in section 9 land and qualify their parts.
+**Accepted; not implemented; not enabled.** Sections 4 to 8, the anchor role, request kind, record
+families and limits are accepted in [SPEC §13.19](../../SPEC.md#1319-private-tool-results).
+This page retains the rationale and implementation order. No released or source component
+implements the private path. Acceptance does not enable it: every owner in section 9 must land
+and qualify their part, and section 11's activation gates remain binding.
 
 Source references are to `c28c9ab16532d72f5b53521b808e8a0a93dddb2e`.
 

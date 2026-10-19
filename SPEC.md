@@ -11,7 +11,7 @@
 > [Reference docs](docs/README.md#reference); those describe the TypeScript implementation,
 > not this contract.
 >
-> **Editors:** Cotal maintainers. **Last updated:** 2026-09-22. Changes are tracked in
+> **Editors:** Cotal maintainers. **Last updated:** 2026-10-19. Changes are tracked in
 > [Appendix D](#appendix-d-change-log); versioning rules are §11.
 >
 > **v0.5 binding revision: workflow runs.** A deployment MAY host **durable workflow runs**: programs
@@ -4125,7 +4125,7 @@ authorization slots, capability handles, checkpoint resumes, trait definitions a
 attachments, session grants, receipts. Anchors are `signer.<keyId>` records: spec =
 `{ keyId, publicKey (Ed25519), owner (the principal or reverse-DNS domain the key belongs
 to), roles ⊆ [handles, traits, receipts, resume, sessions, authz-slots, obligations,
-payments], scope: per-role structured ceilings, for a `handles`-role key the **full grant
+payments, consents], scope: per-role structured ceilings, for a `handles`-role key the **full grant
 dimensions**, in the handle-grant shape itself: the endpoints/domains, and per entry the
 maximal commands, authorization modes, target patterns, instance ids, and read subtrees the
 key may issue for (a handles- or receipts-role key without a dimension ceiling has that
@@ -4156,6 +4156,7 @@ dispatches on the type, never duck-types the claims.
 
 | Artifact | Required claims | Replay rule |
 | --- | --- | --- |
+| Private tool-result consent (§13.19) | consent id, target (owner, actor, lifecycleUid), same-owner interactive holder, window of at most 24 hours | holder-bound; create-only issuance and revocation records; canonical START frontier and current revocation/lifecycle checks per §13.19 |
 | Capability handle | id, space, issuer, holder (principal+UID), structured grants, iat, exp (nbf, parentDigest, epoch as applicable) | reusable within TTL, holder-bound; revocable if sturdy |
 | Checkpoint resume | checkpoint token, goal id, holder (principal+UID), iat, exp, nonce | **one-use** (journaled by create-only CAS); duplicate = `conflict` |
 | Session grant | sessionId, subjects, holder (principal+UID+processEpoch), serving instance+epoch, window, iat, exp, nonce | **one-use** redemption (holder epoch fresh-checked), then live; dies with either side's epoch |
@@ -4870,6 +4871,163 @@ closed. Actual deadlines and revocations still apply. Failure to recover cannot 
 child implicitly. User-intent retirement continues through §13.16; old-epoch terminal grants remain
 invalid, and a fresh terminal session still requires a supported terminal transport.
 
+### 13.19 Private tool results
+
+This optional, additive contract permits a verified human to consent to one holder reading a
+managed agent's future tool results through the endpoint control surface. It adds no public event
+payload: public `events.<owner>.<actor>` MUST continue to withhold `TOOL_CALL_ARGS` and
+`TOOL_CALL_RESULT`. Tool arguments, transcript scraping, a private HTTP result path and provider
+credentials in a client or sandbox are outside this contract.
+
+**Activation.** Acceptance of this subsection is not implementation or enablement. A deployment
+MUST NOT enable this path until the auth and host, Core and Manager, connector-core, and browser
+caller owners have each landed and qualified their part, and a stock release carries those parts.
+A product surface additionally MUST qualify its own freshness and viewer checks. The prerequisites
+of §13.19.4 remain mandatory; without either, the serving commands MUST answer `unavailable`.
+No numeric revocation bound, immediate cutoff, restart guarantee or per-sign-in cutoff may be
+advertised without those prerequisites. The informative [design rationale](docs/design/private-tool-results.md)
+retains the owner order and activation checklist.
+
+#### 13.19.1 Authority and records
+
+The endpoint name is `tool-results`. Its three commands, `tool-result`, `tool-result-consent` and
+`tool-result-revoke`, MUST use `handle` authorization mode. Their schemas MUST be closed, with one
+schema per answer state, and frozen at declaration. Malformed requests and unknown fields MUST be
+refused as `bad-request` before any effect.
+
+**Human proof and consent.** The host MUST parse `auth_time` and `amr` from the verified IdP token.
+Consent requires `auth_time` in integer seconds, not in the future and at most 300 seconds old,
+and `amr` including a password sign-in. Refresh, device and unmarked sessions MUST be refused as
+`permission-denied`. The host MUST hold the consent signing key. The `consents` signing-anchor role
+(§13.10) is scoped to `tool-results`; a verifier MUST enforce that role and scope. A signed consent
+MUST name one target `(owner, actor, lifecycleUid)` and one holder, an interactive actor principal
+of the same owner, with a window of at most 24 hours. The host MUST record each consent id it signs
+create-only. A consent does not confer per-sign-in or per-browser-session control.
+
+**Record families.** Consent issuance records and per-consent revocation records are distinct from
+the connector's bounded result journal. A revocation row MUST be create-only in the space auth
+store and retained until the consent's expiry plus the store's marker retention. Revocation MUST
+distinguish known, refused and unknown outcomes. An unknown outcome MUST be read back before any
+retry and MUST NOT be repeated automatically. The journal MUST follow §13.19.2, §13.19.3 and
+§13.19.5; it is not a public event log.
+
+**Serving issuance.** The closed `manager-managed-agent-tool-result-serving` request kind carries
+only operations `issue` and `renew` on the existing managed-agent manager-authority envelope,
+including its serve epoch. The host MUST require scope `supervise`, verify the current Manager
+registration, and check the ledger to require that the target is a current managed child of that
+Manager. A failed authority check MUST be refused as `permission-denied`. Resume is not supported.
+The host MUST register the serving instance and return its grant, serving credential and the
+§13.19.4 revocation snapshot. The Manager MUST install the material as a 0600 file named by a
+generic launch-material field. Connectors MUST use that generic field, without Manager-specific
+code. Retirement MUST also deregister the instance. Renewal MUST occur before expiry; installation
+or renewal failure MUST remove the serving material rather than continue with failed material.
+
+**Caller view.** Redemption MUST verify the consent, require presenter equality with its holder,
+check the current durable revocation record and target lifecycle state, and read the current
+serving registration. The caller credential MUST be limited to the three commands on that one
+instance, the stock `describe` of that same instance, and the caller's own reply subject. The
+redemption MUST bind one space, account, instance and epoch, and its response MUST name the space,
+instance and epoch. Consent-bound caller authority MUST be checked against current durable
+revocation and target lifecycle state at redemption and again at every native callout or
+connection issuance, including each reconnect. A credential minted before revocation MUST NOT
+permit a new connection after that revocation. Native issuance records alone do not implement
+this consent view or its current-state check. Invalid consent, wrong presenter, revoked consent or
+an inactive target lifecycle MUST be refused as `permission-denied`; unavailable authority state
+MUST be refused as `unavailable`.
+
+#### 13.19.2 Capture frontier
+
+After verifying a consent, the connector MUST sample a durable source position `P` with the
+source's end operation. Sampling `P` is the linearization point. Every record already in the source
+at that call MUST lie at or before `P`, including unread records, a read in progress, replay after
+a restart and ordinary backlog. The reference source operation is `DurableSource.end()`.
+
+The connector MUST record the holder's consent life generation when the consent arrives and
+compare it again after every asynchronous step, including verification, the end call and frontier
+placement, and immediately before committing the consent. Revoke or replacement MUST advance that
+generation. An in-flight activation for an old generation MUST refuse and commit nothing. Token
+registration and pre-capture classification MUST be serialized with that commit. An unresolved
+frontier MUST grant no eligibility. Expiry and snapshot checks do not replace this lifetime fence.
+
+The emitter MUST place `P` against each read using source-only position comparison, through a
+frontier operation equivalent to the reference emitter's `queueTerminal` placement. The reference
+addition is `queueFrontier`, using the existing `boundary` comparison. A START record is eligible
+for that consent only when its canonical durable position lies after `P`; physical tool execution
+time MUST NOT determine eligibility. If `P` cannot be placed, the connector MUST drop the frontier
+and refuse the consent as `failed-precondition`. A source whose end operation answers later than
+the call may only exclude more calls. A RESULT MUST be captured only into an entry its START
+created; a RESULT MUST NOT create an entry.
+
+#### 13.19.3 Audience
+
+At START, each journal entry MUST record the fixed set of consent ids eligible for it. That set
+MUST NOT grow. A lookup by holder `h` may return the entry only if an id in its set remains active,
+unexpired and unrevoked and names `h`. Revoking, expiring or withdrawing consent `c` MUST remove
+`c` from every entry; an entry with an empty set MUST be deleted. Replacing a holder's consent MUST
+revoke the old consent before applying the new frontier, discarding results visible only through
+the old consent. A newly consented holder MUST NOT read results captured before its own frontier.
+
+#### 13.19.4 Revocation bound
+
+Both prerequisites below MUST hold before the serving commands can be available:
+
+1. A sealed, owner-reviewed, bounded read MUST obtain the complete revocation snapshot for the
+   target from the stream leader, through a watermark taken after `T0`. Native issuance-row write
+   authority MUST NOT be treated as consumer-create or stream-read authority. The snapshot read
+   authority MUST be granted and reviewed separately.
+2. A bound `delta` on connector-to-host clock difference MUST be established and enforced. A
+   configured token tolerance is not evidence of measured or enforced skew.
+
+The host MUST take `T0` from its clock, in milliseconds, before the snapshot read starts, read the
+complete snapshot under prerequisite 1, and set the serving credential expiry to
+`floor(T0 / 1000) + 600` seconds. Signing, writing and installing MUST NOT extend that expiry. If
+signing happens more than 30 seconds after `T0` or the expiry has passed, issuance MUST refuse as
+`unavailable` and write nothing.
+
+Immediately before answering a lookup or committing a consent, the connector MUST read the
+installed file and require that its own clock is before expiry and the consent id is absent from
+the snapshot. Otherwise it MUST revoke locally under §13.19.3 and refuse release. An expired file
+MUST be refused as `expired`; a snapshot-revoked consent MUST be refused as `permission-denied`.
+
+Let a revocation be acknowledged at host time `Tr`. If `T0 > Tr`, the snapshot MUST include it and
+every release MUST refuse it. If `T0 <= Tr`, expiry is at most `Tr + 600` seconds, so with
+`|connectorNow - hostNow| <= delta`, no release may occur at host time `Tr + 600 + delta` or later
+(`Tr` and `delta` expressed in seconds for this bound).
+
+A restarted connector may re-apply a revoked consent inside that window. An already connected
+caller keeps its transport until eviction or its own credential expiry. Eviction can have an
+unknown outcome and acts on the whole principal. Neither case permits a result past the bound.
+The host and the Manager installing the file are trusted. This bound is not an immediate cutoff,
+a restart non-restoration guarantee or a per-sign-in cutoff.
+
+#### 13.19.5 Receiver answers
+
+Before invoking, the caller MUST run the stock instance-addressed `describe` on the one redeemed
+instance and verify its contracts and digests. It MUST refuse an answer from another instance or
+an epoch different from the redemption. This bootstrap requires the narrow, separately reviewed
+same-instance `describe` grant in §13.19.1. It MUST NOT use class discovery, scatter or a homemade
+contract. Stock `describe` carries no `bind`, because it produces the binding (§13.3).
+
+Every subsequent private command MUST carry `bind` naming the redemption's instance and epoch.
+A missing `bind` MUST be refused as `bad-request` before the handler touches the journal. The
+§13.3 pre-effect incarnation check MUST refuse another epoch of the same instance as `expired`
+before any handler runs. The caller MUST learn the instance and epoch only from redemption. A
+browser caller MUST be Node-free, MUST NOT scatter, guess or silently change the target or epoch,
+and MUST NOT resend after an accepted or unknown effect. It MUST drop its binding on account,
+space or epoch change.
+
+`tool-result` MUST answer one of these closed states:
+
+| State | Fields beyond the state |
+| --- | --- |
+| `available` | Thread id, tool call id, content, truncated flag, byte count, error flag and capture time |
+| `pending` | Thread id and tool call id |
+| `not-shared`, `missing`, `expired` | None |
+
+Empty or falsy content such as `""`, `"0"`, `"false"` and `"null"` MUST be treated as a result.
+Content MUST be inert text bounded to 64 KiB of UTF-8. The journal MUST hold at most 256 entries,
+retain each for at most one hour and MUST NOT store arguments.
+
 ---
 
 ## 14. Workflow runs (v0.5)
@@ -5551,6 +5709,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-19 | **Private tool results (§13.19), additive; accepted, not implemented or enabled.** Defines the consent anchor role, managed-child serving request, consent and revocation record families, canonical START frontier, fixed audiences, exact-instance binding and bounded inert result journal. Revocation depends on a separately reviewed complete leader snapshot and an established enforced clock-skew bound; absent prerequisites answer `unavailable`. Activation requires every owner's qualified part and a stock release. Public tool arguments and results remain withheld. `protocolVersion` is unchanged. |
 | 2026-10-07 | **A role outside the token grammar is refused (§3), breaking.** A role was sanitized like every other routing token, so ` probe ` reached the `probe` queue and `pro.be` reached `pro_be` while the message kept the spelling sent, and an anycast to `*` was stored on a subject no role consumer matches. A client now refuses a role that is not one `[A-Za-z0-9_-]` token, both for the role it holds and for an anycast target, and refuses `*` as an anycast target. Existing `svc_<role>` durables keep their names, since they were always named from the sanitized token. |
 | 2026-10-07 | **A refusal for a target with no current mapping says that nothing ran (§13.2), additive.** It stays `expired` and now carries `outcome: not-executed` and `details[].kind = ai.cotal.ep.target-unmapped`. A manager resolves targets against the agents it hosts, so in a space with several managers the class queue could hand a targeted `despawn` to a sibling, which refused it the same way it refuses a retired target, with no outcome. The caller could not tell "this agent is gone" from "this manager does not host it", and repaired neither. With the marker a class-rail caller re-resolves and re-issues within its split-repair bound, and a target retired everywhere still ends in the same `expired` refusal once that bound runs out. A caller that ignores the marker sees the old code. |
 | 2026-10-04 | **Managed lifecycle handoff (§13.17), additive.** A managed agent already enrolled through §13.1 may run where the enrolling manager's filesystem is not visible. The manager releases one closed `cotal-managed-handoff/v1` document by value into that one child, carrying the issued owner, actor, lifecycle UID, sentinel, pinned exchange base, and the raw actor token, which the host never receives. The child's entry point removes the handoff file and its variable before it parses its arguments or does anything else, refuses a mismatched owner, actor, or lifecycle UID before any plane opens, never enrolls or mints, and uses the existing agent-bearer exchange unchanged. The manager refuses a spawn choice only its own host can honour before enrolling. Readiness stays presence-observed, a lost create acknowledgement stays held as uncertain and is never retried, a provider's answer that no resource exists is not an exit, and a close by the lifecycle-derived key is fenced against a create that could still land. A provider resource is bound to that key only by the provider's authenticated answer to its create, never by a derived identifier, a name or a listing. Retirement reuses prepare-retirement, then the known runtime handle's fenced close, then the terminal barrier, including after the manager is gone. A preservation cut that holds a handed-off lifecycle is refused, and a manager stop after a refused cut retires it. |

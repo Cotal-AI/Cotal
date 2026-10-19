@@ -320,6 +320,16 @@ received, which it does when a client starts listening. `cotal_connect` adds `wa
 its reply. `GATEWAY_INSTRUCTIONS` is `GATEWAY_CONNECTING` followed by `GATEWAY_LISTENING`, so an
 embedder can say how its conversations listen and keep how they connect.
 
+### Private tool results
+
+[SPEC §13.19](../SPEC.md#1319-private-tool-results) accepts a private, consent-bound read path for
+managed-agent tool results. It is not implemented or enabled and adds no usable export here.
+Public tool arguments and results remain withheld. Auth and host issuance, Manager material,
+connector capture and the browser caller must each be landed and qualified in the
+[design's owner order](design/private-tool-results.md#9-owner-order), then carried by a stock
+release before activation. Without a complete authoritative revocation snapshot and an established,
+enforced clock-skew bound, the serving commands must answer `unavailable`.
+
 ### Browser control
 
 `@cotal-ai/core/browser-control` describes and invokes an endpoint from a strict-CSP page. The page
