@@ -316,21 +316,14 @@ export async function walkKvLatest(kv: KV, filter: string): Promise<KvEntry[]> {
   const latest = new Map<string, KvEntry>();
   let seq = 1;
   for (;;) {
-    let sm;
-    try {
-      // The client types `next_by_subj` only on its Direct Get request; the STREAM.MSG.GET API takes
-      // the same `{seq, next_by_subj}` body (measured on nats-server 2.14.5: walks forward through a
-      // wildcard filter and answers "no message" past the last match), so the request is passed as
-      // the API's own shape rather than the narrower one the typing declares.
-      const req: NextMsgRequest = { seq, next_by_subj: subject };
-      sm = await bucket.jsm.streams.getMessage(bucket.stream, req as unknown as MsgRequest);
-    } catch (e) {
-      // 10037 is the stream saying nothing at or after `seq` matches: the end of the walk. The
-      // pinned client answers `null` for it; older ones threw. Every other error is the broker.
-      if ((e as { code?: unknown })?.code === 10037) break;
-      throw e;
-    }
-    if (sm === null || sm === undefined) break;
+    // The client types `next_by_subj` only on its Direct Get request; the STREAM.MSG.GET API takes
+    // the same `{seq, next_by_subj}` body (measured on nats-server 2.14.5: walks forward through a
+    // wildcard filter and answers "no message" past the last match), so the request is passed as
+    // the API's own shape rather than the narrower one the typing declares.
+    const req: NextMsgRequest = { seq, next_by_subj: subject };
+    const sm = await bucket.jsm.streams.getMessage(bucket.stream, req as unknown as MsgRequest);
+    // The client answers the stream's 10037 (nothing at or after `seq` matches) with `null`.
+    if (sm === null) break;
     const e = bucket.smToEntry(sm);
     const prior = latest.get(e.key);
     if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
