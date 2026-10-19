@@ -13,7 +13,7 @@
 import { headers as natsHeaders } from "@nats-io/transport-node";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { token } from "./subjects.js";
-import { contractDigest, rawDigest } from "./canonical.js";
+import { contractDigest, isContractDigest, rawDigest } from "./canonical.js";
 import {
   epfSubject, parseEpSubject, endpointToken, assertBoundedOwner, assertIdToken,
   assertLifecycleToken, type EpCaller, type ParsedEpRequest,
@@ -467,7 +467,7 @@ export type EffectCompletionFact = EffectFact | EffectCancelledFact;
 export function effectFactOf(acceptance: AcceptanceFact, ts: number): EffectFact {
   if (acceptance.route !== "effects" || typeof acceptance.request.goalId === "string")
     throw new EpEnvelopeError("failed-precondition", "an effect completion fact is only for a non-action route:effects acceptance (actions complete through goal.result)");
-  if (!isDigest(acceptance.fingerprint) || !posInt(acceptance.sourceSeq) || !wireInt(ts))
+  if (!isContractDigest(acceptance.fingerprint) || !posInt(acceptance.sourceSeq) || !wireInt(ts))
     throw new EpEnvelopeError("failed-precondition", "an effect completion fact requires a validated acceptance fingerprint/sourceSeq and non-negative timestamp");
   const caller = checkCaller(acceptance.caller, "effect acceptance caller");
   return { v: 1, id: assertIdToken(acceptance.id, "effect id"), fingerprint: acceptance.fingerprint, caller, sourceSeq: acceptance.sourceSeq, ts, outcome: "ran" };
@@ -499,7 +499,6 @@ function factFail(what: string): never {
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const wireInt = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const posInt = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 1;
-const isDigest = (v: unknown): v is string => typeof v === "string" && /^sha256:[0-9a-f]{64}$/.test(v);
 
 function assertClosedKeys(o: Record<string, unknown>, allowed: readonly string[], what: string): void {
   const ok = new Set(allowed);
@@ -600,7 +599,7 @@ export function parseDecisionFact(raw: unknown, subject: string): DecisionFact {
     factFail("id grammar");
   }
   if (o.id !== addr.id) factFail("id disagrees with the fact subject");
-  if (!isDigest(o.fingerprint)) factFail("fingerprint");
+  if (!isContractDigest(o.fingerprint)) factFail("fingerprint");
   // sourceSeq is a stream sequence (>= 1); ts is a wire timestamp (>= 0, §13.7).
   if (!posInt(o.sourceSeq)) factFail("sourceSeq must be a positive stream sequence");
   if (!wireInt(o.ts)) factFail("ts must be a non-negative integer");
@@ -637,7 +636,7 @@ export function parseDecisionFact(raw: unknown, subject: string): DecisionFact {
       factFail("the fact target does not carry the mappingRevision the request pinned");
   }
   const cd = o.contractDigests;
-  if (!isRec(cd) || !isDigest(cd.input) || !isDigest(cd.output)) factFail("contractDigests");
+  if (!isRec(cd) || !isContractDigest(cd.input) || !isContractDigest(cd.output)) factFail("contractDigests");
   // Where the request pinned contract digests (§13.3: required on every command except
   // `describe`), the fact's contractDigests must EQUAL them — otherwise consumers validate and
   // effect under a different contract than the caller accepted. An omitted digest (describe)
@@ -670,7 +669,7 @@ export function parseEffectFact(raw: unknown, subject: string): EffectCompletion
   assertClosedKeys(o, isCancelled ? ["v", "id", "fingerprint", "caller", "sourceSeq", "ts", "outcome", "cancelled"] : ["v", "id", "fingerprint", "caller", "sourceSeq", "ts", "outcome"], `effect fact on ${subject}`);
   if (o.v !== 1) factFail("effect.v");
   if (o.id !== addr.id) factFail("effect.id disagrees with the fact subject");
-  if (!isDigest(o.fingerprint)) factFail("effect.fingerprint");
+  if (!isContractDigest(o.fingerprint)) factFail("effect.fingerprint");
   if (!posInt(o.sourceSeq)) factFail("effect.sourceSeq must be a positive stream sequence");
   if (!wireInt(o.ts)) factFail("effect.ts must be a non-negative integer");
   const caller = checkCaller(o.caller, "effect.caller");
@@ -700,7 +699,7 @@ export function parseQuarantineFact(raw: unknown, subject: string): QuarantineFa
   if (o.v !== 1 || o.decision !== "quarantined") factFail("v/decision");
   if (!posInt(o.sourceSeq)) factFail("sourceSeq must be a positive integer");
   if (String(o.sourceSeq) !== p.topic[1]) factFail("sourceSeq disagrees with the fact subject");
-  if (!isDigest(o.submissionDigest)) factFail("submissionDigest");
+  if (!isContractDigest(o.submissionDigest)) factFail("submissionDigest");
   checkError(o.error, "error");
   if (o.caller !== undefined) checkCaller(o.caller, "caller");
   if (!wireInt(o.ts)) factFail("ts must be a non-negative integer");

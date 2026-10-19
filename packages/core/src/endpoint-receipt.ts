@@ -346,10 +346,10 @@ export function parseReceipt(raw: unknown, ref: ReceiptRef, space: string): Rece
   if (cal.id !== `${ref.caller.owner}.${ref.caller.actor}` || cal.lifecycleUid !== ref.caller.uid)
     garbled(`the receipt's caller evidence (${String(cal.id)}/${String(cal.lifecycleUid)}) does not name its subject's caller (${ref.caller.owner}.${ref.caller.actor}/${ref.caller.uid}); a cross-caller receipt never attests`);
   const sd = o.schemaDigests as Record<string, unknown>;
-  if (!isRec(sd) || !isContractDigest(sd.input as string) || !isContractDigest(sd.output as string))
+  if (!isRec(sd) || !isContractDigest(sd.input) || !isContractDigest(sd.output))
     garbled("the receipt schemaDigests are not sha256 digests");
-  if (!isContractDigest(o.argsDigest as string)) garbled("the receipt argsDigest is not a sha256 digest");
-  if (o.resultDigest !== undefined && !isContractDigest(o.resultDigest as string)) garbled("the receipt resultDigest is not a sha256 digest");
+  if (!isContractDigest(o.argsDigest)) garbled("the receipt argsDigest is not a sha256 digest");
+  if (o.resultDigest !== undefined && !isContractDigest(o.resultDigest)) garbled("the receipt resultDigest is not a sha256 digest");
   const out = o.outcome as Record<string, unknown>;
   if (!isRec(out) || typeof out.ok !== "boolean" || (out.code !== undefined && typeof out.code !== "string"))
     garbled("the receipt outcome is not { ok, code? }");

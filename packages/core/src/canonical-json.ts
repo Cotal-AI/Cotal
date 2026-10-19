@@ -5,9 +5,9 @@ import { canonicalizeEx } from "json-canonicalize";
 export const DIGEST_PREFIX = "sha256:" as const;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 
-/** True iff `s` is a well-formed `sha256:<hex>` artifact digest. */
-export function isContractDigest(s: string): boolean {
-  return DIGEST_RE.test(s);
+/** True iff `v` is a string holding a well-formed `sha256:<hex>` artifact digest. */
+export function isContractDigest(v: unknown): v is string {
+  return typeof v === "string" && DIGEST_RE.test(v);
 }
 
 /** True iff the string is well-formed UTF-16 (no unpaired surrogate). A lone surrogate has NO
