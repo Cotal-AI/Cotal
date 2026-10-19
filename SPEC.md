@@ -4156,7 +4156,7 @@ dispatches on the type, never duck-types the claims.
 
 | Artifact | Required claims | Replay rule |
 | --- | --- | --- |
-| Private tool-result consent (§13.19) | consent id, space, target (owner, actor, lifecycleUid), same-owner interactive holder, iat and exp (the window of at most 24 hours), signing keyId and sig (§13.10) | holder-bound; create-only issuance and revocation records; canonical START frontier and current revocation/lifecycle checks per §13.19 |
+| Private tool-result consent (§13.19) | consent id, space, target (owner, actor, lifecycleUid), same-owner interactive holder, window of at most 24 hours, signing keyId and sig (§13.10) | holder-bound; create-only issuance and revocation records; canonical START frontier and current revocation/lifecycle checks per §13.19 |
 | Capability handle | id, space, issuer, holder (principal+UID), structured grants, iat, exp (nbf, parentDigest, epoch as applicable) | reusable within TTL, holder-bound; revocable if sturdy |
 | Checkpoint resume | checkpoint token, goal id, holder (principal+UID), iat, exp, nonce | **one-use** (journaled by create-only CAS); duplicate = `conflict` |
 | Session grant | sessionId, subjects, holder (principal+UID+processEpoch), serving instance+epoch, window, iat, exp, nonce | **one-use** redemption (holder epoch fresh-checked), then live; dies with either side's epoch |
