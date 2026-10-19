@@ -67,7 +67,9 @@ type UngatedExemption = { reason: string; recheckBy: string };
 // refused at startup, and the refusal satisfied its own "exits when the broker is gone" assertion.
 // 25 → 15: the whole remaining untriaged set went the same way on 2026-10-01, ten suites run and
 // then gated. What is left is standing decisions plus the five BROKEN backup suites below.
-const EXPECTED_EXEMPTIONS = 15;
+// 15 → 16 on 2026-10-19: the Claude plugin refresh suite drives a real claude CLI, as the user-mode
+// manifest suite does.
+const EXPECTED_EXEMPTIONS = 16;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
 const untriagedExemption = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-09-30" });
 /** The BROKEN class carried `untriagedExemption`, which says nobody has looked. Someone had: each
@@ -86,6 +88,7 @@ const UNGATED: Record<string, UngatedExemption> = {
   "smoke:codex-tui-live": standing("needs a codex TUI session"),
   "smoke:jcode-live": standing("needs an installed, authenticated jcode CLI (COTAL_E2E_JCODE=1)"),
   "smoke:down-manifest-usermode:live": standing("needs a claude CLI on PATH to boot a real connector child"),
+  "smoke:claude-plugin-refresh:live": standing("drives the real claude CLI on PATH against a scratch Claude config"),
   "smoke:backup-usermode:live": brokenExemption("BROKEN: red; cause unconfirmed (measured on a host with a live stack); #1285; already-red so it cannot enter CI"),
   // These four are #643's to fix (backup live coverage that can fail), not an inventory mystery.
   "smoke:backup-perms:live": brokenExemption("BROKEN: red on CI at 2850a5a2e (backup-live.smoke.ts:125 zero-delivery New consumer preserves its creation frontier, 1 !== 2); #643; already-red so it cannot enter CI"),
