@@ -9,6 +9,7 @@ import {
   epAuthBucket,
   fetchContractArtifact,
   foreignSlotHeldFrom,
+  principalKey,
   provisionEndpointGateOpen,
   publishContractArtifact,
   readEndpointGateGeneration,
@@ -61,7 +62,7 @@ export async function registerRemoteManagerAuthority(args: {
       const bytes = await fetchContractArtifact(store, contractRefToHex(digest));
       return bytes ? JSON.parse(new TextDecoder().decode(bytes)) : undefined;
     };
-    const principal = `${args.owner}.${args.serveActor}`;
+    const principal = principalKey(args.owner, args.serveActor).key;
     if ((await serveIssuanceGateKv(authKv, args.space, { endpoint: MANAGER_ENDPOINT, instanceId: args.instanceId }).observe()) === null)
       await provisionEndpointGateOpen(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: args.instanceId, principal });
     const authority = { authorize: (endpoint: string, owner: string) => ({ authorized: endpoint === MANAGER_ENDPOINT && owner === args.owner, revision: 0 }) };

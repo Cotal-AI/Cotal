@@ -9,6 +9,7 @@ import {
   managedRetirementOpId,
   parseRemoteManagerEnvelope,
   remoteManagerActors,
+  remoteManagerServePrincipal,
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
   type RemoteRunAdmissionRequest,
@@ -71,7 +72,7 @@ export async function authorizeRemoteManagerRenewal(args: {
   const gate = await args.observeManagerGate(r.instanceId);
   if (!gate || gate.state !== "open")
     throw new EpEnvelopeError("failed-precondition", "manager-service renewal has no open registration gate");
-  if (gate.principal !== `${args.owner}.${remoteManagerActors(r.instanceId).serve}`)
+  if (gate.principal !== remoteManagerServePrincipal(args.owner, r.instanceId))
     throw new EpEnvelopeError("permission-denied", "manager-service renewal gate belongs to another owner");
   if (gate.processEpoch !== r.processEpoch)
     throw new EpEnvelopeError("conflict", "manager-service renewal processEpoch is stale");
@@ -314,7 +315,7 @@ async function authenticateRegisteredManager(
   const gate = await args.observeManagerGate(r.instanceId);
   if (!gate || gate.state !== "open")
     throw new EpEnvelopeError("failed-precondition", `manager-service ${what} has no open registration gate`);
-  if (gate.principal !== `${args.owner}.${remoteManagerActors(r.instanceId).serve}`)
+  if (gate.principal !== remoteManagerServePrincipal(args.owner, r.instanceId))
     throw new EpEnvelopeError("permission-denied", `manager-service ${what} gate belongs to another owner`);
   if (gate.processEpoch !== r.processEpoch)
     throw new EpEnvelopeError("conflict", `manager-service ${what} processEpoch is stale`);

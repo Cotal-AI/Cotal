@@ -4,7 +4,7 @@ import {
   assertPrincipalOwnerToken,
   assertLifecycleToken,
   assertValidOwnerToken,
-  remoteManagerActors,
+  remoteManagerServePrincipal,
   parseRemoteManagerEnvelope,
   type RemoteManagerAdminAuthorizationRequest,
   type RemoteManagerAdminAuthorizationResult,
@@ -59,10 +59,9 @@ export async function authorizeRemoteManagerAdmin(args: {
     request.instanceId,
     'manager admin authorization needs manager scope "supervise"',
   );
-  const actors = remoteManagerActors(request.instanceId);
   const gate = await args.observeManagerGate(request.instanceId);
   if (!gate || gate.state !== "open") throw new EpEnvelopeError("failed-precondition", `manager admin authorization found no current open manager gate for instance ${request.instanceId}`);
-  const expectedPrincipal = `${args.managerOwner}.${actors.serve}`;
+  const expectedPrincipal = remoteManagerServePrincipal(args.managerOwner, request.instanceId);
   if (gate.principal !== expectedPrincipal) throw new EpEnvelopeError("permission-denied", `manager admin authorization gate belongs to ${gate.principal}, not ${expectedPrincipal}`);
   if (gate.processEpoch !== request.serveEpoch) throw new EpEnvelopeError("conflict", `manager admin authorization serve epoch ${request.serveEpoch} is stale; current is ${gate.processEpoch}`);
   const proof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.managerOwner, request, gate);
