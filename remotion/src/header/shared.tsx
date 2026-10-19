@@ -27,7 +27,7 @@ const { fontFamily: sansFamily } = loadCotalSans("normal", {
 });
 
 // Brand gold for the real logo mark (slightly warmer than the scene accent GOLD).
-export const LOGO_GOLD = "#E9C46A";
+const LOGO_GOLD = "#E9C46A";
 
 // --- re-exports: one import surface for the variant authors --------------------
 
