@@ -1253,6 +1253,38 @@ export function chatHistDurable(owner: string, actor: string, lifecycleUid: stri
   return `chathist_${lifecycleNameKey(owner, actor, lifecycleUid)}`;
 }
 
+/** How many history reads one connection runs at once on one stream, and so how many reader
+ *  consumer names its credential may delete there. A read past this many waits for a free name. */
+export const HISTORY_READERS = 8;
+
+/** Consumer name a connection's `channelHistory` / `multiChannelHistory` / `dmHistory` read uses:
+ *  `hist_<readerId>_<slot>`, slot in `[0, HISTORY_READERS)`. The observer and admin profiles hold an
+ *  exact-name `CONSUMER.DELETE` for these names and for no other consumer on the stream (#4123), so
+ *  the reader id must name one authenticated connection. A static credential's is its nkey, which
+ *  its holder proves by signing; an auth-callout connection's is {@link calloutReaderId}. It must be
+ *  one name token. Injective: the slot is the digit after the last `_`. */
+export function historyReaderConsumer(readerId: string, slot: number): string {
+  if (typeof readerId !== "string" || !/^[A-Za-z0-9_-]{1,120}$/.test(readerId))
+    throw new Error(`history reader id ${JSON.stringify(readerId)} must match [A-Za-z0-9_-]{1,120}`);
+  if (!Number.isInteger(slot) || slot < 0 || slot >= HISTORY_READERS)
+    throw new Error(`history reader slot must be an integer in [0, ${HISTORY_READERS}), received ${slot}`);
+  return `hist_${readerId}_${slot}`;
+}
+
+/** The history-reader id of a connection the auth callout admitted: `<serverId>_<clientId>`, the
+ *  admitting server's id and the client id that server assigned the connection. The callout reads
+ *  both from its request and the client reads both from the server's INFO, and the client chooses
+ *  neither. The callout's connId is the inbox nonce the client picked, so keying reader deletes on it
+ *  would let one connection claim another's readers by naming the same nonce. A reconnect is a new
+ *  connection and so gets a new id. */
+export function calloutReaderId(serverId: string, clientId: number): string {
+  if (typeof serverId !== "string" || !/^N[A-Z2-7]{55}$/.test(serverId))
+    throw new Error(`history reader server id ${JSON.stringify(serverId)} is not a server public key`);
+  if (!Number.isSafeInteger(clientId) || clientId < 1)
+    throw new Error(`history reader client id must be a positive integer, received ${JSON.stringify(clientId)}`);
+  return `${serverId}_${clientId}`;
+}
+
 /** Durable consumer name for a lifecycle's private DM inbox — the lifecycle-scoped dash-form
  *  (`dm_<owner>-<actor>-<lifecycleUid>`, SPEC §13.1). The DM SUBJECTS (`inst.>`) keep the alias
  *  grammar; the backing consumer is lifecycle-keyed and starts at the activation frontier

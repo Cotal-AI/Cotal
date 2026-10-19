@@ -1,0 +1,2 @@
+# Observer and admin history reads leave no consumers behind and survive a low consumer cap (#4123).
+smoke:history-reader-consumers:auth

@@ -49,7 +49,8 @@ export type AclResolver = (
  * Build the callout's `permissionsFor` hook. Maps `ValidatedUserToken` → `MintPrincipal` → core's
  * `permissionsFor("agent", …)`. `connId` here is the CLIENT-CHOSEN inbox nonce the callout reads from
  * `req.connect_opts.name` (NOT `req.user_nkey`, which the client cannot know pre-connect); it scopes the
- * reply inbox `_INBOX_<connId>.>`.
+ * reply inbox `_INBOX_<connId>.>`. `readerId` is the connection's server-assigned history-reader id
+ * (core's `calloutReaderId`), which keys the admin view's reader deletes.
  *
  * Invariants enforced HERE (not in core):
  *  - the owner is a DERIVED owner (`u_…`) — user mode never accepts the reserved dev `local` owner;
@@ -57,29 +58,29 @@ export type AclResolver = (
  *    have them agree, else it is rejected (the confused-authority guard the Q4 review required closed the
  *    moment `permissionsFor(validated)` became production).
  */
-export function calloutPermissions(resolveAcl: AclResolver): (t: ValidatedUserToken, connId: string) => Record<string, unknown>;
+export function calloutPermissions(resolveAcl: AclResolver): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
-): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
   verifySession: SessionVerifier,
-): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
   verifySession: SessionVerifier,
   issueUserCaller: UserCallerIssuer,
-): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller?: (owner: string, instanceId: string) => Promise<void>,
   verifySession?: SessionVerifier,
   issueUserCaller?: UserCallerIssuer,
-): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
-  return (t, connId) => {
+): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
+  return (t, connId, readerId) => {
     assertDerivedOwnerToken(t.owner); // user-mode owners are derived — never `local`, never an nkey
     const caps = t.act.scope ?? [];
     // Single capability authority: if a top-level `scope` is present it must equal `act.scope` exactly —
@@ -89,7 +90,7 @@ export function calloutPermissions(
       throw new Error(
         "callout permissions: top-level scope != act.scope - act.scope is the single capability authority",
       );
-    const principal: MintPrincipal = { owner: t.owner, actor: t.act.actor, connId };
+    const principal: MintPrincipal = { owner: t.owner, actor: t.act.actor, connId, readerId };
     // A claimless bearer of EITHER shape mints nothing, even in a composition that skipped the
     // connect gate (the equality against the row's uid follows below; this refusal is the
     // claim-side half).

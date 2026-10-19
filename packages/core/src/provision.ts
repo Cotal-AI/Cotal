@@ -51,6 +51,8 @@ import {
   dlvStream,
   inboxStream,
   chatHistDurable,
+  historyReaderConsumer,
+  HISTORY_READERS,
   dmDurable,
   taskDurable,
   dlvDurable,
@@ -838,6 +840,11 @@ export interface MintPrincipal {
    *  dm/dlv/chathist grants are lifecycle-keyed EXACT names, so a credential cannot name another
    *  incarnation's resources. Other profiles ignore it. */
   lifecycleUid?: string;
+  /** The connection's history-reader id, the key of the observer and admin profiles' reader deletes
+   *  ({@link historyReaderConsumer}). A static mint leaves it unset, because there `connId` is the
+   *  credential's own nkey, which its holder proves by signing. The auth callout sets it to
+   *  {@link calloutReaderId}, because there `connId` is the inbox nonce the client chose. */
+  readerId?: string;
 }
 
 /** Resolve a {@link MintPrincipal} for the STATIC/dev mint path from an {@link Identity} + optional
@@ -1315,23 +1322,31 @@ export function permissionsFor(
       profile === "admin"
         ? [`${spacePrefix(space)}.chat.>`, `${spacePrefix(space)}.inst.>`, `${spacePrefix(space)}.svc.>`, inbox]
         : [`${spacePrefix(space)}.chat.>`, inbox];
+    // History readers (channelHistory, multiChannelHistory, dmHistory) are named consumers keyed on
+    // this connection's reader id (see MintPrincipal.readerId). The profile may delete exactly those
+    // names and no other consumer (#4123): each read deletes its readers when it ends, so polling no
+    // longer fills the stream's consumer limit.
+    const readerId = pr.readerId ?? pr.connId;
+    const readerDeletes = (stream: string) =>
+      Array.from({ length: HISTORY_READERS }, (_, i) => `$JS.API.CONSUMER.DELETE.${stream}.${historyReaderConsumer(readerId, i)}`);
     const allow = [
       "$JS.API.INFO",
       `$JS.API.STREAM.INFO.${CHAT}`,
       `$JS.API.STREAM.INFO.${KV}`,
-      // NO CONSUMER.DELETE on any stream this profile reads (#691). Its consumers are client-named
-      // ordered consumers (`oc_<nuid>_<serial>`, the serial bumped on every rebuild), so the only
-      // expressible grant is stream-wide, and stream-wide let one observer delete another
-      // principal's live watch cursors and the delivery daemon's fan-out durable. The broker reaps
-      // these consumers at their inactive threshold instead, and the client treats a refused
-      // delete of its own ephemeral consumer as that designed outcome.
+      // NO stream-wide CONSUMER.DELETE on any stream this profile reads (#691). Its watch consumers
+      // are client-named ordered consumers (`oc_<nuid>_<serial>`, the serial bumped on every
+      // rebuild), so the only expressible grant for them is stream-wide, and stream-wide let one
+      // observer delete another principal's live watch cursors and the delivery daemon's fan-out
+      // durable. The broker reaps those consumers at their inactive threshold instead, and the
+      // client treats a refused delete of its own watch consumer as that designed outcome.
       //
-      // ephemeral backlog consumer (channelHistory): a multi-filter create can't encode its
-      // filter in the subject → bare form; the .> form covers named consumers.
+      // history reader consumer: a multi-filter create can't encode its filter in the subject → bare
+      // form; the .> form covers the single-filter named create.
       `$JS.API.CONSUMER.CREATE.${CHAT}`,
       `$JS.API.CONSUMER.CREATE.${CHAT}.>`,
       `$JS.API.CONSUMER.INFO.${CHAT}.>`,
       `$JS.API.CONSUMER.MSG.NEXT.${CHAT}.>`,
+      ...readerDeletes(CHAT),
       `$JS.ACK.${CHAT}.>`,
       `$JS.API.CONSUMER.CREATE.${KV}.>`, // kv.watch ordered consumer (roster is public)
       `$JS.API.CONSUMER.INFO.${KV}.>`,
@@ -1367,6 +1382,7 @@ export function permissionsFor(
         `$JS.API.CONSUMER.CREATE.${DM}.>`,
         `$JS.API.CONSUMER.INFO.${DM}.>`,
         `$JS.API.CONSUMER.MSG.NEXT.${DM}.>`,
+        ...readerDeletes(DM),
         `$JS.ACK.${DM}.>`,
       );
     }

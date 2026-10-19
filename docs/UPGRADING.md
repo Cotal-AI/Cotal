@@ -34,6 +34,29 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## History reader deletes after 0.86.0
+
+Observer and admin credentials now carry a `CONSUMER.DELETE` row for each of the connection's eight
+history-reader names, `hist_<readerId>_<n>`, on CHAT (and on DM for admin). `channelHistory`,
+`multiChannelHistory` and `dmHistory` read under those names and delete each reader when its step
+ends. Before this, every read left its consumers for five minutes, and a dashboard polling history
+filled the stream's consumer limit until reads were refused with "maximum consumers limit reached".
+
+### What stops working
+
+A static observer or admin credential minted by 0.86.0 or earlier has no reader-delete rows. On it,
+a current client's history read fails with "it predates the observer and admin reader-delete grant,
+so remint it", and leaves one reader per stream until the broker's five-minute inactive threshold.
+A credential the CLI mints at start (`cotal console`, `cotal web` on a static auth mesh) is current
+after the upgrade.
+
+### Before the upgrade
+
+- Remint every observer or admin credential a process reads from a file: `cotal mint <name> --profile
+  observer` or `--profile admin`, and any `--creds` file given to a dashboard.
+- On a user-auth mesh, the auth service mints these views per connection. Upgrade it before, or with,
+  the hosts that read history, so no current client connects through an older auth service.
+
 ## Native key issuance recording after 0.85.0
 
 Before upgrading, take a consistent backup of broker JetStream state and the auth host's private

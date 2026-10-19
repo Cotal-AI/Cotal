@@ -47,7 +47,7 @@ import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
 import { readAcceptedRow } from "./issued-authority.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
-import { isJetStreamMissing } from "./jetstream-missing.js";
+import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
@@ -62,6 +62,7 @@ import {
   type JetStreamManager,
   type Consumer,
   type ConsumerMessages,
+  type ConsumerConfig,
   type ConsumerInfo,
   type JsMsg,
   type JetStreamPublishOptions,
@@ -124,6 +125,9 @@ import {
   chatStream,
   chatHistDurable,
   chatSubject,
+  historyReaderConsumer,
+  calloutReaderId,
+  HISTORY_READERS,
   controlServiceSubject,
   livenessSubject,
   livenessServeFilter,
@@ -208,6 +212,40 @@ export const MULTI_FILTER_BATCH = 1_000;
  *  issuing one read per channel: a space large enough to need batches must not get the fan-out back
  *  under another name. */
 export const MULTI_FILTER_READ_CONCURRENCY = 4;
+
+/** A history reader's inactive threshold. It bounds only a reader whose delete never ran (its link
+ *  dropped, or its process stopped), because every read deletes its readers when it ends. Five
+ *  minutes is what the nats.js ordered consumers it replaces carried, and it keeps a reader alive
+ *  across the gap between pulls on a slow link. */
+const HISTORY_READER_INACTIVE_MS = 5 * 60_000;
+
+/** One read's hold on a history-reader name (see {@link CotalEndpoint}'s `acquireHistoryReader`). */
+type HistoryReader = {
+  nc: NatsConnection;
+  js: JetStreamClient;
+  jsm: JetStreamManager;
+  stream: string;
+  pool: HistoryReaderSlots;
+  slot: number;
+  name: string;
+  /** False once the hold is given back, so it is given back once. */
+  held: boolean;
+  /** True once a delete under the name failed, so the name may still hold this read's reader and is
+   *  set aside rather than freed when the hold is given back. */
+  left: boolean;
+};
+
+/** One stream's history-reader names under one reader id: the free slots, how many reads hold one,
+ *  the reads waiting, and until when a read fails at once because the credential was refused a
+ *  reader delete. A slot neither free nor held is set aside until a consumer under it would have
+ *  expired. */
+type HistoryReaderSlots = {
+  readerId: string;
+  free: number[];
+  held: number;
+  waiting: (() => void)[];
+  refusedUntil: number;
+};
 
 export interface EndpointOptions {
   /** Trusted composition custody of each opened transport, including replacement epochs.
@@ -623,9 +661,12 @@ export class CotalEndpoint extends EventEmitter {
    *  EXPECTED async permission violation that joinChannel turns into a clean throw, so watchStatus
    *  suppresses it rather than surfacing a spurious connection error. */
   private readonly confirmingChatSubs = new Set<string>();
-  /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches,
-   *  running membership scans and running history reads (see {@link recordOwnWatchConsumer}). */
+  /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches and
+   *  running membership scans (see {@link recordOwnWatchConsumer}). */
   private readonly ownWatchDeletePrefixes = new Set<string>();
+  /** Per stream, the history-reader names of this connection's current reader id and the reads
+   *  waiting for one (see {@link acquireHistoryReader}). */
+  private readonly historyReaderSlots = new Map<string, HistoryReaderSlots>();
   /** True until the first successful connect completes its boot backfill — distinguishes first-connect
    *  (backfill the boot channels' history) from a reconnect (reopen the core-subs, no re-backfill).
    *  Persists across reconnect (NOT connection-scoped). Replaces the legacy chat-durable consumed-cursor
@@ -3222,16 +3263,16 @@ export class CotalEndpoint extends EventEmitter {
     watch.rejectStop = undefined;
   }
 
-  /** Record the consumer behind one of this connection's own KV watches, membership scans or history
-   *  reads, and return the delete-subject prefix it recorded. nats.js names it `<prefix>_<serial>` and,
+  /** Record the consumer behind one of this connection's own KV watches or membership scans, and
+   *  return the delete-subject prefix it recorded. nats.js names it `<prefix>_<serial>` and,
    *  rebuilding it after a stall or a sequence gap, deletes the predecessor itself with no hook before
    *  the send, so a profile without the delete row (#691) has that delete refused. A stalled link can
    *  time that delete out before its refusal arrives, and nats.js then hands the refusal to no request,
    *  so {@link trackRequestDenials} cannot own it and the consumer's name has to. A watch's prefix
    *  stays recorded for the connection because a retired watch's last rebuild can be refused after
-   *  the watch has stopped; {@link readMembership} and {@link drainWindow} retire theirs after their own
-   *  last delete, which goes out once nats.js has stopped the consumer and so is answered after every
-   *  predecessor delete. */
+   *  the watch has stopped; {@link readMembership} retires its scan's after its own last delete,
+   *  which goes out once nats.js has stopped the consumer and so is answered after every predecessor
+   *  delete. */
   private recordOwnWatchConsumer({ stream_name, name }: ConsumerInfo): string {
     const prefix = `$JS.API.CONSUMER.DELETE.${stream_name}.${name.slice(0, name.lastIndexOf("_") + 1)}`;
     this.ownWatchDeletePrefixes.add(prefix);
@@ -3244,9 +3285,9 @@ export class CotalEndpoint extends EventEmitter {
     return /^\d+$/.test(subject.slice(cut)) && this.ownWatchDeletePrefixes.has(subject.slice(0, cut));
   }
 
-  /** Delete one of this connection's own ephemeral consumers, a history reader's or a KV watch's. A
-   *  refused delete is the designed outcome for a profile without a stream-wide CONSUMER.DELETE
-   *  (#691): the broker reaps the consumer at its inactive threshold. */
+  /** Delete one of this connection's own KV-watch consumers. A refused delete is the designed
+   *  outcome for a profile without a stream-wide CONSUMER.DELETE (#691): the broker reaps the
+   *  consumer at its inactive threshold. */
   private async deleteOwnConsumer(consumer: Consumer | PushConsumer): Promise<void> {
     try { await consumer.delete(); }
     catch (e) {
@@ -3552,8 +3593,10 @@ export class CotalEndpoint extends EventEmitter {
     if (!Number.isSafeInteger(limit))
       throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);
     if (limit <= 0) return [];
-    const js = jetstream(this.nc);
+    const nc = this.nc;
+    let reader: HistoryReader | undefined;
     try {
+      reader = await this.acquireHistoryReader(nc, this.jsm ?? (this.jsm = await jetstreamManager(nc)), stream, signal);
       // THE EXACT CEILING, on the already-granted surface. A one-shot consumer with
       // `DeliverPolicy.Last` plus this subject's filter reports the newest MATCHING sequence, and its
       // `num_pending` of zero means the channel is genuinely empty. Using the STREAM's last sequence
@@ -3564,7 +3607,7 @@ export class CotalEndpoint extends EventEmitter {
       // Deliberately NOT `getMessage({ last_by_subj })`, which would be the obvious way to ask: it
       // needs `$JS.API.STREAM.MSG.GET`, which read credentials do not hold. That grant hole already
       // shipped once from this function and turned every non-admin history read into an empty list.
-      const ceiling = before !== undefined ? before - 1 : await this.lastMatchingSeq(js, stream, subjects, signal);
+      const ceiling = before !== undefined ? before - 1 : await this.lastMatchingSeq(reader, subjects, signal);
       if (ceiling < 1) return [];
 
       // Widen from the exact ceiling until a window holds a full page, or until the window IS the
@@ -3606,10 +3649,10 @@ export class CotalEndpoint extends EventEmitter {
       for (;;) {
         signal?.throwIfAborted();
         const start = Math.max(floor, ceiling - span + 1);
-        const page = await this.drainWindow(js, stream, subjects, start, ceiling, limit, signal);
+        const page = await this.drainWindow(reader, subjects, start, ceiling, limit, signal);
         if (page.length >= limit) return page.slice(-limit);
         if (!floorKnown) {
-          floor = Math.max(1, await this.firstMatchingSeq(js, stream, subjects, signal));
+          floor = Math.max(1, await this.firstMatchingSeq(reader, subjects, signal));
           floorKnown = true;
         }
         if (start <= floor) return page.slice(-limit);
@@ -3634,20 +3677,174 @@ export class CotalEndpoint extends EventEmitter {
       if (/stream not found/i.test(msg) || (e as { code?: number } | null)?.code === 404) return [];
       if (isPermissionDenied(e) && stream === dmStream(this.space)) return [];
       throw e;
+    } finally {
+      if (reader) this.releaseHistoryReader(reader);
     }
+  }
+
+  /** This connection's history-reader id, the key of its credential's reader deletes
+   *  ({@link historyReaderConsumer}). A static credential's is its connId, the nkey it signs with.
+   *  Under the auth callout the connId is the inbox nonce this client chose, so the callout keys the
+   *  deletes on {@link calloutReaderId} instead: the server's id and the client id it assigned this
+   *  connection, which the client reads from the server's INFO and does not choose. */
+  private historyReaderId(nc: NatsConnection): string {
+    if (!this.userMode) return this.connId;
+    const info = nc.info;
+    if (!info) throw new Error("history: the server has not sent its INFO, so this connection has no history reader id yet");
+    return calloutReaderId(info.server_id, info.client_id);
+  }
+
+  /** Take one of this connection's history-reader names on `stream` ({@link historyReaderConsumer})
+   *  for one read. The read holds the name for its whole walk and creates and deletes a consumer
+   *  under it at each step, so this connection keeps at most {@link HISTORY_READERS} reader consumers
+   *  on a stream (#4123). A read past that many waits for a name, and `signal` ends the wait. A
+   *  reconnect under the auth callout changes the reader id, and reads from then on take the new
+   *  id's names. */
+  private async acquireHistoryReader(
+    nc: NatsConnection,
+    jsm: JetStreamManager,
+    stream: string,
+    signal?: AbortSignal,
+  ): Promise<HistoryReader> {
+    for (;;) {
+      signal?.throwIfAborted();
+      const readerId = this.historyReaderId(nc);
+      let pool = this.historyReaderSlots.get(stream);
+      if (pool?.readerId !== readerId) {
+        pool = { readerId, free: Array.from({ length: HISTORY_READERS }, (_, i) => HISTORY_READERS - 1 - i), held: 0, waiting: [], refusedUntil: 0 };
+        this.historyReaderSlots.set(stream, pool);
+      }
+      // A read here would leave one more reader it may not delete, so it fails before creating one.
+      if (pool.refusedUntil > Date.now()) throw this.readerDeleteRefused(stream);
+      const slot = pool.free.pop();
+      if (slot !== undefined) {
+        pool.held++;
+        return { nc, js: jetstream(nc), jsm, stream, pool, slot, name: historyReaderConsumer(readerId, slot), held: true, left: false };
+      }
+      // No read here holds a name, so none will come back from one: every name is set aside (see
+      // openHistoryReader and closeHistoryReader). Waiting would hang until those expire.
+      if (pool.held === 0)
+        throw new Error(`history: every history reader name this connection has on ${stream} is set aside, held by a consumer it did not create (another process using the same credential, or one that stopped mid-read) or by a reader it could not confirm deleted; they expire ${HISTORY_READER_INACTIVE_MS / 60_000} minutes after their last use`);
+      const waitOn = pool;
+      await new Promise<void>((resolve, reject) => {
+        const wake = () => { signal?.removeEventListener("abort", stop); resolve(); };
+        const stop = () => { waitOn.waiting.splice(waitOn.waiting.indexOf(wake), 1); reject(abortReason(signal)); };
+        waitOn.waiting.push(wake);
+        signal?.addEventListener("abort", stop, { once: true });
+      });
+    }
+  }
+
+  /** Give a read's history-reader name back and wake one read waiting for a name. A name whose
+   *  delete failed is set aside instead. */
+  private releaseHistoryReader(reader: HistoryReader): void {
+    if (!reader.held) return;
+    reader.held = false;
+    const pool = reader.pool;
+    pool.held--;
+    if (!reader.left) { pool.free.push(reader.slot); pool.waiting.shift()?.(); return; }
+    this.setAsideHistoryReader(pool, reader.slot);
+    // Every waiter checks again, so one that no running read can now serve fails instead of hanging.
+    if (pool.held === 0) for (const wake of pool.waiting.splice(0)) wake();
+  }
+
+  /** Keep `slot` out of use until a consumer under it would have expired, then free it. */
+  private setAsideHistoryReader(pool: HistoryReaderSlots, slot: number): void {
+    setTimeout(() => { pool.free.push(slot); pool.waiting.shift()?.(); }, HISTORY_READER_INACTIVE_MS).unref();
+  }
+
+  /** Create the reader consumer for one step of a read, under the read's name. It is a plain pull
+   *  consumer: an nats.js ordered consumer renames itself on every rebuild, and the observer and admin
+   *  credentials may delete only these exact names.
+   *
+   *  Every create carries a fresh description. NATS answers a create whose config equals the existing
+   *  consumer's with that consumer, delivery state and all (measured on nats-server 2.15), and a read
+   *  repeats the same config on the same name. Without the description a reader left under the name
+   *  would come back as if new: a `DeliverPolicy.Last` reader that already delivered its message
+   *  reports nothing pending, which reads as an empty channel. With it, a create on a name in use is
+   *  refused, and a consumer that does not carry this step's description is never used.
+   *
+   *  A consumer already under the name is never deleted, whoever left it: another holder of this
+   *  credential, a process that stopped mid-read, or this endpoint when a delete's answer was lost and
+   *  the name was taken again since. The read moves to a free name, and the taken one stays out of use
+   *  until such a consumer would have expired. */
+  private async openHistoryReader(reader: HistoryReader, config: Partial<ConsumerConfig>): Promise<Consumer> {
+    const pool = reader.pool;
+    for (;;) {
+      // A reconnect under the auth callout moved this connection to new reader names, and its
+      // credential may no longer delete this one. Creating under it would leave the reader behind.
+      if (this.historyReaderId(reader.nc) !== pool.readerId)
+        throw new Error(`history: the connection was re-established during the read on ${reader.stream}, so its history reader names changed; the read is not served`);
+      const description = `cotal history read ${randomUUID()}`;
+      let info: ConsumerInfo | undefined;
+      try {
+        info = await reader.jsm.consumers.add(reader.stream, {
+          ...config,
+          name: reader.name,
+          description,
+          ack_policy: AckPolicy.None,
+          max_deliver: 1,
+          mem_storage: true,
+          num_replicas: 1,
+          inactive_threshold: nanos(HISTORY_READER_INACTIVE_MS),
+        });
+      } catch (e) {
+        if (!isConsumerAlreadyExists(e)) throw e;
+      }
+      if (info?.config.description === description) return reader.js.consumers.getConsumerFromInfo(info);
+      this.setAsideHistoryReader(pool, reader.slot);
+      const next = pool.free.pop();
+      if (next === undefined) {
+        // The read ends holding no name. Every waiter checks again, so one that no running read can
+        // now serve fails instead of hanging.
+        reader.held = false;
+        pool.held--;
+        for (const wake of pool.waiting.splice(0)) wake();
+        throw new Error(`history: reader ${reader.name} on ${reader.stream} is held by a consumer this read did not create, and no other reader name is free`);
+      }
+      reader.slot = next;
+      reader.name = historyReaderConsumer(pool.readerId, next);
+    }
+  }
+
+  /** Delete the read's reader consumer; already gone is the same outcome. A failed delete may still
+   *  have run with its answer lost, and the name may be taken again before this endpoint could tell,
+   *  so the name is set aside when the read gives it back rather than deleted again later. A refused
+   *  delete means the credential was minted before the observer and admin profiles held their reader
+   *  deletes. Each read would then leave a reader for the inactive threshold, which is how a polling
+   *  dashboard filled the stream's consumer limit (#4123), so the read fails and says to remint
+   *  rather than leak quietly, and reads on the stream fail at once until that reader expires. */
+  private async closeHistoryReader(reader: HistoryReader): Promise<void> {
+    try { await reader.jsm.consumers.delete(reader.stream, reader.name); }
+    catch (e) {
+      if (isConsumerNotFound(e)) return;
+      reader.left = true;
+      // No `cause`: a permission-shaped cause would let streamHistory read this as the admin-only
+      // DM denial and return an empty page.
+      if (isPublishPermissionDenied(e)) {
+        if (this.historyReaderId(reader.nc) !== reader.pool.readerId)
+          throw new Error(`history: the connection was re-established during the read on ${reader.stream}, so it may no longer delete its reader ${reader.name}, which expires on its own; the read is not served`);
+        reader.pool.refusedUntil = Date.now() + HISTORY_READER_INACTIVE_MS;
+        throw this.readerDeleteRefused(reader.stream);
+      }
+      throw e;
+    }
+  }
+
+  private readerDeleteRefused(stream: string): Error {
+    return new Error(`history: this credential may not delete its own history readers on ${stream}; it predates the observer and admin reader-delete grant, so remint it`);
   }
 
   /** The oldest stream sequence matching `subject`, or 0 when the subject has no messages.
    *  Mirror of {@link lastMatchingSeq}: same CREATE/INFO/NEXT/DELETE surface, `DeliverPolicy.All`
    *  instead of `Last`, first delivered seq instead of last. Read credentials already hold this. */
   private async firstMatchingSeq(
-    js: ReturnType<typeof jetstream>,
-    stream: string,
+    reader: HistoryReader,
     subjects: string[],
     signal?: AbortSignal,
   ): Promise<number> {
     signal?.throwIfAborted();
-    const consumer = await js.consumers.get(stream, {
+    const consumer = await this.openHistoryReader(reader, {
       filter_subjects: subjects,
       deliver_policy: DeliverPolicy.All,
     });
@@ -3666,24 +3863,23 @@ export class CotalEndpoint extends EventEmitter {
       }
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      await this.deleteOwnConsumer(consumer);
+      await this.closeHistoryReader(reader);
     }
   }
 
   /** The newest stream sequence matching `subject`, or 0 when the subject has no messages.
    *
-   *  One ordered consumer at `DeliverPolicy.Last` with this subject's filter: its `num_pending`
+   *  One reader consumer at `DeliverPolicy.Last` with this subject's filter: its `num_pending`
    *  (available from the create, before anything is delivered) is 0 for an empty subject, and
    *  otherwise one message carries the sequence. Same CREATE/INFO/NEXT/DELETE surface `drainWindow`
    *  already uses, so no broker authority is added. */
   private async lastMatchingSeq(
-    js: ReturnType<typeof jetstream>,
-    stream: string,
+    reader: HistoryReader,
     subjects: string[],
     signal?: AbortSignal,
   ): Promise<number> {
     signal?.throwIfAborted();
-    const consumer = await js.consumers.get(stream, {
+    const consumer = await this.openHistoryReader(reader, {
       filter_subjects: subjects,
       deliver_policy: DeliverPolicy.Last,
     });
@@ -3708,17 +3904,16 @@ export class CotalEndpoint extends EventEmitter {
       // exists to stop.
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      await this.deleteOwnConsumer(consumer);
+      await this.closeHistoryReader(reader);
     }
   }
 
   /** Drain every message matching `subject` with sequence in `[start, ceiling]`, oldest-first.
-   *  One ephemeral ordered consumer, one batched pull — `AckPolicy.None`, so no per-message ack
+   *  One reader consumer, one batched pull — `AckPolicy.None`, so no per-message ack
    *  round trip. Fetches exactly the pending count so it returns as soon as the window is
    *  delivered rather than blocking for the pull's full expiry. */
   private async drainWindow(
-    js: ReturnType<typeof jetstream>,
-    stream: string,
+    reader: HistoryReader,
     subjects: string[],
     start: number,
     ceiling: number,
@@ -3727,9 +3922,11 @@ export class CotalEndpoint extends EventEmitter {
   ): Promise<{ seq: number; subject: string; msg: HistoryMessage }[]> {
     signal?.throwIfAborted();
     const out: { seq: number; subject: string; msg: HistoryMessage }[] = [];
-    const consumer = await js.consumers.get(stream, { filter_subjects: subjects, opt_start_seq: start });
-    // A delivery-sequence gap makes nats.js rebuild this consumer and delete the predecessor itself.
-    const readerPrefix = this.recordOwnWatchConsumer(await consumer.info(true));
+    const consumer = await this.openHistoryReader(reader, {
+      filter_subjects: subjects,
+      deliver_policy: DeliverPolicy.StartSequence,
+      opt_start_seq: start,
+    });
     try {
       // A freshly created consumer already carries its ConsumerInfo, so read the CACHED copy: the
       // explicit uncached `info()` this used to call was a round trip for data we already had.
@@ -3754,6 +3951,10 @@ export class CotalEndpoint extends EventEmitter {
         signal?.throwIfAborted();
         for await (const m of iter) {
           delivered++;
+          // A plain consumer does not rebuild itself the way an ordered one did, so a gap in its
+          // delivery sequence is a message this page would silently lack.
+          if (m.info.deliverySequence !== delivered)
+            throw new Error(`history: delivery ${m.info.deliverySequence} arrived where ${delivered} was due on ${subjectLabel(subjects)} - the window has a gap, so the page is not served`);
           if (m.seq >= ceiling) { // reached the page's upper bound
             if (m.seq === ceiling) {
               const msg = historyMessageFromDelivery(m);
@@ -3777,16 +3978,12 @@ export class CotalEndpoint extends EventEmitter {
         throw new Error(`history: read ${delivered} of ${pending} messages on ${subjectLabel(subjects)} before the stream ended early - the window was cut short, not empty`);
       return out;
     } finally {
-      // DELETE THE EPHEMERAL CONSUMER. The pinned client gives an ordered consumer a 5-minute
-      // inactive threshold, so leaving them behind is not free: the widening search below can make
-      // up to eight per call, and a reload repeats every call the page makes. The dashboard used to
-      // make one per channel; since #1210 its activity feed makes one for all of chat and one for
-      // DMs, and the single-channel routes still make one each.
-      // Left alone that accumulates consumers on the broker until the thresholds expire, and the
-      // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
-      // The observer and admin profiles may not delete (#691), so the dashboard's readers do live out
-      // that threshold; only a profile holding the delete row reclaims them here.
-      await this.deleteOwnConsumer(consumer).finally(() => { this.ownWatchDeletePrefixes.delete(readerPrefix); });
+      // DELETE THE READER. Left alone it would stay for its inactive threshold, and the widening
+      // search can run several steps per call while a polling dashboard repeats every call on each
+      // poll. The observer and admin profiles used to hold no delete at all (#691), so a dashboard
+      // polling every ten seconds filled the stream's consumer limit and every later read failed
+      // (#4123). Each reader now goes when its step ends.
+      await this.closeHistoryReader(reader);
     }
   }
 

@@ -32,7 +32,7 @@ import {
   type AuthorizationRequest,
 } from "@nats-io/jwt";
 import { createAccount, createCurve, fromCurveSeed, fromPublic, fromSeed } from "@nats-io/nkeys";
-import { assertInboxConnId, newIdentity, principalKey, principalTags, token } from "@cotal-ai/core";
+import { assertInboxConnId, calloutReaderId, newIdentity, principalKey, principalTags, token } from "@cotal-ai/core";
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { validateUserToken, type ValidatedUserToken } from "./token.js";
 import { SESSION_EXP } from "./permissions.js";
@@ -167,8 +167,10 @@ export interface StartAuthCalloutOpts {
    *  the NATS-minted `req.user_nkey` — the builder scopes the private reply inbox `_INBOX_<connId>.>` on
    *  it. The client picks and passes this nonce because neither it nor this callout knows the per-connect
    *  nkey pre-connect; core's `assertInboxConnId` rejects a nonce with subject metacharacters, so it
-   *  cannot widen the grant. An absent/invalid nonce makes the builder throw → a signed deny. */
-  permissionsFor: (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+   *  cannot widen the grant. An absent/invalid nonce makes the builder throw → a signed deny.
+   *  `readerId` is core's `calloutReaderId` of this connection, which keys the observer and admin
+   *  profiles' history-reader deletes: the client chooses the nonce, so the nonce cannot key them. */
+  permissionsFor: (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
   /** REQUIRED: durably record the minted JWT's broker user key (`req.user_nkey`) against the validated
    *  principal BEFORE the response leaves (SPEC 13.1 `natkey.`). Awaited; a throw becomes the signed
    *  deny and the minted JWT is never sent. A thrown record write may still have landed: evidence of
@@ -276,7 +278,11 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         // injected permissionsFor hook (which could be any implementation). assertInboxConnId throws on a
         // missing/wildcard name → the catch below turns it into a signed deny (fail-closed).
         const inboxNonce = assertInboxConnId(req.connect_opts?.name ?? "");
-        const { [SESSION_EXP]: sessionExp, ...perms } = await opts.permissionsFor(validated, inboxNonce);
+        // The history-reader deletes key on what the SERVER assigned this connection, never on the
+        // nonce: a client that named another connection's nonce would otherwise be granted the
+        // deletes of that connection's readers. A request without a client id throws → signed deny.
+        const readerId = calloutReaderId(req.server_id.id, req.client_info?.id as number);
+        const { [SESSION_EXP]: sessionExp, ...perms } = await opts.permissionsFor(validated, inboxNonce, readerId);
         // #2312: a session-caller connection carries EXACTLY the static arm's expiry, the grant's,
         // and only when the permission builder vouched for it from the live session row.
         const exp = validated.act.view === "session-caller" ? sessionExp : validated.exp;

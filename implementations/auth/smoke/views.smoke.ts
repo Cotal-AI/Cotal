@@ -143,6 +143,8 @@ check(
 // ---------- C. the callout profile switch ----------
 console.log("C. callout profile switch");
 const CONN = "ibx" + "c".repeat(32);
+/** The connection's server-assigned history-reader id (core's `calloutReaderId`). */
+const READER = `N${"A".repeat(55)}_7`;
 // `uid: null` (an explicit sentinel, not undefined - a default parameter would silently refill it)
 // builds the CLAIMLESS bearer shape for the refusal probes.
 const MANAGER_IID = "m".repeat(26);
@@ -174,7 +176,7 @@ const forManagerView = calloutPermissions(
 );
 type Perms = { sub?: { allow?: string[] }; pub?: { allow?: string[] } };
 {
-  const manager = await forManagerView(tok("manager-caller", ["spawn"]), CONN) as Perms;
+  const manager = await forManagerView(tok("manager-caller", ["spawn"]), CONN, READER) as Perms;
   const pub = manager.pub?.allow ?? [];
   const sub = manager.sub?.allow ?? [];
   check("manager-caller emits manager instance rows only",
@@ -187,25 +189,25 @@ type Perms = { sub?: { allow?: string[] }; pub?: { allow?: string[] } };
     && sub.some((s) => s.includes(".ep.reply."))
     && sub.some((s) => s.includes(".epe.manager.")), { pub, sub });
   rowScope = ["spawn", "run", "admin", "role:default"];
-  const widened = await forManagerView(tok("manager-caller", ["spawn"]), CONN) as Perms;
+  const widened = await forManagerView(tok("manager-caller", ["spawn"]), CONN, READER) as Perms;
   check("widening the row after exchange adds no run or admin rows to the bearer",
     !(widened.pub?.allow ?? []).some((s) => s.includes(".run-start.") || s.includes(".purge.")), widened.pub);
   rowScope = ["spawn", "admin", "role:default"];
   managerGate = "closed";
   await rejects("manager-caller refuses when the gate is not open at the permission mint",
-    () => forManagerView(tok("manager-caller", ["spawn"]), CONN), "not open");
+    () => forManagerView(tok("manager-caller", ["spawn"]), CONN, READER), "not open");
   managerGate = "foreign";
   await rejects("manager-caller refuses when the gate no longer belongs to the bearer's owner",
-    () => forManagerView(tok("manager-caller", ["spawn"]), CONN), "not this owner's");
+    () => forManagerView(tok("manager-caller", ["spawn"]), CONN, READER), "not this owner's");
   managerGate = "open";
 }
 {
-  const agent = forView(tok(undefined, ["spawn"]), CONN) as Perms;
+  const agent = forView(tok(undefined, ["spawn"]), CONN, READER) as Perms;
   check("no view → agent profile (channel ACL resolver consulted)", aclConsulted === 1 && (agent.sub?.allow ?? []).length > 0);
 }
 {
   const before = aclConsulted;
-  const admin = forView(tok("admin", ["spawn", "admin"]), CONN) as Perms;
+  const admin = forView(tok("admin", ["spawn", "admin"]), CONN, READER) as Perms;
   // The god-view is the enumerated MESSAGING plane (SPEC 13.9/13.11): chat/inst/svc, never the
   // space-wide `>` (it would plain-subscribe every v0.4 endpoint request rail).
   check("admin view subscribes the messaging plane (chat/inst/svc), never the space-wide tap",
@@ -219,14 +221,14 @@ type Perms = { sub?: { allow?: string[] }; pub?: { allow?: string[] } };
   );
 }
 {
-  const purger = forView(tok("channel-purger", ["spawn", "admin"]), CONN) as Perms;
+  const purger = forView(tok("channel-purger", ["spawn", "admin"]), CONN, READER) as Perms;
   check("channel-purger view holds the filtered CHAT purge grant", (purger.pub?.allow ?? []).includes(`$JS.API.STREAM.PURGE.${chatStream(SPACE)}`), purger.pub);
 }
 {
   // 1d: the deployer view carries the v0.4 ep PRIVILEGED instrument rows (the manager `ctl` tiers
   // are deleted). Its grant includes an ep `spawn` request row (privileged set) but NEVER the
   // any-mode `despawn` row (the admin instrument set — the owner-equality bypass it must not get).
-  const dep = forView(tok("deployer", ["spawn"]), CONN) as Perms;
+  const dep = forView(tok("deployer", ["spawn"]), CONN, READER) as Perms;
   const pub = dep.pub?.allow ?? [];
   check("deployer view control grant carries the PRIVILEGED ep set (an ep `spawn` request row)",
     pub.some((s) => s.includes(".ep.one.manager.spawn.")), dep.pub);
@@ -240,7 +242,7 @@ for (const [view, caps] of [
   ["deployer", ["role:default"]],
 ] as Array<[UserTokenView, string[]]>) {
   try {
-    forView(tok(view, caps), CONN);
+    forView(tok(view, caps), CONN, READER);
     check(`view "${view}" without its required scope refuses to mint`, false);
   } catch (e) {
     check(`view "${view}" without its required scope refuses to mint`, String(e).includes("without capability"));
@@ -251,7 +253,7 @@ for (const [view, caps] of [
   // the elevated arm must too): a CLAIMLESS view bearer mints NOTHING, even in a composition
   // that never ran the connect gate.
   try {
-    forView(tok("admin", ["spawn", "admin"], null), CONN);
+    forView(tok("admin", ["spawn", "admin"], null), CONN, READER);
     check("a CLAIMLESS view bearer refuses to mint the elevated profile", false);
   } catch (e) {
     check("a CLAIMLESS view bearer refuses to mint the elevated profile", String(e).includes("no lifecycle claim"));
@@ -262,7 +264,7 @@ for (const [view, caps] of [
   // read before the elevated mint. The mint re-reads the CURRENT row and trusts THAT.
   // (a) The alias was re-granted mid-connect: the bearer's uid is no longer the row's.
   try {
-    forView(tok("admin", ["spawn", "admin"], "y".repeat(26)), CONN);
+    forView(tok("admin", ["spawn", "admin"], "y".repeat(26)), CONN, READER);
     check("a bearer for a re-granted alias refuses AT THE MINT (view arm)", false);
   } catch (e) {
     check("a bearer for a re-granted alias refuses AT THE MINT (view arm)", String(e).includes("re-granted during connect"));
@@ -270,7 +272,7 @@ for (const [view, caps] of [
   // (b) The grant was NARROWED mid-connect (operator revoked "admin"): the elevated mint refuses.
   rowScope = ["spawn", "role:default"];
   try {
-    forView(tok("admin", ["spawn", "admin"]), CONN);
+    forView(tok("admin", ["spawn", "admin"]), CONN, READER);
     check("a grant narrowed mid-connect refuses the elevated mint (view arm)", false);
   } catch (e) {
     check("a grant narrowed mid-connect refuses the elevated mint (view arm)", String(e).includes("no longer in the actor's CURRENT grant"));
@@ -278,7 +280,7 @@ for (const [view, caps] of [
   // (c) The AGENT arm re-contains its capabilities against the current row too (same class:
   // `capabilities: caps` gates spawn grants and must not ride a stale bearer past a revoke).
   try {
-    forView(tok(undefined, ["spawn", "admin"]), CONN);
+    forView(tok(undefined, ["spawn", "admin"]), CONN, READER);
     check("a grant narrowed mid-connect refuses stale capabilities (agent arm)", false);
   } catch (e) {
     check("a grant narrowed mid-connect refuses stale capabilities (agent arm)", String(e).includes("no longer in the actor's CURRENT grant"));

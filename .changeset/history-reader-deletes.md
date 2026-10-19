@@ -1,0 +1,8 @@
+---
+"@cotal-ai/core": minor
+"@cotal-ai/auth": minor
+---
+
+History reads on observer and admin credentials no longer leave consumers behind. `channelHistory`, `multiChannelHistory` and `dmHistory` used to read through nats.js ordered consumers that these profiles could not delete, so each read left two or three consumers for five minutes. A dashboard polling history filled the stream's consumer limit, and every later read failed with "maximum consumers limit reached". The reads now use the connection's own reader names, `hist_<readerId>_<n>` with `n` in `0..7`, and delete each reader when its step ends. A static credential's `readerId` is its nkey. Under the auth callout it is the server's id and the client id the server assigned the connection, so a client cannot claim another connection's readers by choosing its inbox nonce. A connection runs at most eight history reads at once per stream, and a read past that waits for a free name. A consumer found under one of the names is never deleted, and a create that returns an existing consumer is never read through; the read moves to a free name.
+
+The observer profile gains `$JS.API.CONSUMER.DELETE.<CHAT>.hist_<readerId>_<n>` for those eight names, and admin also gains them on `<DM>`. Each row names one consumer of this connection and no other. Breaking: a static observer or admin credential minted before this release has no such row, and a current client's history read on it fails and says to remint it. Remint those files, and upgrade the auth service before or with the hosts that read history on a user-auth mesh. The auth callout's `permissionsFor` hook now receives the connection's reader id as a third argument, and the function `calloutPermissions` returns requires it.

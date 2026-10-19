@@ -5520,6 +5520,7 @@ CHAT history, presence, and channel registry:
 - `$JS.API.CONSUMER.CREATE.<CHAT>.>`
 - `$JS.API.CONSUMER.INFO.<CHAT>.>`
 - `$JS.API.CONSUMER.MSG.NEXT.<CHAT>.>`
+- `$JS.API.CONSUMER.DELETE.<CHAT>.hist_<readerId>_<n>` for each `n` in `0..7`
 - `$JS.ACK.<CHAT>.>`
 - `$JS.API.CONSUMER.CREATE.<KV>.>`
 - `$JS.API.CONSUMER.INFO.<KV>.>`
@@ -5538,12 +5539,30 @@ CHAT history, presence, and channel registry:
 The membership feed (`MEMKV`) is read-only for this profile and, per §8's membership-feed
 paragraph, display-only and not part of the contract a client must implement.
 
-The profile holds **no** `CONSUMER.DELETE` on any of these streams. Its consumers are client-named
-ordered consumers (`oc_<nuid>_<serial>`, renamed on every rebuild), so the only expressible delete
-grant is stream-wide, and a stream-wide grant lets one holder delete another principal's watch
-cursors and the delivery daemon's `fanout` durable. The broker removes these consumers at their
-inactive threshold (five minutes after the last interest), and a client MUST treat a refused delete
-of its own ephemeral consumer as that outcome rather than as a failure.
+The profile's only `CONSUMER.DELETE` rows name its eight history readers on `CHAT`,
+`hist_<readerId>_<n>`. A static credential's `readerId` is its user nkey, which its holder proves by
+signing. Under the auth callout the inbox id is a nonce the client chooses, so the callout sets
+`readerId` to `<serverId>_<clientId>`: the admitting server's id and the client id that server
+assigned the connection, both in the callout request and in the server's `INFO` to the client. A
+reconnect is a new connection with a new `readerId`.
+
+A history read creates its consumers under one of those names, one at a time, and deletes each when
+its step ends, so one connection holds at most eight history readers on a stream however often it
+polls. Each create carries a description unique to that step. A create whose config equals the
+consumer already under the name returns that consumer, delivery state included, so a client MUST
+NOT read through a consumer that does not carry its own step's description. A client MUST NOT delete
+a consumer it finds under one of its names: another holder of the same credential, a process that
+stopped mid-read, or the client itself may have left it, and nothing the client holds tells which. It
+reads under a free name instead. After a delete fails without saying the consumer is gone, the
+delete may have run with its answer lost and the name may be taken again, so the client keeps that
+name out of use until the reader's inactive threshold has passed.
+
+The profile holds no other `CONSUMER.DELETE`. Its watch consumers are client-named ordered consumers
+(`oc_<nuid>_<serial>`, renamed on every rebuild), so the only expressible delete grant for them is
+stream-wide, and a stream-wide grant lets one holder delete another principal's watch cursors and
+the delivery daemon's `fanout` durable. The broker removes these consumers at their inactive
+threshold (five minutes after the last interest), and a client MUST treat a refused delete of its
+own watch consumer as that outcome rather than as a failure.
 
 ### Admin
 
@@ -5559,6 +5578,7 @@ frame; §13.2, §13.11). Plus DM history read grants:
 - `$JS.API.CONSUMER.CREATE.<DM>.>`
 - `$JS.API.CONSUMER.INFO.<DM>.>`
 - `$JS.API.CONSUMER.MSG.NEXT.<DM>.>`
+- `$JS.API.CONSUMER.DELETE.<DM>.hist_<readerId>_<n>` for each `n` in `0..7`, its DM history readers
 - `$JS.ACK.<DM>.>`
 
 Admin still has no application publish grants.
@@ -5712,6 +5732,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-19 | **Observer and admin history readers are deletable (Appendix B), breaking.** Each history read on these profiles left its consumers to the broker's five-minute inactive threshold, because the profiles held no `CONSUMER.DELETE` (#691). A dashboard polling history filled the stream's consumer limit, and every later read was refused with "maximum consumers limit reached". The observer now holds `CONSUMER.DELETE` on `CHAT` for `hist_<readerId>_<n>`, `n` in `0..7`, and admin holds the same names on `DM`. These are the connection's own history-reader names and no other consumer's: `readerId` is a static credential's nkey, or under the auth callout the server's id and the client id it assigned the connection, never the inbox nonce a client chooses. A history read uses them, deletes each reader when its step ends, and never deletes a consumer it finds under one of them. A credential minted without these rows cannot clean up, so a current client fails its history read and says to remint the credential. |
 | 2026-10-19 | **Private tool results (§13.19), additive; accepted, not implemented or enabled.** Defines the consent anchor role, managed-child serving request, consent and revocation record families, canonical START frontier, fixed audiences, exact-instance binding and bounded inert result journal. Revocation depends on a separately reviewed complete leader snapshot and an established enforced clock-skew bound; absent prerequisites answer `unavailable`. Activation requires every owner's qualified part and a stock release. Public tool arguments and results remain withheld. `protocolVersion` is unchanged. |
 | 2026-10-07 | **A role outside the token grammar is refused (§3), breaking.** A role was sanitized like every other routing token, so ` probe ` reached the `probe` queue and `pro.be` reached `pro_be` while the message kept the spelling sent, and an anycast to `*` was stored on a subject no role consumer matches. A client now refuses a role that is not one `[A-Za-z0-9_-]` token, both for the role it holds and for an anycast target, and refuses `*` as an anycast target. Existing `svc_<role>` durables keep their names, since they were always named from the sanitized token. |
 | 2026-10-07 | **A refusal for a target with no current mapping says that nothing ran (§13.2), additive.** It stays `expired` and now carries `outcome: not-executed` and `details[].kind = ai.cotal.ep.target-unmapped`. A manager resolves targets against the agents it hosts, so in a space with several managers the class queue could hand a targeted `despawn` to a sibling, which refused it the same way it refuses a retired target, with no outcome. The caller could not tell "this agent is gone" from "this manager does not host it", and repaired neither. With the marker a class-rail caller re-resolves and re-issues within its split-repair bound, and a target retired everywhere still ends in the same `expired` refusal once that bound runs out. A caller that ignores the marker sees the old code. |

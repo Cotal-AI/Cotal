@@ -12,3 +12,10 @@ export function isJetStreamMissing(e: unknown, ...codes: number[]): boolean {
 export function isConsumerNotFound(e: unknown): boolean {
   return isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound);
 }
+
+/** Measured on nats-server 2.15: a create whose config differs from the consumer already under that
+ *  name is a `JetStreamApiError` with `code: 10148`, and the client gives it no class of its own. A
+ *  create whose config equals it returns that consumer instead. */
+export function isConsumerAlreadyExists(e: unknown): boolean {
+  return Number((e as { code?: unknown } | null | undefined)?.code) === 10148;
+}

@@ -68,8 +68,8 @@ normative shapes are [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls); in b
 | Profile | Is |
 |---|---|
 | **agent** | The ordinary peer: publishes as itself to its declared channels, reads within its read ACL + its own DM/task inboxes. Its read-only presence and channel-registry watches create and inspect client-managed ordered consumers but cannot delete any consumer on those streams; the broker removes a finished watch's consumer five minutes after its last interest. |
-| **observer** | Read-only chat + presence; DMs invisible. What `cotal console` runs. Holds no consumer delete on any stream it reads, so it cannot remove another principal's watch or the delivery daemon's fan-out consumer; the broker removes its own finished consumers. |
-| **admin** | Elevated *read-only* god-view: sees DMs and anycast live, still writes nothing. A deliberate opt-in (`cotal web`). |
+| **observer** | Read-only chat + presence; DMs invisible. What `cotal console` runs. Its only consumer deletes name its own history readers (`hist_<readerId>_<n>` on CHAT, keyed on its nkey or on the connection the server assigned), so each history read removes its consumers when it ends, and it cannot remove another principal's watch or the delivery daemon's fan-out consumer. The broker removes its finished watch consumers. |
+| **admin** | Elevated *read-only* god-view: sees DMs and anycast live, still writes nothing. A deliberate opt-in (`cotal web`). Deletes its own history readers on CHAT and DM, and no other consumer. |
 | operator-side | Narrow single-purpose creds for the machinery (supervising, provisioning, teardown, delivery); the reference implementation splits these so no one connection can read every DM *and* delete every stream ([security model](security.md)). |
 | **run-driver** | One workflow run and takeover attempt: its journal subject, replay durable and run-owned record writes. Store reads and effects go through the host. |
 | **run-mediator** | The trusted hosting process's separate connection for workflow effects and leader reads. It exposes journal-checked, run-bound operations and never hands its credential to the driver. |
