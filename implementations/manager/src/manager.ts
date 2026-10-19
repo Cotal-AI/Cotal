@@ -77,7 +77,7 @@ import {
   digestIdToken,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -867,7 +867,7 @@ interface PreparedResume {
   launchOpts: LaunchOpts;
   id?: string;
   creds?: string;
-  userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  userAuth?: UserAuthLaunch;
 }
 
 /** What the host returned for one managed-agent enrollment (#1972). */
@@ -902,7 +902,7 @@ interface ProvisionedUserAgent {
   owner: string;
   lifecycleUid: string;
   files: { actorToken: string; sentinelCreds: string; health: string };
-  launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  launch: UserAuthLaunch;
   enrolled?: { material: ManagedEnrollment; actorToken: string };
 }
 
@@ -6134,9 +6134,9 @@ export class Manager {
       // subscribe/allowSubscribe (read) + allowPublish (post, default-deny).
       let credsPath: string | undefined;
       let issued: ManagedAgent["issued"];
-      let userLaunch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } | undefined;
+      let userLaunch: UserAuthLaunch | undefined;
       let userOwner: string | undefined;
-      let enrolled: { material: ManagedEnrollment; actorToken: string } | undefined;
+      let enrolled: ProvisionedUserAgent["enrolled"];
       if (this.userMode) {
         const prep = await this.provisionUserAgent(name, {
           spawner,

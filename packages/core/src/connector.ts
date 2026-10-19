@@ -2,6 +2,19 @@ import type { Extension, ExtensionRef } from "./registry.js";
 import type { McpServerSpec } from "./connector-config.js";
 import type { StartupReply } from "./startup-confirm.js";
 
+/** The user-mode launch identity: the agent's owner+actor principal, the PATH to its sentinel-creds
+ *  copy, and the argv it execs for a fresh bearer. The manager builds it, {@link LaunchOpts} carries
+ *  it to the connector and the launch material hands it to the session, each as this one type, so a
+ *  field added here reaches every hop. `readLaunchMaterial` checks its rebuild against
+ *  `Required<UserAuthLaunch>`, so a new field, optional or not, does not compile until the reader
+ *  grades it. */
+export interface UserAuthLaunch {
+  owner: string;
+  actor: string;
+  sentinelCredsPath: string;
+  bearerCmd: string[];
+}
+
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
 export interface LaunchOpts {
   space: string;
@@ -19,7 +32,7 @@ export interface LaunchOpts {
    *  verbatim (`COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` as JSON
    *  argv) — like {@link creds}, host-local pointers, opaque to core. Mutually exclusive with
    *  `creds`/`id` (the principal IS the identity; connectors throw on a conflicting combination). */
-  userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  userAuth?: UserAuthLaunch;
   /** The incarnation's lifecycle UID (SPEC §13.1), minted by the launcher at spawn. The connector
    *  forwards it (`COTAL_LIFECYCLE_UID`) so the session's endpoint binds its lifecycle-keyed
    *  dm/dlv/chathist durables — the same exact names its credential pins. */

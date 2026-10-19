@@ -39,6 +39,7 @@
 import { mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import type { UserAuthLaunch } from "./connector.js";
 import { hardenPrivate, writeSecretFile } from "./secret-fs.js";
 
 /** The prefix {@link writeLaunchMaterial} gives its private directory, and the single filename it
@@ -67,7 +68,7 @@ export type LaunchMaterial = {
   /** The selected registration requires this session's structured event plane. */
   eventsRequired?: boolean;
   /** User-mode launch identity: principal, sentinel creds path, and the exec-able bearer command. */
-  userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  userAuth?: UserAuthLaunch;
 };
 
 /**
@@ -179,7 +180,7 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
       actor: actor as string,
       sentinelCredsPath: sentinelCredsPath as string,
       bearerCmd: bearerCmd as string[],
-    };
+    } satisfies Required<UserAuthLaunch>;
   }
   if (Object.keys(material).length === 0)
     throw new Error(

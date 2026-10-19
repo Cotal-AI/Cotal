@@ -25,6 +25,7 @@ import {
   writeLaunchMaterial,
   type LaunchMaterial,
   type McpServerSpec,
+  type UserAuthLaunch,
 } from "@cotal-ai/core";
 
 /** OS env a coding-agent TUI genuinely needs to run — find its binary (PATH), render (TERM /
@@ -250,7 +251,7 @@ export function materialEnv(opts: {
   token?: string;
   controlToken?: string;
   eventsRequired?: boolean;
-  userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  userAuth?: UserAuthLaunch;
 }): Record<string, string> {
   if (opts.userAuth && opts.creds)
     throw new Error("launch: creds (static auth) and userAuth (user-mode auth) are mutually exclusive — one launch carries one identity plane");
