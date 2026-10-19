@@ -12,6 +12,7 @@
  */
 import type { Presence, PresenceStatus } from "./types.js";
 import { peerLabel } from "./peer-label.js";
+import { isWellFormedUnicode } from "./canonical-json.js";
 
 export { peerLabel };
 
@@ -92,27 +93,6 @@ export function resolvePeer(
   throw new AmbiguousPeerError(target, pool.map(candidate));
 }
 
-/**
- * Is every UTF-16 surrogate in `s` properly paired?
- *
- * `String.prototype.isWellFormed()` does exactly this, but it is ES2024 and this package targets an
- * earlier lib; raising the target repo-wide to gain one predicate would be a build-config change
- * reaching every package, for a check that is eight lines here. A high surrogate must be followed by
- * a low one, and a low surrogate must not appear on its own.
- */
-function isWellFormedUtf16(s: string): boolean {
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c >= 0xdc00 && c <= 0xdfff) return false; // a low surrogate reached without its high
-    if (c >= 0xd800 && c <= 0xdbff) {
-      const next = s.charCodeAt(i + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false; // high surrogate unpaired (or at end: NaN)
-      i++; // consume the pair
-    }
-  }
-  return true;
-}
-
 /** Maximum length of a display name, in UTF-16 code units.
  *
  *  Derived from the transport budget, not picked. The client's CONNECT line carries the user JWT
@@ -159,7 +139,7 @@ export function assertValidName(name: string): void {
   //     idea of its own name can differ from the parent's while both believe they agree.
   // Refusing here is the only fix that covers both; a consumer that hashes injectively still cannot
   // stop the name itself from changing shape as it crosses a process boundary.
-  if (!isWellFormedUtf16(name))
+  if (!isWellFormedUnicode(name))
     throw new Error(
       `invalid name ${JSON.stringify(name)}: contains an unpaired UTF-16 surrogate. Such a name ` +
         `cannot survive UTF-8 encoding — it is replaced with U+FFFD — so distinct names would ` +

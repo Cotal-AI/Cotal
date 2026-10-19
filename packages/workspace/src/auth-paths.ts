@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import {
   composeSpaceAuth,
+  isWellFormedUnicode,
   jwtIssuedAt,
   mkSecretDir,
   newIdentity,
@@ -71,25 +72,6 @@ export function spaceFromKey(key: string): string | undefined {
   const space = Buffer.from(key, "hex").toString("utf8");
   if (space === "" || space === "." || space === "..") return undefined;
   return spaceKey(space) === key ? space : undefined;
-}
-
-/** Whether every UTF-16 code unit is either a BMP scalar or part of a valid surrogate PAIR — i.e.
- *  the string has no LONE surrogate. `String.prototype.isWellFormed` is ES2024 (past this build's
- *  lib target), so scan the units directly. Paired surrogates (emoji/supplementary) pass; a stray
- *  high or low surrogate fails. This is the exact predicate that makes {@link spaceKey}'s UTF-8 hex
- *  injective — `Buffer.from` folds every lone surrogate to U+FFFD, collapsing distinct names. */
-function isWellFormedUnicode(s: string): boolean {
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c >= 0xd800 && c <= 0xdbff) {
-      const next = s.charCodeAt(i + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false; // high not followed by low
-      i++; // valid pair — skip the low half
-    } else if (c >= 0xdc00 && c <= 0xdfff) {
-      return false; // lone low surrogate
-    }
-  }
-  return true;
 }
 
 /** THE per-space path/key segment — `space.<hex>`, the {@link spaceKey} under a fixed prefix so a
