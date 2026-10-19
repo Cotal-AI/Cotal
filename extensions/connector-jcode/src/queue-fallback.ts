@@ -55,15 +55,10 @@
  * turn defers and delivers late rather than reconnecting, and finite so a wedged one cannot defer
  * forever. Delivery is late, bounded, and exactly once in every branch.
  *
- * NOT GRADED BY A LIVE CELL, AND SAYING SO RATHER THAN IMPLYING OTHERWISE. A mutation severing the
- * call site SURVIVED the loss suite: that suite's A is a swallowed SEND, not an open unacknowledged
- * RUN, so the deferral is never consulted there. I then built the run-debt cell (the fixture knob
- * `FAKE_JCODE_RUN_WITHOUT_ACCEPT_ON_CONTENT` exists for it) and it PASSED WITH THE DEFERRAL SEVERED,
- * because `nextFallbackAction` takes `drive` on an idle seat and only reaches `queue-turn` on the
- * busy branch after a soft interrupt has failed, so my probe measured a path the defect cannot
- * touch. I deleted the mutation instead of keeping one whose SURVIVED verdict I could not turn into
- * a red, and left the knob so the next attempt starts further along. The behaviour here is covered
- * by the policy cells and by a reviewer's live reproduction, NOT by a mutation-graded live cell.
+ * Only a run held open and unacknowledged on a busy seat whose soft interrupt has failed reaches
+ * this deferral: `nextFallbackAction` takes `drive` on an idle seat and reaches `queue-turn` only on
+ * the busy branch after a soft interrupt has failed. The queue-fallback smoke grades it live in that
+ * state, and the policy cells grade the predicate.
  */
 export function attributionBlockedByOpenRun(unsettledRunDispatches: number, blockedForMs = 0): boolean {
   if (unsettledRunDispatches <= 0) return false;
@@ -112,12 +107,12 @@ export function deferralExhausted(unsettledRunDispatches: number, blockedForMs: 
 /**
  * What an EXHAUSTED deferral should do, which is a three-way decision and not a two-way one.
  *
- * Both obvious answers were measured harmful by reviewers, one of them after I had already written
- * it. Forcing the boundary when the one-shot recovery is spent does not replace anything: it calls
- * `shutdown(1)` and the seat exits, so a starvation report is answered by killing the seat. And
- * continuing to WRITE is the same defect as doing nothing: the send is refused as unattributable,
- * the batch stays owed, and the loop re-sends once a minute while the Harness accepts and RUNS each
- * copy, bounded only by how long the run stays open, which is to say not bounded.
+ * Both obvious answers are harmful. Forcing the boundary when the one-shot recovery is spent does not
+ * replace anything: it calls `shutdown(1)` and the seat exits, so a starvation report is answered by
+ * killing the seat. And continuing to WRITE is the same defect as doing nothing: the send is refused
+ * as unattributable, the batch stays owed, and the loop re-sends once a minute while the Harness
+ * accepts and RUNS each copy, bounded only by how long the run stays open, which is to say not
+ * bounded.
  *
  * So the third outcome is the #790 give-up's: STOP ATTEMPTING, leave the batch owed and un-acked. No
  * frame is written so the instruction cannot execute again, nothing is acked so the durable copy
