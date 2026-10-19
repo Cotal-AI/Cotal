@@ -301,8 +301,8 @@
     {
       "name": "a conclave body keeps its parent's depth",
       "file": "packages/lang/src/engine/frame.ts",
-      "find": "      this.depth + 1,",
-      "replace": "      kind === \"conclave\" ? this.depth : this.depth + 1,",
+      "find": "    return this.keys.path.length;",
+      "replace": "    return this.keys.path.filter((frame) => frame.kind !== \"conclave\").length;",
       "expectRed": "and so does a conclave body",
       "completionMarker": "ok a concurrent branch raises the depth",
       "cell": "and so does a conclave body",
