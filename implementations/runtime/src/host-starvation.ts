@@ -43,6 +43,7 @@
  * clock that only moves forward at its own rate.
  */
 import { EffectError } from "@cotal-ai/lang";
+import { TimeoutError } from "@nats-io/transport-node";
 import { delay } from "./delay.js";
 
 /**
@@ -237,26 +238,20 @@ export const STARVED_SHARE_DIVISOR = 4;
  *  reports large lag while losing no ticks is a clock that moved, not a loop that stopped. */
 export const STARVED_TICK_KEPT_DIVISOR = 2;
 
-const nameOf = (e: unknown): string | undefined => {
-  const n = (e as { name?: unknown } | null | undefined)?.name;
-  return typeof n === "string" ? n : undefined;
-};
-
 /**
- * Is this failure the SHAPE a client-side deadline produces?
+ * Is this failure the deadline the NATS client raises?
  *
- * Read off the error's CLASS, never its message. The NATS client's timeout carries the bare text
- * `timeout`, and so do several unrelated failures in this tree and in other people's, so matching the
- * word would classify a broker's refusal as starvation the moment somebody phrased one that way.
+ * Read off the error's CLASS, never its message or its name. The NATS client's timeout carries the
+ * bare text `timeout`, and so do several unrelated failures in this tree and in other people's, so
+ * matching the word would classify a broker's refusal as starvation the moment somebody phrased one
+ * that way. The name is no better: an expired `AbortSignal.timeout()` is a `DOMException` named
+ * `TimeoutError` too.
  *
- * Two accepting branches, because the client raises the deadline in two shapes: on its own for a
- * plain API call, and wrapped in a `RequestError` when the deadline ends a request. Each has a
- * refusing cell that differs from it only in the class involved.
+ * The client raises its deadline as this one class, unwrapped, from both request paths (muxed and
+ * `noMux`) and from the JetStream API calls the pause plane makes.
  */
 export function isDeadlineShaped(error: unknown): boolean {
-  if (nameOf(error) === "TimeoutError") return true;
-  if (nameOf(error) === "RequestError" && nameOf((error as { cause?: unknown }).cause) === "TimeoutError") return true;
-  return false;
+  return error instanceof TimeoutError;
 }
 
 /** Was this process demonstrably not scheduled across the window? */

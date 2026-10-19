@@ -23,7 +23,7 @@
     "would have shipped, and the GENUINE-FAILURE cell reddens on the FIXED tree. A repair that",
     "swallowed all timeouts would pass the starvation half and be caught here.",
     "",
-    "MP2..MP6 and MP8 take the classifier one branch at a time. The classifier is what separates the",
+    "MP2, MP5, MP6 and MP8 take the classifier one branch at a time. The classifier is what separates the",
     "two conditions, so each accepting branch has a mutation whose kill is a REFUSING cell. The",
     "direction a green probe hides a hole in.",
     "",
@@ -61,26 +61,10 @@
     {
       "name": "MP2 the deadline is recognised by its MESSAGE instead of its class",
       "file": "implementations/runtime/src/host-starvation.ts",
-      "find": "  if (nameOf(error) === \"TimeoutError\") return true;",
-      "replace": "  if ((error as { message?: unknown })?.message === \"timeout\") return true;",
+      "find": "  return error instanceof TimeoutError;",
+      "replace": "  return (error as { message?: unknown })?.message === \"timeout\";",
       "expectRed": "A1 refuses an error carrying the identical message from another class",
       "cell": "A1 refuses an error carrying the identical message from another class"
-    },
-    {
-      "name": "MP3 a wrapped deadline is not recognised at all",
-      "file": "implementations/runtime/src/host-starvation.ts",
-      "find": "  if (nameOf(error) === \"RequestError\" && nameOf((error as { cause?: unknown }).cause) === \"TimeoutError\") return true;",
-      "replace": "  if (false) return true;",
-      "expectRed": "A2 accepts a request whose CAUSE is the deadline",
-      "cell": "A2 accepts a request whose CAUSE is the deadline"
-    },
-    {
-      "name": "MP4 the wrapper's cause is ignored, so any RequestError reads as a deadline",
-      "file": "implementations/runtime/src/host-starvation.ts",
-      "find": "  if (nameOf(error) === \"RequestError\" && nameOf((error as { cause?: unknown }).cause) === \"TimeoutError\") return true;",
-      "replace": "  if (nameOf(error) === \"RequestError\") return true;",
-      "expectRed": "A2 refuses the same wrapper caused by no-responders, which is a plane fault",
-      "cell": "A2 refuses the same wrapper caused by no-responders, which is a plane fault"
     },
     {
       "name": "MP5 the tick shortfall is dropped, so lag alone decides and a clock jump reads as starvation",

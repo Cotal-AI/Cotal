@@ -34,7 +34,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect } from "@nats-io/transport-node";
+import { connect, TimeoutError } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
@@ -360,7 +360,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
               injected += 1;
               // The nats client's own deadline, by CLASS and not by message: the same value the
               // socket produces when a reply is late, carrying no JetStream code at all.
-              return Promise.reject(Object.assign(new Error("timeout"), { name: "TimeoutError" }));
+              return Promise.reject(new TimeoutError());
             }
             return (Reflect.get(s, p, r) as (...a: unknown[]) => unknown).apply(s, args);
           };
@@ -422,7 +422,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 // still starvation and must not be re-diagnosed as a late plane.
 {
   console.log("• 1d: a deadline on a running loop is a late reply, and the neighbours are unmoved");
-  const timeoutError = Object.assign(new Error("timeout"), { name: "TimeoutError" });
+  const timeoutError = new TimeoutError();
   const healthy: LoopLagWindow = { elapsedMs: 10_000, lagMs: 12, ticksExpected: 40, ticksObserved: 40, wallSkewMs: 0 };
   const starvedWindow: LoopLagWindow = { elapsedMs: 10_000, lagMs: 9_000, ticksExpected: 40, ticksObserved: 3, wallSkewMs: 0 };
 
@@ -452,7 +452,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
   let attempts = 0;
   const out = await withDeadline(
     servedDespiteStarvation(
-      () => { attempts += 1; return Promise.reject(Object.assign(new Error("timeout"), { name: "TimeoutError" })); },
+      () => { attempts += 1; return Promise.reject(new TimeoutError()); },
       healthyThroughout,
       "waiting on the pause t",
       () => { /* quiet in the transcript */ },
@@ -503,7 +503,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
   };
   const out = await withDeadline(
     servedDespiteStarvation(
-      () => { attempts += 1; return Promise.reject(Object.assign(new Error("timeout"), { name: "TimeoutError" })); },
+      () => { attempts += 1; return Promise.reject(new TimeoutError()); },
       alternating,
       "waiting on the pause t",
       () => { /* quiet in the transcript */ },
@@ -547,24 +547,18 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
 
 // ── 3) the classifier's branches, each with a REFUSING case that differs only in context ─────
 //
-// Three accepting branches across two predicates: `isDeadlineShaped` accepts a bare `TimeoutError`
-// (A1) and a `RequestError` caused by one (A2); `wasStarved` accepts a window that is both laggy
-// and tick-short (A3). Each has a refusal that differs from its acceptance in exactly one thing.
+// Two accepting branches across two predicates: `isDeadlineShaped` accepts the client's
+// `TimeoutError` (A1); `wasStarved` accepts a window that is both laggy and tick-short (A3). Each
+// has a refusal that differs from its acceptance in exactly one thing.
 {
   console.log("• 3: one refusing case per accepting branch");
-  const timeoutError = Object.assign(new Error("timeout"), { name: "TimeoutError" });
-  const requestWithTimeout = Object.assign(new Error("request"), { name: "RequestError", cause: timeoutError });
+  const timeoutError = new TimeoutError();
 
-  // A1 accept / refuse: same message, different class. The message is what the old code would have
-  // had to match on, so a refusal that differs ONLY by class is the one that matters.
+  // A1 accept / refuse: same message and name, different class. The message and the name are what
+  // a text match would read, so a refusal that differs ONLY by class is the one that matters.
   c("A1 accepts the client's own deadline class", isDeadlineShaped(timeoutError));
   c("A1 refuses an error carrying the identical message from another class",
-    !isDeadlineShaped(Object.assign(new Error("timeout"), { name: "EpEnvelopeError" })));
-
-  // A2 accept / refuse: same wrapper class, different cause.
-  c("A2 accepts a request whose CAUSE is the deadline", isDeadlineShaped(requestWithTimeout));
-  c("A2 refuses the same wrapper caused by no-responders, which is a plane fault",
-    !isDeadlineShaped(Object.assign(new Error("request"), { name: "RequestError", cause: Object.assign(new Error("no responders"), { name: "NoResponders" }) })));
+    !isDeadlineShaped(Object.assign(new Error("timeout"), { name: "TimeoutError" })));
 
   // A3 accept / refuse: the starved window, then four windows each failing one condition.
   const starvedWindow: LoopLagWindow = { elapsedMs: 10_000, lagMs: 9_000, ticksExpected: 40, ticksObserved: 3, wallSkewMs: 0 };
@@ -643,7 +637,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
     c("and the step is visible in the skew while the window did not move with it",
       w.wallSkewMs > 9_000 && w.elapsedMs < 2_000, JSON.stringify(w));
     c("and the classifier agrees: a stepped clock buys a real deadline none of STARVATION's retries",
-      classifyPauseFailure(Object.assign(new Error("timeout"), { name: "TimeoutError" }), w).condition !== "starved",
+      classifyPauseFailure(new TimeoutError(), w).condition !== "starved",
       JSON.stringify(w));
   }
 
@@ -663,7 +657,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
     c("and that step really happened: the skew is negative while the window kept its own length",
       w.wallSkewMs < -3_000 && w.elapsedMs > 1_500, JSON.stringify(w));
     c("so the sleep is still absorbed rather than failing, which is the defect returning under NTP",
-      classifyPauseFailure(Object.assign(new Error("timeout"), { name: "TimeoutError" }), w).condition === "starved",
+      classifyPauseFailure(new TimeoutError(), w).condition === "starved",
       JSON.stringify(w));
   }
 }
@@ -681,7 +675,7 @@ const handlerWith = (lag?: LoopLagObserver, clock: () => number = () => Date.now
   let attempts = 0;
   const out = await withDeadline(
     servedDespiteStarvation(
-      () => { attempts += 1; return Promise.reject(Object.assign(new Error("timeout"), { name: "TimeoutError" })); },
+      () => { attempts += 1; return Promise.reject(new TimeoutError()); },
       alwaysStarved,
       "waiting on the pause t",
       () => { /* quiet in the transcript */ },
@@ -723,7 +717,7 @@ done();
 // from this file produced exactly that, a passing run one cell lighter. An assertion silently
 // stops being paid for the moment nobody counts it, which is the same way a displaced mutation
 // anchor stops grading without anything going red.
-const EXPECTED_CELLS = 58;
+const EXPECTED_CELLS = 56;
 const ran = ok + fail;
 if (ran !== EXPECTED_CELLS) {
   console.error(
