@@ -21,7 +21,7 @@ import { cliVersion } from "../lib/version.js";
 import { brand, brandBold, dim, ok, note, splash } from "../lib/theme.js";
 import { runSteps, type Step } from "../lib/steps.js";
 import { abortIfCancel } from "../lib/cancel.js";
-import { openSetupLog } from "../lib/setup-log.js";
+import { openSetupLog, type SetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, recordedWebUrl, webInstalled, type MeshStatus } from "../lib/status.js";
@@ -516,7 +516,7 @@ async function cardConnectorRows(): Promise<ConnectorStatusRow[]> {
  *  harnesses have no remote install/update path, so `cotal setup` reconciles the files (install/refresh,
  *  back up a user's edited copy, remove a retired Cotal skill) and `cotal status` reports skew. Idempotent;
  *  a re-run after an upgrade brings a deployed install current. */
-function seedAgentSkills(log?: ReturnType<typeof openSetupLog>): AgentSkillsResult {
+function seedAgentSkills(log?: SetupLog): AgentSkillsResult {
   const r = installAgentSkills();
   provenance.wrote("cross-vendor skills", agentSkillsHome());
   log?.line(
@@ -757,7 +757,7 @@ export function seedDefaultAgentInto(dir: string): void {
  *  Takes the SAME destination the default persona used, so the team can never land in a different
  *  catalog than the default — one `cotal spawn david` reading a root that `cotal spawn` does not is
  *  the same defect wearing a different name. */
-function seedDemoTeam(dest: SeedDestination, log?: { line(msg: string): void }): void {
+function seedDemoTeam(dest: SeedDestination, log?: SetupLog): void {
   mkdirSync(dest.dir, { recursive: true });
   for (const [name, body] of Object.entries(DEMO_AGENTS)) {
     writeDemoAgent(join(dest.dir, `${name}.md`), body);
