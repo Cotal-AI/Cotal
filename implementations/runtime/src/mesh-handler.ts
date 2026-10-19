@@ -3174,7 +3174,8 @@ export function outstandingPauseTokens(entries: readonly JournalEntry[]): string
 }
 
 /**
- * The settle watcher over EPF, which is where the one-use settle fact lives.
+ * The settle-poll loop every settle watcher runs, over the read it is given. The one-use settle
+ * fact lives on EPF.
  *
  * It POLLS the fact's subject through the plane's own leader-served read rather than binding a
  * consumer to it. The earlier shape created an ephemeral consumer per wait, and an ephemeral create
@@ -3187,18 +3188,24 @@ export function outstandingPauseTokens(entries: readonly JournalEntry[]): string
  * The cadence is the same one the handler already takes its fires on: the deadline is durable and
  * authoritative, and a poll only bounds how late its observation can be.
  */
-export class EpfSettleWatcher implements SettleWatcher {
+export class PollingSettleWatcher implements SettleWatcher {
   constructor(
-    private readonly jsm: JetStreamManager,
-    private readonly space: string,
+    private readonly read: (ref: CheckpointRef) => Promise<CheckpointSettleFact | undefined>,
     private readonly pollMs = FIRE_POLL_MS,
   ) {}
 
   async awaitSettle(ref: CheckpointRef): Promise<CheckpointSettleFact> {
     for (;;) {
-      const settled = await readCheckpointSettle(this.jsm, this.space, ref);
+      const settled = await this.read(ref);
       if (settled !== undefined) return settled;
       await delay(this.pollMs);
     }
+  }
+}
+
+/** The settle watcher that reads EPF directly, with no run-scope authority in front of the read. */
+export class EpfSettleWatcher extends PollingSettleWatcher {
+  constructor(jsm: JetStreamManager, space: string, pollMs?: number) {
+    super((ref) => readCheckpointSettle(jsm, space, ref), pollMs);
   }
 }
