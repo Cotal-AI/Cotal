@@ -3339,22 +3339,13 @@ export class CotalEndpoint extends EventEmitter {
    * The newest `limit` chat messages across MANY channels at once, oldest-first within the page,
    * each tagged with the channel the BROKER delivered it on.
    *
-   * **One read, not one per channel.** The CHAT stream already interleaves every channel into one
-   * sequence space, so "the newest N across these channels" is the tail of ONE stream, and a
-   * consumer takes a SET of filter subjects. The dashboard's activity feed used to answer this by
-   * calling {@link channelHistory} once per channel and merging: each of those is a widening probe
-   * loop, so the cost carried two multipliers (a probe loop per channel, and a fan-out across every
-   * channel). Counted on the wire over a seeded corpus of 69 chat channels and 24 event channels at
-   * limit 200: 2524 broker requests and about 8.0 MB transferred to return a 143,401-byte page,
-   * against 143 requests and about 0.91 MB here. With no link cost the counts and the page size
-   * repeat exactly across runs; the byte totals move by tens of bytes. `pnpm smoke:web-activity-read-cost` reproduces the
-   * second column and a frozen copy of the fan-out shape; the first is that same suite run against
-   * `544a974b7` (Cotal #1210).
+   * **One read across every channel.** The CHAT stream already interleaves every channel into one
+   * sequence space, so "the newest N across these channels" is the tail of ONE stream, read by one
+   * consumer that takes a SET of filter subjects.
    *
    * **The broker does the filtering, so the wire carries only what is asked for.** A channel left
    * out of `channels` costs nothing: its messages are never delivered, so a space whose volume is
-   * dominated by channels the caller does not want stays cheap. That is the same "filter before the
-   * fetch" property the per-channel fan-out had, kept rather than traded away.
+   * dominated by channels the caller does not want stays cheap.
    *
    * **The channel comes from the SUBJECT, never from the payload.** A message claims a `channel`
    * field, and this method ignores it: the tag is derived from the subject the broker routed the
