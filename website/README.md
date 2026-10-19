@@ -10,8 +10,10 @@ each file opens with and a description from its first paragraph of text after th
 and any headings, and rewrites `*.md` cross-links and image paths to site routes, whether
 a Markdown link or an HTML or JSX `href`, `src` or `srcset` names them, then writes the
 result into `src/content/docs/` (git-ignored). A page that does not open with an H1, a
-page with no such paragraph, or one whose long paragraph opens with a character too long
-to shorten, fails the sync. Edit the source files, not the generated copies.
+page with no such paragraph, one whose long paragraph opens with a character too long
+to shorten, or one with a table row that has more cells than its header, fails the sync.
+GFM drops the extra cells, so write a `|` that belongs to a cell as `\|`, inside a code
+span too. Edit the source files, not the generated copies.
 
 ## Develop
 

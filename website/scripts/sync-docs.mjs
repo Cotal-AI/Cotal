@@ -197,7 +197,10 @@ function* htmlEdits(node, offset, rel) {
 // parser's text, where a NUL is already U+FFFD: its backslash escapes and character references
 // are decoded and the result is percent-encoded as the renderer encodes it, so URL parsing
 // neither strips whitespace nor reads a backslash as a path separator. The rewritten one is
-// escaped so it parses back to the same address.
+// escaped so it parses back to the same address. The same pass refuses a table row with more
+// cells than its header: GFM drops the cells past the header's count, so the end of the row
+// would be lost on GitHub and on the site. A `|` starts a cell even inside a code span; one
+// that belongs to the cell is written `\|`.
 function rewriteLinks(md, rel, extensions) {
   // micromark skips one leading BOM and counts offsets from after it, so none may remain.
   md = md.replace(/^\uFEFF+/, '');
@@ -210,6 +213,9 @@ function rewriteLinks(md, rel, extensions) {
   // carries the same source attributes, and a source attribute is rewritten once.
   const edits = new Map();
   let attr;
+  let columns = 0;
+  let row;
+  let cells = 0;
   for (const [kind, token, context] of events) {
     const { type, start, end } = token;
     if (kind !== 'enter') continue;
@@ -227,6 +233,15 @@ function rewriteLinks(md, rel, extensions) {
       const value = decodeString(context.sliceSerialize(token).replace(/\\/g, '\\\\'));
       const next = URL_ATTRS.has(attr) ? rewriteAttr(attr, value, rel) : value;
       if (next !== value) edits.set(start.offset, [end.offset, escapeAttr(next)]);
+    } else if (type === 'tableHead') {
+      columns = 0;
+    } else if (type === 'tableHeader') {
+      columns++;
+    } else if (type === 'tableRow') {
+      row = token;
+      cells = 0;
+    } else if (type === 'tableData' && ++cells > columns) {
+      throw new Error(`table row has more cells than its ${columns}-column header: ${rel}: ${md.slice(row.start.offset, row.end.offset).slice(0, 80)}`);
     }
   }
   let out = '';
