@@ -219,7 +219,9 @@ The context never resolves a workspace root from the working directory and has n
 only remote manager gates can be selected. It returns after
 the authority plane, the callout subscription and the loopback listener are bound. A start that
 fails closes the connections it opened and releases its plane claim, so a retry on the same space
-can claim it. A fenced plane or
+can claim it. When that release fails, the start logs the close failure on stderr and still
+throws its own error. The row stays held, and the next start reclaims it through the liveness
+oracle. A fenced plane or
 a lost broker connection makes that context `unavailable` and closes it without exiting the process.
 The host writes no discovery file for it. The handle carries what `auth-service.json` holds for a
 CLI start: the loopback `url`, `publicUrl` when a public face runs, and the per-start `cap`. The cap

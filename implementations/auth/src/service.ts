@@ -2382,11 +2382,12 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       state === "unavailable" ? { state, cause: cause ?? "auth-service context is unavailable" } : { state: closeStarted ? "draining" : "ready" };
     return { handle: service, status, ended };
   } catch (e) {
-    // A failed start releases only what THIS context acquired, in reverse order.
+    // A failed start releases only what THIS context acquired, in reverse order. It throws its own
+    // error, so a failed plane close (a claim left held) is only logged, as the plane's failed open does.
     await closeServer(publicHttp).catch(() => {});
     await closeServer(http).catch(() => {});
     await nc?.close().catch(() => {});
-    await plane.close().catch(() => {});
+    await plane.close().catch((r: Error) => console.error(r.message));
     throw e;
   }
 }
