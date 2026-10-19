@@ -87,20 +87,24 @@ export function bootToken(): string | undefined {
   }
 }
 
-/** The Linux process start token: `/proc/<pid>/stat` field 22 (starttime, in clock ticks since
- *  boot), parsed after the final `)` because comm may hold spaces and parentheses. A zombie still
- *  reports it, so a child that exited before its custodian reaped it is still readable. Undefined
- *  when the pid has no `/proc` entry. */
-export function processStartToken(pid: number): string | undefined {
+/** The fields of `/proc/<pid>/stat` after comm, so index 0 is field 3 (state). They start after the
+ *  final `) ` because comm may hold spaces and parentheses. Undefined when the pid has no `/proc`
+ *  entry or the line has no comm terminator. */
+export function processStatFields(pid: number): string[] | undefined {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const after = stat.lastIndexOf(") ");
-    if (after < 0) return undefined;
-    const token = stat.slice(after + 2).split(" ")[19];
-    return token || undefined;
+    return after < 0 ? undefined : stat.slice(after + 2).split(" ");
   } catch {
     return undefined;
   }
+}
+
+/** The Linux process start token: `/proc/<pid>/stat` field 22 (starttime, in clock ticks since
+ *  boot). A zombie still reports it, so a child that exited before its custodian reaped it is still
+ *  readable. Undefined when {@link processStatFields} is. */
+export function processStartToken(pid: number): string | undefined {
+  return processStatFields(pid)?.[19] || undefined;
 }
 
 export function writeRecord(path: string, record: SeatRecord): void {
