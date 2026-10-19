@@ -280,6 +280,12 @@ export function wirePath(p0: Pt, c1: Pt, c2: Pt, p1: Pt): string {
   return `M ${p0.x} ${p0.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p1.x} ${p1.y}`;
 }
 
+// A straight wire from a to b. Its control points sit on the chord, so the wire
+// stays on the line a beam's lerp() dot travels.
+export function straightWire(a: Pt, b: Pt): string {
+  return wirePath(a, lerp(a, b, 0.4), lerp(a, b, 0.6), b);
+}
+
 // Multicast and anycast both fan out to the peers through this one wire shape,
 // so the two cards glance alike and cannot drift apart.
 export function fanWire(from: Pt, to: Pt): [Pt, Pt, Pt, Pt] {

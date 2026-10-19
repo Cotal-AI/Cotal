@@ -15,6 +15,7 @@ import {
   Labels,
   lerp,
   prog,
+  straightWire,
   wirePath,
   Wires,
   type Pt,
@@ -184,7 +185,7 @@ export const NatsReplay: React.FC = () => {
         return (
           <Beam
             key={i}
-            d={wirePath(START, lerp(START, end, 0.4), lerp(START, end, 0.6), end)}
+            d={straightWire(START, end)}
             pos={(u) => lerp(START, end, u)}
             t={t}
             visible={t > 0 && t < 1}
