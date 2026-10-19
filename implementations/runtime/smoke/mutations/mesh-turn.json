@@ -73,7 +73,7 @@
     {
       "name": "the presence watch is dropped: a dead seat is never observed by the run",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "      if (!rows.some((pr) => pr.card?.name === name && pr.lifecycleUid === uid)) {",
+      "find": "      if (!rows.some((pr) => pr.card.name === name && pr.lifecycleUid === uid)) {",
       "replace": "      if (false) {",
       "expectRed": "the client observes the death itself and throws L4002, naming the reason",
       "cell": "the client observes the death itself and throws L4002, naming the reason",
