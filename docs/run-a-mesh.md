@@ -416,7 +416,9 @@ manager refuses new spawns and first waits for the ones it already accepted, so 
 it can still adopt and reap seats that an earlier manager launched under a detached per-seat
 custodian, so those seats drain under the new manager; it starts no new custodian. A custodian whose agent has exited exits a few seconds later on its own. `cotal seats`
 lists the custodians left on the machine, and `cotal seats --drain` retires the ones whose agent
-has exited while keeping every seat whose agent still runs ([cli.md](cli.md#seats)). When a pty
+has exited while keeping every seat whose agent still runs ([cli.md](cli.md#seats)). A pty launch or
+supervised restart that fails reports the last line the child printed, or
+`last output unreadable: <reason>` when that line cannot be read. When a pty
 agent exits on its own, in-process or under a custodian, the manager logs a `seat reaped:` line
 with the exit code and, for a signalled child, the signal number. The line ends with the last line
 the child printed that starts with a connector's `[cotal-<name>]` or `[cotal-<name>/<part>]`

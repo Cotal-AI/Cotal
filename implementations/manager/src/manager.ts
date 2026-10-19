@@ -5124,9 +5124,19 @@ export class Manager {
       } catch (error) {
         restart.recovering = false;
         restart.armed = false;
-        let tail = "";
-        try { tail = await this.tail((replacement ?? a.handle).attach()); } catch { /* runtime has no readable tail */ }
-        console.error(`! ${a.name}: ${supervised ? "supervised restart" : "Pi session recovery"} failed: ${rejectionText(error)}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
+        let session: AttachSession | undefined;
+        try { session = (replacement ?? a.handle).attach(); } catch { /* runtime has no readable tail */ }
+        // A reader that fails is named on this line, so it never reads as a seat that printed nothing.
+        let lastOutput = "";
+        if (session) {
+          try {
+            const tail = await this.tail(session);
+            if (tail) lastOutput = ` - last output: ${tail}`;
+          } catch (e) {
+            lastOutput = `; last output unreadable: ${rejectionText(e)}`;
+          }
+        }
+        console.error(`! ${a.name}: ${supervised ? "supervised restart" : "Pi session recovery"} failed: ${rejectionText(error)}${lastOutput} - retiring the managed seat`);
         // The replacement may be alive but unable to prove readiness. Stop it BEFORE
         // retiring credentials/durables; otherwise an untracked process survives under torn auth.
         try { replacement?.stop({ graceful: false }); } catch { /* terminal cleanup continues */ }
@@ -7227,11 +7237,15 @@ export class Manager {
         // tells a deliberate stop from a launch failure.
         const deliberate = a.terminalizing === true;
         void (async () => {
-          // waitForExit may close the attach stream before this snapshot
+          // A reader that fails is named in the detail, so it never reads as a seat that printed
+          // nothing. That includes an attach stream waitForExit closed before this snapshot.
           let tail = "";
+          let tailDetail = "";
           try {
             if (s) tail = await this.tail(s);
-          } catch {}
+          } catch (e) {
+            tailDetail = `; last output unreadable: ${rejectionText(e)}`;
+          }
           if (opts.reapOnExit !== false) this.onAgentExit(a);
           // A DELIBERATE STOP IS NOT A LAUNCH FAILURE. The despawn path owns this goal's terminal
           // and commits `cancel`; reporting `failed` here races it and, when it wins, tells the
@@ -7260,7 +7274,7 @@ export class Manager {
           }
           // A runtime's text can carry a lone surrogate, which is not I-JSON, and the failed terminal
           // this detail becomes is refused with it.
-          exitDetail = exitDetail.replace(/\p{Cs}/gu, "\uFFFD");
+          exitDetail = `${tailDetail}${exitDetail}`.replace(/\p{Cs}/gu, "\uFFFD");
           finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}${exitDetail}` });
         })();
       };

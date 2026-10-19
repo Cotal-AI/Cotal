@@ -679,9 +679,9 @@ original is untouched.
   environment; `ANTHROPIC_API_KEY` alone is refused. The private home trusts the authorized
   launch directory without changing the manager's home. Claude must be 2.1.234 or later.
 - The manager waits for a real outcome: `✓ started` means the agent *joined the mesh*,
-  `✗ exited on launch` carries Claude's last output and the seat's exit diagnostic, such as a
-  startup confirmation that never appeared, and an uncertain launch (~30 s) is reported without
-  tearing the agent down.
+  `✗ exited on launch` carries Claude's last output, or why it could not be read, and the seat's
+  exit diagnostic, such as a startup confirmation that never appeared, and an uncertain launch
+  (~30 s) is reported without tearing the agent down.
 - Resume is an **operator surface only**, deliberately not exposed on MCP `cotal_spawn`
   (a mesh peer naming host-local transcripts would widen `spawn` into transcript
   disclosure). Only the Claude connector supports it today; OpenCode and Hermes fail loud.
