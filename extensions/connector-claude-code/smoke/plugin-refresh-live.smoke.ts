@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,7 +20,10 @@ process.env.COTAL_HOME = join(ROOT, "cotal");
 const PROJECT_A = join(ROOT, "a");
 const PROJECT_B = join(ROOT, "b");
 const PROJECT_GONE = join(ROOT, "gone");
-for (const dir of [process.env.CLAUDE_CONFIG_DIR, process.env.COTAL_HOME, PROJECT_A, PROJECT_B, PROJECT_GONE]) mkdirSync(dir, { recursive: true });
+const PROJECT_FILE = join(ROOT, "file");
+const PROJECT_OFF = join(ROOT, "off");
+for (const dir of [process.env.CLAUDE_CONFIG_DIR, process.env.COTAL_HOME, PROJECT_A, PROJECT_B, PROJECT_GONE, PROJECT_FILE, PROJECT_OFF]) mkdirSync(dir, { recursive: true });
+const BIG = 64 * 1024 * 1024;
 if (spawnSync("claude", ["--version"]).status !== 0) throw new Error("this suite drives the real Claude Code CLI; put `claude` on PATH");
 
 const { claudeSetupProvider } = await import("../src/setup.js");
@@ -39,10 +42,10 @@ function ok(label: string, fn: () => void): void {
 
 /** The installs of the cotal plugin, as Claude Code records them: `user`, or `local:<project>`. */
 function installs(): string[] {
-  const out = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" });
+  const out = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8", maxBuffer: BIG });
   assert.equal(out.status, 0, out.stderr);
   return (JSON.parse(out.stdout) as { id: string; scope: string; projectPath?: string }[])
-    .filter((e) => e.id === "cotal@cotal-mesh")
+    .filter((e) => e.id === "cotal@cotal-mesh" && !e.projectPath?.startsWith(join(ROOT, "old")))
     .map((e) => (e.scope === "local" ? `local:${e.projectPath}` : e.scope))
     .sort();
 }
@@ -134,27 +137,72 @@ try {
     assert.equal(folderVersion(), before);
   });
 
-  // An earlier release installed the plugin per project, at local scope. One of those projects has since
-  // been deleted.
+  // An earlier release installed the plugin per project, at local scope. Since then one of those
+  // projects was deleted and another path became a file.
   plugin(ROOT, "uninstall", "cotal@cotal-mesh", "--scope", "user");
-  for (const dir of [PROJECT_A, PROJECT_B, PROJECT_GONE]) plugin(dir, "install", "cotal@cotal-mesh", "--scope", "local");
+  for (const dir of [PROJECT_A, PROJECT_B, PROJECT_GONE, PROJECT_FILE]) plugin(dir, "install", "cotal@cotal-mesh", "--scope", "local");
   rmSync(PROJECT_GONE, { recursive: true });
+  rmSync(PROJECT_FILE, { recursive: true });
+  writeFileSync(PROJECT_FILE, "");
   ok("status counts an earlier release's per-project installs", () => {
-    assert.deepEqual(status(RELEASE), { label: "Claude plugin", state: "ok", text: "current (3 installs)" });
+    assert.deepEqual(status(RELEASE), { label: "Claude plugin", state: "ok", text: "current (4 installs)" });
   });
+  // Claude Code cannot change project B's settings, so it cannot remove the install recorded there. It
+  // writes by replacing the file, so the directory is locked as well.
+  const locked = join(PROJECT_B, ".claude");
+  chmodSync(join(locked, "settings.local.json"), 0o444);
+  chmodSync(locked, 0o555);
+  try {
+    ok("setup removes every per-project install it can, then fails naming the one it cannot", () => {
+      let thrown: unknown;
+      try {
+        inProject(ROOT, () => connector.run({ cotal: cli("two") }));
+      } catch (e) {
+        thrown = e;
+      }
+      assert.ok(thrown instanceof Error, "setup did not fail");
+      assert.ok(thrown.message.includes(`${PROJECT_B}:`) && !thrown.message.includes(`${PROJECT_A}:`), thrown.message);
+      assert.ok(thrown.message.includes("claude plugin uninstall cotal@cotal-mesh --scope local"), thrown.message);
+      assert.deepEqual(installs(), [`local:${PROJECT_B}`, `local:${PROJECT_FILE}`, `local:${PROJECT_GONE}`, "user"].sort());
+    });
+  } finally {
+    chmodSync(locked, 0o755);
+    chmodSync(join(locked, "settings.local.json"), 0o644);
+  }
   const moved = inProject(ROOT, () => connector.run({ cotal: cli("two") })) as string;
-  ok("setup moves the per-project installs under one user-scope install", () => {
-    assert.ok(moved.startsWith("cotal@cotal-mesh (user scope, replacing 2 project installs)"), moved);
-    assert.deepEqual(installs(), [`local:${PROJECT_GONE}`, "user"]);
+  ok("once it can, setup removes that one too, and leaves the records of paths that are no longer directories", () => {
+    assert.ok(moved.startsWith("cotal@cotal-mesh (user scope, replacing 1 project install)"), moved);
+    assert.deepEqual(installs(), [`local:${PROJECT_FILE}`, `local:${PROJECT_GONE}`, "user"].sort());
   });
   ok("both projects still start the copy, now from the user-scope install", () => {
     for (const dir of [PROJECT_A, PROJECT_B]) assert.ok(startedIn(dir).includes(join(FOLDER, "dist", "mcp.cjs")));
     assert.deepEqual(status(RELEASE), { label: "Claude plugin", state: "ok", text: "current (user scope)" });
   });
+  mkdirSync(join(PROJECT_OFF, ".claude"));
+  writeFileSync(join(PROJECT_OFF, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "cotal@cotal-mesh": false } }));
+  ok("setup run from a project that turns the plugin off still installs it for the account", () => {
+    const text = inProject(PROJECT_OFF, () => connector.run({ cotal: cli("two") })) as string;
+    assert.ok(text.startsWith("cotal@cotal-mesh (user scope)"), text);
+  });
   ok("a repeat setup leaves the one install in place", () => {
     const again = inProject(PROJECT_B, () => connector.run({ cotal: cli("two") })) as string;
     assert.ok(again.startsWith("cotal@cotal-mesh (user scope)"), again);
-    assert.deepEqual(installs(), [`local:${PROJECT_GONE}`, "user"]);
+    assert.deepEqual(installs(), [`local:${PROJECT_FILE}`, `local:${PROJECT_GONE}`, "user"].sort());
+  });
+
+  // A machine that ran setup in many projects over time: 1,700 more records of projects since deleted,
+  // in the shape Claude Code writes them, take `claude plugin list --json` past 1 MiB.
+  const records = join(process.env.CLAUDE_CONFIG_DIR, "plugins", "installed_plugins.json");
+  const recorded = JSON.parse(readFileSync(records, "utf8")) as { plugins: Record<string, Record<string, unknown>[]> };
+  const template = recorded.plugins["cotal@cotal-mesh"]!.find((r) => r.scope === "user")!;
+  for (let i = 0; i < 1700; i++) recorded.plugins["cotal@cotal-mesh"]!.push({ ...template, scope: "local", projectPath: join(ROOT, "old", `p${i}`) });
+  writeFileSync(records, JSON.stringify(recorded, null, 2));
+  ok("with more than 1 MiB of install records, status and setup still read the list", () => {
+    const size = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8", maxBuffer: BIG }).stdout.length;
+    assert.ok(size > 1024 * 1024, `plugin list is ${size} bytes`);
+    assert.deepEqual(status(RELEASE), { label: "Claude plugin", state: "ok", text: "current (user scope)" });
+    const text = inProject(ROOT, () => connector.run({ cotal: cli("two") })) as string;
+    assert.ok(text.startsWith("cotal@cotal-mesh (user scope)"), text);
   });
 
   console.log(`plugin-refresh-live.smoke: ${checks} checks passed`);

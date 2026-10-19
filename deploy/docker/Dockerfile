@@ -45,8 +45,8 @@ RUN pnpm install --frozen-lockfile \
   && pnpm build
 # Install the cotal plugin so the wake channel binds (it must be *installed*, not --plugin-dir).
 # `cotal setup` = claude plugin marketplace add <repo> + plugin install cotal@cotal-mesh --scope
-# local. Runs as uid 10001 so the plugin cache (~/.claude) + enablement (/workspace/.claude/
-# settings.local.json) are owned by the user that runs at runtime.
+# user. Runs as uid 10001 so the plugin cache and its enablement (both under ~/.claude) are owned
+# by the user that runs at runtime.
 RUN pnpm cotal setup
 
 # Pre-complete claude's first-run onboarding for the runtime user. A fresh container has no

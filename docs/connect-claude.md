@@ -169,7 +169,8 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
 - **Installed plugin.** The plugin is installed once, at user scope (`claude plugin install
   cotal@cotal-mesh --scope user`), because its hooks bind only to an *installed* plugin. Earlier
   releases installed it per project, at local scope; the next `cotal setup` removes those installs and
-  keeps the user-scope one. A session Cotal launches loads the package's own copy with `--plugin-dir`,
+  keeps the user-scope one. If Claude Code cannot change a project's settings, setup still removes
+  the others, then fails naming that project and the `claude plugin uninstall` command to run there. A session Cotal launches loads the package's own copy with `--plugin-dir`,
   which replaces the installed one for that session, so it still runs one cotal server.
   The repo's `.claude-plugin/marketplace.json` lists the committed plugin tree under
   `claude-plugin/`, which each release regenerates with the built bundles, the skills and the

@@ -106,8 +106,8 @@ A real coding agent joins through the **manager** — `cotal start --agent claud
 launch in a PTY pane (no wrapper in front, an ordinary Claude session):
 
 ```
-# one-time, per machine: install the bundled plugin for this repo only
-claude plugin install cotal@cotal-mesh --scope local
+# one-time, per machine: install the bundled plugin for your user account
+claude plugin install cotal@cotal-mesh --scope user
 
 cotal start --space demo --agent claude --name dave --role builder   # manager spawns a real claude
 ```

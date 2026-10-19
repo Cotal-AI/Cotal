@@ -131,12 +131,20 @@ function materialize(name: string, root: string, assets: readonly string[], vers
   }
 }
 
+/** `claude plugin list --json` keeps a record for every project an install was ever made in: 1.2 MB for
+ *  1,782 records on one machine, past spawnSync's 1 MiB default, which cuts the output short and still
+ *  reports exit 0. */
+const CLAUDE_OUTPUT_LIMIT = 64 * 1024 * 1024;
+
 function command(...args: string[]): { status: number | null; output: string } {
   return commandIn(process.cwd(), ...args);
 }
 
+/** A spawn error (output past the limit, a directory that cannot be entered) is a failure whatever the
+ *  exit status says, and its message is the output. */
 function commandIn(cwd: string, ...args: string[]): { status: number | null; output: string } {
-  const result = spawnSync("claude", args, { cwd, encoding: "utf8" });
+  const result = spawnSync("claude", args, { cwd, encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT });
+  if (result.error) return { status: null, output: result.error.message };
   return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }
 
@@ -194,11 +202,11 @@ function writeMarketplace(): void {
   if (update.status !== 0) throw new Error(`plugin marketplace update failed:\n${update.output}`);
 }
 
-/** Every installed plugin, as `claude plugin list --json` reports it. It lists local-scope installs of
- *  every project, each with its `projectPath`, but `enabled` says whether the plugin is enabled in the
- *  directory it runs in, not in the install's own project. */
-function listPlugins(): PluginEntry[] {
-  const result = command("plugin", "list", "--json");
+/** Every installed plugin, as `claude plugin list --json` reports it from `cwd`. It lists local-scope
+ *  installs of every project, each with its `projectPath`, but `enabled` says whether the plugin is
+ *  enabled in `cwd`, not in the install's own project. */
+function listPlugins(cwd = process.cwd()): PluginEntry[] {
+  const result = commandIn(cwd, "plugin", "list", "--json");
   if (result.status !== 0) throw new Error(`plugin list failed:\n${result.output}`);
   let entries: unknown;
   try {
@@ -210,8 +218,10 @@ function listPlugins(): PluginEntry[] {
   return entries as PluginEntry[];
 }
 
+/** Reads the install from Cotal's home, which no project's settings cover, so a project that turns the
+ *  plugin off for itself does not fail a user-scope install that succeeded. */
 function verify(name: string, scope: string, expectedVersion?: string): void {
-  const match = listPlugins().find((entry) => entry.id === `${name}@${MARKETPLACE}` && entry.scope === scope);
+  const match = listPlugins(cotalHome()).find((entry) => entry.id === `${name}@${MARKETPLACE}` && entry.scope === scope);
   const where = `${scope} scope`;
   if (!match) throw new Error(`plugin ${name}@${MARKETPLACE} (${where}) is not installed`);
   if (match.enabled !== true || (match as { errors?: unknown[] }).errors?.length)
@@ -233,17 +243,23 @@ function install(name: string, scope: string, expectedVersion?: string): void {
 
 /** Removes the per-project installs of the `cotal` plugin that earlier releases made, once the user-scope
  *  install covers every project. Each is removed from its own project, where Claude Code keeps its
- *  record. A project whose directory is gone has no settings left to enable the plugin, so its record is
- *  left as it is. Returns how many it removed. */
+ *  record. A project path that is no longer a directory has no settings left to enable the plugin, so
+ *  its record is left as it is. A project Claude Code cannot change does not stop the others; setup
+ *  then fails naming each one. Returns how many it removed. */
 function retireProjectInstalls(): number {
   let removed = 0;
+  const failed: string[] = [];
   for (const entry of listPlugins()) {
     if (entry.id !== `cotal@${MARKETPLACE}` || entry.scope !== "local" || typeof entry.projectPath !== "string") continue;
-    if (!existsSync(entry.projectPath)) continue;
+    if (!statSync(entry.projectPath, { throwIfNoEntry: false })?.isDirectory()) continue;
     const result = commandIn(entry.projectPath, "plugin", "uninstall", `cotal@${MARKETPLACE}`, "--scope", "local");
-    if (result.status !== 0) throw new Error(`plugin uninstall failed (cotal, local scope, ${entry.projectPath}):\n${result.output}`);
-    removed += 1;
+    if (result.status === 0) removed += 1;
+    else failed.push(`${entry.projectPath}: ${result.output}`);
   }
+  if (failed.length)
+    throw new Error(
+      `cotal@${MARKETPLACE} is installed at user scope, but ${failed.length} earlier per-project install${failed.length === 1 ? "" : "s"} could not be removed. In each directory, run \`claude plugin uninstall cotal@${MARKETPLACE} --scope local\`:\n${failed.join("\n")}`,
+    );
   return removed;
 }
 
@@ -251,8 +267,8 @@ function retireProjectInstalls(): number {
 /** The installed Claude Code plugins, or undefined when Claude cannot be launched or queried (both of
  *  which status renders as "unknown" rather than "absent"). ONE spawn serves both rows. */
 function pluginList(): PluginEntry[] | undefined {
-  const result = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" });
-  if (result.status !== 0) return undefined;
+  const result = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT });
+  if (result.error || result.status !== 0) return undefined;
   try {
     const parsed: unknown = JSON.parse(result.stdout || "[]");
     return Array.isArray(parsed) ? (parsed as PluginEntry[]) : undefined;
@@ -341,8 +357,9 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     run({ cotal }) {
       materializeCotal(cotal);
       install("cotal", "user");
-      const removed = retireProjectInstalls();
+      // Desktop first: a per-project install that cannot be removed fails the step after it.
       const app = desktop(cotal, true);
+      const removed = retireProjectInstalls();
       const replaced = removed ? `, replacing ${removed} project install${removed === 1 ? "" : "s"}` : "";
       return `cotal@${MARKETPLACE} (user scope${replaced})${app ? `; ${app}` : ""}`;
     },
