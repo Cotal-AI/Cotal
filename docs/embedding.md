@@ -331,6 +331,19 @@ revocation and lifecycle state. The serving material's grant coordinates are not
 `EpServeGrant` and confer no authority. `parseToolResultAnswer` also checks the UTF-8 byte count;
 a schema's character limit alone is not the byte bound.
 
+`@cotal-ai/auth` exports `verifyToolResultHumanProof` for the consent prerequisite. It verifies
+an EdDSA IdP JWT against the existing issuer, audience and key pins, then requires integer-second
+`auth_time` no later than the decision and at most 300 seconds old, plus a signed `amr` array
+containing `pwd`. JWT clock tolerance does not widen this window. Ordinary bearer exchange does
+not require these claims or turn them into consent authority.
+
+The loopback-only `POST /tool-result-human-proof/verify` takes only `{ idpToken, subject }` with
+the host's current capability and no Origin header. The host supplies its authenticated session
+subject. Success returns `{ authorized: true, sub, owner, authTime, exp }`; the owner derives from
+the verified subject, which must match the session. The door verifies proof only. It does not
+sign consent, issue credentials, register a service or serve private content. A host must still
+refuse platform keys and check current membership and lifecycle at consent admission.
+
 Public tool arguments and results remain withheld. Auth and host issuance, Manager material,
 connector capture and the browser caller must each be landed and qualified in the
 [design's owner order](design/private-tool-results.md#9-owner-order), then carried by a stock

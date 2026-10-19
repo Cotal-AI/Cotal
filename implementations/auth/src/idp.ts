@@ -119,11 +119,20 @@ export interface IdpBridge {
   }): Promise<ExchangeResult>;
 }
 
+/** Verified IdP claims. Optional password provenance is retained only when well-shaped;
+ * ordinary exchanges do not require it or gain consent authority from it. */
+export interface VerifiedIdpToken {
+  sub: string;
+  exp: number;
+  auth_time?: number;
+  amr?: readonly string[];
+}
+
 /** Verify an external IdP JWT against the pinned config and return its `sub` AND `exp`. Same pinning
  *  posture as `validateUserToken`, minus the Cotal claim shape (an IdP token has no `ver`/`act`; its
  *  lifetime is the IdP's session policy — but it must expire and must not be post-dated). The `exp` is
  *  returned so `exchange` can CAP the minted Cotal bearer to the upstream proof's remaining life. */
-export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ sub: string; exp: number }> {
+export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<VerifiedIdpToken> {
   const header = decodeProtectedHeader(token);
   if (header.jku !== undefined || header.jwk !== undefined || header.x5u !== undefined || header.x5c !== undefined)
     throw new Error("idp token: embedded key material (jku/jwk/x5u/x5c) is rejected - keys resolve only via the pinned JWKS");
@@ -147,7 +156,35 @@ export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ s
   if (payload.iat > Math.floor(Date.now() / 1000) + CLOCK_TOLERANCE_SEC) throw new Error("idp token: iat is in the future");
   if (typeof payload.sub !== "string" || !payload.sub)
     throw new Error("idp token: sub must be a non-empty string user id - no coercion at a trust boundary");
-  return { sub: payload.sub, exp: payload.exp };
+  return {
+    sub: payload.sub, exp: payload.exp,
+    ...(typeof payload.auth_time === "number" && Number.isSafeInteger(payload.auth_time) && payload.auth_time >= 0
+      ? { auth_time: payload.auth_time } : {}),
+    ...(Array.isArray(payload.amr) && payload.amr.length > 0 && payload.amr.every(method => typeof method === "string" && method.length > 0)
+      ? { amr: Object.freeze([...payload.amr] as string[]) } : {}),
+  };
+}
+
+/** A private-result consent proof, not consent or permission to read any result. */
+export interface ToolResultHumanProof {
+  readonly sub: string;
+  readonly exp: number;
+  readonly authTime: number;
+}
+
+/** Verify the pinned signed proof before applying the consent-only, five-minute password rule.
+ * The clock is host-owned and read after verification; no JWT tolerance widens this window. */
+export async function verifyToolResultHumanProof(
+  token: string, idp: IdpConfig, now: () => number = Date.now,
+): Promise<ToolResultHumanProof> {
+  const verified = await verifyIdpToken(token, idp);
+  const at = verified.auth_time;
+  const ms = now();
+  const second = Math.floor(ms / 1000);
+  if (!Number.isSafeInteger(ms) || ms < 0 || at === undefined || at > second || second - at > 300 ||
+      !verified.amr?.includes("pwd") || verified.exp <= second)
+    throw new Error("tool-result consent requires a fresh signed password proof");
+  return Object.freeze({ sub: verified.sub, exp: verified.exp, authTime: at });
 }
 
 /**

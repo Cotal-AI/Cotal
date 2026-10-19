@@ -241,7 +241,7 @@ That listener still binds `127.0.0.1`; put a reverse proxy in front of it and te
 In-process TLS is deliberately not another deployment mode: it would duplicate certificate renewal
 and fork proxy-based deployments.
 
-The loopback face also serves three host-only doors, all capability-gated and never on the public
+The loopback face also serves four host-only doors, all capability-gated and never on the public
 face. Two retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)
 and `/managed-lifecycle/retire`, which finishes a managed agent's terminal retirement after its
 remote manager is gone. The third decides one:
@@ -257,7 +257,9 @@ the service process, so no signing material reaches the caller, and it returns
 answering a manager-lifecycle phase for an agent-lifecycle request. The same door decides the hosted
 runtime create and status kinds. For those it reads the manager actor's ledger row itself and returns
 `{ authorized: true, owner, instanceId, actor, target }`.
-[embedding.md](embedding.md) documents the managed doors' contracts.
+The fourth, `POST /tool-result-human-proof/verify`, decides a pinned password proof for the
+host's authenticated session subject without issuing consent or credentials.
+[embedding.md](embedding.md) documents these host doors' contracts.
 
 The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exchange`,
 `POST /manager-service-authority`, and `GET /.well-known/cotal-mesh`; every other path is 404. It
@@ -576,6 +578,14 @@ const bridge = createIdpBridge({
   authorizeActor: (owner, actor) => grantFromLedger(owner, actor), // your ledger, returns an ActorGrant
 });
 ```
+
+For private-result consent, `verifyToolResultHumanProof` applies the separate password-freshness
+rule to the same pinned signature check. A signed integer-second `auth_time` must be no later
+than the decision and at most 300 seconds old, and signed `amr` must contain `pwd`. Neither a
+recent JWT `iat` nor a session's creation time supplies password provenance. Missing, malformed,
+future or stale provenance refuses this decision without changing ordinary bearer exchange.
+The host-only proof door and the remaining activation limits are documented under
+[private tool results](embedding.md#private-tool-results).
 
 ## Joining
 

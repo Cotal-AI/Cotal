@@ -69,7 +69,7 @@ import { makePlatformControlAuthority, makePlatformControlReadiness, requireMana
 import { OwnedConnections, type AuthConnectionState, type AuthServiceClosed } from "./owned-connections.js";
 import { makePlatformSupervisorAuthority, makePlatformSupervisorEnd, platformSupervisorEnded, requirePlatformSupervisorAdmin, type PlatformSupervisorInput, type PlatformSupervisorAuthorityRequest } from "./platform-supervisor.js";
 import { startAuthCallout } from "./callout.js";
-import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
+import { createIdpBridge, verifyIdpToken, verifyToolResultHumanProof, type IdpBridge } from "./idp.js";
 import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
@@ -143,6 +143,9 @@ export const MANAGED_RETIRE_PATH = "/managed-lifecycle/retire";
  *  remote manager (#1972 §2.2). The platform owns the writers; this door owns the decision. It
  *  derives the caller's scope from the local ledger and never accepts one from the caller. */
 export const VERIFY_ENROLLMENT_PATH = "/manager-service-authority/verify-enrollment";
+
+/** Host-only, capability-gated proof decision. It neither signs consent nor serves results. */
+export const TOOL_RESULT_HUMAN_PROOF_PATH = "/tool-result-human-proof/verify";
 
 /** Failed-exchange rate limit: at most this many REFUSED exchanges per rolling minute; further
  *  attempts get 429 until the window drains. Successes are unthrottled (the CLI's normal path). */
@@ -2648,6 +2651,7 @@ const ROUTES = new Map<string, RouteHandler>([
   [INTERACTIVE_RETIRE_PATH, handleInteractiveLifecycleRetirement],
   [MANAGED_RETIRE_PATH, handleManagedLifecycleRetirement],
   [VERIFY_ENROLLMENT_PATH, handleVerifyManagedAgentEnrollment],
+  [TOOL_RESULT_HUMAN_PROOF_PATH, handleToolResultHumanProof],
 ]);
 
 /** Route one HTTP request against the loopback route table. Errors are JSON `{ error }`. */
@@ -3034,6 +3038,38 @@ export async function handleManagerServiceAuthority(req: IncomingMessage, res: S
     if (peerThrottled)
       return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
     return send(res, 403, { error: reason });
+  }
+}
+
+/** Minimal host-held inputs for the proof decision; no signing or storage authority is used. */
+export type ToolResultHumanProofCtx = Pick<HandlerCtx, "cap" | "bridgeIdp" | "ownerSecret" | "badCaps">;
+
+/** Decide one signed password proof against the host's authenticated session subject.
+ * The subject is an equality constraint, never the source of the derived owner. */
+export async function handleToolResultHumanProof(
+  req: IncomingMessage, res: ServerResponse, ctx: ToolResultHumanProofCtx,
+): Promise<void> {
+  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
+    return send(res, 415, { error: "content-type must be application/json" });
+  if (req.headers.authorization !== `Bearer ${ctx.cap}`)
+    return refuseCapability(res, ctx, "missing/invalid exchange capability - human proof verification is a loopback host action");
+  let body: unknown;
+  try { body = await readJsonBody(req); }
+  catch (error) { return send(res, error instanceof RequestBodyError ? error.status : 400, { error: "invalid human proof request" }); }
+  if (!body || typeof body !== "object" || Array.isArray(body) ||
+      Object.keys(body).some(key => key !== "idpToken" && key !== "subject") ||
+      !("idpToken" in body) || typeof body.idpToken !== "string" || !body.idpToken ||
+      !("subject" in body) || typeof body.subject !== "string" || !body.subject)
+    return send(res, 400, { error: "human proof verification needs only { idpToken, subject }" });
+  try {
+    const proof = await verifyToolResultHumanProof(body.idpToken, ctx.bridgeIdp);
+    if (proof.sub !== body.subject) return send(res, 403, { error: "human proof subject does not match the session" });
+    const owner = deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, proof.sub);
+    return send(res, 200, { authorized: true, owner, ...proof });
+  } catch {
+    return send(res, 403, { error: "fresh signed password proof required" });
   }
 }
 

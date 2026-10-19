@@ -433,6 +433,14 @@ try {
     const { fetchIdpJwt } = await import("@cotal-ai/auth");
     return fetchIdpJwt(base, idpSessionToken);
   })();
+  const { TOOL_RESULT_HUMAN_PROOF_PATH } = await import("@cotal-ai/auth");
+  const proofBody = { idpToken: idpJwt, subject: signup.response.user.id };
+  check("human proof decision is absent on the public face", (await post(`${PUBLIC}${TOOL_RESULT_HUMAN_PROOF_PATH}`, proofBody)).status === 404);
+  check("human proof decision on the daemon requires the host capability", (await post(`${LOOPBACK}${TOOL_RESULT_HUMAN_PROOF_PATH}`, proofBody)).status === 401);
+  check("ordinary signed IdP proof without password provenance refuses consent on the real daemon",
+    (await post(`${LOOPBACK}${TOOL_RESULT_HUMAN_PROOF_PATH}`, proofBody, { authorization: `Bearer ${info!.cap}` })).status === 403);
+  check("real daemon refuses mixed human and agent proof fields",
+    (await post(`${LOOPBACK}${TOOL_RESULT_HUMAN_PROOF_PATH}`, { ...proofBody, actorToken: "inert-fixture" }, { authorization: `Bearer ${info!.cap}` })).status === 400);
   const viewPublic = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "purger" });
   check("a `view` request is REFUSED on the public face (403)", viewPublic.status === 403, viewPublic.body);
   check("…naming it as a loopback operator surface", /loopback/i.test(String(viewPublic.body.error)), viewPublic.body);
@@ -713,7 +721,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 95;
+const EXPECTED = 99;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);
