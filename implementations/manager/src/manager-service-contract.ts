@@ -557,14 +557,17 @@ const PURGE_OUTPUT_SCHEMA = {
 } as const;
 
 const CHANNEL_LIST = { type: "array", items: { type: "string" } } as const;
+/** `define-persona` input. A `model`, `role` or `agent` that is present must say something: the
+ *  handler writes it as given, and a blank role or agent would become the persona's anycast address
+ *  or connector pin. To leave one unset, or keep a redefined file's value, omit it. */
 const PERSONA_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name", "persona"],
   properties: {
     name: { type: "string", minLength: 1 },
     persona: { type: "string", minLength: 1 },
-    model: { type: "string" },
-    role: { type: "string" },
-    agent: { type: "string" },
+    model: nonBlank(),
+    role: nonBlank(),
+    agent: nonBlank(),
     subscribe: CHANNEL_LIST,
     allowSubscribe: CHANNEL_LIST,
     allowPublish: CHANNEL_LIST,
@@ -1018,7 +1021,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  27 = manager `status` adds `lastSweep.error`: why a static reconciliation sweep stopped before
  *  it planned any alias. A changed output contract is a changed described surface even though the
- *  command name is unchanged. */
+ *  command name is unchanged.
+ *
+ *  28 = `define-persona` input refuses an empty or whitespace-only `model`, `role` or `agent`. A
+ *  changed input contract is a changed described surface even though the command name is
+ *  unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1036,7 +1043,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 27,
+    revision: 28,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

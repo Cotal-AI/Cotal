@@ -107,7 +107,9 @@ it online, so a peer can mint a teammate with no hand-written file
 complete agent file (its own `---` frontmatter) is **merged** into one block: grants,
 role, and agent from that block survive, and explicit tool arguments such as `model` win.
 A malformed leading frontmatter block is refused (`prompt-frontmatter`) rather than
-wrapped. `capabilities` and `owner` remain policy and have no slot, so a peer cannot
+wrapped. An empty or whitespace-only `model`, `role` or `agent` is refused with
+`bad-request` naming the field; omit it to leave the field unset, or unchanged on a
+redefine. `capabilities` and `owner` remain policy and have no slot, so a peer cannot
 grant itself spawn or claim ownership. A persona with no `capabilities:` line therefore
 spawns **without** `spawn`, and a spawn whose effective role is `manager` is **refused at
 spawn time** rather than joining as a labelled manager that silently cannot seat workers:

@@ -10067,7 +10067,6 @@ export class Manager {
     if (nameErr) return { ok: false, error: nameErr };
     const persona = String(args.persona ?? "").trim();
     if (!persona) return { ok: false, error: "persona required" };
-    const model = args.model !== undefined && args.model !== null && String(args.model) !== "" ? String(args.model) : undefined;
     const path = agentFilePath(this.workspaceRoot, name);
     let existing: AgentDef | undefined;
     if (existsSync(path)) {
@@ -10092,9 +10091,9 @@ export class Manager {
           name,
           owner: caller,
           prompt: persona,
-          model,
-          role: args.role !== undefined && args.role !== null && String(args.role) !== "" ? String(args.role) : undefined,
-          agent: args.agent !== undefined && args.agent !== null && String(args.agent) !== "" ? String(args.agent) : undefined,
+          model: args.model as string | undefined,
+          role: args.role as string | undefined,
+          agent: args.agent as string | undefined,
           subscribe: strList(args.subscribe),
           allowSubscribe: strList(args.allowSubscribe),
           allowPublish: strList(args.allowPublish),
