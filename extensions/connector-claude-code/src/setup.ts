@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -132,7 +132,11 @@ function materialize(name: string, root: string, assets: readonly string[], vers
 }
 
 function command(...args: string[]): { status: number | null; output: string } {
-  const result = spawnSync("claude", args, { encoding: "utf8" });
+  return commandIn(process.cwd(), ...args);
+}
+
+function commandIn(cwd: string, ...args: string[]): { status: number | null; output: string } {
+  const result = spawnSync("claude", args, { cwd, encoding: "utf8" });
   return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }
 
@@ -206,21 +210,9 @@ function listPlugins(): PluginEntry[] {
   return entries as PluginEntry[];
 }
 
-const samePath = (a: unknown, b: string): boolean => {
-  if (typeof a !== "string") return false;
-  try {
-    return realpathSync(a) === realpathSync(b);
-  } catch {
-    return false;
-  }
-};
-
-/** A local-scope install is this directory's, and is listed from here, where `enabled` describes it. */
 function verify(name: string, scope: string, expectedVersion?: string): void {
-  const match = listPlugins().find(
-    (entry) => entry.id === `${name}@${MARKETPLACE}` && entry.scope === scope && (scope !== "local" || samePath(entry.projectPath, process.cwd())),
-  );
-  const where = `${scope} scope${scope === "local" ? `, ${process.cwd()}` : ""}`;
+  const match = listPlugins().find((entry) => entry.id === `${name}@${MARKETPLACE}` && entry.scope === scope);
+  const where = `${scope} scope`;
   if (!match) throw new Error(`plugin ${name}@${MARKETPLACE} (${where}) is not installed`);
   if (match.enabled !== true || (match as { errors?: unknown[] }).errors?.length)
     throw new Error(`plugin ${name}@${MARKETPLACE} (${where}) did not load: ${JSON.stringify({ enabled: match.enabled, errors: match.errors })}`);
@@ -237,6 +229,22 @@ function install(name: string, scope: string, expectedVersion?: string): void {
     if (update.status !== 0) throw new Error(`plugin update failed (${name}):\n${update.output}`);
   }
   verify(name, scope, expectedVersion);
+}
+
+/** Removes the per-project installs of the `cotal` plugin that earlier releases made, once the user-scope
+ *  install covers every project. Each is removed from its own project, where Claude Code keeps its
+ *  record. A project whose directory is gone has no settings left to enable the plugin, so its record is
+ *  left as it is. Returns how many it removed. */
+function retireProjectInstalls(): number {
+  let removed = 0;
+  for (const entry of listPlugins()) {
+    if (entry.id !== `cotal@${MARKETPLACE}` || entry.scope !== "local" || typeof entry.projectPath !== "string") continue;
+    if (!existsSync(entry.projectPath)) continue;
+    const result = commandIn(entry.projectPath, "plugin", "uninstall", `cotal@${MARKETPLACE}`, "--scope", "local");
+    if (result.status !== 0) throw new Error(`plugin uninstall failed (cotal, local scope, ${entry.projectPath}):\n${result.output}`);
+    removed += 1;
+  }
+  return removed;
 }
 
 
@@ -283,6 +291,7 @@ function pluginRow(entries: PluginEntry[] | undefined, { version }: ConnectorSta
     materialized = undefined;
   }
   if (typeof materialized !== "string" || !materialized.startsWith(`${version}+`)) return row("warn", "stale · run `cotal setup`");
+  if (installs.some((entry) => entry.scope === "user")) return row("ok", "current (user scope)");
   return row("ok", `current (${installs.length} install${installs.length === 1 ? "" : "s"})`);
 }
 
@@ -327,13 +336,15 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
   connector: {
     name: "claude-plugin",
     title: "Install the Claude Code plugin",
-    explain: "Lets a Claude Code session join the web and wake on peer messages.",
+    explain: "Lets every Claude Code session on this machine join the web and wake on peer messages.",
     context: [DOCS_URL],
     run({ cotal }) {
       materializeCotal(cotal);
-      install("cotal", "local");
+      install("cotal", "user");
+      const removed = retireProjectInstalls();
       const app = desktop(cotal, true);
-      return `cotal@${MARKETPLACE} (local scope)${app ? `; ${app}` : ""}`;
+      const replaced = removed ? `, replacing ${removed} project install${removed === 1 ? "" : "s"}` : "";
+      return `cotal@${MARKETPLACE} (user scope${replaced})${app ? `; ${app}` : ""}`;
     },
   },
   refresh: {

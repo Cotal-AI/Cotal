@@ -1,8 +1,10 @@
 /**
- * The `cotal` plugin a plain Claude Code session loads stays current. Claude Code runs a plugin from a
- * local-directory marketplace in place, from its folder, so the folder setup materializes is what every
- * install runs. This drives the real setup provider against the real `claude` CLI, with Claude's config
- * and Cotal's home in a scratch directory, and asks Claude Code what it would start in each project.
+ * The `cotal` plugin a plain Claude Code session loads stays current, in every project. Setup installs it
+ * at user scope, so each project on the machine loads it, and moves the per-project installs earlier
+ * releases made under that one. Claude Code runs a plugin from a local-directory marketplace in place,
+ * from its folder, so the folder setup materializes is what every install runs. This drives the real
+ * setup provider against the real `claude` CLI, with Claude's config and Cotal's home in a scratch
+ * directory, and asks Claude Code what it would start in each project.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -17,7 +19,8 @@ process.env.CLAUDE_CONFIG_DIR = join(ROOT, "claude");
 process.env.COTAL_HOME = join(ROOT, "cotal");
 const PROJECT_A = join(ROOT, "a");
 const PROJECT_B = join(ROOT, "b");
-for (const dir of [process.env.CLAUDE_CONFIG_DIR, process.env.COTAL_HOME, PROJECT_A, PROJECT_B]) mkdirSync(dir, { recursive: true });
+const PROJECT_GONE = join(ROOT, "gone");
+for (const dir of [process.env.CLAUDE_CONFIG_DIR, process.env.COTAL_HOME, PROJECT_A, PROJECT_B, PROJECT_GONE]) mkdirSync(dir, { recursive: true });
 if (spawnSync("claude", ["--version"]).status !== 0) throw new Error("this suite drives the real Claude Code CLI; put `claude` on PATH");
 
 const { claudeSetupProvider } = await import("../src/setup.js");
@@ -34,14 +37,20 @@ function ok(label: string, fn: () => void): void {
   console.log(`  ✓ ${label}`);
 }
 
-/** The projects with a local install of the cotal plugin, as Claude Code records them. */
-function installedIn(): string[] {
+/** The installs of the cotal plugin, as Claude Code records them: `user`, or `local:<project>`. */
+function installs(): string[] {
   const out = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" });
   assert.equal(out.status, 0, out.stderr);
   return (JSON.parse(out.stdout) as { id: string; scope: string; projectPath?: string }[])
-    .filter((e) => e.id === "cotal@cotal-mesh" && e.scope === "local")
-    .map((e) => e.projectPath!)
+    .filter((e) => e.id === "cotal@cotal-mesh")
+    .map((e) => (e.scope === "local" ? `local:${e.projectPath}` : e.scope))
     .sort();
+}
+
+/** `claude plugin <args>` run in `dir`, as an earlier release's setup or a person would. */
+function plugin(dir: string, ...args: string[]): void {
+  const out = spawnSync("claude", ["plugin", ...args], { cwd: dir, encoding: "utf8" });
+  assert.equal(out.status, 0, `${out.stdout}${out.stderr}`);
 }
 
 /** A user's terminal: no Cotal launch identity and no enclosing Claude Code session, which a suite run
@@ -77,16 +86,18 @@ try {
   console.log("plugin-refresh-live.smoke:");
   ok("refresh with nothing installed installs nothing", () => {
     assert.equal(refresh.run({ cotal: cli("one") }), "not installed");
-    assert.deepEqual(installedIn(), []);
+    assert.deepEqual(installs(), []);
   });
 
-  inProject(PROJECT_A, () => connector.run({ cotal: cli("one") }));
-  ok("setup installs the plugin in its project, stamped with this release and a digest", () => {
-    assert.deepEqual(installedIn(), [PROJECT_A]);
+  const setupText = inProject(PROJECT_A, () => connector.run({ cotal: cli("one") })) as string;
+  ok("setup installs the plugin at user scope, stamped with this release and a digest", () => {
+    assert.deepEqual(installs(), ["user"]);
+    assert.ok(setupText.startsWith("cotal@cotal-mesh (user scope)"), setupText);
     assert.match(folderVersion(), new RegExp(`^${RELEASE.replace(/\./g, "\\.")}\\+[0-9a-f]{12}$`));
   });
   ok("the copy setup wrote is this package's build and records the CLI setup was given", () => {
     assert.equal(sha(join(FOLDER, "dist", "mcp.cjs")), sha(join(PACKAGE, "dist", "mcp.cjs")));
+    assert.equal(sha(join(FOLDER, "dist", "hook.cjs")), sha(join(PACKAGE, "dist", "hook.cjs")));
     assert.equal(sha(join(FOLDER, "dist", "monitor.cjs")), sha(join(PACKAGE, "dist", "monitor.cjs")));
     assert.deepEqual(folderCli(), cli("one"));
   });
@@ -95,15 +106,12 @@ try {
     assert.ok(line.includes(join(FOLDER, "dist", "mcp.cjs")), line);
     assert.match(line, /Connected/);
   });
-
-  inProject(PROJECT_B, () => connector.run({ cotal: cli("one") }));
   const first = folderVersion();
-  ok("a second project runs the same copy", () => {
-    assert.deepEqual(installedIn(), [PROJECT_A, PROJECT_B]);
+  ok("a project setup never ran in starts the same copy", () => {
     assert.ok(startedIn(PROJECT_B).includes(join(FOLDER, "dist", "mcp.cjs")));
   });
-  ok("status calls the copy current", () => {
-    assert.deepEqual(status(RELEASE), { label: "Claude plugin", state: "ok", text: "current (2 installs)" });
+  ok("status calls the copy current at user scope", () => {
+    assert.deepEqual(status(RELEASE), { label: "Claude plugin", state: "ok", text: "current (user scope)" });
   });
   ok("status after an upgrade, before setup runs again, calls the copy stale", () => {
     assert.deepEqual(status("999.0.0"), { label: "Claude plugin", state: "warn", text: "stale · run `cotal setup`" });
@@ -115,15 +123,38 @@ try {
     assert.notEqual(folderVersion(), first);
     assert.deepEqual(folderCli(), cli("two"));
     assert.equal(text, `cotal@cotal-mesh ${folderVersion()}; each Claude Code session loads it when it starts`);
-    assert.deepEqual(installedIn(), [PROJECT_A, PROJECT_B]);
+    assert.deepEqual(installs(), ["user"]);
   });
-  ok("after the refresh both projects still start the rewritten copy", () => {
+  ok("after the refresh both projects start the rewritten copy", () => {
     for (const dir of [PROJECT_A, PROJECT_B]) assert.ok(startedIn(dir).includes(join(FOLDER, "dist", "mcp.cjs")));
   });
   ok("a second refresh with the same CLI writes the same version", () => {
     const before = folderVersion();
     refresh.run({ cotal: cli("two") });
     assert.equal(folderVersion(), before);
+  });
+
+  // An earlier release installed the plugin per project, at local scope. One of those projects has since
+  // been deleted.
+  plugin(ROOT, "uninstall", "cotal@cotal-mesh", "--scope", "user");
+  for (const dir of [PROJECT_A, PROJECT_B, PROJECT_GONE]) plugin(dir, "install", "cotal@cotal-mesh", "--scope", "local");
+  rmSync(PROJECT_GONE, { recursive: true });
+  ok("status counts an earlier release's per-project installs", () => {
+    assert.deepEqual(status(RELEASE), { label: "Claude plugin", state: "ok", text: "current (3 installs)" });
+  });
+  const moved = inProject(ROOT, () => connector.run({ cotal: cli("two") })) as string;
+  ok("setup moves the per-project installs under one user-scope install", () => {
+    assert.ok(moved.startsWith("cotal@cotal-mesh (user scope, replacing 2 project installs)"), moved);
+    assert.deepEqual(installs(), [`local:${PROJECT_GONE}`, "user"]);
+  });
+  ok("both projects still start the copy, now from the user-scope install", () => {
+    for (const dir of [PROJECT_A, PROJECT_B]) assert.ok(startedIn(dir).includes(join(FOLDER, "dist", "mcp.cjs")));
+    assert.deepEqual(status(RELEASE), { label: "Claude plugin", state: "ok", text: "current (user scope)" });
+  });
+  ok("a repeat setup leaves the one install in place", () => {
+    const again = inProject(PROJECT_B, () => connector.run({ cotal: cli("two") })) as string;
+    assert.ok(again.startsWith("cotal@cotal-mesh (user scope)"), again);
+    assert.deepEqual(installs(), [`local:${PROJECT_GONE}`, "user"]);
   });
 
   console.log(`plugin-refresh-live.smoke: ${checks} checks passed`);

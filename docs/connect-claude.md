@@ -26,8 +26,9 @@ cotal setup      # one-time: installs the plugin, seeds one agent; launches noth
 cotal up         # brings up the mesh + delivery daemon + a detached manager
 ```
 
-`cotal setup` installs the cotal plugin (so the repo's Claude sessions get the `cotal_*`
-tools), shares your own MCP servers with spawned sessions on its first run (see
+`cotal setup` installs the cotal plugin for your user account, so every Claude Code session on
+this machine gets the `cotal_*` tools, in any project. That covers the terminal, the IDE extensions
+and the Desktop app's local Code sessions. It also shares your own MCP servers with spawned sessions on its first run (see
 [Sharing your MCP servers](#sharing-your-mcp-servers)), and seeds one `default` persona; `cotal up` brings up the local stack so
 `cotal spawn --detach` / `cotal_spawn` work right away. Re-running either is idempotent.
 Claude Code runs the plugin in place from the copy under `~/.cotal/claude-plugin`, so a repeat
@@ -161,8 +162,15 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   the plugin's `.mcp.json` (personal plugin sessions) both pass these flags. `--lite-mode` and
   `--jitless` would save more, but they remove `WebAssembly`, which Node's built-in `fetch` needs,
   so WebAssembly stays enabled.
-- **Installed plugin.** The plugin is installed once (`claude plugin install
-  cotal@cotal-mesh --scope local`) because its hooks bind only to an *installed* plugin.
+- **Light hook.** Claude Code starts the plugin's hook as a new process for every tool call, prompt
+  and stop. The hook imports `@cotal-ai/core` only through small subpaths such as
+  `@cotal-ai/core/peer-label`, never the package root, which would bundle YAML and NATS into it.
+  `pnpm smoke:claude-hook-weight` holds that.
+- **Installed plugin.** The plugin is installed once, at user scope (`claude plugin install
+  cotal@cotal-mesh --scope user`), because its hooks bind only to an *installed* plugin. Earlier
+  releases installed it per project, at local scope; the next `cotal setup` removes those installs and
+  keeps the user-scope one. A session Cotal launches loads the package's own copy with `--plugin-dir`,
+  which replaces the installed one for that session, so it still runs one cotal server.
   The repo's `.claude-plugin/marketplace.json` lists the committed plugin tree under
   `claude-plugin/`, which each release regenerates with the built bundles, the skills and the
   release version, so an install from the repo or from a pinned commit runs without a build
@@ -174,7 +182,7 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   its version tracks the CLI release so updates land.
 - **Identity-gated.** A launched session joins under the identity in `COTAL_NAME`, `COTAL_LINK`
   or `COTAL_AGENT_FILE`. A plain `claude` with none of them joins only when its conversation calls
-  `cotal_connect`, so your own sessions in a repo do not appear as stray peers. Until then its MCP
+  `cotal_connect`, so your own sessions do not appear as stray peers. Until then its MCP
   server builds no mesh agent and opens no broker connection. See
   [Sessions Cotal did not launch](#sessions-cotal-did-not-launch).
 - **Hands-free.** The dev-channels flag prints a one-time confirm prompt. The runtime waits for the
