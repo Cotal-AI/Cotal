@@ -579,12 +579,14 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
 
     const repoRoot = resolve(import.meta.dirname, "../../..");
     const tsxBin = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+    const tsxEsmLoader = join(repoRoot, "node_modules", "tsx", "dist", "esm", "index.mjs");
     const cliDir = join(repoRoot, "implementations", "cli");
     const managerDir = join(repoRoot, "implementations", "manager");
     const cliSpawnSrc = join(cliDir, "src", "commands", "spawn.ts");
     const cliManagedHandoffSrc = join(cliDir, "src", "managed-handoff.ts");
     const managerSrc = join(managerDir, "src", "manager.ts");
     const connectorCoreSrc = join(repoRoot, "extensions", "connector-core", "src", "index.ts");
+    const coreSrc = join(repoRoot, "packages", "core", "src", "index.ts");
 
     // N1b + R3a + R3b + R3c: drive shipped Manager.start() + startAgent (delegated and local), recoverManagedSession, and resumePreservedAgent
     const mgrRes = spawnSync(
@@ -1052,9 +1054,11 @@ process.exit(0);
       COTAL_BEARER_CMD: JSON.stringify(makeBearerCmd(delegatedActor, delegatedLog)),
     };
 
-    // N1a: drive the cotal spawn handoff branch all the way through connector.buildLaunch (spawn.ts:1250),
-    // applyHandoffManagerInstance(spec, handoffManagerInstanceId) (spawn.ts:1280), and spawnProcess (spawn.ts:1303)
+    // N1a + R5: drive both the cotal spawn handoff branch and a direct (non-handoff) cotal spawn
+    // all the way through connector.buildLaunch (spawn.ts:1250), applyHandoffManagerInstance (spawn.ts:1280),
+    // and spawnProcess (spawn.ts:1303-1307)
     const handoffChildEnvPath = join(dir, "handoff-child-env.json");
+    const directChildEnvPath = join(dir, "direct-child-env.json");
     const spawnHopEnv: Record<string, string | undefined> = {
       ...launchEnv(),
       PATH: process.env.PATH ?? "",
@@ -1063,7 +1067,11 @@ process.exit(0);
       COTAL_MANAGED_HANDOFF_FILE: delegated?.env.COTAL_MANAGED_HANDOFF_FILE ?? handoffFilePath,
       PROBE_SPACE: space,
       PROBE_SERVERS: servers,
+      PROBE_SPACE_AUTH: JSON.stringify(auth),
+      PROBE_AMBIENT_MANAGER_INSTANCE: delegatedInstanceId,
       PROBE_CHILD_ENV_OUT: handoffChildEnvPath,
+      PROBE_DIRECT_CHILD_ENV_OUT: directChildEnvPath,
+      PROBE_DIRECT_PERSONA: handoffPersonaPath,
       PROBE_DELEGATED_ARGS: JSON.stringify(delegated?.args.slice(1) ?? [
         "--config", handoffPersonaPath,
         "--space", space,
@@ -1091,7 +1099,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCommandArgs, registry } from "@cotal-ai/core";
 import { aclEnv, launchEnv } from ${JSON.stringify(connectorCoreSrc)};
-import { recordMesh } from "@cotal-ai/workspace";
+import { recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { takeManagedHandoffCustody } from ${JSON.stringify(cliManagedHandoffSrc)};
 import * as spawnMod from ${JSON.stringify(cliSpawnSrc)};
 
@@ -1100,6 +1108,7 @@ takeManagedHandoffCustody(process.env);
 const space = process.env.PROBE_SPACE!;
 const servers = process.env.PROBE_SERVERS!;
 const childEnvOut = process.env.PROBE_CHILD_ENV_OUT!;
+const directChildEnvOut = process.env.PROBE_DIRECT_CHILD_ENV_OUT!;
 const spawnArgs = JSON.parse(process.env.PROBE_DELEGATED_ARGS!) as string[];
 
 const cDir = mkdtempSync(join(tmpdir(), "cli-handoff-"));
@@ -1152,38 +1161,66 @@ registry.register({
     allowSubscribe?: string[];
     allowPublish?: string[];
     capabilities?: string[];
-  }) => ({
-    command: process.execPath,
-    args: ["-e", "import('node:fs').then(fs => fs.writeFileSync(" + JSON.stringify(childEnvOut) + ", JSON.stringify(process.env)))"],
-    env: {
-      ...launchEnv(),
-      ...aclEnv(opts),
-      COTAL_SPACE: opts.space,
-      COTAL_NAME: opts.name,
-      COTAL_SERVERS: String(opts.servers),
-      ...(opts.lifecycleUid ? { COTAL_LIFECYCLE_UID: opts.lifecycleUid } : {}),
-      ...(opts.userAuth
-        ? {
-            COTAL_OWNER: opts.userAuth.owner,
-            COTAL_ACTOR: opts.userAuth.actor,
-            COTAL_SENTINEL_CREDS: opts.userAuth.sentinelCredsPath,
-            COTAL_BEARER_CMD: JSON.stringify(opts.userAuth.bearerCmd),
-          }
-        : {}),
-    },
-  }),
+  }) => {
+    const outPath = opts.name === "direct_spawn_seat" ? directChildEnvOut : childEnvOut;
+    return {
+      command: process.execPath,
+      args: ["-e", "import('node:fs').then(fs => fs.writeFileSync(" + JSON.stringify(outPath) + ", JSON.stringify(process.env)))"],
+      env: {
+        ...launchEnv(),
+        ...aclEnv(opts),
+        COTAL_SPACE: opts.space,
+        COTAL_NAME: opts.name,
+        COTAL_SERVERS: String(opts.servers),
+        ...(opts.lifecycleUid ? { COTAL_LIFECYCLE_UID: opts.lifecycleUid } : {}),
+        ...(opts.userAuth
+          ? {
+              COTAL_OWNER: opts.userAuth.owner,
+              COTAL_ACTOR: opts.userAuth.actor,
+              COTAL_SENTINEL_CREDS: opts.userAuth.sentinelCredsPath,
+              COTAL_BEARER_CMD: JSON.stringify(opts.userAuth.bearerCmd),
+            }
+          : {}),
+      },
+    };
+  },
 });
 
-const directSpec = { command: "true", args: [], env: { ...launchEnv() } };
 const fn = (spawnMod as { applyHandoffManagerInstance?: (s: unknown, id: string | undefined) => void }).applyHandoffManagerInstance;
 const hasFn = typeof fn === "function";
-if (hasFn) fn(directSpec, undefined);
 
 const cmd = { kind: "command" as const, name: "spawn", summary: "spawn", flags: spawnMod.spawnFlags, run: spawnMod.spawn };
 await spawnMod.spawn(parseCommandArgs(cmd, spawnArgs));
 const handoffEnv = JSON.parse(readFileSync(childEnvOut, "utf8")) as Record<string, string | undefined>;
+
+// R5: direct (non-handoff) cotal spawn while the parent environment carries an ambient COTAL_MANAGER_INSTANCE
+process.env.COTAL_MANAGER_INSTANCE = process.env.PROBE_AMBIENT_MANAGER_INSTANCE!;
+const parentManagerInstance = process.env.COTAL_MANAGER_INSTANCE;
+const directWs = join(cDir, "direct-ws");
+mkdirSync(join(directWs, ".cotal", "agents"), { recursive: true });
+saveSpaceAuth(join(directWs, ".cotal", "auth"), JSON.parse(process.env.PROBE_SPACE_AUTH!));
+recordMesh({
+  space,
+  root: directWs,
+  server: servers,
+  mode: "auth",
+  origin: "manual",
+  policyCheckedAt: new Date().toISOString(),
+  ts: new Date().toISOString(),
+});
+await spawnMod.spawn(
+  parseCommandArgs(cmd, [
+    "--config", process.env.PROBE_DIRECT_PERSONA!,
+    "--space", space,
+    "--name", "direct_spawn_seat",
+    "--agent", "smoke-delegated",
+    "--live-only",
+  ]),
+);
+const directEnv = JSON.parse(readFileSync(directChildEnvOut, "utf8")) as Record<string, string | undefined>;
+
 rmSync(cDir, { recursive: true, force: true });
-console.log("SPAWN_HOP_JSON:" + JSON.stringify({ hasFn, handoffEnv, directEnv: directSpec.env }));
+console.log("SPAWN_HOP_JSON:" + JSON.stringify({ hasFn, parentManagerInstance, handoffEnv, directEnv }));
 process.exit(0);
 `,
       ],
@@ -1198,6 +1235,7 @@ process.exit(0);
     const spawnHop = spawnHopLine
       ? (JSON.parse(spawnHopLine.slice("SPAWN_HOP_JSON:".length)) as {
           hasFn?: boolean;
+          parentManagerInstance?: string;
           handoffEnv?: Record<string, string | undefined>;
           directEnv?: Record<string, string | undefined>;
         })
@@ -1213,6 +1251,32 @@ process.exit(0);
         got: spawnHop?.handoffEnv?.COTAL_MANAGER_INSTANCE,
         expected: delegatedInstanceId,
         directGot: spawnHop?.directEnv?.COTAL_MANAGER_INSTANCE,
+        status: spawnHopRes.status,
+        stderr: spawnHopRes.stderr,
+      },
+    );
+    const directSpawnCfg = spawnHop?.directEnv
+      ? configFromEnv({
+          ...spawnHop.directEnv,
+          COTAL_SPACE: space,
+          COTAL_NAME: "direct_spawn_seat",
+          COTAL_SERVERS: servers,
+        })
+      : undefined;
+    check(
+      "R5: direct cotal spawn with ambient COTAL_MANAGER_INSTANCE in parent env delivers no COTAL_MANAGER_INSTANCE to spawnProcess child env and leaves the child unpinned",
+      spawnHopRes.status === 0 &&
+        spawnHop?.parentManagerInstance === delegatedInstanceId &&
+        spawnHop?.directEnv !== undefined &&
+        !("COTAL_MANAGER_INSTANCE" in spawnHop.directEnv) &&
+        spawnHop.directEnv.COTAL_MANAGER_INSTANCE === undefined &&
+        directSpawnCfg !== undefined &&
+        directSpawnCfg.managerInstanceId === undefined,
+      {
+        parentManagerInstance: spawnHop?.parentManagerInstance,
+        directChildManagerInstance: spawnHop?.directEnv?.COTAL_MANAGER_INSTANCE,
+        hasManagerInstanceKey: spawnHop?.directEnv ? "COTAL_MANAGER_INSTANCE" in spawnHop.directEnv : undefined,
+        parsedManagerInstanceId: directSpawnCfg?.managerInstanceId,
         status: spawnHopRes.status,
         stderr: spawnHopRes.stderr,
       },
@@ -1257,9 +1321,13 @@ process.exit(0);
     const n2Home = join(n2Dir, "home");
     const n2Xdg = join(n2Dir, "xdg");
     const n2Work = join(n2Dir, "work");
+    const n2Cwd = join(n2Dir, "cwd");
+    const n2Tmp = join(n2Dir, "tmp");
     mkdirSync(n2Home, { recursive: true });
     mkdirSync(n2Xdg, { recursive: true });
     mkdirSync(n2Work, { recursive: true });
+    mkdirSync(n2Cwd, { recursive: true });
+    mkdirSync(n2Tmp, { recursive: true });
     const handoffNoInstPath = join(n2Work, "handoff-no-instance.json");
     const personaNoInstPath = join(n2Work, "seat-no-instance.md");
     writeFileSync(handoffNoInstPath, "not-even-json\n", { mode: 0o600 });
@@ -1267,7 +1335,8 @@ process.exit(0);
     const n2Env: Record<string, string | undefined> = {
       ...launchEnv(),
       PATH: process.env.PATH ?? "",
-      TMPDIR: dir,
+      TMPDIR: n2Tmp,
+      TSX_DISABLE_CACHE: "1",
       COTAL_HOME: n2Home,
       XDG_CONFIG_HOME: n2Xdg,
       NO_COLOR: "1",
@@ -1283,30 +1352,31 @@ process.exit(0);
     const n2Res = spawnSync(
       process.execPath,
       [
-        tsxBin,
+        "--import",
+        tsxEsmLoader,
         "--input-type=module",
         "-e",
         `
-import { parseCommandArgs } from "@cotal-ai/core";
+import { parseCommandArgs } from ${JSON.stringify(coreSrc)};
 import { takeManagedHandoffCustody } from ${JSON.stringify(cliManagedHandoffSrc)};
 import { spawn, spawnFlags } from ${JSON.stringify(cliSpawnSrc)};
 
 takeManagedHandoffCustody(process.env);
-const cmd = { kind: "command" as const, name: "spawn", summary: "spawn", flags: spawnFlags, run: spawn };
+const cmd = { kind: "command", name: "spawn", summary: "spawn", flags: spawnFlags, run: spawn };
 await spawn(
   parseCommandArgs(cmd, [
-    "--config", process.env.PROBE_PERSONA!,
-    "--space", process.env.PROBE_SPACE!,
-    "--name", process.env.PROBE_ACTOR!,
+    "--config", process.env.PROBE_PERSONA,
+    "--space", process.env.PROBE_SPACE,
+    "--name", process.env.PROBE_ACTOR,
     "--agent", "claude",
-    "--expect-owner", process.env.PROBE_OWNER!,
-    "--expect-lifecycle-uid", process.env.PROBE_SEAT_UID!,
+    "--expect-owner", process.env.PROBE_OWNER,
+    "--expect-lifecycle-uid", process.env.PROBE_SEAT_UID,
   ]),
 );
 `,
       ],
       {
-        cwd: cliDir,
+        cwd: n2Cwd,
         env: n2Env,
         encoding: "utf8",
         timeout: 30_000,
@@ -1319,6 +1389,8 @@ await spawn(
         !existsSync(handoffNoInstPath) &&
         readdirSync(n2Home).length === 0 &&
         readdirSync(n2Xdg).length === 0 &&
+        readdirSync(n2Cwd).length === 0 &&
+        readdirSync(n2Tmp).length === 0 &&
         readdirSync(n2Work).length === 1 &&
         readdirSync(n2Work)[0] === "seat-no-instance.md" &&
         (n2Res.stderr ?? "").replace(/\x1b\[[0-9;]*m/g, "") ===
@@ -1330,6 +1402,8 @@ await spawn(
         fileStillExists: existsSync(handoffNoInstPath),
         homeEntries: readdirSync(n2Home),
         xdgEntries: readdirSync(n2Xdg),
+        cwdEntries: readdirSync(n2Cwd),
+        tmpEntries: readdirSync(n2Tmp),
         workEntries: readdirSync(n2Work),
       },
     );
@@ -1347,7 +1421,7 @@ await spawn(
   }
 }
 
-const EXPECTED_CELLS = 48;
+const EXPECTED_CELLS = 49;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

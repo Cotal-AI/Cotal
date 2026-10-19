@@ -195,6 +195,15 @@
       "expectRed": "R3c: Manager.resumePreservedAgent sets COTAL_MANAGER_INSTANCE on the resumed spec.env when the connector buildLaunch does not",
       "cell": "R3c: Manager.resumePreservedAgent sets COTAL_MANAGER_INSTANCE on the resumed spec.env when the connector buildLaunch does not",
       "note": "Dropping COTAL_MANAGER_INSTANCE in resumePreservedAgent leaves a resumed seat without managerInstanceId."
+    },
+    {
+      "name": "MX1: forward ambient process.env.COTAL_MANAGER_INSTANCE on a direct cotal spawn",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "    applyHandoffManagerInstance(spec, handoffManagerInstanceId);\n    artifacts = spec.artifacts;\n    scrubEnrollmentEnv(spec.env);",
+      "replace": "    applyHandoffManagerInstance(spec, handoffManagerInstanceId ?? process.env.COTAL_MANAGER_INSTANCE);\n    artifacts = spec.artifacts;\n    scrubEnrollmentEnv(spec.env);",
+      "expectRed": "R5: direct cotal spawn with ambient COTAL_MANAGER_INSTANCE in parent env delivers no COTAL_MANAGER_INSTANCE to spawnProcess child env and leaves the child unpinned",
+      "cell": "R5: direct cotal spawn with ambient COTAL_MANAGER_INSTANCE in parent env delivers no COTAL_MANAGER_INSTANCE to spawnProcess child env and leaves the child unpinned",
+      "note": "Falling back to process.env.COTAL_MANAGER_INSTANCE at spawn.ts:1280 pins a direct cotal spawn child to an ambient manager instance id."
     }
   ],
   "why": [
