@@ -4156,7 +4156,7 @@ dispatches on the type, never duck-types the claims.
 
 | Artifact | Required claims | Replay rule |
 | --- | --- | --- |
-| Private tool-result consent (§13.19) | consent id, target (owner, actor, lifecycleUid), same-owner interactive holder, window of at most 24 hours | holder-bound; create-only issuance and revocation records; canonical START frontier and current revocation/lifecycle checks per §13.19 |
+| Private tool-result consent (§13.19) | consent id, space, target (owner, actor, lifecycleUid), same-owner interactive holder, iat and exp (the window of at most 24 hours), signing keyId and sig (§13.10) | holder-bound; create-only issuance and revocation records; canonical START frontier and current revocation/lifecycle checks per §13.19 |
 | Capability handle | id, space, issuer, holder (principal+UID), structured grants, iat, exp (nbf, parentDigest, epoch as applicable) | reusable within TTL, holder-bound; revocable if sturdy |
 | Checkpoint resume | checkpoint token, goal id, holder (principal+UID), iat, exp, nonce | **one-use** (journaled by create-only CAS); duplicate = `conflict` |
 | Session grant | sessionId, subjects, holder (principal+UID+processEpoch), serving instance+epoch, window, iat, exp, nonce | **one-use** redemption (holder epoch fresh-checked), then live; dies with either side's epoch |
@@ -4961,8 +4961,8 @@ created; a RESULT MUST NOT create an entry.
 #### 13.19.3 Audience
 
 At START, each journal entry MUST record the fixed set of consent ids eligible for it. That set
-MUST NOT grow. A lookup by holder `h` may return the entry only if an id in its set remains active,
-unexpired and unrevoked and names `h`. Revoking, expiring or withdrawing consent `c` MUST remove
+MUST NOT grow. A lookup MUST NOT return the entry to holder `h` unless an id in its set remains
+active, unexpired and unrevoked and names `h`. Revoking, expiring or withdrawing consent `c` MUST remove
 `c` from every entry; an entry with an empty set MUST be deleted. Replacing a holder's consent MUST
 revoke the old consent before applying the new frontier, discarding results visible only through
 the old consent. A newly consented holder MUST NOT read results captured before its own frontier.
@@ -5023,6 +5023,9 @@ space or epoch change.
 | `available` | Thread id, tool call id, content, truncated flag, byte count, error flag and capture time |
 | `pending` | Thread id and tool call id |
 | `not-shared`, `missing`, `expired` | None |
+
+The `expired` answer state belongs to a successful `tool-result` reply. It is distinct from the
+`expired` refusal code for an expired serving file (§13.19.4) or a mismatched epoch (§13.3).
 
 Empty or falsy content such as `""`, `"0"`, `"false"` and `"null"` MUST be treated as a result.
 Content MUST be inert text bounded to 64 KiB of UTF-8. The journal MUST hold at most 256 entries,
