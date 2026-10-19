@@ -1525,6 +1525,12 @@ export function authorizeTrustedServeSnapshot(args: {
   return grant;
 }
 
+/** The registration read needed to derive a serve grant. A native KV satisfies it; an
+ * authenticated remote snapshot supplies only this read, never a writable KV or a JSON brand. */
+export interface ServiceSpecReader {
+  get(key: string): Promise<Pick<NonNullable<Awaited<ReturnType<KV["get"]>>>, "operation" | "value" | "revision"> | null>;
+}
+
 /**
  * Authorize a serve credential against the REGISTERED service (§13.9: serving is granted
  * authority, dual to calling — the registry is discovery, the serve grant is the authority).
@@ -1547,7 +1553,7 @@ export function authorizeTrustedServeSnapshot(args: {
  * produces the surface, the gate serializes its release against takeover and re-registration.
  */
 export async function authorizeServeGrant(
-  kv: KV,
+  kv: ServiceSpecReader,
   args: {
     space: string;
     endpoint: string;

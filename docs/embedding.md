@@ -33,6 +33,22 @@ the full `up` orchestration are **not** public runners: `up` also does broker br
 process and registry management, and lifecycle work, and `supervise`'s orchestration is private (see
 [Supervisor signing authority](#supervisor-signing-authority)).
 
+## Service authority contracts
+
+`@cotal-ai/core` exports closed service-authority request, proof and result types and their
+runtime parsers. The parsers bind a result to the submitted request and registration witness.
+`AuthProvider.serviceEndpointAuthority` is an optional provider hook for this protocol. A provider
+without the hook must refuse service setup. The current provider does not implement it yet.
+
+`parseEndpointCapabilities` normalizes the native caller capability shape. `endpointCapabilitiesWithin`
+checks route, instance, target and journal containment using the native grant builders. The host
+still authenticates the granter and checks current grantee, parent and approval records.
+Cross-principal relative-target comparisons refuse when containment is unproved.
+
+`authorizeServeGrant` accepts a read-only `ServiceSpecReader`. A trusted provider can supply
+verified registration and contract reads without constructing a writable KV adapter. The function
+still derives the complete serving surface and creates the process-local grant.
+
 ## Owner-bound platform supervisors
 
 A host can start one user's supervisor without retaining that user's login. Pass

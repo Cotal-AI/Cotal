@@ -1,6 +1,7 @@
 import { execFile, type ExecFileException } from "node:child_process";
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
+import type { ServiceAuthorityProof, ServiceAuthorityRequest, ServiceAuthorityResult } from "./remote-service-authority.js";
 import type {
   RemoteManagerAdminAuthorizationRequest,
   RemoteManagerAdminAuthorizationResult,
@@ -113,6 +114,15 @@ export interface AuthProvider extends Extension {
   hasSpaceCatalog?(opts: { dir: string; idpUrl: string; sub: string }): boolean;
   /** Clear one account's provider cache and return its opaque registry ownership key. */
   removeSpaceCatalog?(opts: { dir: string; idpUrl: string; sub: string }): string;
+  /** Generic user-auth service registration. The provider supplies IdP proof when no service
+   * proof is supplied, validates its pinned authority origin, and returns that space's deny-all
+   * sentinel alongside the checked result. It never enrolls an actor or falls back to static auth. */
+  serviceEndpointAuthority?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: ServiceAuthorityRequest;
+    proof?: Exclude<ServiceAuthorityProof, { kind: "idp" }>;
+  }): Promise<{ result: ServiceAuthorityResult; sentinelCreds: string }>;
   /**
    * Request the closed remote manager-service authority material from the host's loopback/operator
    * exchange. This is an explicitly typed lifecycle protocol, not a generic profile mint: the
