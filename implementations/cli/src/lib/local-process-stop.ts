@@ -95,8 +95,10 @@ export async function stopLocalProcess(
 
   if (rawPid.startsWith("removing:")) {
     const owner = parsePid(rawPid.slice("removing:".length));
+    // "Stale, remove that file" is advice to delete the record, so only an owner proven gone gets it:
+    // an `unknown` owner may still be the `cotal ext remove` that wrote it.
     throw new Error(
-      owner && probeLiveness(owner) === "alive"
+      owner && probeLiveness(owner) !== "dead"
         ? `${component.name} extension removal is in progress (pid ${owner})`
         : `${component.name} has a stale extension-removal reservation at ${pidPath} - remove that file and retry`,
     );
