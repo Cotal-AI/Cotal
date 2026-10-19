@@ -1,0 +1,3 @@
+# A hosted Claude session's card reports its own SessionStart directory, never the host's. Added with
+# the suite in #4070, which defined the script but not this fragment, so nothing ran it.
+smoke:claude-hosted-session-directory
