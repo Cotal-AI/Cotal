@@ -18,6 +18,7 @@ import { mdxjs } from 'micromark-extension-mdxjs';
 import { decodeString } from 'micromark-util-decode-string';
 import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
+import { parse as parseYaml } from 'yaml';
 import { PROMPT_FENCE } from '../src/prompt.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -390,8 +391,18 @@ for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;
   const file = join(skillsDir, entry.name, 'SKILL.md'); // missing SKILL.md fails the sync
   const raw = readFileSync(file);
-  const description = raw.toString('utf8').match(/^description:\s*"?(.+?)"?\s*$/m)?.[1];
-  if (!description) throw new Error(`no description frontmatter in ${file}`);
+  // The description is read from the frontmatter that opens the file, parsed as YAML, so a folded,
+  // quoted or escaped value publishes the text it means and a body line is never taken for it.
+  const frontmatter = raw.toString('utf8').match(/^---\r?\n((?:.*\r?\n)*?)---[ \t]*(?:\r?\n|$)/)?.[1];
+  if (frontmatter === undefined) throw new Error(`no frontmatter in ${file}`);
+  let description;
+  try {
+    description = parseYaml(frontmatter)?.description;
+  } catch (err) {
+    throw new Error(`invalid frontmatter in ${file}`, { cause: err });
+  }
+  if (typeof description !== 'string' || !description.trim())
+    throw new Error(`no description frontmatter in ${file}`);
   skills.push({
     name: entry.name,
     type: 'skill-md',
