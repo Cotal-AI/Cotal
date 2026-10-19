@@ -12,6 +12,22 @@ export const SERVICE_ACCESS_TTL_SECONDS = 60;
 export const SERVICE_RENEWAL_TTL_SECONDS = 24 * 60 * 60;
 export const SERVICE_AUTHORITY_MAX_BYTES = 2 * 1024 * 1024;
 
+/** Non-authorizing account metadata read through the client's already-pinned authority origin. */
+export interface ServiceAuthorityInfo {
+  v: 1;
+  kind: "service-endpoint-authority-info";
+  space: string;
+  accountPublicKey: string;
+}
+
+/** A transport failure never permits a new mutation identity or an unqualified replay. */
+export class ServiceAuthorityTransportError extends Error {
+  constructor(message: string, readonly outcome: "not-executed" | "unknown", readonly httpStatus?: number) {
+    super(message);
+    this.name = "ServiceAuthorityTransportError";
+  }
+}
+
 export interface ServicePrincipal {
   owner: string;
   actor: string;
@@ -181,6 +197,16 @@ function artifacts(raw: unknown): void {
     if (seen.has(id)) invalid("duplicate contract artifact");
     seen.add(id);
   }
+}
+
+export function parseServiceAuthorityInfo(raw: unknown, expectedSpace: string): ServiceAuthorityInfo {
+  const o = record(raw, "authority info");
+  closed(o, ["v", "kind", "space", "accountPublicKey"]);
+  spacePrefix(expectedSpace);
+  if (o.v !== 1 || o.kind !== "service-endpoint-authority-info" || o.space !== expectedSpace)
+    invalid("authority info does not match this space and protocol");
+  if (typeof o.accountPublicKey !== "string" || !isAccountNkey(o.accountPublicKey)) invalid("invalid DATA-account public key");
+  return { v: 1, kind: "service-endpoint-authority-info", space: expectedSpace, accountPublicKey: o.accountPublicKey };
 }
 
 export function parseServiceRegistrationWitness(raw: unknown): ServiceRegistrationWitness {
@@ -378,7 +404,8 @@ export function serviceEndpointActor(tuple: {
   spacePrefix(tuple.space); assertDerivedOwnerToken(tuple.owner); endpointToken(tuple.endpoint);
   assertLifecycleToken(tuple.instanceId, "instanceId");
   const bytes = canonicalJson([1, tuple.accountPublicKey, tuple.space, tuple.owner, tuple.endpoint, tuple.instanceId, "serve"]);
-  return `svc_${createHash("sha256").update(bytes, "utf8").digest("base64url")}`;
+  const hash = createHash("sha256").update(bytes, "utf8").digest("hex");
+  return assertBoundedOwner(`svc_${BigInt(`0x${hash}`).toString(36).padStart(50, "0")}`, "service actor");
 }
 
 export function serviceWitnessDigest(witness: ServiceRegistrationWitness): string {

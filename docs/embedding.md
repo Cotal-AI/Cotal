@@ -38,7 +38,15 @@ process and registry management, and lifecycle work, and `supervise`'s orchestra
 `@cotal-ai/core` exports closed service-authority request, proof and result types and their
 runtime parsers. The parsers bind a result to the submitted request and registration witness.
 `AuthProvider.serviceEndpointAuthority` is an optional provider hook for this protocol. A provider
-without the hook must refuse service setup. The current provider does not implement it yet.
+without the hook must refuse service setup. The user-auth provider implements the HTTP client,
+including `serviceEndpointInfo` for the DATA-account binding. It uses the pinned exchange origin,
+refuses redirects and does not retry an unknown mutation outcome. The client does not transmit
+the local host capability or read callout signing material. Local setup needs the client sentinel
+projection written by `prepareServer`; a missing projection refuses rather than reading server secrets.
+
+`@cotal-ai/auth` exports host request and view types with `parseServiceHostRequest`. Parsing checks
+structure only, not owner consent, current grants or admission state. The host handlers and native
+service lifecycle are not implemented yet, so these interfaces do not enable service registration.
 
 `parseEndpointCapabilities` normalizes the native caller capability shape. `endpointCapabilitiesWithin`
 checks route, instance, target and journal containment using the native grant builders. The host

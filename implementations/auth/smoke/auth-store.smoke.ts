@@ -248,7 +248,7 @@ try {
   check("…and no IdP pin was written at the aliased dir", !existsSync(join(aliasedDir, "idp.json")));
 
   // ---------- 7. deprovision: the delete half of the pair ----------
-  console.log("7) deprovisionSecrets deletes the four kinds through the store, all-attempt + fail-loud");
+  console.log("7) deprovisionSecrets deletes secrets and the client projection through the store, all-attempt + fail-loud");
   const deleted: string[] = [];
   const recordingDeleter: SecretStore = {
     get: async () => undefined,
@@ -257,8 +257,8 @@ try {
     delete: async (key) => { deleted.push(key); },
   };
   await cotalAuthProvider.deprovisionSecrets({ store: recordingDeleter, space: "hosted" });
-  check("deprovision deletes exactly the four canonical keys",
-    deleted.length === 4 && ["callout.json", "issuer.json", "owner-secret.json", "service-keys.json"]
+  check("deprovision deletes all five canonical keys",
+    deleted.length === 5 && ["callout.json", "issuer.json", "owner-secret.json", "service-keys.json", "client-sentinel.creds"]
       .every((f) => deleted.includes(`auth/space.686f73746564/${f}`)), deleted.join(", "));
   const failingDeleter: SecretStore = {
     get: async () => undefined,
@@ -269,8 +269,8 @@ try {
   deleted.length = 0;
   await rejects("one failed delete still attempts the rest, then throws naming the key",
     () => cotalAuthProvider.deprovisionSecrets({ store: failingDeleter, space: "hosted" }),
-    `1 of 4 keys (${authIssuerKey("hosted")}: backend down`);
-  check("…all four deletes were attempted despite the failure", deleted.length === 4, deleted.join(", "));
+    `1 of 5 keys (${authIssuerKey("hosted")}: backend down`);
+  check("…all five deletes were attempted despite the failure", deleted.length === 5, deleted.join(", "));
   // End-to-end on the real filesystem composition: the material section 1 persisted is removed
   // through the store (absent callout = idempotent no-op), leaving no secret files behind.
   await cotalAuthProvider.deprovisionSecrets({ store, space: SPACE });

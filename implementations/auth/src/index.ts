@@ -197,3 +197,5 @@ export {
 // surface.
 
 export type { AuthConnectionState, AuthServiceClosed } from "./owned-connections.js";
+
+export * from "./service-host-contract.js";

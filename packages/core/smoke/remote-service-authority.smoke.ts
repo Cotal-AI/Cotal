@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { assertBoundedOwner } from "../src/endpoint-subjects.js";
 import { createAccount } from "@nats-io/nkeys";
 import { contractDigest } from "../src/canonical.js";
 import {
-  parseServiceAuthorityEnvelope, parseServiceAuthorityRequest, parseServiceAuthorityResult,
+  parseServiceAuthorityEnvelope, parseServiceAuthorityInfo, parseServiceAuthorityRequest, parseServiceAuthorityResult,
   parseServiceRegistrationWitness, serviceAuthorityRequestDigest, serviceEndpointActor, serviceWitnessDigest,
   type ServiceAuthorityRequest, type ServiceRegistrationWitness,
 } from "../src/remote-service-authority.js";
@@ -41,8 +42,17 @@ const credential = {
   accessBearer: "fixture-access", accessExpiresAt: 60, renewalProof: "fixture-renewal", renewalExpiresAt: 3600,
 };
 
-assert.equal(actor.length, 47);
-assert.match(actor, /^[A-Za-z0-9_-]+$/);
+const info = { v: 1, kind: "service-endpoint-authority-info", space: identity.space, accountPublicKey: identity.accountPublicKey };
+assert.deepEqual(parseServiceAuthorityInfo(info, identity.space), info);
+assert.throws(() => parseServiceAuthorityInfo(info, "other-space"), /does not match/);
+assert.throws(() => parseServiceAuthorityInfo({ ...info, token: "fixture" }, identity.space), /unsupported fields/);
+assert.throws(() => parseServiceAuthorityInfo({ ...info, accountPublicKey: "invalid" }, identity.space), /DATA-account/);
+
+assert.equal(actor.length, 54);
+assert.match(actor, /^svc_[a-z0-9]{50}$/);
+assert.equal(assertBoundedOwner(actor, "service actor"), actor);
+const regressionActor = serviceEndpointActor({ ...identity, accountPublicKey: "ADWIN6MSGKUAPVYX2OR5YNMCNVCQ6XNMZ3YNEOZFP2HD63VB6IWZ4WJT", instanceId: "00000000000000000000000000000001" });
+assert.equal(assertBoundedOwner(regressionActor, "service actor"), regressionActor);
 assert.equal(actor, serviceEndpointActor(identity));
 for (const change of [{ endpoint: "org.example.other" }, { instanceId: "2".repeat(32) }, { space: "other-space" }, { accountPublicKey: createAccount().getPublicKey() }])
   assert.notEqual(actor, serviceEndpointActor({ ...identity, ...change }));

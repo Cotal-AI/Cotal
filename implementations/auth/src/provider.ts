@@ -18,6 +18,8 @@ import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment
 import { readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { acquireLock, AgentGrantConflictError } from "@cotal-ai/core";
+import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@cotal-ai/core";
+import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl } from "./service-authority-client.js";
 import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, hashActorToken, newActorToken, revokeManagedActor, revokeManagedActorAt } from "./ledger.js";
@@ -25,6 +27,7 @@ import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./contin
 import {
   AUTH_PROVIDER_NAME,
   authCalloutKey,
+  authClientSentinelKey,
   authIssuerKey,
   authOwnerSecretKey,
   authServiceKeysKey,
@@ -104,6 +107,7 @@ export const cotalAuthProvider: AuthProvider = {
     await ensureOwnerSecret(store, space);
     await ensureIssuer(store, space);
     const callout = await ensureCalloutAuth(store, { space, operatorSeed: input.operatorSeed, accountPub: input.account.pub });
+    await store.put(authClientSentinelKey(space), callout.sentinelCreds);
     // The daemon's ONLY signing material: the data-account user-minting seed. Written by this
     // (briefly privileged) call; the long-lived service loads this projection, never the space bundle.
     await saveServiceKeys(store, space, { dataAccount: { pub: input.account.pub, signingSeed: input.account.signingSeed } });
@@ -235,6 +239,27 @@ export const cotalAuthProvider: AuthProvider = {
     if (typeof out.token !== "string" || !out.token)
       throw new Error(`the auth service's exchange returned no token - its build may be stale; restart it with \`cotal up\``);
     return { bearer: out.token, sentinelCreds: callout.sentinelCreds };
+  },
+
+  async serviceEndpointInfo({ store, dir, space }) {
+    const target = serviceClientTarget(store, dir, space);
+    return readRemoteServiceAuthorityInfo(target.base, space);
+  },
+
+  async serviceEndpointAuthority({ store, dir, request: raw, proof }) {
+    const request = parseServiceAuthorityRequest(raw);
+    const target = serviceClientTarget(store, dir, request.space);
+    serviceAuthorityUrl(target.base);
+    if (proof !== undefined && proof.kind !== "service-renewal" && proof.kind !== "service-access")
+      throw new Error("service authority client accepts only its own login or a service proof");
+    const checked = parseServiceAuthorityEnvelope({ request, proof: proof ?? { kind: "idp", token: "pending-login" } });
+    const sentinelCreds = await target.readSentinel();
+    if (!sentinelCreds) throw new Error("service authority client has no sentinel projection; refresh the registered space before setup");
+    const actualProof = proof === undefined
+      ? { kind: "idp" as const, token: await fetchIdpJwt(target.idpUrl, requireIdpSession(homeCotalDir(), target.idpUrl).token) }
+      : checked.proof;
+    const result = await postRemoteServiceAuthority(target.base, { request, proof: actualProof });
+    return { result, sentinelCreds };
   },
 
   async managerServiceAuthority({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerAuthorityRequest }): Promise<RemoteManagerAuthorityMaterial> {
@@ -480,11 +505,11 @@ export const cotalAuthProvider: AuthProvider = {
     }
   },
 
-  /** The delete half of the seam pair: drop the four secret kinds from the store, attempting all
-   *  four even when one fails (idempotent deletes — a failed pass re-runs as-is), then fail loud
+  /** The delete half of the seam pair: drop secrets and the client sentinel projection, attempting
+   *  every key even when one fails (idempotent deletes — a failed pass re-runs as-is), then fail loud
    *  with everything that failed. The caller sweeps its non-seam local state only after this. */
   async deprovisionSecrets({ store, space }) {
-    const keys = [authCalloutKey(space), authIssuerKey(space), authOwnerSecretKey(space), authServiceKeysKey(space)];
+    const keys = [authCalloutKey(space), authIssuerKey(space), authOwnerSecretKey(space), authServiceKeysKey(space), authClientSentinelKey(space)];
     const failures: string[] = [];
     for (const key of keys) {
       try {
@@ -640,6 +665,23 @@ function remoteUserAuthEntry(
     typeof ua.sentinelCredsPath === "string" &&
     resolve(ua.sentinelCredsPath).startsWith(resolve(dir) + sep);
   return bound ? (ua as UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) : undefined;
+}
+
+/** Client-only service transport. The local arm reads a powerless sentinel projection, never
+ * the callout account document. It sends no loopback capability. Remote pins remain dir-bound. */
+function serviceClientTarget(store: SecretStore, dir: string, space: string): {
+  base: string; idpUrl: string; readSentinel(): Promise<string | undefined>;
+} {
+  const remote = remoteUserAuthEntry(dir, space);
+  if (remote) return {
+    base: remote.endpoints.url, idpUrl: remote.idp.url,
+    readSentinel: async () => readFileSync(remote.sentinelCredsPath, "utf8"),
+  };
+  const idp = loadPinnedIdp(dir);
+  const info = loadAuthServiceInfo(dir);
+  if (!idp || !info || !pidAlive(info.pid))
+    throw new Error("service authority has no live local service or pinned remote registration; configure the user-auth space before setup");
+  return { base: info.url, idpUrl: idp.url, readSentinel: () => store.get(authClientSentinelKey(space)) };
 }
 
 /** The `/exchange` body both client arms send. It names each coordinate rather than spreading the

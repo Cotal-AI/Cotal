@@ -422,6 +422,8 @@
     "smoke:grammar": "tsx packages/core/smoke/grammar.smoke.ts",
     "smoke:ep-grammar": "tsx packages/core/smoke/endpoint-grammar.smoke.ts",
     "smoke:ep-grants": "tsx packages/core/smoke/endpoint-grants.smoke.ts",
+    "smoke:service-authority-client": "tsx implementations/auth/smoke/service-authority-client.smoke.ts",
+    "smoke:service-host-contract": "tsx implementations/auth/smoke/service-host-contract.smoke.ts",
     "smoke:remote-service-authority": "tsx packages/core/smoke/remote-service-authority.smoke.ts",
     "smoke:ep-capability-policy": "tsx packages/core/smoke/endpoint-capability-policy.smoke.ts",
     "smoke:frozen-exports": "tsx packages/core/smoke/frozen-exports.smoke.ts",
