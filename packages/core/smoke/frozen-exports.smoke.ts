@@ -99,7 +99,8 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
 // wildcard, an opaque deep-import subpath, an undeclared addition, or a subpath exposing an
 // off-barrel collection fails HERE, at authoring time. ("./session-browser" is the browser-safe
 // session rail and frame codec re-export for the console bundle. "./launch-material" is the
-// launch-material reader the lifecycle hook relay imports without loading the barrel.
+// launch-material reader the lifecycle hook relay imports without loading the barrel, and
+// "./peer-label" is the peer label its frame rendering prints, for the same reason.
 // "./browser-control" and "./browser-validators-build" are the Node-free browser describe/invoke
 // entry and its build-time validator generator; their callers never load the barrel, so their
 // entry functions live only there.)
@@ -109,6 +110,7 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
   const ALLOWED_SUBPATHS = new Map<string, { mod: Record<string, unknown>; additions: readonly string[] }>([
     ["./session-browser", { mod: await import("../src/session-browser.js") as Record<string, unknown>, additions: [] }],
     ["./launch-material", { mod: await import("../src/launch-material.js") as Record<string, unknown>, additions: [] }],
+    ["./peer-label", { mod: await import("../src/peer-label.js") as Record<string, unknown>, additions: [] }],
     ["./browser-control", { mod: await import("../src/browser-control.js") as Record<string, unknown>, additions: ["browserServiceSurface", "openBrowserEndpointCaller"] }],
     ["./browser-validators-build", { mod: await import("../src/browser-validators-build.js") as Record<string, unknown>, additions: ["generateBrowserContracts"] }],
   ]);

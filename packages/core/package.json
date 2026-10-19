@@ -40,6 +40,10 @@
       "types": "./dist/launch-material.d.ts",
       "import": "./dist/launch-material.js"
     },
+    "./peer-label": {
+      "types": "./dist/peer-label.d.ts",
+      "import": "./dist/peer-label.js"
+    },
     "./browser-control": {
       "types": "./dist/browser-control.d.ts",
       "import": "./dist/browser-control.js"

@@ -1,0 +1,3 @@
+# The Claude Code lifecycle hook runs as a new process on every tool call, so its bundle must not reach
+# the @cotal-ai/core barrel or the YAML and NATS modules behind it.
+smoke:claude-hook-weight

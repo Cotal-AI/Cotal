@@ -15,7 +15,7 @@
  * core's peer label, so the hook relay can reach it without pulling a tool surface in behind it, and
  * so neither surface can drift into a second convention.
  */
-import { peerLabel } from "@cotal-ai/core";
+import { peerLabel } from "@cotal-ai/core/peer-label";
 import type { InboxItem } from "./agent.js";
 
 /**
