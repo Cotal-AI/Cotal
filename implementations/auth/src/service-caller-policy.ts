@@ -135,7 +135,7 @@ export async function readNativeServiceCallerPolicy(reg: LifecycleRegistry, bind
 }
 async function write(reg: LifecycleRegistry, binding: ServiceCallerPolicyBinding, row: NativeServiceCallerPolicy, revision: number): Promise<NativeServiceCallerPolicyRead> {
   const { kv, key } = context(reg, binding), parsed = parseNativeServiceCallerPolicy(row), bytes = enc.encode(canonicalJson(parsed));
-  try { return { row: parsed, revision: revision === 0 ? await kv.create(key, bytes) : await kv.update(key, bytes, revision) }; }
+  try { return { row: parsed, revision: revision === 0 ? await kv.put(key, bytes, { previousSeq: 0 }) : await kv.update(key, bytes, revision) }; }
   catch (error) {
     if (isCasLoss(error)) conflict("native caller policy changed; re-read before another mutation");
     throw new EpEnvelopeError("unavailable", "native caller policy write outcome is unknown; retain the operation identity");

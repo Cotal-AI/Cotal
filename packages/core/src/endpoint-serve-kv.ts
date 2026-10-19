@@ -31,7 +31,8 @@ const dec = new TextDecoder();
 export async function createRowByteIdempotent(kv: KV, key: string, value: unknown): Promise<void> {
   const bytes = JSON.stringify(value);
   try {
-    await kv.create(key, enc.encode(bytes));
+    // KV.create can recreate a tombstone. A staged identity must have no prior history.
+    await kv.put(key, enc.encode(bytes), { previousSeq: 0 });
   } catch (e) {
     if (!isRawCasLoss(e))
       throw new EpEnvelopeError("unavailable", `creating the row ${key} is ambiguous; the mint fails closed (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);

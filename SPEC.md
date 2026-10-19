@@ -1369,6 +1369,10 @@ normalized capabilities, source and parent references, and status. Source and pa
 name immutable grant ids at their original grantee UIDs. Source instance is provenance; native
 capability route and instance fields still determine request reach.
 
+Initial policy and create-only service authority writes require zero prior key history at the
+write CAS. A deletion or purge marker, including one arriving after an absence read, MUST refuse
+recreation. An additional pre-read is not this fence.
+
 A new grant is appended at the observed policy revision. An existing id cannot change its capability
 or provenance and cannot become active again after revocation starts. Revocation first records
 `{state:"revoking",operationId,phase:"cutoff-required"}` at that revision. Unrelated writes preserve

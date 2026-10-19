@@ -7,8 +7,9 @@ import { createAccount } from "@nats-io/nkeys";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { contractDigest, createEndpointStreams, isReachable, mintLifecycleUid } from "@cotal-ai/core";
+import { contractDigest, createEndpointStreams, epgateKey, isReachable, mintLifecycleUid } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { createPendingServiceGate } from "../src/native-service-gate.js";
 import { openLifecycleRegistry, registryStores } from "../src/lifecycle-registry.js";
 import { appendNativeServiceCallerGrant, beginNativeServiceCallerRevocation, parseNativeServiceCallerPolicy, readNativeServiceCallerPolicy } from "../src/service-caller-policy.js";
 import type { ServiceCallerGrant } from "../src/service-host-contract.js";
@@ -63,6 +64,51 @@ try {
     { ...policy.row, grants: [{ ...grant, capabilities: [{ endpoint: "org.example.other", command: "read" }] }] },
     { ...policy.row, grants: [{ ...grant, parentRefs: [{ principal: binding.grantee, grants: [{ granteeUid: mintLifecycleUid(), grantId: grant.grantId }] }] }] },
   ]) assert.throws(() => parseNativeServiceCallerPolicy(bad));
+  const recreationFailures: string[] = [];
+  for (const marker of ["DEL", "PURGE"] as const) {
+    const raceBinding = { ...binding, grantee: { ...binding.grantee, lifecycleUid: mintLifecycleUid() } };
+    const key = `servicepolicy.${raceBinding.grantee.lifecycleUid}`;
+    const kv = registryStores(reg).authKv, competingKv = registryStores(otherWriter).authKv;
+    assert.notEqual(kv, competingKv);
+    const originalGet = kv.get;
+    let reached!: () => void, proceed!: () => void;
+    const atRead = new Promise<void>((resolve) => { reached = resolve; });
+    const releaseRead = new Promise<void>((resolve) => { proceed = resolve; });
+    kv.get = async (...args) => {
+      const entry = await originalGet.apply(kv, args);
+      if (args[0] === key && !entry) { reached(); await releaseRead; }
+      return entry;
+    };
+    const pending = appendNativeServiceCallerGrant(reg, raceBinding, { expectedRevision: 0, grant })
+      .then(() => ({ accepted: true }), () => ({ accepted: false }));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([atRead, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("native absence read did not pause")), 5000); })]);
+      clearTimeout(timer);
+      const competing = await appendNativeServiceCallerGrant(otherWriter, raceBinding, { expectedRevision: 0, grant });
+      await beginNativeServiceCallerRevocation(otherWriter, raceBinding, { expectedRevision: competing.revision, grantId: grant.grantId, operationId });
+      if (marker === "DEL") await competingKv.delete(key); else await competingKv.purge(key);
+      const before = (await competingKv.get(key))!;
+      assert.equal(before.operation, marker);
+      proceed();
+      const outcome = await pending, after = (await competingKv.get(key))!;
+      if (outcome.accepted || after.operation !== marker || after.revision !== before.revision)
+        recreationFailures.push(`${marker}: initial absence writer recreated the policy after deny-new and deletion`);
+    } finally { clearTimeout(timer); proceed(); kv.get = originalGet; await pending; }
+  }
+  const serviceBinding = { accountPublicKey: binding.accountPublicKey, space, owner: binding.grantee.owner,
+    endpoint: "org.example.policy-history", instanceId: mintLifecycleUid(), lifecycleUid: mintLifecycleUid(),
+    assignmentDigest: contractDigest({ assignment: "history-fence" }) };
+  await createPendingServiceGate(reg, serviceBinding);
+  const serviceKey = epgateKey(serviceBinding.endpoint, serviceBinding.instanceId);
+  await registryStores(reg).authKv.delete(serviceKey);
+  const deletedGate = (await registryStores(reg).authKv.get(serviceKey))!;
+  let recreatedGate = false;
+  try { await createPendingServiceGate(reg, serviceBinding); recreatedGate = true; } catch { /* expected refusal */ }
+  const afterGate = (await registryStores(reg).authKv.get(serviceKey))!;
+  if (recreatedGate || afterGate.operation !== "DEL" || afterGate.revision !== deletedGate.revision)
+    recreationFailures.push("service gate: create-only helper recreated a deleted pending assignment");
+  assert.deepEqual(recreationFailures, [], "initial authority creation never adopts deletion history after an absent read");
   const mutableBinding = { ...binding, grantee: { ...binding.grantee } };
   const mutableGrant = { ...grant, grantId: "9".repeat(32), capabilities: [{ endpoint: grant.endpoint, command: "read" }] };
   const inFlight = appendNativeServiceCallerGrant(reg, mutableBinding, { expectedRevision: policy.revision, grant: mutableGrant });
