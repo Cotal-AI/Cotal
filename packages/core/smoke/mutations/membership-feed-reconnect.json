@@ -35,7 +35,7 @@
     {
       "name": "closed epoch delete rejects public stop instead of deferring cleanup",
       "file": "packages/core/src/endpoint.ts",
-      "find": "          if (timeout || closedEpoch || dyingEpochTimeout) {\n            this.emit(\"error\", err as Error);\n          } else {\n            throw err;\n          }\n",
+      "find": "          if (timeout || closedEpoch) {\n            this.emit(\"error\", err as Error);\n          } else {\n            throw err;\n          }\n",
       "replace": "          throw err;\n",
       "expectRed": "public stop concurrent with terminal close resolves after fresh cleanup",
       "cell": "public stop concurrent with terminal close resolves after fresh cleanup",

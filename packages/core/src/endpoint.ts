@@ -3269,11 +3269,10 @@ export class CotalEndpoint extends EventEmitter {
         } else {
           const closedEpoch = err instanceof ClosedConnectionError;
           const timeout = err instanceof TimeoutError;
-          const dyingEpochTimeout = timeout && (this.reconnecting || !this.nc || this.nc.isClosed());
           // Cleanup of an ordered consumer: a delete timeout means the broker did not answer in time,
           // not that the endpoint is unusable. The broker reaps an idle/ephemeral consumer anyway.
           // Throwing here killed a live observer over a slow VPN (#1047). Catch, surface, continue.
-          if (timeout || closedEpoch || dyingEpochTimeout) {
+          if (timeout || closedEpoch) {
             this.emit("error", err as Error);
           } else {
             throw err;
