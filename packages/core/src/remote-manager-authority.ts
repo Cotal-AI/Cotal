@@ -1,4 +1,5 @@
-import { rawDigest } from "./canonical.js";
+import { fromPublic } from "@nats-io/nkeys";
+import { rawDigest, canonicalJson } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
 import { isAccountNkey, isUserNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken } from "./subjects.js";
@@ -406,6 +407,17 @@ export interface RemoteManagedAgentRuntimeStatusRequest extends Omit<RemoteManag
 
 export type RemoteManagedAgentRuntimeRequest = RemoteManagedAgentRuntimeCreateRequest | RemoteManagedAgentRuntimeStatusRequest;
 
+/** SPEC §13.19's declaration-only serving request. Parsing grants no authority; the auth
+ *  and host owners must implement current registration, child, snapshot and clock checks. */
+export interface RemoteManagedAgentToolResultServingRequest extends RemoteManagerEnvelope {
+  v: 1;
+  kind: "manager-managed-agent-tool-result-serving";
+  accountPublicKey: string;
+  serveEpoch: number;
+  operation: "issue" | "renew";
+  target: { owner: string; actor: string; lifecycleUid: string };
+}
+
 /** The host's answer to a runtime create or status request: the request echo plus the host state. */
 export interface RemoteManagedAgentRuntimeResult {
   v: 1;
@@ -702,6 +714,34 @@ function parseRemoteManagedAgentRuntimeRequest<K extends RemoteManagedAgentRunti
       lifecycleUid: assertLifecycleToken(t.lifecycleUid, `${what} target lifecycleUid`),
     },
   } as Extract<RemoteManagedAgentRuntimeRequest, { kind: K }>;
+}
+
+/** Parse the closed issue/renew request through the shared managed-agent envelope.
+ *  There is no dispatch, signer, resume operation or caller-selected profile in this slice. */
+export function parseRemoteManagedAgentToolResultServingRequest(raw: unknown): RemoteManagedAgentToolResultServingRequest {
+  const what = "managed agent tool-result serving";
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) enrollmentError(what, "must be an object");
+  let o: Record<string, unknown>;
+  try { o = JSON.parse(canonicalJson(raw)) as Record<string, unknown>; }
+  catch { enrollmentError(what, "must be interchangeable JSON"); }
+  const keys = new Set([...RUNTIME_REQUEST_KEYS, "operation", "accountPublicKey"]);
+  for (const key of Object.keys(o))
+    if (!keys.has(key)) enrollmentError(what, "carries an unknown field (the protocol is closed)");
+  if (o.operation !== "issue" && o.operation !== "renew") enrollmentError(what, "operation must be issue or renew");
+  try {
+    const envelope = parseManagedAgentEnvelope(o, what, "manager-managed-agent-tool-result-serving");
+    if (!/^[A-Za-z0-9_-]+$/.test(envelope.space)) enrollmentError(what, "space must be a literal routing token");
+    const target = Object.freeze(parseRetirementTarget(o.target, what));
+    const accountPublicKey = parseAccountPublicKey(o.accountPublicKey, what);
+    fromPublic(accountPublicKey);
+    for (const identity of Object.values(envelope.identities)) Object.freeze(identity);
+    Object.freeze(envelope.identities);
+    return Object.freeze({ v: 1, kind: "manager-managed-agent-tool-result-serving", ...envelope,
+      accountPublicKey, operation: o.operation, target });
+  } catch (error) {
+    if (error instanceof EpEnvelopeError) throw error;
+    enrollmentError(what, "has invalid identity coordinates");
+  }
 }
 
 /** Parse a runtime-create request without retaining unknown input fields. */

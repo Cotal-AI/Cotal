@@ -323,7 +323,14 @@ embedder can say how its conversations listen and keep how they connect.
 ### Private tool results
 
 [SPEC §13.19](../SPEC.md#1319-private-tool-results) accepts a private, consent-bound read path for
-managed-agent tool results. It is not implemented or enabled and adds no usable export here.
+managed-agent tool results. It is not served or enabled. Core exports the closed
+`ToolResultConsent`, `ToolResultRevocation` and `ToolResultServingMaterial` contracts, their
+parsers, and the frozen `TOOL_RESULTS_CLUSTER` declaration. These parse structure and static
+bindings only. They do not verify a consent signature, establish human proof or read current
+revocation and lifecycle state. The serving material's grant coordinates are not a branded
+`EpServeGrant` and confer no authority. `parseToolResultAnswer` also checks the UTF-8 byte count;
+a schema's character limit alone is not the byte bound.
+
 Public tool arguments and results remain withheld. Auth and host issuance, Manager material,
 connector capture and the browser caller must each be landed and qualified in the
 [design's owner order](design/private-tool-results.md#9-owner-order), then carried by a stock

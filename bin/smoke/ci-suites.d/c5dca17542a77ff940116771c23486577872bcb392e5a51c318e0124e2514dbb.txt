@@ -1,0 +1,2 @@
+# Closed declaration-only private tool-result contracts, through the shipped core exports.
+smoke:private-tool-results-contracts

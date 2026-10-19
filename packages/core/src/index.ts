@@ -108,6 +108,7 @@ export * from "./run-migration.js";
 export * from "./run-program.js";
 export * from "./run-driver-grants.js";
 export * from "./turn-contract.js";
+export * from "./private-tool-results.js";
 export * from "./run-host.js";
 export * from "./issued-authority.js";
 export * from "./run-admission.js";

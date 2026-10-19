@@ -550,6 +550,7 @@
     "smoke:reload-store-identity": "tsx implementations/delivery/smoke/reload-store-identity.smoke.ts",
     "smoke:artifact-contract": "tsx packages/core/smoke/artifact-contract.smoke.ts",
     "smoke:schema-profile": "tsx packages/core/smoke/schema-profile.smoke.ts",
+    "smoke:private-tool-results-contracts": "tsx packages/core/smoke/private-tool-results-contract.smoke.ts",
     "smoke:safe-pattern-fuzz": "tsx packages/core/smoke/safe-pattern-fuzz.smoke.ts",
     "smoke:ep-envelope": "tsx packages/core/smoke/endpoint-envelope.smoke.ts",
     "smoke:broker-floor": "tsx packages/core/smoke/broker-floor.smoke.ts",
