@@ -261,11 +261,11 @@ export async function down(args: ParsedArgs): Promise<void> {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-// The pid parser + liveness probe are the SHARED pid-attribution contract (`lib/pid.ts`), the same
-// one `auth-proc` uses - so `cotal down`'s stop of the auth-service (a callout SIGNER) attributes a
-// torn pidfile exactly as the direct helper does, instead of the old unbounded parser + two-state
-// probe that mapped a kernel-unsignalable value to "dead" and orphaned the process under a clean
-// stop. `isAlive` = the probe says the process EXISTS; every caller below feeds it a parsed pid.
+// The pid parser + liveness probe are the SHARED pid-attribution contract in `@cotal-ai/workspace`,
+// the same one `auth-proc` uses, so `cotal down`'s stop of the auth-service (a callout SIGNER)
+// attributes a torn pidfile the same way the direct helper does. `isAlive` is the presence check:
+// true only when the probe proves the process EXISTS, so `dead` and `unknown` both read false.
+// Every caller below feeds it a parsed pid.
 export const isAlive = (pid: number): boolean => probeLiveness(pid) === "alive";
 
 /** Registered brokers for this root that answer and have no nats pidfile. Never a kill list. */
