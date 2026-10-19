@@ -5451,7 +5451,8 @@ export class Manager {
   /** The harness binaries a managed launch runs, as boot resolved them, or the refusal naming what is
    *  missing. Spawn, resume and the model catalog all take it, so a seat launches from the same files
    *  whichever path starts it and the catalog never disagrees with a launch about whether the harness
-   *  is there. A connector registered after boot has no inventory row and is checked on PATH now. */
+   *  is there or which file it is. A connector registered after boot has no inventory row and is
+   *  checked on PATH now. */
   private launchHarness(connector: Connector): { binaries?: Readonly<Record<string, string>> } | { refusal: string } {
     const row = this.connectorStatuses.find((status) => status.agent === connector.name);
     if (row?.state === "unavailable") return { refusal: row.reason ?? `${connector.name} harness is unavailable` };
@@ -5525,7 +5526,7 @@ export class Manager {
       const harness = this.launchHarness(connector);
       if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
       try {
-        const catalog = await connector.listModels({ refresh });
+        const catalog = await connector.listModels({ refresh, resolvedBinaries: harness.binaries });
         return { agent: connector.name, supported: true, ...catalog };
       } catch (e) {
         return { agent: connector.name, supported: true, models: [], error: rejectionText(e) };

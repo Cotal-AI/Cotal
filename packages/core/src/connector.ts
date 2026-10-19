@@ -215,6 +215,10 @@ export interface ModelCatalog {
 
 export interface ModelCatalogOpts {
   refresh?: boolean;
+  /** The harness executables a managed launch of this connector runs, as the manager resolved them
+   *  at boot (see {@link LaunchOpts.resolvedBinaries}). A catalog that runs its harness takes them with
+   *  the precedence its launch uses, so it reads the binary a spawn would run. */
+  resolvedBinaries?: Readonly<Record<string, string>>;
 }
 
 /** Manager-facing wrapper for one connector's catalog lookup. */

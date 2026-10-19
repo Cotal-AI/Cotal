@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, eventChannel, launchArmsEvents, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 import { opencodeLine } from "./opencode-line.js";
 
@@ -76,17 +76,20 @@ function parseModels(stdout: string): ModelInfo[] {
   return models;
 }
 
-function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
+function listOpenCodeModels(opts: ModelCatalogOpts = {}): ModelCatalog {
   const env = discoveryEnv();
+  // The binary a managed launch runs (launch.ts): the operator's COTAL_OPENCODE_BIN pin, else the
+  // path the manager resolved at boot, else the name on PATH.
+  const bin = process.env.COTAL_OPENCODE_BIN?.trim() || opts.resolvedBinaries?.opencode || "opencode";
   // Detect the line first (same rule launch.ts uses), on the same binary the discovery below would
   // run, before running any 2.x-incompatible subcommand: `opencode models --pure --verbose` exits 1
   // on 2.x with the help text (measured, fx105/measurements.md M4) rather than a real catalog.
-  const versionRaw = execFileSync("opencode", ["--version"], {
+  const versionRaw = execFileSync(bin, ["--version"], {
     encoding: "utf8",
     env,
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
-  const line = opencodeLine(versionRaw, "opencode");
+  const line = opencodeLine(versionRaw, bin);
   if (line === 2)
     throw new Error(
       "opencode connector: 'cotal models' is not available for OpenCode 2.x (the catalog is served by a running opencode server, not the CLI); pass --model provider/model",
@@ -94,7 +97,7 @@ function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
   const args = ["models", "--pure", "--verbose"];
   if (opts.refresh) args.push("--refresh");
   try {
-    const stdout = execFileSync("opencode", args, {
+    const stdout = execFileSync(bin, args, {
       encoding: "utf8",
       env,
       stdio: ["ignore", "pipe", "pipe"],

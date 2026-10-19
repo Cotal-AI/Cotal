@@ -200,9 +200,10 @@ manager's `status` response. Available connector rows record the absolute paths 
 A spawned seat and a seat resumed after `cotal down --preserve-state` both launch from those paths,
 and both are refused with the recorded reason when their connector's row is unavailable.
 `cotal models` takes the same rule and reports that reason in place of the catalog, so it agrees
-with a launch about a harness installed or removed after boot. The manager looks again only when it
-restarts. A connector registered after boot has no row, so spawn, resume and `cotal models` check
-its binaries on PATH when they run.
+with a launch about a harness installed or removed after boot. The OpenCode and Codex catalogs also
+run the paths boot resolved, so a binary added ahead of them on PATH later changes neither the
+catalog nor a launch. The manager looks again only when it restarts. A connector registered after
+boot has no row, so spawn, resume and `cotal models` check its binaries on PATH when they run.
 
 On an authenticated manager start, unfinished static lifecycle rows reconcile while the control
 endpoint is already serving. The manager `status` response reports
