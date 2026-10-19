@@ -1,5 +1,9 @@
 # Hosted managed-agent terminal retirement
 
+Status: the terminal-retirement operation, its `retirement-requester` credential and the manager
+teardown that requests it shipped in `@cotal-ai/core`, `@cotal-ai/auth` and `@cotal-ai/manager`
+0.49.0. The Current gap section below describes the state before that release.
+
 ## Current gap
 
 A remotely supervised manager can register and serve without holding the space signer. Its typed host authority protocol issues prepare, activate, renew, and session credentials. Terminal managed-agent retirement is different from those standing phases:

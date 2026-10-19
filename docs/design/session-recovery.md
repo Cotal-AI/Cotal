@@ -1,12 +1,13 @@
 # Session recovery for a managed seat
 
-A design record, not a description of shipped behavior. Every claim about current behavior
-names the file and the function it was read from. Everything else is proposed.
+Status: everything the Status section below lists as shipped is in 0.51.0. The eviction evidence a
+destination needs for the residual case in 3.3, and everything in section 4, are not built. Every
+claim about current behavior names the file and the function it was read from.
 
 ## Status
 
-Part of this record now ships. The design below is left as written; this note says which sections
-are implemented, where, and what changed against what they propose.
+The design below is left as written; this note says which sections are implemented, where, and what
+changed against what they propose.
 
 Shipped:
 
@@ -57,10 +58,9 @@ Two changes against what the sections below propose, both found by running the c
   deleting the previous one would destroy an artifact a rollback still needs. The path is
   `.cotal/maintenance/v<N>/checkpoints/<attemptId>/<seat>/`, from `seatCheckpointDir`.
 
-Not shipped, and still open as the sections describe them: the eviction evidence a destination
-needs for the residual case in 3.3, and everything in section 4. The harness store paths for pi (4
-in Open points) remain an operator input by decision rather than by omission: this repository does
-not know where a harness keeps its transcript, and `--session-store` is where the operator says so.
+The harness store paths for pi (4 in Open points) remain an operator input by decision rather than
+by omission: this repository does not know where a harness keeps its transcript, and
+`--session-store` is where the operator says so.
 
 Two shipped pieces are narrower than the sections they implement, and the difference matters:
 
