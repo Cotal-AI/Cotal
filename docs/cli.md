@@ -1434,13 +1434,18 @@ that it is not a report that the seat is gone. Read it as unknown and retry with
 still running. A single manager cannot tell "hosted elsewhere" from "does not exist": it answers
 `not-found` for both, which is why the search asks all of them and why an incomplete search
 concludes nothing.
-- **User-auth mesh.** `cotal ps` reports what **one** authorized manager knows about your agents
-  (an instance-addressed read against its in-memory roster, owner-filtered). It does **not** report
-  other manager instances or establish whether they are reachable. Completeness across a
-  multi-manager user-auth space is not claimed.
-  A manager that does not answer fails the command outright (exit non-zero), rather than printing
-  an empty list that could be read as "no agents". Your ledger row needs the `admin` scope to
-  reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary).
+- **User-auth mesh.** Without `--on`, `cotal ps` exchanges an `admin`-gated, read-only
+  `registry-reader` view (5 minutes; `scatterFreezeReadRows(space)` plus its own reply inbox, whose
+  stream-scoped `STREAM.MSG.GET` can read any row of `KV_cotal_records_<space>`, including goal,
+  answer, and run rows, and whose `STREAM.INFO` with a subject filter lists every key: the residual
+  the operator instrument carries, now also held for 5 minutes by an `admin`-scoped human on the
+  public face), freezes the live `manager` endpoint registrations, keeps the instances whose
+  registered spec `owner` is yours (or `local`, matching `managerGate`), asks each kept instance
+  through the pinned `--on` path (one `manager-caller` exchange per instance), and renders the
+  attributed results with the same single- vs. multi-manager layout and incomplete-census exit status
+  as static mode. Foreign owners' managers are neither listed nor exchanged for. Your ledger row
+  needs the `admin` scope both for the `registry-reader` exchange and to reach `ps` on the broker
+  (the ep tier boundary).
 
 `attach` streams and drives an agent's terminal on the `pty` runtime; detach with the escape key
 (Ctrl-] by default; see [`COTAL_DETACH_KEY`](config.md)). The key is recognised as the legacy

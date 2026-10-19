@@ -33,9 +33,10 @@
  * the public face is the credential itself: the human arm presents an EdDSA IdP JWT verified
  * against the pinned JWKS/issuer/audience; the agent arm presents an actorToken whose sha256 must
  * match a FRESH ledger row. Origin rejection, JSON-only bodies, the 64 KB bound, and no-CORS-ever
- * hold verbatim. Public views are channel-writer/channel-purger and the one-object transfer-writer
- * (admin-gated) and manager-caller (instance-bound, with no added command scope). Other views stay
- * loopback-only. The agent-secret arm may request only manager-caller on either face;
+ * hold verbatim. Public views are channel-writer/channel-purger, registry-reader, and the one-object
+ * transfer-writer (all admin-gated), session-caller (grant-bound), and manager-caller (instance-bound,
+ * with no added command scope). Other views stay loopback-only. The agent-secret arm may request only
+ * manager-caller on either face;
  * failures are bucketed per peer (`--exchange-trusted-proxy` opts into the last X-Forwarded-For
  * hop as the peer key; otherwise the socket remote address) in a bounded LRU, under a global
  * concurrent-admission cap and a hard request deadline — all of it pools SEPARATE from the

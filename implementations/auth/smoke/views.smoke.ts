@@ -239,6 +239,7 @@ for (const [view, caps] of [
   ["admin", ["spawn", "role:default"]],
   ["purger", ["spawn"]],
   ["channel-writer", ["spawn"]],
+  ["registry-reader", ["spawn"]],
   ["deployer", ["role:default"]],
 ] as Array<[UserTokenView, string[]]>) {
   try {

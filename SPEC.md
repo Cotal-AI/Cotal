@@ -759,6 +759,7 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 | `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info/delete of their client-managed ordered consumers on those two streams only; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; ordered-consumer cleanup cannot delete KV records or streams; durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied. The `manager-caller` view narrows this endpoint control set to `ep.inst.manager.<managerInstanceId>.<command>` only, plus the exact instance `describe`, contract reads, own reply/progress rows, and own inbox. It carries no agent messaging, delivery, class, or scatter rows. When the actor holds `spawn`, the view also carries `status`, `models` and `resolve-cwd` on that instance, the reads a launch there needs; a view without `spawn` gains none of them, and no view gains `ps` or `slots` from `spawn`. |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
+| `registry-reader` | none | the three §13.9 service-registry freeze rows (`scatterFreezeReadRows`: `STREAM.INFO`, leader-served `STREAM.MSG.GET`, and `DIRECT.GET.…svc.>` on `KV_cotal_records_<space>`) plus own `_INBOX_<connId>.>` | one-shot (5 min), read-only, requires ledger scope `admin` (human-only on both exchange faces); no ep request row, no write, no other bucket; its stream-scoped `STREAM.MSG.GET` can read any row of `KV_cotal_records_<space>` (every record kind, including goal, answer, and run rows) and `STREAM.INFO` with a subject filter lists every key — the records-read residual the operator instrument carries, now also held for 5 minutes by an `admin`-scoped human on the public face |
 | `transfer-writer` | one carried transcript's chunk and meta subjects in one manager instance's transfer bucket (§8) | a last-message Direct Get on those two subjects | one-shot per CLI call, minted after the transcript is hashed; no consumer and no other object |
 | `transfer-reader` | the stock delete marker on its own transfer bucket's meta subjects | its own `OBJ_cotal_xfer_<space>_<instanceId>` stream: info, message get, its push consumer, purge | one-shot per `transcript-receive` or sweep; no other instance's bucket |
 | scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Appendix B summarizes them; the concrete grant lists are **generated from the §13.9 ownership matrix** into `provision.ts` (the matrix is the single oracle; `provision.ts` is its artifact, Appendix B its summary). |
@@ -931,12 +932,20 @@ one session and binds the minted connection's expiry to the grant's, which is th
 expiry, rather than the bearer's. The auth service's host-issuer connection performs both reads and
 holds only `STREAM.INFO` and the leader-served `STREAM.MSG.GET` on `KV_cotal_sessions_<space>`: no
 Direct Get and no write on that store.
+The `registry-reader` view requires ledger scope `admin` (the scope `cotal ps` itself needs) and
+carries no claim beyond `act.view`: the callout re-asserts `admin` and mints the `registry-reader`
+profile holding `scatterFreezeReadRows(space)` plus the connection's own reply inbox
+(`_INBOX_<connId>.>`), with no `ep` request row, no write, and no other bucket. Its stream-scoped
+`STREAM.MSG.GET` can read any row of `KV_cotal_records_<space>` (every record kind, including goal,
+answer, and run rows), and `STREAM.INFO` with a subject filter lists every key: that is the residual
+the operator instrument carries, now also held for 5 minutes by an `admin`-scoped human on the public
+face.
 The `transfer-writer` view carries a required `act.transferWriter` claim `{instanceId, hex}` and is
 valid with no other view; `act.transferWriter` is valid only with it. It needs ledger scope `admin`,
 the scope of the `transcript-receive` row it serves. The human exchange accepts it only together with a
 `transferWriter` body (each without the other is a 400), and the callout mints the `transfer-writer`
 profile for that one object of that one instance's transfer bucket (§8).
-On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`, `session-caller`, and
+On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`, `registry-reader`, `session-caller`, and
 `transfer-writer` MAY be issued. `admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A
 managed-agent secret exchange MUST refuse every view other than `manager-caller`.
 
@@ -4516,7 +4525,13 @@ missing either eligibility predicate keeps the legacy manager-caller mint for or
 and `run-start` refuses with `permission-denied`. Without a signed `run` capability the broker
 refuses the publish. With signed `run` but no eligible parent, the manager returns
 `ai.cotal.ep.unbound-caller-authority`. Failed
-issuance never retries on the legacy rail. The `agent` profile and every other view keep that rail.
+issuance never retries on the legacy rail. The `agent` profile and every other view keep that rail,
+including `registry-reader` (human-only on both exchange faces, requiring ledger scope `admin`;
+`scatterFreezeReadRows(space)` plus its own reply inbox, no `ep` request row, no write, and no other
+bucket — its stream-scoped `STREAM.MSG.GET` can read any row of `KV_cotal_records_<space>`, including
+goal, answer, and run rows, and `STREAM.INFO` with a subject filter lists every key: the residual the
+operator instrument carries, now also held for 5 minutes by an `admin`-scoped human on the public
+face).
 
 **Platform-owned user supervisor.** A trusted host composition MAY issue the closed manager-service
 registration material for one ordinary derived owner without that owner's IdP proof. This is an
@@ -5673,7 +5688,7 @@ single-function profiles, each granting only the verbs its function needs and no
   `unknown`, which never authorizes. The former
   `delivery-admin` control tier is deleted with the v0 rail (§13.11).
 - `membership-rw`: the derived channel-membership graph feed reader/writer.
-- `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe`: the
+- `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `registry-reader`, `deployer`, `probe`: the
   human-CLI and maintenance surfaces, each scoped to its verbs. `teardown` also lists stream names,
   so space deletion finds the transfer buckets (§8), and holds `STREAM.INFO` and `STREAM.DELETE` on
   each transfer stream named at its mint.

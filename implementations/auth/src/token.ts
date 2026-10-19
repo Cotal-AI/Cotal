@@ -41,13 +41,13 @@ export const CLOCK_TOLERANCE_SEC = 5;
  *  instead of `agent`. A closed enum on BOTH the mint and validate side — an unknown view fails
  *  closed, never falls back to a profile. Deliberately NOT a generic `view=<profile>` passthrough:
  *  most profiles are daemon/provisioning surfaces that must never become human-requestable. */
-export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller", "session-caller", "transfer-writer"] as const;
+export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller", "registry-reader", "session-caller", "transfer-writer"] as const;
 export type UserTokenView = (typeof USER_TOKEN_VIEWS)[number];
 
 /** Views the public exchange face will mint (still ledger-gated). Every other
  *  {@link USER_TOKEN_VIEWS} value stays loopback-only. An actor-secret exchange may request
  *  only manager-caller, which narrows its existing command authority to one instance. */
-export const PUBLIC_EXCHANGE_VIEWS = ["channel-writer", "channel-purger", "manager-caller", "session-caller", "transfer-writer"] as const satisfies readonly UserTokenView[];
+export const PUBLIC_EXCHANGE_VIEWS = ["channel-writer", "channel-purger", "manager-caller", "registry-reader", "session-caller", "transfer-writer"] as const satisfies readonly UserTokenView[];
 
 /** The ONE central view policy table: which ledger capability each view's exchange requires (and
  *  the callout re-asserts, defense in depth). `admin` = operator authority (god-view read +
@@ -62,6 +62,7 @@ export const VIEW_REQUIRED_SCOPE: Record<UserTokenView, "admin" | "spawn" | "sup
   deployer: "spawn",
   "manager-service": "supervise",
   "manager-caller": undefined, // baseline self calls are allowed; command grants still derive from scope
+  "registry-reader": "admin", // service-registry freeze read (user-mode cotal ps census; whole-records-bucket read residual)
   // #2312: no ledger scope. The grant itself is the authority: the auth plane verifies the redeemed
   // `session.<id>` row names THIS principal as holder, at the exchange and again at the callout mint.
   "session-caller": undefined,

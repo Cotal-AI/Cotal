@@ -117,6 +117,7 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   teardown: via("teardown"),
   "control-caller-privileged": via("control-caller-privileged"),
   "control-caller-admin": via("control-caller-admin"),
+  "registry-reader": via("registry-reader"),
   deployer: via("deployer"),
   // `permissionsFor` refuses this one BY DESIGN (serve rows are emitted only by mintCreds behind
   // the §13.1 fence), so it is covered through the row builder the mint itself calls — covered,

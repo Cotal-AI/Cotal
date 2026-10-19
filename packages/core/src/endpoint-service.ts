@@ -1246,6 +1246,8 @@ export interface FrozenInstance {
   /** The `svc….spec` key's store revision at freeze time. */
   registrationRevision: number;
   epoch: number;
+  /** The registered spec's `owner` (§13.7). */
+  owner?: string;
 }
 
 /** Freeze the request-scoped expected set (§13.5): the LIVE instances of a class from the
@@ -1293,14 +1295,14 @@ export async function freezeExpectedSet(jsm: JetStreamManager, space: string, en
     // would otherwise fabricate registration churn from pure read-skew.
     const spec = await readSvcRecordLeader(jsm, space, recordSpecKey(RECORD_KINDS.svc, [endpoint, instanceId]));
     if (!spec || "deleted" in spec) continue; // gone since the enumeration list: not a live member
-    parseServiceSpec(spec.value, { endpoint }); // malformed registry state fails LOUD (§13.9)
+    const parsedSpec = parseServiceSpec(spec.value, { endpoint }); // malformed registry state fails LOUD (§13.9)
     const statusRec = await readSvcRecordLeader(jsm, space, recordStatusKey(RECORD_KINDS.svc, [endpoint, instanceId]));
     if (!statusRec || "deleted" in statusRec) continue; // registered but never converged: not a live class member
     const status = parseServiceStatus(statusRec.value);
     if (status.state === SERVICE_EXITED) continue;
     if (status.state === SERVICE_ESCALATED) continue; // terminally not-startable (§13.6): never a live scatter member
     if (status.observedSpecRevision < spec.revision) continue; // staleProjection: liveness predates the CURRENT registration
-    frozen.push({ instanceId, registrationRevision: spec.revision, epoch: status.epoch });
+    frozen.push({ instanceId, registrationRevision: spec.revision, epoch: status.epoch, owner: parsedSpec.owner });
   }
   if (frozen.length === 0)
     throw new EpEnvelopeError("failed-precondition", `service "${endpoint}" has no live registered instances; an empty registry is never an empty scatter success (SPEC 13.5)`);
