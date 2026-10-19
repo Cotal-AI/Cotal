@@ -4,8 +4,7 @@
 > ("The remaining hosted gap is signer isolation"). Wire contract unchanged: no new subject, no new
 > stream, no new message type. This is a composition-root and OS-custody seam.
 
-**Status:** design. Nothing here is implemented. Review gate: this doc is approved before any code
-lands.
+Review gate: this doc is approved before any code lands.
 
 **Citations.** Every `file` / function below was read in this worktree at `c5c462886`. No seed, key,
 or credential value is reproduced.
