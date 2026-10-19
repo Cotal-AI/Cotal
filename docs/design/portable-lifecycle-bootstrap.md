@@ -313,8 +313,9 @@ The handoff path through `spawn(args)`:
    `COTAL_ENROLLMENT_FILE` also set, `--detach`, `-f`, `--creds`, a missing `--space`, `--name`,
    `--expect-owner` or `--expect-lifecycle-uid`, a missing or unloadable `--config` file, and an
    absent `COTAL_MANAGER_INSTANCE` (`COTAL_MANAGED_HANDOFF_FILE requires
-   COTAL_MANAGER_INSTANCE`; a newer CLI child under an older manager or runtime refuses every
-   delegated launch before any plane is touched).
+   COTAL_MANAGER_INSTANCE`; `DelegatedSeatLaunch.managerInstanceId` is required and a newer CLI child under an older
+   manager or runtime refuses every delegated launch before any plane is touched, so managers and
+   the CLI must be upgraded together).
 3. Validate `COTAL_MANAGER_INSTANCE` with `assertLifecycleToken` (refusing a malformed value with
    `COTAL_MANAGER_INSTANCE "<value>" is not a valid lifecycle token ([a-z0-9]{26,32})`), then
    `parseManagedLifecycleHandoff(text, { space: --space, owner: --expect-owner, actor: --name,

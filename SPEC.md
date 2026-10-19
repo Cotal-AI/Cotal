@@ -4691,8 +4691,9 @@ every outcome leaves no file. It MUST NOT forward the variable or the file into 
 instance id. The child MUST refuse, before any broker connection and before any exchange request,
 when `COTAL_MANAGER_INSTANCE` is absent (`COTAL_MANAGED_HANDOFF_FILE requires
 COTAL_MANAGER_INSTANCE`) or malformed, or when the handoff's values differ from them or the
-document is malformed. A newer CLI child under an older manager or runtime that omits
-`COTAL_MANAGER_INSTANCE` therefore refuses every delegated launch. A refusal MUST NOT echo the
+document is malformed. `DelegatedSeatLaunch.managerInstanceId` is required and a newer CLI child under an older manager
+or runtime that omits `COTAL_MANAGER_INSTANCE` refuses every delegated launch, so managers and
+the CLI must be upgraded together. A refusal MUST NOT echo the
 document's contents.
 
 **Launch choices.** The manager MUST refuse, before enrollment, a spawn choice that only its own host

@@ -1116,7 +1116,7 @@ COTAL_MANAGED_HANDOFF_FILE=/run/seat/handoff.json COTAL_MANAGER_INSTANCE=<instan
 The `cotal` entry reads the file, deletes it and drops the variable before it parses flags, prints
 help or loads extensions, so every outcome leaves no file. The variable is read under any letter
 case; spellings that name different files are refused after every one of them was deleted. The
-spawn then refuses an absent `COTAL_MANAGER_INSTANCE` (`COTAL_MANAGED_HANDOFF_FILE requires COTAL_MANAGER_INSTANCE`; a newer CLI child under an older manager or runtime that omits it refuses every delegated launch), a malformed `COTAL_MANAGER_INSTANCE` (`COTAL_MANAGER_INSTANCE "<value>" is not a valid lifecycle token ([a-z0-9]{26,32})`), a malformed handoff, or one whose space, owner, actor or lifecycle UID differs
+spawn then refuses an absent `COTAL_MANAGER_INSTANCE` (`COTAL_MANAGED_HANDOFF_FILE requires COTAL_MANAGER_INSTANCE`; `DelegatedSeatLaunch.managerInstanceId` is required and a newer CLI child under an older manager or runtime that omits it refuses every delegated launch, so managers and the CLI must be upgraded together), a malformed `COTAL_MANAGER_INSTANCE` (`COTAL_MANAGER_INSTANCE "<value>" is not a valid lifecycle token ([a-z0-9]{26,32})`), a malformed handoff, or one whose space, owner, actor or lifecycle UID differs
 from `--space`, `--expect-owner`, `--name` and `--expect-lifecycle-uid`, before any broker
 connection or exchange request. Every refusal on this path names the field and never a value from
 the handoff. The registration's server, exchange and enforcement checks, the local state this

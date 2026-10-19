@@ -732,7 +732,7 @@ it as one 0600 file and the persona beside it, and runs the stock bootstrap ther
 with `COTAL_MANAGED_HANDOFF_FILE` naming the file and `COTAL_MANAGER_INSTANCE` naming the launching manager. `delegatedSeatCommand` builds that argv and `env`. The
 `cotal` entry reads the file into memory, deletes it and drops the variable before it parses flags,
 prints help or loads extensions, so every outcome, a refusal of its own flags included, leaves no
-file. It refuses before any broker connection or exchange request when `COTAL_MANAGER_INSTANCE` is absent (`COTAL_MANAGED_HANDOFF_FILE requires COTAL_MANAGER_INSTANCE`; a newer CLI child under an older manager or runtime refuses every delegated launch) or malformed, or when the
+file. It refuses before any broker connection or exchange request when `COTAL_MANAGER_INSTANCE` is absent (`COTAL_MANAGED_HANDOFF_FILE requires COTAL_MANAGER_INSTANCE`; `DelegatedSeatLaunch.managerInstanceId` is required and a newer CLI child under an older manager or runtime refuses every delegated launch, so managers and the CLI must be upgraded together) or malformed, or when the
 space, owner, actor, or lifecycle UID differ from the expected values, and then runs the
 enrollment-redeem consumer: it registers the mesh in its own home, writes the token to its own 0600
 file, and exchanges it through `agent-bearer --exchange-url` unchanged. It never enrolls, redeems, or
