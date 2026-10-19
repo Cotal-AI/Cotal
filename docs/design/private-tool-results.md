@@ -94,22 +94,36 @@ None of these exist. Each needs its owner's review.
   field. Retirement also deregisters the instance.
 - **Caller view.** A redemption that checks the consent, presenter equality and the current
   revocation record, reads the current serving registration and mints a caller credential limited
-  to the three commands on that one instance plus the caller's own reply subject. The response
-  names the space, instance and epoch.
+  to the three commands on that one instance, the stock `describe` of that same instance (section
+  8) and the caller's own reply subject. The response names the space, instance and epoch. This
+  consent-bound caller authority is new. It is checked against the current durable revocation and
+  target lifecycle state at redemption and again at every native callout or connection issuance
+  for that caller, including each reconnect. A credential minted before a revocation therefore
+  gets no new connection after it. Existing native issuance rows do not implement this check or
+  the consent view.
 - **Emitter frontier.** `queueFrontier`, modeled on `queueTerminal`, that places a consent's source
   position against each read before capture.
 - **Journal and handlers.** The capture, audience and release rules of sections 5 to 7, and a
-  handler rule that refuses any request without a `bind` block.
-- **Browser caller.** A Node-free caller that always sends `bind`, never discovers, never resends
-  after an accepted or unknown effect, and drops its binding on account, space or epoch change.
+  handler rule that refuses any of the three commands without a `bind` block.
+- **Browser caller.** A Node-free caller that resolves the redeemed instance through the stock
+  exact-instance bootstrap of section 8, sends `bind` on every private command, never scatters,
+  never guesses or silently changes a target or epoch, never resends after an accepted or unknown
+  effect, and drops its binding on account, space or epoch change.
 
 ## 5. Capture frontier
 
 A consent takes effect at a frontier `P`, a source position sampled with `DurableSource.end()`
-after the consent verifies and after a lifetime fence confirms no revoke or replacement happened
-during verification. Sampling `P` is the linearization point. Every record already in the source
-at that call lies at or before `P`, including records not yet read, a read in progress, replay
-after a restart and ordinary backlog.
+after the consent verifies. Sampling `P` is the linearization point. Every record already in the
+source at that call lies at or before `P`, including records not yet read, a read in progress,
+replay after a restart and ordinary backlog.
+
+Lifetime fence: the connector records the holder's consent life generation when the consent
+arrives. It compares that generation again after every asynchronous step (verification, the
+`end()` call and placement) and once more immediately before it commits the consent. A revoke or
+replacement at any point bumps the generation, so an in-flight activation for the old consent
+refuses and commits nothing. Token registration and pre-capture classification are serialized
+with that commit. A frontier whose placement is unresolved grants no eligibility; there is no
+eligible-by-default state. The section 7 expiry and snapshot checks do not replace this fence.
 
 The emitter places `P` against each read with the same source-only comparison `boundary` already
 uses. A START record is eligible for that consent only if it lies after `P`. Eligibility is
@@ -174,9 +188,19 @@ The host and the Manager that installs the file are trusted.
 
 ## 8. Receiver answers
 
-Every serving command requires a `bind` block. `assertBoundIncarnation` already refuses a different
-epoch of the same instance before the handler runs. The handler refuses a request with no `bind`
-before it touches the journal. The caller learns the instance and epoch only from its redemption.
+Bootstrap: before invoking, the caller runs the stock instance-addressed `describe` on the one
+redeemed instance and verifies its contracts and digests, as `openBrowserEndpointCaller`
+(`packages/core/src/browser-control.ts:114`) does through `describeEndpoint`
+(`packages/core/src/endpoint-caller.ts:77`) on the `inst` route. It refuses an answer from any
+other instance or an epoch that differs from the redemption. This needs the narrow, explicitly
+reviewed `describe` grant of the caller view. Class discovery, scatter and a homemade contract
+are not used. In stock, `describe` carries no `bind`, because it is the bootstrap that produces
+one (`packages/core/src/endpoint-call.ts:99-108`).
+
+Every private command after that requires a `bind` block whose instance and epoch match the
+redemption. `assertBoundIncarnation` already refuses a different epoch of the same instance before
+the handler runs. The handler refuses a request with no `bind` before it touches the journal. The
+caller learns the instance and epoch only from its redemption.
 
 `tool-result` answers one of these closed states:
 
@@ -193,7 +217,9 @@ one hour and never stores arguments.
 1. Core/SPEC owner: accept sections 4 to 8, the anchor role, the request kind, the record families
    and the limits.
 2. Auth and host owners: human proof check, consent signer and route, revocation record, serving
-   request authorization and issuance under section 7, caller view.
+   request authorization and issuance under section 7, caller view, and the consent-bound current
+   revocation and lifecycle check at redemption and at every native callout, connection issuance
+   and reconnect.
 3. Core and Manager owners: generic launch-material field, serving material installation, renewal
    before expiry and removal on failure.
 4. Connector-core owner: `queueFrontier`, capture, audience, release check and `bind` requirement.
