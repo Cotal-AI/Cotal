@@ -48,11 +48,14 @@ the local host capability or read callout signing material. Local setup needs th
 projection written by `prepareServer`; a missing projection refuses rather than reading server secrets.
 
 `@cotal-ai/auth` exports host request and view types with `parseServiceHostRequest`. Parsing checks
-structure only, not owner consent, current grants or admission state. The host handlers and native
+structure only, not owner consent, current grants or admission state. The host handlers and complete native
 service lifecycle are not implemented yet, so these interfaces do not enable service registration.
 The native endpoint gate also carries service approval and activation fields. Registration and
 serving guards retain those fields and refuse expired or revoked approval; these guards are not
-a replacement for the missing host lifecycle.
+a replacement for the missing host lifecycle. Internal host gate transitions bind approval to a
+current native root and make activation monotonic. They do not provide consent, public handlers
+or terminal retirement. Pre-activation registration requires an empty issuance family, including
+deleted records, and release rechecks fixed expiry after asynchronous work.
 
 `parseEndpointCapabilities` normalizes the native caller capability shape. `endpointCapabilitiesWithin`
 checks route, instance, target and journal containment using the native grant builders. The host

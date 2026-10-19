@@ -1338,9 +1338,15 @@ requires the registration stamp. A service value without its family, or the fami
 its value, is invalid. Existing nonservice gates do not acquire this authority.
 
 Service registration freeze requires live approval and `activationIssued: false` at the gate CAS.
-Gate transitions retain the complete service value. Serving release requires live approval,
+Under that freeze, a complete leader read must prove the issuance family empty. Active, revoked,
+malformed or deleted credential evidence is inconsistent with pre-activation state and blocks
+registration and recovery. Failed or partial reads never prove emptiness.
+Gate transitions retain approval, root and activation fields. A new registration freeze clears
+the previous completion stamp; the new stamp is written only after that registration completes.
+Serving release requires live approval,
 recorded activation and a finite credential expiry bounded by the service access lifetime,
-native root expiry and approval expiry. A registration recovery that reopens an already revoked
+native root expiry and approval expiry. Release rechecks the fixed expiry after asynchronous
+staging and commit; expired material is refused and never given a new expiry. A registration recovery that reopens an already revoked
 approval does not authorize serving release. Standalone service authority does not support
 sibling credential duties. Native root validation, owner consent, activation and coordinated
 retirement remain requirements of the trusted host; parsing this value does not establish them.

@@ -449,6 +449,11 @@ export async function registerServiceInstance(
   if (token === null)
     throw new EpEnvelopeError("conflict", `a concurrent barrier froze the issuance gate for "${args.instanceId}" first; re-read and re-decide (SPEC 13.1/13.8)`);
 
+  if (obs.authorityFamily === "service") {
+    if (obs.serviceAuthority?.activationIssued || (await args.barrier.enumerate()).length !== 0)
+      throw new EpEnvelopeError("failed-precondition", "unexpected service issuance evidence before activation; registration remains frozen");
+  }
+
   // The gate is frozen; every exit below reopens it (token-pinned, at the original coordinate) or
   // deliberately leaves it FROZEN for reconciliation. The successor the completing reopen targets.
   // `processEpoch` defaults to the frozen gate's epoch (an ABORT reopens the UNCHANGED coordinate);
@@ -2032,5 +2037,9 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
   if (!won) {
     const revokeFailed = await revokeStaged();
     throw new EpEnvelopeError("expired", `the issuance gate advanced during mint (a takeover, re-registration, or name transfer won the serialization on ${snap.endpoint}/${snap.instanceId}); this mint released nothing (SPEC 13.1)${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+  }
+  if (obs.authorityFamily === "service" && credential.exp! <= Math.floor(Date.now() / 1000)) {
+    const revokeFailed = await revokeStaged();
+    throw new EpEnvelopeError("expired", `service credential expired before release; its fixed expiry is not extended${revokeFailed ? `; staged-row revoke also failed: ${revokeFailed}` : ""}`);
   }
 }

@@ -422,6 +422,8 @@
     "smoke:grammar": "tsx packages/core/smoke/grammar.smoke.ts",
     "smoke:ep-grammar": "tsx packages/core/smoke/endpoint-grammar.smoke.ts",
     "smoke:ep-grants": "tsx packages/core/smoke/endpoint-grants.smoke.ts",
+    "smoke:native-service-gate": "tsx implementations/auth/smoke/native-service-gate.smoke.ts",
+    "smoke:service-release": "tsx packages/core/smoke/service-release.smoke.ts",
     "smoke:service-gate": "tsx packages/core/smoke/service-gate.smoke.ts",
     "smoke:service-authority-client": "tsx implementations/auth/smoke/service-authority-client.smoke.ts",
     "smoke:service-host-contract": "tsx implementations/auth/smoke/service-host-contract.smoke.ts",
