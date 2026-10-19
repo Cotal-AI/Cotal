@@ -74,6 +74,7 @@ export {
 } from "./secret-fs.js";
 export * from "./launch-material.js";
 export * from "./launch-artifacts.js";
+export * from "./private-launcher.js";
 export * from "./connector-config.js";
 export * from "./kv-scan.js";
 export * from "./jetstream-missing.js";
