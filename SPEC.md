@@ -4664,13 +4664,16 @@ grant on `KV_<REC>`). Every slot write MUST be a revision-pinned compare-and-set
 absent, or `update` against the prior revision); a same-name retry after an interrupted `enrolling`
 write MUST converge on the existing `enrolling` row's `provisionalUid` and `tokenHash` rather than
 overwriting it with a newly minted token. When `/manager-service-authority` refuses with HTTP 403 on
-an `EpEnvelopeError`, its JSON body carries `code: EpErrorCode` alongside `error`, and
-`enrollManagedAgent` raises `code: "already-exists"` when the alias is already enrolled under a
-different `tokenHash` (`conflict` remains the code for a stale manager serve epoch or CAS
-concurrency). Startup convergence of an `enrolling` row retires the row at its `provisionalUid`
-(after shredding local staged secret files) ONLY on `code: "already-exists"`; every other failure
-(including `conflict` on a stale serve epoch, `unauthenticated`, network failure, or a 403 omitting
-`code`) MUST leave the row in `enrolling`, count as `failed`, and retry on the next start. Startup
+an `EpEnvelopeError`, its JSON body carries `code: EpErrorCode` alongside `error` (reconstructed by
+the client only when `code` is in `EP_ERROR_CODES`), and `enrollManagedAgent` raises
+`code: "already-exists"` exclusively when the alias is already enrolled under a different
+`tokenHash` (an activation-saga `already-exists` when the lifecycle head is still active at another
+UID maps to `code: "failed-precondition"`, and `conflict` remains the code for a stale manager
+serve epoch or CAS concurrency). Startup convergence of an `enrolling` row retires the row at its
+`provisionalUid` (after shredding local staged secret files) ONLY on `code: "already-exists"`;
+every other failure (including `conflict` on a stale serve epoch, `failed-precondition` on an
+unretired head, `unauthenticated`, network failure, or a 403 omitting a valid catalog `code`) MUST
+leave the row in `enrolling`, count as `failed`, and retry on the next start. Startup
 reconciliation classifies only rows whose `managerInstanceId` matches the reconciling manager
 instance (preserving sibling instances' rows untouched), defers `active`/`preserved` rows when
 `resumeRequired` is set until post-adoption reconciliation, and evaluates process liveness

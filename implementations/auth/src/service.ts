@@ -1377,6 +1377,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             await deprovisionManagedFootprint(owner, t.actor, lifecycleUid, []).catch((err) =>
               opts.log(`auth-service: refused enrollment of ${owner}/${t.actor} left durables at ${lifecycleUid}: ${err instanceof Error ? err.message : String(err)}`));
           }
+          // Keep `already-exists` on the enrollment door exclusive to the tokenHash refusal above:
+          // an activation-saga `already-exists` means the alias head is still active at another uid
+          // (e.g. a releasing predecessor whose grant was revoked before its terminal barrier ran).
+          if (e instanceof EpEnvelopeError && e.code === "already-exists")
+            throw new EpEnvelopeError("failed-precondition", e.message, e.details, e.outcome);
           throw e;
         }
         return { lifecycleUid, row };

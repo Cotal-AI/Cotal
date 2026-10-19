@@ -115,6 +115,7 @@ import {
   eventChannel,
   headCandidate,
   isReachable,
+  managedRetirementOpId,
   MANAGER_LEASE_KEY,
   managerBucket,
   mintCreds,
@@ -2386,12 +2387,46 @@ Seat ${seatName}.
     );
     await mgr2!.stop();
 
+    // Sub-cell 1b (N4): real host returns HTTP 403 with an off-set non-catalog `code` -> provider ignores off-set code and row stays enrolling
+    let mgrOffSet: Manager | undefined;
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const res = await realFetch(input, init);
+        const urlStr = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (urlStr.endsWith("/manager-service-authority") && res.status === 403) {
+          const body = (await res.clone().json()) as { error?: string; code?: unknown };
+          if (typeof body.error === "string" && body.error.includes(seatName)) {
+            return new Response(JSON.stringify({ error: body.error, code: "off-set-non-catalog-code" }), {
+              status: res.status,
+              headers: res.headers,
+            });
+          }
+        }
+        return res;
+      }) as typeof globalThis.fetch;
+      ({ mgr: mgrOffSet } = await bootRemoteManagerOnRoot(ws, "pty"));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    const rowOffSet = await readRow();
+    const recOffSet = mgrOffSet!.status().userReconciliation;
+    checkGuard(
+      cell,
+      "when the host returns an off-set `code` outside EP_ERROR_CODES, provider does not construct EpEnvelopeError and convergence leaves the row enrolling",
+      rowOffSet?.phase === "enrolling" &&
+        rowOffSet?.provisionalUid === provisionalUid &&
+        recOffSet?.state === "failed" &&
+        recOffSet?.lastSweep?.failed === 1 &&
+        existsSync(stagedFiles!.actorToken),
+      { rowOffSet, recOffSet },
+    );
+    await mgrOffSet!.stop();
+
     // Sub-cell 2: real host returns HTTP 403 with `code: "already-exists"` -> row is retired at provisionalUid and staged secrets shredded
-    const { mgr: mgr3 } = await bootRemoteManagerOnRoot(ws, "pty");
+    const { mgr: mgr3, remoteAuthority: auth3 } = await bootRemoteManagerOnRoot(ws, "pty");
     const rowWithCode = await readRow();
     const recWithCode = mgr3.status().userReconciliation;
     const liveStateAfter = await inspectLifecycleState(seatName, liveUid);
-    await mgr3.stop();
     checkContract(
       cell,
       "when the real host returns HTTP 403 with code already-exists, convergence shreds staged secrets and retires the enrolling row at provisionalUid",
@@ -2413,6 +2448,76 @@ Seat ${seatName}.
         liveStateAfter.dmPresent === true &&
         liveStateAfter.dlvPresent === true,
       liveStateAfter,
+    );
+
+    // Sub-cell 3 (N1): when liveUid has completed prepareAgentRetirement (grant revoked: held === undefined)
+    // but its lifecycle head is still active in KV_<REC>, the real host's activateLifecycleAtUid throws
+    // already-exists and service.ts maps it to failed-precondition so convergence keeps the enrolling row
+    await auth3.prepareAgentRetirement({
+      target: { owner, actor: seatName, lifecycleUid: liveUid },
+      opId: managedRetirementOpId(liveUid),
+    });
+    await mgr3.stop();
+
+    // Seed a fresh interrupted enrolling row on ws after prepareAgentRetirement revoked liveUid's grant
+    let abortMgr4 = true;
+    const { mgr: mgr4 } = await bootRemoteManagerOnRoot(ws, "pty", undefined, undefined, {
+      beforeHostEnrollment: (t) => {
+        if (abortMgr4 && t.actor === seatName) throw new Error("simulated crash before host received second enrollment");
+      },
+    });
+    const second = await mgr4.startAgent({ name: seatName, agent: "u4005-seat" });
+    abortMgr4 = false;
+    await mgr4.stop();
+    const secondRow = await readRow();
+    const provisionalUid2 = secondRow?.provisionalUid ?? "";
+    const stagedFiles2 = provisionalUid2 ? agentLifecycleSecretFilePaths(ws, space, seatName, provisionalUid2) : undefined;
+    const releasedHeadState = await inspectLifecycleState(seatName, liveUid);
+    checkSetup(
+      cell,
+      "after prepareAgentRetirement on liveUid: managed grant is revoked (held === undefined) while lifecycle head remains active at liveUid, and second enrolling row is staged",
+      !second.ok &&
+        secondRow?.phase === "enrolling" &&
+        provisionalUid2.length > 0 &&
+        releasedHeadState.grantUnrevoked === false &&
+        releasedHeadState.headState === "active" &&
+        releasedHeadState.headUid === liveUid,
+      { second, secondRow, releasedHeadState },
+    );
+
+    let observedActCode: unknown;
+    let mgr5: Manager | undefined;
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const res = await realFetch(input, init);
+        const urlStr = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (urlStr.endsWith("/manager-service-authority") && res.status === 403) {
+          const body = (await res.clone().json()) as { error?: string; code?: unknown };
+          if (typeof body.error === "string" && body.error.includes(seatName)) {
+            observedActCode = body.code;
+          }
+        }
+        return res;
+      }) as typeof globalThis.fetch;
+      ({ mgr: mgr5 } = await bootRemoteManagerOnRoot(ws, "pty"));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    const rowAfterAct = await readRow();
+    const recAfterAct = mgr5!.status().userReconciliation;
+    await mgr5!.stop();
+    checkGuard(
+      cell,
+      "when activateLifecycleAtUid throws already-exists on an active head with no held grant, the real host maps it to code failed-precondition and convergence keeps the row enrolling",
+      observedActCode === "failed-precondition" &&
+        rowAfterAct?.phase === "enrolling" &&
+        rowAfterAct?.provisionalUid === provisionalUid2 &&
+        recAfterAct?.state === "failed" &&
+        recAfterAct?.lastSweep?.failed === 1 &&
+        recAfterAct?.lastSweep?.succeeded === 0 &&
+        stagedFiles2 !== undefined &&
+        existsSync(stagedFiles2.actorToken),
+      { observedActCode, rowAfterAct, recAfterAct },
     );
   }
 
