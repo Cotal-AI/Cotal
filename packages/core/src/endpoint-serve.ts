@@ -35,6 +35,7 @@ import {
   assertGovernedSurfaceFor, assertGovernedPreEffect, type EpTraitEnforcement,
 } from "./endpoint-traits.js";
 import type { GuardObligation } from "./endpoint-guard.js";
+import { parseDescribeObservation, type DescribeRequestContext } from "./endpoint-describe-observation.js";
 
 // ---- the serve table ---------------------------------------------------------------------------
 
@@ -58,6 +59,8 @@ export interface EpServeContext {
   request: EndpointRequest;
   obligations?: readonly GuardObligation[];
 }
+
+const describeContexts = new WeakMap<EpServeContext, DescribeRequestContext>();
 
 /** One served command: its handler plus the COMPILED §13.7 contracts (schema-profile
  *  {@link compileContract} — provenance-branded, so a fabricated `{validate, closureDigest}`
@@ -445,14 +448,17 @@ export function serveEndpoint(
   const enc = new TextEncoder();
   const dec = new TextDecoder();
 
+  const needsDescribeContext = describe.public !== true;
   const handle = async (def: ActiveDef, msg: { subject: string; data: Uint8Array }): Promise<void> => {
+    const receivedAtMonotonicMs = performance.now();
     const parsed = parseEpSubject(msg.subject);
     if (!parsed || parsed.plane !== "request") return; // no sender: MUST NOT be handled (§13.2)
     let env: EndpointRequest | undefined;
     let dispatched = false;
     let reply: EndpointReply;
     try {
-      env = parseEndpointRequest(JSON.parse(dec.decode(msg.data)));
+      const originalEnvelope: unknown = JSON.parse(dec.decode(msg.data));
+      env = parseEndpointRequest(originalEnvelope);
       checkRequestSubjectAgreement(env, parsed);
       // §13.2 FIRST among the semantic gates, and deliberately ahead of the command's own class,
       // contract, and args: whether this instance is the addressee at all is settled before
@@ -506,6 +512,12 @@ export function serveEndpoint(
           await assertTargetCurrent(env, opts.resolveTarget);
       }
       const ctx: EpServeContext = { identity, subject: parsed, request: env, ...(obligations !== undefined ? { obligations } : {}) };
+      if (def.command === "describe" && needsDescribeContext) {
+        const observed = parseDescribeObservation(space, msg.subject, originalEnvelope);
+        describeContexts.set(ctx, Object.freeze({ subject: msg.subject, fingerprint: observed.fingerprint,
+          identity: Object.freeze({ ...identity }), receivedAtMonotonicMs, replyExpected: observed.replyExpected,
+          ...(observed.deadlineMs === undefined ? {} : { deadlineMs: observed.deadlineMs }) }));
+      }
       dispatched = true;
       if (!env.replyExpected) {
         await def.handler(ctx);
@@ -603,7 +615,7 @@ export interface DescribeView {
  *  not even a parameter here). The provider owns its own freshness bound. */
 export type DescribeAuthorization =
   | { public: true }
-  | { public?: false; view: (caller: EpCaller) => Promise<DescribeView | undefined> | DescribeView | undefined };
+  | { public?: false; view: (caller: EpCaller, context?: DescribeRequestContext) => Promise<DescribeView | undefined> | DescribeView | undefined };
 
 /** The describe answer: `public` says which path produced it (§13.7: the answer says so). */
 export interface DescribeAnswer {
@@ -682,7 +694,7 @@ function describeHandler(descriptor: DescribeDescriptor, authz: DescribeAuthoriz
       throw new EpEnvelopeError("internal", "describe has no snapshotted authorization view but is not public");
     let view: DescribeView | undefined;
     try {
-      view = await viewFn!(ctx.subject.caller);
+      view = await viewFn!(ctx.subject.caller, describeContexts.get(ctx));
     } catch (err) {
       throw new EpEnvelopeError("unavailable", `the trusted authorization view failed; describe fails closed, never answers from a weaker source (SPEC 13.7): ${(err as Error)?.message ?? String(err)}`);
     }

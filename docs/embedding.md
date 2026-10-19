@@ -77,6 +77,12 @@ Revocation begins with a revision-pinned deny-new intent that unrelated appends 
 These are storage operations, not entitlement checks. The effective policy resolver, host operations,
 cutoff evidence and terminal caller revocation are not implemented yet.
 
+Scoped Describe callbacks also receive an optional immutable local context with the actual subject,
+complete-envelope fingerprint, serving identity and receive-relative deadline information.
+`parseDescribeObservation` shares native syntax and full-JSON fingerprint checks with trusted observers.
+Neither the context nor a fingerprint proves broker receipt to a remote authority. The remote
+observer, policy projection and Describe authority HTTP operation are not implemented yet.
+
 `parseEndpointCapabilities` normalizes the native caller capability shape. `endpointCapabilitiesWithin`
 checks route, instance, target and journal containment using the native grant builders. The host
 still authenticates the granter and checks current grantee, parent and approval records.

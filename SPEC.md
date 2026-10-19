@@ -1382,6 +1382,15 @@ do not establish current grantee, service, granter or ancestor authority; the na
 those before committing or using a grant. Neither a policy row nor a deny-new intent proves live
 connection absence.
 
+A local scoped Describe callback may receive immutable request context alongside the caller.
+Its subject comes from actual dispatch, and its fingerprint is the canonical digest of
+`{subject,envelope}`, using the complete original decoded JSON envelope after native Describe
+validation. A picked parser projection cannot substitute for that envelope. Local receive time
+is monotonic and captured before validation; deadlineMs remains the original relative budget.
+This is receiver-relative context, not a publisher-start timestamp. The context exposes no raw
+proof bytes. Neither a context value nor its digest establishes actual receipt or authority to
+another process; a trusted observer must establish that independently.
+
 A service access bearer uses the user-token shape with `act.view: "service-endpoint"`.
 Its closed payload has `iss`, scalar `aud`, `sub`, `iat`, `nbf`, `exp`, `ver`, `scope` and `act`.
 Its protected header has only `alg: "EdDSA"` and `kid`. The closed actor has `owner`, `actor`,
