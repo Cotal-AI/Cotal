@@ -13,7 +13,7 @@ import {
 let passed = 0;
 function check(name: string, value: unknown) { assert.ok(value, name); passed++; console.log(`PASS ${name}`); }
 async function refuses(name: string, fn: () => Promise<unknown>) {
-  await assert.rejects(fn); passed++; console.log(`PASS ${name}`);
+  await assert.rejects(fn, name); passed++; console.log(`PASS ${name}`);
 }
 const now = Math.floor(Date.now() / 1000);
 const keys = await generateKeyPair("EdDSA");
@@ -49,6 +49,17 @@ try {
     const proof = await verifyToolResultHumanProof(await sign({ auth_time: now - age }), idp, () => now * 1000);
     check(`password proof admitted at age ${age}`, proof.authTime === now - age && proof.sub === "human" && Object.isFrozen(proof));
   }
+  check("password proof admitted one millisecond before the ceiling",
+    (await verifyToolResultHumanProof(token, idp, () => now * 1000 + 299_999)).authTime === now);
+  for (const elapsed of [300_001, 300_999])
+    await refuses(`password proof refuses at ${elapsed} elapsed milliseconds`, () => verifyToolResultHumanProof(token, idp, () => now * 1000 + elapsed));
+  await refuses("password event one millisecond in the future refuses", () => verifyToolResultHumanProof(token, idp, () => now * 1000 - 1));
+  const fractionalExpiry = await new SignJWT({ auth_time: now, amr: ["pwd"] }).setProtectedHeader({ alg: "EdDSA", kid: "fixture" })
+    .setIssuer(issuer).setAudience(issuer).setSubject("human").setIssuedAt(now).setExpirationTime(now + 299.25).sign(keys.privateKey);
+  check("proof is admitted just before its fractional expiry",
+    (await verifyToolResultHumanProof(fractionalExpiry, idp, () => now * 1000 + 299_249)).authTime === now);
+  for (const elapsed of [299_250, 299_251])
+    await refuses(`proof refuses at or after fractional expiry (${elapsed} ms)`, () => verifyToolResultHumanProof(fractionalExpiry, idp, () => now * 1000 + elapsed));
   for (const [label, claims] of [
     ["301 seconds", { auth_time: now - 301 }], ["future", { auth_time: now + 1 }],
     ["milliseconds", { auth_time: now * 1000 }], ["fractional", { auth_time: now - 0.5 }],
@@ -107,6 +118,16 @@ try {
   const claims = await validateUserToken(ordinary.token, { issuer: bearerIssuer.issuer, audience: "proof_fixture", key: bearerIssuer.localKeySet() });
   check("ordinary exchange remains available without freshness", claims.act.actor === "cli" && credentialWrites === 1);
   check("ordinary exchange gains no consent authority", claims.act.view === undefined && !Object.keys(claims).includes("auth_time"));
+  const originalClock = Date.now;
+  try {
+    for (const elapsed of [300_000, 300_001, 300_999]) {
+      Date.now = () => now * 1000 + elapsed;
+      const boundary = await post({ idpToken: token, subject: "human" });
+      check(`real HTTP proof door enforces the ${elapsed} ms boundary`, boundary.status === (elapsed === 300_000 ? 200 : 403));
+    }
+  } finally { Date.now = originalClock; }
+  const EXPECTED = 70;
+  assert.equal(passed, EXPECTED, "signed proof smoke must execute every declared boundary cell");
   console.log(`tool-result-human-proof smoke: ${passed} passed, 0 failed`);
 } finally {
   server.closeAllConnections(); keyServer.closeAllConnections();

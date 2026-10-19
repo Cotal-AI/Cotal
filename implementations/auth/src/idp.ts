@@ -173,16 +173,16 @@ export interface ToolResultHumanProof {
 }
 
 /** Verify the pinned signed proof before applying the consent-only, five-minute password rule.
- * The clock is host-owned and read after verification; no JWT tolerance widens this window. */
+ * The host clock returns integer milliseconds and is read after verification;
+ * no rounding or JWT tolerance widens this window. */
 export async function verifyToolResultHumanProof(
   token: string, idp: IdpConfig, now: () => number = Date.now,
 ): Promise<ToolResultHumanProof> {
   const verified = await verifyIdpToken(token, idp);
   const at = verified.auth_time;
   const ms = now();
-  const second = Math.floor(ms / 1000);
-  if (!Number.isSafeInteger(ms) || ms < 0 || at === undefined || at > second || second - at > 300 ||
-      !verified.amr?.includes("pwd") || verified.exp <= second)
+  if (!Number.isSafeInteger(ms) || ms < 0 || at === undefined || at * 1000 > ms || ms - at * 1000 > 300_000 ||
+      !verified.amr?.includes("pwd") || verified.exp * 1000 <= ms)
     throw new Error("tool-result consent requires a fresh signed password proof");
   return Object.freeze({ sub: verified.sub, exp: verified.exp, authTime: at });
 }

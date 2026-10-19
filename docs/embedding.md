@@ -334,7 +334,8 @@ a schema's character limit alone is not the byte bound.
 `@cotal-ai/auth` exports `verifyToolResultHumanProof` for the consent prerequisite. It verifies
 an EdDSA IdP JWT against the existing issuer, audience and key pins, then requires integer-second
 `auth_time` no later than the decision and at most 300 seconds old, plus a signed `amr` array
-containing `pwd`. JWT clock tolerance does not widen this window. Ordinary bearer exchange does
+containing `pwd`. The host compares elapsed milliseconds without rounding its clock to seconds.
+JWT clock tolerance does not widen this window. Ordinary bearer exchange does
 not require these claims or turn them into consent authority.
 
 The loopback-only `POST /tool-result-human-proof/verify` takes only `{ idpToken, subject }` with
