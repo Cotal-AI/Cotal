@@ -18,6 +18,7 @@ import {
   Labels,
   lerp,
   MODE_ALICE,
+  MODE_MIDDLE,
   MODE_PEERS,
   NODE_R,
   prog,
@@ -26,7 +27,7 @@ import {
   type Pt,
 } from "./scene";
 
-const JUNCTION: Pt = { x: 400, y: 410 };
+const JUNCTION = MODE_MIDDLE;
 
 // The role's bracket is measured from the first and last peer so it follows the
 // pool when the cast moves; below the last peer it leaves room for its name.

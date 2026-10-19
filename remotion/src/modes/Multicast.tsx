@@ -15,6 +15,7 @@ import {
   Labels,
   lerp,
   MODE_ALICE,
+  MODE_MIDDLE,
   MODE_PEERS,
   prog,
   Ripple,
@@ -23,7 +24,7 @@ import {
   type Pt,
 } from "./scene";
 
-const PILL: Pt = { x: 400, y: 410 };
+const PILL = MODE_MIDDLE;
 
 // The pill's label takes the smallest card text size, which leaves the wires
 // on either side room to read.
