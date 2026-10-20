@@ -2707,7 +2707,8 @@ journal does not record is absent: a checkpoint opened before `onExpiry` was rec
 The run header and errors go to stderr, so stdout carries only rows; an unreadable revocation marker
 prints its reason there and still exits 1. The text view is presentation and is not a stable
 parsing target. `--json` on any other verb is refused.
-`ps --page` asks one manager for a single bounded diagnostic JSON page instead of the full list:
+`ps --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
+diagnostic JSON page instead of the full list:
 `--limit` takes 1 to 16 rows (default 8), and `--cursor` continues a scan from a returned
 `nextCursor`. It requires `--on` and refuses `--local`, and a page proves neither absence nor
 ownership ([Diagnostic inventory](workflows.md#diagnostic-inventory)).

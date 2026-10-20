@@ -310,7 +310,8 @@ mesh; on a bare broker a pause still resolves, it just cannot expire.
 ## Diagnostic inventory
 
 A large inventory can exceed the broker's reply limit. A host that supports page mode can return
-one bounded JSON page:
+one bounded JSON page. Page mode is not in release 0.88.0 or earlier: the calling CLI or connector and
+the manager both need a later version.
 
 ```bash
 cotal run ps --page --on <instance> --limit 8
