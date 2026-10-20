@@ -3,7 +3,7 @@ import { canonicalJson } from "./canonical.js";
 import { submissionFingerprint } from "./endpoint-journal.js";
 import { invokeCommand, type ResolvedService } from "./endpoint-caller.js";
 import { epRequestSubject, parseEpSubject, type EpCaller } from "./endpoint-subjects.js";
-import { EpEnvelopeError } from "./endpoint-error.js";
+import { EpEnvelopeError, type EpErrorCode } from "./endpoint-error.js";
 import type { RunSubmissionView } from "./run-submission.js";
 
 export interface KeyedRunSubmission {
@@ -49,7 +49,7 @@ export async function invokeKeyedRunSubmission(nc: NatsConnection, space: string
   if (!p || canonicalJson(p.service.caller) !== canonicalJson(submission.caller))
     throw new EpEnvelopeError("failed-precondition", "keyed submission was not prepared from pinned native support");
   const result = await invokeCommand(nc, space, p.service, "run-start-keyed", p.args, { ...opts, id: submission.submissionId });
-  if (!result.reply.ok) throw new EpEnvelopeError(result.reply.error?.code ?? "internal", result.reply.error?.message ?? "keyed start refused",
+  if (!result.reply.ok) throw new EpEnvelopeError((result.reply.error?.code ?? "internal") as EpErrorCode, result.reply.error?.message ?? "keyed start refused",
     result.reply.error?.details, result.reply.error?.outcome);
   return result.reply.data as RunSubmissionView;
 }
@@ -59,7 +59,7 @@ export async function readKeyedRunSubmission(nc: NatsConnection, space: string, 
   const p = pins.get(submission);
   if (!p) throw new EpEnvelopeError("failed-precondition", "keyed read needs its original pinned support");
   const result = await invokeCommand(nc, space, p.service, "run-submission-status", { submissionId: submission.submissionId }, opts);
-  if (!result.reply.ok) throw new EpEnvelopeError(result.reply.error?.code ?? "internal", result.reply.error?.message ?? "keyed read refused",
+  if (!result.reply.ok) throw new EpEnvelopeError((result.reply.error?.code ?? "internal") as EpErrorCode, result.reply.error?.message ?? "keyed read refused",
     result.reply.error?.details, result.reply.error?.outcome);
   return result.reply.data as RunSubmissionView;
 }
