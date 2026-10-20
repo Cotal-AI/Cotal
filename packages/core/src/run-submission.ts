@@ -6,6 +6,7 @@ import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js"
 import { EpEnvelopeError } from "./endpoint-error.js";
 import { admissionBucket, admissionKey, admissionSnapshot, type RunAdmission } from "./run-admission.js";
 import { assertIdToken, endpointToken, isIssuedCaller, type EpCaller } from "./endpoint-subjects.js";
+import { callerRailTokens } from "./endpoint-subjects.js";
 
 export interface RunSubmissionBinding {
   v: 1;
@@ -34,6 +35,7 @@ const enc = new TextEncoder(), dec = new TextDecoder("utf-8", { fatal: true });
 const refuse = (message: string): never => { throw new EpEnvelopeError("failed-precondition", message); };
 export function runSubmissionKey(endpoint: string, caller: EpCaller, submissionId: string): string {
   if (!isIssuedCaller(caller)) return refuse("keyed runs require issued caller authority");
+  callerRailTokens(caller);
   assertIdToken(submissionId, "submissionId");
   // Generation is stored and checked, not part of the incarnation's permanent key.
   const namespace = contractDigest([caller.owner, caller.actor, caller.uid]).slice(7);
@@ -102,6 +104,8 @@ async function beforeDeadline<T>(deadline: number, work: () => Promise<T>): Prom
 export async function bindAndAdmitRunSubmission(args: {
   kv: KV; jsm: JetStreamManager; admission: RunAdmission; submissionId: string; fingerprint: string;
   processEpoch: number; callbackDeadline: number;
+  /** Fresh checks may refuse/hold, never replace the original frozen admission bytes. */
+  assertCurrent?: () => Promise<void>;
 }): Promise<{ winner: boolean; view: RunSubmissionView; admission?: RunAdmission }> {
   const a = admissionSnapshot(args.admission), binding = runSubmissionSnapshot({ v: 1, space: a.space, endpoint: a.endpoint,
     caller: a.caller, submissionId: args.submissionId, fingerprint: args.fingerprint, instanceId: a.instanceId,
@@ -109,6 +113,7 @@ export async function bindAndAdmitRunSubmission(args: {
   const key = runSubmissionKey(a.endpoint, a.caller, args.submissionId), bytes = enc.encode(canonicalJson(a));
   const read = () => readRunSubmission({ ...binding, jsm: args.jsm });
   let winner = false;
+  if (args.assertCurrent) await beforeDeadline(args.callbackDeadline, args.assertCurrent);
   try { await beforeDeadline(args.callbackDeadline, () => args.kv.put(key, enc.encode(canonicalJson(binding)), { previousSeq: 0 })); winner = true; }
   catch (error) {
     // First-wins/per-subject-limit and unknown create outcomes all classify by exact leader read.
@@ -120,6 +125,7 @@ export async function bindAndAdmitRunSubmission(args: {
     return { winner: false, view: await beforeDeadline(args.callbackDeadline, read) };
   }
   for (let attempt = 0; attempt < 3; attempt++) {
+    if (args.assertCurrent) await beforeDeadline(args.callbackDeadline, args.assertCurrent);
     try {
       await beforeDeadline(args.callbackDeadline, () => args.kv.put(admissionKey(a.endpoint, a.runId), bytes, { previousSeq: 0 }));
       return { winner, view: await beforeDeadline(args.callbackDeadline, read), admission: a };

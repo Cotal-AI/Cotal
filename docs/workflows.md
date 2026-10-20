@@ -1,5 +1,26 @@
 # Workflow runs
 
+## Keyed submission
+
+The new `run-start-keyed` command binds an envelope submission ID to one manager-minted run.
+`run-submission-status` reads that binding for the authenticated caller incarnation. Both need
+fresh issued reach and a digest-verified description pinned to one manager instance and epoch.
+Legacy `run-start` is unchanged. An unsupported keyed command never falls back to it.
+
+The scheduler must persist the submission ID, semantic fingerprint, caller incarnation,
+contract digests and instance/epoch before dispatch. The client helpers prepare that snapshot
+and send one attempt at a time. They do not schedule retries, replace unknown work or re-pin it
+to another manager. Keep the original work reservation while reconciling any unknown outcome.
+
+The binding winner may make at most three admission-create attempts in its original callback
+deadline, with the same admission bytes and authority. Later duplicates only read. A
+`binding-only` result is a visible reconciliation hold, not a queue or permission to repair.
+An absent admission is an observation at read time, not proof that the original callback cannot
+still write. A changed caller generation or manager epoch refuses rather than adopting the run.
+
+This implementation is under validation. Static native and signerless issuer paths require
+separate acceptance evidence before release or integration.
+
 > **Concept** (informative) · **For:** people writing a durable multi-agent workflow, and implementers hosting one · **Normative:** [SPEC §14](../SPEC.md#14-workflow-runs-v05) and the language reference [`spec/cotal-lang.md`](../spec/cotal-lang.md)
 
 A **workflow run** is a program that coordinates agents over hours or days and survives the

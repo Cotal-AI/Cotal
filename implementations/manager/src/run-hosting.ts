@@ -58,6 +58,7 @@ import {
   admissionBucket,
   createRunAdmission,
   bindAndAdmitRunSubmission, readRunSubmission, submissionFingerprint, newSubmissionRunId,
+  canonicalJson,
   type RunSubmissionView, type RemoteRunSubmissionResult,
   readRunAdmission,
   revokeRunAdmission,
@@ -285,7 +286,12 @@ export class RunHosting {
         provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now() };
       result = await this.withAdmitter(runId, (kv, jsm) => bindAndAdmitRunSubmission({ kv, jsm, admission,
         submissionId: ctx.request.id, fingerprint: submissionFingerprint(ctx.request, ctx.subject).fingerprint,
-        processEpoch: ctx.identity.epoch, callbackDeadline: deadline }), { caller, id: ctx.request.id });
+        processEpoch: ctx.identity.epoch, callbackDeadline: Math.min(deadline, resolved.evidence.expiresAt === undefined ? Infinity : resolved.evidence.expiresAt * 1000),
+        assertCurrent: async () => {
+          const fresh = await withIssuerSession({ servers: this.ctx.servers ?? DEFAULT_SERVER, space: this.ctx.space, auth, tls: false }, s => s.store.resolve(ref, s.sourceIsLive));
+          if (fresh.revision !== resolved.revision || canonicalJson(fresh.evidence) !== canonicalJson(resolved.evidence))
+            throw new EpEnvelopeError("permission-denied", "original keyed authority changed; retain its binding");
+        } }), { caller, id: ctx.request.id });
     }
     if (!result.winner || !result.admission) return this.submissionActivation(result.view);
     const admission = result.admission;

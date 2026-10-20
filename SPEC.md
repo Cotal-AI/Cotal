@@ -5062,6 +5062,35 @@ retain each for at most one hour and MUST NOT store arguments.
 
 ## 14. Workflow runs (v0.5)
 
+### Keyed submission prerequisite
+
+`run-start-keyed` is a distinct registered command. Its envelope ID is the immutable submission
+identity. `run-submission-status` accepts only a submission ID and derives its namespace from
+the authenticated caller owner, actor and lifecycle UID. Both require issued reach, pinned
+contracts and an exact-instance/epoch bind. Old credentials gain no reach by reconnecting.
+Legacy `run-start` remains unchanged and is never an automatic fallback.
+
+The admission authority writes one `submission.v1.<endpointToken>.<callerDigest>.<id>` binding
+in the existing write-once admission store. `callerDigest` is the canonical SHA-256 digest of
+`[owner,actor,lifecycleUid]` without its `sha256:` prefix. The closed value records the caller
+generation, semantic fingerprint, accepting instance/epoch, manager-minted run ID, frozen
+admission digest and original callback deadline. Bindings are permanent, including terminal
+runs. Capacity exhaustion refuses new submissions rather than deleting authority history.
+
+All authorization and evidence reads precede the binding CAS. Only the original binding
+winner may create its admission, with at most three classified transient attempts in the
+original callback deadline and authority window. The admission bytes, timestamp, ceiling and
+provenance remain fixed. A failed create is classified by a leader read of that exact admission
+key. Matching bytes recover success, authoritative absence permits another same-callback
+attempt, and unreadable or conflicting state holds. No later callback, duplicate, restart,
+operator or read repairs a binding-only submission.
+
+Status reports `unbound`, `binding-only`, `admitted`, `activated` or `indeterminate`, with the
+original bound run and callback deadline when available. Absence is observation-time only.
+The scheduler preserves its original reservation and never allocates a replacement run or
+adopts another instance/epoch from these reads. A later repair protocol requires its own fence
+and review. This prerequisite introduces no second scheduler or generic cancellation.
+
 A **workflow run** is one execution of a program in the Cotal workflow language, hosted by a
 **driver** (an endpoint, in the reference deployment the manager daemon) that performs the
 program's effects against the mesh and records every one of them in a per-run **step journal**.

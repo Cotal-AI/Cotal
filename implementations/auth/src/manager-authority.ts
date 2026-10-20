@@ -34,7 +34,7 @@ import {
   admissionKey,
   admissionSnapshot,
   createRunAdmission,
-  bindAndAdmitRunSubmission, readRunSubmission, newSubmissionRunId, submissionFingerprint,
+  bindAndAdmitRunSubmission, readRunSubmission, newSubmissionRunId, submissionFingerprint, canonicalJson,
   revokeRunAdmission,
   isAccountNkey,
   isDerivedOwner,
@@ -353,7 +353,13 @@ export async function handleRemoteRunSubmission(args: {
     const admission: RunAdmission = { version: 1, space: r.space, endpoint: args.endpoint, runId, instanceId: r.instanceId,
       caller: c, ceiling: resolved.evidence.permissions, provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now() };
     return bindAndAdmitRunSubmission({ kv, jsm, admission, submissionId: id, fingerprint: observed.submission!.fingerprint,
-      processEpoch: r.processEpoch, callbackDeadline: observed.submission!.deadline });
+      processEpoch: r.processEpoch, callbackDeadline: Math.min(observed.submission!.deadline, resolved.evidence.expiresAt === undefined ? Infinity : resolved.evidence.expiresAt * 1000),
+      assertCurrent: async () => {
+        await authenticateRegisteredManager(r, args, "keyed admission recheck");
+        const fresh = await args.issued.resolve(ref, args.sourceIsLive);
+        if (fresh.revision !== resolved.revision || canonicalJson(fresh.evidence) !== canonicalJson(resolved.evidence))
+          throw new EpEnvelopeError("permission-denied", "original keyed admission authority changed; retain its binding");
+      } });
   });
   return { v: 1, kind: "manager-run-submission", requestId: r.requestId, ...result };
 }
