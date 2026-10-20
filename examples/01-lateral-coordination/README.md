@@ -34,20 +34,25 @@ who delegates to whom — is just how you set it up.
 
 ## Prerequisites
 
-- Node ≥ 22, pnpm, and `nats-server` (v2.11+). macOS: `brew install nats-server`.
+- Node ≥ 22, pnpm, and `nats-server` 2.12 or newer. macOS: `brew install nats-server`.
 - Install deps once, from the repo root: `pnpm install`.
 
 ## Run it
 
-**1. Start the mesh** (one terminal — stays running):
+**1. Start the mesh** (one terminal — stays running), from the repo root:
 
 ```
-pnpm cotal up --open --no-manager --space demo --channels examples/01-lateral-coordination/channels.json
+mkdir -p .cotal
+pnpm cotal up --open --no-manager --space demo --server nats://127.0.0.1:4222 \
+  --channels examples/01-lateral-coordination/channels.json
 ```
 
-`--space demo` names the space every command below uses; without it the space takes the folder's
-name. `--no-manager` leaves the manager to this example (see below). If `:4222` is taken, `up` picks
-a free port and records it, so `cotal meshes` shows the address. The
+`mkdir -p .cotal` makes the repo its own mesh root. Without it, `up` and the manager below both use
+the nearest `.cotal/` above the repo, which is often `~/.cotal`. Check with `cotal meshes`: the
+`demo` row must show `nats://127.0.0.1:4222` and this repo as its root. `--space demo` names the
+space every command below uses; without it the space takes the folder's name. `--server` fixes the
+broker address: if `:4222` is taken, `up` refuses, so pick another port and use it everywhere below.
+`--no-manager` leaves the manager to this example (see below). The
 optional `--channels` file seeds the channel registry (per-channel replay policy +
 descriptions); edit it live with `cotal channels set <name> [--replay|--no-replay] [--desc …]`.
 
@@ -72,7 +77,7 @@ plane. The manager owns each peer's process in a pseudo-terminal (`pty` runtime)
 
 ```
 # one terminal — the supervisor (composition root: picks the cotal + claude connectors)
-(cd examples/01-lateral-coordination && pnpm manager)
+(cd examples/01-lateral-coordination && COTAL_SPACE=demo COTAL_SERVERS=nats://127.0.0.1:4222 pnpm manager)
 
 # then, from the repo root
 cotal spawn --detach --no-events --agent cotal --cwd "$PWD" --space demo --name alice --role planner   # manager spawns alice in a PTY
@@ -81,13 +86,13 @@ cotal attach --space demo --name alice                  # stream + drive her ter
 cotal stop  --space demo --name alice                   # kill the process
 ```
 
-The manager keeps its state under the nearest `.cotal/` above its folder, which is the repo root
-once step 1 has run there. Run step 1 from the repo root first, or the manager walks further up and
-writes into whatever `.cotal/` it finds, such as `~/.cotal`. The example's `cotal` peer runs
-`pnpm cotal join`, so it needs the repo as its `--cwd`, and `--no-events`, because it publishes no
-event plane. If `up` picked a port other than `:4222`, start the manager with
-`COTAL_SERVERS=<url>`. `cotal spawn --detach --agent claude` spawns a real Claude Code session the
-same way (see below).
+The manager reads its space and broker only from `COTAL_SPACE` and `COTAL_SERVERS` (defaults `demo`
+and `nats://127.0.0.1:4222`), so set both to what step 1 used: a value inherited from your shell,
+such as an agent session's own `COTAL_SPACE`, would point it at another space. It keeps its state
+under the nearest `.cotal/` above its folder, which is the repo root only because of the
+`mkdir -p .cotal` in step 1. The example's `cotal` peer runs `pnpm cotal join`, so it needs the repo
+as its `--cwd`, and `--no-events`, because it publishes no event plane. `cotal spawn --detach
+--agent claude` spawns a real Claude Code session the same way (see below).
 
 ## Watch them in the browser — CLI + manager + web console
 
@@ -96,10 +101,11 @@ shows one live terminal per managed agent. PTY bytes stream over a direct WebSoc
 stream `cotal attach` consumes), never the mesh. One example, all three surfaces together:
 
 ```
-pnpm cotal up --open --no-manager --space demo             # 1. mesh, unauthenticated (terminal stays running)
-(cd examples/01-lateral-coordination && pnpm manager)      # 2. manager + console → prints http://127.0.0.1:7878/
+mkdir -p .cotal                                            # 1. make the repo its own mesh root
+pnpm cotal up --open --no-manager --space demo --server nats://127.0.0.1:4222   # 2. mesh, unauthenticated (terminal stays running)
+(cd examples/01-lateral-coordination && COTAL_SPACE=demo COTAL_SERVERS=nats://127.0.0.1:4222 pnpm manager)   # 3. manager + console → prints http://127.0.0.1:7878/
 
-# 3. drive it from the CLI — the console updates live
+# 4. drive it from the CLI — the console updates live
 pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name ada   --role planner
 pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name linus --role reviewer
 ```
@@ -183,11 +189,12 @@ import the matching extension in the composition root and select it at launch:
 
 ```bash
 # tmux — each agent gets its own window in the cotal session
-cotal supervise --runtime tmux   # requires: import "@cotal-ai/tmux" in the composition root
+cotal supervise --runtime tmux   # requires: cotal ext add @cotal-ai/tmux (or import it in a composition root)
 
 # cmux — each agent gets its own tab
-cotal supervise --runtime cmux   # requires: import "@cotal-ai/cmux" in the composition root
+cotal supervise --runtime cmux   # requires: cotal ext add @cotal-ai/cmux (or import it in a composition root)
 ```
 
-With `--runtime tmux` or `--runtime cmux` and the matching package not imported, the manager
-throws a clear `"import @cotal-ai/<runtime>"` error — no silent fallback to pty.
+With `--runtime tmux` or `--runtime cmux` and the matching package neither installed nor imported,
+the manager refuses with `unknown runtime "<runtime>"` and names both remedies — no silent fallback
+to pty.
