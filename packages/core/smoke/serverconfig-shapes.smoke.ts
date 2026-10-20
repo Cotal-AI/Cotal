@@ -133,5 +133,57 @@ for (const [what, tlsConf, plainConf] of [
   }
 }
 
-console.log(`serverconfig-shapes smoke: OK - all 4 call-site shapes render (incl. the :live-only extraAccounts-from-variable form), tls renders on both renderers, allow_non_tls/handshake_first/verify never emitted, open renderer carries no auth material, maxFileStore unset is byte-identical and set renders max_file_store, invalid caps refused`);
+// Native nats-server log file and rotation directives (`logFile`, `logfileSizeLimit`, `logfileMaxNum`).
+{
+  const logBlock = `log_file: "/tmp/shapes-nats.log"\nlogfile_size_limit: 10485760\nlogfile_max_num: 5\n`;
+  const openUnset = openServerConfig({ transport: { kind: "plaintext" }, port: 4340, storeDir });
+  const authUnset = serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4341, storeDir });
+  for (const [what, unset, set] of [
+    [
+      "openServerConfig",
+      openUnset,
+      openServerConfig({
+        transport: { kind: "plaintext" },
+        port: 4340,
+        storeDir,
+        logFile: "/tmp/shapes-nats.log",
+        logfileSizeLimit: 10485760,
+        logfileMaxNum: 5,
+      }),
+    ],
+    [
+      "serverConfig",
+      authUnset,
+      serverConfig(auth, [auth], {
+        transport: { kind: "plaintext" },
+        port: 4341,
+        storeDir,
+        logFile: "/tmp/shapes-nats.log",
+        logfileSizeLimit: 10485760,
+        logfileMaxNum: 5,
+      }),
+    ],
+  ] as const) {
+    assert.ok(set.includes(`\n${logBlock}`), `${what}: logFile, logfileSizeLimit, and logfileMaxNum render native nats-server log rotation directives`);
+    assert.equal(set.replace(logBlock, ""), unset, `${what}: setting log rotation options changes only the log directive block`);
+  }
+  for (const badPath of ["", "   ", "/tmp/bad\n.log", "/tmp/bad\0.log"]) {
+    assert.throws(() => openServerConfig({ transport: { kind: "plaintext" }, port: 4340, storeDir, logFile: badPath }),
+      /openServerConfig: logFile must be a non-empty path/, `openServerConfig: invalid logFile ${JSON.stringify(badPath)} is refused`);
+    assert.throws(() => serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4341, storeDir, logFile: badPath }),
+      /serverConfig: logFile must be a non-empty path/, `serverConfig: invalid logFile ${JSON.stringify(badPath)} is refused`);
+  }
+  for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+    assert.throws(() => openServerConfig({ transport: { kind: "plaintext" }, port: 4340, storeDir, logfileSizeLimit: bad }),
+      /openServerConfig: logfileSizeLimit must be a positive integer number of bytes/, `openServerConfig: logfileSizeLimit ${bad} is refused`);
+    assert.throws(() => serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4341, storeDir, logfileSizeLimit: bad }),
+      /serverConfig: logfileSizeLimit must be a positive integer number of bytes/, `serverConfig: logfileSizeLimit ${bad} is refused`);
+    assert.throws(() => openServerConfig({ transport: { kind: "plaintext" }, port: 4340, storeDir, logfileMaxNum: bad }),
+      /openServerConfig: logfileMaxNum must be a positive integer file count/, `openServerConfig: logfileMaxNum ${bad} is refused`);
+    assert.throws(() => serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4341, storeDir, logfileMaxNum: bad }),
+      /serverConfig: logfileMaxNum must be a positive integer file count/, `serverConfig: logfileMaxNum ${bad} is refused`);
+  }
+}
+
+console.log(`serverconfig-shapes smoke: OK - all 4 call-site shapes render (incl. the :live-only extraAccounts-from-variable form), tls renders on both renderers, allow_non_tls/handshake_first/verify never emitted, open renderer carries no auth material, maxFileStore and log rotation directives render and validate`);
 emitSentinel({ passed: cells(), failed: 0 });

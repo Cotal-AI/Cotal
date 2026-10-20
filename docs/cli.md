@@ -8,6 +8,22 @@ wire contract: the normative subjects and schemas live in the [SPEC](../SPEC.md)
 lookup material for the commands, not a walkthrough; if you are new, start with
 [Getting started](getting-started.md).
 
+## Broker file logging
+
+`cotal up --log-file <path>` uses nats-server's native file logger. Add
+`--logfile-size-limit <bytes>` and `--logfile-max-num <count>` for native rotation.
+Both bounds require an explicit log file, in foreground and detached mode. Paths containing
+control characters are refused. Quotes and configuration delimiters remain quoted path text.
+Manifest keys are `broker.logFile`, `broker.logfileSizeLimit` and `broker.logfileMaxNum`.
+Relative manifest paths resolve beside the manifest. CLI paths resolve from the working directory.
+
+Detached launches keep pre-logger failures in `.cotal/nats-startup.log`, separate from the
+rotating file. Its permissions are enforced as 0600 even when it already exists. The native
+log path must differ from this startup diagnostics path. A failed launch names the file and
+includes its first bounded diagnostic bytes.
+Logging choices are recorded and retained by preserved resumes. Different explicit choices
+are refused during resume. With no log options, existing logging behavior is unchanged.
+
 ## Running it
 
 ```bash

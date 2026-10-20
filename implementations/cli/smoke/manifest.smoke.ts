@@ -207,6 +207,39 @@ agents: { a: ./a.md }
 channels: { general: { subscribe: [a] } }
 `, "bind address");
 
+// broker log rotation fields accepted + validated
+{
+  const m = ok(`${HEAD}
+broker:
+  logFile: ./logs/nats.log
+  logfileSizeLimit: 1048576
+  logfileMaxNum: 5
+agents: { a: ./a.md }
+channels: { general: { subscribe: [a] } }
+`);
+  assert.equal(m.broker?.logFile, rel("logs/nats.log"));
+  assert.equal(m.broker?.logfileSizeLimit, 1048576);
+  assert.equal(m.broker?.logfileMaxNum, 5);
+}
+
+fails(`${HEAD}
+broker: { logFile: "bad\\npath" }
+agents: { a: ./a.md }
+channels: { general: { subscribe: [a] } }
+`, "broker.logFile");
+
+fails(`${HEAD}
+broker: { logfileSizeLimit: 0 }
+agents: { a: ./a.md }
+channels: { general: { subscribe: [a] } }
+`, "logfileSizeLimit");
+
+fails(`${HEAD}
+broker: { logfileMaxNum: -1 }
+agents: { a: ./a.md }
+channels: { general: { subscribe: [a] } }
+`, "logfileMaxNum");
+
 // inline agent with neither model nor instructions
 fails(`${HEAD}
 agents: { a: { description: just a blurb } }

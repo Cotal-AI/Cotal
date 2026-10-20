@@ -349,7 +349,12 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
   const mesh = matching[0];
   const storeDir = storeOverride ? resolveStore(storeOverride) : join(root, ".cotal", "nats");
   // The store cap the broker was started with travels with the store, so the resume re-renders it.
-  const cap: { maxFileStore?: number } = mesh.maxFileStore !== undefined ? { maxFileStore: mesh.maxFileStore } : {};
+  const cap = {
+    ...(mesh.maxFileStore !== undefined ? { maxFileStore: mesh.maxFileStore } : {}),
+    ...(mesh.logFile !== undefined ? { logFile: mesh.logFile } : {}),
+    ...(mesh.logfileSizeLimit !== undefined ? { logfileSizeLimit: mesh.logfileSizeLimit } : {}),
+    ...(mesh.logfileMaxNum !== undefined ? { logfileMaxNum: mesh.logfileMaxNum } : {}),
+  };
   const lock = acquireMaintenanceLock(root);
   try {
     const all = localProcessSurface();

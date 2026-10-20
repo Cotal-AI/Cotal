@@ -61,6 +61,10 @@ export interface MeshEntry {
    *  re-renders it, and a refresh compares a requested cap against it. Absent means the broker runs
    *  on nats-server's dynamic default. */
   maxFileStore?: number;
+  /** Native file logging selected at launch, preserved with the broker's launch record. */
+  logFile?: string;
+  logfileSizeLimit?: number;
+  logfileMaxNum?: number;
   /** The JetStream store directory the broker was started with (`cotal up --store-dir`, or the
    *  root's default), as a resolved absolute path. A same-root repair `up` reopens it; an explicit
    *  `--store-dir` that disagrees is refused. Absent means the record was written before this field
