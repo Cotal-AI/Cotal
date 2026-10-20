@@ -82,7 +82,7 @@ const runCommand: Command = {
   group: "Manager",
   summary: "operate workflow runs — start, resume, list, inspect, answer, amend (hosted by the manager), revoke",
   usage:
-    "run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] | journal <runId> [--endpoint <ep>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text>> [--local [--admit-read <channels> --admit-publish <channels>]] [--on <instance>]",
+    "run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] [--page [--limit <n>] [--cursor <cursor>]] | journal <runId> [--endpoint <ep>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text>> [--local [--admit-read <channels> --admit-publish <channels>]] [--on <instance>]",
   flags: [
     ...targetFlags,
     { name: "file", type: "string", short: "f", value: "<program>", description: "cotal-lang program source (start; resume --local when no program is recorded)" },
@@ -99,6 +99,9 @@ const runCommand: Command = {
     { name: "release", type: "string", value: "<handle>", description: "REFUSED by `migrate`: it decides what a commit does with an orphan, and that verb only checks" },
     { name: "discard-approvals", type: "boolean", description: "REFUSED by `migrate`: it decides what a commit does with a recorded decision, and that verb only checks" },
     { name: "json", type: "boolean", description: "ps, journal: machine-readable, one JSON object per row per line (headers and errors go to stderr)" },
+    { name: "page", type: "boolean", description: "hosted ps: one bounded diagnostic JSON page; requires --on and proves no absence or ownership" },
+    { name: "limit", type: "string", value: "<n>", description: "ps --page: row limit from 1 to 16 (default 8); byte and read bounds can return fewer" },
+    { name: "cursor", type: "string", value: "<cursor>", description: "ps --page: continuation from the same manager instance, epoch and filter" },
     { name: "on", type: "string", value: "<instance>", description: "hosted verbs, not with --local: target one manager instance id (multi-manager space), as `cotal ps` prints it" },
   ],
   positionals: "<start|resume|ps|journal|answer|amend|revoke|migrate> …",

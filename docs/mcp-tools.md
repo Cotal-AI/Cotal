@@ -350,6 +350,7 @@ Runs continue independently of your session and can recover after a manager rest
 | `value` | unknown | no | answer only: supply the value requested by the open checkpoint or ask and match its answer shape. A checkpoint may resolve without a value; an ask must receive its requested record. Use null only when that is the intended answer. |
 | `artifact` | string | no | answer only: a reference to what you reviewed before answering, recorded beside the answer. |
 | `endpoint` | string | no | status/ps/answer: the endpoint the run record lives under. Omit for runs the manager hosts. |
+| `page` | object | no | ps only: one bounded diagnostic JSON page, default 8 rows. Pin the manager with instance unless this session is already bound. Continuation is not snapshot, absence or ownership proof. |
 | `instance` | string | no | Optional manager instance id for a multi-manager space. When omitted, a seat a manager launched uses that manager and any other caller lets the mesh select one; on a user-auth mesh with several of your managers live, that selection refuses and lists their ids. A pin that cannot be resolved is refused without falling back to another manager. |
 
 ## `cotal_persona`

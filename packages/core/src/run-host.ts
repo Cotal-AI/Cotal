@@ -165,6 +165,50 @@ export interface RunListRow {
   readonly revocationUnreadable?: string;
 }
 
+/** Opt-in diagnostic inventory. A cursor is continuation data, not authority or absence proof. */
+export interface RunListPageOptions {
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
+export interface RunListRequest {
+  readonly endpoint?: string;
+  readonly page?: RunListPageOptions;
+}
+
+export interface RunListPageRow {
+  readonly endpoint: string;
+  readonly runId: string;
+  readonly specRevision: number;
+  readonly startedAt: number;
+  readonly observedAt: number;
+  readonly status: (RunStatusValue & { readonly statusRevision: number; readonly staleProjection: boolean }) | null;
+  readonly revocation: "present" | "not-observed";
+}
+
+export interface RunListPage {
+  readonly v: 1;
+  readonly semantics: "diagnostic";
+  readonly space: string;
+  readonly endpointFilter: string | null;
+  readonly responder: { readonly instanceId: string; readonly epoch: number };
+  readonly cutSeq: number;
+  readonly nextSeq: number;
+  readonly items: readonly RunListPageRow[];
+  readonly nextCursor?: string;
+  readonly endObserved: boolean;
+  readonly stopReason: "end" | "rows" | "bytes" | "read-budget";
+  readonly storageReads: number;
+}
+
+/** Local host context. The runtime receives no serving connection or credential. */
+export interface RunListPageContext {
+  readonly responder: { readonly instanceId: string; readonly epoch: number };
+  /** Monotonic deadline after which no new storage call is issued, not a total wall-time bound. */
+  readonly issueUntil: number;
+  readonly replyFits: (data: unknown, ceiling: number) => boolean;
+}
+
 /** One row of a run's journal view. */
 export type RunJournalRow =
   | { readonly n: number; readonly kind: "activation"; readonly holder: string; readonly epoch: number; readonly replayedTo: number }
@@ -258,4 +302,6 @@ export interface RunHost extends Extension {
   status(planes: RunHostPlanes, req: { readonly endpoint: string; readonly runId: string; readonly takeoverId: string }): Promise<RunStatusView | undefined>;
   /** Every run recorded on `endpoint`, or on every endpoint when none is named. */
   list(planes: RunHostPlanes, req: { readonly endpoint?: string }): Promise<RunListRow[]>;
+  /** Bounded diagnostic pages, when supported. Never emulate with a full list followed by slicing. */
+  listPage?(planes: RunHostPlanes, req: RunListRequest & { readonly page: RunListPageOptions }, context: RunListPageContext): Promise<RunListPage>;
 }

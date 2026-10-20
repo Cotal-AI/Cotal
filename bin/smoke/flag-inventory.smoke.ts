@@ -275,8 +275,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   run: {
     flags: [
       "admit-publish:string", "admit-read:string", "adopt:string", "artifact:string", "by:string",
-      "creds:string", "discard-approvals:boolean", "endpoint:string", "file:string:f", "json:boolean",
-      "local:boolean", "on:string", "reason:string", "release:string", "server:string", "space:string",
+      "creds:string", "cursor:string", "discard-approvals:boolean", "endpoint:string", "file:string:f", "json:boolean",
+      "limit:string", "local:boolean", "on:string", "page:boolean", "reason:string", "release:string", "server:string", "space:string",
       "timeout:string", "value:string",
     ],
     positionals: true,

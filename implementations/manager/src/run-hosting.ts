@@ -84,6 +84,8 @@ import {
   type RunHostOutcome,
   type RunHostPlanes,
   type RunListRow,
+  type RunListPage,
+  type RunListRequest,
   type RunProgramValue,
   type RunStatusValue,
   type RunStatusView,
@@ -487,10 +489,22 @@ export class RunHosting {
   }
 
   /** `run-ps`: every run recorded on the endpoint (or every endpoint). */
-  async list(args: { endpoint?: string }): Promise<RunListRow[]> {
+  async list(args: { endpoint?: string }): Promise<RunListRow[]>;
+  async list(args: RunListRequest, ctx: EpServeContext): Promise<RunListRow[] | RunListPage>;
+  async list(args: RunListRequest, ctx?: EpServeContext): Promise<RunListRow[] | RunListPage> {
     const host = this.host();
-    return await this.withOperator({ ...(args.endpoint !== undefined ? { endpoint: args.endpoint } : {}) }, (planes) =>
-      host.list(planes, args.endpoint !== undefined ? { endpoint: args.endpoint } : {}));
+    const scope = args.endpoint !== undefined ? { endpoint: args.endpoint } : {};
+    if (args.page === undefined)
+      return await this.withOperator(scope, (planes) => host.list(planes, scope));
+    if (host.listPage === undefined || ctx?.replyFits === undefined)
+      throw new EpEnvelopeError("failed-precondition", "this host does not support diagnostic inventory pages");
+    const page = args.page;
+    const context = {
+      responder: { instanceId: ctx.identity.instanceId, epoch: ctx.identity.epoch },
+      issueUntil: performance.now() + Math.min(2000, ctx.request.deadlineMs ?? 2000),
+      replyFits: ctx.replyFits,
+    };
+    return await this.withOperator(scope, (planes) => host.listPage!(planes, { ...scope, page }, context));
   }
 
   /** Boot: take back every run this endpoint recorded `running`. A dead predecessor's drive left
