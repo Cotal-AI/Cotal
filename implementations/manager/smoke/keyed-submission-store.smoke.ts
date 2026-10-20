@@ -28,11 +28,11 @@ try {
   const jsm = await jetstreamManager(nc), kvm = new Kvm(nc), space = "keyed-store";
   await ensureAdmissionStore(jsm, kvm, space);
   const kv = await kvm.open(admissionBucket(space));
-  const caller: EpCaller = { owner: DEV_OWNER, actor: "caller", uid: mintLifecycleUid(), generation: mintGeneration() } as EpCaller;
+  const caller: EpCaller & { generation: string } = { owner: DEV_OWNER, actor: "caller", uid: mintLifecycleUid(), generation: mintGeneration() };
   const endpoint = "manager", instanceId = mintLifecycleUid(), processEpoch = 4;
   const admission = (): RunAdmission => ({ version: 1, space, endpoint, runId: newSubmissionRunId(), instanceId, caller,
     ceiling: { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } }, admittedAt: Date.now(),
-    provenance: { kind: "issued", ref: { space, ...caller, generation: (caller as { generation: string }).generation }, resolvedRevision: 1 } });
+    provenance: { kind: "issued", ref: { space, ...caller }, resolvedRevision: 1 } });
   const run = (id: string, a = admission(), fingerprint = contractDigest({ source: "same" })) => bindAndAdmitRunSubmission({ kv, jsm,
     admission: a, submissionId: id, fingerprint, processEpoch, callbackDeadline: Date.now() + 3000 });
   const read = (id: string, who = caller, epoch = processEpoch) => readRunSubmission({ jsm, space, endpoint, caller: who, submissionId: id, instanceId, processEpoch: epoch });
