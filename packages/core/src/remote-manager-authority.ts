@@ -126,13 +126,17 @@ export interface RemoteManagerAuthorityMaterial {
   }>;
 }
 
+/** The manager-service maintenance operations. The request type and the host parser both read this
+ *  list, so an operation added here is admitted by the parser too. */
+export const REMOTE_MANAGER_MAINTENANCE_OPERATIONS = Object.freeze(["evict-family-principal", "reconcile-registration"] as const);
+
 /** Closed host-owned maintenance request for one remote manager registration. The participant
  * names an operation and, for eviction, the claimed family holders. The host re-binds every
  * coordinate to the authenticated owner and current registration before it acts. */
 export interface RemoteManagerMaintenanceRequest {
   v: 1;
   kind: "manager-service-maintenance";
-  operation: "evict-family-principal" | "reconcile-registration";
+  operation: (typeof REMOTE_MANAGER_MAINTENANCE_OPERATIONS)[number];
   space: string;
   actor: string;
   instanceId: string;

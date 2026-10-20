@@ -1,6 +1,7 @@
 import {
   EVICT_PRINCIPALS_MAX,
   EpEnvelopeError,
+  REMOTE_MANAGER_MAINTENANCE_OPERATIONS,
   assertLifecycleToken,
   epcredFamilyPrefix,
   parseLedgerRow,
@@ -25,8 +26,8 @@ export function parseRemoteManagerMaintenanceRequest(raw: unknown): RemoteManage
     "requestId", "identities", "targetInstanceId", "principals",
   ]);
   for (const key of Object.keys(o)) if (!allowed.has(key)) requestError(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
-  if (o.operation !== "evict-family-principal" && o.operation !== "reconcile-registration")
-    requestError('operation must be "evict-family-principal" or "reconcile-registration"');
+  if (!(REMOTE_MANAGER_MAINTENANCE_OPERATIONS as readonly unknown[]).includes(o.operation))
+    requestError(`operation must be one of ${REMOTE_MANAGER_MAINTENANCE_OPERATIONS.join(", ")}`);
   const envelope = parseRemoteManagerEnvelope(o, "manager-service-maintenance", "manager-service maintenance", false);
   if (typeof o.targetInstanceId !== "string" || o.targetInstanceId.length === 0) requestError("requires non-empty targetInstanceId");
   assertLifecycleToken(o.targetInstanceId, "manager-service maintenance targetInstanceId");
@@ -39,7 +40,7 @@ export function parseRemoteManagerMaintenanceRequest(raw: unknown): RemoteManage
   return {
     v: 1,
     kind: "manager-service-maintenance",
-    operation: o.operation,
+    operation: o.operation as RemoteManagerMaintenanceRequest["operation"],
     ...envelope,
     targetInstanceId: o.targetInstanceId,
     ...(Array.isArray(o.principals) ? { principals: [...(o.principals as string[])] } : {}),
