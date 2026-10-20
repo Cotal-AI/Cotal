@@ -10,70 +10,26 @@ import.
 See [docs/connect-claude.md](../../docs/connect-claude.md) for the integration guide, and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
-## Claude Code hook reference
+## Claude Code hooks
 
-The full set of Claude Code hook events, grouped by lifecycle — this is Claude *product*
-surface, kept here with the adapter rather than in the protocol docs. Source:
-[code.claude.com/docs/en/hooks](https://code.claude.com/docs/en/hooks) (Claude Code
-2.1.16x, 31 events; the `StopFailure` matchers re-read off 2.1.237's own hook schema, which
-carries two the earlier list was missing). The connector consumes the subset mapped in
-[docs/connect-claude.md](../../docs/connect-claude.md) (presence mapping + message
-delivery); the rest are listed for completeness.
+Claude Code documents every hook event and its matchers in its
+[hooks reference](https://code.claude.com/docs/en/hooks). This README does not copy that list.
 
-### Once per session
-| Event | Fires when | Matchers |
+The plugin registers the nine hooks below in [`hooks/hooks.json`](hooks/hooks.json). Each runs
+`dist/hook.cjs`, which relays the event to the session's connector over its authenticated control
+socket. A Cotal session, one that Cotal launched, carries a mesh identity in its environment. A
+plain session, such as a `claude` you started yourself, carries none and has no connector, so there
+the hook only runs the hosted connection checks in the `PreToolUse` and `PostToolUse` rows. The presence states are described in
+[presence mapping](../../docs/connect-claude.md#presence-mapping).
+
+| Hook | Matcher | What the plugin does |
 |---|---|---|
-| `SessionStart` | a session begins or resumes | `startup`, `resume`, `clear`, `compact` |
-| `Setup` | started with `--init-only`, or `--init`/`--maintenance` in `-p` | `init`, `maintenance` |
-| `SessionEnd` | a session terminates | `clear`, `resume`, `logout`, `prompt_input_exit`, `bypass_permissions_disabled`, `other` |
-
-### Once per turn
-| Event | Fires when | Matchers |
-|---|---|---|
-| `UserPromptSubmit` | user submits a prompt, before Claude processes it | (none) |
-| `UserPromptExpansion` | a typed command expands into a prompt | command name |
-| `Stop` | Claude finishes responding | (none) |
-| `StopFailure` | turn ends due to an API error | `rate_limit`, `overloaded`, `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`, `billing_error`, `invalid_request`, `model_not_found`, `server_error`, `max_output_tokens`, `unknown` |
-
-### Per tool call (agentic loop)
-| Event | Fires when | Matchers |
-|---|---|---|
-| `PreToolUse` | before a tool call executes (can block) | tool name |
-| `PermissionRequest` | a permission dialog appears | tool name |
-| `PermissionDenied` | a tool call denied by auto-mode classifier | tool name |
-| `PostToolUse` | after a tool call succeeds | tool name |
-| `PostToolUseFailure` | after a tool call fails | tool name |
-| `PostToolBatch` | after a parallel tool batch resolves, before next model call | (none) |
-| `SubagentStart` | a subagent is spawned | agent type |
-| `SubagentStop` | a subagent finishes | agent type |
-| `TaskCreated` | a task is created via `TaskCreate` | (none) |
-| `TaskCompleted` | a task is marked completed | (none) |
-| `TeammateIdle` | an agent-team teammate is about to go idle | (none) |
-
-### Compaction
-| Event | Fires when | Matchers |
-|---|---|---|
-| `PreCompact` | before context compaction | `manual`, `auto` |
-| `PostCompact` | after compaction completes | `manual`, `auto` |
-
-### Async / background
-| Event | Fires when | Matchers |
-|---|---|---|
-| `CwdChanged` | working directory changes | (none) |
-| `FileChanged` | a watched file changes on disk | literal filenames |
-| `ConfigChange` | a config file changes mid-session | `user_settings`, `project_settings`, `local_settings`, `policy_settings`, `skills` |
-| `InstructionsLoaded` | CLAUDE.md / `.claude/rules/*.md` loaded into context | `session_start`, `nested_traversal`, `path_glob_match`, `include`, `compact` |
-| `Notification` | Claude Code emits a notification | `permission_prompt`, `idle_prompt`, `auth_success`, `elicitation_dialog`, `elicitation_complete`, `elicitation_response` |
-| `MessageDisplay` | while assistant message text is displayed (display-only) | (none) |
-
-### Worktree
-| Event | Fires when | Matchers |
-|---|---|---|
-| `WorktreeCreate` | a worktree is created (`--worktree` / `isolation: "worktree"`) | (none) |
-| `WorktreeRemove` | a worktree is removed | (none) |
-
-### MCP elicitation
-| Event | Fires when | Matchers |
-|---|---|---|
-| `Elicitation` | an MCP server requests user input during a tool call | MCP server name |
-| `ElicitationResult` | after the user responds, before it is sent to the server | MCP server name |
+| `SessionStart` | all | Surfaces the channel briefing and waiting messages, sets `idle` when no turn is open, resets attention to `open`, and records the session's model when none is pinned. On `startup`, `resume` or `fork` it also records the session's directory. |
+| `UserPromptSubmit` | all | Sets `working` and surfaces waiting messages and run turns. |
+| `PreToolUse` | all | Records the pending tool so a permission wait can name it. In a Cotal session, it denies a Cotal tool from any server other than the local one. In a plain session, it denies a hosted `connection_id` that it recorded as opened by a different session. |
+| `PostToolUse` | `^mcp__.+__cotal_(connect\|disconnect)$` | Plain sessions only: records or forgets which session opened a hosted connection. |
+| `PostToolBatch` | all | Sets `working` again when the main agent's batch resolves after a prompt left the seat `waiting`. A subagent's batch changes nothing. |
+| `Notification` | `permission_prompt\|agent_needs_input\|elicitation_dialog` | Sets `waiting`. `permission_prompt` adds condition `approval`, and `agent_needs_input` adds `input`. |
+| `Stop` | all | Ends the turn: closes the run on the event plane, sets `idle`, and asks for a wake turn when held messages are waiting. |
+| `StopFailure` | all | Same as `Stop`, but closes the run with `RUN_ERROR` and sets a condition mapped from the error type. |
+| `SessionEnd` | all | Sets `offline`. |
