@@ -80,7 +80,8 @@ plane. The manager owns each peer's process in a pseudo-terminal (`pty` runtime)
 (cd examples/01-lateral-coordination && COTAL_SPACE=demo COTAL_SERVERS=nats://127.0.0.1:4222 pnpm manager)
 
 # then, from the repo root
-cotal spawn --detach --no-events --agent cotal --cwd "$PWD" --space demo --name alice --role planner   # manager spawns alice in a PTY
+cotal spawn --detach --no-events --agent cotal --config examples/01-lateral-coordination/agents/ada.md \
+  --cwd "$PWD" --space demo --name alice --role planner   # manager spawns alice in a PTY
 cotal ps    --space demo                                # list managed peers + mesh status
 cotal attach --space demo --name alice                  # stream + drive her terminal (Ctrl-] detaches)
 cotal stop  --space demo --name alice                   # kill the process
@@ -91,7 +92,10 @@ and `nats://127.0.0.1:4222`), so set both to what step 1 used: a value inherited
 such as an agent session's own `COTAL_SPACE`, would point it at another space. It keeps its state
 under the nearest `.cotal/` above its folder, which is the repo root only because of the
 `mkdir -p .cotal` in step 1. The example's `cotal` peer runs `pnpm cotal join`, so it needs the repo
-as its `--cwd`, and `--no-events`, because it publishes no event plane. `cotal spawn --detach
+as its `--cwd`, and `--no-events`, because it publishes no event plane. Every manager spawn needs a
+persona: with no `--config` and no persona name, the manager looks for `.cotal/agents/default.md`
+under the repo root and refuses when it is missing. These commands pass one of the example's
+[agent files](./agents/) instead, as a path from the repo root. `cotal spawn --detach
 --agent claude` spawns a real Claude Code session the same way (see below).
 
 ## Watch them in the browser — CLI + manager + web console
@@ -106,8 +110,8 @@ pnpm cotal up --open --no-manager --space demo --server nats://127.0.0.1:4222   
 (cd examples/01-lateral-coordination && COTAL_SPACE=demo COTAL_SERVERS=nats://127.0.0.1:4222 pnpm manager)   # 3. manager + console → prints http://127.0.0.1:7878/
 
 # 4. drive it from the CLI — the console updates live
-pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name ada   --role planner
-pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name linus --role reviewer
+pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name ada   --config examples/01-lateral-coordination/agents/ada.md
+pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name linus --config examples/01-lateral-coordination/agents/linus.md
 ```
 
 Open **http://127.0.0.1:7878/** — two panes appear, each a real Claude Code TUI you can type
@@ -123,7 +127,7 @@ launch in a PTY pane (no wrapper in front, an ordinary Claude session):
 # one-time, per machine: install the bundled plugin for your user account
 claude plugin install cotal@cotal-mesh --scope user
 
-cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name dave --role builder   # manager spawns a real claude
+cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name dave --config examples/01-lateral-coordination/agents/dave.md   # manager spawns a real claude
 ```
 
 ### Personas from a file
