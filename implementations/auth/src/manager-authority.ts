@@ -312,8 +312,9 @@ export function parseRemoteRunSubmissionRequest(raw: unknown): RemoteRunSubmissi
   return { v: 1, kind: "manager-run-submission", ...registered, subject: subject as string };
 }
 
-/** One issuer-observed keyed start/read. All fallible authorization and evidence precedes
- * binding creation. Its immutable winner alone may perform the original bounded admission. */
+/** One issuer-observed keyed start/read. Initial authorization/evidence validation precedes
+ * binding creation. Its winner rechecks freshness before bounded admission; those fallible reads
+ * may retain binding-only debt without changing the original frozen admission authority. */
 export async function handleRemoteRunSubmission(args: {
   request: unknown; owner: string; space: string; accountPublicKey: string; proofSecret: string | Uint8Array;
   endpoint: string; observeManagerGate: ObserveManagerGate; issued: IssuedStore;

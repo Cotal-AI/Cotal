@@ -10,10 +10,15 @@ Legacy `run-start` is unchanged. An unsupported keyed command never falls back t
 The scheduler must persist the submission ID, semantic fingerprint, caller incarnation,
 contract digests and instance/epoch before dispatch. The client helpers prepare that snapshot
 and send one attempt at a time. They do not schedule retries, replace unknown work or re-pin it
-to another manager. Keep the original work reservation while reconciling any unknown outcome.
+to another manager. Their prepared handle is process-local and WeakMap-bound: serialized JSON
+cannot be rehydrated through these helpers. Persisted scheduler recovery needs separate reviewed
+integration, not a cast or an automatic fresh Describe. Keep the original work reservation
+while reconciling any unknown outcome.
 
 The binding winner may make at most three admission-create attempts in its original callback
-deadline, with the same admission bytes and authority. Later duplicates only read. A
+deadline, with the same admission bytes and authority. Initial authorization precedes binding,
+but fresh authority rechecks before each admission attempt can fail after binding and retain
+binding-only debt. Later duplicates only read. A
 `binding-only` result is a visible reconciliation hold, not a queue or permission to repair.
 An absent admission is an observation at read time, not proof that the original callback cannot
 still write. A changed caller generation or manager epoch refuses rather than adopting the run.

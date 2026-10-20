@@ -5077,9 +5077,12 @@ generation, semantic fingerprint, accepting instance/epoch, manager-minted run I
 admission digest and original callback deadline. Bindings are permanent, including terminal
 runs. Capacity exhaustion refuses new submissions rather than deleting authority history.
 
-All authorization and evidence reads precede the binding CAS. Only the original binding
-winner may create its admission, with at most three classified transient attempts in the
-original callback deadline and authority window. The admission bytes, timestamp, ceiling and
+Initial authorization and evidence validation precedes the binding CAS. Before each admission
+attempt, the original binding winner rechecks that same authority. These fallible freshness
+reads may leave permanent binding-only reconciliation debt after the binding exists. They
+never replace its frozen admission. Only that winner may create its admission, with at most
+three classified transient attempts in the original callback deadline and authority window.
+The admission bytes, timestamp, ceiling and
 provenance remain fixed. A failed create is classified by a leader read of that exact admission
 key. Matching bytes recover success, authoritative absence permits another same-callback
 attempt, and unreadable or conflicting state holds. No later callback, duplicate, restart,

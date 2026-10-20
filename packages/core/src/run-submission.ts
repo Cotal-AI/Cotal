@@ -99,8 +99,9 @@ async function beforeDeadline<T>(deadline: number, work: () => Promise<T>): Prom
   finally { clearTimeout(timer); }
 }
 
-/** All authorization/evidence reads happen before calling this function. Only the original
- * binding winner can perform at most3 admission creates. The bytes/timestamp never change. */
+/** Initial authorization/evidence validation precedes this call. The original binding winner
+ * rechecks that authority before each admission attempt; a failed recheck can retain binding-only
+ * debt. Only that winner performs at most3 creates. The bytes/timestamp never change. */
 export async function bindAndAdmitRunSubmission(args: {
   kv: KV; jsm: JetStreamManager; admission: RunAdmission; submissionId: string; fingerprint: string;
   processEpoch: number; callbackDeadline: number;

@@ -21,7 +21,8 @@ export interface KeyedRunSubmission {
 const pins = new WeakMap<KeyedRunSubmission, { service: ResolvedService; args: Record<string, unknown> }>();
 
 /** Snapshot a digest-verified exact-instance Describe before dispatch. The sole scheduler must
- * persist these coordinates with its reservation. This helper does not own retries or work. */
+ * persist these coordinates with its reservation. This process-local WeakMap handle cannot be
+ * rehydrated from JSON. This helper owns neither persisted restart recovery, retries nor work. */
 export function prepareKeyedRunSubmission(space: string, service: ResolvedService, submissionId: string,
   input: { source: string; file?: string; timeout?: string }): KeyedRunSubmission {
   const command = service.commands.get("run-start-keyed"), read = service.commands.get("run-submission-status");
