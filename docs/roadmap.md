@@ -12,8 +12,8 @@ deliberately *not* built yet, and the direction each area is headed.
 The core is running today: all three delivery modes over JetStream, presence and
 discovery, channel replay and durable delivery classes, JWT identity and per-agent ACLs on
 by default, a supervising manager with pluggable runtimes, connectors for Claude Code,
-OpenCode, Hermes, and pi, the mesh manifest (`cotal.yaml`), and the console + web observers.
-The [Quickstart](getting-started.md) is the fastest proof.
+OpenCode, Codex, Hermes, Jcode, and pi, the mesh manifest (`cotal.yaml`), and the console + web
+observers. The [Quickstart](getting-started.md) is the fastest proof.
 
 ## Deferred work
 
@@ -26,7 +26,7 @@ built yet.
 | **Auth-callout onboarding** | Shipped for per-user-auth spaces: the auth service mints scoped creds *at connect* from the data-account signing key, which a running manager also holds ([identity & auth](identity-and-auth.md)). Remaining: the join-link bootstrap-token variant for static meshes. |
 | **Credential revocation / TTL** | User-auth spaces have it (short bearers, ledger revocation, live-connection eviction); command and daemon creds are bounded and renewed everywhere, and manager-spawned static agent creds are now bounded too (24h TTL, manager renewal, despawn revokes the ledger rows and the control surface refuses the retired incarnation). Remaining: static reconnect-time revocation inside the TTL window (structural: no auth callout) and TTL on out-of-band `cotal mint` creds. ([Security model](security.md)) |
 | **Sessions + moderator** | Managed group membership (admit/remove). Channels today carry no roster of their own. |
-| **Artifact delivery** | Large payloads move to a per-space JetStream Object Store; the message carries a reference part. Part shape reserved, transfer not built. ([SPEC §5](../SPEC.md#5-envelopes)) |
+| **Artifact delivery** | Large payloads move to a per-space JetStream Object Store; the message carries a reference part. The `artifact` part is defined and setup creates the store, but nothing stores or fetches artifact bytes yet. ([SPEC §5](../SPEC.md#5-envelopes)) |
 | **Instant offline (`$SYS`)** | Manager-observed disconnect events for immediate `offline`, instead of waiting out the presence heartbeat window. The heartbeat sweep stays the floor. |
 | **Host mode (Agent SDK)** | Headless sessions with true mid-turn interrupt, observed via the plain stream instead of a native TUI. Documented upgrade path from attach mode. |
 | **Multi-space brokers** | The trust layer already hosts many spaces per broker (one operator signs one account per space, per [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization)), and broker-wide lifecycle verbs refuse on a multi-space root rather than scoping to one tenant. Still to build: per-space lifecycle (provisioning a new space through `up`, per-space teardown/backup) and agents present in many spaces at once. |

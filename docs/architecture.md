@@ -55,8 +55,9 @@ guarantees, Cotal uses the native NATS mechanisms: streams for at-least-once and
 join, queue groups for anycast load-balancing, KV TTL for liveness ([SPEC §8](../SPEC.md#8-nats--jetstream-binding);
 the reasoning: [presence & delivery](presence-and-delivery.md)). Isolation is one NATS
 **account per space** ([spaces & channels](spaces.md)); authorization is per-agent JWT
-ACLs ([identity & auth](identity-and-auth.md)). Large artifacts are reserved for a
-per-space Object Store ([roadmap](roadmap.md)).
+ACLs ([identity & auth](identity-and-auth.md)). Bytes too large for a message are referenced by an
+`artifact` part ([SPEC §5](../SPEC.md#5-envelopes)), and setup creates a per-space Object Store
+for them. Nothing in Cotal stores or fetches those bytes yet ([roadmap](roadmap.md)).
 
 Whether any of this *requires* NATS is answered in
 [transport vs protocol](transport.md): the contract is transport-agnostic; NATS/JetStream
@@ -184,7 +185,7 @@ laterally; the manager only births and configures them.
   floor (a human's own terminal, tracked via presence); **host** (Agent SDK, true mid-turn
   interrupt) is the documented upgrade path ([roadmap](roadmap.md)).
 - **Served commands.** `spawn` (an action, below), `stop`, `ps`, `status`, `attach`,
-  `models`, `definePersona`, and `bind` are endpoint commands
+  `models`, and `define-persona` are among its endpoint commands
   ([§13.5](../SPEC.md#135-verbs)) any authorized node can send, policy-gated
   ([identity & auth](identity-and-auth.md)). A caller learns them off the wire with `cotal
   describe manager`; nothing is compiled in.
@@ -237,7 +238,8 @@ laterally; the manager only births and configures them.
   the broker. The manager's own socket stays private. A late
   attach still repaints the full screen from a replayed snapshot of a headless terminal
   mirror (including alternate-screen TUIs). If the manager restarts, its successor refuses
-  the old session and the client surfaces "manager restarted; re-attach".
+  the old session. `cotal attach` reconnects when its link dies by asking the manager for a new
+  session ([CLI](cli.md#managed-seats)).
 - **The manager's console face is a separate, credentialed surface.** The manager still
   serves the browser console over local HTTP: the static page plus the roster, the live feed,
   and the route that mints the browser's own session. It binds loopback unless the operator
@@ -293,5 +295,5 @@ id: process continuity, not credential reuse.
 ## Deferred
 
 Sessions/moderator, signed envelopes + DID identity, instant offline, artifact delivery,
-auth-callout, and federation are designed for but not built yet; each is tracked, with
-its direction, in the [roadmap](roadmap.md).
+join-link bootstrap tokens for static meshes, and federation are designed for but not built yet;
+each is tracked, with its direction, in the [roadmap](roadmap.md).
