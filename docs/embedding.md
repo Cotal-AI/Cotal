@@ -73,6 +73,11 @@ Internal service-access reads retain native credential-root authorization and ch
 registration, assignment, current name and fixed expiry. They do not create a serving grant or
 release a native JWT. The dedicated callout still needs native issuance and final authorization.
 
+Service serving-issuance evidence binds the authenticated broker user key, server key and client id.
+The native release fence rechecks that record and the gate after its CAS. Ordinary serving and
+credential-root records cannot use this service binding. This is not proof of broker acceptance;
+the accepting callout, native receipt coordination and terminal retirement remain unfinished.
+
 Internal service-name bindings are create-only and return owner and revision from one native read.
 The trusted host must authenticate the operator and verify the namespace claim before writing.
 Native auth, delivery and manager names keep their existing authority; they cannot be application

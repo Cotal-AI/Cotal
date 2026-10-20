@@ -139,15 +139,34 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
         || !current.row.serviceAuthority.activationIssued
         || !serviceGateApprovalLive(current.row.serviceAuthority, Math.floor(Date.now() / 1000))))
         throw new EpEnvelopeError("expired", "service approval does not permit staging issuance evidence");
+      if ((current?.row.authorityFamily === "service") !== (row.serviceConnection !== undefined))
+        throw new EpEnvelopeError("failed-precondition", "service connection evidence must match its native authority family");
       const ledgerRow: CredentialLedgerRow = {
         credentialId: row.credentialId, holderPrincipal: row.holderPrincipal,
         lifecycleUid: instanceId, endpoint, sourceChain: [...row.sourceChain], state: "active", exp: row.exp,
+        ...(row.serviceConnection ? { serviceConnection: row.serviceConnection } : {}),
       };
       const rowKey = epcredRowKey(endpoint, instanceId, row.credentialId);
       // Round-trip the writer's own bytes through the consuming parser BEFORE the create: a row
       // this trusted path would itself refuse to read never lands durably.
       parseLedgerRow(enc.encode(JSON.stringify(ledgerRow)), rowKey);
       await createRowByteIdempotent(kv, rowKey, ledgerRow);
+    },
+    verifyServiceIssuance: async (row, observed) => {
+      const rowKey = epcredRowKey(endpoint, instanceId, row.credentialId), entry = await kv.get(rowKey);
+      if (!entry || entry.operation !== "PUT") throw new EpEnvelopeError("unavailable", "native service issuance evidence is missing");
+      const stored = parseLedgerRow(entry.value, rowKey);
+      if (!row.serviceConnection || stored.state !== "active" || stored.holderPrincipal !== row.holderPrincipal
+        || stored.exp !== row.exp || row.credentialKey !== row.serviceConnection.userNkey
+        || contractDigest(stored.sourceChain) !== contractDigest(row.sourceChain)
+        || !stored.serviceConnection || contractDigest(stored.serviceConnection) !== contractDigest(row.serviceConnection))
+        throw new EpEnvelopeError("permission-denied", "native service issuance evidence does not match this connection");
+      const current = await endpointGateState(kv, space, endpoint, instanceId);
+      if (!current || current.authorityFamily !== "service" || current.state !== "open")
+        throw new EpEnvelopeError("permission-denied", "native service issuance gate is no longer open");
+      const { revision: beforeRevision, ...before } = observed, { revision: afterRevision, ...after } = current;
+      if (contractDigest(before) !== contractDigest(after))
+        throw new EpEnvelopeError("permission-denied", "native service issuance authority changed after its gate CAS");
     },
     commit: async (expectedRevision: number) => {
       const entry = await kv.get(key);
@@ -450,11 +469,12 @@ export function endpointRegistrationBarrier(
         const led = parseLedgerRow(entry.value, rowKey);
         // Reconstruct the EpServeLedgerRow the barrier consumers need: revoke keys by credentialId,
         // evict by holderPrincipal, the revoke loop reads state. The gate-coordinate fields and the
-        // holder nkey (`credentialKey`) are NOT persisted on the ledger row — the
-        // coordinates are pinned by the gate key, and revoke/evict never need the nkey; carried as
-        // the observed gate's coordinates + empty credentialKey, documented, not consumed here.
+        // ordinary holder nkey are not persisted. Service rows retain their authenticated user
+        // nkey in serviceConnection. Gate coordinates below are placeholders, not fresh authority;
+        // the barrier revokes by credentialId and evicts by holderPrincipal.
         rows.push({
-          credentialId: led.credentialId, credentialKey: "", holderPrincipal: led.holderPrincipal,
+          credentialId: led.credentialId, credentialKey: led.serviceConnection?.userNkey ?? "", holderPrincipal: led.holderPrincipal,
+          ...(led.serviceConnection ? { serviceConnection: led.serviceConnection } : {}),
           endpoint, lifecycleUid: instanceId, sourceChain: led.sourceChain, state: led.state, exp: led.exp,
           generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0,
         });

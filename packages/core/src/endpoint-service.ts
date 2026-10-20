@@ -11,7 +11,7 @@
  * table names (`provisioner-registration` for spec, `instance-commit-epoch-fenced` for status).
  */
 import { SERVICE_ACCESS_TTL_SECONDS } from "./service-authority-limits.js";
-import { serviceGateApprovalLive, type ServiceGateAuthority } from "./service-gate.js";
+import { parseServiceConnectionBinding, serviceGateApprovalLive, type ServiceConnectionBinding, type ServiceGateAuthority } from "./service-gate.js";
 import type { KV } from "@nats-io/kv";
 import type { JetStreamManager } from "@nats-io/jetstream";
 import { spacePrefix, principalKey } from "./subjects.js";
@@ -1815,6 +1815,8 @@ export interface EpGateSuccessor {
 export interface EpServeLedgerRow {
   credentialId: string;
   credentialKey: string;
+  /** Required only for encrypted service-callout issuance. */
+  serviceConnection?: ServiceConnectionBinding;
   holderPrincipal: string;
   /** The served endpoint — the instance token is unique only within `(space, endpoint)`, so the
    *  credential family is keyed by `(endpoint, lifecycleUid)`, never the instance token alone. */
@@ -1853,6 +1855,8 @@ export interface EpIssuanceGate {
   commit: (expectedRevision: number) => Promise<boolean> | boolean;
   /** Mark the staged row revoked on CAS loss / abort (the credential is never released). */
   revoke: (row: EpServeLedgerRow) => Promise<void> | void;
+  /** Service-only post-CAS leader reads of the bound row and original gate authority. */
+  verifyServiceIssuance?: (row: EpServeLedgerRow, observed: EpGateState) => Promise<void> | void;
 }
 
 /** The BARRIER half of the SAME single-key gate (§13.1): the typed protocol a takeover, a
@@ -1913,6 +1917,8 @@ export interface EpServeCredential {
   credentialId: string;
   /** The stable holder NKEY (public key) the broker revokes by; many JWTs share it. */
   credentialKey: string;
+  /** Required only for encrypted service-callout issuance. */
+  serviceConnection?: ServiceConnectionBinding;
   /** The holder's actor (owner.actor is the §13.1 eviction target). */
   holderActor: string;
   /** The credential's §13.1 issuance lineage: each element `root` | `handle.<issuerKeyId>.<id>` |
@@ -1963,6 +1969,8 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
     throw new EpEnvelopeError("internal", "the serve credential sourceChain must be a non-empty §13.1 issuance lineage (root | handle.<issuer>.<id> | session.<id>), never principal components");
   if (credential.exp !== undefined && (!Number.isSafeInteger(credential.exp) || credential.exp < 0))
     throw new EpEnvelopeError("internal", `the serve credential exp ${JSON.stringify(credential.exp)} is not an unsigned unix timestamp`);
+  credential = { ...credential, sourceChain: [...credential.sourceChain],
+    ...(credential.serviceConnection === undefined ? {} : { serviceConnection: parseServiceConnectionBinding(credential.serviceConnection) }) };
   const obs = await gate.observe();
   if (obs === null)
     throw new EpEnvelopeError("expired", `no issuance gate for "${snap.endpoint}/${snap.instanceId}"; a serve credential never mints against a missing gate (SPEC 13.1)`);
@@ -1975,7 +1983,11 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
     throw new EpEnvelopeError("internal", `the issuance gate is for "${obs.space}/${obs.endpoint}/${obs.lifecycleUid}", not the authorized instance "${snap.space}/${snap.endpoint}/${snap.instanceId}"; a serve credential mints only against its OWN gate (SPEC 13.1)`);
   if (obs.state !== "open")
     throw new EpEnvelopeError("expired", `the issuance gate for "${snap.endpoint}/${snap.instanceId}" is ${obs.state}; minting is closed (SPEC 13.1)`);
+  if (obs.authorityFamily !== "service" && credential.serviceConnection !== undefined)
+    throw new EpEnvelopeError("failed-precondition", "ordinary serving issuance cannot carry service connection evidence");
   if (obs.authorityFamily === "service") {
+    if (!credential.serviceConnection || credential.serviceConnection.userNkey !== credential.credentialKey || !gate.verifyServiceIssuance)
+      throw new EpEnvelopeError("failed-precondition", "service issuance requires its authenticated connection binding and native verification");
     const authority = obs.serviceAuthority;
     const now = Math.floor(Date.now() / 1000);
     if (!authority || !authority.activationIssued || !serviceGateApprovalLive(authority, now)
@@ -2005,6 +2017,7 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
   const row: EpServeLedgerRow = {
     credentialId: credential.credentialId,
     credentialKey: credential.credentialKey,
+    ...(credential.serviceConnection ? { serviceConnection: credential.serviceConnection } : {}),
     // The eviction target is the OBSERVED gate principal (== the minted principal, checked above),
     // serialized through the ONE principal serializer the eviction feed keys on (subjects.ts
     // principalKey invariant), so the barrier's enumeration key can never drift from the
@@ -2037,6 +2050,13 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
   if (!won) {
     const revokeFailed = await revokeStaged();
     throw new EpEnvelopeError("expired", `the issuance gate advanced during mint (a takeover, re-registration, or name transfer won the serialization on ${snap.endpoint}/${snap.instanceId}); this mint released nothing (SPEC 13.1)${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+  }
+  if (obs.authorityFamily === "service") {
+    try { await gate.verifyServiceIssuance!(row, obs); }
+    catch {
+      const revokeFailed = await revokeStaged();
+      throw new EpEnvelopeError("unavailable", `native service issuance could not be verified after its gate CAS${revokeFailed ? `; staged-row revoke also failed: ${revokeFailed}` : ""}`);
+    }
   }
   if (obs.authorityFamily === "service" && credential.exp! <= Math.floor(Date.now() / 1000)) {
     const revokeFailed = await revokeStaged();

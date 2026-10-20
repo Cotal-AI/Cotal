@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer, createUser } from "@nats-io/nkeys";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
@@ -90,6 +91,13 @@ try {
     authority: { authorize: () => ({ authorized: true, revision: 1 }) }, readProcessEpoch: () => 1,
     readClusterArtifact: (digest) => documents.get(digest) });
   const native = serveIssuanceGateKv(kv, space, { endpoint, instanceId });
+  const serviceConnection = { userNkey: createUser().getPublicKey(), serverId: createServer().getPublicKey(), clientId: 1 };
+  const credentialKey = serviceConnection.userNkey;
+  await assert.rejects(finalizeServeIssuance(native, grant, { credentialId: mintLifecycleUid(), credentialKey,
+    holderActor: actor, sourceChain: ["root"], exp: Math.floor(Date.now() / 1000) + 30 }), /authenticated connection binding/);
+  await assert.rejects(finalizeServeIssuance({ ...native, verifyServiceIssuance: undefined }, grant,
+    { credentialId: mintLifecycleUid(), credentialKey, serviceConnection, holderActor: actor, sourceChain: ["root"],
+      exp: Math.floor(Date.now() / 1000) + 30 }), /native verification/);
   for (const delay of ["stage", "ack"] as const) {
     const exp = Math.floor(Date.now() / 1000) + 2, credentialId = mintLifecycleUid();
     const expire = () => new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, exp * 1000 + 30 - Date.now())));
@@ -98,7 +106,7 @@ try {
       commit: async (pin) => { const won = await native.commit(pin); if (delay === "ack") await expire(); return won; },
     };
     try {
-      await finalizeServeIssuance(delayed, grant, { credentialId, credentialKey: "fixture-key", holderActor: actor, sourceChain: ["root"], exp });
+      await finalizeServeIssuance(delayed, grant, { credentialId, credentialKey, serviceConnection, holderActor: actor, sourceChain: ["root"], exp });
       failures.push(`${delay}: expired fixed credential released`);
     } catch (error) {
       assert.match(String(error), /expired/);
@@ -106,8 +114,28 @@ try {
         epcredRowKey(endpoint, instanceId, credentialId)).state, "revoked");
     }
   }
-  await finalizeServeIssuance(native, grant, { credentialId: mintLifecycleUid(), credentialKey: "fixture-key",
-    holderActor: actor, sourceChain: ["root"], exp: Math.floor(Date.now() / 1000) + 30 });
+  const issued = { credentialId: mintLifecycleUid(), credentialKey, serviceConnection,
+    holderActor: actor, sourceChain: ["root"], exp: Math.floor(Date.now() / 1000) + 30 };
+  await finalizeServeIssuance(native, grant, issued);
+  const issuedKey = epcredRowKey(endpoint, instanceId, issued.credentialId);
+  const stored = parseLedgerRow((await kv.get(issuedKey))!.value, issuedKey);
+  assert.deepEqual(stored.serviceConnection, serviceConnection, "native service evidence retains its broker coordinates");
+  for (const changed of [{ ...serviceConnection, clientId: 2 }, { ...serviceConnection, serverId: createServer().getPublicKey() }])
+    await assert.rejects(finalizeServeIssuance(native, grant, { ...issued, serviceConnection: changed }), /FOREIGN/);
+  assert.throws(() => parseLedgerRow(bytes({ ...stored, endpoint: undefined }), `cred.${instanceId}.${issued.credentialId}`), /agent-family/);
+  for (const bad of [{ ...serviceConnection, clientId: 0 }, { ...serviceConnection, clientId: 1.5 },
+    { ...serviceConnection, userNkey: serviceConnection.serverId }, { ...serviceConnection, extra: true }])
+    assert.throws(() => parseLedgerRow(bytes({ ...stored, serviceConnection: bad }), issuedKey));
+  const changedId = mintLifecycleUid();
+  const changedPair: EpIssuanceGate = { ...native, commit: async (pin) => {
+    const won = await native.commit(pin), rowKey = epcredRowKey(endpoint, instanceId, changedId);
+    const entry = (await kv.get(rowKey))!, row = parseLedgerRow(entry.value, rowKey);
+    await kv.update(rowKey, bytes({ ...row, serviceConnection: { ...serviceConnection, clientId: 2 } }), entry.revision);
+    return won;
+  } };
+  await assert.rejects(finalizeServeIssuance(changedPair, grant, { ...issued, credentialId: changedId }), /could not be verified/);
+  assert.equal(parseLedgerRow((await kv.get(epcredRowKey(endpoint, instanceId, changedId)))!.value,
+    epcredRowKey(endpoint, instanceId, changedId)).state, "revoked");
   const ordinaryId = mintLifecycleUid();
   const ordinaryRevision = await records.create(recordSpecKey(RECORD_KINDS.svc, [endpoint, ordinaryId]), bytes({ endpoint, owner,
     clusterDigests: [contractDigest(manifest)], protocol: { v: 1 } }));
@@ -118,8 +146,10 @@ try {
     readClusterArtifact: (digest) => documents.get(digest) });
   await finalizeServeIssuance(serveIssuanceGateKv(kv, space, { endpoint, instanceId: ordinaryId }), ordinaryGrant,
     { credentialId: mintLifecycleUid(), credentialKey: "fixture-key", holderActor: actor, sourceChain: ["root"], exp: Math.floor(Date.now() / 1000) + 30 });
+  await assert.rejects(finalizeServeIssuance(serveIssuanceGateKv(kv, space, { endpoint, instanceId: ordinaryId }), ordinaryGrant,
+    { ...issued, credentialId: mintLifecycleUid() }), /ordinary serving issuance/);
   assert.deepEqual(failures, [], "native service evidence and final release checks");
-  console.log("service release: contradictory evidence, recovery and fixed-expiry delays refused on native KV");
+  console.log("service release: contradictory evidence, recovery, connection binding and fixed-expiry delays refused on native KV");
 } finally {
   await nc?.close();
   await killAndAwaitExit(broker);

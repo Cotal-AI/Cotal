@@ -1455,6 +1455,14 @@ KICKed). The `cred.`/`epcred.` families hold ONLY conformant ledger rows:
 implementation staging, half-minted state, and tombstone fences live in a distinct
 `stage.` family, never under a ledger prefix a barrier enumerates.
 
+Service-callout `epcred` rows also carry the closed `serviceConnection` object
+`{userNkey, serverId, clientId}`. The user and server keys are checksum-valid NKeys of their
+respective kinds; clientId is a positive safe integer from the authenticated broker request.
+These fields are forbidden in the `cred` root family. Service issuance requires this binding,
+preserves it during staging and leader-reads the row and unchanged gate authority after its CAS.
+An ordinary serving issuance cannot carry service connection evidence. These rows prove issuance,
+not broker acceptance or response delivery. Native root authorization remains separate.
+
 **Native-key issuance evidence.** Every callout success first writes one create-only
 `natkey.<userNkey>` row in the same auth bucket, where `userNkey` is the broker-generated
 per-connection user public key the minted JWT is issued to (never the client's inbox nonce or a

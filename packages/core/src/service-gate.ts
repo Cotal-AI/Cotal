@@ -1,8 +1,29 @@
+import { fromPublic } from "@nats-io/nkeys";
 import { isContractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
 import { parseEndpointCapabilities } from "./endpoint-capability-policy.js";
 import type { EpCapability } from "./endpoint-grants.js";
 import { assertLifecycleToken } from "./endpoint-subjects.js";
+
+/** Broker-authenticated connection coordinates. The client inbox nonce is not this identity. */
+export interface ServiceConnectionBinding {
+  userNkey: string;
+  serverId: string;
+  clientId: number;
+}
+
+/** Syntax and checksum checks only; the encrypted callout authenticates these coordinates. */
+export function parseServiceConnectionBinding(raw: unknown): ServiceConnectionBinding {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) bad();
+  const o = raw as Record<string, unknown>;
+  if (Object.getPrototypeOf(raw) !== Object.prototype && Object.getPrototypeOf(raw) !== null) bad();
+  if (Reflect.ownKeys(o).length !== 3 || Object.keys(o).some((k) => !["userNkey", "serverId", "clientId"].includes(k))
+    || typeof o.userNkey !== "string" || !/^U[A-Z2-7]{55}$/.test(o.userNkey)
+    || typeof o.serverId !== "string" || !/^N[A-Z2-7]{55}$/.test(o.serverId)
+    || typeof o.clientId !== "number" || !Number.isSafeInteger(o.clientId) || o.clientId <= 0) bad();
+  try { fromPublic(o.userNkey as string); fromPublic(o.serverId as string); } catch { bad(); }
+  return { userNkey: o.userNkey as string, serverId: o.serverId as string, clientId: o.clientId as number };
+}
 
 export interface ServiceRegistrationIdentity {
   operationId: string;

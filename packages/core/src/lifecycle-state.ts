@@ -10,7 +10,7 @@
  * live with their executors; a second copy of either is the dual-encoder drift this module
  * exists to prevent.
  */
-import { parseServiceGateAuthority, type ServiceGateAuthority } from "./service-gate.js";
+import { parseServiceConnectionBinding, parseServiceGateAuthority, type ServiceConnectionBinding, type ServiceGateAuthority } from "./service-gate.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { LIFECYCLE_HEAD, UID_RESERVATION, recordAtomicKey } from "./endpoint-records.js";
 import { assertLifecycleToken, endpointNameOf, endpointToken } from "./endpoint-subjects.js";
@@ -419,6 +419,8 @@ export interface CredentialLedgerRow {
   /** The endpoint NAME whose token forms the `epcred.` key; present iff this is an endpoint-
    *  family row, absent in the `cred.` family (which the lifecycleUid keys). */
   endpoint?: string;
+  /** Present only for service-callout epcred evidence; never a cred-root authorization. */
+  serviceConnection?: ServiceConnectionBinding;
   /** The FULL verified lineage at mint: `root` | `handle.<issuerKeyId>.<id>`… |
    *  `session.<sessionId>` (SPEC 13.1 — for a handle redemption EVERY handle in the presented
    *  chain, never only the leaf). */
@@ -439,7 +441,7 @@ export function parseLedgerRow(raw: Uint8Array, key: string): CredentialLedgerRo
     throw new EpEnvelopeError("internal", `the credential-ledger row ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.1)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the credential-ledger row ${key} is not an object`);
-  const allowed = new Set(["credentialId", "holderPrincipal", "lifecycleUid", "endpoint", "sourceChain", "state", "exp"]);
+  const allowed = new Set(["credentialId", "holderPrincipal", "lifecycleUid", "endpoint", "serviceConnection", "sourceChain", "state", "exp"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the credential-ledger row ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
   if (
     typeof o.credentialId !== "string" || typeof o.holderPrincipal !== "string" || typeof o.lifecycleUid !== "string" ||
@@ -460,7 +462,7 @@ export function parseLedgerRow(raw: Uint8Array, key: string): CredentialLedgerRo
   // eviction target stay disjoint.
   let expected: string;
   if (key.startsWith("cred.")) {
-    if (o.endpoint !== undefined)
+    if (o.endpoint !== undefined || o.serviceConnection !== undefined)
       throw new EpEnvelopeError("internal", `the agent-family row ${key} carries an endpoint field (that belongs to the epcred family, SPEC 13.1)`);
     expected = credRowKey(o.lifecycleUid, o.credentialId);
   } else if (key.startsWith("epcred.")) {
@@ -474,6 +476,7 @@ export function parseLedgerRow(raw: Uint8Array, key: string): CredentialLedgerRo
   } else {
     throw new EpEnvelopeError("internal", `the credential-ledger row key ${key} is under neither ledger family prefix (SPEC 13.1)`);
   }
+  if (o.serviceConnection !== undefined) o.serviceConnection = parseServiceConnectionBinding(o.serviceConnection);
   if (expected !== key)
     throw new EpEnvelopeError("internal", `the credential-ledger row at ${key} embeds an identity that rebuilds ${expected}; a key-mismatched row never authorizes (SPEC 13.1)`);
   return o as unknown as CredentialLedgerRow;
