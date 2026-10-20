@@ -126,6 +126,15 @@ export interface PlaneClaimHold {
   release(): Promise<void>;
 }
 
+/** Every hold `acquirePlaneClaim` returned, keyed to its space. A structural object with the same
+ *  fields is not a hold: package-internal consumers that act under the claim check this brand. */
+const GENUINE_HOLDS = new WeakMap<PlaneClaimHold, string>();
+
+/** The space of a hold this module returned, or `undefined` for any other object. */
+export function genuinePlaneHoldSpace(hold: unknown): string | undefined {
+  return typeof hold === "object" && hold !== null ? GENUINE_HOLDS.get(hold as PlaneClaimHold) : undefined;
+}
+
 /** `details[].kind` on every plane-claim refusal (SPEC 13.13). The copy is written for an
  *  operator and the codes pair unlike cases, so a host that retries contention without masking
  *  corruption keys on `reason`. */
@@ -313,7 +322,7 @@ export async function acquirePlaneClaim(opts: {
         `the plane claim for space "${space}" is no longer held by this process (${row === undefined ? "row missing or unparseable" : row.state !== "held" || row.claimId !== claimId || row.generation !== gen ? `now ${row.state} under claim ${row.claimId} generation ${row.generation}` : "the row's scanner tuples no longer match this plane's connections"}, expected held under ${claimId} generation ${gen}); ${what} - a successor plane may own the sealed scanners (SPEC 13.13, fail-closed)`);
     }
   };
-  return {
+  const hold: PlaneClaimHold = {
     claimId,
     generation: gen,
     guard: { assertHeld },
@@ -351,6 +360,8 @@ export async function acquirePlaneClaim(opts: {
       return flight;
     },
   };
+  GENUINE_HOLDS.set(hold, space);
+  return hold;
 }
 
 /**

@@ -1205,6 +1205,25 @@ sufficient *authority* identity on this surface. Two further identity components
   authorize through this active-only reader. It confers no writer, bootstrap, abort, rotation
   or terminal authority and makes no atomic multi-key snapshot claim. Ordinary readers stay
   closed to every marked service row.
+  A package-internal dormant custody writer, with no product caller, may advance one sealed
+  reservation. Bootstrap order is reservation, pending-root endpoint gate, `service-creating`
+  head, native gate created frozen at generation0 under the creation operation and opened at
+  generation1, RootPlan `{credentialId,expMs}` fixed once by head CAS at
+  `now + ROOT_CREDENTIAL_TTL_MS`, planned active root by zero-history create, identical-bytes
+  native gate touch, then the active head stamp. The endpoint gate is re-read at open and before
+  the plan, root and stamp writes; a revoked endpoint stops bootstrap. Cancellation is
+  endpoint-first: endpoint deny-new, `service-cancelling` head (an active head's stamp and its
+  root row's expiry become the preserved plan), native gate frozen under the cancel operation,
+  then root disposition. An unstamped planned root MUST be fenced only by a zero-history create
+  of revoked bytes or a CAS of the exact active row; a stamped root is retained. Every result is
+  nonterminal. An absent reservation leaves endpoint deny residue and reports unconfirmed; a
+  foreign or tombstoned reservation refuses before any write. Each write is a per-key create or
+  revision CAS under a genuine plane-claim hold re-read before and after it plus a fatal latch.
+  This is local readiness control, not broker writer exclusion. Each broker request is bounded
+  by `min(5s, remaining original deadline)`; CAS re-decisions, native gate re-pins and
+  unknown-outcome rounds are capped at 4, 8 and 3, and an unknown outcome is classified by a
+  leader read before any reissue. The deadline and reservation are caller-supplied original
+  material, not durable host authentication.
   Only then does it mint **before the entity is reachable**, persisting a CAS-fenced
   mapping
   `{ owner, actor, lifecycleUid, managerInstance, processEpoch,

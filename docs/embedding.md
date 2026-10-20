@@ -1227,8 +1227,8 @@ from that tuple, and the creation operation and request digest remain fixed.
 These guards run before ordinary root reuse, activation, gate and head changes, mint finalization,
 and native retirement. Ordinary connect and currency reads also refuse service custody, including
 rows whose head or credential mirror is missing. Existing ordinary reservation bytes are unchanged.
-Closed head, gate and credential parsers continue to reject service markers. This release provides
-no service reservation writer or marked-root minting path. A service access-view contract and
+Closed head, gate and credential parsers continue to reject service markers. No product path writes
+a service reservation or mints a marked root. A service access-view contract and
 optional sealed native access/callout composition are shipped, but production registration and
 lifecycle wiring remain unavailable. Those unwired seams do not authorize service admission.
 
@@ -1245,6 +1245,22 @@ snapshot. Positive fixtures raw-seed synthetic marked records, not production se
 The account is trusted host configuration. Sealed readers do not attest the broker account or
 detect a cross-account pair of legitimately constructed handles. Future service integration must
 construct the registry, reader and callout from the same authenticated account context.
+
+A package-internal dormant custody writer has no product caller and is not exported. Bootstrap
+writes the reservation, the pending-root endpoint gate, a creating head, a frozen activation native
+gate opened at generation1, a RootPlan fixed once by head CAS, the planned active root, an
+identical-bytes native gate touch and the active head stamp. It rechecks the endpoint gate at open
+and before the plan, root and stamp writes. Cancellation denies the endpoint gate first, then
+writes the cancelling head and freezes the native gate under the cancel operation. An unstamped
+planned root is fenced by a create of revoked bytes or by CAS of the exact active row. A stamped
+root is retained, and every cancellation result is nonterminal. An absent reservation leaves
+endpoint deny residue and reports unconfirmed; a foreign or deleted reservation refuses without a
+write. Each write is a per-key create or revision CAS under a sealed host whose genuine plane-claim
+hold is re-read before and after the write, plus a fatal latch. That is local readiness control,
+not broker writer exclusion, so a paused writer can still land one late conditional write. Each
+request is bounded by the remaining original deadline. The caller supplies that deadline and the
+reservation; nothing here authenticates a host, approves serving, retires terminally, releases an
+alias or rotates a root.
 
 This is a refusal foundation, not service endpoint admission. Service bootstrap, cancellation,
 terminal retirement, complete observer evidence, writer exclusion and restore readiness remain
