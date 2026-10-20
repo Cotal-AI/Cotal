@@ -1222,13 +1222,19 @@ sufficient *authority* identity on this surface. Two further identity components
   foreign or tombstoned reservation refuses before any write. Each write is a per-key create or
   revision CAS under a genuine plane-claim hold re-read before and after it plus a fatal latch.
   This is local readiness control, not broker writer exclusion. Each broker request is bounded
-  by `min(5s, remaining live authority)`, where live authority is the original deadline and,
-  once a RootPlan exists, also the plan expiry; a request still in flight at that bound ends
-  held. CAS re-decisions, native gate re-pins and
+  by `min(5s, remaining live authority)`, where live authority is the invocation's original
+  deadline. In bootstrap, once the plan step has fixed or read the RootPlan, live authority is
+  also bounded by the plan expiry. Cancellation keeps only its own deadline, so an accepted
+  cancellation can still proceed after the root expires. A request still in flight at the
+  live-authority bound ends held; the writer stops waiting for it but does not cancel it at the
+  broker. CAS re-decisions, native gate re-pins and
   unknown-outcome rounds are capped at 4, 8 and 3, and an unknown outcome is classified by a
   leader read before any reissue. Endpoint-gate reads and writes are the writer's own leader
-  reads and conditional writes built from pure package-internal rows, so no request starts
-  after an invocation returns. The held check is the closure captured when the hold was
+  reads and conditional writes built from pure package-internal rows, so no endpoint-gate
+  request starts after an invocation returns. Bootstrap's final active-root proof is bounded the
+  same way, but it is a sequence of read-only leader reads behind one wait: when that wait ends
+  at its bound, the abandoned proof can still issue its remaining reads after the invocation
+  returns. Those reads write nothing. The held check is the closure captured when the hold was
   acquired, not the hold's mutable guard field. A frozen activation native gate is valid only at
   generation0; any other frozen activation form holds. The deadline and reservation are
   caller-supplied original material, not durable host authentication.

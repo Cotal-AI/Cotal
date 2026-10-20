@@ -124,8 +124,8 @@ function held(reason: string, step: string, detail = reason): never {
 }
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** `deadlineMs` is the live-authority bound: the original deadline, clipped to the RootPlan
- *  expiry once a plan exists. `deadlineReason` names whichever of the two is binding. */
+/** `deadlineMs` is the live-authority bound: the original deadline, clipped in bootstrap to the
+ *  RootPlan expiry after the plan step. `deadlineReason` names whichever of the two is binding. */
 interface Ctx {
   h: HostInternals; jsm: JetStreamManager; kv: { records: KV; auth: KV }; bucket: { records: string; auth: string };
   deadlineMs: number; deadlineReason: "deadline" | "plan-expired"; step: string;
@@ -137,7 +137,9 @@ function context(h: HostInternals, deadlineMs: number): Ctx {
     bucket: { records: recordsBucket(h.space), auth: epAuthBucket(h.space) }, deadlineMs, deadlineReason: "deadline", step: "open" };
 }
 
-/** From the moment a RootPlan exists, `liveUntilMs = min(deadline, plan.expMs)` bounds every request. */
+/** Bootstrap only, after the plan step: `liveUntilMs = min(deadline, plan.expMs)` bounds every
+ *  later request. Cancellation keeps its own deadline, so an accepted cancellation can proceed
+ *  after the root expires. */
 function clipToPlan(ctx: Ctx, plan: RootPlan): void {
   if (plan.expMs < ctx.deadlineMs) { ctx.deadlineMs = plan.expMs; ctx.deadlineReason = "plan-expired"; }
 }

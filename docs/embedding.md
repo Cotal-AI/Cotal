@@ -1258,9 +1258,14 @@ endpoint deny residue and reports unconfirmed; a foreign or deleted reservation 
 write. Each write is a per-key create or revision CAS under a sealed host whose genuine plane-claim
 hold is re-read before and after the write, plus a fatal latch. That is local readiness control,
 not broker writer exclusion, so a paused writer can still land one late conditional write. Each
-request is bounded by the remaining original deadline, and once a RootPlan exists also by its
-expiry. The writer issues every endpoint-gate request itself, so none starts after an invocation
-returns, and it re-reads the endpoint gate before every plan, root and stamp write attempt. The caller supplies that deadline and the
+request is bounded by the remaining original deadline. In bootstrap, once the plan step has fixed
+or read the RootPlan, requests are also bounded by its expiry. Cancellation keeps only its own
+deadline, so an accepted cancellation can still proceed after the root expires. At its bound the
+writer stops waiting for a request but does not cancel it at the broker. The writer issues every
+endpoint-gate request itself, so no endpoint-gate request starts after an invocation returns, and
+it re-reads the endpoint gate before every plan, root and stamp write attempt. Bootstrap's final
+active-root proof is several read-only reads behind one bounded wait. If that wait ends at its
+bound, the remaining reads can still run after the invocation returns; none of them writes. The caller supplies that deadline and the
 reservation; nothing here authenticates a host, approves serving, retires terminally, releases an
 alias or rotates a root.
 
