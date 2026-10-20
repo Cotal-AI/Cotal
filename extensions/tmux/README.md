@@ -51,5 +51,5 @@ cmux opens a per-agent **workspace (tab)** in the cmux app; this package opens a
 **window** in a tmux session. Both are native-watch (no PTY streaming). No `cli.ts` helper is
 included — tmux is always on PATH and needs no bundled binary path.
 
-See [docs/architecture.md](../../docs/architecture.md) (*Manager*) and the
+See [docs/architecture.md](../../docs/architecture.md) (*Manager supervision*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.

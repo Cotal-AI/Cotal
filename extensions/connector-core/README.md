@@ -2,7 +2,7 @@
 
 The shared MCP-bridge runtime: the mesh agent, the `cotal_*` tool specs (including
 `cotal_spawn` / `cotal_persona` / `cotal_personas` / `cotal_despawn`), and the hook relay. The connector adapters
-(Claude Code, OpenCode, Hermes) are thin clients over it.
+(Claude Code, OpenCode, Codex, Hermes, Jcode, and pi) are thin clients over it.
 
 **Tier:** `extensions/`. Peer-depends [`@cotal-ai/core`](../../packages/core); self-registers on
 import.

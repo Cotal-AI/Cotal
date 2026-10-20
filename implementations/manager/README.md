@@ -11,7 +11,7 @@ over the mesh.
 **Tier:** `implementations/` (a self-contained surface over core). Implementations never import
 each other; they meet at runtime over NATS.
 
-See [docs/architecture.md](../../docs/architecture.md) (*Manager*) and the
+See [docs/architecture.md](../../docs/architecture.md) (*Manager supervision*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
 ## Remote authority clients
