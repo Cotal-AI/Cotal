@@ -103,7 +103,7 @@ with the log path and a non-zero exit. It still launches nothing. The control pl
 
 | Thing | Must stay in sync across | Why |
 |---|---|---|
-| Marketplace name **`cotal-mesh`** | `setup.ts` (materialized `marketplace.json`), `CHANNEL_REF` in [`extensions/connector-claude-code/src/extension.ts`](../extensions/connector-claude-code/src/extension.ts), repo [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json) | The wake channel ref `plugin:cotal@cotal-mesh` binds by this name |
+| Marketplace name **`cotal-mesh`** | `MARKETPLACE` in the claude connector's [`src/setup.ts`](../extensions/connector-claude-code/src/setup.ts) (materialized `marketplace.json`), repo [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json) | Setup installs and verifies the plugin as `cotal@cotal-mesh`. The wake channel does not use this name: `CHANNEL_REF` in [`extension.ts`](../extensions/connector-claude-code/src/extension.ts) is `server:cotal` |
 | Plugin assets | the claude connector's own [`src/setup.ts`](../extensions/connector-claude-code/src/setup.ts) copy list `COTAL_ASSETS` (`dist/mcp.cjs`, `dist/hook.cjs`, `dist/monitor.cjs`, `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json`, `monitors/monitors.json`, plus the `dist/cli.json` that setup writes beside them), its `package.json` `files` field, and the release tree's list in [`scripts/materialize-claude-plugin.mjs`](../scripts/materialize-claude-plugin.mjs) | The connector materializes its own plugin; missing or renamed assets break the install, and the base CLI has no copy of the list. The release script refuses a plugin whose `.mcp.json` or hooks reference a file it did not copy |
 | `cotal` plugin copy | `materializeCotal` and `refresh` in the claude connector's `src/setup.ts`; `pluginVersion` stamps the release, `+`, then a digest of every file setup copies, `cli.json` included | Claude Code runs a plugin from a local-directory marketplace in place, so this copy is what the user-scope install runs in every project. A repeat `cotal setup` and `cotal update` rewrite it, and the stamp lets `cotal status` name a copy an earlier release wrote |
 | Claude Desktop entry | `desktopConfigPath` and the `cotal` server name in the claude connector's `src/desktop-config.ts`, and `desktopEntry` in its `src/setup.ts` | Desktop reads its config only when it starts. The entry runs the materialized `dist/mcp.cjs` with `--desktop`, so the materialize path and the entry must agree |
@@ -208,7 +208,7 @@ status-card hints so they match how you ran it.
 
 ## Built-in connectors are seeded extensions
 
-The first-party connectors (`claude`, `opencode`, `codex`, `hermes`, `pi`) are **not** static-imported by
+The first-party connectors (`claude`, `opencode`, `codex`, `hermes`, `jcode`, `pi`) are **not** static-imported by
 the binary. The composition root (`bin/cotal.ts`) registers no connector; they self-register only when
 imported, and they are imported only once installed. On the first real command of each boot the CLI
 **seeds** them through the same `cotal ext add` path a third party uses, so they are ordinary

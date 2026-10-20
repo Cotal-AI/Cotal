@@ -39,7 +39,7 @@ agents:
     cwd: repos/backend                  # relative to the manager workspace
     role: implementer
     instructions: Prefer the smallest change that works.
-  lead:                                 # 3) inline (no file): needs at least model or instructions
+  lead:                                 # 3) inline (no file): needs model, variant or instructions
     model: opus
     role: lead
     capabilities: [spawn]               # may spawn helpers
@@ -47,8 +47,9 @@ agents:
     prompt: Introduce yourself in #general and assign the first task.
 ```
 
-Per-agent keys: `persona`, `agent` (harness override), `cwd`, `continuity`, `model`, `variant`, `role`,
-`description`, `instructions`, `prompt`, `capabilities` (`spawn`,
+Per-agent keys: `persona`, `agent` (harness override), `cwd`, `continuity`, `model`, `variant`,
+`launchOptions` (connector-specific options, merged per key over the persona's `launchOptions:`),
+`role`, `description`, `instructions`, `prompt`, `events` (`false` is `--no-events`), `capabilities` (`spawn`,
 [what it grants](identity-and-auth.md); on a per-user-auth mesh also `role:<r>`, so the
 agent may delegate that role when spawning; `admin` is never accepted from a manifest),
 `personaPermissions` (override the top-level policy). Model strings and variants pass to

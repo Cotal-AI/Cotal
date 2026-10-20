@@ -20,10 +20,13 @@ resume on another with the recorded steps returning instantly.
 | `checkpoint` | `await checkpoint(name, prompt, { schema?, timeout?, onExpiry?, to? })` | see below |
 | `sleep` | `await sleep("10m", { name? })` | `null` |
 | `wait` | `await wait(event, { name?, timeout? })` | the event value, `null` on timeout |
+| `waitUntil` | `await waitUntil(probe, { name, every, deadline, terminal? })` | the terminal observation |
 | `notify` | `await notify(agents, fact, { name? })` | `null` |
 | `monitor` | `await monitor(agent, { name? })` | `null` |
 
 `parallel`, `race`, `fanOut` and `conclave` are the four concurrency scopes (below).
+`waitUntil` calls `probe` every `every` until `terminal(observation)` holds (by default, until the
+observation is not `null`); an elapsed `deadline` throws L4023, which the program can catch.
 `await once(fn, { name })` runs `fn` so that the `ask` inside it is dispatched at most once: a
 resume that finds it begun and never settled opens a hold for a person to answer instead. Step names
 are kebab-case; where the reference says a name is required, it must be a string literal. Option

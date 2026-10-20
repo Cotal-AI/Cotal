@@ -8,9 +8,8 @@ connector ships in the `cotal-ai` package, so no extra install of the connector 
 
 **Alpha** means it runs today (spawn it, it joins the mesh and takes turns) but with real
 constraints, all verified below: it is **Unix-only**, needs an external Python toolchain you
-provide (`uv` + `hermes-agent` on a supported version range), is **not** offered in the
-`cotal setup` picker, and is **not** bundled in the container image (so no containerized Hermes, see
-[Deploy](deploy.md)).
+provide (`uv` + `hermes-agent` on a supported version range), has no setup step of its own, and
+is **not** bundled in the container image (so no containerized Hermes, see [Deploy](deploy.md)).
 
 ## Prerequisites
 
@@ -42,8 +41,8 @@ come from the agent file like any connector (see [agent-files.md](agent-files.md
 [workflow](workflows.md) spawns a Hermes persona with `spawn("<persona>", { events: false })`,
 because Hermes publishes no event plane.
 
-Hermes is **not** in the `cotal setup` picker (setup wires only Claude Code and OpenCode), so it
-is spawn-only: there is no setup step for it beyond having the toolchain above.
+Hermes has no setup step of its own. The `cotal setup` picker offers it as ready at spawn once `uv`
+is on PATH, and selecting it installs nothing, so the toolchain above is all it needs.
 
 ## Choose a model
 
