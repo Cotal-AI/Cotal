@@ -407,12 +407,19 @@ export interface AuthorityClientOpts {
    *     disconnect is a FENCING event the composition observes via {@link AuthorityClient.gone}.
    *   - NON-EXPIRING mint (no `exp`): a short-exp JWT would have the broker hard-disconnect the
    *     connection at expiry, fencing the plane on a timer. NAMED RESIDUAL (the fact-3 short-TTL
-   *     pin deliberately relaxed for EXACTLY these two in-process connections): the credential
+   *     pin relaxed for the two plane scanners and the separate two-connection tool-result custody
+   *     profile): the credential
    *     never leaves process memory, and the data-account signing seed co-resident in the SAME
    *     memory is strictly stronger authority, so the marginal exposure is nil; revoke remains the
    *     D5 class (stop the service / rotate the seed). The renewal timer is skipped (nothing to
    *     renew, and a renewal could not be presented without the forbidden reconnect anyway). */
   planeCandidate?: boolean;
+  /** INTERNAL tool-result custody only: non-expiring, non-reconnecting, no renewal timer.
+   * Separate from a plane candidate: no plane claim tuple or scanner authority is implied.
+   * The two custody credentials stay in process memory beside the stronger account signer.
+   * A copied JWT plus identity seed loses the old 900-second leak bound: it remains usable
+   * until signing-key removal. Service stop closes owned sockets, not an exfiltrated copy. */
+  toolResultCustody?: boolean;
 }
 
 export interface AuthorityClient {
@@ -439,6 +446,9 @@ export interface AuthorityClient {
  * renewal fail-closes instead of retrying on a lapsed credential.
  */
 export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<AuthorityClient> {
+  if (opts.toolResultCustody && (opts.planeCandidate || !["cotal:tool-result-snapshot", "cotal:tool-result-revocation"].includes(opts.label)))
+    throw new Error("tool-result custody requires its dedicated internal reader or writer profile");
+  const uninterrupted = Boolean(opts.planeCandidate || opts.toolResultCustody);
   const identity = newIdentity();
   const grants = opts.grants(identity.id);
   const signer = fromSeed(new TextEncoder().encode(opts.dataAccount.signingSeed));
@@ -449,18 +459,17 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
       fromPublic(opts.dataAccount.pub),
       { pub: { allow: grants.publish }, sub: { allow: grants.subscribe },
         ...(opts.principal ? { tags: principalTags(opts.principal.owner, opts.principal.actor) } : {}) },
-      // planeCandidate: NON-EXPIRING by design (see the option's doc — the named fact-3 residual);
-      // every other authority connection keeps the short-exp + half-life-renewal boundary.
-      opts.planeCandidate ? { signer } : { signer, exp: Math.floor(Date.now() / 1000) + AUTHORITY_CLIENT_TTL_SEC },
+      // Plane scanners and the separate custody profile require uninterrupted identities.
+      // Every other authority connection keeps short expiry and half-life renewal.
+      uninterrupted ? { signer } : { signer, exp: Math.floor(Date.now() / 1000) + AUTHORITY_CLIENT_TTL_SEC },
     );
   let currentJwt = await mint();
   const renew = async (): Promise<string> => {
     if (opts.probeRenewal?.fail) throw new Error("probe-forced renewal failure");
     return mint();
   };
-  // No renewal timer for a planeCandidate: nothing expires, and a fresh mint could only be
-  // presented on the reconnect the non-reconnecting shape forbids.
-  const renewal = opts.planeCandidate ? undefined : setInterval(() => {
+  // Neither uninterrupted profile can present renewal without its forbidden reconnect.
+  const renewal = uninterrupted ? undefined : setInterval(() => {
     void renew().then(
       (jwt) => { currentJwt = jwt; },
       (e) => {
@@ -476,9 +485,9 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
       name: opts.label,
       authenticator: jwtAuthenticator(() => currentJwt, new TextEncoder().encode(identity.seed)),
       inboxPrefix: `_INBOX_${identity.id}`,
-      // planeCandidate and the per-call repair connections (#4) never auto-reconnect; every standing
-      // authority connection reconnects infinitely so a broker blip never downs it silently.
-      ...(opts.planeCandidate || opts.noReconnect ? { reconnect: false, maxReconnectAttempts: 0 } : { maxReconnectAttempts: -1 }),
+      // Custody, plane candidates and per-call repairs never reconnect. Other standing
+      // authority connections use stock renewal/reconnect semantics.
+      ...(uninterrupted || opts.noReconnect ? { reconnect: false, maxReconnectAttempts: 0 } : { maxReconnectAttempts: -1 }),
     });
   } catch (e) {
     if (renewal !== undefined) clearInterval(renewal);

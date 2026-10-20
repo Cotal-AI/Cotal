@@ -205,6 +205,9 @@ export type { AuthConnectionState, AuthServiceClosed } from "./owned-connections
 
 export { createToolResultConsentSigner, makeToolResultConsentRecorder, parseToolResultConsentInput, toolResultConsentKey, type ToolResultConsentInput, type ToolResultConsentSignerOptions, type ToolResultConsentRecorder } from "./tool-result-consent.js";
 
+// Host-only prerequisites. No serving activation and no supported runtime clock witness.
+export { createToolResultRevocationCustody, recordToolResultRevocation, snapshotToolResultRevocations, consumeToolResultSnapshot, requireToolResultClockPrerequisite, type ToolResultRevocationCustody, type ToolResultSnapshotWitness, type ToolResultSnapshotRequest } from "./tool-result-prerequisites.js";
+
 export * from "./service-host-contract.js";
 
 export { SERVICE_RENEWAL_TYP, validateServiceRenewalProof, type ServiceRenewalClaims, type ValidatedServiceRenewal } from "./service-renewal.js";

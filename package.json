@@ -326,6 +326,8 @@
     "smoke:manifest-launch": "tsx implementations/manager/smoke/manifest-launch.smoke.ts",
     "smoke:own-agent-control": "tsx implementations/manager/smoke/own-agent-control.smoke.ts",
     "smoke:views": "tsx implementations/auth/smoke/views.smoke.ts",
+    "smoke:tool-result-prerequisites": "tsx implementations/auth/smoke/tool-result-prerequisites.smoke.ts && tsx implementations/auth/smoke/tool-result-revocation-outcomes.smoke.ts && tsx implementations/auth/smoke/tool-result-custody-lifetime.smoke.ts",
+    "smoke:tool-result-custody-lifetime": "tsx implementations/auth/smoke/tool-result-custody-lifetime.smoke.ts --lifetime",
     "smoke:tool-result-consent": "tsx implementations/auth/smoke/tool-result-consent.smoke.ts",
     "smoke:tool-result-consent-acl": "tsx implementations/auth/smoke/tool-result-consent-acl.smoke.ts",
     "smoke:tool-result-human-proof": "tsx implementations/auth/smoke/tool-result-human-proof.smoke.ts",
