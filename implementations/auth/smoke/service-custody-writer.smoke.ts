@@ -93,6 +93,14 @@ try {
   const revision = async (kv: typeof records, key: string) => (await kv.get(key))?.revision ?? 0;
   const freshHost = (h: PlaneClaimHold = hold) => openServiceCustodyHost({ registry: reg, hold: h, accountPublicKey });
   const later = () => Date.now() + 120_000;
+  // One fixture-supplied original bootstrap deadline per reservation. Every reseal of that
+  // reservation reuses it, so a recovery run never gets a later deadline than the first run had.
+  const originals = new Map<string, number>();
+  const original = (r: ServiceUidCustodyV1) => {
+    let d = originals.get(r.native.lifecycleUid);
+    if (d === undefined) originals.set(r.native.lifecycleUid, d = Date.now() + 600_000);
+    return d;
+  };
   const cancelOp = () => ({ opId: mintLifecycleUid(), requestDigest: contractDigest({ cancel: mintLifecycleUid() }) });
   // Trip `trip` when the broker delivers the nth write to `key`, so that write lands under a
   // fenced host and the writer must observe the loss after it.
@@ -109,20 +117,20 @@ try {
   await throws("an intent is refused for a structural host", async () => sealServiceBootstrapIntent({ space: SPACE, accountPublicKey } as ServiceCustodyHost, { reservation: reservation(), notAfterMs: later() }), /sealed/);
   await throws("an intent whose account differs from the host is refused", async () => {
     const r = reservation(); r.native.accountPublicKey = createAccount().getPublicKey();
-    sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() });
+    sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) });
   }, /./);
   await throws("an intent without an explicit positive deadline is refused", async () => sealServiceBootstrapIntent(freshHost().host, { reservation: reservation(), notAfterMs: 0 }), /notAfterMs/);
   {
     const r = reservation(), k = keys(r), { host, trip } = freshHost();
     trip("fixture fatal before any write");
-    const out = await runServiceBootstrap(sealServiceBootstrapIntent(host, { reservation: r, notAfterMs: later() }));
+    const out = await runServiceBootstrap(sealServiceBootstrapIntent(host, { reservation: r, notAfterMs: original(r) }));
     check("a tripped latch holds before any write", out.kind === "held" && (await records.get(k.uid)) === null, out);
   }
   {
     const r = reservation(), k = keys(r), { host } = freshHost();
     const plane = (await auth.get(PLANE_CLAIM_KEY))!;
     const moved = await auth.update(PLANE_CLAIM_KEY, new TextEncoder().encode(JSON.stringify({ ...JSON.parse(dec.decode(plane.value)), claimId: "NFOREIGNCLAIM" })), plane.revision);
-    const out = await runServiceBootstrap(sealServiceBootstrapIntent(host, { reservation: r, notAfterMs: later() }));
+    const out = await runServiceBootstrap(sealServiceBootstrapIntent(host, { reservation: r, notAfterMs: original(r) }));
     check("a claim lost before the write holds with no reservation written", out.kind === "held" && (await records.get(k.uid)) === null, out);
     await auth.update(PLANE_CLAIM_KEY, plane.value, moved);
   }
@@ -142,12 +150,12 @@ try {
     const r = reservation(ENDPOINT, FENCE_SPACE), k = keys(r);
     const { host } = openServiceCustodyHost({ registry: fenceReg, hold: fenceHold, accountPublicKey });
     const sub = tripOnWrite(recordsBucket(FENCE_SPACE), k.uid, 1, (reason) => fenceHold.fence(reason));
-    const out = await runServiceBootstrap(sealServiceBootstrapIntent(host, { reservation: r, notAfterMs: later() }));
+    const out = await runServiceBootstrap(sealServiceBootstrapIntent(host, { reservation: r, notAfterMs: original(r) }));
     sub.unsubscribe();
     check("the awaited hold check rejecting after the reservation write lands is held, never success",
       out.kind === "held" && out.reason === "post-write-readiness" && /fixture pause/.test(out.detail) && !/host was fenced/.test(out.detail)
       && (await fenceRecords.get(k.uid)) !== null, out);
-    const again = await runServiceBootstrap(sealServiceBootstrapIntent(host, { reservation: r, notAfterMs: later() }));
+    const again = await runServiceBootstrap(sealServiceBootstrapIntent(host, { reservation: r, notAfterMs: original(r) }));
     check("the fenced hold refuses the next invocation before any write", again.kind === "held" && again.reason === "readiness"
       && (await fenceRecords.get(k.head)) === null, again);
   }
@@ -156,10 +164,12 @@ try {
   {
     const r = reservation(), k = keys(r), first = freshHost();
     const sub = tripOnWrite(recordsBucket(SPACE), k.uid, 1, first.trip);
-    const paused = await runServiceBootstrap(sealServiceBootstrapIntent(first.host, { reservation: r, notAfterMs: later() }));
+    const pausedIntent = sealServiceBootstrapIntent(first.host, { reservation: r, notAfterMs: original(r) });
+    const paused = await runServiceBootstrap(pausedIntent);
     sub.unsubscribe();
+    check("recovery reseals the paused run's original deadline", sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) }).notAfterMs === pausedIntent.notAfterMs);
     check("a loss observed after the reservation write lands is held, never success", paused.kind === "held" && paused.reason === "post-write-readiness" && (await records.get(k.uid)) !== null, paused);
-    const out = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() }));
+    const out = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) }));
     check("the same original material resumes to an active root", out.kind === "active", out);
     if (out.kind === "active") {
       const head = await value(records, k.head), gate = await value(auth, k.gate), root = await value(auth, `cred.${r.native.lifecycleUid}.${out.root.credentialId}`);
@@ -171,7 +181,7 @@ try {
       const proof = await readRegistryServiceRoot(reg, binding(r), out.root.credentialId, Date.now());
       check("the unchanged active-root reader proves the written custody", proof.expiresAt === Math.floor(out.root.expMs / 1000), proof);
       const before = { head: await revision(records, k.head), gate: await revision(auth, k.gate) };
-      const again = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() }));
+      const again = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) }));
       check("re-running the same bootstrap returns the same root without a new plan or write",
         again.kind === "active" && again.root.credentialId === out.root.credentialId && again.root.expMs === out.root.expMs
         && before.head === await revision(records, k.head) && before.gate === await revision(auth, k.gate), again);
@@ -193,7 +203,7 @@ try {
       check("re-running the same cancel operation resumes idempotently", repeat.kind === "pending" && repeat.root === "retained-stamped" && headRev === await revision(records, k.head), repeat);
       const foreign = await cancelServiceCustody(sealServiceCancelIntent(freshHost().host, { reservation: r, ...cancelOp() }), { deadlineMs: later() });
       check("a different cancel operation gets only a reference to the recorded one", foreign.kind === "foreign-operation" && foreign.opId === op.opId, foreign);
-      const resumed = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() }));
+      const resumed = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) }));
       check("bootstrap after cancellation never returns the root", resumed.kind === "endpoint-revoked" || resumed.kind === "cancelled", resumed);
     }
   }
@@ -203,7 +213,7 @@ try {
     // Paused after the RootPlan CAS (second head write): the plan is durable, no root row exists.
     const r = reservation(), k = keys(r), first = freshHost();
     const sub = tripOnWrite(recordsBucket(SPACE), k.head, 2, first.trip);
-    const paused = await runServiceBootstrap(sealServiceBootstrapIntent(first.host, { reservation: r, notAfterMs: later() }));
+    const paused = await runServiceBootstrap(sealServiceBootstrapIntent(first.host, { reservation: r, notAfterMs: original(r) }));
     sub.unsubscribe();
     const plan = (await value(records, k.head))?.rootPlan as { credentialId: string; expMs: number } | undefined;
     check("bootstrap paused with a durable plan and no root row", paused.kind === "held" && !!plan && (await auth.get(`cred.${r.native.lifecycleUid}.${plan.credentialId}`)) === null, { paused, plan });
@@ -213,7 +223,7 @@ try {
       const root = await value(auth, `cred.${r.native.lifecycleUid}.${plan.credentialId}`);
       check("the fenced root row is revoked with the unchanged plan expiry and mirror", root?.state === "revoked" && root.exp === plan.expMs
         && (root.serviceCustody as { uidDigest: string }).uidDigest === contractDigest(r), root);
-      const resumed = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() }));
+      const resumed = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) }));
       check("a resumed bootstrap cannot stage over the fence", resumed.kind !== "active" && (await value(auth, `cred.${r.native.lifecycleUid}.${plan.credentialId}`))?.state === "revoked", resumed);
     }
   }
@@ -223,7 +233,7 @@ try {
     const prefix = `cred.${r.native.lifecycleUid}.`;
     let seen = 0;
     const sub = conn.subscribe(`$KV.${epAuthBucket(SPACE)}.${prefix}*`, { callback: () => { if (++seen === 1) first.trip("fixture pause at root create"); } });
-    const paused = await runServiceBootstrap(sealServiceBootstrapIntent(first.host, { reservation: r, notAfterMs: later() }));
+    const paused = await runServiceBootstrap(sealServiceBootstrapIntent(first.host, { reservation: r, notAfterMs: original(r) }));
     sub.unsubscribe();
     const plan = (await value(records, k.head))?.rootPlan as { credentialId: string; expMs: number } | undefined;
     check("bootstrap paused with an active unstamped root row", paused.kind === "held" && !!plan && (await value(auth, `${prefix}${plan.credentialId}`))?.state === "active", paused);
@@ -235,27 +245,27 @@ try {
     // Bootstrap paused at the native gate create; cancellation paused right after its endpoint deny.
     const r = reservation(), k = keys(r), first = freshHost();
     let sub = tripOnWrite(epAuthBucket(SPACE), k.gate, 1, first.trip);
-    await runServiceBootstrap(sealServiceBootstrapIntent(first.host, { reservation: r, notAfterMs: later() }));
+    await runServiceBootstrap(sealServiceBootstrapIntent(first.host, { reservation: r, notAfterMs: original(r) }));
     sub.unsubscribe();
     const second = freshHost();
     sub = tripOnWrite(epAuthBucket(SPACE), k.epgate, 1, second.trip);
     const cut = await cancelServiceCustody(sealServiceCancelIntent(second.host, { reservation: r, ...cancelOp() }), { deadlineMs: later() });
     sub.unsubscribe();
     check("cancellation paused after the endpoint deny is held", cut.kind === "held" && (await readNativeServiceGate(reg, binding(r)))?.row.serviceAuthority.state === "revoked", cut);
-    const resumed = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() }));
+    const resumed = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) }));
     check("bootstrap refuses once the endpoint is revoked, writing no plan", resumed.kind === "endpoint-revoked" && (await value(records, k.head))?.rootPlan === null, resumed);
   }
 
   console.log("E. refusals and unconfirmed reservations");
   {
     const r = reservation("org.example.unbound"), k = keys(r);
-    const out = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() }));
+    const out = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) }));
     check("an unbound service name refuses before any write", out.kind === "name-unbound" && (await records.get(k.uid)) === null, out);
   }
   {
     const r = reservation(), k = keys(r);
     await tryReserveUid(reg, r.native.lifecycleUid, { owner: OWNER, actor: "cli", mintedBy: "fixture" });
-    const out = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() }));
+    const out = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) }));
     check("an ordinary reservation burns the candidate with no head written", out.kind === "uid-burned" && (await records.get(k.head)) === null, out);
     const cancel = await cancelServiceCustody(sealServiceCancelIntent(freshHost().host, { reservation: r, ...cancelOp() }), { deadlineMs: later() });
     check("cancellation of a burned candidate refuses without fencing anything", cancel.kind === "uid-foreign"
@@ -264,7 +274,7 @@ try {
   {
     const r = reservation(), k = keys(r);
     await records.create(k.head, new TextEncoder().encode(JSON.stringify({ owner: OWNER, actor: r.assignment.actor, lifecycleUid: mintLifecycleUid(), managerInstance: "fixture", processEpoch: 1, state: "active" })));
-    const out = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() }));
+    const out = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) }));
     check("an ordinary head at the alias is an identity collision, never replaced", out.kind === "identity-collision" && (await value(records, k.head))?.managerInstance === "fixture", out);
   }
   {
@@ -273,7 +283,7 @@ try {
     check("cancellation with no reservation denies the endpoint and stays unconfirmed",
       out.kind === "uid-unconfirmed" && (await readNativeServiceGate(reg, binding(r)))?.row.serviceAuthority.state === "revoked"
       && (await records.get(k.head)) === null && (await auth.get(k.gate)) === null, out);
-    const boot = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() }));
+    const boot = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) }));
     check("a later bootstrap refuses before reserving the UID", boot.kind === "endpoint-revoked" && (await records.get(k.uid)) === null, boot);
     const expired = await cancelServiceCustody(sealServiceCancelIntent(freshHost().host, { reservation: r, ...cancelOp() }), { deadlineMs: Date.now() - 1 });
     check("a cancel invocation past its explicit deadline holds", expired.kind === "held" && expired.reason === "deadline", expired);
@@ -284,7 +294,7 @@ try {
     return async () => { await auth.update(PLANE_CLAIM_KEY, plane.value, moved); };
   };
   const active = async (r: ServiceUidCustodyV1) => {
-    const out = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() }));
+    const out = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) }));
     if (out.kind !== "active") throw new Error(`fixture bootstrap did not reach active: ${JSON.stringify(out)}`);
   };
 
@@ -336,7 +346,7 @@ try {
   console.log("G. the genuine hold's own check, not its mutable guard field");
   for (const variant of ["guard object replaced after open", "guard method replaced after open", "guard object replaced before open"] as const) {
     const r = reservation(), k = keys(r);
-    const original: ScanGuard = hold.guard, originalMethod = hold.guard.assertHeld;
+    const savedGuard: ScanGuard = hold.guard, savedMethod = hold.guard.assertHeld;
     const mutate = () => {
       if (variant === "guard method replaced after open") hold.guard.assertHeld = async () => {};
       else (hold as { guard: ScanGuard }).guard = { assertHeld: async () => {} };
@@ -345,9 +355,9 @@ try {
     const { host } = freshHost();
     if (variant !== "guard object replaced before open") mutate();
     const restore = await movePlane();
-    const out = await runServiceBootstrap(sealServiceBootstrapIntent(host, { reservation: r, notAfterMs: later() }));
+    const out = await runServiceBootstrap(sealServiceBootstrapIntent(host, { reservation: r, notAfterMs: original(r) }));
     const wrote = (await records.get(k.uid)) !== null;
-    (hold as { guard: ScanGuard }).guard = original; original.assertHeld = originalMethod;
+    (hold as { guard: ScanGuard }).guard = savedGuard; savedGuard.assertHeld = savedMethod;
     await restore();
     check(`${variant}: a moved claim still holds with no reservation written`, out.kind === "held" && !wrote, { out, wrote });
   }
@@ -356,7 +366,7 @@ try {
   for (const variant of ["creation op", "foreign op"] as const) {
     const r = reservation(), k = keys(r), first = freshHost();
     const sub = tripOnWrite(recordsBucket(SPACE), k.head, 1, first.trip);
-    await runServiceBootstrap(sealServiceBootstrapIntent(first.host, { reservation: r, notAfterMs: later() }));
+    await runServiceBootstrap(sealServiceBootstrapIntent(first.host, { reservation: r, notAfterMs: original(r) }));
     sub.unsubscribe();
     const seeded = { lifecycleUid: r.native.lifecycleUid, state: "frozen", generation: 1, serviceCustody: { v: 1, uidDigest: contractDigest(r) },
       op: { opId: variant === "creation op" ? r.creation.operationId : mintLifecycleUid(), kind: "activation" } };
@@ -364,7 +374,7 @@ try {
     let parsed = true;
     try { parseServiceNativeGate(structuredClone(seeded), serviceCustodyIdentity(r)); } catch { parsed = false; }
     check(`${variant}: the shared parser refuses it`, !parsed);
-    const boot = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() }));
+    const boot = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) }));
     check(`${variant}: bootstrap holds without touching the gate`, boot.kind === "held" && (await revision(auth, k.gate)) === seededRev, boot);
     const cancel = await cancelServiceCustody(sealServiceCancelIntent(freshHost().host, { reservation: r, ...cancelOp() }), { deadlineMs: later() });
     check(`${variant}: cancellation holds instead of normalizing the gate`, cancel.kind === "held" && (await revision(auth, k.gate)) === seededRev, cancel);
