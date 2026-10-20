@@ -3,14 +3,15 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer, createUser } from "@nats-io/nkeys";
+import { decode } from "@nats-io/jwt";
+import { createAccount, createServer, createUser } from "@nats-io/nkeys";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   authorizeServeGrant, contractDigest, createEndpointStreams, epAuthBucket, epcredRowKey, epgateKey,
-  endpointRegistrationBarrier, finalizeServeIssuance, isReachable, mintLifecycleUid, openRecordsBucket,
+  endpointRegistrationBarrier, finalizeServeIssuance, isReachable, mintLifecycleUid, mintServiceCalloutJwt, openRecordsBucket, principalKey,
   parseEndpointGate, parseLedgerRow, reconcileEndpointGate, registerServiceInstance, recordSpecKey, RECORD_KINDS,
   serveIssuanceGateKv, type EndpointGateRow, type EpIssuanceGate, type ServiceGateAuthority,
 } from "../src/index.js";
@@ -136,6 +137,24 @@ try {
   await assert.rejects(finalizeServeIssuance(changedPair, grant, { ...issued, credentialId: changedId }), /could not be verified/);
   assert.equal(parseLedgerRow((await kv.get(epcredRowKey(endpoint, instanceId, changedId)))!.value,
     epcredRowKey(endpoint, instanceId, changedId)).state, "revoked");
+  const account = createAccount(), signer = createAccount();
+  const mintAuth = { space, account: { pub: account.getPublicKey(), signingSeed: new TextDecoder().decode(signer.getSeed()) } };
+  const admittedAt = Math.floor(Date.now() / 1000), accessExpiresAt = admittedAt + 30, inboxNonce = "n".repeat(32);
+  const mintArgs = { serve: grant, gate: native, principal: { owner, actor }, connection: serviceConnection,
+    inboxNonce, admittedAt, accessExpiresAt, expiresAt: accessExpiresAt };
+  const minted = await mintServiceCalloutJwt(mintAuth, mintArgs), claims = decode(minted.jwt);
+  assert.equal(claims.name, principalKey(owner, actor).name, "callout authorized_user identifies the actual serving principal");
+  assert.equal(claims.sub, serviceConnection.userNkey);
+  assert.equal(claims.exp, accessExpiresAt);
+  const nativePermissions = claims.nats as { sub: { allow: string[] }; pub: { allow: string[] } };
+  assert.ok(nativePermissions.sub.allow.includes(`_INBOX_${inboxNonce}.>`));
+  assert.ok(!nativePermissions.sub.allow.includes(`_INBOX_${serviceConnection.userNkey}.>`), "reply nonce is not inferred from the broker user key");
+  assert.ok(nativePermissions.pub.allow.every((subject) => !subject.startsWith("$JS.") && !subject.startsWith("$KV.")));
+  const mintedRowKey = epcredRowKey(endpoint, instanceId, minted.credentialId);
+  assert.deepEqual(parseLedgerRow((await kv.get(mintedRowKey))!.value, mintedRowKey).serviceConnection, serviceConnection);
+  await assert.rejects(mintServiceCalloutJwt(mintAuth, { ...mintArgs, expiresAt: accessExpiresAt + 1 }), /original admission-bounded expiry/);
+  await assert.rejects(mintServiceCalloutJwt(mintAuth, { ...mintArgs, admittedAt: admittedAt - 61 }), /original admission-bounded expiry/);
+  await assert.rejects(mintServiceCalloutJwt(mintAuth, { ...mintArgs, inboxNonce: ">" }));
   const ordinaryId = mintLifecycleUid();
   const ordinaryRevision = await records.create(recordSpecKey(RECORD_KINDS.svc, [endpoint, ordinaryId]), bytes({ endpoint, owner,
     clusterDigests: [contractDigest(manifest)], protocol: { v: 1 } }));

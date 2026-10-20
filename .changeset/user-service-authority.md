@@ -10,3 +10,5 @@ Add immutable local scoped-Describe receive context and complete-envelope finger
 Keep create-only native authority writes closed over deleted key history, including concurrent caller-policy creation and pending service gates.
 
 Bind service serving-issuance evidence to broker connection coordinates and verify it after the native gate CAS.
+
+Add a host-only service-callout mint seam with principal attribution, a separate client inbox nonce and an original fixed expiry.

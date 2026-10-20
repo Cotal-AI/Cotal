@@ -78,6 +78,11 @@ The native release fence rechecks that record and the gate after its CAS. Ordina
 credential-root records cannot use this service binding. This is not proof of broker acceptance;
 the accepting callout, native receipt coordination and terminal retirement remain unfinished.
 
+`mintServiceCalloutJwt` is a host-only mint seam. It uses the native serving grant, the actual
+principal name and tags, the authenticated broker user key and a separate client inbox nonce.
+Expiry stays bounded by the original admission and access deadline. It does not authenticate the
+callout request, record natkey evidence or release an encrypted response; the host must do those.
+
 Internal service-name bindings are create-only and return owner and revision from one native read.
 The trusted host must authenticate the operator and verify the namespace claim before writing.
 Native auth, delivery and manager names keep their existing authority; they cannot be application
