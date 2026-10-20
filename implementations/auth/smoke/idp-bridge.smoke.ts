@@ -207,7 +207,7 @@ check("a scopeless grant mints a scopeless bearer (explicit allow, no scope)",
     j.setSubject("human-42").setIssuer(IDP_ISS).setAudience(IDP_ISS).setIssuedAt(now()).setExpirationTime(idpExp));
   const capped = await synth.exchange(nearExpiry, { actor: "agent_1", ttlSec: 900 });
   check("a near-expiry IdP proof caps the bearer to its remaining life, not the full TTL",
-    capped.exp <= idpExp + 2 && capped.exp > now() + 20, { bearerExp: capped.exp, idpExp });
+    capped.exp <= idpExp && capped.exp > now() + 20, { bearerExp: capped.exp, idpExp });
 }
 
 await rejects("HS256 alg confusion is rejected at the header", async () => {
