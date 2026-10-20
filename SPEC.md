@@ -1362,6 +1362,15 @@ approval does not authorize serving release. Standalone service authority does n
 sibling credential duties. Native root validation, owner consent, activation and coordinated
 retirement remain requirements of the trusted host; parsing this value does not establish them.
 
+Native application-service name bindings use `servicename.<endpointToken>` in the primary auth store.
+The closed record has `v:1`, `kind:"service-name"`, accountPublicKey, space, endpoint, owner,
+claimReference, requestId and requestDigest. The trusted host authenticates operator authority and
+verifies the namespace claim before creation. A stored assertion alone proves neither of those checks.
+Creation requires zero retained key history. Only an identical request can recover the binding;
+changing its owner, claim or request identity does not update it. Owner and binding revision are read
+from one leader snapshot. Transfer and release are unsupported. Native auth, delivery and manager
+names remain with their existing control authorities and cannot be application-service bindings.
+
 Native service caller policy is stored at `servicepolicy.<granteeUid>` in the primary auth store.
 Its closed value is `{v:1,accountPublicKey,space,grantee,grants}`; grantee is the exact owner, actor
 and lifecycle UID. A grant contains its immutable id, endpoint and source instance, approval digest,

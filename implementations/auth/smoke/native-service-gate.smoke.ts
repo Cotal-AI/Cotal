@@ -8,11 +8,12 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
-  contractDigest, createEndpointStreams, endpointRegistrationBarrier, isReachable, mintLifecycleUid,
+  contractDigest, createEndpointStreams, endpointToken, endpointRegistrationBarrier, isReachable, mintLifecycleUid,
   serviceEndpointActor, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { openLifecycleRegistry, reserveLifecycleUid, registryStores } from "../src/lifecycle-registry.js";
+import { bindNativeServiceName, nativeServiceNameAuthority, readNativeServiceName } from "../src/native-service-name.js";
 import { ensureRootCredential } from "../src/root-credential.js";
 import { credRowKey, markLedgerRowRevoked } from "../src/credential-ledger.js";
 import {
@@ -32,6 +33,35 @@ try {
   const reg = await openLifecycleRegistry(nc, space);
   const tuple = { accountPublicKey: createAccount().getPublicKey(), space, owner: `u_${"a".repeat(26)}`,
     endpoint: "org.example.orders", instanceId: mintLifecycleUid() };
+  const nameContext = { accountPublicKey: tuple.accountPublicKey, space };
+  const nameRequest = { v: 1 as const, kind: "service-endpoint-host" as const, requestId: "a".repeat(32), operation: "name-bind" as const,
+    granter: { kind: "operator" as const, auditId: "fixture-verified-claim" },
+    input: { endpoint: tuple.endpoint, owner: tuple.owner, expectedRevision: 0, claimReference: "fixture-namespace-claim" } };
+  const names = nativeServiceNameAuthority(reg, nameContext);
+  assert.deepEqual(await names.authorize(tuple.endpoint, tuple.owner), { authorized: false, revision: 0 });
+  const nameBinding = await bindNativeServiceName(reg, nameContext, nameRequest);
+  assert.equal((await bindNativeServiceName(reg, nameContext, nameRequest)).revision, nameBinding.revision);
+  assert.deepEqual(await names.authorize(tuple.endpoint, tuple.owner), { authorized: true, revision: nameBinding.revision });
+  assert.deepEqual(await names.authorize(tuple.endpoint, `u_${"b".repeat(26)}`), { authorized: false, revision: nameBinding.revision });
+  await assert.rejects(bindNativeServiceName(reg, nameContext, { ...nameRequest, requestId: "b".repeat(32),
+    input: { ...nameRequest.input, owner: `u_${"b".repeat(26)}` } }), /FOREIGN/);
+  await assert.rejects(bindNativeServiceName(reg, nameContext, { ...nameRequest, input: { ...nameRequest.input, expectedRevision: nameBinding.revision } }), /create-only/);
+  await assert.rejects(bindNativeServiceName(reg, nameContext, { ...nameRequest, granter: { kind: "owner", owner: tuple.owner } }), /operator decision/);
+  for (const endpoint of ["manager", "auth", "delivery"])
+    await assert.rejects(bindNativeServiceName(reg, nameContext, { ...nameRequest, input: { ...nameRequest.input, endpoint } }), /native control/);
+  const referenceName = await bindNativeServiceName(reg, nameContext, { ...nameRequest, requestId: "f".repeat(32),
+    input: { ...nameRequest.input, endpoint: "linear" } });
+  assert.equal(referenceName.owner, tuple.owner, "operator-provisioned reference names do not require an application allowlist");
+  const contenders = await Promise.allSettled([tuple.owner, `u_${"b".repeat(26)}`].map((owner, index) => bindNativeServiceName(reg, nameContext,
+    { ...nameRequest, requestId: String(index + 3).repeat(32), input: { ...nameRequest.input, endpoint: "org.example.concurrent", owner } })));
+  assert.equal(contenders.filter((r) => r.status === "fulfilled").length, 1, "one owner wins a native name binding");
+  const deletedRequest = { ...nameRequest, requestId: "e".repeat(32), input: { ...nameRequest.input, endpoint: "org.example.deleted" } };
+  await bindNativeServiceName(reg, nameContext, deletedRequest);
+  await registryStores(reg).authKv.delete(`servicename.${endpointToken(deletedRequest.input.endpoint)}`);
+  await assert.rejects(readNativeServiceName(reg, nameContext, deletedRequest.input.endpoint), /deletion history/);
+  await assert.rejects(bindNativeServiceName(reg, nameContext, deletedRequest), /FOREIGN/);
+  await assert.rejects(readNativeServiceName(reg, { ...nameContext, accountPublicKey: createAccount().getPublicKey() }, tuple.endpoint), /another account/);
+  await assert.rejects(readNativeServiceName(reg, { ...nameContext, space: "other" }, tuple.endpoint), /native registry/);
   const actor = serviceEndpointActor(tuple);
   const lifecycleUid = await reserveLifecycleUid(reg, { owner: tuple.owner, actor, mintedBy: "service-fixture" });
   const binding = { ...tuple, lifecycleUid, assignmentDigest: contractDigest({ tuple, lifecycleUid }) };
@@ -40,7 +70,7 @@ try {
   assert.equal((await createPendingServiceGate(reg, binding)).revision, gate.revision);
   const rootCredentialId = await ensureRootCredential(reg, { owner: tuple.owner, actor, lifecycleUid, managerInstance: "service-fixture" });
   gate = await approveNativeServiceGate(reg, binding, { expectedRevision: gate.revision, rootCredentialId,
-    approvalDigest: contractDigest({ approved: binding.assignmentDigest }), nameAuthorityRevision: 1, approvalExpiresAt: null, callerCeiling: [] });
+    approvalDigest: contractDigest({ approved: binding.assignmentDigest }), nameAuthorityRevision: nameBinding.revision, approvalExpiresAt: null, callerCeiling: [] });
   assert.equal(gate.row.serviceAuthority.state, "approved");
   assert.ok(gate.row.serviceAuthority.rootExpiresAt! < Date.now(), "gate root expiry is seconds, not ledger milliseconds");
   const register = async (revision: number) => {
@@ -52,7 +82,7 @@ try {
     const token = await barrier.freeze(observed.revision);
     assert.notEqual(token, null);
     assert.equal(await barrier.reopen(token!, { generation: observed.generation + 1, processEpoch: observed.processEpoch + 1,
-      registrationRevision: revision, nameAuthorityRevision: 1 }), true);
+      registrationRevision: revision, nameAuthorityRevision: nameBinding.revision }), true);
     return (await readNativeServiceGate(reg, binding))!;
   };
   gate = await register(1);
@@ -69,7 +99,7 @@ try {
   const witness: ServiceRegistrationWitness = { accountPublicKey: tuple.accountPublicKey, space, endpoint: tuple.endpoint,
     instanceId: tuple.instanceId, principal: { owner: tuple.owner, actor, lifecycleUid }, rootCredentialId,
     approvalDigest: gate.row.serviceAuthority.approvalDigest!, processEpoch: gate.row.processEpoch,
-    registrationRevision: 2, nameAuthorityRevision: 1, registrationRequestId: stamp2.requestId, registrationProof: stamp2.registrationProof };
+    registrationRevision: 2, nameAuthorityRevision: nameBinding.revision, registrationRequestId: stamp2.requestId, registrationProof: stamp2.registrationProof };
   await assert.rejects(markNativeServiceActivated(reg, binding, { expectedRevision: gate.revision, witness: { ...witness, registrationProof: stamp.registrationProof } }));
   gate = await markNativeServiceActivated(reg, binding, { expectedRevision: gate.revision, witness });
   assert.equal(gate.row.serviceAuthority.activationIssued, true);
@@ -88,7 +118,7 @@ try {
   const cancelledGate = await fenceUncreatedServiceGate(reg, cancelled, mintLifecycleUid());
   assert.equal(cancelledGate.row.serviceAuthority.state, "revoked");
   await assert.rejects(createPendingServiceGate(reg, cancelled), /FOREIGN content/);
-  console.log("native service gate: root binding, registration stamps, monotonic activation and cancellation fence passed; full host retirement not exercised");
+  console.log("native service gate: create-only name binding and native reservations, root binding, registration stamps, monotonic activation and cancellation fence passed; full host retirement not exercised");
 } finally {
   await nc?.close();
   await killAndAwaitExit(broker);
