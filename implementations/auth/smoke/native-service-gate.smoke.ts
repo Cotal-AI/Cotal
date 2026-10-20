@@ -8,17 +8,20 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
-  contractDigest, createEndpointStreams, endpointToken, endpointRegistrationBarrier, isReachable, mintLifecycleUid,
+  contractDigest, createEndpointStreams, endpointToken, epgateKey, endpointRegistrationBarrier, isReachable, mintLifecycleUid,
   serviceEndpointActor, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { openLifecycleRegistry, reserveLifecycleUid, registryStores } from "../src/lifecycle-registry.js";
 import { bindNativeServiceName, nativeServiceNameAuthority, readNativeServiceName } from "../src/native-service-name.js";
+import { openConnectReader } from "../src/connect-reader.js";
+import { createUserTokenIssuer, generateSigningKey } from "../src/issuer.js";
+import { validateUserToken } from "../src/token.js";
 import { ensureRootCredential } from "../src/root-credential.js";
 import { credRowKey, markLedgerRowRevoked } from "../src/credential-ledger.js";
 import {
   approveNativeServiceGate, createPendingServiceGate, denyNativeServiceGate, fenceUncreatedServiceGate,
-  markNativeServiceActivated, readNativeServiceGate,
+  markNativeServiceActivated, readNativeServiceGate, readNativeServiceAccess,
 } from "../src/native-service-gate.js";
 
 const space = "native-service-gate", port = await freePort(), servers = `nats://127.0.0.1:${port}`;
@@ -101,11 +104,55 @@ try {
     approvalDigest: gate.row.serviceAuthority.approvalDigest!, processEpoch: gate.row.processEpoch,
     registrationRevision: 2, nameAuthorityRevision: nameBinding.revision, registrationRequestId: stamp2.requestId, registrationProof: stamp2.registrationProof };
   await assert.rejects(markNativeServiceActivated(reg, binding, { expectedRevision: gate.revision, witness: { ...witness, registrationProof: stamp.registrationProof } }));
+  const reader = await openConnectReader(nc, space);
+  const issuer = createUserTokenIssuer({ issuer: "https://authority.example/native-service", key: await generateSigningKey() });
+  const expiresAt = Math.floor(Date.now() / 1000) + 45;
+  const access = await validateUserToken(await issuer.issueServiceAccess({ witness, expiresAt }),
+    { issuer: issuer.issuer, key: issuer.localKeySet(), audience: space });
+  await assert.rejects(readNativeServiceAccess(reg, reader, binding, access, expiresAt), /current activated registration/);
   gate = await markNativeServiceActivated(reg, binding, { expectedRevision: gate.revision, witness });
   assert.equal(gate.row.serviceAuthority.activationIssued, true);
   assert.equal((await markNativeServiceActivated(reg, binding, { expectedRevision: gate.revision, witness })).revision, gate.revision);
   assert.equal(await duplicate.freeze(gate.revision), null, "activated service cannot begin another registration");
+  assert.deepEqual(await readNativeServiceAccess(reg, reader, binding, access, expiresAt),
+    { witness, gateRevision: gate.revision, expiresAt }, "signed service access retains native root authorization without an ActorRow");
+  await assert.rejects(readNativeServiceAccess(reg, reader, { ...binding, assignmentDigest: contractDigest({ other: true }) }, access, expiresAt), /another immutable assignment/);
+  await assert.rejects(readNativeServiceAccess(reg, reader, { ...binding, accountPublicKey: createAccount().getPublicKey() }, access, expiresAt), /native assignment/);
+  await assert.rejects(readNativeServiceAccess(reg, reader, binding, access, expiresAt + 1), /original bounded expiry/);
+  await assert.rejects(readNativeServiceAccess(reg, reader, binding, access, Math.floor(Date.now() / 1000)), /original bounded expiry/);
+  const stale = await validateUserToken(await issuer.issueServiceAccess({ witness: { ...witness, registrationProof: stamp.registrationProof }, expiresAt }),
+    { issuer: issuer.issuer, key: issuer.localKeySet(), audience: space });
+  await assert.rejects(readNativeServiceAccess(reg, reader, binding, stale, expiresAt), /current activated registration/);
+  const mutableBinding = { ...binding }, mutableAccess = structuredClone(access);
+  const detached = readNativeServiceAccess(reg, reader, mutableBinding, mutableAccess, expiresAt);
+  mutableBinding.assignmentDigest = contractDigest({ changed: true });
+  mutableAccess.act.service!.witness.registrationProof = stamp.registrationProof;
+  assert.equal((await detached).gateRevision, gate.revision, "native access snapshots caller-owned inputs before reads");
+  const kv = registryStores(reg).authKv, originalGet = kv.get;
+  kv.get = async (...args) => {
+    const result = await originalGet.apply(kv, args);
+    if (args[0] === `servicename.${endpointToken(tuple.endpoint)}`)
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+    return result;
+  };
+  try {
+    await assert.rejects(readNativeServiceAccess(reg, reader, binding, access, Math.floor(Date.now() / 1000) + 1), /expired during native authorization/);
+  } finally { kv.get = originalGet; }
+  kv.get = async (...args) => {
+    const result = await originalGet.apply(kv, args);
+    if (args[0] === `servicename.${endpointToken(tuple.endpoint)}`) {
+      const row = { ...gate.row, generation: gate.row.generation + 1 };
+      const revision = await kv.update(epgateKey(tuple.endpoint, tuple.instanceId), new TextEncoder().encode(JSON.stringify(row)), gate.revision);
+      gate = { row, revision };
+    }
+    return result;
+  };
+  try {
+    await assert.rejects(readNativeServiceAccess(reg, reader, binding, access, expiresAt), /authority changed during/);
+  } finally { kv.get = originalGet; }
+  assert.equal((await readNativeServiceAccess(reg, reader, binding, access, expiresAt)).gateRevision, gate.revision);
   await markLedgerRowRevoked(registryStores(reg).authKv, credRowKey(lifecycleUid, rootCredentialId));
+  await assert.rejects(readNativeServiceAccess(reg, reader, binding, access, expiresAt), /not active/);
   await assert.rejects(markNativeServiceActivated(reg, binding, { expectedRevision: gate.revision, witness }), /not live/);
   gate = await denyNativeServiceGate(reg, binding, { expectedRevision: gate.revision, operationId: mintLifecycleUid() });
   assert.equal(gate.row.serviceAuthority.state, "revoked");
@@ -118,7 +165,7 @@ try {
   const cancelledGate = await fenceUncreatedServiceGate(reg, cancelled, mintLifecycleUid());
   assert.equal(cancelledGate.row.serviceAuthority.state, "revoked");
   await assert.rejects(createPendingServiceGate(reg, cancelled), /FOREIGN content/);
-  console.log("native service gate: create-only name binding and native reservations, root binding, registration stamps, monotonic activation and cancellation fence passed; full host retirement not exercised");
+  console.log("native service gate: create-only name binding and native reservations, root binding, registration stamps, monotonic activation, native access prerequisites and cancellation fence passed; full host retirement not exercised");
 } finally {
   await nc?.close();
   await killAndAwaitExit(broker);

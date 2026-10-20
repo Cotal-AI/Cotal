@@ -69,6 +69,10 @@ ordinary parent, manager, session and transfer claims. Ordinary exchange, callou
 refuse this view before actor lookup. The dedicated native callout path is not implemented yet,
 so signing this bearer does not enable a service connection.
 
+Internal service-access reads retain native credential-root authorization and check the activated
+registration, assignment, current name and fixed expiry. They do not create a serving grant or
+release a native JWT. The dedicated callout still needs native issuance and final authorization.
+
 Internal service-name bindings are create-only and return owner and revision from one native read.
 The trusted host must authenticate the operator and verify the namespace claim before writing.
 Native auth, delivery and manager names keep their existing authority; they cannot be application

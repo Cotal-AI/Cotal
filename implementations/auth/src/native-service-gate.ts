@@ -1,9 +1,12 @@
 import {
-  EpEnvelopeError, assertLifecycleToken, createRowByteIdempotent, epgateKey, isCasLoss, parseEndpointCapabilities,
+  EpEnvelopeError, SERVICE_ACCESS_TTL_SECONDS, assertLifecycleToken, createRowByteIdempotent, epgateKey, isCasLoss, parseEndpointCapabilities,
   parseEndpointGate, parseServiceRegistrationWitness, principalKey, serviceEndpointActor,
   serviceGateApprovalLive, type EndpointGateRow, type EpCapability, type ServiceGateAuthority,
   type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
+import { authorizeConnectCredential, type ConnectReader } from "./connect-reader.js";
+import { readNativeServiceName } from "./native-service-name.js";
+import type { ValidatedUserToken } from "./token.js";
 import { credRowKey, parseLedgerRow } from "./credential-ledger.js";
 import { readLifecycleHeadForOperation, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
 
@@ -96,6 +99,59 @@ async function rootExpiry(reg: LifecycleRegistry, binding: ServiceAssignmentBind
     || row.sourceChain.length !== 1 || row.sourceChain[0] !== "root" || row.exp <= nowMs)
     throw new EpEnvelopeError("permission-denied", "service native root credential is not live");
   return Math.floor(row.exp / 1000);
+}
+
+/** Current native access prerequisites, not a serving grant or an issuance release fence.
+ * The host supplies an already signature-validated token and fixes expiresAt before its first
+ * authority read. Final issuance still needs a fresh check and the native serving gate CAS.
+ */
+export async function readNativeServiceAccess(reg: LifecycleRegistry, reader: ConnectReader,
+  expected: ServiceAssignmentBinding, raw: ValidatedUserToken, expiresAt: number): Promise<{
+    witness: ServiceRegistrationWitness; gateRevision: number; expiresAt: number;
+  }> {
+  const binding = { ...expected }, now = Math.floor(Date.now() / 1000);
+  if (raw.act.view !== "service-endpoint" || raw.act.service?.duty !== "serve")
+    throw new EpEnvelopeError("permission-denied", "native service access requires a validated service bearer");
+  const witness = parseServiceRegistrationWitness(raw.act.service.witness);
+  const token: ValidatedUserToken = { ...raw, scope: [...raw.scope], act: { ...raw.act,
+    scope: raw.act.scope === undefined ? undefined : [...raw.act.scope], service: { duty: "serve", witness } } };
+  const { actor } = coordinates(reg, binding);
+  if (reader.space !== binding.space || token.space !== binding.space || token.owner !== binding.owner
+    || token.act.owner !== binding.owner || token.act.actor !== actor || token.act.lifecycleUid !== binding.lifecycleUid
+    || token.act.credentialId !== witness.rootCredentialId || token.credentialId !== witness.rootCredentialId
+    || token.scope.length || token.act.scope?.length || witness.accountPublicKey !== binding.accountPublicKey
+    || witness.space !== binding.space || witness.endpoint !== binding.endpoint || witness.instanceId !== binding.instanceId
+    || witness.principal.owner !== binding.owner || witness.principal.actor !== actor || witness.principal.lifecycleUid !== binding.lifecycleUid)
+    throw new EpEnvelopeError("permission-denied", "service bearer does not bind the native assignment");
+  if (!Number.isSafeInteger(expiresAt) || !Number.isSafeInteger(token.exp) || expiresAt <= now
+    || expiresAt > token.exp || expiresAt > now + SERVICE_ACCESS_TTL_SECONDS)
+    throw new EpEnvelopeError("expired", "service access requires its original bounded expiry");
+  // The native cred root and the endpoint's epcred issuance family are distinct authorities.
+  await authorizeConnectCredential(reader, token, Date.now);
+  const rootExpiresAt = await rootExpiry(reg, binding, witness.rootCredentialId, Date.now());
+  const found = await readNativeServiceGate(reg, binding);
+  if (!found) throw new EpEnvelopeError("permission-denied", "service assignment has no native gate");
+  const { row } = found, authority = row.serviceAuthority, stamp = authority.registration;
+  if (row.state !== "open" || !authority.activationIssued || authority.pendingRegistration !== undefined
+    || !serviceGateApprovalLive(authority, Math.floor(Date.now() / 1000)) || !stamp
+    || authority.rootCredentialId !== witness.rootCredentialId || authority.approvalDigest !== witness.approvalDigest
+    || row.processEpoch !== witness.processEpoch || row.registrationRevision !== witness.registrationRevision
+    || row.nameAuthorityRevision !== witness.nameAuthorityRevision || stamp.processEpoch !== witness.processEpoch
+    || stamp.registrationRevision !== witness.registrationRevision || stamp.nameAuthorityRevision !== witness.nameAuthorityRevision
+    || stamp.requestId !== witness.registrationRequestId || stamp.registrationProof !== witness.registrationProof)
+    throw new EpEnvelopeError("permission-denied", "service access does not match the current activated registration");
+  if (expiresAt > rootExpiresAt || expiresAt > authority.rootExpiresAt!
+    || (authority.approvalExpiresAt !== null && expiresAt > authority.approvalExpiresAt))
+    throw new EpEnvelopeError("expired", "service access outlives its native root or approval");
+  const name = await readNativeServiceName(reg, binding, binding.endpoint);
+  if (!name || name.owner !== binding.owner || name.revision !== witness.nameAuthorityRevision)
+    throw new EpEnvelopeError("permission-denied", "service access does not match the native name binding");
+  const finalGate = await readNativeServiceGate(reg, binding);
+  if (!finalGate || finalGate.revision !== found.revision)
+    throw new EpEnvelopeError("conflict", "service authority changed during the access read");
+  if (expiresAt <= Math.floor(Date.now() / 1000))
+    throw new EpEnvelopeError("expired", "service access expired during native authorization");
+  return { witness, gateRevision: found.revision, expiresAt };
 }
 
 /** Final approval CAS. The host must first verify the proposal, owner consent and operator target policy. */
