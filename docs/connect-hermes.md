@@ -78,9 +78,8 @@ cotal spawn --agent hermes --no-events --model <model>
 { "spawn": { "env": ["HERMES_INFERENCE_PROVIDER", "CUSTOM_BASE_URL"] } }
 ```
 
-Hermes 0.19 reads `CUSTOM_BASE_URL` only when the provider is `custom`, and it never reads
-`OPENAI_BASE_URL` for the endpoint. It does not send `CUSTOM_API_KEY` either, so this shape suits a
-server that needs no key. For a server that needs one, run on
+In Hermes 0.19, this setup takes its endpoint from `CUSTOM_BASE_URL` and configures no API key, so
+it suits a server that needs none. For a server that needs one, run on
 [your own profile](#use-your-own-hermes-profile) and put the endpoint in its `config.yaml`:
 
 ```yaml
