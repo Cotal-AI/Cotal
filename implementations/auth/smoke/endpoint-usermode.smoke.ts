@@ -132,3 +132,6 @@ try {
   rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
+
+// The resident CLI caller must use the same user auth plane as this publish-only endpoint.
+await import("./join-user.smoke.js");

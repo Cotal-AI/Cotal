@@ -988,8 +988,8 @@ same name wins and remains untouched; that discovered name is reported as a coll
 removes only the discovered entries owned by that account.
 
 `cotal meshes` and `cotal status` print `events: required` for a registration carrying
-`policy: { events: "required" }`. On that space, foreground spawn, detached spawn, manager starts,
-and interactive `join` cannot opt out or join without an event plane. `--no-events` is refused with
+`policy: { events: "required" }`. On that space, foreground spawn, detached spawn and manager
+starts that host a native harness cannot opt out or launch without an event plane. `--no-events` is refused with
 the space named. A connector without an event plane is refused with both the space and connector
 named. A session whose own grant omits `events.<owner>.<actor>` is refused before joining and the
 message names a full-row `actor grant` repair. A running seat whose event plane stops keeps running
@@ -998,6 +998,11 @@ itself and reports every failure with the delay before the next attempt. A seat 
 from a preserved cut meets the same rules as a fresh
 spawn: a seat retained with `--no-events`, or on a connector without an event plane, is refused, and
 a resumed seat carries the requirement in its launch material.
+
+`join`, one-shot sends and passive protocol views host no native harness turns. They publish no
+AG-UI runs, regardless of who drives their input. Required events do not turn terminal messages
+into agent runs or copy channel and DM text into an event stream. This launch policy is not an
+additional broker authorization boundary. The broker still enforces each endpoint's grants.
 
 `use <space>` sets that default; the selection applies from every directory,
 including inside another mesh's project. `status` is a read-only report: machine prerequisites
@@ -2450,6 +2455,13 @@ cotal join --link <url> | --token <t>
 An interactive presence: join a space under your own name and role, without launching an agent
 harness. A `--link` or `--token` supplies the where and the auth in one value. See
 [Spaces](spaces.md) and [Identity and auth](identity-and-auth.md).
+
+On a registered user-auth space, sign in with `cotal login` first. `join` uses your existing `cli`
+actor bearer and renews it through the same login and exchange while the session runs. Its channel
+and DM resources must already be provisioned by the space operator. It never mints static
+credentials or widens your grants. A changed principal, lifecycle or connection trust refuses
+renewal and requires leaving and joining again. A revoked login is reported by renewal, and the
+current connection can last only until its already-issued bearer expires.
 
 ## Manifest deploys
 

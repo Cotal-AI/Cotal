@@ -21,7 +21,7 @@ import {
   type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { findMesh, refreshRegistrationPolicy, type MeshEntry } from "@cotal-ai/workspace";
+import { findMesh, refreshRegistrationPolicy, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, type Connection } from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
 import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
 import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
@@ -116,24 +116,22 @@ export async function join(args: ParsedArgs): Promise<void> {
 
   let space: string;
   let server: string;
+  let userConnection: Connection | undefined;
   // An explicit connection (a join link, --token, or --creds) is taken at face value — that's the
   // escape hatch. Otherwise resolve the running mesh from any directory (server + trust material)
   // and self-mint, so a bare `cotal join` works outside the project instead of crashing credless.
   if (link || values.token || values.creds) {
     space = values.space ?? link?.space ?? resolveSpace(process.cwd());
     server = values.server ?? link?.servers ?? DEFAULT_SERVER;
-    let registeredPolicy: MeshEntry["policy"];
     try {
-      registeredPolicy = await refreshRegistrationPolicy({ space, policy: findMesh(space)?.policy });
+      await refreshRegistrationPolicy({ space, policy: findMesh(space)?.policy });
     } catch (e) {
       console.error(c.red(`✗ ${(e as Error).message}`));
       process.exit(1);
     }
-    if (registeredPolicy?.events === "required") {
-      console.error(c.red(`✗ space "${space}" requires every joining session to publish its event plane, but interactive \`cotal join\` has no event-plane connector; launch a supported connector instead`));
-      process.exit(1);
-    }
-    refuseStaticCredsForKnownUserAuthOrExit(space, server, "interactive join");
+    // An omitted server must still match a recorded user mesh on a non-default port. Checking
+    // DEFAULT_SERVER here would miss that record and probe an unrelated broker with static creds.
+    refuseStaticCredsForKnownUserAuthOrExit(space, values.server ?? link?.servers, "interactive join");
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
@@ -148,31 +146,25 @@ export async function join(args: ParsedArgs): Promise<void> {
     // ConsumerNotFound (a self-minted console had no manager to pre-create its dm_<id> durable) AND drops
     // the last broad `manager` mint off the console. Open mode (no auth) is unchanged — connect bare.
     const target = await resolveTargetOrExit({ server: values.server, space: values.space });
-    let policy: typeof target.policy;
     try {
-      policy = await refreshRegistrationPolicy(target);
+      await refreshRegistrationPolicy(target);
     } catch (e) {
       console.error(c.red(`✗ ${(e as Error).message}`));
       process.exit(1);
     }
-    if (policy?.events === "required") {
-      console.error(c.red(`✗ space "${target.space}" requires every joining session to publish its event plane, but interactive \`cotal join\` has no event-plane connector; launch a supported connector instead`));
-      process.exit(1);
-    }
     space = target.space;
     server = target.server;
-    // USER-auth mesh: interactive join self-provisions a STATIC agent identity, which is the wrong
-    // identity plane for a user space — refuse with the user path rather than half-joining (U10).
+    // Join never launches or attaches a harness, even headless. Required events apply to native
+    // harness turns, not this endpoint's messages. Do not invent AG-UI runs for terminal sends.
     if (target.mode === "user") {
-      console.error(
-        c.red(
-          `✗ interactive join is not yet supported on user-auth space "${space}" - sign in (\`cotal login --idp ${target.userAuth?.idp.url ?? "<url>"}\`) and use \`cotal send\`, or run agents properly: \`cotal spawn <persona>\` (they get their own managed identity under you)`,
-        ),
-      );
-      process.exit(1);
+      userConnection = await connectUserControlOrExit({ space, server });
+      if (!userConnection.bearer || !userConnection.sentinelCreds || !userConnection.epCaller)
+        throw new Error("interactive join requires a complete user bearer, sentinel and lifecycle");
+      lifecycleUid = userConnection.epCaller.uid;
+    } else {
+      await preflightOrExit(target); // one sentence if the mesh is down / won't auth, + stale-prune
     }
-    await preflightOrExit(target); // one sentence if the mesh is down / won't auth, + stale-prune
-    if (target.auth) {
+    if (target.mode !== "user" && target.auth) {
       const identity = newIdentity();
       // One lifecycle per join session (SPEC 13.1): the provisioned dm/dlv footprint, the minted
       // grants, and the endpoint's binds all carry this uid; the session's exit orphans only its own
@@ -217,15 +209,42 @@ export async function join(args: ParsedArgs): Promise<void> {
     }
   }
 
+  // The native endpoint owns fetch-ahead, reconnects and retry warnings. Resolve fresh login
+  // material for each renewal, but never adopt a successor lifecycle or changed trust position.
+  const pinnedRegistration = userConnection ? findMesh(space) : undefined;
+  let firstBearer = userConnection?.bearer;
+  const bearer = userConnection ? async () => {
+    if (firstBearer !== undefined) {
+      const initial = firstBearer;
+      firstBearer = undefined;
+      return initial;
+    }
+    const registration = findMesh(space);
+    if (!registration || registration.mode !== "user" || registration.server !== pinnedRegistration?.server ||
+        registration.tlsRequired !== pinnedRegistration?.tlsRequired || registration.root !== pinnedRegistration?.root ||
+        JSON.stringify(registration.userAuth) !== JSON.stringify(pinnedRegistration?.userAuth))
+      throw new Error("join registration trust changed; leave and join again");
+    const fresh = await connectUserControlOrThrow({ space, server });
+    const pinned = userConnection!;
+    if (fresh.epCaller?.owner !== pinned.epCaller!.owner || fresh.epCaller?.actor !== pinned.epCaller!.actor ||
+        fresh.epCaller?.uid !== lifecycleUid || fresh.server !== pinned.server || fresh.tls !== pinned.tls ||
+        fresh.sentinelCreds !== pinned.sentinelCreds || fresh.root !== pinned.root ||
+        JSON.stringify(fresh.userAuth) !== JSON.stringify(pinned.userAuth))
+      throw new Error("join bearer renewal changed the session's principal, lifecycle or connection trust; leave and join again");
+    if (!fresh.bearer) throw new Error("join bearer renewal returned no user bearer");
+    return fresh.bearer;
+  } : undefined;
+
   const ep = new CotalEndpoint({
     space,
     servers: server,
-    ...auth,
+    ...(userConnection ? { ...endpointAuth(userConnection), bearer } : auth),
     // Absent for a bare open/token join: the endpoint self-mints its per-session lifecycle at
     // construction. Set for auth joins: self-provisioned above, or --creds-paired (never invented).
     lifecycleUid,
     channels: [channel],
     card: {
+      ...(userConnection ? { owner: userConnection.epCaller!.owner, actor: userConnection.epCaller!.actor } : {}),
       name,
       role: values.role,
       kind: (values.kind as EndpointKind) ?? "agent",
@@ -233,8 +252,7 @@ export async function join(args: ParsedArgs): Promise<void> {
   });
   const me = ep.card.id;
 
-  // Interactive only when attached to a real terminal; headless when spawned
-  // detached (manager) — then we just hold presence and log mesh events.
+  // A terminal gets readline. Headless join only holds presence and logs mesh messages.
   const interactive = process.stdin.isTTY === true;
   let rlClosed = false;
   const rl = interactive
