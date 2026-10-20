@@ -210,8 +210,10 @@ function reap(handle: AgentHandle, cause: FreeSlotCause): { lines: string[]; sea
 }
 {
   const { manager, agents } = managerWith(fakeHandle("worker", { exitInfo: () => ({ code: 0 }) }));
-  const lines = capture(() => { void (manager as unknown as { teardownManagedAgents(): Promise<void> }).teardownManagedAgents(); });
-  await new Promise((r) => setTimeout(r, 50));
+  const { lines } = await captureAsync(async () => {
+    void (manager as unknown as { teardownManagedAgents(): Promise<void> }).teardownManagedAgents();
+    await new Promise((r) => setTimeout(r, 50)); // the shutdown logs the reap only after its awaited exit proof
+  });
   const seat = lines.find((l) => /seat reaped/i.test(l));
   check("a manager shutdown reaps with its own sentence, not silence", /stopped it on manager shutdown/i.test(seat ?? ""), lines);
 }

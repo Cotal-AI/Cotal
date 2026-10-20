@@ -3002,17 +3002,18 @@ export class Manager {
       if (refused === undefined) stopped.push(a);
       else failures.push(`${a.name}: stop failed: ${refused}`);
     }
-    // The slot delete above bypasses freeSlot, which is where the reap line lives — so say it here,
-    // once per seat, with the one stop cause that names this path: the shutdown itself. Without
-    // this a `--with-agents` stop left every seat unaccounted for in the log (see #1423).
-    for (const a of managed) this.logSeatReaped(a, { kind: "stopped-shutdown" });
     // A runtime stop request is not exit proof. Do not release the manager lease or registration
     // while any seat may still hold this instance's broker rails: that creates the exact orphan
     // window where a successor sees a dead manager but live predecessor authority. Every shipped
     // runtime now supplies waitForExit; absence or timeout is a failed shutdown, never a clean one.
+    // The slot delete above bypasses freeSlot, which is where the reap line lives — so say it here,
+    // once per seat whose exit is proved, with the one stop cause that names this path: the shutdown
+    // itself (see #1423). A seat whose stop was refused or whose exit went unproved is named by the
+    // shutdown error instead.
     await Promise.all(stopped.map(async (a) => {
       try {
         await this.awaitHandleExit(a.handle);
+        this.logSeatReaped(a, { kind: "stopped-shutdown" });
       } catch (e) {
         failures.push(`${a.name}: ${rejectionText(e)}`);
       }
