@@ -28,7 +28,7 @@ import {
   type ServiceCustodyHost,
 } from "../src/service-custody.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let passed = 0, failed = 0;
 const check = (label: string, ok: boolean, detail?: unknown) => {
@@ -113,12 +113,16 @@ try {
   console.log("A. sealed host and readiness boundary");
   await throws("a structural copy of a genuine hold is refused", () => openServiceCustodyHost({ registry: reg, hold: { ...hold }, accountPublicKey }), /plane claim hold/);
   await throws("a hold acquired for another space is refused", () => openServiceCustodyHost({ registry: reg, hold: otherHold, accountPublicKey }), /another space/);
-  await throws("a hand-assembled registry is refused", () => openServiceCustodyHost({ registry: { space: SPACE } as unknown as LifecycleRegistry, hold, accountPublicKey }), /./);
+  await throws("a hand-assembled registry is refused", () => openServiceCustodyHost({ registry: { space: SPACE } as unknown as LifecycleRegistry, hold, accountPublicKey }), /hand-assembled/);
   await throws("an intent is refused for a structural host", async () => sealServiceBootstrapIntent({ space: SPACE, accountPublicKey } as ServiceCustodyHost, { reservation: reservation(), notAfterMs: later() }), /sealed/);
   await throws("an intent whose account differs from the host is refused", async () => {
-    const r = reservation(); r.native.accountPublicKey = createAccount().getPublicKey();
+    // A complete reservation under another account, with that account's derived actor, so only
+    // the host's account check can refuse it.
+    const r = reservation(), other = createAccount().getPublicKey();
+    r.native.accountPublicKey = other;
+    r.assignment.actor = serviceEndpointActor({ accountPublicKey: other, space: SPACE, owner: OWNER, endpoint: r.assignment.endpoint, instanceId: r.assignment.instanceId });
     sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) });
-  }, /./);
+  }, /another account or space/);
   await throws("an intent without an explicit positive deadline is refused", async () => sealServiceBootstrapIntent(freshHost().host, { reservation: reservation(), notAfterMs: 0 }), /notAfterMs/);
   {
     const r = reservation(), k = keys(r), { host, trip } = freshHost();
@@ -224,7 +228,7 @@ try {
       check("the fenced root row is revoked with the unchanged plan expiry and mirror", root?.state === "revoked" && root.exp === plan.expMs
         && (root.serviceCustody as { uidDigest: string }).uidDigest === contractDigest(r), root);
       const resumed = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: original(r) }));
-      check("a resumed bootstrap cannot stage over the fence", resumed.kind !== "active" && (await value(auth, `cred.${r.native.lifecycleUid}.${plan.credentialId}`))?.state === "revoked", resumed);
+      check("a resumed bootstrap cannot stage over the fence", resumed.kind === "endpoint-revoked" && (await value(auth, `cred.${r.native.lifecycleUid}.${plan.credentialId}`))?.state === "revoked", resumed);
     }
   }
   {
@@ -387,4 +391,5 @@ try {
   rmSync(dir, { recursive: true, force: true });
 }
 console.log(`SERVICE-CUSTODY writer: ${passed} passed, ${failed} failed`);
+emitSentinel({ passed, failed });
 if (failed) process.exitCode = 1;
