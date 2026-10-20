@@ -1067,10 +1067,19 @@ Custody exclusively creates a **fresh** auth store after a private fsynced inten
 Existing stores or journals are never adopted. Only a standalone broker and owner-private local ext4 journal parent are supported. Only the creating process may use its sealed,
 non-reconnecting reader/writer custody. Unknown writes, missing/changed journals, stream
 identity/configuration drift or connection loss invalidate it. Crash/rebind recovery stays
-unavailable. The trusted composition supplies current authenticated consent/target authorizers
+unavailable. Routine broker restart, upgrade, network loss or process restart therefore leaves
+gate 1 permanently unavailable for that space. Recognize this as `revocation custody lost; no reopen from current INFO`.
+No retirement/reprovision recovery protocol exists in this increment. Gate 2 cannot assume
+custody survives broker maintenance. The trusted composition supplies current authenticated consent/target authorizers
 and exclusively holds account/provisioning keys. Independently running privileged provisioners,
 uncontrolled legacy writers and existing roots have no qualified custody and are unsupported.
 This is not protection from a malicious host administrator or copied signing keys.
+The separate internal custody profile uses two non-expiring, non-reconnecting credentials,
+without planeCandidate or a renewal timer. With the two sealed scanners this is four standing
+connections across three profiles. The CREATE provisioner still expires and closes after CREATE.
+A leaked custody JWT plus user seed no longer has a 900-second expiry bound. Stopping the
+service closes its own sockets, not copied credentials. Signing-key removal invalidates copied
+credentials as well. This remains inside the trusted-process/account-signer residual.
 
 Revocation creates only `revocation.<targetDigest>.<consentId>` with native expected-last-subject
 sequence zero, no operation/TTL headers and independently fsynced acknowledgement receipts.

@@ -97,7 +97,9 @@ async function prove(state: State): Promise<StreamInfo> {
 /** FRESH, dedicated trusted-host provisioning only. Never adopts an existing auth stream, journal
  * or running authority owner. Persist-before-create with fsync; crash recovery is deliberately
  * unavailable. The trusted host exclusively holds account/provisioning keys: this is NOT a claim
- * against a malicious administrator or an independently running privileged provisioner. */
+ * against a malicious administrator or an independently running privileged provisioner.
+ * Any real connection/process loss, including routine broker restart or upgrade, permanently
+ * disables gate 1 for this space. No retirement/reprovision recovery is provided here. */
 export async function createToolResultRevocationCustody(opts: Pick<AuthorityClientOpts, "server" | "space" | "dataAccount" | "log"> & { directory: string; authorizeConsent: (consent: ToolResultConsent) => Promise<void>; authorizeTarget: (target: ToolResultTarget) => Promise<void> }): Promise<ToolResultRevocationCustody> {
   if (process.platform !== "linux") fail("unavailable", "revocation custody requires qualified local Linux filesystem semantics");
   const generation = randomUUID();
@@ -105,9 +107,12 @@ export async function createToolResultRevocationCustody(opts: Pick<AuthorityClie
   const clients: AuthorityClient[] = [];
   let state: State | undefined;
   let phase = "private intent";
-  const open = async (label: string, grants: (space: string, id: string) => { publish: string[]; subscribe: string[] }) => {
-    const client = await openAuthorityClient({ ...opts, label, grants: id => grants(opts.space, id), noReconnect: true,
-      onRenewalFailure: () => { if (state) state.valid = false; } });
+  const open = async (label: string, grants: (space: string, id: string) => { publish: string[]; subscribe: string[] }, custody = false) => {
+    // Public callers cannot forward internal mint/connect controls or observe credentials.
+    const client = await openAuthorityClient({ server: opts.server, space: opts.space,
+      dataAccount: { pub: opts.dataAccount.pub, signingSeed: opts.dataAccount.signingSeed }, log: opts.log,
+      label, grants: id => grants(opts.space, id), noReconnect: true,
+      ...(custody ? { toolResultCustody: true } : {}) });
     clients.push(client);
     void client.nc.closed().then(() => { if (state && (state.reader === client || state.writer === client)) state.valid = false; });
     return client;
@@ -124,7 +129,7 @@ export async function createToolResultRevocationCustody(opts: Pick<AuthorityClie
     const journal = new Map<string, string>();
     journal.set("intent.json", durableCreate(opts.directory, "intent.json", { v: 1, generation, space: opts.space, account: opts.dataAccount.pub, stream, server: opts.server }));
     phase = "reader bind";
-    const reader = await open("cotal:tool-result-snapshot", toolResultSnapshotReaderGrants);
+    const reader = await open("cotal:tool-result-snapshot", toolResultSnapshotReaderGrants, true);
     const jsm = await jetstreamManager(reader.nc);
     try { await jsm.streams.info(stream); fail("unavailable", "existing auth store has no qualified custody history"); }
     catch (error) { if (!isJetStreamMissing(error, 10059)) throw error; }
@@ -139,7 +144,7 @@ export async function createToolResultRevocationCustody(opts: Pick<AuthorityClie
     const info = await jsm.streams.info(stream);
     if (info.state.messages !== 0 || info.state.last_seq !== 0) fail("unavailable", "fresh auth store is not empty");
     phase = "writer bind";
-    const writer = await open("cotal:tool-result-revocation", toolResultRevocationWriterGrants);
+    const writer = await open("cotal:tool-result-revocation", toolResultRevocationWriterGrants, true);
     const dirStat = lstatSync(opts.directory);
     state = { space: opts.space, account: opts.dataAccount.pub, stream, generation, directory: opts.directory, directoryIdentity: `${dirStat.dev}:${dirStat.ino}`, reader, writer, jsm, authorizeConsent: opts.authorizeConsent, authorizeTarget: opts.authorizeTarget,
       identity: "", broker: reader.nc.info?.server_id ?? "", journal, receipts: new Map(), valid: true, tail: Promise.resolve() };

@@ -4345,14 +4345,21 @@ frontiers close over live work. The exclusion is broker-visible, not host-local:
   the trusted signing-seed residual; there is no dual SCAN authority because the capability
   does not exist before the win.
 - **Plane credentials.** The two plane-owned scanner connections authenticate with
-  NON-EXPIRING user JWTs, for exactly these two connections and no other profile: an expiring
+  NON-EXPIRING user JWTs. The separate host-private tool-result custody profile (§13.19)
+  adds two more non-expiring, non-reconnecting connections, one reader and one writer.
+  No plane claim is implied by custody. These are three profiles and four standing
+  connections in total. For each, an expiring
   credential would have the broker hard-disconnect at expiry, and a renewal cannot be
   presented without the reconnect the non-reconnecting shape forbids — an expiry would fence
   the plane on a timer. The credentials never leave process memory, and the account signing
   seed co-resident in the same memory is strictly stronger authority, so the marginal
   exposure is the existing trusted-process residual class; revocation remains service-stop +
-  seed rotation. Every other authority credential keeps the short-expiry + in-process-renewal
-  boundary.
+  seed rotation. Service stop closes owned sockets; a copied JWT and user seed remain usable
+  until signing-key removal, no longer bounded by the ordinary 900-second credential expiry.
+  Every other authority credential, including the short-lived tool-result CREATE provisioner,
+  keeps the short-expiry + in-process-renewal boundary. Custody accepts no reconnect or
+  re-adoption: any real loss, broker restart or upgrade included, leaves gate 1 permanently
+  unavailable for that space until a separately authorized retirement/reprovision protocol exists.
 - **Reclaim is liveness-only.** A `held` row is reclaimed only when BOTH claimed tuples are
   conclusively ABSENT under a COMPLETE connection sweep, adjudicated by the delivery daemon's
   read-only oracle over the privileged delivery-admin rail (the auth process holds no `$SYS`;
