@@ -1066,3 +1066,25 @@ transports it, and `remoteRunHosting` supplies `RunHostingContext.revokeRun` for
 manager. The callback returns the stored `RunRevocation`, including on repeats. A host composing
 its own remote authority must supply that callback to revoke. No signer reaches the participant.
 CLI and MCP revoke verbs are a follow-up described in the [run-start design](design/user-auth-run-start.md).
+
+
+## Native service custody guards
+
+Ordinary lifecycle executors refuse a UID reservation carrying `kind: "native-service-uid"`.
+The reservation has closed `native`, `assignment` and `creation` objects. It is not an ordinary
+`{ owner, actor, mintedBy }` audit, and a reader must not project it into one. Its assignment
+binds the full account, space, owner, endpoint, instance and serve-duty tuple. The actor is derived
+from that tuple, and the creation operation and request digest remain fixed.
+
+These guards run before ordinary root reuse, activation, gate and head changes, mint finalization,
+and native retirement. Ordinary connect and currency reads also refuse service custody, including
+rows whose head or credential mirror is missing. Existing ordinary reservation bytes are unchanged.
+Closed head, gate and credential parsers continue to reject service markers. This release provides
+no service reservation writer, marked-root minting path or service access view.
+
+This is a refusal foundation, not service endpoint admission. Service bootstrap, cancellation,
+terminal retirement, complete observer evidence, writer exclusion and restore readiness remain
+unavailable. Do not seed service reservations in an existing space, adopt old service-shaped rows,
+or use ordinary retirement to make them terminal. A signing-key or raw-store holder can bypass
+helper guards, so schema rejection alone does not make mixed-version writers safe. Restore must
+quarantine service work until a separately supported reconciliation protocol is available.

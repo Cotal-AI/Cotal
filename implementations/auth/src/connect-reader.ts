@@ -19,7 +19,7 @@
  */
 import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
-import { EpEnvelopeError, assertInboxConnId, epAuthBucket, recordsBucket } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, epAuthBucket, recordsBucket, readRecordLeader, assertOrdinaryNativeMutation } from "@cotal-ai/core";
 import { assertAuthorityStreamShape, openLifecycleMappingReader, readLifecycleMappingLeader, type LifecycleMappingReader } from "./lifecycle-registry.js";
 import { credRowKey, parseLedgerRow, type CredentialLedgerRow } from "./credential-ledger.js";
 import type { ValidatedUserToken } from "./token.js";
@@ -162,6 +162,15 @@ export async function authorizeConnectCredential(reader: ConnectReader, t: Valid
   if (uid === undefined)
     throw new EpEnvelopeError("permission-denied", "the bearer carries no lifecycle claim; a credential row is keyed by lifecycle uid (SPEC 13.1)");
 
+  const { jsm, space } = internals(reader);
+  await assertOrdinaryNativeMutation({
+    async getRecord(key) {
+      const entry = await readRecordLeader(jsm, space, key);
+      return entry === undefined ? undefined : {
+        value: new TextEncoder().encode(JSON.stringify(entry.value)), revision: entry.revision, operation: "PUT",
+      };
+    },
+  }, { lifecycleUid: uid, owner: t.owner, actor: t.act.actor });
   const row = await readCredRowLeader(reader, uid, credid);
   if (row === undefined)
     throw new EpEnvelopeError("permission-denied", `no credential row cred.${uid}.${credid}; a revoked or never-issued credential does not connect (deny-new, SPEC 13.1)`);

@@ -1177,6 +1177,18 @@ sufficient *authority* identity on this surface. Two further identity components
   and draws a fresh one (the alias head alone cannot reject the same UID under a different
   alias, and the `gate.`/`cred.` families key by UID alone, so uniqueness must be
   space-wide); a DEL/PURGE marker on a reservation is corruption, never reusable absence.
+  A reservation carrying `kind: "native-service-uid"` is reserved for service custody. Its
+  closed shape is `{ v:1, kind, native:{accountPublicKey,space,lifecycleUid},
+  assignment:{owner,actor,endpoint,instanceId,duty:"serve"},
+  creation:{operationId,requestDigest} }`. Its embedded UID must equal its key. The actor is
+  `svc_` followed by the lowercase base36 encoding of the unsigned SHA-256 of RFC-8785
+  canonical JSON `[1,accountPublicKey,space,owner,endpoint,instanceId,"serve"]`, padded to
+  50 characters. Ordinary executors MUST refuse this reservation before mutation or
+  idempotent root reuse and MUST NOT project it into an ordinary audit. Ordinary connect
+  and currency paths also refuse it. No reservation creation, service credential release
+  or terminal service transition is enabled by this reserved shape. Legacy ordinary audit
+  bytes and their existing validation remain unchanged. Mixed-version writer exclusion
+  and restore reconciliation remain prerequisites for any future service admission.
   Only then does it mint **before the entity is reachable**, persisting a CAS-fenced
   mapping
   `{ owner, actor, lifecycleUid, managerInstance, processEpoch,

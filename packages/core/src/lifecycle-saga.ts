@@ -17,6 +17,7 @@
  * that already holds its stores' authenticated bindings; every fence below is the store's own
  * revision-pinned CAS, and an `opId` is an identifier, never a bearer capability (§13.1).
  */
+import { assertOrdinaryNativeMutation, parseNativeUidCustody } from "./native-uid-custody.js";
 import { EpEnvelopeError, lifecycleBlocked } from "./endpoint-envelope.js";
 import { isCasLoss as isRawCasLoss } from "./endpoint-records.js";
 import { mintLifecycleUid, assertLifecycleToken } from "./subjects.js";
@@ -32,8 +33,6 @@ import {
 } from "./lifecycle-state.js";
 
 const enc = new TextEncoder();
-const dec = new TextDecoder();
-const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const isCasLoss = (e: unknown): boolean => e instanceof EpEnvelopeError && e.code === "conflict";
 
 /** One raw store entry as the sequencing consumes it (a KV entry stripped to what a CAS needs). */
@@ -143,15 +142,10 @@ export async function uidReadReservation(
   if (!entry) return undefined;
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the uid reservation for ${lifecycleUid} carries a ${entry.operation} marker; a reservation is never deleted (corruption, SPEC 13.12)`);
-  let o: unknown;
-  try {
-    o = JSON.parse(dec.decode(entry.value));
-  } catch {
-    throw new EpEnvelopeError("internal", `the uid reservation for ${lifecycleUid} is not JSON (SPEC 13.1)`);
-  }
-  if (!isRec(o) || typeof o.owner !== "string" || typeof o.actor !== "string" || o.owner.length === 0 || o.actor.length === 0)
-    throw new EpEnvelopeError("internal", `the uid reservation for ${lifecycleUid} does not carry a valid owner/actor audit (SPEC 13.1)`);
-  return { owner: o.owner, actor: o.actor };
+  const custody = parseNativeUidCustody(entry.value, lifecycleUid);
+  if (custody.kind === "service")
+    throw new EpEnvelopeError("permission-denied", `uid ${lifecycleUid} has immutable service custody; it is not an ordinary reservation`);
+  return { owner: custody.owner, actor: custody.actor };
 }
 
 // ---- the issuance-gate CAS transitions -------------------------------------------------------
@@ -163,6 +157,7 @@ export async function gateCreateFrozen(
   t: LifecycleStateTransport,
   args: { lifecycleUid: string; op: { opId: string; kind: "activation" } },
 ): Promise<{ row: EpGateRow; revision: number }> {
+  await assertOrdinaryNativeMutation(t, { lifecycleUid: args.lifecycleUid });
   if (args.op.kind !== "activation")
     throw new EpEnvelopeError("failed-precondition", `an issuance gate is born only under an activation intent, not "${String(args.op.kind)}" (SPEC 13.1: other operations freeze an existing open gate)`);
   const reservation = await t.getRecord(uidKey(assertLifecycleToken(args.lifecycleUid)));
@@ -170,6 +165,10 @@ export async function gateCreateFrozen(
     throw new EpEnvelopeError("failed-precondition", `no uid reservation exists for ${args.lifecycleUid}; the reservation is won BEFORE any gate or head write (SPEC 13.1)`);
   if (reservation.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the uid reservation for ${args.lifecycleUid} carries a ${reservation.operation} marker; a reservation is never deleted (corruption, not absence, SPEC 13.12)`);
+  // Validate the actual reservation read after the guard. A service reservation may have won
+  // while the first absent read was in flight. An ordinary reservation cannot change custody.
+  if (parseNativeUidCustody(reservation.value, args.lifecycleUid).kind === "service")
+    throw new EpEnvelopeError("permission-denied", `uid ${args.lifecycleUid} has immutable service custody; an ordinary gate cannot be born`);
   const row: EpGateRow = { lifecycleUid: args.lifecycleUid, state: "frozen", generation: 0, op: { opId: assertLifecycleToken(args.op.opId), kind: "activation" } };
   const revision = await putGate(t, args.lifecycleUid, row, 0);
   return { row, revision };
@@ -181,6 +180,7 @@ export async function gateFreeze(
   t: LifecycleStateTransport,
   args: { lifecycleUid: string; revision: number; op: { opId: string; kind: "takeover" | "registration" | "retirement"; successor?: string } },
 ): Promise<{ row: EpGateRow; revision: number }> {
+  await assertOrdinaryNativeMutation(t, { lifecycleUid: args.lifecycleUid });
   if (args.op.successor !== undefined && args.op.kind === "retirement")
     throw new EpEnvelopeError("failed-precondition", "a retirement freeze carries no successor (SPEC 13.1: a retirement has none)");
   if (args.op.successor !== undefined && args.op.successor.length === 0)
@@ -203,6 +203,7 @@ export async function gateReopen(
   t: LifecycleStateTransport,
   args: { lifecycleUid: string; revision: number; opId: string },
 ): Promise<{ row: EpGateRow; revision: number }> {
+  await assertOrdinaryNativeMutation(t, { lifecycleUid: args.lifecycleUid });
   const current = await gateObserve(t, args.lifecycleUid);
   if (current === undefined) throw new EpEnvelopeError("not-found", `the issuance gate for ${args.lifecycleUid} does not exist (SPEC 13.1)`);
   if (current.row.state !== "frozen")
@@ -223,6 +224,7 @@ export async function gateRetire(
   t: LifecycleStateTransport,
   args: { lifecycleUid: string; revision: number; opId: string },
 ): Promise<{ row: EpGateRow; revision: number }> {
+  await assertOrdinaryNativeMutation(t, { lifecycleUid: args.lifecycleUid });
   const current = await gateObserve(t, args.lifecycleUid);
   if (current === undefined) throw new EpEnvelopeError("not-found", `the issuance gate for ${args.lifecycleUid} does not exist (SPEC 13.1)`);
   if (current.row.state === "retired") {
@@ -250,6 +252,7 @@ export async function headAdvanceEpochWithinTakeover(
   t: LifecycleStateTransport,
   args: { owner: string; actor: string; lifecycleUid: string; fromEpoch: number; opId: string },
 ): Promise<"advanced" | "already-advanced"> {
+  await assertOrdinaryNativeMutation(t, args);
   const cur = await headCandidate(t, args.owner, args.actor);
   if (cur === undefined || cur.mapping.state !== "active" || cur.mapping.lifecycleUid !== args.lifecycleUid)
     throw new EpEnvelopeError("failed-precondition", `the takeover epoch advance for "${args.owner}/${args.actor}" requires an ACTIVE head at uid ${args.lifecycleUid}; found ${cur === undefined ? "no head" : `${cur.mapping.state} at ${cur.mapping.lifecycleUid}`} (SPEC 13.1)`);
@@ -275,6 +278,7 @@ export async function headSetCurrentRootCredential(
   t: LifecycleStateTransport,
   args: { owner: string; actor: string; lifecycleUid: string; credentialId: string },
 ): Promise<void> {
+  await assertOrdinaryNativeMutation(t, args);
   if (typeof args.credentialId !== "string" || args.credentialId.length === 0)
     throw new EpEnvelopeError("failed-precondition", "setCurrentRootCredential requires a credentialId");
   const cur = await headCandidate(t, args.owner, args.actor);
@@ -293,6 +297,7 @@ export async function headBeginRetirement(
   t: LifecycleStateTransport,
   args: { owner: string; actor: string; lifecycleUid: string; opId: string },
 ): Promise<"retiring" | "already-retiring"> {
+  await assertOrdinaryNativeMutation(t, args);
   const cur = await headCandidate(t, args.owner, args.actor);
   if (cur === undefined || cur.mapping.lifecycleUid !== args.lifecycleUid)
     throw new EpEnvelopeError("failed-precondition", `the retirement of uid ${args.lifecycleUid} requires the head for "${args.owner}/${args.actor}" to name it; found ${cur === undefined ? "no head" : `uid ${cur.mapping.lifecycleUid}`} (SPEC 13.1)`);
@@ -314,6 +319,7 @@ export async function headCompleteRetirement(
   t: LifecycleStateTransport,
   args: { owner: string; actor: string; lifecycleUid: string; opId: string },
 ): Promise<"retired" | "already-retired"> {
+  await assertOrdinaryNativeMutation(t, args);
   const cur = await headCandidate(t, args.owner, args.actor);
   if (cur === undefined || cur.mapping.lifecycleUid !== args.lifecycleUid)
     throw new EpEnvelopeError("failed-precondition", `the retirement terminal for uid ${args.lifecycleUid} requires the head for "${args.owner}/${args.actor}" to name it; found ${cur === undefined ? "no head" : `uid ${cur.mapping.lifecycleUid}`}; a replaced head is settled at the gate, never here (SPEC 13.1)`);
@@ -335,6 +341,7 @@ export async function runActivationSaga(
   t: LifecycleStateTransport,
   args: { owner: string; actor: string; managerInstance: string },
 ): Promise<{ mapping: LifecycleMapping; revision: number; opId: string }> {
+  await assertOrdinaryNativeMutation(t, args);
   const { owner, actor } = args;
   if (typeof args.managerInstance !== "string" || args.managerInstance.length === 0)
     throw new EpEnvelopeError("failed-precondition", "activateLifecycle requires a managerInstance (the minting authority)");
@@ -392,6 +399,7 @@ export async function runActivationSagaAtUid(
   t: LifecycleStateTransport,
   args: { owner: string; actor: string; lifecycleUid: string; managerInstance: string },
 ): Promise<void> {
+  await assertOrdinaryNativeMutation(t, args);
   const { owner, actor, lifecycleUid } = args;
   assertLifecycleToken(lifecycleUid);
   if (typeof args.managerInstance !== "string" || args.managerInstance.length === 0)
@@ -489,6 +497,7 @@ export async function resumeActivationSaga(
   t: LifecycleStateTransport,
   args: { owner: string; actor: string; lifecycleUid: string; opId: string },
 ): Promise<"completed" | "terminalized" | "already-settled"> {
+  await assertOrdinaryNativeMutation(t, args);
   const head = await headCandidate(t, args.owner, args.actor);
   const gate = await gateObserve(t, args.lifecycleUid);
   const won = head !== undefined && head.mapping.state === "active" && head.mapping.lifecycleUid === args.lifecycleUid;
