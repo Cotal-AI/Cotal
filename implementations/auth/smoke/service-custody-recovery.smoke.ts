@@ -277,6 +277,29 @@ try {
       && (await auth.get(k.root(p.credentialId))) === null, { out, root: await fx.value(auth, k.root(p.credentialId)) });
   }
 
+  console.log("B9: an already-active head is verified before any plan clip, and its final check sees the root expiry");
+  for (const at of ["the reader's root read", "verification's root re-read"] as const) {
+    const r = fx.reservation(), k = fx.keys(r);
+    await fx.pausedBootstrap(r, "auth", k.gate, 2);
+    const head = (await records.get(k.head))!, row = JSON.parse(new TextDecoder().decode(head.value)) as Record<string, unknown>;
+    const p = { credentialId: mintLifecycleUid(), expMs: Date.now() + 2_500 };
+    await records.update(k.head, bytesOf({ ...row, rootPlan: p }), head.revision);
+    const setup = await fx.bootstrap(r);
+    const revs = [await fx.revision(records, k.head), await fx.revision(auth, k.root(p.credentialId))];
+    // The already-active path reads the root twice in verification: the reader's read, then the re-read.
+    let reads = 0, reached = false;
+    fx.faults.onRead("auth", k.root(p.credentialId), async () => {
+      if (++reads !== (at === "the reader's root read" ? 1 : 2)) return;
+      reached = Date.now() < p.expMs;
+      await within(new Promise<void>(() => {}), Math.max(0, p.expMs - Date.now()) + 300);
+    }, 2);
+    const out = await fx.bootstrap(r);
+    fx.faults.clear();
+    check(`an already-active root that expires while ${at} is held ends held, not active, with no write`, active(setup) && reached
+      && out.kind === "held" && out.reason === "plan-expired" && out.step === "B9-verify"
+      && (await fx.revision(records, k.head)) === revs[0] && (await fx.revision(auth, k.root(p.credentialId))) === revs[1], { setup, reached, out });
+  }
+
   // Canonical 3862 line 43 revokes approval on an existing registration freeze without stealing its
   // op; it supersedes r4 §7 L1's "held:registration-in-flight", so cancellation continues.
   console.log("F4 (canonical): deny-new on a registration freeze keeps its op, and cancellation continues");

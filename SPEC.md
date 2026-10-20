@@ -1234,7 +1234,10 @@ sufficient *authority* identity on this surface. Two further identity components
   request starts after an invocation returns. Bootstrap's final active-root proof is bounded the
   same way, but it is a sequence of read-only leader reads behind one wait: when that wait ends
   at its bound, the abandoned proof can still issue its remaining reads after the invocation
-  returns. Those reads write nothing. The held check is the closure captured when the hold was
+  returns. Those reads write nothing. An already-active head reaches that proof before any plan
+  clip, so bootstrap MUST hold `plan-expired` rather than report an active root whose expiry a
+  final synchronous check, made after its last read with no await before the return, observes.
+  This does not make the result fresh when the caller receives it. The held check is the closure captured when the hold was
   acquired, not the hold's mutable guard field. A frozen activation native gate is valid only at
   generation0; any other frozen activation form holds. The deadline and reservation are
   caller-supplied original material, not durable host authentication.

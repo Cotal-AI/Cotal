@@ -1265,7 +1265,10 @@ writer stops waiting for a request but does not cancel it at the broker. The wri
 endpoint-gate request itself, so no endpoint-gate request starts after an invocation returns, and
 it re-reads the endpoint gate before every plan, root and stamp write attempt. Bootstrap's final
 active-root proof is several read-only reads behind one bounded wait. If that wait ends at its
-bound, the remaining reads can still run after the invocation returns; none of them writes. The caller supplies that deadline and the
+bound, the remaining reads can still run after the invocation returns; none of them writes.
+Bootstrap holds instead of reporting an active root whose expiry its final synchronous check
+observes, with no await between that check and the return. The result can still be stale by the
+time the caller acts on it. The caller supplies that deadline and the
 reservation; nothing here authenticates a host, approves serving, retires terminally, releases an
 alias or rotates a root.
 

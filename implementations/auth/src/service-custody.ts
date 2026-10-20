@@ -454,7 +454,10 @@ async function bootstrap(ctx: Ctx, m: BootstrapSnapshot): Promise<ServiceBootstr
 }
 
 /** B9: the root coordinate is returned only after the unchanged active-root reader proves it and
- *  the endpoint is not revoked. No connect-reader proof is claimed here. */
+ *  the endpoint is not revoked. No connect-reader proof is claimed here. The already-active paths
+ *  reach this step before any plan clip, so the reader's clock and both root reads can predate the
+ *  root's expiry; a final synchronous check, with no await before the return, holds instead of
+ *  reporting a root whose expiry it observes. That is not freshness at the caller's receipt. */
 async function verify(ctx: Ctx, m: Material, credentialId: string): Promise<ServiceBootstrapResult> {
   ctx.step = "B9-verify";
   const proof = await bounded(ctx, () => readRegistryServiceRoot(m.host.registry, m.binding, credentialId, Date.now()));
@@ -466,6 +469,7 @@ async function verify(ctx: Ctx, m: Material, credentialId: string): Promise<Serv
   await endpointRecheck(ctx, m);
   const r = await root(ctx, m, credentialId);
   if (r.state !== "value" || r.row.state !== "active") held("verify", ctx.step, "the proven root row is not readable as active");
+  if (r.row.exp <= Date.now()) held("plan-expired", ctx.step, "the root expired before verification completed");
   return { kind: "active", root: { credentialId, expMs: r.row.exp } };
 }
 
