@@ -69,7 +69,7 @@ built `dist/`, so run `pnpm build` after `pnpm install` and after editing a pack
 | `deploy/`                               | Containerized agent teams against an external broker.                                                                                                                                                                             |
 | `scripts/`                              | Maintenance scripts (schema generation, feedback admin).                                                                                                                                                                          |
 | `assets/`, `remotion/`, `presentation/` | README images, the animation project, and a slide deck.                                                                                                                                                                           |
-| `reserved/`                             | npm name placeholders (`cotal`, `cotal-mesh`, `cotal-web`).                                                                                                                                                                       |
+| `reserved/`                             | npm name placeholders (`cotal`, `cotal-mesh`).                                                                                                                                                                                    |
 
 
 ### The packages (one-way dependency tiers)
@@ -104,8 +104,10 @@ program with no broker. Depends on nothing else in the repo; it knows about effe
 detached custodian process per seat. The custodian owns the `node-pty` object, child relationship,
 screen mirror, and exit observation. A manager worker adopts a proxy handle over a permissioned
 Unix socket. Depends on nothing else in the repo; it knows about PTYs, not about NATS. Linux is
-the production transport in this cut; other platforms throw from this package. The manager still
-spawns pty seats in-process off Linux and only `adopt` throws.
+the only platform this package supports; others throw from it. The built-in `pty` runtime does not
+launch through it: the manager spawns pty seats in-process on every platform, and uses this
+package only to adopt and reap seats that an earlier manager left under a custodian (on Linux;
+elsewhere `adopt` throws).
 - `**@cotal-ai/runtime**` (`implementations/runtime`): the host that runs a cotal-lang program on
 the mesh: the mesh handler binding the effect interface onto the real planes, the durable step
 journal, and the `RunDriver` the manager daemon hosts. Depends on core and lang.
@@ -118,6 +120,11 @@ adapter (installed plugin + `claude/channel` push).
 (native in-process plugin injected via `OPENCODE_CONFIG_CONTENT`).
 - `**@cotal-ai/connector-hermes**` (`extensions/connector-hermes`): the Hermes (Nous Research)
 adapter; includes a Python sidecar.
+- `**@cotal-ai/connector-codex**` (`extensions/connector-codex`): the OpenAI Codex adapter: a
+host-mode peer that drives `codex app-server`, with Codex's own TUI attached and the `cotal_*`
+tools served on a loopback MCP endpoint.
+- `**@cotal-ai/connector-jcode**` (`extensions/connector-jcode`): the Jcode adapter: a host-mode
+peer driven through Jcode's Harness API bridge.
 - `**@cotal-ai/pi**` (`extensions/pi`): the pi adapter — a pi extension (loaded into the
 user's own pi, no bundled runtime) that embeds `MeshAgent` in the session's process and
 drives it off the inbox with true mid-turn steering; also covers agents built on pi's SDK.
@@ -141,11 +148,15 @@ registered endpoint that agents call with `cotal_describe` and `cotal_invoke`, p
 `cotal linear` operator command. A `cotal ext`-installable package that peer-depends on core +
 workspace.
 - `**@cotal-ai/manager**` (`implementations/manager`): the agent supervisor: spawns and manages
-nodes via a pluggable Runtime (`pty` built-in; `tmux`, `cmux`, `orca`, and `herdr` via extensions), with `start`/`stop`/`ps`/`attach` and
-a WebSocket attach endpoint.
+nodes via a pluggable Runtime (`pty` built-in; `tmux`, `cmux`, `orca`, and `herdr` via extensions), with `spawn --detach`/`stop`/`ps`/`attach`
+(attach streams over a mesh session) and a credentialed local HTTP console.
 - `**@cotal-ai/delivery**` (`implementations/delivery`): the server-side Plane-3 delivery daemon
 — the durable backstop (fan-out writer + trusted reader + membership/ACL authority), a scoped,
 least-privilege NATS client co-located with the broker. Self-registers the `deliver` command.
+- `**@cotal-ai/auth**` (`implementations/auth`): per-user auth: owner-token derivation,
+user-token validation for the NATS auth callout, and the auth service. Self-registers the
+`auth-service`, `actor`, `agent-bearer`, `login`, and `logout` commands. Depends on core, lang,
+and workspace.
 
 An example only *configures and orchestrates* (roles, config, space name, runbook, optional
 driver) and picks which extensions to register. It never adds message kinds, subjects, or
@@ -219,6 +230,30 @@ supersede a plan, update its row there in the same change; add a `planned` row f
 **Commit the plan file and its STATUS row together as their own `.internal` commit** (a
 `plans: …` message) as you make the change — never leave plan/STATUS edits uncommitted in the
 shared submodule working tree, where another agent's commit could sweep in your half-done work.
+
+## Closing out a lane
+
+A lane is one piece of delegated work: its worktree, its workers, and what it built. The agent
+that spawned the lane cleans it up when the lane finishes. A scheduled cleanup job is only a
+backstop.
+
+1. **Keep what must survive.** Commit and push the source, and keep compact proof of the required
+checks: the tested head, the logs, and their hashes. Keeping proof does not keep every build or
+dependency copy.
+2. **Retire the lane's workers.** A worker is ready only when it is terminal and quiescent, with no
+live jobs, transfers, or unresolved ownership. A quiet worker can still be in a live, blocked turn.
+Confirm the lane owns it, stop only that worker through a native control that targets it alone,
+such as despawn, and confirm it exited. Never stop a manager as cleanup.
+3. **Remove the disposable copies.** Delete the lane's dependency installs, build outputs, test
+stores, downloads, and the finished worktree. Remove a directory only while holding a barrier that
+keeps new owners and new processes out of it, from the final check through the deletion. A
+one-time check that nothing runs there is not enough, because a process can enter after it.
+4. **Record the result.** Note the bytes reclaimed. For anything that stays, such as evidence or
+unfinished work, record who owns its cleanup and the condition that releases it.
+
+Never delete anything live, held, shared, foreign, or of unknown ownership, any credential, an
+unpushed commit, or an unmerged branch. Do not clean by age alone. The rule covers only what the
+lane can show it owns.
 
 ## Git and public messages
 

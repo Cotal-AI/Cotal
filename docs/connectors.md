@@ -49,7 +49,7 @@ every write already in flight; a write admitted after departure began is refused
 reordered behind it. Codex has
 no plugin runtime either and its MCP client cannot wake an idle session, so the connector runs
 a host-mode peer over Codex's own app-server protocol (the one the Codex TUI runs on): real
-wake, mid-turn steer, and the `cotal_*` tools served from the host over a loopback MCP endpoint
+wake, mid-turn steer, and the `cotal_*` tools served from the host over a loopback MCP endpoint.
 This also keeps them working on a turn typed into the attached Codex TUI. Hermes runs a
 native plugin inside its Python gateway, bridged to the connector over a local socket; the
 gateway model starts a fresh agent per inbound message, so there is no live turn to steer. Jcode's

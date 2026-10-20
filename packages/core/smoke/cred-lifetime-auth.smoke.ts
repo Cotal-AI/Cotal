@@ -6,6 +6,8 @@
  * Run: pnpm smoke:cred-lifetime
  */
 import { randomUUID } from "node:crypto";
+import assert from "node:assert/strict";
+import { createServer, createAccount } from "@nats-io/nkeys";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +22,11 @@ import {
   isReachable,
   probeConnect,
   mintConnectionEvictorCreds,
+  mintAccountCensusCreds,
+  observeAccountCensusWithCreds,
+  accountCensusInboxPrefix,
+  connzRequestSubject,
+  credsClaims,
   mintMembershipObserverCreds,
   mintCreds,
   newIdentity,
@@ -187,6 +194,62 @@ try {
   check("connection-evictor creds carry the rotation-renewed exp", Boolean(eviClaims.uc.exp && eviClaims.uc.exp - now <= ROTATION_RENEWED_TTL_SEC + 5 && eviClaims.uc.exp - now > ROTATION_RENEWED_TTL_SEC - 60), eviClaims.uc.exp);
   check("deployer is classified but not default-expired before near-expiry guards", credentialLifetime("deployer").defaultTtlSeconds === undefined, credentialLifetime("deployer"));
   check("teardown is classified but not default-expired before near-expiry guards", credentialLifetime("teardown").defaultTtlSeconds === undefined, credentialLifetime("teardown"));
+
+  assert.throws(() => accountCensusInboxPrefix(createServer().getPublicKey()), /account public key/);
+  assert.throws(() => accountCensusInboxPrefix(auth.account.pub.slice(0, -1) + (auth.account.pub.endsWith("A") ? "B" : "A")));
+  const censusIdentity = newIdentity();
+  const censusCreds = await mintAccountCensusCreds(auth, censusIdentity, { expiresInSeconds: 120 });
+  const censusClaims = credsClaims(censusCreds);
+  assert.deepEqual(censusClaims.nats?.pub, { allow: [connzRequestSubject(auth.account.pub)] });
+  assert.deepEqual(censusClaims.nats?.sub, { allow: [`${accountCensusInboxPrefix(auth.account.pub)}.>`] });
+  assert.equal(Object.hasOwn(censusClaims.nats!, "resp"), false);
+  assert.equal(credentialLifetime("account-census").class, "one-shot");
+  assert.equal(credentialLifetime("account-census").defaultTtlSeconds, 300);
+  check("census credential has one-account request/reply scope and a five-minute maximum", true);
+  await assert.rejects(mintAccountCensusCreds({ account: auth.account, sys: { pub: auth.sys.pub } }, newIdentity()), /registered system-account signer/);
+  await assert.rejects(mintAccountCensusCreds(auth, { ...newIdentity(), id: censusIdentity.id }), /identity does not match/);
+  await assert.rejects(mintAccountCensusCreds(auth, newIdentity(), { expiresAt: 0 }), /bounded future/);
+  await assert.rejects(mintAccountCensusCreds(auth, newIdentity(), { expiresInSeconds: 301 }), /bounded future/);
+  const capped = credsClaims(await mintAccountCensusCreds(auth, newIdentity(), { expiresInSeconds: 300 }));
+  assert.ok(capped.exp! - capped.iat! <= 300 && capped.exp! > capped.iat!);
+  check("census mint refuses missing signer, mismatched identity and unsupported expiry", true);
+  const dataConns: NatsConnection[] = [];
+  try {
+    const first = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(provCreds)), reconnect: false }); dataConns.push(first);
+    const second = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(supCreds)), reconnect: false }); dataConns.push(second);
+    const serverId = first.info!.server_id;
+    const censusOpts = { servers: SERVERS, observerCreds: censusCreds, accountId: auth.account.pub, expectedServerId: serverId };
+    const census = await observeAccountCensusWithCreds(censusOpts);
+    assert.equal(census.state, "complete");
+    assert.equal(census.connections.length, 2);
+    assert.ok(census.connections.some((c) => c.serverId === serverId && c.cid === first.info?.client_id && c.userNkey === prov.id && c.principal === `local.${prov.id}`));
+    assert.ok(census.connections.some((c) => c.cid === second.info?.client_id && c.userNkey === sup.id));
+    check("native census retains both real account connection coordinates", true);
+    const limited = await observeAccountCensusWithCreds({ ...censusOpts, options: { pageLimit: 1 } });
+    assert.equal(limited.state, "unknown"); assert.equal(limited.reason, "incomplete-page"); assert.equal(Object.hasOwn(limited, "connections"), false);
+    const wrongPin = await observeAccountCensusWithCreds({ ...censusOpts, expectedServerId: createServer().getPublicKey() });
+    assert.equal(wrongPin.state, "unknown"); assert.equal(wrongPin.reason, "unsupported-topology");
+    await assert.rejects(observeAccountCensusWithCreds({ ...censusOpts, observerCreds: obsCreds }), /account-scoped/);
+    await assert.rejects(observeAccountCensusWithCreds({ ...censusOpts, accountId: createAccount().getPublicKey() }), /account-scoped/);
+    check("census refuses incomplete pages, wrong pins, legacy scope and wrong accounts", true);
+    await first.close();
+    const remaining = await observeAccountCensusWithCreds(censusOpts);
+    assert.equal(remaining.state, "complete"); assert.equal(remaining.connections.length, 1);
+    assert.equal(remaining.connections[0]!.cid, second.info!.client_id);
+    await second.close();
+    const empty = await observeAccountCensusWithCreds(censusOpts);
+    assert.equal(empty.state, "complete"); assert.deepEqual(empty.connections, []);
+    check("disconnect and empty-account observations are complete pinned pages only", true);
+    const shortCreds = await mintAccountCensusCreds(auth, newIdentity(), { expiresInSeconds: 3 });
+    const short = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(shortCreds)), reconnect: false }); dataConns.push(short);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const reason = await Promise.race([short.closed(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("census credential did not expire")), 8000); })]);
+      assert.match(String(reason), /expired/i);
+      await assert.rejects(observeAccountCensusWithCreds({ ...censusOpts, observerCreds: shortCreds }), /account-scoped/);
+    } finally { clearTimeout(timer); }
+    check("broker expires a live census credential and the reader refuses its expired copy", true);
+  } finally { for (const nc of dataConns) await nc.close(); }
 
   const expired = newIdentity();
   const expiredCreds = await mintCreds(auth, expired, "probe", { expiresAt: now - 1 });

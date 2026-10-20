@@ -215,8 +215,8 @@ This prevents pnpm from falling back to a classic token when an OIDC exchange fa
 HTTP 201 from the OIDC exchange is identity only. npm's trusted-publisher Allowed actions always
 permit `npm stage publish`; configurations created after 2026-09-03 default to stage and may omit
 direct `npm publish`. Both paths use the same successful exchange, so the preflight never treats
-that 201 as proof that sequential `pnpm publish -r` can write. Binding those Allowed actions to a
-GitHub Environment is done: the `version` and `snapshot` jobs reference `environment:
+that 201 as proof that the sequential per-archive `pnpm publish` can write. Binding those Allowed
+actions to a GitHub Environment is done: the `version` and `snapshot` jobs reference `environment:
 npm-publish`, and the OIDC identity assertion rejects tokens without the matching
 environment claim.
 
@@ -228,9 +228,12 @@ instead of the per-package OIDC exchanges used here. The repository stays on the
 protocol and treats the preflight as the fail-before-first-write control.
 
 ```bash
-node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemble-natives.mjs && pnpm publish -r --provenance --access=public --no-git-checks
+node scripts/publish-cold-candidate.mjs
 ```
 
+- The candidate comes from `COLD_CANDIDATE` and the native receipts from `COLD_RESULTS`. Its
+  manifest must name the current `HEAD`, and all 18 receipts must name that source and that
+  manifest's hash.
 - `preflight-npm-publish.mjs`: derive and print the full fixed-group package/version census. In
   addition to each exact version, it reads every package record before any OIDC exchange. A
   missing record refuses the run with the [new-package setup](#adding-a-publishable-package).
@@ -241,12 +244,12 @@ node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemb
   `claims.workflow_ref.file` with a `permissions` array. Other GitHub publishers on the same package
   are not proof that this job can publish. It refuses npm access-token environment variables before
   the census or OIDC exchange, so `ci:publish` cannot be used with a classic token.
-- `pnpm build`: build every workspace package first, supplying local workspace dependency outputs
-  when a partial retry publishes only the packages still missing.
-- `seat-assemble-natives.mjs`: assemble the downloaded native seat artifacts before publication.
-- Seat's pack and publish hooks assert both native artifacts and compile its JavaScript and type
-  entrypoints without rebuilding the native helpers.
-- `-r`: recursively publish all workspace packages.
+- Each archive's hash must match the manifest for the whole set before the first write, and again
+  just before that archive is published.
+- Each archive is published with `pnpm publish <archive> --provenance --access=public
+  --no-git-checks --ignore-scripts --tag <tag>`. The tag is `latest`, or the dist-tag the snapshot
+  job passes as the script's argument.
+- `--ignore-scripts`: package scripts already ran when the candidate was packed.
 - `--provenance`: emit SLSA provenance attestations (a no-op without OIDC, automatic with it).
 - `--access=public`: required for scoped packages on first publish.
 - `--no-git-checks`: skip pnpm's branch / clean-tree guard, since CI does not need it.

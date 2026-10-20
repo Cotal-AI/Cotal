@@ -72,7 +72,7 @@ import { createRunRecordHost, runRecordView } from "./run-record-host.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
 
 const USAGE =
-  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] | journal <runId> [--endpoint <ep>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--on <instance>] [--space <s>] [--server <url>] [--creds <path>]';
+  'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] [--page [--limit <n>] [--cursor <cursor>]] | journal <runId> [--endpoint <ep>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--on <instance>] [--space <s>] [--server <url>] [--creds <path>]';
 
 interface RunValues {
   space?: string;
@@ -100,6 +100,9 @@ interface RunValues {
   "discard-approvals"?: boolean;
   /** `ps` and `journal` only: one JSON object per row per line on stdout. */
   json?: boolean;
+  page?: boolean;
+  limit?: string;
+  cursor?: string;
   /** Hosted verbs only: the manager instance to address, as `cotal ps` prints it. */
   on?: string;
 }
@@ -803,6 +806,20 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     return;
   }
   if (verb === "ps") {
+    if (values.page === true) {
+      const page = await askHost(values, "run-ps", { ...endpoint, page: {
+        ...(values.limit !== undefined ? { limit: Number(values.limit) } : {}),
+        ...(values.cursor !== undefined ? { cursor: values.cursor } : {}),
+      } });
+      if (page === null || typeof page !== "object" || Array.isArray(page) || !("semantics" in page) || page.semantics !== "diagnostic")
+        throw new Error("the manager did not return a diagnostic inventory page");
+      console.log(JSON.stringify(page));
+      if (values.cursor !== undefined && "nextCursor" in page && page.nextCursor === values.cursor) {
+        console.error("diagnostic inventory made no progress; retain the incomplete observation and do not retry in a loop");
+        process.exitCode = 1;
+      }
+      return;
+    }
     const rows = await askHost(values, "run-ps", Object.keys(endpoint).length ? endpoint : undefined) as RunListRow[];
     const t = values.space ?? "(the resolved mesh)";
     printRuns(t, rows, values.json === true);
@@ -844,6 +861,20 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
   if (verb === undefined || !["start", "resume", "ps", "journal", "answer", "amend", "revoke", "migrate"].includes(verb)) {
     console.error(USAGE);
     process.exit(1);
+  }
+  if (values.page !== undefined || values.limit !== undefined || values.cursor !== undefined) {
+    if (verb !== "ps" || values.local === true || values.page !== true || values.on === undefined) {
+      console.error("diagnostic paging requires run ps --page --on <instance> without --local");
+      process.exit(1);
+    }
+    if (values.limit !== undefined && (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 16)) {
+      console.error("run ps --page: --limit must be between 1 and 16");
+      process.exit(1);
+    }
+    if (values.cursor !== undefined && (values.cursor.length > 3072 || !/^[A-Za-z0-9_-]+$/.test(values.cursor))) {
+      console.error("run ps --page: invalid cursor encoding");
+      process.exit(1);
+    }
   }
   if (values.json === true && verb !== "ps" && verb !== "journal") {
     console.error(`run ${verb}: --json is taken by \`ps\` and \`journal\` only`);

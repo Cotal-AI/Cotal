@@ -470,33 +470,37 @@ export interface RecordReplaceIo {
 /** The codes Windows gives a rename over a file another handle holds open, until that handle closes. */
 const WIN32_HELD_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
 
-/** The total backoff one replace may spend, a third of the publish lock's 30 s wait, so a writer queued
- *  behind a retrying one still gets the lock. */
-const RECORD_REPLACE_BUDGET_MS = 10_000;
+/** The total backoff one publish may spend across all its renames. The wait is synchronous and taken
+ *  under the publish lock, so it blocks the publishing process and any writer queued for the lock;
+ *  5 s keeps both far inside the lock's 30 s wait. */
+const PUBLISH_REPLACE_BUDGET_MS = 5_000;
 
-/** Rename `from` over the record file `to`. On Windows the rename fails with EPERM, EACCES or EBUSY while
- *  another handle holds either file open, such as a reader of the record, which the publish lock does
- *  not serialize, or a virus scanner (#4168). As graceful-fs does for `fs.rename` on Windows, those
- *  codes are retried with a backoff that grows from 0 by 10 ms to 100 ms. graceful-fs gives up when the
- *  destination exists; here the destination is always the record being replaced, so the retry goes on
- *  until {@link RECORD_REPLACE_BUDGET_MS} of backoff is spent, and then the last error is thrown. Any
- *  other error, and any error on another platform, is thrown at once. */
-function replaceRecordFile(from: string, to: string, io: RecordReplaceIo = {}): void {
+/** The rename one publish uses to move each temporary over the record. On Windows a rename fails with
+ *  EPERM, EACCES or EBUSY while another handle holds either file open, such as a reader of the record,
+ *  which the publish lock does not serialize, or a virus scanner (#4168). As graceful-fs does for
+ *  `fs.rename` on Windows, those codes are retried with a backoff that grows from 0 by 10 ms to 100 ms.
+ *  graceful-fs gives up when the destination exists; here the destination is always the record being
+ *  replaced, so the retry goes on until the publish has spent {@link PUBLISH_REPLACE_BUDGET_MS} of
+ *  backoff, counted across every rename it makes, and then the last error is thrown. Any other error,
+ *  and any error on another platform, is thrown at once. */
+function publishRenamer(io: RecordReplaceIo = {}): (from: string, to: string) => void {
   const rename = io.rename ?? renameSync;
   const sleep = io.sleep ?? sleepSync;
   const platform = io.platform ?? process.platform;
   let spent = 0;
-  for (let backoff = 0; ; backoff = Math.min(backoff + 10, 100)) {
-    try {
-      rename(from, to);
-      return;
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (platform !== "win32" || code === undefined || !WIN32_HELD_RENAME_CODES.has(code) || spent + backoff > RECORD_REPLACE_BUDGET_MS) throw e;
-      sleep(backoff);
-      spent += backoff;
+  return (from, to) => {
+    for (let backoff = 0; ; backoff = Math.min(backoff + 10, 100)) {
+      try {
+        rename(from, to);
+        return;
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (platform !== "win32" || code === undefined || !WIN32_HELD_RENAME_CODES.has(code) || spent + backoff > PUBLISH_REPLACE_BUDGET_MS) throw e;
+        sleep(backoff);
+        spent += backoff;
+      }
     }
-  }
+  };
 }
 
 function sleepSync(ms: number): void {
@@ -528,9 +532,10 @@ function sleepSync(ms: number): void {
  *  record under the same lock ({@link removePidPair}). A crashed holder's lock is reclaimed by the
  *  next writer.
  *
- *  Each rename goes through {@link replaceRecordFile}, which retries the brief refusal Windows gives a
- *  rename over a record another handle holds open. A refusal that outlasts its bound throws like any
- *  other step, leaving the state the previous step reached.
+ *  Its renames go through one {@link publishRenamer}, which retries the brief refusal Windows gives a
+ *  rename over a record another handle holds open, on one backoff budget for the whole publish. A
+ *  refusal that outlasts the budget throws like any other step, leaving the state the previous step
+ *  reached.
  *
  *  On any throw, the temporaries are removed (`finally`, best-effort) and the error rethrown; the
  *  temporary names are never read by any reader (`${path}.publish.<pid>.<hex>`, the same claim-file
@@ -549,6 +554,7 @@ export function writePidPair(
   const bridgeTemp = `${pinPath}.publish.${suffix}.bridge`;
   const rec = identityRecord(pid, tokenAt);
   const line: ProcessIdentityRecord = "token" in rec ? rec : { pid, token: NO_START_TOKEN };
+  const replace = publishRenamer(opts.replaceIo);
   try {
     writeFileSync(pidTemp, String(pid));
     if ("token" in rec) writeFileSync(pinTemp, formatRecord(rec));
@@ -557,11 +563,11 @@ export function writePidPair(
       const old = currentPinLine(pidfilePath);
       writeFileSync(bridgeTemp, (old !== undefined && old.pid !== pid ? [old, line] : [line]).map(formatRecord).join("\n"));
       onStep("temporaries");
-      replaceRecordFile(bridgeTemp, pinPath, opts.replaceIo);
+      replace(bridgeTemp, pinPath);
       onStep("bridge-pin");
-      replaceRecordFile(pidTemp, pidfilePath, opts.replaceIo);
+      replace(pidTemp, pidfilePath);
       onStep("publish-pid");
-      if ("token" in rec) replaceRecordFile(pinTemp, pinPath, opts.replaceIo);
+      if ("token" in rec) replace(pinTemp, pinPath);
       else rmSync(pinPath, { force: true });
       onStep("publish-pin");
     } finally {

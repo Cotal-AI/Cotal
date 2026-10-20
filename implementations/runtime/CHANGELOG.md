@@ -1,5 +1,20 @@
 # @cotal-ai/runtime
 
+## 0.89.0
+
+### Minor Changes
+
+- bab4ca8: Add explicit bounded diagnostic pages for native run inventory, preserving legacy list requests and existing permissions. CLI and MCP callers can continue a pinned scan without a full-list reply or an absence claim.
+
+### Patch Changes
+
+- Updated dependencies [dc458a4]
+- Updated dependencies [bab4ca8]
+- Updated dependencies [2905ae9]
+  - @cotal-ai/core@0.89.0
+  - @cotal-ai/workspace@0.89.0
+  - @cotal-ai/lang@0.89.0
+
 ## 0.88.0
 
 ### Patch Changes

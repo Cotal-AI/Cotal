@@ -307,6 +307,39 @@ resume on a host that can perform the step performs it live and continues from t
 back. Checkpoint expiry rides the mediated timer writer, which the delivery daemon pumps on a live
 mesh; on a bare broker a pause still resolves, it just cannot expire.
 
+## Diagnostic inventory
+
+A large inventory can exceed the broker's reply limit. A host that supports page mode can return
+one bounded JSON page. Page mode is not in release 0.88.0 or earlier: the calling CLI or connector and
+the manager both need a later version.
+
+```bash
+cotal run ps --page --on <instance> --limit 8
+cotal run ps --page --on <instance> --cursor <cursor>
+```
+
+For the MCP surface, use `cotal_run` with `verb: "ps"`, `instance` and `page: { limit: 8 }`.
+Pass a returned `nextCursor` as `page.cursor` to continue. A managed session can use its existing
+manager binding. Keep the same space, endpoint filter, instance and process epoch throughout a scan.
+The CLI requires `--on`; page mode is not available with `--local` or other verbs. An older host
+refuses page mode rather than returning a truncated legacy list.
+
+Each page has at most 16 rows (default 8), and the complete reply fits 65536 bytes and the broker's
+payload limit. The reader issues at most 64 storage calls and stops issuing them after 2 seconds or
+the smaller request duration. These are application limits, not bounds on broker CPU, disk work,
+client-library retries or total elapsed time. One row that cannot fit is refused, never split.
+
+The response carries `semantics: "diagnostic"`, the observed sequence cut, responder, storage-read
+count and `stopReason`. Rows contain spec/status revisions and whether a revocation marker was
+observed. Programs, journal contents and revocation reasons are omitted. Legacy requests without
+page mode retain their existing array output.
+
+`endObserved` means the walk reached its cut or received a no-match response. It does not prove an
+atomic snapshot, absence, ownership, terminal work or worker inactivity. Cursors are unsigned
+continuation data. Deleted history and restores can be invisible. Keep partial results incomplete,
+and retain uncertain-start reservations and ownership holds. A continuation that makes no progress
+is reported as incomplete; do not retry it in a loop or use it to release work.
+
 ## What is on the wire
 
 The run's wire footprint is [SPEC §14](../SPEC.md#14-workflow-runs-v05):

@@ -44,8 +44,10 @@ No workflow runs `pnpm check`, and some of its `:live` steps are on no CI shard.
 
 ## Docs checks
 
-`pnpm check:docsbundle` is the CI docs gate. It runs three checks, and each proves less than a
-green run suggests:
+`pnpm check:docsbundle` is the CI docs gate. It runs `check-unmerged.mjs`, `check:docs-voice`,
+`check:doc-comments`, `check:docs-literals`, `check:docs-site`, the tool-docs and schema generators
+with a diff of their output, and `check-docs-bundle.mjs`. Three of them prove less than a green run
+suggests:
 
 - `check:docs-voice` grades prose style in `docs/` and never reads source.
 - `check:docs-literals` reads each code span in `docs/` that looks like emitted operator prose

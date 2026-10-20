@@ -229,7 +229,7 @@ On a static or open mesh,
 an untargeted spawn rides class anycast (any manager may accept, and the acceptance records which one did).
 `cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")`
 pin one instance by its exact id, as `--on` does for `cotal ps`, `cotal models` and every hosted
-`cotal run` verb, and `instance` for `cotal_run` and `cotal_personas`. A foreground CLI spawn has no manager to pin and refuses the
+`cotal run` verb, and `instance` for `cotal_run`, `cotal_persona` and `cotal_personas`. A foreground CLI spawn has no manager to pin and refuses the
 flag. An MCP pin that does not resolve is refused without falling back to class anycast. There are no ordinal
 aliases and no short forms: wherever a display names an instance you can address, it prints
 the whole id, because both surfaces take nothing else.
@@ -473,8 +473,9 @@ with the grant's expiry. Terminal bytes then stream on core-NATS session subject
 scoped to the two parties. Backpressure is a bounded in-flight window with an explicit drop notice, never
 silent loss; a late attach still repaints the full screen from a replayed terminal
 snapshot. Close, expiry, target despawn, and a manager restart are distinct, surfaced end
-states: a restarted manager's successor refuses the old epoch's sessions and the client
-shows "manager restarted; re-attach".
+states: a restarted manager's successor refuses the old epoch's sessions. `cotal attach`
+reconnects when its link dies by asking the manager for a new session
+([CLI](cli.md#managed-seats)).
 
 ## Seat input
 

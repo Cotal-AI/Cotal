@@ -26,8 +26,9 @@ const myConnector: Connector = {
       env: { /* COTAL_* wiring from opts */ },
     };
   },
-  // optional: listModels, supportsModelVariant, supportsPrompt, supportsResume,
-  // supportsSessionContinuation, supportsSessionReopen, supportsToolListAnnounce, eventChannel, pluginRoot
+  // optional: setup, listModels, supportsModelVariant, supportsPrompt, supportsResume, resumeTranscript,
+  // supportsSessionContinuation, supportsSessionReopen, supportsFreshStart, supportsToolListAnnounce,
+  // readinessTimeoutMs, launchHint, eventChannel, pluginRoot
 };
 
 registry.register(myConnector);          // registration runs on import, making the connector available

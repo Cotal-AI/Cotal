@@ -96,6 +96,7 @@ if (subcommand === "tool-seat") {
       const { execFile } = await import("node:child_process");
       const other = process.env.MC_OTHER_INSTANCE!;
       const personas = cotalToolSpecs(config).find((s) => s.name === "cotal_personas")!;
+      const persona = cotalToolSpecs(config).find((s) => s.name === "cotal_persona")!;
       const call = async (spec: typeof tool, args: Record<string, unknown>) => {
         try { return await spec.run(mesh, config, parseToolArgs(spec, args)); }
         catch (error) { return { isError: true, text: error instanceof Error ? error.message : String(error) }; }
@@ -121,8 +122,17 @@ if (subcommand === "tool-seat") {
       trace({ kind: "unbound-cli-bearer", code, stderr });
       trace({ kind: "unbound-run-ps-on", ...await call(tool, { verb: "ps", instance: other }) });
       trace({ kind: "unbound-personas-on", ...await call(personas, { instance: other }) });
+      trace({ kind: "unbound-persona-on", ...await call(persona, {
+        name: "pinned_definition", prompt: "A persona on the selected manager.", instance: other,
+        subscribe: [], allowSubscribe: [], allowPublish: [],
+      }) });
       config.managerInstanceId = spawner;
+      trace({ kind: "bound-persona-other", ...await call(persona, {
+        name: "wrong_manager_definition", prompt: "Must not be written.", instance: other,
+      }) });
       trace({ kind: "pin-done" });
+    } else if (config.name === "toolpage") {
+      trace({ kind: "tool-page", ...await tool.run(mesh, config, parseToolArgs(tool, { verb: "ps", page: { limit: 1 } })) });
     } else {
       const started = await tool.run(mesh, config, { verb: "start", source: 'await checkpoint("child-owned", "Native child decision", { timeout: "1m" }); await checkpoint("child-finish", "Finish resumed child run", { timeout: "1m" });' });
       trace({ kind: "tool-start", ...started });
@@ -189,6 +199,7 @@ import {
   CotalEndpoint, createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, serverConfig, setupSpaceStreams,
   standaloneConnectOpts, isReachable, remoteManagerActors, remoteManagerRegistrationProof,
   eventChannel, loadAgentFile, readRunAdmission, runDriverCaller, readGoalResult,
+  openRecordsBucket, createRunSpec, writeRunStatus, newTakeoverId, type RunListPage,
   RUN_HOST_KIND, COTAL_LANG_RUN_HOST, type RunHost, type RunHostDrive,
   epCall, issuedUserCaller, resolveService, invokeCommand, type EpCaller, type Connector, type EpAttributedReply, registry,
 } from "@cotal-ai/core";
@@ -460,6 +471,13 @@ try {
   cell("#4037 an unbound seat's `cotal agent-bearer --manager-call` refuses, lists both and names --manager-instance", seat("unbound-cli-bearer").code === 1 && namesBoth(seat("unbound-cli-bearer").stderr, "--manager-instance <instanceId>"), seat("unbound-cli-bearer"));
   cell("#3959 MCP cotal_run ps with instance succeeds against the named instance", answered("unbound-run-ps-on"), seat("unbound-run-ps-on"));
   cell("#3959 MCP cotal_personas with instance reads the named instance's catalog", answered("unbound-personas-on") && seat("unbound-personas-on").text === "No personas in the manager catalog.", seat("unbound-personas-on"));
+  cell("MCP cotal_persona with instance defines on the named manager", answered("unbound-persona-on") &&
+    existsSync(join(rootB, ".cotal", "agents", "pinned_definition.md")) &&
+    !existsSync(join(root, ".cotal", "agents", "pinned_definition.md")), seat("unbound-persona-on"));
+  cell("MCP cotal_persona keeps a bound seat on its own manager", seat("bound-persona-other").isError === true &&
+    String(seat("bound-persona-other").text).includes("differs from this credential's instance authority") &&
+    !existsSync(join(rootB, ".cotal", "agents", "wrong_manager_definition.md")) &&
+    !existsSync(join(root, ".cotal", "agents", "wrong_manager_definition.md")), seat("bound-persona-other"));
   cell("#3959 each seat call reached the manager it named (runs: spawner 2, other 1)", onA.runs === before.a.runs + 2 && onB.runs === before.b.runs + 1, { before, onA, onB });
   // The cells above leave one manager live and an empty trace, as the cells below expect.
   await managerB.stop({ withAgents: true });
@@ -626,6 +644,111 @@ try {
   await until(async () => ((await status(revocationRun)).journal as Array<{ step?: string }>).some((e) => e.step === "/checkpoint:grant-hold#0"), "revocation run checkpoint");
   successful(await endpoint.invokeService("manager", "run-answer", { runId: revocationRun, stepKey: "/checkpoint:grant-hold#0", value: "release" }));
   await until(async () => ((await status(revocationRun)).status as { state?: string }).state === "completed", "revocation run released");
+  // A real admitted run remains parked while diagnostic pages observe it and synthetic records.
+  const inventoryRun = await start('await checkpoint("inventory-hold", "Keep inventory observation read-only", { timeout: "5m" });');
+  await until(async () => ((await status(inventoryRun)).journal as Array<{ step?: string }>).some((e) => e.step === "/checkpoint:inventory-hold#0"), "inventory checkpoint");
+  const inventoryBefore = await status(inventoryRun);
+  const beforePages = successful(await endpoint.invokeService("manager", "run-ps")) as unknown as Array<{ endpoint: string; runId: string }>;
+  const expectedRuns = new Set(beforePages.map((r) => `${r.endpoint}/${r.runId}`));
+  // These are valid create-only fixture records, not claimed live/admitted workers. Each row fits
+  // a page but their combined legacy reply exceeds the broker's ordinary one-MiB payload limit.
+  const createInventoryFixture = async (runId: string, holder: string): Promise<number> => {
+    const now = Date.now();
+    const fixtureCreds = await mintCreds(auth, newIdentity(), "run-driver", {
+      runDriver: { endpoint: "manager", runId, takeoverId: newTakeoverId(), instanceId: state.instanceId, epoch: 1 },
+    });
+    const fixtureNc = await connect({ servers, ...standaloneConnectOpts({ creds: fixtureCreds, tls: false }), maxReconnectAttempts: 0 });
+    connections.push(fixtureNc);
+    const fixtureKv = await openRecordsBucket(fixtureNc, space);
+    const revision = await createRunSpec(fixtureKv, "manager", runId, {
+      pins: { seed: "inventory-fixture", startedAt: now, yieldEvery: 1000, stepBudget: 1000, effectCeiling: 1000, languageVersion: "2" }, createdAt: now,
+    });
+    await writeRunStatus(fixtureKv, "manager", runId, {
+      observedSpecRevision: revision, state: "completed", holder,
+      epoch: 1, fencingToken: 1, journalHigh: -1, at: now,
+    });
+    await fixtureNc.close();
+    return revision;
+  };
+  for (let i = 0; i < 24; i++) {
+    const runId = `inventory-fixture-${i}`;
+    await createInventoryFixture(runId, "fixture".repeat(6500));
+    expectedRuns.add(`manager/${runId}`);
+  }
+  const largeLegacy = await endpoint.invokeService("manager", "run-ps");
+  check("inventory legacy oversize remains a surfaced refusal", largeLegacy.reply.ok === false && largeLegacy.reply.error?.code === "resource-exhausted");
+  const wireLengths: number[] = [];
+  const subscribe = controlNc.subscribe.bind(controlNc);
+  controlNc.subscribe = (subject, options) => {
+    const callback = options?.callback;
+    return subscribe(subject, callback === undefined ? options : { ...options, callback: (error, message) => {
+      if (!error) wireLengths.push(message.data.byteLength);
+      callback(error, message);
+    } });
+  };
+  let cursor: string | undefined;
+  let cut: number | undefined;
+  const observedRuns = new Set<string>();
+  let pageCount = 0;
+  try {
+    for (;;) {
+      if (++pageCount > 64) throw new Error("inventory fixture exceeded its page count bound");
+      const result = successful(await endpoint.invokeService("manager", "run-ps", { page: { limit: 8, ...(cursor !== undefined ? { cursor } : {}) } })) as unknown as RunListPage;
+      assert.equal(result.semantics, "diagnostic");
+      assert.equal(result.responder.instanceId, state.instanceId);
+      assert.equal(result.responder.epoch, controlService.responder.epoch);
+      cut ??= result.cutSeq;
+      assert.equal(result.cutSeq, cut);
+      assert.ok(result.storageReads <= 64 && result.items.length <= 8);
+      for (const item of result.items) {
+        const key = `${item.endpoint}/${item.runId}`;
+        assert.ok(expectedRuns.has(key) && !observedRuns.has(key));
+        observedRuns.add(key);
+      }
+      if (result.endObserved) break;
+      assert.ok(result.nextCursor && result.nextCursor !== cursor);
+      cursor = result.nextCursor;
+    }
+  } finally {
+    controlNc.subscribe = subscribe;
+  }
+  check("inventory native pages retain every fixture coordinate once", pageCount > 1 && observedRuns.size === expectedRuns.size);
+  check("inventory actual reply bytes fit both ceilings", wireLengths.length === pageCount && wireLengths.every((n) => n <= 65536 && n <= controlNc.info!.max_payload));
+  const badPageInput = (error: unknown) => error instanceof Error && "code" in error && error.code === "bad-request";
+  await assert.rejects(() => endpoint.invokeService("manager", "run-ps", { page: { limit: 17 } }), badPageInput);
+  check("inventory page limit refuses outside its bound", true);
+  await assert.rejects(() => endpoint.invokeService("manager", "run-ps", { page: { cursor: "!" } }), badPageInput);
+  check("inventory cursor encoding refuses before traversal", true);
+  assert.ok(cursor);
+  const cursorFields = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  const otherManagerCursor = Buffer.from(JSON.stringify({ ...cursorFields, instanceId: mintLifecycleUid() })).toString("base64url");
+  const wrongManager = await endpoint.invokeService("manager", "run-ps", { page: { cursor: otherManagerCursor } });
+  check("inventory continuation refuses a different manager", wrongManager.reply.ok === false && wrongManager.reply.error?.code === "bad-request");
+  const largeRevision = await createInventoryFixture("inventory-unfit", "fixture".repeat(10000));
+  // Unsigned cursors are diagnostic coordinates. This selects the new row without pretending
+  // this explicitly partial lookup covers the earlier records or proves anything absent.
+  const unfitCursor = Buffer.from(JSON.stringify({ ...cursorFields, cutSeq: largeRevision, nextSeq: largeRevision })).toString("base64url");
+  const unfit = await endpoint.invokeService("manager", "run-ps", { page: { cursor: unfitCursor, limit: 1 } });
+  check("inventory refuses a single row that cannot fit without truncation", unfit.reply.ok === false && unfit.reply.error?.code === "resource-exhausted");
+  const inventoryAfter = await status(inventoryRun);
+  const beforeInventoryStatus = inventoryBefore.status as { state: string; holder: string; epoch: number; fencingToken: number };
+  const afterInventoryStatus = inventoryAfter.status as typeof beforeInventoryStatus;
+  check("inventory pages preserve the admitted run and pending checkpoint", JSON.stringify(inventoryAfter.spec) === JSON.stringify(inventoryBefore.spec) &&
+    afterInventoryStatus.state === beforeInventoryStatus.state && afterInventoryStatus.holder === beforeInventoryStatus.holder &&
+    afterInventoryStatus.epoch === beforeInventoryStatus.epoch && afterInventoryStatus.fencingToken === beforeInventoryStatus.fencingToken &&
+    (inventoryAfter.journal as Array<{ step?: string; state?: string }>).some((e) => e.step === "/checkpoint:inventory-hold#0" && e.state === "pending"));
+  const unpinnedPageCli = await cli(["run", "ps", "--page", "--space", space]);
+  check("inventory CLI refuses unpinned page mode", unpinnedPageCli.code === 1 && unpinnedPageCli.stderr.includes("diagnostic paging requires"));
+  const pageCli = await cli(["run", "ps", "--page", "--limit", "1", "--on", state.instanceId, "--space", space]);
+  check("inventory CLI emits one diagnostic page", pageCli.code === 0 && JSON.parse(pageCli.stdout).semantics === "diagnostic");
+  writeFileSync(join(root, ".cotal", "agents", "toolpage.md"), "---\nname: toolpage\nagent: u4-seat\ncapabilities: [run]\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nRead one diagnostic inventory page.\n");
+  assert.equal((await manager.startAgent({ name: "toolpage" }, `${owner}.cli`)).ok, true);
+  await until(() => trace().some((e) => e.actor === "toolpage" && (e.kind === "tool-page" || e.kind === "tool-failure")), "native inventory tool page");
+  const toolPage = trace().find((e) => e.actor === "toolpage" && e.kind === "tool-page");
+  check("inventory MCP emits one bounded diagnostic page", toolPage?.isError !== true && typeof toolPage?.text === "string" && Buffer.byteLength(toolPage.text) <= 65536 && JSON.parse(toolPage.text).semantics === "diagnostic");
+  successful(await endpoint.invokeService("manager", "run-answer", { runId: inventoryRun, stepKey: "/checkpoint:inventory-hold#0", value: "release" }));
+  await until(async () => ((await status(inventoryRun)).status as { state?: string }).state === "completed", "inventory checkpoint released after observation");
+  console.log(`INVENTORY_SCOPE: ${pageCount} pages, ${observedRuns.size} observed records, max reply ${Math.max(...wireLengths)} bytes; synthetic fixture records are not active lanes. No absence, restore or ownership proof.`);
   console.log("U4_SCOPE: preserved native persona cells plus genuine managed PTY cotal_run start/status/answer/released-resume using its own bearerCmd; no provider/model, production or full Cloud composition acceptance.");
 } catch (error) {
   fatal = error instanceof Error ? error.message : String(error);

@@ -2320,7 +2320,7 @@ export class MeshAgent extends EventEmitter {
     });
   }
 
-  /** An explicit manager instance for a read or run call, under `spawn`'s rules: a lifecycle token,
+  /** An explicit manager instance for a manager call, under `spawn`'s rules: a lifecycle token,
    *  and in user-auth mode no other instance than the one this session is bound to. */
   private managerPin(instance: string | undefined): { instanceId?: string } | { error: ControlReply } {
     if (instance === undefined) return {};
@@ -2516,6 +2516,7 @@ export class MeshAgent extends EventEmitter {
   async definePersona(def: {
     name: string;
     prompt: string;
+    instance?: string;
     model?: string;
     role?: string;
     agent?: string;
@@ -2525,6 +2526,8 @@ export class MeshAgent extends EventEmitter {
     announce?: string;
   }): Promise<ControlReply & { announceError?: string; announceOutcome?: "denied" | "unknown" }> {
     await this.requireConnected();
+    const pin = this.managerPin(def.instance);
+    if ("error" in pin) return pin.error;
     // Validate the destination BEFORE the write, and here rather than only in the tool's schema —
     // this is the API every host's tool surface funnels through, so a caller that reaches
     // definePersona directly gets the same guarantee. `announce` present must mean EXACTLY that
@@ -2562,7 +2565,7 @@ export class MeshAgent extends EventEmitter {
       allowSubscribe: def.allowSubscribe,
       allowPublish: def.allowPublish,
     };
-    const reply = await this.managerInvoke("define-persona", args);
+    const reply = await this.managerInvoke("define-persona", args, pin);
     if (!reply.ok || !def.announce) return reply;
     // The persona IS saved by this point (the manager only replies ok after it writes the file), so
     // a failed announcement must NOT be reported as a failed definition. Reporting it as one names

@@ -62,7 +62,7 @@
     {
       "name": "M5 the bridge pin never reaches the pin path (the #1238 bridge-pin step removed)",
       "file": "packages/workspace/src/pid.ts",
-      "find": "      replaceRecordFile(bridgeTemp, pinPath, opts.replaceIo);\n      onStep(\"bridge-pin\");\n",
+      "find": "      replace(bridgeTemp, pinPath);\n      onStep(\"bridge-pin\");\n",
       "replace": "      onStep(\"bridge-pin\");\n",
       "expectRed": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
       "cell": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
@@ -86,7 +86,7 @@
       "replace": "    writeFileSync(pidfilePath, String(pid));\n",
       "expectRed": "G0 a first publish with no injection leaves a complete, matching record",
       "cell": "G0 a first publish with no injection leaves a complete, matching record",
-      "note": "Hand-confirmed: G0 is the FIRST writePidPair call ever made against a fresh pidfile path, so it is the call that hits the mutant first (not G1): the pidfile is written directly, then the pidfile rename (replaceRecordFile(pidTemp, pidfilePath)) throws ENOENT, which it never retries, since pidTemp was never created. G0 is try/catch-wrapped so this is now a clean, named red rather than an uncaught crash.",
+      "note": "Hand-confirmed: G0 is the FIRST writePidPair call ever made against a fresh pidfile path, so it is the call that hits the mutant first (not G1): the pidfile is written directly, then the pidfile rename (replace(pidTemp, pidfilePath)) throws ENOENT, which it never retries, since pidTemp was never created. G0 is try/catch-wrapped so this is now a clean, named red rather than an uncaught crash.",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {

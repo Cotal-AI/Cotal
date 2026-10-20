@@ -16,8 +16,8 @@ who delegates to whom — is just how you set it up.
 <p align="center"><sub><b>multicast</b> broadcast to a channel&nbsp; · &nbsp;<b>unicast</b> DM one peer&nbsp; · &nbsp;<b>anycast</b> reach <i>any one</i> of a role</sub></p>
 
 > **Status:** the **walking skeleton** (manual CLI peers), the **control plane** (manager +
-> `pty` runtime + web console), and the **Claude Code adapter** run today — `cotal start --agent
-> claude` spawns a real Claude session that joins the mesh, flips presence from its lifecycle
+> `pty` runtime + web console), and the **Claude Code adapter** run today — `cotal spawn --detach
+> --agent claude` spawns a real Claude session that joins the mesh, flips presence from its lifecycle
 > hooks, and wakes on incoming peer messages.
 
 ## What it demonstrates
@@ -34,18 +34,25 @@ who delegates to whom — is just how you set it up.
 
 ## Prerequisites
 
-- Node ≥ 20, pnpm, and `nats-server` (v2.11+). macOS: `brew install nats-server`.
+- Node ≥ 22, pnpm, and `nats-server` 2.12 or newer. macOS: `brew install nats-server`.
 - Install deps once, from the repo root: `pnpm install`.
 
 ## Run it
 
-**1. Start the mesh** (one terminal — stays running):
+**1. Start the mesh** (one terminal — stays running), from the repo root:
 
 ```
-pnpm cotal up --open --channels examples/01-lateral-coordination/channels.json
+mkdir -p .cotal
+pnpm cotal up --open --no-manager --space demo --server nats://127.0.0.1:4222 \
+  --channels examples/01-lateral-coordination/channels.json
 ```
 
-If a nats-server is already listening on `:4222`, Cotal detects it and reuses it. The
+`mkdir -p .cotal` makes the repo its own mesh root. Without it, `up` and the manager below both use
+the nearest `.cotal/` above the repo, which is often `~/.cotal`. Check with `cotal meshes`: the
+`demo` row must show `nats://127.0.0.1:4222` and this repo as its root. `--space demo` names the
+space every command below uses; without it the space takes the folder's name. `--server` fixes the
+broker address: if `:4222` is taken, `up` refuses, so pick another port and use it everywhere below.
+`--no-manager` leaves the manager to this example (see below). The
 optional `--channels` file seeds the channel registry (per-channel replay policy +
 descriptions); edit it live with `cotal channels set <name> [--replay|--no-replay] [--desc …]`.
 
@@ -70,16 +77,27 @@ plane. The manager owns each peer's process in a pseudo-terminal (`pty` runtime)
 
 ```
 # one terminal — the supervisor (composition root: picks the cotal + claude connectors)
-(cd examples/01-lateral-coordination && pnpm manager)
+(cd examples/01-lateral-coordination && COTAL_SPACE=demo COTAL_SERVERS=nats://127.0.0.1:4222 pnpm manager)
 
-# then, from anywhere
-cotal start --space demo --name alice --role planner   # manager spawns alice in a PTY
+# then, from the repo root
+cotal spawn --detach --no-events --agent cotal --config examples/01-lateral-coordination/agents/ada.md \
+  --cwd "$PWD" --space demo --name alice --role planner   # manager spawns alice in a PTY
 cotal ps    --space demo                                # list managed peers + mesh status
 cotal attach --space demo --name alice                  # stream + drive her terminal (Ctrl-] detaches)
 cotal stop  --space demo --name alice                   # kill the process
 ```
 
-`cotal start --agent claude` spawns a real Claude Code session the same way (see below).
+The manager reads its space and broker only from `COTAL_SPACE` and `COTAL_SERVERS` (defaults `demo`
+and `nats://127.0.0.1:4222`), so set both to what step 1 used: a value inherited from your shell,
+such as an agent session's own `COTAL_SPACE`, would point it at another space. It keeps its state
+under the nearest `.cotal/` above its folder, which is the repo root only because of the
+`mkdir -p .cotal` in step 1. The example's `cotal` peer runs `pnpm cotal join`, so it needs the repo
+as its `--cwd`, and `--no-events`, because it publishes no event plane. Every manager spawn needs a
+persona: with no `--config` and no persona name, `cotal spawn` asks for the persona that
+`COTAL_DEFAULT_PERSONA` names, else `default`, and the manager refuses when
+`.cotal/agents/<persona>.md` is missing under the repo root. These commands pass one of the example's
+[agent files](./agents/) instead, as a path from the repo root. `cotal spawn --detach
+--agent claude` spawns a real Claude Code session the same way (see below).
 
 ## Watch them in the browser — CLI + manager + web console
 
@@ -88,28 +106,29 @@ shows one live terminal per managed agent. PTY bytes stream over a direct WebSoc
 stream `cotal attach` consumes), never the mesh. One example, all three surfaces together:
 
 ```
-pnpm cotal up --open                                       # 1. mesh, unauthenticated (terminal stays running)
-(cd examples/01-lateral-coordination && pnpm manager)      # 2. manager + console → prints http://127.0.0.1:7878/
+mkdir -p .cotal                                            # 1. make the repo its own mesh root
+pnpm cotal up --open --no-manager --space demo --server nats://127.0.0.1:4222   # 2. mesh, unauthenticated (terminal stays running)
+(cd examples/01-lateral-coordination && COTAL_SPACE=demo COTAL_SERVERS=nats://127.0.0.1:4222 pnpm manager)   # 3. manager + console → prints http://127.0.0.1:7878/
 
-# 3. drive it from the CLI — the console updates live
-pnpm cotal start --space demo --agent claude --name ada   --role planner
-pnpm cotal start --space demo --agent claude --name linus --role reviewer
+# 4. drive it from the CLI — the console updates live
+pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name ada   --config examples/01-lateral-coordination/agents/ada.md
+pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name linus --config examples/01-lateral-coordination/agents/linus.md
 ```
 
 Open **http://127.0.0.1:7878/** — two panes appear, each a real Claude Code TUI you can type
-into. `cotal ps` / `stop` / `start` from any terminal and the grid reconciles (panes added,
+into. `cotal ps` / `stop` / `spawn --detach` from any terminal and the grid reconciles (panes added,
 removed, status dot flips green→red on exit). Port: `COTAL_CONSOLE_PORT` (default `7878`).
 
 ## A Claude Code agent joins as a peer
 
-A real coding agent joins through the **manager** — `cotal start --agent claude` does the native
+A real coding agent joins through the **manager** — `cotal spawn --detach --agent claude` does the native
 launch in a PTY pane (no wrapper in front, an ordinary Claude session):
 
 ```
 # one-time, per machine: install the bundled plugin for your user account
 claude plugin install cotal@cotal-mesh --scope user
 
-cotal start --space demo --agent claude --name dave --role builder   # manager spawns a real claude
+cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name dave --config examples/01-lateral-coordination/agents/dave.md   # manager spawns a real claude
 ```
 
 ### Personas from a file
@@ -171,15 +190,18 @@ broadcast and a DM, observe a `working` state change, and detect `offline` on le
 ## Runtime options
 
 The manager defaults to `pty`. To spawn agents into a **tmux window** or **cmux tab** instead,
-import the matching extension in the composition root and select it at launch:
+install the matching extension (or import it in your own composition root) and select it at launch:
 
 ```bash
 # tmux — each agent gets its own window in the cotal session
-cotal supervise --runtime tmux   # requires: import "@cotal-ai/tmux" in the composition root
+cotal supervise --runtime tmux   # requires: cotal ext add @cotal-ai/tmux (or import it in a composition root)
 
 # cmux — each agent gets its own tab
-cotal supervise --runtime cmux   # requires: import "@cotal-ai/cmux" in the composition root
+cotal supervise --runtime cmux   # requires: cotal ext add @cotal-ai/cmux (or import it in a composition root)
 ```
 
-With `--runtime tmux` or `--runtime cmux` and the matching package not imported, the manager
-throws a clear `"import @cotal-ai/<runtime>"` error — no silent fallback to pty.
+Without the matching package, `cotal supervise` refuses with
+`no installed extension provides runtime "<runtime>"` and names the package to add. A composition
+root that builds its own `Manager`, such as this example's manager with `COTAL_RUNTIME=tmux`,
+refuses with `unknown runtime "<runtime>"` and names both installing and importing the integration.
+Neither falls back to pty.

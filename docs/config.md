@@ -164,6 +164,9 @@ other value when it starts, naming the variable.
 | `COTAL_FEEDBACK_URL` | `feedback`, connector | Intake URL override (self-hosted) | keyed / public intake |
 | `COTAL_SKIP_ASSIST` | `setup` | Disable the connector debug handoff on a failed step (`1`; for CI) | off |
 | `COTAL_COMPLETE_DEBUG` | `completion` | Print completion-resolution errors to stderr | off |
+| `COTAL_DEBUG` | any `cotal` command | Print the stack trace under a command's one-line error | off |
+| `COTAL_CODEX_BIN` / `COTAL_OPENCODE_BIN` / `COTAL_ORCA_BIN` | Codex and OpenCode connectors, Orca runtime | Pin the `codex`, `opencode` or Orca CLI binary | found on `PATH` |
+| `COTAL_IDP_TIMEOUT_MS` | `cotal login`, IdP requests | Per-request IdP timeout in milliseconds, for a slow IdP; a malformed value fails loud | `30000` |
 | `COTAL_ENROLLMENT_FILE` | foreground `spawn` | Private `0600` file containing one remote enrollment URL; preferred over the environment form | none |
 | `COTAL_MANAGED_HANDOFF_FILE` | `cotal` entry, foreground `spawn` | Private `0600` file holding one managed lifecycle handoff from a delegating runtime; taken and deleted before anything else runs | none |
 | `COTAL_ENROLLMENT_URL` | foreground `spawn` | One remote enrollment URL when a secret file cannot be mounted; conflicts with `COTAL_ENROLLMENT_FILE` | none |
@@ -190,7 +193,7 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 | `COTAL_CONTROL_SOCKET` | The session's local control endpoint path. The MCP server listens on it and the lifecycle hooks connect to it. A launcher-spawned session carries the token that authenticates the first frame in its launch material. A hand-driven Claude Code or jcode session sets this path and `COTAL_CONTROL_TOKEN` itself (see [Launch material](#launch-material)) |
 | `COTAL_BRIDGE_SOCKET` / `COTAL_TOOLS_FILE` / `COTAL_PARENT_PID` | Hermes sidecar plumbing (bridge socket, generated tool descriptors, launcher pid to watch). The bridge socket's first frame carries the control token from the launch material (or `COTAL_CONTROL_TOKEN` in standalone mode) |
 | `OPENCODE_CONFIG_CONTENT` | Inline OpenCode config (the injected cotal plugin, highest merge layer) |
-| `OPENCODE_DB` / `OPENCODE_HOME` / `OPENCODE_PORT` / `OPENCODE_SERVER_URL` / `COTAL_OPENCODE_*` | OpenCode server plumbing (home, port, DB, server URL) |
+| `OPENCODE_DB` / `COTAL_OPENCODE_*` | OpenCode server plumbing (the per-agent DB, and the connector's home, port and server URL) |
 
 A spawned agent receives a fixed OS execution allow-list (PATH, HOME, TERM, locale, and
 XDG/Windows config directories), the machine-wide `COTAL_*` operator knobs (`COTAL_HOME`, the

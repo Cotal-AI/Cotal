@@ -26,10 +26,10 @@ import.
   that window, whether it still runs or has exited, and a window that has moved out of the session,
   including one that moves while the reap runs.
 
-- **`TerminalLayout` (`tmux`)** — opens/closes tmux windows for host-side orchestration
-  (e.g. `cotal setup`). Detects the current session from `$TMUX`; must be called from inside
-  a tmux session. Supports multi-pane tabs via `split-window`; a tab with more than one pane
-  needs a `split`, and one without it is refused before any window opens. Looking up tabs by
+- **`TerminalLayout` (`tmux`)** — opens/closes tmux windows for host-side orchestration.
+  Detects the current session from `$TMUX`; must be called from inside a tmux session. Supports
+  multi-pane tabs via `split-window`; a tab with more than one pane needs a `split`, and one
+  without it is refused before any window opens. Looking up tabs by
   label throws when tmux cannot be queried.
 
 ## Usage
@@ -51,5 +51,5 @@ cmux opens a per-agent **workspace (tab)** in the cmux app; this package opens a
 **window** in a tmux session. Both are native-watch (no PTY streaming). No `cli.ts` helper is
 included — tmux is always on PATH and needs no bundled binary path.
 
-See [docs/architecture.md](../../docs/architecture.md) (*Manager*) and the
+See [docs/architecture.md](../../docs/architecture.md) (*Manager supervision*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.

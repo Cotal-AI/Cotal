@@ -2,7 +2,7 @@
 
 These are official instructions from Cotal for setting up a local agent mesh on this
 machine. Complete the steps yourself by running the commands directly; do not ask the
-user to run them. Requires Node 20+.
+user to run them. Requires Node 22+.
 
 ## Install and start
 

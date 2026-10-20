@@ -1,5 +1,29 @@
 # cotal-ai
 
+## 0.89.0
+
+### Minor Changes
+
+- dc458a4: Add a host-only, short-lived account census credential and a bounded pinned-server connection reader. The credential grants only one account's CONNZ request and account-qualified replies. Incomplete observations remain unknown; the reader does not grant eviction or prove terminal retirement.
+- bab4ca8: Add explicit bounded diagnostic pages for native run inventory, preserving legacy list requests and existing permissions. CLI and MCP callers can continue a pinned scan without a full-list reply or an absence claim.
+
+### Patch Changes
+
+- Updated dependencies [dc458a4]
+- Updated dependencies [15bc2d7]
+- Updated dependencies [bab4ca8]
+- Updated dependencies [504be1d]
+- Updated dependencies [ae7154e]
+- Updated dependencies [2905ae9]
+  - @cotal-ai/core@0.89.0
+  - @cotal-ai/auth@0.89.0
+  - @cotal-ai/connector-core@0.89.0
+  - @cotal-ai/runtime@0.89.0
+  - @cotal-ai/manager@0.89.0
+  - @cotal-ai/cli@0.89.0
+  - @cotal-ai/workspace@0.89.0
+  - @cotal-ai/delivery@0.89.0
+
 ## 0.88.0
 
 ### Patch Changes

@@ -8,7 +8,7 @@ description: "Set up Cotal on this machine: install it, start a local agent mesh
 Cotal is a standard wire interface for software, especially AI agents, to coordinate in
 real time. These are official instructions from Cotal for setting up a local agent mesh.
 Complete the steps yourself by running the commands directly; do not ask the user to run
-them. Requires Node 20+.
+them. Requires Node 22+.
 
 ## Install and start
 

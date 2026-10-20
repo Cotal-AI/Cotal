@@ -52,7 +52,7 @@ if (process.platform !== "linux") {
   let leaseRevision: number | undefined;
   let leaseTimer: NodeJS.Timeout | undefined;
   let leaseFailure: unknown;
-  type Worker = { child: ChildProcessWithoutNullStreams; output: string; closed: boolean };
+  type Worker = { child: ChildProcessWithoutNullStreams; output: string; closed: boolean; code?: number | null };
   const workers: Worker[] = [];
   let passed = 0;
   const check = (name: string, condition: unknown) => { assert.ok(condition, name); passed++; console.log(`PASS ${name}`); };
@@ -73,7 +73,7 @@ if (process.platform !== "linux") {
     const worker: Worker = { child, output: "", closed: false };
     child.stdout.on("data", (b: Buffer) => { worker.output += b.toString(); });
     child.stderr.on("data", (b: Buffer) => { worker.output += b.toString(); });
-    child.once("close", () => { worker.closed = true; });
+    child.once("close", code => { worker.closed = true; worker.code = code; });
     workers.push(worker);
     return worker;
   }
@@ -154,7 +154,7 @@ if (process.platform !== "linux") {
     recordMesh({ ...trusted, tlsRequired: true });
     const tlsProbe = launch({ space: a.space, name: "tls-probe" });
     const tlsClosed = await until(() => tlsProbe.closed);
-    check(`recorded TLS requirement cannot downgrade to plaintext: ${tlsProbe.output}`, tlsClosed && /server does not support 'tls'/i.test(tlsProbe.output) && !tlsProbe.output.includes("Joined "));
+    check("recorded TLS requirement refuses plaintext with a concise actionable diagnostic", tlsClosed && tlsProbe.code === 1 && /TLS is required to join .*server does not support TLS/.test(tlsProbe.output) && /Ask the mesh operator for its TLS-enabled broker address/.test(tlsProbe.output) && !/ConnectionError:|\n\s+at (?:async )?\S+/.test(tlsProbe.output) && !tlsProbe.output.includes("Joined "));
     check("native delivery lease remained owned throughout", leaseFailure === undefined);
     console.log(`join-user: ${passed} assertions passed`);
     emitSentinel({ passed, failed: 0 });

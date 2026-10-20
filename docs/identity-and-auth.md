@@ -556,8 +556,10 @@ The bridge (`createIdpBridge`) exchanges a verified IdP token for a Cotal bearer
 1. **Bearer validation.** Verify the IdP's JWT offline against its **pinned JWKS**, with the token
    algorithm pinned to EdDSA. Keys resolve only through the pinned JWKS: a token carrying embedded
    key material (`jku`/`jwk`/`x5u`/`x5c`) is rejected, so the token can never influence key
-   resolution. Issuer and audience are checked, and the minted Cotal bearer is capped to the
-   upstream proof's remaining lifetime.
+   resolution. Issuer and audience are checked. The minted Cotal bearer never expires after the
+   upstream proof: the issuer signs the earlier of the requested lifetime and the proof's `exp`,
+   read when it signs, and refuses once the proof has expired. Time spent in the bridge's hooks
+   shortens the bearer instead of extending it.
 2. **Owner derivation.** The opaque per-space owner derives deterministically from the JSON-array
    encoding of `[idp issuer, sub]`, namespaced by issuer so no issuer/sub pair can straddle a
    delimiter, and re-login re-lands the same person in the same lanes. The owner-token *format*
@@ -626,14 +628,15 @@ still sets `COTAL_CREDS` itself.
   the operator JWT and system account they were taken under, so re-run `cotal backup` after). Past that horizon the mesh keeps delivering, but the
   membership feed and live eviction stop; `cotal doctor auth` and the manager warn from the 75%
   point onward.
-- **Static agent creds are long-lived; the machinery's are not.** One-shot command creds
-  expire in minutes and the standing daemon creds in 24h with the manager renewing them
-  (`cotal doctor auth` is the one diagnosis and repair surface). But a static *agent*
-  cred has no TTL yet: `cotal_despawn` cuts a session, not a credential, and a
-  compromised agent that copied its creds can reconnect until the signing key is
-  rotated. Per-user-auth spaces close this: bearers live minutes, `cotal actor revoke`
-  denies the next exchange and the next connect and evicts the principal's live
-  connections immediately.
+- **A copied static agent cred outlives its session.** One-shot command creds expire in
+  minutes and the standing daemon creds in 24h with the manager renewing them (`cotal doctor
+  auth` is the one diagnosis and repair surface). A manager-spawned agent cred also expires
+  after 24h, the manager renews it only while the agent is live, and despawn retires it. A
+  static mesh has no auth callout, so a compromised agent that copied its creds can still
+  reconnect until they expire, and a `cotal mint` cred without `--expires-in` or `--expires-at`
+  stays valid until the signing key is rotated ([security](security.md)). Per-user-auth spaces
+  close this: bearers live minutes, `cotal actor revoke` denies the next exchange and the next
+  connect and evicts the principal's live connections immediately.
 - **Not non-repudiation.** Authenticity is broker-enforced, not portable proof; it does
   not survive an untrusted relay. Signed envelopes are reserved
   ([SPEC §11](../SPEC.md#11-versioning-and-extensibility)).
