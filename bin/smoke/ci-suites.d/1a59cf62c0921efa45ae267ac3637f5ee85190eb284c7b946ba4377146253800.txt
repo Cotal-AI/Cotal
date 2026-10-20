@@ -1,0 +1,2 @@
+# Ordinary agent channel history uses its existing lifecycle-scoped single-filter grant.
+smoke:agent-channel-history:auth

@@ -33,6 +33,12 @@ until it joins one. On a mesh that enforces ACLs, the default is the first chann
 and may post to, so a read-only channel such as an announcements feed is never the default. An
 agent that may post to none of the channels it reads has no default either.
 
+`CotalEndpoint.channelHistory` reads an allowed channel through the agent's lifecycle-scoped,
+single-filter history consumer. It serializes with that endpoint's backfill and recall reads.
+Observer and admin views keep their separate connection-scoped readers. Multiple endpoints
+using the same agent lifecycle still share its history-consumer name, so they must not run
+history or backfill concurrently across processes.
+
 ## Delivery classes
 
 Each channel is `live` or `durable` ([SPEC §4](../SPEC.md#4-delivery-modes),

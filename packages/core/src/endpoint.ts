@@ -229,6 +229,8 @@ type HistoryReader = {
   pool: HistoryReaderSlots;
   slot: number;
   name: string;
+  confined: boolean;
+  connectionReaderId: string;
   /** False once the hold is given back, so it is given back once. */
   held: boolean;
   /** True once a delete under the name failed, so the name may still hold this read's reader and is
@@ -3367,14 +3369,55 @@ export class CotalEndpoint extends EventEmitter {
     channel: string,
     opts?: { limit?: number; signal?: AbortSignal },
   ): Promise<HistoryMessage[]> {
-    // history from any sender
-    return (await this.streamHistory(
+    const confined = this.confinedHistoryName();
+    const read = async () => (await this.streamHistory(
       chatStream(this.space),
       [chatSubject(this.space, "*", "*", channel)],
       opts?.limit ?? 100,
       undefined,
       opts?.signal,
+      confined,
     )).map((r) => r.msg);
+    if (!confined) return read();
+    // Backfill and recall use this same lifecycle name. Keep the entire page walk under their lock.
+    return this.withHistoryLock(read, opts?.signal);
+  }
+
+  /** Select the agent's existing confined reader rail from its credential, never its display card.
+   *  Local claims choose a request shape only; the broker still enforces every create and filter. */
+  private confinedHistoryName(): string | undefined {
+    if (!this.authed) return undefined;
+    if (this.userMode) {
+      const payload = this.currentBearer?.split(".")[1];
+      if (!payload) throw new Error("history: no current bearer claim");
+      const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { act?: { view?: string } };
+      if (claims.act?.view !== undefined) return undefined;
+      return chatHistDurable(this.owner, this.actor, this.requireLifecycleUid("chat history reads"));
+    }
+    if (!this.currentCreds || !this.ownLifecycleUid) return undefined;
+    const name = chatHistDurable(this.owner, this.actor, this.ownLifecycleUid);
+    const grants = credsClaims(this.currentCreds).nats?.pub?.allow ?? [];
+    return grants.includes(`$JS.API.CONSUMER.INFO.${chatStream(this.space)}.${name}`) ? name : undefined;
+  }
+
+  /** A cancelled waiter rejects promptly, while its queued task remains fenced behind the holder. */
+  private async withHistoryLock<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    signal?.throwIfAborted();
+    let started = false;
+    const run = this.histLock.then(async () => {
+      signal?.throwIfAborted();
+      started = true;
+      const value = await read();
+      signal?.throwIfAborted();
+      return value;
+    });
+    this.histLock = run.catch(() => {});
+    if (!signal) return run;
+    return new Promise<T>((resolve, reject) => {
+      const stop = () => { if (!started) reject(abortReason(signal)); };
+      signal.addEventListener("abort", stop, { once: true });
+      run.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+    });
   }
 
   /**
@@ -3569,6 +3612,7 @@ export class CotalEndpoint extends EventEmitter {
     limit: number,
     before?: number,
     signal?: AbortSignal,
+    confined?: string,
   ): Promise<{ seq: number; subject: string; msg: HistoryMessage }[]> {
     if (!this.nc) throw new Error("endpoint not started");
     signal?.throwIfAborted();
@@ -3597,7 +3641,7 @@ export class CotalEndpoint extends EventEmitter {
     const nc = this.nc;
     let reader: HistoryReader | undefined;
     try {
-      reader = await this.acquireHistoryReader(nc, this.jsm ?? (this.jsm = await jetstreamManager(nc)), stream, signal);
+      reader = await this.acquireHistoryReader(nc, this.jsm ?? (this.jsm = await jetstreamManager(nc)), stream, signal, confined);
       // THE EXACT CEILING, on the already-granted surface. A one-shot consumer with
       // `DeliverPolicy.Last` plus this subject's filter reports the newest MATCHING sequence, and its
       // `num_pending` of zero means the channel is genuinely empty. Using the STREAM's last sequence
@@ -3706,21 +3750,24 @@ export class CotalEndpoint extends EventEmitter {
     jsm: JetStreamManager,
     stream: string,
     signal?: AbortSignal,
+    confined?: string,
   ): Promise<HistoryReader> {
     for (;;) {
       signal?.throwIfAborted();
-      const readerId = this.historyReaderId(nc);
-      let pool = this.historyReaderSlots.get(stream);
+      const readerId = confined ?? this.historyReaderId(nc);
+      const key = confined ? `${stream}:${confined}` : stream;
+      let pool = this.historyReaderSlots.get(key);
       if (pool?.readerId !== readerId) {
-        pool = { readerId, free: Array.from({ length: HISTORY_READERS }, (_, i) => HISTORY_READERS - 1 - i), held: 0, waiting: [], refusedUntil: 0 };
-        this.historyReaderSlots.set(stream, pool);
+        const count = confined ? 1 : HISTORY_READERS;
+        pool = { readerId, free: Array.from({ length: count }, (_, i) => count - 1 - i), held: 0, waiting: [], refusedUntil: 0 };
+        this.historyReaderSlots.set(key, pool);
       }
       // A read here would leave one more reader it may not delete, so it fails before creating one.
-      if (pool.refusedUntil > Date.now()) throw this.readerDeleteRefused(stream);
+      if (pool.refusedUntil > Date.now()) throw this.readerDeleteRefused(stream, Boolean(confined));
       const slot = pool.free.pop();
       if (slot !== undefined) {
         pool.held++;
-        return { nc, js: jetstream(nc), jsm, stream, pool, slot, name: historyReaderConsumer(readerId, slot), held: true, left: false };
+        return { nc, js: jetstream(nc), jsm, stream, pool, slot, name: confined ?? historyReaderConsumer(readerId, slot), confined: Boolean(confined), connectionReaderId: this.historyReaderId(nc), held: true, left: false };
       }
       // No read here holds a name, so none will come back from one: every name is set aside (see
       // openHistoryReader and closeHistoryReader). Waiting would hang until those expire.
@@ -3774,9 +3821,14 @@ export class CotalEndpoint extends EventEmitter {
     for (;;) {
       // A reconnect under the auth callout moved this connection to new reader names, and its
       // credential may no longer delete this one. Creating under it would leave the reader behind.
-      if (this.historyReaderId(reader.nc) !== pool.readerId)
+      if (this.historyReaderId(reader.nc) !== reader.connectionReaderId)
         throw new Error(`history: the connection was re-established during the read on ${reader.stream}, so its history reader names changed; the read is not served`);
       const description = `cotal history read ${randomUUID()}`;
+      if (reader.confined) {
+        if (config.filter_subjects?.length !== 1) throw new Error("history: a confined reader requires one channel filter");
+        const { filter_subjects, ...single } = config;
+        config = { ...single, filter_subject: filter_subjects[0] };
+      }
       let info: ConsumerInfo | undefined;
       try {
         info = await reader.jsm.consumers.add(reader.stream, {
@@ -3790,7 +3842,11 @@ export class CotalEndpoint extends EventEmitter {
           inactive_threshold: nanos(HISTORY_READER_INACTIVE_MS),
         });
       } catch (e) {
-        if (!isConsumerAlreadyExists(e)) throw e;
+        if (!isConsumerAlreadyExists(e)) {
+          // A lost create answer may have left a consumer. Never let backfill pre-delete that name.
+          if (reader.confined && !isPublishPermissionDenied(e)) reader.left = true;
+          throw e;
+        }
       }
       if (info?.config.description === description) return reader.js.consumers.getConsumerFromInfo(info);
       this.setAsideHistoryReader(pool, reader.slot);
@@ -3823,16 +3879,17 @@ export class CotalEndpoint extends EventEmitter {
       // No `cause`: a permission-shaped cause would let streamHistory read this as the admin-only
       // DM denial and return an empty page.
       if (isPublishPermissionDenied(e)) {
-        if (this.historyReaderId(reader.nc) !== reader.pool.readerId)
+        if (this.historyReaderId(reader.nc) !== reader.connectionReaderId)
           throw new Error(`history: the connection was re-established during the read on ${reader.stream}, so it may no longer delete its reader ${reader.name}, which expires on its own; the read is not served`);
         reader.pool.refusedUntil = Date.now() + HISTORY_READER_INACTIVE_MS;
-        throw this.readerDeleteRefused(reader.stream);
+        throw this.readerDeleteRefused(reader.stream, reader.confined);
       }
       throw e;
     }
   }
 
-  private readerDeleteRefused(stream: string): Error {
+  private readerDeleteRefused(stream: string, confined = false): Error {
+    if (confined) return new Error(`history: this credential may not delete its lifecycle reader on ${stream}; the read is not served`);
     return new Error(`history: this credential may not delete its own history readers on ${stream}; it predates the observer and admin reader-delete grant, so remint it`);
   }
 
@@ -6299,9 +6356,7 @@ export class CotalEndpoint extends EventEmitter {
     // Serialize on the per-instance lock: the fixed `chathist_<id>` name means two concurrent reads
     // (recall + join-backfill + drop-marker can race in-process) would delete/recreate the consumer
     // under each other and cross-feed results. The chain makes the "serial callers" assumption true.
-    const run = this.histLock.then(() => this.collectHistoryInner(subject, start, opts));
-    this.histLock = run.catch(() => {}); // keep the chain alive on error
-    return run;
+    return this.withHistoryLock(() => this.collectHistoryInner(subject, start, opts));
   }
 
   private async collectHistoryInner(
@@ -6312,6 +6367,9 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.jsm || !this.js) throw new Error("endpoint not started");
     const stream = chatStream(this.space);
     const name = chatHistDurable(this.owner, this.actor, this.requireLifecycleUid("chat history reads"));
+    const retained = this.historyReaderSlots.get(`${stream}:${name}`);
+    if (retained && (retained.refusedUntil > Date.now() || retained.free.length === 0))
+      throw new Error(`history: lifecycle reader ${name} is held or its deletion is unconfirmed; wait for its inactive threshold`);
     const out: JsMsg[] = [];
     // Clear any consumer leaked by a crashed prior read before re-creating it with THIS read's
     // single filter (the read ACL is enforced at create — see the doc above).
