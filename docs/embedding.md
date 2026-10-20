@@ -83,6 +83,11 @@ principal name and tags, the authenticated broker user key and a separate client
 Expiry stays bounded by the original admission and access deadline. It does not authenticate the
 callout request, record natkey evidence or release an encrypted response; the host must do those.
 
+Native service receipts bind the same epcred connection and registration witness to the broker user
+key. Recording rechecks the evidence, receipt, native authority and fixed expiry. Expired service
+receipts are retained, not pruned on elapsed JWT time. Qualified retirement and the accepting
+callout are still required before enabling the service path.
+
 Internal service-name bindings are create-only and return owner and revision from one native read.
 The trusted host must authenticate the operator and verify the namespace claim before writing.
 Native auth, delivery and manager names keep their existing authority; they cannot be application

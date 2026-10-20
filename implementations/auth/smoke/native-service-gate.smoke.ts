@@ -3,17 +3,18 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAccount } from "@nats-io/nkeys";
+import { createAccount, createServer, createUser } from "@nats-io/nkeys";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
-  contractDigest, createEndpointStreams, endpointToken, epgateKey, endpointRegistrationBarrier, isReachable, mintLifecycleUid,
+  contractDigest, createEndpointStreams, endpointToken, epcredRowKey, epgateKey, nativeIssuanceKey, endpointRegistrationBarrier, isReachable, mintLifecycleUid,
   serviceEndpointActor, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { openLifecycleRegistry, reserveLifecycleUid, registryStores } from "../src/lifecycle-registry.js";
 import { bindNativeServiceName, nativeServiceNameAuthority, readNativeServiceName } from "../src/native-service-name.js";
+import { makeNativeIssuanceRecorder, nativeIssuanceRecord, parseNativeIssuanceRecord, pruneNativeIssuance, readNativeIssuance } from "../src/native-issuance.js";
 import { openConnectReader } from "../src/connect-reader.js";
 import { createUserTokenIssuer, generateSigningKey } from "../src/issuer.js";
 import { validateUserToken } from "../src/token.js";
@@ -123,6 +124,33 @@ try {
   const stale = await validateUserToken(await issuer.issueServiceAccess({ witness: { ...witness, registrationProof: stamp.registrationProof }, expiresAt }),
     { issuer: issuer.issuer, key: issuer.localKeySet(), audience: space });
   await assert.rejects(readNativeServiceAccess(reg, reader, binding, stale, expiresAt), /current activated registration/);
+  const connection = { userNkey: createUser().getPublicKey(), serverId: createServer().getPublicKey(), clientId: 1 };
+  const serviceCredentialId = mintLifecycleUid(), authKv = registryStores(reg).authKv;
+  const issuance = { userNkey: connection.userNkey, token: access, connId: "n".repeat(32), iat: Math.floor(Date.now() / 1000), exp: expiresAt,
+    service: { credentialId: serviceCredentialId, connection } };
+  const receiptWriter = makeNativeIssuanceRecorder(reg, async (token) => { await readNativeServiceAccess(reg, reader, binding, token, expiresAt); });
+  await assert.rejects(receiptWriter(issuance), /service issuance evidence is unavailable/);
+  const evidenceKey = epcredRowKey(tuple.endpoint, tuple.instanceId, serviceCredentialId);
+  await authKv.create(evidenceKey, new TextEncoder().encode(JSON.stringify({ credentialId: serviceCredentialId,
+    holderPrincipal: `${tuple.owner}.${actor}`, lifecycleUid: tuple.instanceId, endpoint: tuple.endpoint, sourceChain: ["root"],
+    state: "active", exp: expiresAt, serviceConnection: connection })));
+  await receiptWriter(issuance);
+  const receipt = (await readNativeIssuance(authKv, connection.userNkey))!;
+  assert.deepEqual(receipt.service, { witness, credentialId: serviceCredentialId, connection });
+  await assert.rejects(receiptWriter(issuance), "one native key cannot acquire a second receipt");
+  assert.throws(() => nativeIssuanceRecord(space, { ...issuance, service: undefined }), /bounded native evidence/);
+  assert.throws(() => nativeIssuanceRecord(space, { ...issuance, userNkey: createUser().getPublicKey() }), /different user key/);
+  assert.throws(() => parseNativeIssuanceRecord({ ...receipt, view: "agent" }), /must occur together/);
+  assert.throws(() => parseNativeIssuanceRecord({ ...receipt, credentialId: mintLifecycleUid() }), /native root and lifetime/);
+  const foreignReceiptKey = nativeIssuanceKey(createUser().getPublicKey());
+  await authKv.create(foreignReceiptKey, new TextEncoder().encode(JSON.stringify(receipt)));
+  await assert.rejects(pruneNativeIssuance(reg, expiresAt + 10), /receipt key does not match/);
+  await authKv.delete(foreignReceiptKey);
+  const pruned = await pruneNativeIssuance(reg, expiresAt + 10);
+  assert.equal(pruned.retainedService, 1, "elapsed service JWT time is not topology-qualified absence");
+  assert.deepEqual(await readNativeIssuance(authKv, connection.userNkey), receipt);
+  await authKv.delete(nativeIssuanceKey(connection.userNkey));
+  await assert.rejects(receiptWriter(issuance), "deleted native service receipt cannot be recreated");
   const mutableBinding = { ...binding }, mutableAccess = structuredClone(access);
   const detached = readNativeServiceAccess(reg, reader, mutableBinding, mutableAccess, expiresAt);
   mutableBinding.assignmentDigest = contractDigest({ changed: true });

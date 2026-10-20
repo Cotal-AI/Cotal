@@ -12,3 +12,5 @@ Keep create-only native authority writes closed over deleted key history, includ
 Bind service serving-issuance evidence to broker connection coordinates and verify it after the native gate CAS.
 
 Add a host-only service-callout mint seam with principal attribution, a separate client inbox nonce and an original fixed expiry.
+
+Bind native service issuance receipts to the registered witness and epcred connection, and retain expired evidence until qualified retirement.

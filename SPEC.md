@@ -1463,6 +1463,15 @@ preserves it during staging and leader-reads the row and unchanged gate authorit
 An ordinary serving issuance cannot carry service connection evidence. These rows prove issuance,
 not broker acceptance or response delivery. Native root authorization remains separate.
 
+Service-callout natkey evidence additionally carries
+`service:{witness,credentialId,connection}`. The outer credentialId is the native root; the nested
+credentialId identifies the issued service JWT in epcred. The connection is the same authenticated
+broker triple, and its user key must match the natkey key. Recording checks the active epcred
+binding before and after the create-only write, verifies its receipt, reauthorizes and checks the
+original expiry before release. Existing receipt history cannot be reused. Expired service evidence
+is retained until topology-qualified retirement authorizes removal; the ordinary expiry pruner
+reports it separately and cannot remove it. That terminal pruning path is not implemented yet.
+
 **Native-key issuance evidence.** Every callout success first writes one create-only
 `natkey.<userNkey>` row in the same auth bucket, where `userNkey` is the broker-generated
 per-connection user public key the minted JWT is issued to (never the client's inbox nonce or a
