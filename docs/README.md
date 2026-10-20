@@ -101,7 +101,7 @@ For protocol implementers:
 | [Agent files](agent-files.md) | Every field of `.cotal/agents/<name>.md`. |
 | [Mesh manifest](manifest.md) | Every field of `cotal.yaml`. |
 | [Channels & permissions](channels-and-permissions.md) | The three access verbs and how to grant them. |
-| [Config & env](config.md) | The config file, every `COTAL_*` variable, the on-disk layout. |
+| [Config & env](config.md) | The config file, the operator-facing `COTAL_*` variables, the on-disk layout. |
 | [MeshView](mesh-view.md) | The observer model behind console and web (reference implementation). |
 | [Glossary](glossary.md) | Definitions of every term. |
 | [cotal-lang card](lang-card.md) | The one-page cotal-lang card: effects and results, the await rule, branch keys, top refusals. |

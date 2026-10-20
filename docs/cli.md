@@ -98,6 +98,7 @@ runtimes ship this way.
 | Agents & personas | [`service`](#service) | Run the manager as a user service (survives logout and reboot) |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Agents & personas | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
+| Agents & personas | [`deregister-instance`](#deregister-instance) | Remove the service registration of a manager instance whose host is gone, when the broker affirms nothing is subscribed on its rail |
 | Agents & personas | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Messaging & watching | [`describe` / `invoke`](#endpoint-control) | Resolve a v0.4 service's command surface off the wire; invoke one command by name |
@@ -120,6 +121,7 @@ runtimes ship this way.
 | Extensions & misc | [`deliver`](#server-daemons) | Run the server-side Plane-3 delivery daemon |
 | Workflow runs | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
 | Extensions & misc | [`feedback-intake`](#server-daemons) | Run a self-hosted feedback intake server |
+| Extensions & misc | [`auth-service`](#server-daemons) | Run a user-auth space's auth service by hand (`cotal up --user-auth` normally starts it) |
 
 The manifest modes of `up`, `spawn`, and `down` (`-f <cotal.yaml>`) plus `topology` are covered
 together under [Manifest deploys](#manifest-deploys).
@@ -217,6 +219,7 @@ current.
 ```bash
 cotal up [--detach] [--open] [--space <s>] [--server <url>] [--channels <path>] [--runtime <name>]
 cotal up --user-auth --idp <url> [--exchange-public-port <n> --exchange-public-url <https://…> [--exchange-trusted-proxy]]
+         [--advertised-server <url>] [--agent-provisioning-url <https://…>]
 cotal up --tls-cert <cert.pem> --tls-key <key.pem>   # serve broker TLS (both, or neither)
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
@@ -240,6 +243,8 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--exchange-public-port <n>` | none | With `--user-auth`: add the public exchange face on this loopback port, for an HTTPS reverse proxy to forward to |
 | `--exchange-public-url <https://…>` | none | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
 | `--exchange-trusted-proxy` | off | With `--exchange-public-port`: attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy; otherwise the socket address is used |
+| `--advertised-server <url>` | `--server` | With `--exchange-public-port`: the broker address the public discovery bundle tells participants to dial, such as a `wss://` address behind your proxy. Must be a `nats://`, `tls://`, `ws://` or `wss://` URL |
+| `--agent-provisioning-url <https://…>` | none | With `--exchange-public-port`: the deployment's agent-provisioning endpoint the public bundle advertises. A participant's `cotal spawn` on a remote user-auth mesh sends its login bearer there to provision the agent; without one, that spawn needs a one-time enrollment ([Run a mesh](run-a-mesh.md#remote-supervised-seats-by-enrollment)). HTTPS only |
 | `--detach` | off | Run in the background (stop with `cotal down`) |
 | `--tls-cert <path>` | none | PEM certificate to serve TLS with. Must be given together with `--tls-key`. Before starting the broker, Cotal checks readability, private-key mode, key/certificate match, the validity window, and host coverage. `nats-server` accepts an expired certificate and leaves the failure to clients, so Cotal performs these checks first. The decision is recorded; a later bare `cotal up` keeps serving TLS |
 | `--tls-key <path>` | none | PEM private key for `--tls-cert`. Refused if group- or other-readable (tighten to `600`) |
@@ -870,7 +875,7 @@ restore only when its details prove manager commit and its exact recorded listen
 ```bash
 cotal meshes [--json]
 cotal meshes add                      # guided, on a terminal
-cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open|user] [--tls] [--force]
+cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open|user] [--tls] [--allow-unencrypted-overlay] [--force]
 cotal meshes add <space> --mode user (--user-auth-file <bundle.json> | --from <https url>)
 cotal meshes rm <space> [<space> …] [--force]
 cotal sync [--idp <auth base URL>]
@@ -951,8 +956,9 @@ replaces an existing record).
 A hostname or public address is registrable only when the connection will **require TLS**. Pass
 `--tls`, or use a `tls://` URL. The scheme is recorded as enforced intent, so every later dial
 through the record demands the handshake (and `meshes add tls://…` against a plaintext broker is
-refused at registration). Without required TLS the fence admits loopback and private-overlay
-literals only. RFC1918 addresses are refused in both modes because a cafe LAN is private but does not belong to you.
+refused at registration). Without required TLS the fence admits loopback literals, and
+private-overlay literals only with `--allow-unencrypted-overlay`, which records your acceptance that
+the overlay is protected only while its tunnel is up ([Run a mesh](run-a-mesh.md#which-addresses-you-may-register)). RFC1918 addresses are refused in both modes because a cafe LAN is private but does not belong to you.
 
 A **user-auth** mesh registers from supplied pinned trust, never guessed: `--user-auth-file`
 takes the bundle exported where the mesh runs; `--from` asks before it dials the address at all,
@@ -1161,8 +1167,9 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>` | persona's `model:` | Model override |
 | `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
-| `--cwd <dir>` | this cwd | Working directory to root the agent at. Refused before launch when the directory does not exist on the serving manager's host. |
+| `--cwd <dir>` | this cwd; with `--detach`, the serving manager's workspace root | Working directory to root the agent at. With `--detach`, a relative path resolves against the manager's workspace root, not your shell. Refused before launch when the directory does not exist on the serving manager's host. |
 | `--prompt <text>` | none | Initial prompt auto-submitted at start |
+| `--opt <k=v>` | none | Connector-specific launch option, repeatable. Wins per key over the persona's `launchOptions:`; a connector with no option surface refuses it |
 | `--resume <id>` | none | Fork an existing session id into the mesh; only connectors that declare resume support accept it (see [the matrix](connectors.md)). The manager records the source session id, and `ps --wide` shows it. With `--detach --on <instance>`, a Claude session held on this host is carried to that instance first ([Resume a session](connect-claude.md#resume-a-session)); carrying one needs `--on` |
 | `--no-events` | event plane on where supported | Opt out of the session's structured event plane (`--events` only restates the default) |
 | `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
@@ -1302,8 +1309,8 @@ it is not limited to child processes owned by the manager.
 ## Endpoint control
 
 ```bash
-cotal describe <endpoint> [--on <instance>]                        [--space <s>]
-cotal invoke <endpoint> <command> [--args '<json>']              [--space <s>]
+cotal describe <endpoint> [--on <instance>]                        [--space <s>] [--server <url>] [--creds <path>]
+cotal invoke <endpoint> <command> [--args '<json>'] [--timeout <ms>] [--space <s>] [--server <url>] [--creds <path>]
 cotal invoke <endpoint> <command> --name <agent> [--admin]       [--space <s>]
 ```
 
@@ -1316,7 +1323,8 @@ pins `describe` to one manager instance's rail (the whole id, as `ps` prints it 
 unpinned, the class queue answers and the attribution line names whichever instance did. `invoke`
 calls one command by name: `--args` is a JSON object validated against the fetched input schema
 *before*
-publish; a targeted command takes `--name <agent>` (resolved to the agent's current principal through
+publish, and `--timeout` sets the reply deadline in milliseconds (default 10000). `--server` overrides the
+registry's broker URL and `--creds` names a creds file for an off-registry connection. A targeted command takes `--name <agent>` (resolved to the agent's current principal through
 `inspect`) or `--self`. `--admin` uses the admin instrument credential, whose cross-agent reach rides
 the operator-only `any` authorization mode. Neither command has compile-time knowledge of any
 endpoint's schemas - this is the same trust chain every built-in control command now uses. Needs an
@@ -1611,7 +1619,7 @@ refuses by name rather than dropping the keystroke.
 cotal personas list [-v] [--running]
 cotal personas show <name>
 cotal personas edit <name>
-cotal personas new <name> (--prompt <t> | --from <f>) [--role <r>] [--model <m>]
+cotal personas new <name> (--prompt <t> | --from <f>) --subscribe <a,b|""> [--role <r>] [--model <m>] [--force]
 cotal personas rm <name> --force
 ```
 
@@ -1621,10 +1629,11 @@ cotal personas rm <name> --force
 | `--role <r>` | none | `new`: the persona's role |
 | `--model <m>` | none | `new`: the persona's model |
 | `--prompt <t>` | none | `new`: the persona's prompt text |
-| `--from <f>` | none | `new`: seed the prompt from a file |
+| `--from <f>` | none | `new`: seed the prompt from a file, or `-` for stdin |
+| `--subscribe <a,b>` | none | `new`, required: the channels the persona reads; `""` for an agent reachable only by direct message |
 | `--verbose`, `-v` | off | `list`: include role / model / description |
 | `--running` | off | `list`: mark personas live on the mesh |
-| `--force` | none | `rm`: required, delete without prompting |
+| `--force` | none | `new`: overwrite an existing persona. `rm`: required, delete without prompting |
 
 Personas are the local agent files under the resolved mesh root's `.cotal/agents/`, the same catalog
 `cotal spawn` launches from. `--space` and `--server` therefore move every list, read, write, delete
@@ -1648,6 +1657,10 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 | `--roster <file>` | none | Declarative roster to boot at startup. See [Roster files](define-a-team.md#roster-files) |
 | `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `spawn -f`) |
 | `--spawn <names>` | none | Comma-separated personas to pre-spawn at startup |
+
+`--ws-port`, `--resume-attempt` and `--resume-commit-token` are passed by `cotal up` when it starts
+the manager, for the console session client and for resuming preserved seats. They are not for
+direct use.
 
 The manager is the agent supervisor and control plane: it answers `spawn --detach`, `stop`, `ps`,
 `attach`, and the `cotal_*` manager tools. `cotal up --detach` starts one for you; run `supervise`
@@ -2400,6 +2413,7 @@ cotal actor list
 | `--allow-publish <a,b>` | `>` (all channels) with `--full` | Channel post ACL; also the envelope for their agents' posting |
 | `--role <r>` | none | Role (scopes the task-queue consumer) |
 | `--label <l>` | none | Display label for `actor list` (never the IdP subject) |
+| `--parent <owner.actor>` | none | Audit link to the spawning principal. An operator grant is the authority, so the link does not narrow the row |
 
 The actor ledger is the single authorization source of a user-auth space: no row, no access.
 `grant --full` is the **full** envelope (all channels; scope `spawn,role:default`, so it may spawn and may delegate the default role). A
@@ -2424,12 +2438,13 @@ with its counts, or with the reason the result was not accepted. Managed-agent r
 ## doctor
 
 ```bash
-cotal doctor auth [--fix]
+cotal doctor auth [--fix] [--space <s>]
 ```
 
 Credential-health diagnosis and repair for this folder's mesh: renders every managed
 credential as healthy / near-expiry / expired and ends in `healthy` or the exact next
-command; `--fix` applies the repairs it can. The one surface every stale-credential error
+command; `--fix` applies the repairs it can. On a root that holds several spaces, `--space` names
+one; it defaults to the sole space. The one surface every stale-credential error
 points at. `--fix` takes the mesh's renewal lease when the broker answers and refuses while
 a manager or another doctor holds it; with no broker it repairs offline and says so.
 
@@ -2654,14 +2669,19 @@ keyed beta intake; without one it goes to the public `cotal.ai` intake and requi
 Operate durable workflow runs (cotal-lang programs) from the terminal.
 
 ```bash
-cotal run start --file <program> [--timeout <dur>] [--local] [--on <instance>]
+cotal run start --file <program> [--timeout <dur>] [--local --admit-read <channels> --admit-publish <channels>] [--on <instance>]
 cotal run resume <runId> [--local --file <program>] [--on <instance>]
 cotal run ps [--endpoint <ep>] [--json] [--on <instance>]
+cotal run ps --page --on <instance> [--limit <n>] [--cursor <cursor>] [--endpoint <ep>]
 cotal run journal <runId> [--endpoint <ep>] [--json] [--on <instance>]
 cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
 cotal run amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] [--on <instance>]
+cotal run revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>]
 cotal run migrate <runId> --local --file <program> [--endpoint <ep>]
 ```
+
+Every verb also takes `--space <s>`, `--server <url>` and `--creds <path>` to pick the mesh and the
+credential.
 
 `start` hands the program to the mesh's manager, which validates it, mints the run id (the record
 never takes a caller-supplied one), drives it in its own process, and answers with the id once the
@@ -2687,6 +2707,13 @@ journal does not record is absent: a checkpoint opened before `onExpiry` was rec
 The run header and errors go to stderr, so stdout carries only rows; an unreadable revocation marker
 prints its reason there and still exits 1. The text view is presentation and is not a stable
 parsing target. `--json` on any other verb is refused.
+`ps --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
+diagnostic JSON page instead of the full list:
+`--limit` takes 1 to 16 rows (default 8), and `--cursor` continues a scan from a returned
+`nextCursor`. It requires `--on` and refuses `--local`, and a page proves neither absence nor
+ownership ([Diagnostic inventory](workflows.md#diagnostic-inventory)).
+`revoke` writes the run's revocation marker from the project folder; `--by` and `--reason` are
+required ([workflows](workflows.md)).
 `answer` resolves an open
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
 answerer from your credential, so no `--by` is taken there. A settled step refuses a second
@@ -2698,14 +2725,16 @@ edited program against a run's journal, from this terminal under a read credenti
 only; the manager serves no run-migrate command): it prints whether the migration is admissible,
 every orphaned step with its verdict and code, and exits 0 on admissible and non-zero on not. It
 writes nothing: the commit that would file the migration is not reachable yet, and the report
-says so. `--timeout` sets the default
+says so. `migrate` refuses `--adopt`, `--release` and `--discard-approvals`, since they decide what a
+commit does and the check files nothing. `--timeout` sets the default
 checkpoint timeout for a drive (default 1h). `--on <instance>` sends a hosted verb to one manager
 instance, with the same rules as [`ps`](#managed-seats). On a user-auth mesh where you run more than one
 live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
 (`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
-`--by <who>`. On a
+`--by <who>`, and `start --local` requires `--admit-read` and `--admit-publish` (comma-separated
+patterns or `none`), the run's channel ceiling. On a
 user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
 there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
 its issuing host: the auth callout issues the user's manager connection, and every `run` verb rides
@@ -2720,7 +2749,7 @@ daemon comes up automatically with `cotal up --detach` in auth mode.
 
 ```bash
 cotal deliver --space <s> [--server <url>] [--creds <file>] [--root <dir>]
-cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy]
+cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>]
 cotal feedback-intake --keys <keys.json> [--port <n>] [--creds <file>]
 ```
 
@@ -2728,6 +2757,8 @@ cotal feedback-intake --keys <keys.json> [--port <n>] [--creds <file>]
 capability-gated local exchange and JWKS, and, when `--exchange-public-port` is set, the closed public
 exchange/discovery face forwarded by an HTTPS reverse proxy. `--exchange-public-url` is the proxy URL
 advertised to clients; `--exchange-trusted-proxy` opts into last-hop `X-Forwarded-For` attribution.
+`--advertised-server` and `--agent-provisioning-url` set the broker address and agent-provisioning
+endpoint the public bundle advertises, as on [`up`](#up).
 `cotal up --user-auth` starts and supervises the service for you, so you run it directly only to
 recover one by hand.
 

@@ -158,7 +158,11 @@ remains capability-gated. Add
 `--exchange-trusted-proxy` only when that listener is reachable exclusively through your trusted
 proxy; it keys failure throttling by the last `X-Forwarded-For` hop instead of the socket address.
 The well-known bundle includes IdP pins and a deny-all sentinel credential, so fetch it only from
-the configured HTTPS origin. To change these listener flags, stop and restart the mesh; a refresh
+the configured HTTPS origin. It tells participants to dial `--server` unless `--advertised-server`
+names the address they can reach, such as a `wss://` address behind the proxy. Add
+`--agent-provisioning-url <https://…>` to advertise an endpoint where a participant's `cotal spawn`
+provisions its agent; without one, a participant on another machine needs a one-time enrollment,
+described next. To change these listener flags, stop and restart the mesh; a refresh
 of an already-running service does not replace its bind or proxy policy. See
 [Identity & auth](identity-and-auth.md#per-user-authentication) for the trust boundary.
 

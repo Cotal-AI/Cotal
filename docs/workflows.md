@@ -310,7 +310,8 @@ mesh; on a bare broker a pause still resolves, it just cannot expire.
 ## Diagnostic inventory
 
 A large inventory can exceed the broker's reply limit. A host that supports page mode can return
-one bounded JSON page:
+one bounded JSON page. Page mode is not in release 0.88.0 or earlier: the calling CLI or connector and
+the manager both need a later version.
 
 ```bash
 cotal run ps --page --on <instance> --limit 8
@@ -323,8 +324,8 @@ manager binding. Keep the same space, endpoint filter, instance and process epoc
 The CLI requires `--on`; page mode is not available with `--local` or other verbs. An older host
 refuses page mode rather than returning a truncated legacy list.
 
-Each page has at most16 rows (default8), and the complete reply fits65536 bytes and the broker's
-payload limit. The reader issues at most64 storage calls and stops issuing them after2 seconds or
+Each page has at most 16 rows (default 8), and the complete reply fits 65536 bytes and the broker's
+payload limit. The reader issues at most 64 storage calls and stops issuing them after 2 seconds or
 the smaller request duration. These are application limits, not bounds on broker CPU, disk work,
 client-library retries or total elapsed time. One row that cannot fit is refused, never split.
 
