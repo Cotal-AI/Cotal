@@ -47,7 +47,7 @@ let setup: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
 const nonces = new WeakMap<NatsConnection, string>();
 const dial = async (bearer: string) => {
   const nonce = randomUUID().replaceAll("-", "");
-  const nc = await connect({ servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 4000, maxReconnectAttempts: 0,
+  const nc = await connect({ servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 4000, reconnect: false, maxReconnectAttempts: 0,
     authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(bearer)] });
   conns.push(nc); nonces.set(nc, nonce); return nc;
 };
@@ -132,17 +132,36 @@ try {
   assert.equal(receipt.service!.connection.serverId, serverId);
   assert.equal(receipt.service!.connection.clientId, service.info?.client_id, "native receipt identifies the accepted broker connection");
   assert.equal(receipt.connId, nonces.get(service));
+  await service.close();
   const reconnect = await dial(actualBearer); await reconnect.flush();
   assert.equal(mints.length, 2);
-  assert.notEqual(decode(mints[1]!.jwt).sub, firstKey, "reconnect preserves registration but records a new broker key");
+  const secondKey = decode(mints[1]!.jwt).sub;
+  assert.ok(typeof secondKey === "string");
+  assert.notEqual(secondKey, firstKey, "reconnect after disconnect preserves registration but records a new broker key");
+  const secondReceipt = (await readNativeIssuance(stores.authKv, secondKey))!;
+  assert.equal(secondReceipt.service!.connection.clientId, reconnect.info?.client_id);
+  assert.equal(secondReceipt.service!.connection.serverId, serverId);
+  const shortExpiry = Math.floor(Date.now() / 1000) + 3;
+  const expiring = await dial(await issuer.issueServiceAccess({ witness: actualWitness, expiresAt: shortExpiry }));
+  assert.equal(mints.length, 3);
+  assert.equal(mints[2]!.exp, shortExpiry);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const reason = await Promise.race([expiring.closed(), new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("native service JWT expiry did not close the connection")), 8000);
+    })]);
+    assert.match(String(reason), /expired/i, "broker closes the admitted service connection on authentication expiry");
+    assert.ok(Date.now() >= shortExpiry * 1000);
+  } finally { clearTimeout(timer); }
+
   open = false;
   await assert.rejects(dial(actualBearer), /authorization violation/i);
   open = true;
   await markLedgerRowRevoked(stores.authKv, credRowKey(lifecycleUid, rootCredentialId));
   await assert.rejects(dial(actualBearer), /authorization violation/i);
-  assert.equal(mints.length, 2, "fenced or revoked native authority never releases another mint");
+  assert.equal(mints.length, 3, "fenced or revoked native authority never releases another mint");
   assert.deepEqual(hooks, []);
-  console.log("service access callout: default refusal and ordinary control preserved; native registered service connected and reconnected through encrypted auth with exact broker receipts, then deny-new checked; public approval and terminal retirement not exercised");
+  console.log("service access callout: default refusal and ordinary control preserved; native registered service connected, disconnected/reconnected and expired through encrypted auth with exact broker receipts, then deny-new checked; public approval and terminal retirement not exercised");
 } finally {
   await setup?.close();
   for (const nc of conns.reverse()) await nc.close().catch(() => {});
