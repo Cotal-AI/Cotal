@@ -111,6 +111,10 @@ export interface IssueClaims {
   transferWriter?: UserTokenTransferWriter;
   /** Requested lifetime; capped at the view's {@link viewTtlCapSec} (an overlong ask THROWS). */
   ttlSec?: number;
+  /** Absolute expiry ceiling in unix seconds, such as the expiry of the proof the bearer rests on.
+   *  `exp` is the earlier of `now + ttlSec` and this, read at signing time, so time spent before
+   *  signing shortens the bearer instead of extending it; a ceiling at or before now THROWS. */
+  notAfter?: number;
 }
 
 /** A running issuer: mints bearers with the active key, publishes the public JWKS, and rotates. */
@@ -179,6 +183,8 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     if ((claims.view === "transfer-writer") !== (claims.transferWriter !== undefined))
       throw new Error('issue: view "transfer-writer" and a transferWriter claim come together or not at all');
     if (claims.transferWriter !== undefined) assertTransferWriterClaim(claims.transferWriter);
+    if (claims.notAfter !== undefined && !Number.isSafeInteger(claims.notAfter))
+      throw new Error("issue: notAfter must be an integer unix time when present");
     const cap = viewTtlCapSec(claims.view);
     const ttl = claims.ttlSec ?? cap;
     if (typeof ttl !== "number" || !Number.isFinite(ttl) || !(ttl > 0) || ttl > cap)
@@ -186,6 +192,9 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     const signer = keys.get(active);
     if (!signer) throw new Error("issue: no active signing key");
     const now = Math.floor(Date.now() / 1000);
+    if (claims.notAfter !== undefined && claims.notAfter <= now)
+      throw new Error(`issue: the expiry ceiling ${claims.notAfter} has passed - refusing to sign a bearer that would outlive its proof`);
+    const exp = claims.notAfter === undefined ? now + ttl : Math.min(now + ttl, claims.notAfter);
     return new SignJWT({
       scope: claims.scope ?? [],
       ver: USER_TOKEN_VER,
@@ -197,7 +206,7 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
       .setAudience(claims.space)
       .setIssuedAt(now)
       .setNotBefore(now)
-      .setExpirationTime(now + ttl)
+      .setExpirationTime(exp)
       .sign(signer.privateKey);
   };
 

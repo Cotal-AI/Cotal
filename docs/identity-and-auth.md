@@ -556,8 +556,10 @@ The bridge (`createIdpBridge`) exchanges a verified IdP token for a Cotal bearer
 1. **Bearer validation.** Verify the IdP's JWT offline against its **pinned JWKS**, with the token
    algorithm pinned to EdDSA. Keys resolve only through the pinned JWKS: a token carrying embedded
    key material (`jku`/`jwk`/`x5u`/`x5c`) is rejected, so the token can never influence key
-   resolution. Issuer and audience are checked, and the minted Cotal bearer is capped to the
-   upstream proof's remaining lifetime.
+   resolution. Issuer and audience are checked. The minted Cotal bearer never expires after the
+   upstream proof: the issuer signs the earlier of the requested lifetime and the proof's `exp`,
+   read when it signs, and refuses once the proof has expired. Time spent in the bridge's hooks
+   shortens the bearer instead of extending it.
 2. **Owner derivation.** The opaque per-space owner derives deterministically from the JSON-array
    encoding of `[idp issuer, sub]`, namespaced by issuer so no issuer/sub pair can straddle a
    delimiter, and re-login re-lands the same person in the same lanes. The owner-token *format*

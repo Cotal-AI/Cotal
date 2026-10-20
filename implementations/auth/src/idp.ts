@@ -278,7 +278,10 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
       // outlive the session proof it rests on. Otherwise a near-expired (or stolen just-before-expiry)
       // IdP JWT would exchange for a full MAX_TOKEN_TTL_SEC bearer, widening authority past the upstream
       // proof and defeating the "revocation bites when the IdP session lapses" model. An already-lapsed
-      // proof cannot mint anything (fail-loud).
+      // proof cannot mint anything (fail-loud). The relative TTL alone is not that cap: the hooks below
+      // await before the issuer reads its clock, so `notAfter` carries the proof's ABSOLUTE expiry
+      // (and a session-caller's session expiry) to signing time, and the issuer refuses once it passes.
+      let notAfter = Math.floor(idpExp);
       const idpRemaining = idpExp - Math.floor(Date.now() / 1000);
       if (idpRemaining <= 0)
         throw new Error("idp bridge: the IdP session proof has expired - cannot mint a bearer");
@@ -288,6 +291,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         if (!req.verifySession) throw new Error('view "session-caller" needs the identity plane\'s session decision - refusing to mint');
         session = await req.verifySession({ owner, actor: req.actor, lifecycleUid: grant.lifecycleUid });
         ttlSec = Math.min(ttlSec, Math.max(1, session.exp - Math.floor(Date.now() / 1000)));
+        notAfter = Math.min(notAfter, session.exp);
       }
       // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential id
       // rides act.credentialId — ensured (minted release-last on first exchange) BEFORE the
@@ -308,6 +312,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         ...(session ? { session } : {}),
         ...(req.transferWriter ? { transferWriter: req.transferWriter } : {}),
         ttlSec,
+        notAfter,
       });
       const { exp } = decodeJwt(token);
       if (typeof exp !== "number") throw new Error("idp bridge: minted bearer is missing exp - issuer contract violated");
