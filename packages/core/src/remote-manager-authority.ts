@@ -852,6 +852,20 @@ export interface RemoteRunAdmissionResult {
   admission: import("./run-admission.js").RunAdmission;
 }
 
+/** Issuer-observed keyed start or caller-confined exact read. No caller/run identity in body. */
+export interface RemoteRunSubmissionRequest extends Omit<RemoteRunAdmissionRequest, "kind" | "run"> {
+  kind: "manager-run-submission";
+  subject: string;
+}
+export interface RemoteRunSubmissionResult {
+  v: 1;
+  kind: "manager-run-submission";
+  requestId: string;
+  winner: boolean;
+  view: import("./run-submission.js").RunSubmissionView;
+  admission?: import("./run-admission.js").RunAdmission;
+}
+
 /** Revoke one admitted run through its issuing host. The authenticated holder, never the body,
  * supplies the owner and attribution. The admission supplies the run's owner. */
 export interface RemoteRunRevokeRequest extends Omit<RemoteRunAdmissionRequest, "kind" | "run"> {
@@ -934,6 +948,7 @@ export type PlatformControlInnerRequest =
   | RemoteManagerGoalIndexScanRequest
   | RemoteManagerAdminAuthorizationRequest
   | RemoteRunAdmissionRequest
+  | RemoteRunSubmissionRequest
   | RemoteRunAttemptRequest;
 
 /** Closed envelope for one platform control door call. It names no profile, permission, subject,
@@ -958,6 +973,7 @@ export type PlatformControlAuthorityResult<R extends PlatformControlInnerRequest
   : R extends RemoteManagerGoalIndexScanRequest ? RemoteManagerGoalIndexScanResult
   : R extends RemoteManagerAdminAuthorizationRequest ? RemoteManagerAdminAuthorizationResult
   : R extends RemoteRunAdmissionRequest ? RemoteRunAdmissionResult
+  : R extends RemoteRunSubmissionRequest ? RemoteRunSubmissionResult
   : R extends RemoteRunAttemptRequest ? RemoteRunAttemptResult
   : never;
 

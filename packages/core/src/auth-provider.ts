@@ -133,6 +133,9 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteRunAdmissionRequest;
   }): Promise<RemoteRunAdmissionResult>;
+  requestRemoteRunSubmission?(opts: { store: SecretStore; dir: string;
+    request: import("./remote-manager-authority.js").RemoteRunSubmissionRequest;
+  }): Promise<import("./remote-manager-authority.js").RemoteRunSubmissionResult>;
   requestRemoteRunAttempt?(opts: {
     store: SecretStore;
     dir: string;

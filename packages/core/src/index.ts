@@ -113,4 +113,5 @@ export * from "./private-tool-results.js";
 export * from "./run-host.js";
 export * from "./issued-authority.js";
 export * from "./run-admission.js";
+export * from "./run-submission.js";
 export * from "./issuer-session.js";

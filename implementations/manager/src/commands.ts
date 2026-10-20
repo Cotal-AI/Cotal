@@ -301,6 +301,10 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           state, owner: material.owner, registrationProof: retainedRegistrationProof,
           accountPublicKey: standing.accountPublicKey, processEpoch: registered.processEpoch,
           requestRunAdmission: (request) => provider.requestRemoteRunAdmission!({ ...providerCall, request }),
+          requestRunSubmission: async (request) => {
+            if (!provider.requestRemoteRunSubmission) throw new Error("auth provider does not implement keyed submission protocol");
+            return provider.requestRemoteRunSubmission({ ...providerCall, request });
+          },
           requestRunAttempt: (request) => provider.requestRemoteRunAttempt!({ ...providerCall, request }),
           requestRunRevoke: async (request) => {
             if (provider.requestRemoteRunRevoke === undefined) throw new Error(`the registered auth provider "${provider.name}" does not implement closed hosted-run revoke`);

@@ -57,6 +57,8 @@ import {
   newTakeoverId,
   admissionBucket,
   createRunAdmission,
+  bindAndAdmitRunSubmission, readRunSubmission, submissionFingerprint, newSubmissionRunId,
+  type RunSubmissionView, type RemoteRunSubmissionResult,
   readRunAdmission,
   revokeRunAdmission,
   readRunRevocation,
@@ -64,6 +66,7 @@ import {
   withIssuerSession,
   epRequestSubject,
   isIssuedCaller,
+  issuedPermitsSubject as importedIssuedPermitsSubject,
   EP_UNBOUND_CALLER_AUTHORITY,
   runDriverCaller,
   type EpCaller,
@@ -118,6 +121,8 @@ export interface RunHostingContext {
    *  run id it minted; the host resolves the issued caller and writes the admission. Separate from
    *  `renewRun`. Delegation to this registered host, not a proof of an arbitrary message. */
   readonly admitRun?: (args: { runId: string; subject: string }) => Promise<RunAdmission>;
+  /** Distinct observed keyed protocol. Absence refuses keyed commands, never legacy fallback. */
+  readonly submitRun?: (args: { subject: string }) => Promise<RemoteRunSubmissionResult>;
   /** Signerless host: the closed first-attempt/resume issuance for caller-held driver and mediator
    *  nkeys (`authorizeRemoteRunAttempt` then host signing). The host derives epoch/fence from the
    *  run record and refuses a revoked or foreign admission. Never used for renewal. */
@@ -240,6 +245,91 @@ export class RunHosting {
     return { runId };
   }
 
+  private keyedCoordinates(ctx: EpServeContext): { caller: EpCaller; deadline: number } {
+    const caller = ctx.subject.caller, bind = ctx.request.bind;
+    if (ctx.subject.rail !== "v1" || !isIssuedCaller(caller) || ctx.subject.route !== "inst"
+      || ctx.subject.instanceId !== this.ctx.instanceId || !bind || bind.instanceId !== this.ctx.instanceId
+      || bind.epoch !== ctx.identity.epoch || !Number.isSafeInteger(ctx.receivedAt)
+      || !Number.isSafeInteger(ctx.request.deadlineMs) || ctx.request.deadlineMs! <= 0)
+      throw new EpEnvelopeError("permission-denied", "keyed runs require fresh issued exact-instance/epoch contracts and original receive deadline");
+    return { caller, deadline: ctx.receivedAt! + ctx.request.deadlineMs! };
+  }
+
+  /** The binding winner alone launches. Duplicates observe, even if an earlier admission is
+   * absent. A lost reply never allocates a replacement run or repairs an incomplete binding. */
+  async startKeyed(ctx: EpServeContext, args: { source: string; file?: string; timeout?: string }): Promise<RunSubmissionView> {
+    this.assertReconciled();
+    const { caller, deadline } = this.keyedCoordinates(ctx), host = this.host();
+    const verdict = host.validate(args.source, args.file);
+    if (!verdict.ok) throw new EpEnvelopeError("bad-request", "keyed program does not validate", verdict.errors.map(e => ({ kind: LANG_PROBLEM_DETAIL_KIND, ...withoutFrame(e) })));
+    const placements = verdict.placements ?? [];
+    if (placements.length > 1) throw new EpEnvelopeError("unimplemented", "keyed run may place spawns on one manager instance only");
+    let result: { winner: boolean; view: RunSubmissionView; admission?: RunAdmission };
+    if (this.remote) {
+      if (!this.ctx.submitRun) throw new EpEnvelopeError("unimplemented", "this issuer does not support keyed submissions");
+      const remote = await this.ctx.submitRun({ subject: this.servedSubject(ctx) });
+      result = remote;
+      if (remote.view.submissionId !== ctx.request.id || remote.view.instanceId !== this.ctx.instanceId
+        || remote.view.processEpoch !== ctx.identity.epoch || remote.view.fingerprint !== submissionFingerprint(ctx.request, ctx.subject).fingerprint)
+        throw new EpEnvelopeError("internal", "issuer keyed response names other submission coordinates");
+    } else {
+      const auth = this.ctx.auth;
+      if (!auth || !isIssuedCaller(caller)) throw new EpEnvelopeError("unimplemented", "keyed runs require issued static or signerless authority");
+      const ref = { space: this.ctx.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
+      const resolved = await withIssuerSession({ servers: this.ctx.servers ?? DEFAULT_SERVER, space: this.ctx.space, auth, tls: false }, s => s.store.resolve(ref, s.sourceIsLive));
+      const subject = this.servedSubject(ctx);
+      if (!importedIssuedPermitsSubject(resolved.evidence.permissions.publish, subject))
+        throw new EpEnvelopeError("permission-denied", "issued ceiling does not permit keyed start");
+      const runId = newSubmissionRunId(), admission: RunAdmission = { version: 1, space: this.ctx.space, endpoint: this.ctx.endpoint,
+        runId, instanceId: this.ctx.instanceId, caller, ceiling: resolved.evidence.permissions,
+        provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now() };
+      result = await this.withAdmitter(runId, (kv, jsm) => bindAndAdmitRunSubmission({ kv, jsm, admission,
+        submissionId: ctx.request.id, fingerprint: submissionFingerprint(ctx.request, ctx.subject).fingerprint,
+        processEpoch: ctx.identity.epoch, callbackDeadline: deadline }), { caller, id: ctx.request.id });
+    }
+    if (!result.winner || !result.admission) return this.submissionActivation(result.view);
+    const admission = result.admission;
+    if (admission.runId !== result.view.runId || admission.instanceId !== this.ctx.instanceId
+      || admission.caller.owner !== caller.owner || admission.caller.actor !== caller.actor || admission.caller.uid !== caller.uid
+      || !isIssuedCaller(admission.caller) || !isIssuedCaller(caller) || admission.caller.generation !== caller.generation)
+      throw new EpEnvelopeError("internal", "keyed admission names another caller/run/instance");
+    if (Date.now() >= deadline) return { ...result.view, reason: "reconcile-held; original callback deadline elapsed before activation" };
+    await this.launch(host, { mode: "new", runId: admission.runId, source: args.source,
+      ...(args.file !== undefined ? { file: args.file } : {}), epoch: 1, fencingToken: 1,
+      timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT, admission: { admission, revoked: undefined }, placements });
+    return { ...result.view, state: "activated" };
+  }
+
+  async submissionStatus(ctx: EpServeContext, submissionId: string): Promise<RunSubmissionView> {
+    const { caller } = this.keyedCoordinates(ctx);
+    if (this.remote) {
+      if (!this.ctx.submitRun) throw new EpEnvelopeError("unimplemented", "this issuer does not support submission reads");
+      const r = await this.ctx.submitRun({ subject: this.servedSubject(ctx) });
+      if (r.winner || r.admission || r.view.submissionId !== submissionId || r.view.instanceId !== this.ctx.instanceId
+        || r.view.processEpoch !== ctx.identity.epoch) throw new EpEnvelopeError("internal", "invalid issuer submission read");
+      return this.submissionActivation(r.view);
+    }
+    const auth = this.ctx.auth;
+    if (!auth || !isIssuedCaller(caller)) throw new EpEnvelopeError("unimplemented", "keyed read needs issued authority");
+    const ref = { space: this.ctx.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
+    await withIssuerSession({ servers: this.ctx.servers ?? DEFAULT_SERVER, space: this.ctx.space, auth, tls: false }, async s => {
+      const resolved = await s.store.resolve(ref, s.sourceIsLive);
+      if (!importedIssuedPermitsSubject(resolved.evidence.permissions.publish, this.servedSubject(ctx)))
+        throw new EpEnvelopeError("permission-denied", "issued ceiling does not permit submission read");
+    });
+    const view = await this.withAdmitter(newSubmissionRunId(), (_kv, jsm) => readRunSubmission({ jsm,
+      space: this.ctx.space, endpoint: this.ctx.endpoint, caller, submissionId, instanceId: this.ctx.instanceId, processEpoch: ctx.identity.epoch }));
+    return this.submissionActivation(view);
+  }
+
+  private async submissionActivation(view: RunSubmissionView): Promise<RunSubmissionView> {
+    if (view.state !== "admitted" || !view.runId) return view;
+    try {
+      const record = await this.withOperator({ runId: view.runId }, (_planes, kv) => readRunRecord(kv, this.ctx.endpoint, view.runId!));
+      return record?.status ? { ...view, state: "activated" } : view;
+    } catch { return { ...view, state: "indeterminate", reason: "bound admission exists; activation observation unavailable" }; }
+  }
+
   /** Resolve the caller's issued authority and write the run's admission record, create-only,
    *  BEFORE the driver is launched and before the start reply. The ceiling is the evidence's,
    *  verbatim; nothing is read from a mutable ledger or an agent file. */
@@ -316,19 +406,19 @@ export class RunHosting {
   }
 
   /** One admission-store write over an ephemeral `run-admitter` credential pinned to this run. */
-  private async withAdmitter<T>(runId: string, fn: (kv: KV) => Promise<T>): Promise<T> {
+  private async withAdmitter<T>(runId: string, fn: (kv: KV, jsm: import("@nats-io/jetstream").JetStreamManager) => Promise<T>, submission?: { caller: EpCaller; id: string }): Promise<T> {
     const auth = this.ctx.auth;
     if (auth === undefined) throw new EpEnvelopeError("unimplemented", "an open mesh admits no hosted run (SPEC 14.8)");
     const nc = await dialerFor(this.ctx.servers ?? DEFAULT_SERVER)({
       servers: this.ctx.servers ?? DEFAULT_SERVER,
       ...standaloneConnectOpts({
-        creds: await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: this.ctx.endpoint, runId } }),
+        creds: await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: this.ctx.endpoint, runId, ...(submission ? { submission } : {}) } }),
         /* not yet wired to a recorded transport */ tls: false,
       }),
       maxReconnectAttempts: 0,
     });
     try {
-      return await fn(await new Kvm(nc).open(admissionBucket(this.ctx.space)));
+      return await fn(await new Kvm(nc).open(admissionBucket(this.ctx.space)), await jetstreamManager(nc));
     } finally {
       await nc.drain().catch(() => nc.close());
     }

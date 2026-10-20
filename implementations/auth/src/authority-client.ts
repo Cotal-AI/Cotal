@@ -171,7 +171,7 @@ export function servedRunRequestSubjects(space: string): string[] {
   const p = spacePrefix(space);
   const m = endpointToken("manager");
   return [
-    ...["run-start", "run-resume", "run-answer"].flatMap((c) => [`${p}.ep.v1.inst.${m}.*.${c}.>`, `${p}.ep.v1.one.${m}.${c}.>`]),
+    ...["run-start", "run-resume", "run-answer", "run-start-keyed", "run-submission-status"].flatMap((c) => [`${p}.ep.v1.inst.${m}.*.${c}.>`, `${p}.ep.v1.one.${m}.${c}.>`]),
     // A managed seat answers on the legacy rail, the relay path; nothing else served there is forwarded.
     `${p}.ep.inst.${m}.*.run-answer.>`,
     `${p}.ep.one.${m}.run-answer.>`,
