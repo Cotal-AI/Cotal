@@ -148,8 +148,8 @@ registered endpoint that agents call with `cotal_describe` and `cotal_invoke`, p
 `cotal linear` operator command. A `cotal ext`-installable package that peer-depends on core +
 workspace.
 - `**@cotal-ai/manager**` (`implementations/manager`): the agent supervisor: spawns and manages
-nodes via a pluggable Runtime (`pty` built-in; `tmux`, `cmux`, `orca`, and `herdr` via extensions), with `spawn --detach`/`stop`/`ps`/`attach` and
-a WebSocket attach endpoint.
+nodes via a pluggable Runtime (`pty` built-in; `tmux`, `cmux`, `orca`, and `herdr` via extensions), with `spawn --detach`/`stop`/`ps`/`attach`
+(attach streams over a mesh session) and a credentialed local HTTP console.
 - `**@cotal-ai/delivery**` (`implementations/delivery`): the server-side Plane-3 delivery daemon
 — the durable backstop (fan-out writer + trusted reader + membership/ACL authority), a scoped,
 least-privilege NATS client co-located with the broker. Self-registers the `deliver` command.

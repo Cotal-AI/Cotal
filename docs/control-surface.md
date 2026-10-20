@@ -473,8 +473,9 @@ with the grant's expiry. Terminal bytes then stream on core-NATS session subject
 scoped to the two parties. Backpressure is a bounded in-flight window with an explicit drop notice, never
 silent loss; a late attach still repaints the full screen from a replayed terminal
 snapshot. Close, expiry, target despawn, and a manager restart are distinct, surfaced end
-states: a restarted manager's successor refuses the old epoch's sessions and the client
-shows "manager restarted; re-attach".
+states: a restarted manager's successor refuses the old epoch's sessions. `cotal attach`
+reconnects when its link dies by asking the manager for a new session
+([CLI](cli.md#managed-seats)).
 
 ## Seat input
 

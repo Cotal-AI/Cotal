@@ -5,12 +5,12 @@ authenticated local protocol a manager worker uses to adopt that handle.
 
 **Tier:** `packages/` (leaf). Depends on PTY and terminal-mirror libraries, not on
 `@cotal-ai/core`, workspace, implementations, connectors, or NATS. The manager's `pty` runtime
-is the first production caller.
+calls it only to adopt and reap seats an earlier manager left under a custodian.
 
 Linux is the production transport in this cut. `create`/`spawn`/`adopt` in this package throw a
 named `custody transport unsupported on <platform>` error on darwin and win32. There is no
-in-process node-pty fallback here. The manager's `pty` runtime still spawns in-process off
-Linux and only `adopt` throws that named error.
+in-process node-pty fallback here. The manager's `pty` runtime spawns in-process on every
+platform. Its custodial `adopt` and `reap` are Linux-only and throw that named error elsewhere.
 
 `peerCredentials(socket)` and its `PeerCredentials` type are exported from the package root.
 For a connected Linux Unix socket, the function returns the kernel's peer `pid`, `uid` and
@@ -37,7 +37,8 @@ without a C compiler installs the prebuilt helpers; a missing helper, an unsuppo
 `linux-<arch>`, or a load failure throws rather than compiling in place.
 
 The package.json has no `os` / `cpu` / libc fields. Manager depends on this package on every
-platform: off Linux it still loads, and only `adopt` throws the named custody-transport error.
+platform: off Linux it still loads, and custody adoption, reaping and `cotal seats` throw the named
+custody-transport error.
 Gating install would skip the package on darwin and win32 and break that path. A musl or
 non-Linux host that reaches `peerCredentials` throws; there is no compile fallback and no
 silent degrade. First use of the helper is the right place for that refusal.
