@@ -28,10 +28,14 @@ import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
 
 // The plan's stale-cred fail-fast gate: render an unprovisioned / auth-rejected join as ONE human
 // sentence instead of a raw NATS stack. Shared by the self-mint provisioning step (which runs
-// BEFORE ep.start) and ep.start itself. Returns false for anything that isn't a known auth/
-// provisioning class, so the caller re-throws the raw error for genuinely unexpected failures.
+// BEFORE ep.start) and ep.start itself. Known TLS negotiation refusal is rendered here too.
+// Unexpected failures still propagate unchanged.
 function renderJoinAuthError(e: unknown, space: string): boolean {
   const msg = (e as Error)?.message ?? String(e);
+  if (msg === "server does not support 'tls'") {
+    console.error(c.red(`TLS is required to join ${space}, but this server does not support TLS. Ask the mesh operator for its TLS-enabled broker address.`));
+    return true;
+  }
   if (/consumer not found|no responders|not provisioned/i.test(msg)) {
     console.error(
       c.red(`${space} isn't provisioned for a console session yet - run `) +
