@@ -14,7 +14,7 @@ resume on another with the recorded steps returning instantly.
 
 | Primitive | Call | Returns |
 |---|---|---|
-| `spawn` | `await spawn(persona, { name?, worktree?, join?, role?, permits?, supervise?, onFork?, events? })` | agent handle |
+| `spawn` | `await spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events? })` | agent handle |
 | `turn` | `await turn(agent, { name, deadline? })` | `{ status: "done" \| "blocked" \| "handoff", to?, note?, at }` |
 | `ask` | `await ask(agent, { name, schema, deadline?, attempts? })` | the record the agent published |
 | `checkpoint` | `await checkpoint(name, prompt, { schema?, timeout?, onExpiry?, to? })` | see below |
