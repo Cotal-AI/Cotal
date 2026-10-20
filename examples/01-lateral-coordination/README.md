@@ -16,8 +16,8 @@ who delegates to whom — is just how you set it up.
 <p align="center"><sub><b>multicast</b> broadcast to a channel&nbsp; · &nbsp;<b>unicast</b> DM one peer&nbsp; · &nbsp;<b>anycast</b> reach <i>any one</i> of a role</sub></p>
 
 > **Status:** the **walking skeleton** (manual CLI peers), the **control plane** (manager +
-> `pty` runtime + web console), and the **Claude Code adapter** run today — `cotal start --agent
-> claude` spawns a real Claude session that joins the mesh, flips presence from its lifecycle
+> `pty` runtime + web console), and the **Claude Code adapter** run today — `cotal spawn --detach
+> --agent claude` spawns a real Claude session that joins the mesh, flips presence from its lifecycle
 > hooks, and wakes on incoming peer messages.
 
 ## What it demonstrates
@@ -34,7 +34,7 @@ who delegates to whom — is just how you set it up.
 
 ## Prerequisites
 
-- Node ≥ 20, pnpm, and `nats-server` (v2.11+). macOS: `brew install nats-server`.
+- Node ≥ 22, pnpm, and `nats-server` (v2.11+). macOS: `brew install nats-server`.
 - Install deps once, from the repo root: `pnpm install`.
 
 ## Run it
@@ -42,10 +42,12 @@ who delegates to whom — is just how you set it up.
 **1. Start the mesh** (one terminal — stays running):
 
 ```
-pnpm cotal up --open --channels examples/01-lateral-coordination/channels.json
+pnpm cotal up --open --no-manager --space demo --channels examples/01-lateral-coordination/channels.json
 ```
 
-If a nats-server is already listening on `:4222`, Cotal detects it and reuses it. The
+`--space demo` names the space every command below uses; without it the space takes the folder's
+name. `--no-manager` leaves the manager to this example (see below). If `:4222` is taken, `up` picks
+a free port and records it, so `cotal meshes` shows the address. The
 optional `--channels` file seeds the channel registry (per-channel replay policy +
 descriptions); edit it live with `cotal channels set <name> [--replay|--no-replay] [--desc …]`.
 
@@ -72,14 +74,20 @@ plane. The manager owns each peer's process in a pseudo-terminal (`pty` runtime)
 # one terminal — the supervisor (composition root: picks the cotal + claude connectors)
 (cd examples/01-lateral-coordination && pnpm manager)
 
-# then, from anywhere
-cotal start --space demo --name alice --role planner   # manager spawns alice in a PTY
+# then, from the repo root
+cotal spawn --detach --no-events --agent cotal --cwd "$PWD" --space demo --name alice --role planner   # manager spawns alice in a PTY
 cotal ps    --space demo                                # list managed peers + mesh status
 cotal attach --space demo --name alice                  # stream + drive her terminal (Ctrl-] detaches)
 cotal stop  --space demo --name alice                   # kill the process
 ```
 
-`cotal start --agent claude` spawns a real Claude Code session the same way (see below).
+The manager keeps its state under the nearest `.cotal/` above its folder, which is the repo root
+once step 1 has run there. Run step 1 from the repo root first, or the manager walks further up and
+writes into whatever `.cotal/` it finds, such as `~/.cotal`. The example's `cotal` peer runs
+`pnpm cotal join`, so it needs the repo as its `--cwd`, and `--no-events`, because it publishes no
+event plane. If `up` picked a port other than `:4222`, start the manager with
+`COTAL_SERVERS=<url>`. `cotal spawn --detach --agent claude` spawns a real Claude Code session the
+same way (see below).
 
 ## Watch them in the browser — CLI + manager + web console
 
@@ -88,28 +96,28 @@ shows one live terminal per managed agent. PTY bytes stream over a direct WebSoc
 stream `cotal attach` consumes), never the mesh. One example, all three surfaces together:
 
 ```
-pnpm cotal up --open                                       # 1. mesh, unauthenticated (terminal stays running)
+pnpm cotal up --open --no-manager --space demo             # 1. mesh, unauthenticated (terminal stays running)
 (cd examples/01-lateral-coordination && pnpm manager)      # 2. manager + console → prints http://127.0.0.1:7878/
 
 # 3. drive it from the CLI — the console updates live
-pnpm cotal start --space demo --agent claude --name ada   --role planner
-pnpm cotal start --space demo --agent claude --name linus --role reviewer
+pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name ada   --role planner
+pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name linus --role reviewer
 ```
 
 Open **http://127.0.0.1:7878/** — two panes appear, each a real Claude Code TUI you can type
-into. `cotal ps` / `stop` / `start` from any terminal and the grid reconciles (panes added,
+into. `cotal ps` / `stop` / `spawn --detach` from any terminal and the grid reconciles (panes added,
 removed, status dot flips green→red on exit). Port: `COTAL_CONSOLE_PORT` (default `7878`).
 
 ## A Claude Code agent joins as a peer
 
-A real coding agent joins through the **manager** — `cotal start --agent claude` does the native
+A real coding agent joins through the **manager** — `cotal spawn --detach --agent claude` does the native
 launch in a PTY pane (no wrapper in front, an ordinary Claude session):
 
 ```
 # one-time, per machine: install the bundled plugin for your user account
 claude plugin install cotal@cotal-mesh --scope user
 
-cotal start --space demo --agent claude --name dave --role builder   # manager spawns a real claude
+cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name dave --role builder   # manager spawns a real claude
 ```
 
 ### Personas from a file
