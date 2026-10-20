@@ -35,7 +35,7 @@ try {
     provenance: { kind: "issued", ref: { space, ...caller }, resolvedRevision: 1 } });
   const run = (id: string, a = admission(), fingerprint = contractDigest({ source: "same" })) => bindAndAdmitRunSubmission({ kv, jsm,
     admission: a, submissionId: id, fingerprint, processEpoch, callbackDeadline: Date.now() + 3000 });
-  const read = (id: string, who = caller, epoch = processEpoch) => readRunSubmission({ jsm, space, endpoint, caller: who, submissionId: id, instanceId, processEpoch: epoch });
+  const read = (id: string, who: EpCaller = caller, epoch = processEpoch) => readRunSubmission({ jsm, space, endpoint, caller: who, submissionId: id, instanceId, processEpoch: epoch });
   const id = mintLifecycleUid(), contenders = await Promise.all(Array.from({ length: 8 }, () => run(id)));
   assert.equal(contenders.filter(r => r.winner).length, 1);
   assert.equal(new Set(contenders.map(r => r.view.runId)).size, 1);
