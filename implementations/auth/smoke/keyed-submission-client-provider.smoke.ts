@@ -9,6 +9,8 @@ import { spawn } from "node:child_process";
 import { connect } from "@nats-io/transport-node";
 import { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit, awaitBrokerReady } from "@cotal-ai/smoke-kit";
 import type { ResolvedService, RemoteRunSubmissionRequest } from "@cotal-ai/core";
+import { encodeUser } from "@nats-io/jwt";
+import { fromSeed, fromPublic } from "@nats-io/nkeys";
 
 const home = mkdtempSync(join(tmpdir(), "keyed-client-home-"));
 process.env.COTAL_HOME = home;
@@ -29,9 +31,11 @@ const service = { endpoint: "manager", caller, responder: { endpoint: "manager",
   pinnedInstanceId: instanceId, commands: new Map(["run-start-keyed", "run-submission-status"].map(name => [name, { name, class: "ephemeral", contract }]))
 } as unknown as ResolvedService;
 const prepared = core.prepareKeyedRunSubmission("client-cells", service, core.mintLifecycleUid(), { source: "log(1);" });
+if (!process.env.AGENT41_REMAINING_EDGES_ONLY) {
 await assert.rejects(core.invokeKeyedRunSubmission({} as never, "client-cells", JSON.parse(JSON.stringify(prepared)), { deadlineMs: 50 }), /prepared/);
 await assert.rejects(core.readKeyedRunSubmission({} as never, "client-cells", JSON.parse(JSON.stringify(prepared)), { deadlineMs: 50 }), /pinned support/);
 console.log("PASS exported helper rejects serialized structural handle before any broker access, no persisted restart recovery implied");
+}
 
 const port = await freePort(), servers = `nats://127.0.0.1:${port}`, space = "client-cells";
 assert.notEqual(port, 4222);
@@ -46,6 +50,7 @@ const closed: Array<() => Promise<void>> = [];
 try {
   await awaitBrokerReady(() => core.isReachable(servers), { servers, attempts: 50, delayMs: 100 });
   await core.setupSpaceStreams({ servers, space, creds: await core.mintCreds(auth, core.newIdentity(), "provisioner") });
+  if (!process.env.AGENT41_REMAINING_EDGES_ONLY) {
   const issued = { generation, acceptedToken: core.mintAcceptedToken() };
   const creds = await core.withIssuerSession({ servers, space, auth, tls: false }, s => core.mintCreds(auth, id, "agent", {
     lifecycleUid: uid, expiresInSeconds: 300, issued, endpointCapabilities: [
@@ -59,12 +64,19 @@ try {
     await nc.close();
   }
   console.log("PASS actual old legacy-only issued ceiling cannot publish keyed start, reconnect does not gain new command rights");
+  }
   // Public helper + real native RPC, but synthetic contract validators and responder. This is
   // an error-propagation regression, not native serving-grant or Describe acceptance.
-  const operator = await connect({ servers, ...core.standaloneConnectOpts({ creds: await core.mintCreds(auth, core.newIdentity(), "provisioner"), tls: false }), reconnect: false });
-  closed.push(() => operator.close());
   const requestPattern = `cotal.${space}.ep.v1.inst.manager.${instanceId}.*.>`;
-  const responder = operator.subscribe(requestPattern, { callback: (_error, msg) => {
+  const fixtureIdentity = core.newIdentity();
+  const jwt = await encodeUser("owned-keyed-error-responder", fromPublic(fixtureIdentity.id), fromPublic(auth.account.pub), {
+    pub: { allow: [requestPattern, core.epResponderIssuedReplyPattern(space, "manager", instanceId, 0)] },
+    sub: { allow: [requestPattern, core.epCallerReplyFilter(space, caller)] },
+  }, { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)), exp: Math.floor(Date.now() / 1000) + 60 });
+  const operator = await connect({ servers, ...core.standaloneConnectOpts({ creds: core.credsFromJwt(jwt, fixtureIdentity), tls: false }), reconnect: false });
+  closed.push(() => operator.close());
+  const responder = operator.subscribe(requestPattern, { callback: (error, msg) => {
+    if (error || !msg?.subject) return;
     const parsed = core.parseEpSubject(msg.subject); if (!parsed || parsed.plane !== "request") return;
     const request = JSON.parse(new TextDecoder().decode(msg.data));
     const replySubject = core.epReplySubject(space, { endpoint: "manager", instanceId, epoch: 0, caller: parsed.caller, nonce: parsed.nonce });
