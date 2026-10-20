@@ -1545,16 +1545,23 @@ export function cotalToolSpecs(
         value: z.unknown().optional().describe("answer only: supply the value requested by the open checkpoint or ask and match its answer shape. A checkpoint may resolve without a value; an ask must receive its requested record. Use null only when that is the intended answer."),
         artifact: z.string().min(1).optional().describe("answer only: a reference to what you reviewed before answering, recorded beside the answer."),
         endpoint: z.string().min(1).optional().describe("status/ps/answer: the endpoint the run record lives under. Omit for runs the manager hosts."),
+        page: z.strictObject({
+          limit: z.number().int().min(1).max(16).optional(),
+          cursor: z.string().min(1).max(3072).regex(/^[A-Za-z0-9_-]+$/).optional(),
+        }).optional().describe("ps only: one bounded diagnostic JSON page, default 8 rows. Pin the manager with instance unless this session is already bound. Continuation is not snapshot, absence or ownership proof."),
         instance: managerInstanceArg,
       },
       async run(
         agent,
         config,
-        a: { verb: "start" | "status" | "ps" | "answer" | "resume"; source?: string; file?: string; timeout?: string; runId?: string; stepKey?: string; value?: unknown; artifact?: string; endpoint?: string; instance?: string },
+        a: { verb: "start" | "status" | "ps" | "answer" | "resume"; source?: string; file?: string; timeout?: string; runId?: string; stepKey?: string; value?: unknown; artifact?: string; endpoint?: string; page?: { limit?: number; cursor?: string }; instance?: string },
       ) {
         const need = (field: keyof typeof a, verb: string): ToolResult | undefined =>
           a[field] === undefined ? err(`cotal_run ${verb}: \`${String(field)}\` is required`) : undefined;
         try {
+          if (a.page !== undefined && a.verb !== "ps") return err("cotal_run: page is supported only for ps");
+          if (a.page !== undefined && a.instance === undefined && config.managerInstanceId === undefined)
+            return err("cotal_run ps: diagnostic pages require an explicit instance or a bound manager");
           if (a.verb === "start") {
             const missing = need("source", "start");
             if (missing) return missing;
@@ -1571,8 +1578,17 @@ export function cotalToolSpecs(
             return ok(`Resumed run ${a.runId} on the manager from its recorded program.`);
           }
           if (a.verb === "ps") {
-            const reply = await agent.run("ps", { endpoint: a.endpoint }, a.instance);
+            const reply = await agent.run("ps", { endpoint: a.endpoint, ...(a.page !== undefined ? { page: a.page } : {}) }, a.instance);
             if (!reply.ok) return err(renderRunRefusal("ps", reply));
+            if (a.page !== undefined) {
+              const page = reply.data as { semantics?: unknown; nextCursor?: unknown } | null;
+              if (page === null || typeof page !== "object" || Array.isArray(page) || page.semantics !== "diagnostic")
+                return err("the manager did not return a diagnostic inventory page");
+              const text = JSON.stringify(page);
+              if (a.page.cursor !== undefined && page.nextCursor === a.page.cursor)
+                return err(`Diagnostic inventory made no progress; retain this incomplete observation, do not retry in a loop: ${text}`);
+              return ok(text);
+            }
             const rows = reply.data as Array<{ runId: string; endpoint: string; state?: string; holder?: string; journalHigh?: number; forkedFrom?: { run: string; step: string } }>;
             if (rows.length === 0) return ok("No workflow runs are recorded in this space.");
             return ok(rows.map((r) => `${r.runId}  ${r.endpoint}  ${r.state ?? "(no status)"}  holder=${r.holder ?? "-"}  journal=${r.journalHigh ?? "-"}${r.forkedFrom ? `  forked-from=${r.forkedFrom.run}@${r.forkedFrom.step}` : ""}`).join("\n"));

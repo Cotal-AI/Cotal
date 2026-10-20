@@ -730,7 +730,16 @@ const RUN_ID_OUTPUT_SCHEMA = {
 } as const;
 const RUN_PS_INPUT_SCHEMA = {
   type: "object", additionalProperties: false,
-  properties: { endpoint: { type: "string", minLength: 1 } },
+  properties: {
+    endpoint: { type: "string", minLength: 1 },
+    page: {
+      type: "object", additionalProperties: false,
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 16 },
+        cursor: { type: "string", minLength: 1, maxLength: 3072, pattern: "^[A-Za-z0-9_-]+$" },
+      },
+    },
+  },
 } as const;
 const RUN_ROW_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId", "endpoint"],
@@ -754,7 +763,48 @@ const RUN_ROW_SCHEMA = {
     revocationUnreadable: { type: "string" },
   },
 } as const;
-const RUN_PS_OUTPUT_SCHEMA = { type: "array", items: RUN_ROW_SCHEMA } as const;
+const RUN_PAGE_STATUS_SCHEMA = {
+  type: "object", additionalProperties: false,
+  required: ["v", "observedSpecRevision", "state", "holder", "epoch", "fencingToken", "journalHigh", "at", "statusRevision", "staleProjection"],
+  properties: {
+    v: { const: 1 }, observedSpecRevision: { type: "integer", minimum: 0 },
+    state: { type: "string", enum: ["running", "released", "completed", "failed"] },
+    holder: { type: "string" }, epoch: { type: "integer", minimum: 0 }, fencingToken: { type: "integer", minimum: 0 },
+    journalHigh: { type: "integer", minimum: -1 }, at: { type: "number", minimum: 0 },
+    statusRevision: { type: "integer", minimum: 1 }, staleProjection: { type: "boolean" },
+  },
+} as const;
+const RUN_PAGE_SCHEMA = {
+  type: "object", additionalProperties: false,
+  required: ["v", "semantics", "space", "endpointFilter", "responder", "cutSeq", "nextSeq", "items", "endObserved", "stopReason", "storageReads"],
+  properties: {
+    v: { const: 1 }, semantics: { const: "diagnostic" }, space: { type: "string" },
+    endpointFilter: { anyOf: [{ type: "null" }, { type: "string", minLength: 1, maxLength: 64 }] },
+    responder: {
+      type: "object", additionalProperties: false, required: ["instanceId", "epoch"],
+      properties: { instanceId: { type: "string", pattern: "^[a-z0-9]{26,32}$" }, epoch: { type: "integer", minimum: 0 } },
+    },
+    cutSeq: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER - 1 },
+    nextSeq: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+    items: {
+      type: "array", maxItems: 16,
+      items: {
+        type: "object", additionalProperties: false,
+        required: ["endpoint", "runId", "specRevision", "startedAt", "observedAt", "status", "revocation"],
+        properties: {
+          endpoint: { type: "string", minLength: 1, maxLength: 64 },
+          runId: { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$" },
+          specRevision: { type: "integer", minimum: 1 }, startedAt: { type: "number", minimum: 0 }, observedAt: { type: "number", minimum: 0 },
+          status: { anyOf: [{ type: "null" }, RUN_PAGE_STATUS_SCHEMA] }, revocation: { enum: ["present", "not-observed"] },
+        },
+      },
+    },
+    nextCursor: { type: "string", minLength: 1, maxLength: 3072, pattern: "^[A-Za-z0-9_-]+$" },
+    endObserved: { type: "boolean" }, stopReason: { enum: ["end", "rows", "bytes", "read-budget"] },
+    storageReads: { type: "integer", minimum: 0, maximum: 64 },
+  },
+} as const;
+const RUN_PS_OUTPUT_SCHEMA = { anyOf: [{ type: "array", items: RUN_ROW_SCHEMA }, RUN_PAGE_SCHEMA] } as const;
 const RUN_STATUS_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId", "endpoint", "spec", "journal"],
   properties: {
@@ -1044,7 +1094,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 28,
+    revision: 29,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

@@ -42,6 +42,7 @@ import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
 import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
 import type { KV } from "@nats-io/kv";
+import { listRunPage } from "./run-list-page.js";
 
 function outcomeOf(out: DriveOutcome): RunHostOutcome {
   if (out.status === "completed")
@@ -350,6 +351,8 @@ export const cotalLangRunHost: RunHost = {
       journal: await journalRows(planes.kv, req.endpoint, replay.records),
     };
   },
+
+  listPage: listRunPage,
 
   async list(planes: RunHostPlanes, req: { endpoint?: string }): Promise<RunListRow[]> {
     // Run record keys are `run.<endpoint>.<runId>.<spec|status>`; the scan is over the spec half,
