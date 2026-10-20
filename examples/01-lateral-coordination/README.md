@@ -93,8 +93,9 @@ such as an agent session's own `COTAL_SPACE`, would point it at another space. I
 under the nearest `.cotal/` above its folder, which is the repo root only because of the
 `mkdir -p .cotal` in step 1. The example's `cotal` peer runs `pnpm cotal join`, so it needs the repo
 as its `--cwd`, and `--no-events`, because it publishes no event plane. Every manager spawn needs a
-persona: with no `--config` and no persona name, the manager looks for `.cotal/agents/default.md`
-under the repo root and refuses when it is missing. These commands pass one of the example's
+persona: with no `--config` and no persona name, `cotal spawn` asks for the persona that
+`COTAL_DEFAULT_PERSONA` names, else `default`, and the manager refuses when
+`.cotal/agents/<persona>.md` is missing under the repo root. These commands pass one of the example's
 [agent files](./agents/) instead, as a path from the repo root. `cotal spawn --detach
 --agent claude` spawns a real Claude Code session the same way (see below).
 
@@ -189,7 +190,7 @@ broadcast and a DM, observe a `working` state change, and detect `offline` on le
 ## Runtime options
 
 The manager defaults to `pty`. To spawn agents into a **tmux window** or **cmux tab** instead,
-import the matching extension in the composition root and select it at launch:
+install the matching extension (or import it in your own composition root) and select it at launch:
 
 ```bash
 # tmux — each agent gets its own window in the cotal session
@@ -199,6 +200,8 @@ cotal supervise --runtime tmux   # requires: cotal ext add @cotal-ai/tmux (or im
 cotal supervise --runtime cmux   # requires: cotal ext add @cotal-ai/cmux (or import it in a composition root)
 ```
 
-With `--runtime tmux` or `--runtime cmux` and the matching package neither installed nor imported,
-the manager refuses with `unknown runtime "<runtime>"` and names both remedies — no silent fallback
-to pty.
+Without the matching package, `cotal supervise` refuses with
+`no installed extension provides runtime "<runtime>"` and names the package to add. A composition
+root that builds its own `Manager`, such as this example's manager with `COTAL_RUNTIME=tmux`,
+refuses with `unknown runtime "<runtime>"` and names both installing and importing the integration.
+Neither falls back to pty.

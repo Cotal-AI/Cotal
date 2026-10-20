@@ -193,7 +193,7 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 | `COTAL_CONTROL_SOCKET` | The session's local control endpoint path. The MCP server listens on it and the lifecycle hooks connect to it. A launcher-spawned session carries the token that authenticates the first frame in its launch material. A hand-driven Claude Code or jcode session sets this path and `COTAL_CONTROL_TOKEN` itself (see [Launch material](#launch-material)) |
 | `COTAL_BRIDGE_SOCKET` / `COTAL_TOOLS_FILE` / `COTAL_PARENT_PID` | Hermes sidecar plumbing (bridge socket, generated tool descriptors, launcher pid to watch). The bridge socket's first frame carries the control token from the launch material (or `COTAL_CONTROL_TOKEN` in standalone mode) |
 | `OPENCODE_CONFIG_CONTENT` | Inline OpenCode config (the injected cotal plugin, highest merge layer) |
-| `OPENCODE_DB` / `OPENCODE_HOME` / `OPENCODE_PORT` / `OPENCODE_SERVER_URL` / `COTAL_OPENCODE_*` | OpenCode server plumbing (home, port, DB, server URL) |
+| `OPENCODE_DB` / `COTAL_OPENCODE_*` | OpenCode server plumbing (the per-agent DB, and the connector's home, port and server URL) |
 
 A spawned agent receives a fixed OS execution allow-list (PATH, HOME, TERM, locale, and
 XDG/Windows config directories), the machine-wide `COTAL_*` operator knobs (`COTAL_HOME`, the

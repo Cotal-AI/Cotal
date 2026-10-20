@@ -53,6 +53,7 @@ interface FeedEntry {           // one feed row
   toIds?: string[];             // unicast: authoritative target endpoint ids
   toNames?: string[];           // unicast: targets resolved off the roster
   count?: number;               // unicast: burst multiplicity for a coalesced entry
+  events?: boolean;             // arrived on an agent's event channel, not a chat channel
   text: string;                 // parts joined, plain; the surface colours it
 }
 
@@ -63,7 +64,7 @@ interface MeshSnapshot {
   feed:      FeedEntry[];       // classified + coalesced + windowed
   membership: { snapshot?: MembershipSnapshot; unreadable?: string };  // the feed as last read (below)
   rates:     { msgsPerSec: number; activity: number[] };  // rolling 1 s rate; 15 x 4 s volume buckets (60 s)
-  status:    { connected: boolean; space: string; dmVisible: boolean; error?: string };
+  status:    { connected: boolean; space: string; dmVisible: boolean; error?: string; warning?: string };
   signals:   MeshSignals;       // derived operator signals (below)
   nameOf:    (id: string) => string;   // unicast target id → display name
 }
