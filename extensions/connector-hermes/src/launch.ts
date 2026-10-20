@@ -40,8 +40,9 @@ import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat
  *  CEILING 0.22 (exclusive). Everything through 0.21.x is verified compatible on the surfaces
  *  this connector binds: the four gateway.platforms.base imports resolve, Platform and
  *  PlatformConfig are unchanged, all five registered hooks are still in VALID_HOOKS, and
- *  register_platform / register_tool / register_hook keep their signatures. 0.22 does not exist
- *  yet, so admitting it would be a claim about code nobody has read.
+ *  register_platform / register_tool / register_hook keep their signatures. 0.22.0 was released
+ *  upstream on 2026-10-14 and has not been checked against those surfaces, so admitting it would be
+ *  a claim about code nobody has read.
  *
  *  Refusing outside the range is deliberate: a silent degrade here surfaces as a TypeError at
  *  platform connect, after a clean-looking plugin load. */
