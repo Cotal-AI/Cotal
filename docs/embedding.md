@@ -81,7 +81,11 @@ Scoped Describe callbacks also receive an optional immutable local context with 
 complete-envelope fingerprint, serving identity and receive-relative deadline information.
 `parseDescribeObservation` shares native syntax and full-JSON fingerprint checks with trusted observers.
 Neither the context nor a fingerprint proves broker receipt to a remote authority. The remote
-observer, policy projection and Describe authority HTTP operation are not implemented yet.
+observer and policy projection are not implemented yet. The client contract admits an explicit
+read-only `describe-view` operation using only service-access proof. It checks witness, observation,
+principal-policy basis and remaining validity, requires no-store responses, and bounds preparation,
+HTTP streaming and validation by the same local deadline. Cancellation cannot restart that deadline.
+The native handler and serving adapter are still required before this can authorize a remote view.
 
 `parseEndpointCapabilities` normalizes the native caller capability shape. `endpointCapabilitiesWithin`
 checks route, instance, target and journal containment using the native grant builders. The host

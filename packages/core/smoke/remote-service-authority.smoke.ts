@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { assertBoundedOwner } from "../src/endpoint-subjects.js";
+import { assertBoundedOwner, epRequestSubject } from "../src/endpoint-subjects.js";
 import { createAccount } from "@nats-io/nkeys";
 import { contractDigest } from "../src/canonical.js";
+import { spacePrefix } from "../src/subjects.js";
 import {
   parseServiceAuthorityEnvelope, parseServiceAuthorityInfo, parseServiceAuthorityRequest, parseServiceAuthorityResult,
   parseServiceRegistrationWitness, serviceAuthorityRequestDigest, serviceEndpointActor, serviceWitnessDigest,
@@ -33,6 +34,22 @@ const registration: ServiceAuthorityRequest = {
   expected: { state: "unregistered" },
 };
 const activate: ServiceAuthorityRequest = { ...common, operation: "activate", witness };
+const observedSubject = epRequestSubject(identity.space, { endpoint: identity.endpoint, command: "describe", route: { mode: "one" },
+  caller: { owner, actor: "caller", uid: "c".repeat(32) }, nonce: "n".repeat(32) });
+const describeView: ServiceAuthorityRequest = { ...common, operation: "describe-view", witness,
+  observation: { subject: observedSubject, fingerprint: contractDigest({ observed: true }) } };
+const viewResult = { ...common, operation: "describe-view", state: "view", witness, observation: describeView.observation,
+  basis: "principal-policy-v1", commands: ["read"], validForMs: 1000 };
+assert.deepEqual(parseServiceAuthorityResult(viewResult, describeView), viewResult);
+for (const change of [{ basis: "issued-ceiling" }, { commands: ["read", "read"] }, { validForMs: 0 }, { validForMs: 2001 },
+  { validForMs: 1.5 }, { witness: { ...witness, processEpoch: 2 } },
+  { observation: { ...describeView.observation, fingerprint: contractDigest({ changed: true }) } }])
+  assert.throws(() => parseServiceAuthorityResult({ ...viewResult, ...change }, describeView));
+for (const subject of [observedSubject.replace(`${spacePrefix(identity.space)}.`, `${spacePrefix("other")}.`),
+  epRequestSubject(identity.space, { endpoint: identity.endpoint, command: "describe", route: { mode: "inst", instanceId: "z".repeat(32) },
+    caller: { owner, actor: "caller", uid: "c".repeat(32) }, nonce: "n".repeat(32) })])
+  assert.throws(() => parseServiceAuthorityRequest({ ...describeView, observation: { ...describeView.observation, subject } }));
+
 const snapshot = {
   spec: { value: { endpoint: identity.endpoint, owner, clusterDigests: [contractDigest(root)], protocol: { v: 1 } }, revision: 2 },
   name: { authorized: true, revision: 3 }, processEpoch: 1, contractArtifacts: [root],
@@ -67,10 +84,10 @@ const proofKinds = ["idp", "service-renewal", "service-access"] as const;
 const allowed = {
   register: ["idp"], activate: ["idp", "service-renewal"], renew: ["service-renewal"],
   ready: ["service-access"], revoke: ["idp", "service-renewal"],
-  status: ["idp", "service-renewal", "service-access"],
+  status: ["idp", "service-renewal", "service-access"], "describe-view": ["service-access"],
 };
-for (const operation of ["register", "activate", "renew", "ready", "revoke", "status"] as const) {
-  const request = operation === "register" ? registration : operation === "status"
+for (const operation of ["register", "activate", "renew", "ready", "revoke", "status", "describe-view"] as const) {
+  const request = operation === "describe-view" ? describeView : operation === "register" ? registration : operation === "status"
     ? { ...common, operation, target: { kind: "instance" } }
     : { ...common, operation, witness };
   for (const kind of proofKinds) {

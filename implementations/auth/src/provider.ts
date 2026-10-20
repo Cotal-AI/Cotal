@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { acquireLock, AgentGrantConflictError } from "@cotal-ai/core";
 import { parseServiceAuthorityEnvelope, parseServiceAuthorityRequest } from "@cotal-ai/core";
-import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl } from "./service-authority-client.js";
+import { readRemoteServiceAuthorityInfo, postRemoteServiceAuthority, serviceAuthorityUrl, withServiceAuthorityBudget, assertServiceViewFreshness } from "./service-authority-client.js";
 import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, hashActorToken, newActorToken, revokeManagedActor, revokeManagedActorAt } from "./ledger.js";
@@ -246,20 +246,26 @@ export const cotalAuthProvider: AuthProvider = {
     return readRemoteServiceAuthorityInfo(target.base, space);
   },
 
-  async serviceEndpointAuthority({ store, dir, request: raw, proof }) {
-    const request = parseServiceAuthorityRequest(raw);
-    const target = serviceClientTarget(store, dir, request.space);
-    serviceAuthorityUrl(target.base);
-    if (proof !== undefined && proof.kind !== "service-renewal" && proof.kind !== "service-access")
-      throw new Error("service authority client accepts only its own login or a service proof");
-    const checked = parseServiceAuthorityEnvelope({ request, proof: proof ?? { kind: "idp", token: "pending-login" } });
-    const sentinelCreds = await target.readSentinel();
-    if (!sentinelCreds) throw new Error("service authority client has no sentinel projection; refresh the registered space before setup");
-    const actualProof = proof === undefined
-      ? { kind: "idp" as const, token: await fetchIdpJwt(target.idpUrl, requireIdpSession(homeCotalDir(), target.idpUrl).token) }
-      : checked.proof;
-    const result = await postRemoteServiceAuthority(target.base, { request, proof: actualProof });
-    return { result, sentinelCreds };
+  async serviceEndpointAuthority({ store, dir, request: raw, proof, timeoutMs, signal }) {
+    const startedAt = performance.now(), request = parseServiceAuthorityRequest(raw);
+    return withServiceAuthorityBudget(request.operation, { timeoutMs, signal }, async (budget) => {
+      const target = serviceClientTarget(store, dir, request.space);
+      serviceAuthorityUrl(target.base);
+      if (proof !== undefined && proof.kind !== "service-renewal" && proof.kind !== "service-access")
+        throw new Error("service authority client accepts only its own login or a service proof");
+      const checked = parseServiceAuthorityEnvelope({ request, proof: proof ?? { kind: "idp", token: "pending-login" } });
+      const sentinelCreds = await target.readSentinel();
+      budget.check();
+      if (!sentinelCreds) throw new Error("service authority client has no sentinel projection; refresh the registered space before setup");
+      const actualProof = proof === undefined
+        ? { kind: "idp" as const, token: await fetchIdpJwt(target.idpUrl, requireIdpSession(homeCotalDir(), target.idpUrl).token) }
+        : checked.proof;
+      budget.check();
+      const result = await postRemoteServiceAuthority(target.base, { request, proof: actualProof }, { signal: budget.signal, timeoutMs: budget.remainingMs() });
+      budget.check();
+      assertServiceViewFreshness(result, startedAt);
+      return { result, sentinelCreds };
+    }, startedAt);
   },
 
   async managerServiceAuthority({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerAuthorityRequest }): Promise<RemoteManagerAuthorityMaterial> {

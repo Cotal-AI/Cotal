@@ -8,7 +8,7 @@ import { cotalAuthProvider } from "../src/provider.js";
 import { authClientSentinelKey, ensurePinnedIdp, saveAuthServiceInfo } from "../src/store.js";
 import type { SecretStore } from "@cotal-ai/core";
 import { createAccount } from "@nats-io/nkeys";
-import { ServiceAuthorityTransportError, contractDigest, type ServiceAuthorityEnvelope } from "@cotal-ai/core";
+import { ServiceAuthorityTransportError, contractDigest, epRequestSubject, serviceEndpointActor, type ServiceAuthorityEnvelope } from "@cotal-ai/core";
 import { postRemoteServiceAuthority, readRemoteServiceAuthorityInfo, serviceAuthorityUrl } from "../src/service-authority-client.js";
 
 const accountPublicKey = createAccount().getPublicKey();
@@ -20,6 +20,16 @@ const request = {
   expected: { state: "unregistered" as const },
 };
 const envelope: ServiceAuthorityEnvelope = { request, proof: { kind: "idp", token: "fixture-not-a-credential" } };
+const owner = `u_${"a".repeat(26)}`;
+const witness = { accountPublicKey, space: request.space, endpoint: request.endpoint, instanceId: request.instanceId,
+  principal: { owner, actor: serviceEndpointActor({ accountPublicKey, space: request.space, endpoint: request.endpoint, instanceId: request.instanceId, owner }), lifecycleUid: "l".repeat(32) },
+  rootCredentialId: "r".repeat(32), approvalDigest: contractDigest({ approval: 1 }), processEpoch: 1,
+  registrationRevision: 1, nameAuthorityRevision: 1, registrationRequestId: "a".repeat(32), registrationProof: contractDigest({ registration: 1 }) };
+const viewRequest = { v: request.v, kind: request.kind, operation: "describe-view" as const, requestId: "d".repeat(32),
+  accountPublicKey, space: request.space, endpoint: request.endpoint, instanceId: request.instanceId, witness,
+  observation: { subject: epRequestSubject(request.space, { endpoint: request.endpoint, command: "describe", route: { mode: "one" },
+    caller: { owner, actor: "caller", uid: "c".repeat(32) }, nonce: "n".repeat(32) }), fingerprint: contractDigest({ observed: 1 }) } };
+const viewEnvelope: ServiceAuthorityEnvelope = { request: viewRequest, proof: { kind: "service-access", token: "fixture-access" } };
 const info = { v: 1, kind: "service-endpoint-authority-info", space: request.space, accountPublicKey };
 let mode = "info", requests = 0, redirectRequests = 0;
 let expectedEnvelope = envelope;
@@ -41,8 +51,20 @@ const server = createServer(async (req, res) => {
   if (mode === "lost") { req.socket.destroy(); return; }
   if (mode === "malformed") { res.writeHead(502); res.end("upstream unavailable"); return; }
   res.setHeader("content-type", "application/json");
+  res.setHeader("cache-control", "no-store");
   const { operation, requestId, space, accountPublicKey, endpoint, instanceId, v, kind } = expectedEnvelope.request;
   const echo = { operation, requestId, space, accountPublicKey, endpoint, instanceId, v, kind };
+  if (mode.startsWith("view")) {
+    assert.equal(req.headers["cache-control"], "no-store");
+    const body = JSON.stringify({ ...echo, state: "view", witness, observation: viewRequest.observation,
+      basis: "principal-policy-v1", commands: ["read"], validForMs: mode === "view-expired" ? 1 : 1500 });
+    if (mode === "view-cacheable") res.removeHeader("cache-control");
+    if (mode === "view-slow-body") {
+      res.write(body.slice(0, 10)); setTimeout(() => res.end(body.slice(10)), 100).unref(); return;
+    }
+    if (mode === "view-expired") { setTimeout(() => res.end(body), 30).unref(); return; }
+    res.end(body); return;
+  }
   if (mode === "denied" || mode === "denied502" || mode === "denied503") { res.writeHead(mode === "denied" ? 403 : Number(mode.slice(6))); res.end(JSON.stringify({ ...echo, state: "denied", reason: "permission-denied" })); return; }
   if (mode === "mismatch") { res.end(JSON.stringify({ ...echo, requestId: "b".repeat(32), state: "denied", reason: "permission-denied" })); return; }
   if (mode === "wrong-space") { res.end(JSON.stringify({ ...info, space: "other" })); return; }
@@ -107,7 +129,34 @@ try {
   await assert.rejects(cotalAuthProvider.serviceEndpointAuthority!({ store, dir, request,
     proof: { kind: "service-access", token: "fixture-access" } }), /proof kind/);
   assert.equal(reads.length, beforeInvalid, "proof preflight precedes store access");
-  console.log("service-authority-client: live HTTP, provider projection, result binding and no-retry checks passed");
+  expectedEnvelope = viewEnvelope; mode = "view"; sentinel = "fixture-client-sentinel";
+  assert.equal((await postRemoteServiceAuthority(target, viewEnvelope)).state, "view");
+  assert.equal((await cotalAuthProvider.serviceEndpointAuthority!({ store, dir, request: viewRequest,
+    proof: { kind: "service-access", token: "fixture-access" } })).result.state, "view");
+  const beforeNoProof = reads.length;
+  await assert.rejects(cotalAuthProvider.serviceEndpointAuthority!({ store, dir, request: viewRequest }), /proof kind/);
+  assert.equal(reads.length, beforeNoProof, "Describe never falls back to IdP or reads credentials without its access proof");
+  for (mode of ["view-cacheable", "view-expired", "denied502", "redirect"]) {
+    const before = requests;
+    await assert.rejects(postRemoteServiceAuthority(target, viewEnvelope), transportError("not-executed"));
+    assert.equal(requests, before + 1, `${mode}: Describe is a read and does not retry`);
+  }
+  mode = "view-slow-body";
+  await assert.rejects(postRemoteServiceAuthority(target, viewEnvelope, { timeoutMs: 20 }), transportError("not-executed"));
+  const cancelled = new AbortController(); cancelled.abort();
+  const beforeAbort = requests;
+  await assert.rejects(postRemoteServiceAuthority(target, viewEnvelope, { signal: cancelled.signal }), transportError("not-executed"));
+  assert.equal(requests, beforeAbort);
+  mode = "view";
+  const beforeSlow = requests;
+  const slowStore: SecretStore = { ...store, get: async (key) => {
+    await new Promise((resolve) => setTimeout(resolve, 80)); return store.get(key);
+  } };
+  await assert.rejects(cotalAuthProvider.serviceEndpointAuthority!({ store: slowStore, dir, request: viewRequest,
+    proof: { kind: "service-access", token: "fixture-access" }, timeoutMs: 10 }), transportError("not-executed"));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(requests, beforeSlow, "late preparation cannot dispatch after the original provider deadline");
+  console.log("service-authority-client: live HTTP, provider projection, result binding, read-only Describe/no-store/full-flow deadlines and no-retry checks passed");
 } finally {
   rmSync(dir, { recursive: true, force: true });
   server.closeAllConnections();

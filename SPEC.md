@@ -1391,6 +1391,22 @@ This is receiver-relative context, not a publisher-start timestamp. The context 
 proof bytes. Neither a context value nor its digest establishes actual receipt or authority to
 another process; a trusted observer must establish that independently.
 
+The service authority's read-only `describe-view` request adds the complete current `witness` and
+`observation:{subject,fingerprint}` to its common coordinates. Only service-access proof is admitted.
+The subject must be an untargeted native Describe for this space and endpoint; an instance route
+must name this instance. Parsing does not prove that the request was observed. The host must verify
+current native service authority and an independent live observation before evaluating caller policy.
+
+Its successful result has `state:"view"`, the matching witness and observation,
+`basis:"principal-policy-v1"`, unique declared command names and positive integer `validForMs` no
+greater than 2000. That basis denotes current principal-policy visibility, not the connected
+credential's exact permission ceiling. The serving client verifies commands against its registered
+surface. It requires request and response no-store, original receive-relative budget and the host's
+remaining duration after subtracting the full local query roundtrip. Proof, preparation, HTTP body
+and validation work cannot restart the deadline. Missing access proof never triggers IdP login.
+Transport failure on this read is not an unknown mutation outcome. The host's current-root,
+observation, source/provenance and freshness checks remain mandatory beyond this wire shape.
+
 A service access bearer uses the user-token shape with `act.view: "service-endpoint"`.
 Its closed payload has `iss`, scalar `aud`, `sub`, `iat`, `nbf`, `exp`, `ver`, `scope` and `act`.
 Its protected header has only `alg: "EdDSA"` and `kid`. The closed actor has `owner`, `actor`,

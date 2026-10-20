@@ -125,6 +125,9 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: ServiceAuthorityRequest;
     proof?: Exclude<ServiceAuthorityProof, { kind: "idp" }>;
+    /** Remaining local query budget. Describe queries are capped at two seconds. */
+    timeoutMs?: number;
+    signal?: AbortSignal;
   }): Promise<{ result: ServiceAuthorityResult; sentinelCreds: string }>;
   /**
    * Request the closed remote manager-service authority material from the host's loopback/operator

@@ -3,13 +3,13 @@ import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js"
 import { CONTRACT_CLOSURE_MAX_ARTIFACTS } from "./contract-manifest.js";
 import { CONTRACT_ARTIFACT_MAX_BYTES } from "./endpoint-contract-store.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
-import { endpointToken, assertBoundedOwner } from "./endpoint-subjects.js";
+import { endpointToken, assertBoundedOwner, assertCommandToken, parseEpSubject, MAX_EP_SUBJECT_BYTES } from "./endpoint-subjects.js";
 import { parseServiceSpec, type ServiceSpec } from "./endpoint-service.js";
 import { isAccountNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, spacePrefix } from "./subjects.js";
 
-import { SERVICE_AUTHORITY_MAX_BYTES } from "./service-authority-limits.js";
-export { SERVICE_ACCESS_TTL_SECONDS, SERVICE_RENEWAL_TTL_SECONDS, SERVICE_AUTHORITY_MAX_BYTES } from "./service-authority-limits.js";
+import { SERVICE_AUTHORITY_MAX_BYTES, SERVICE_DESCRIBE_QUERY_BUDGET_MS } from "./service-authority-limits.js";
+export { SERVICE_ACCESS_TTL_SECONDS, SERVICE_RENEWAL_TTL_SECONDS, SERVICE_AUTHORITY_MAX_BYTES, SERVICE_DESCRIBE_QUERY_BUDGET_MS } from "./service-authority-limits.js";
 
 /** Non-authorizing account metadata read through the client's already-pinned authority origin. */
 export interface ServiceAuthorityInfo {
@@ -72,11 +72,17 @@ export interface ServiceAuthorityCoordinates {
   instanceId: string;
 }
 
+export interface ServiceDescribeObservation {
+  subject: string;
+  fingerprint: string;
+}
+
 export type ServiceAuthorityRequest = ServiceAuthorityCoordinates & (
   | { operation: "register"; registration: ServiceRegistration; expected:
       | { state: "unregistered" }
       | { state: "registered"; witness: ServiceRegistrationWitness } }
   | { operation: "activate" | "renew" | "ready" | "revoke"; witness: ServiceRegistrationWitness }
+  | { operation: "describe-view"; witness: ServiceRegistrationWitness; observation: ServiceDescribeObservation }
   | { operation: "status"; target: { kind: "instance" } | { kind: "operation"; requestId: string } }
 );
 
@@ -108,6 +114,8 @@ export type ServiceAuthorityResult = ServiceAuthorityCoordinates & { operation: 
       accessBearer: string; accessExpiresAt: number; renewalProof: string; renewalExpiresAt: number;
       snapshot: ServiceRegistrationSnapshot }
   | { state: "ready"; witness: ServiceRegistrationWitness; reportedAt: number }
+  | { state: "view"; witness: ServiceRegistrationWitness; observation: ServiceDescribeObservation;
+      basis: "principal-policy-v1"; commands: string[]; validForMs: number }
   | { state: "status"; status: ServiceAuthorityStatus }
   | { state: "retired"; operationId: string; witness: ServiceRegistrationWitness }
   | { state: "denied"; reason: string }
@@ -115,7 +123,7 @@ export type ServiceAuthorityResult = ServiceAuthorityCoordinates & { operation: 
 
 const COMMON = ["v", "kind", "operation", "requestId", "space", "accountPublicKey", "endpoint", "instanceId"] as const;
 const WITNESS = ["accountPublicKey", "space", "endpoint", "instanceId", "principal", "rootCredentialId", "approvalDigest", "processEpoch", "registrationRevision", "nameAuthorityRevision", "registrationRequestId", "registrationProof"] as const;
-const OPERATIONS = ["register", "activate", "renew", "ready", "revoke", "status"] as const;
+const OPERATIONS = ["register", "activate", "renew", "ready", "revoke", "status", "describe-view"] as const;
 const RESULT_STATES: Record<ServiceAuthorityRequest["operation"], readonly string[]> = {
   register: ["approval-required", "pending", "registered", "denied"],
   activate: ["credential", "denied"],
@@ -123,11 +131,13 @@ const RESULT_STATES: Record<ServiceAuthorityRequest["operation"], readonly strin
   ready: ["ready", "denied"],
   revoke: ["pending", "retired", "denied"],
   status: ["status", "denied"],
+  "describe-view": ["view", "denied"],
 };
 const PROOFS: Record<ServiceAuthorityRequest["operation"], readonly ServiceAuthorityProof["kind"][]> = {
   register: ["idp"], activate: ["idp", "service-renewal"], renew: ["service-renewal"],
   ready: ["service-access"], revoke: ["idp", "service-renewal"],
   status: ["idp", "service-renewal", "service-access"],
+  "describe-view": ["service-access"],
 };
 
 function invalid(detail: string): never {
@@ -240,6 +250,18 @@ function boundWitness(raw: unknown, request: Record<string, unknown>): ServiceRe
   return witness;
 }
 
+function observation(raw: unknown, outer: Record<string, unknown>): ServiceDescribeObservation {
+  const o = record(raw, "Describe observation");
+  closed(o, ["subject", "fingerprint"]);
+  const subject = text(o.subject, "Describe subject", MAX_EP_SUBJECT_BYTES);
+  const parsed = parseEpSubject(subject);
+  if (!subject.startsWith(`${spacePrefix(outer.space as string)}.ep.`) || !parsed || parsed.plane !== "request"
+    || parsed.command !== "describe" || parsed.endpoint !== outer.endpoint || parsed.target !== null
+    || (parsed.route === "inst" && parsed.instanceId !== outer.instanceId))
+    invalid("Describe observation does not name this service");
+  return { subject, fingerprint: digest(o.fingerprint, "Describe fingerprint") };
+}
+
 /** Parsing binds shape and identity only. Authentication and current native state remain host checks. */
 export function parseServiceAuthorityRequest(raw: unknown): ServiceAuthorityRequest {
   const o = record(raw, "request");
@@ -263,6 +285,9 @@ export function parseServiceAuthorityRequest(raw: unknown): ServiceAuthorityRequ
       } else invalid("unsupported expected registration state");
       break;
     }
+    case "describe-view":
+      closed(o, [...COMMON, "witness", "observation"]);
+      boundWitness(o.witness, o); observation(o.observation, o); break;
     case "status": {
       closed(o, [...COMMON, "target"]);
       const target = record(o.target, "status target");
@@ -386,6 +411,19 @@ export function parseServiceAuthorityResult(raw: unknown, expected: ServiceAutho
       if (!("witness" in request) || serviceWitnessDigest(witness) !== serviceWitnessDigest(request.witness))
         invalid("ready result does not bind the submitted witness");
       integer(o.reportedAt, "reportedAt"); break;
+    }
+    case "view": {
+      closed(o, [...common, "witness", "observation", "basis", "commands", "validForMs"]);
+      if (request.operation !== "describe-view") invalid("view result requires a Describe query");
+      const witness = boundWitness(o.witness, o), observed = observation(o.observation, o);
+      if (serviceWitnessDigest(witness) !== serviceWitnessDigest(request.witness)
+        || canonicalJson(observed) !== canonicalJson(request.observation) || o.basis !== "principal-policy-v1")
+        invalid("view result does not bind this query and principal-policy basis");
+      if (!Array.isArray(o.commands) || new Set(o.commands).size !== o.commands.length) invalid("view commands must be a unique array");
+      for (const command of o.commands) assertCommandToken(text(command, "view command", 32));
+      const validity = integer(o.validForMs, "view validity");
+      if (validity === 0 || validity > SERVICE_DESCRIBE_QUERY_BUDGET_MS) invalid("view validity exceeds its query budget");
+      break;
     }
     case "status":
       closed(o, [...common, "status"]); status(o.status, o); break;
