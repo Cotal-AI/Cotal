@@ -6,10 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { decode } from "@nats-io/jwt";
+import { createServer } from "@nats-io/nkeys";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { createSpaceAuth, createEndpointStreams, endpointRegistrationBarrier, mintLifecycleUid, registerServiceInstance,
-  serverConfig, isReachable, contractDigest, serviceEndpointActor, type ServiceRegistrationWitness } from "@cotal-ai/core";
+  serverConfig, isReachable, contractDigest, serviceEndpointActor, newIdentity, mintAccountCensusCreds,
+  observeAccountCensusWithCreds, accountCensusInboxPrefix, connzRequestSubject, credsClaims, mintMembershipObserverCreds, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createCalloutAuth, startAuthCallout, type StartAuthCalloutOpts } from "../src/callout.js";
 import { createUserTokenIssuer, generateSigningKey } from "../src/issuer.js";
@@ -141,6 +143,25 @@ try {
   const secondReceipt = (await readNativeIssuance(stores.authKv, secondKey))!;
   assert.equal(secondReceipt.service!.connection.clientId, reconnect.info?.client_id);
   assert.equal(secondReceipt.service!.connection.serverId, serverId);
+  const censusCreds = await mintAccountCensusCreds(auth, newIdentity(), { expiresInSeconds: 120 });
+  const censusClaims = credsClaims(censusCreds);
+  assert.deepEqual(censusClaims.nats?.pub, { allow: [connzRequestSubject(auth.account.pub)] });
+  assert.deepEqual(censusClaims.nats?.sub, { allow: [`${accountCensusInboxPrefix(auth.account.pub)}.>`] });
+  const censusOpts = { servers, observerCreds: censusCreds, accountId: auth.account.pub, expectedServerId: serverId! };
+  const census = await observeAccountCensusWithCreds(censusOpts);
+  assert.equal(census.state, "complete", "census-only credential reads the real pinned account page");
+  assert.ok(census.connections.some((c) => c.serverId === serverId && c.cid === reconnect.info?.client_id && c.principal === `${owner}.${actor}`));
+  assert.ok(!census.connections.some((c) => c.cid === service.info?.client_id), "disconnected connection is absent from the pinned page");
+  assert.ok(census.connections.every((c) => c.userNkey === undefined || c.userNkey.startsWith("U")), "principal names are not reported as user keys");
+  const limited = await observeAccountCensusWithCreds({ ...censusOpts, options: { pageLimit: 1 } });
+  assert.deepEqual(limited.state === "unknown" ? limited.reason : limited.state, "incomplete-page", "partial page cannot be called complete");
+  const wrongServer = await observeAccountCensusWithCreds({ ...censusOpts, expectedServerId: createServer().getPublicKey() });
+  assert.equal(wrongServer.state === "unknown" ? wrongServer.reason : wrongServer.state, "unsupported-topology");
+  const legacyObserver = await mintMembershipObserverCreds(auth, newIdentity(), { expiresInSeconds: 120 });
+  await assert.rejects(observeAccountCensusWithCreds({ ...censusOpts, observerCreds: legacyObserver }), /account-scoped/);
+  await assert.rejects(mintAccountCensusCreds({ account: auth.account, sys: { pub: auth.sys.pub } }, newIdentity()), /registered system-account signer/);
+  await assert.rejects(mintAccountCensusCreds(auth, newIdentity(), { expiresAt: 0 }), /bounded future/);
+  await assert.rejects(mintAccountCensusCreds(auth, newIdentity(), { expiresInSeconds: 31 * 86400 }), /bounded future/);
   const shortExpiry = Math.floor(Date.now() / 1000) + 3;
   const expiring = await dial(await issuer.issueServiceAccess({ witness: actualWitness, expiresAt: shortExpiry }));
   assert.equal(mints.length, 3);
@@ -161,7 +182,15 @@ try {
   await assert.rejects(dial(actualBearer), /authorization violation/i);
   assert.equal(mints.length, 3, "fenced or revoked native authority never releases another mint");
   assert.deepEqual(hooks, []);
-  console.log("service access callout: default refusal and ordinary control preserved; native registered service connected, disconnected/reconnected and expired through encrypted auth with exact broker receipts, then deny-new checked; public approval and terminal retirement not exercised");
+  const afterExpiry = await observeAccountCensusWithCreds(censusOpts);
+  assert.equal(afterExpiry.state, "complete");
+  assert.ok(!afterExpiry.connections.some((c) => c.cid === expiring.info?.client_id), "expired service connection is absent from the pinned page");
+  await setup.close(); setup = undefined;
+  for (const connection of conns) await connection.close();
+  const empty = await observeAccountCensusWithCreds(censusOpts);
+  assert.equal(empty.state, "complete");
+  assert.deepEqual(empty.connections, [], "empty account has a complete empty page, without a retirement verdict");
+  console.log("service access callout: default refusal and ordinary control preserved; native registered service connected, disconnected/reconnected and expired through encrypted auth with exact broker receipts, then deny-new checked; account-qualified pinned census and incomplete-page refusal checked; public approval and terminal retirement not exercised");
 } finally {
   await setup?.close();
   for (const nc of conns.reverse()) await nc.close().catch(() => {});

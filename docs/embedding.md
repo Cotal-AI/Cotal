@@ -92,6 +92,16 @@ key. Recording rechecks the evidence, receipt, native authority and fixed expiry
 receipts are retained, not pruned on elapsed JWT time. Qualified retirement and production
 authority-plane wiring are still required before enabling the service path for clients.
 
+`mintAccountCensusCreds` creates a host-only SYS user with at most five minutes of authority.
+It can request CONNZ for one DATA account and subscribe only to an account-qualified reply prefix.
+It grants neither KICK nor account events. The host supplies a registered SYS signer; the helper
+does not find, persist or renew that signer, and the broker verifies its authority on connection.
+`observeAccountCensusWithCreds` requires this narrow scope and a pinned server key. It reads one
+bounded page. Malformed, incomplete, multiple-server or cluster-declared replies are unknown,
+with no connection list. A complete result describes only that server's observed account page.
+The host still needs independent topology and restore guarantees, deny-new, a fixed cutoff and
+lifecycle fencing before using an observation for retirement. These helpers do not enable clients.
+
 Internal service-name bindings are create-only and return owner and revision from one native read.
 The trusted host must authenticate the operator and verify the namespace claim before writing.
 Native auth, delivery and manager names keep their existing authority; they cannot be application

@@ -68,6 +68,7 @@ import {
   MANAGER_LEASE_KEY,
   MANAGER_RENEWAL_LEASE_KEY,
   connzRequestSubject,
+  accountCensusInboxPrefix,
   accountConnectSubject,
   accountDisconnectSubject,
   MEMBERSHIP_INBOX_PREFIX,
@@ -207,7 +208,7 @@ export type CredentialLifetimeClass =
   | "one-shot"
   | "static-operator-managed"
   | "mixed";
-export type CredentialKind = Profile | "membership-observer" | "connection-evictor";
+export type CredentialKind = Profile | "membership-observer" | "account-census" | "connection-evictor";
 
 export interface CredentialLifetimePolicy {
   class: CredentialLifetimeClass;
@@ -304,6 +305,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "environment-manager-executor": { class: "standing-renewable", renewalOwner: "environment-authority", note: "own admitted authority instance RPC; explicit expiry capped by admission, no direct store access" },
   "environment-manager-goal-writer": { class: "standing-renewable", renewalOwner: "environment-authority", note: "manager goal rows without the auth-read belt; explicit expiry capped by admission" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
+  "account-census": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "Host-only account CONNZ and account-qualified replies; at most five minutes, no KICK or client-side renewal" },
   "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred; same rotation-renewed posture as the observer" },
 };
 // RUNTIME integrity (the afa715b class): the matrix and every policy freeze at module load
@@ -2905,6 +2907,28 @@ export async function mintMembershipObserverCreds(auth: SpaceAuth, identity: Ide
   );
   const creds = fmtCreds(userJwt, fromSeed(new TextEncoder().encode(identity.seed)));
   return new TextDecoder().decode(creds);
+}
+
+/** Host-only read-only census credential. A registered system signer is required; no fallback
+ * to a broader observer or eviction credential. Reissuing with a retained registered signer
+ * needs no broker restart. The helper does not discover or persist that signer.
+ */
+export async function mintAccountCensusCreds(
+  auth: { account: { pub: string }; sys: { pub: string; signingSeed?: string } },
+  identity: Identity, opts: MintOpts = {},
+): Promise<string> {
+  const prefix = accountCensusInboxPrefix(auth.account.pub);
+  if (!auth.sys.signingSeed) throw new Error("account census requires the registered system-account signer");
+  const { exp } = userValidDates("account-census", opts), now = Math.floor(Date.now() / 1000);
+  if (exp === undefined || !Number.isSafeInteger(exp) || exp <= now || exp > now + FIVE_MINUTES)
+    throw new Error("account census requires a bounded future credential expiry");
+  const user = fromSeed(new TextEncoder().encode(identity.seed));
+  if (!isUserNkey(identity.id) || user.getPublicKey() !== identity.id) throw new Error("account census identity does not match its user key");
+  const jwt = await encodeUser("account-census", fromPublic(identity.id), fromPublic(auth.sys.pub), {
+    pub: { allow: [connzRequestSubject(auth.account.pub)] }, sub: { allow: [`${prefix}.>`] },
+  }, { signer: fromSeed(new TextEncoder().encode(auth.sys.signingSeed)), exp });
+  if (exp <= Math.floor(Date.now() / 1000)) throw new Error("account census credential expired before release");
+  return new TextDecoder().decode(fmtCreds(jwt, user));
 }
 
 /** The KICK-ONLY connection-evictor permission set — a SYSTEM-account user that can do
