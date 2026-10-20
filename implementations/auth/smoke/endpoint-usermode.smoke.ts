@@ -22,7 +22,7 @@ import {
 const smokeUid = mintLifecycleUid();
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, emitSentinel } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -133,5 +133,4 @@ try {
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
-// The resident CLI caller must use the same user auth plane as this publish-only endpoint.
-await import("./join-user.smoke.js");
+emitSentinel({ passed: pass, failed: fail });
