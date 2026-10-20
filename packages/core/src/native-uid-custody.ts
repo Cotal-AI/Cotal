@@ -38,7 +38,7 @@ export function parseNativeUidCustody(raw: Uint8Array, lifecycleUid: string): Na
   try { value = JSON.parse(dec.decode(raw)); } catch { return invalid(`for ${lifecycleUid} is not JSON`); }
   if (!record(value)) return invalid(`for ${lifecycleUid} is not an object`);
   // A service discriminant or nested coordinate is never accepted as a legacy extension.
-  if (value.kind === "native-service-uid" || Object.hasOwn(value, "native") || Object.hasOwn(value, "assignment") || Object.hasOwn(value, "serviceCustody")) {
+  if (Object.hasOwn(value, "kind") || Object.hasOwn(value, "native") || Object.hasOwn(value, "assignment") || Object.hasOwn(value, "serviceCustody")) {
     const o = closed(value, ["v", "kind", "native", "assignment", "creation"], "service reservation");
     const n = closed(o.native, ["accountPublicKey", "space", "lifecycleUid"], "native coordinates");
     const a = closed(o.assignment, ["owner", "actor", "endpoint", "instanceId", "duty"], "assignment");

@@ -142,6 +142,22 @@ async function write(reg: LifecycleRegistry, binding: ServiceCallerPolicyBinding
   }
 }
 
+const byteSize = (value: unknown) => Buffer.byteLength(canonicalJson(value), "utf8");
+// Exact closed status syntax bounds. Reserve for all grants simultaneously, not just the
+// newly appended grant or the first cutoff intent. No cap increase or old-row rewriting.
+const maxStatusBytes = Math.max(...[
+  { state: "active" },
+  { state: "revoking", operationId: "f".repeat(32), phase: "cutoff-required" },
+  { state: "revoking", operationId: "f".repeat(32), markerKey: "m".repeat(512),
+    markerRevision: Number.MAX_SAFE_INTEGER, notBefore: Number.MAX_SAFE_INTEGER },
+  { state: "revoked", operationId: "f".repeat(32), verifiedAt: Number.MAX_SAFE_INTEGER },
+].map(byteSize));
+function assertRevocationHeadroom(row: NativeServiceCallerPolicy): void {
+  const worstBytes = byteSize(row) + row.grants.reduce((sum, g) => sum + Math.max(0, maxStatusBytes - byteSize(g.status)), 0);
+  if (worstBytes > SERVICE_AUTHORITY_MAX_BYTES)
+    throw new EpEnvelopeError("resource-exhausted", "native service caller policy lacks all-grant revocation status headroom");
+}
+
 /** Storage commit only, after trusted host eligibility checks. Never replaces an existing grant. */
 export async function appendNativeServiceCallerGrant(reg: LifecycleRegistry, binding: ServiceCallerPolicyBinding, args: {
   expectedRevision: number; grant: ServiceCallerGrant;
@@ -158,7 +174,9 @@ export async function appendNativeServiceCallerGrant(reg: LifecycleRegistry, bin
   }
   if ((found?.revision ?? 0) !== revision) conflict("native caller policy revision changed");
   const row = found?.row ?? context(reg, binding).expected;
-  return write(reg, binding, { ...row, grants: [...row.grants, candidate] }, revision);
+  const next = { ...row, grants: [...row.grants, candidate] };
+  assertRevocationHeadroom(next);
+  return write(reg, binding, next, revision);
 }
 
 /** Monotonic deny-new intent only. Cutoff, descendant invalidation and live retirement remain host work. */

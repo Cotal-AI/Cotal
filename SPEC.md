@@ -1423,6 +1423,16 @@ do not establish current grantee, service, granter or ancestor authority; the na
 those before committing or using a grant. Neither a policy row nor a deny-new intent proves live
 connection absence.
 
+New caller-policy appends MUST reserve serialized status-growth headroom for every grant
+simultaneously under the unchanged 2 MiB policy limit. Compute canonical policy bytes plus each
+grant's nonnegative remaining growth to the largest supported closed status, including a
+512-character marker and maximum safe-integer revision/time fields. Refuse before the append CAS
+if that worst-case total exceeds the limit. This is not a retroactive repair of older near-cap
+policies: their bytes and grant history remain unchanged, append refuses insufficient headroom,
+and revocation can still fail the byte bound. Such residue blocks service writer/admission
+enablement pending a separately authorized compatibility protocol. No cap raise, pruning,
+reactivation or terminal absence claim follows from the headroom check.
+
 A local scoped Describe callback may receive immutable request context alongside the caller.
 Its subject comes from actual dispatch, and its fingerprint is the canonical digest of
 `{subject,envelope}`, using the complete original decoded JSON envelope after native Describe

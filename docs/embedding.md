@@ -1171,7 +1171,9 @@ These guards run before ordinary root reuse, activation, gate and head changes, 
 and native retirement. Ordinary connect and currency reads also refuse service custody, including
 rows whose head or credential mirror is missing. Existing ordinary reservation bytes are unchanged.
 Closed head, gate and credential parsers continue to reject service markers. This release provides
-no service reservation writer, marked-root minting path or service access view.
+no service reservation writer or marked-root minting path. A service access-view contract and
+optional sealed native access/callout composition are shipped, but production registration and
+lifecycle wiring remain unavailable. Those unwired seams do not authorize service admission.
 
 This is a refusal foundation, not service endpoint admission. Service bootstrap, cancellation,
 terminal retirement, complete observer evidence, writer exclusion and restore readiness remain
