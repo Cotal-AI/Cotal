@@ -4,7 +4,7 @@ The Orca integration: a thin driver over the public `orca` CLI plus a self-regis
 `orca` `Runtime` provider. Importing it registers the runtime with the core `Registry`, so
 the manager can spawn agents into native Orca terminals.
 
-**Tier:** `extensions/`. Depends on [`@cotal-ai/core`](../../packages/core); self-registers on
+**Tier:** `extensions/`. Peer-depends [`@cotal-ai/core`](../../packages/core); self-registers on
 import.
 
 ## What it does

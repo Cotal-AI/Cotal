@@ -5,12 +5,12 @@ authenticated local protocol a manager worker uses to adopt that handle.
 
 **Tier:** `packages/` (leaf). Depends on PTY and terminal-mirror libraries, not on
 `@cotal-ai/core`, workspace, implementations, connectors, or NATS. The manager's `pty` runtime
-is the first production caller.
+calls it only to adopt and reap seats an earlier manager left under a custodian.
 
 Linux is the production transport in this cut. `create`/`spawn`/`adopt` in this package throw a
 named `custody transport unsupported on <platform>` error on darwin and win32. There is no
-in-process node-pty fallback here. The manager's `pty` runtime still spawns in-process off
-Linux and only `adopt` throws that named error.
+in-process node-pty fallback here. The manager's `pty` runtime spawns in-process on every
+platform, and off Linux only its `adopt` throws that named error.
 
 `peerCredentials(socket)` and its `PeerCredentials` type are exported from the package root.
 For a connected Linux Unix socket, the function returns the kernel's peer `pid`, `uid` and
