@@ -57,6 +57,8 @@ export const AUTH_PROVIDER_NAME = "cotal" as const;
  *  segment is workspace's ONE guarded encoder (`spaceSegment`, shared with `userAuthStateDir`):
  *  a `.`/`..`/empty space is refused before any key or path exists, on both surfaces. */
 export const authCalloutKey = (space: string): string => `auth/${spaceSegment(space)}/callout.json`;
+/** Host-written client projection. Reading it never loads the callout account signing material. */
+export const authClientSentinelKey = (space: string): string => `auth/${spaceSegment(space)}/client-sentinel.creds`;
 export const authIssuerKey = (space: string): string => `auth/${spaceSegment(space)}/issuer.json`;
 export const authOwnerSecretKey = (space: string): string => `auth/${spaceSegment(space)}/owner-secret.json`;
 export const authServiceKeysKey = (space: string): string => `auth/${spaceSegment(space)}/service-keys.json`;

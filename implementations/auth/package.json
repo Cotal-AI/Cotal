@@ -22,6 +22,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "tsx smoke/backup-continuity.smoke.ts && tsx smoke/retained-manager-validation.smoke.ts && tsx smoke/manager-admin-authorization.smoke.ts && tsx smoke/views.smoke.ts",
     "prepublishOnly": "pnpm run build",
+    "smoke:service-custody": "tsx smoke/service-custody.smoke.ts",
     "smoke:public-surfaces": "tsx smoke/auth-public-closure.smoke.ts && tsx smoke/plane-claim-public.smoke.ts && tsx smoke/account-liveness-public.smoke.ts"
   },
   "dependencies": {

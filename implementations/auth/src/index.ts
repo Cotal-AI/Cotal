@@ -21,6 +21,7 @@ export {
   PUBLIC_EXCHANGE_VIEWS,
   VIEW_REQUIRED_SCOPE,
   type UserTokenActor,
+  type UserTokenService,
   type UserTokenView,
   type ValidatedUserToken,
   type ValidateUserTokenOpts,
@@ -35,6 +36,7 @@ export {
   type SigningKey,
   type SerializedSigningKey,
   type IssueClaims,
+  type ServiceAccessClaims,
   type UserTokenIssuer,
   type CreateIssuerOpts,
 } from "./issuer.js";
@@ -202,3 +204,7 @@ export {
 export type { AuthConnectionState, AuthServiceClosed } from "./owned-connections.js";
 
 export { createToolResultConsentSigner, makeToolResultConsentRecorder, parseToolResultConsentInput, toolResultConsentKey, type ToolResultConsentInput, type ToolResultConsentSignerOptions, type ToolResultConsentRecorder } from "./tool-result-consent.js";
+
+export * from "./service-host-contract.js";
+
+export { SERVICE_RENEWAL_TYP, validateServiceRenewalProof, type ServiceRenewalClaims, type ValidatedServiceRenewal } from "./service-renewal.js";

@@ -72,6 +72,7 @@ import {
 import {
   observeGate,
   registryStores,
+  assertOrdinaryRegistryMutation,
   readLifecycleMappingLeader,
   type LifecycleRegistry,
   type LifecycleMappingReader,
@@ -584,6 +585,7 @@ export function sessionRedemptionHooks(deps: SessionHookDeps): SessionRedemption
       const key = credLedgerKey(id);
       const entry = await kv.get(key);
       if (!entry) return; // a dead (never-staged) id re-revokes successfully
+      if (key.startsWith("cred.")) await assertOrdinaryRegistryMutation(registry, { lifecycleUid: key.split(".")[1] });
       await markLedgerRowRevoked(kv, key);
     },
     ...(now ? { now } : {}),

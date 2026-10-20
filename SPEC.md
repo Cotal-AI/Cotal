@@ -948,6 +948,8 @@ profile for that one object of that one instance's transfer bucket (§8).
 On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`, `session-caller`, and
 `transfer-writer` MAY be issued. `admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A
 managed-agent secret exchange MUST refuse every view other than `manager-caller`.
+The service-only `service-endpoint` view (§13.1) is not selectable on either ordinary exchange
+face. Its dedicated authority path checks native service custody rather than an enrolled actor row.
 
 ---
 
@@ -1177,6 +1179,32 @@ sufficient *authority* identity on this surface. Two further identity components
   and draws a fresh one (the alias head alone cannot reject the same UID under a different
   alias, and the `gate.`/`cred.` families key by UID alone, so uniqueness must be
   space-wide); a DEL/PURGE marker on a reservation is corruption, never reusable absence.
+  A reservation carrying `kind: "native-service-uid"` is reserved for service custody. Its
+  closed shape is `{ v:1, kind, native:{accountPublicKey,space,lifecycleUid},
+  assignment:{owner,actor,endpoint,instanceId,duty:"serve"},
+  creation:{operationId,requestDigest} }`. Its embedded UID must equal its key. The actor is
+  `svc_` followed by the lowercase base36 encoding of the unsigned SHA-256 of RFC-8785
+  canonical JSON `[1,accountPublicKey,space,owner,endpoint,instanceId,"serve"]`, padded to
+  50 characters. Ordinary executors MUST refuse this reservation before mutation or
+  idempotent root reuse and MUST NOT project it into an ordinary audit. Ordinary connect
+  and currency paths also refuse it. No reservation creation, service credential release
+  or terminal service transition is enabled by this reserved shape. Legacy ordinary audit
+  bytes and their existing validation remain unchanged. Mixed-version writer exclusion
+  and restore reconciliation remain prerequisites for any future service admission.
+  A separate package-internal read-only service prerequisite accepts only the canonical active
+  marked head, open native `gate.<uid>` generation1 and active exact root row, with all three
+  `serviceCustody:{v:1,uidDigest}` mirrors matching the complete closed immutable reservation.
+  Head `managerInstance` MUST equal reservation assignment `instanceId`, and native
+  `processEpoch` is exactly1, independently of endpoint serving gate/witness epochs. Full
+  configured account/space/UID/assignment, derived actor, root key/current stamp/holder,
+  `sourceChain:["root"]` and unexpired millisecond root expiry are checked with sealed
+  primary leader-served readers. Account identity is trusted host configuration: sealed readers
+  do not attest the broker account or detect a cross-account pair of legitimately constructed
+  handles. Missing or mismatched native gate evidence refuses even if an endpoint gate exists.
+  Creating/cancelling states and their RootPlan recovery cannot
+  authorize through this active-only reader. It confers no writer, bootstrap, abort, rotation
+  or terminal authority and makes no atomic multi-key snapshot claim. Ordinary readers stay
+  closed to every marked service row.
   Only then does it mint **before the entity is reachable**, persisting a CAS-fenced
   mapping
   `{ owner, actor, lifecycleUid, managerInstance, processEpoch,
@@ -1345,6 +1373,142 @@ liveness precondition, MAY skip only holders in a cursor whose complete binding 
 restart from empty progress on any mismatch, and MUST reopen only after every current holder
 verifies. Cleanup occurs after reopen; a cursor that
 cannot be deleted cannot authorize a later freeze because that freeze has a different gate revision.
+
+A standalone user-authorized service gate adds `authorityFamily: "service"` and a required
+`serviceAuthority` value. Its closed fields are `v: 1`, `assignmentDigest`, native
+`lifecycleUid`, `state: pending-root | approved | revoked`, `rootCredentialId`, `rootExpiresAt`,
+`approvalDigest`, `approvalExpiresAt`, `callerCeiling`, `activationIssued`, and optional
+`registration: {operationId, requestId, requestDigest, processEpoch, registrationRevision,
+nameAuthorityRevision, registrationProof}` and
+`pendingRegistration: {operationId, requestId, requestDigest}`. Expiries use Unix seconds.
+The completion stamp's coordinates must equal the gate's. A positive registration revision
+requires a completion stamp. A pending identity is present only under its matching registration
+freeze, and activation cannot be recorded while that identity is pending.
+A pending-root value has null root and approval fields, an empty ceiling, no registration and
+`activationIssued: false`. An approved value binds the native root and immutable approval;
+only approval expiry may be null. Revocation retains any existing binding. An activated value
+requires the registration stamp. A service value without its family, or the family without
+its value, is invalid. Existing nonservice gates do not acquire this authority.
+
+Service registration freeze requires live approval and `activationIssued: false` at the gate CAS.
+Under that freeze, a complete leader read must prove the issuance family empty. Active, revoked,
+malformed or deleted credential evidence is inconsistent with pre-activation state and blocks
+registration and recovery. Failed or partial reads never prove emptiness.
+Gate transitions retain approval, root and activation fields. A new registration freeze retains
+the prior completion stamp and records the new operation's request identity and digest. Successful
+reopen writes the new completion stamp and resulting coordinates in the same CAS. A definite
+abort-reopen preserves the prior stamp. Both paths remove the pending identity. Recovery binds
+the recorded operation; an open surface alone cannot establish which request completed.
+A separate post-reopen writer cannot attach a completion stamp.
+Serving release requires live approval,
+recorded activation and a finite credential expiry bounded by the service access lifetime,
+native root expiry and approval expiry. Release rechecks the fixed expiry after asynchronous
+staging and commit; expired material is refused and never given a new expiry. A registration recovery that reopens an already revoked
+approval does not authorize serving release. Standalone service authority does not support
+sibling credential duties. Native root validation, owner consent, activation and coordinated
+retirement remain requirements of the trusted host; parsing this value does not establish them.
+
+Native application-service name bindings use `servicename.<endpointToken>` in the primary auth store.
+The closed record has `v:1`, `kind:"service-name"`, accountPublicKey, space, endpoint, owner,
+claimReference, requestId and requestDigest. The trusted host authenticates operator authority and
+verifies the namespace claim before creation. A stored assertion alone proves neither of those checks.
+Creation requires zero retained key history. Only an identical request can recover the binding;
+changing its owner, claim or request identity does not update it. Owner and binding revision are read
+from one leader snapshot. Transfer and release are unsupported. Native auth, delivery and manager
+names remain with their existing control authorities and cannot be application-service bindings.
+
+Native service caller policy is stored at `servicepolicy.<granteeUid>` in the primary auth store.
+Its closed value is `{v:1,accountPublicKey,space,grantee,grants}`; grantee is the exact owner, actor
+and lifecycle UID. A grant contains its immutable id, endpoint and source instance, approval digest,
+normalized capabilities, source and parent references, and status. Source and parent references
+name immutable grant ids at their original grantee UIDs. Source instance is provenance; native
+capability route and instance fields still determine request reach.
+
+Initial policy and create-only service authority writes require zero prior key history at the
+write CAS. A deletion or purge marker, including one arriving after an absence read, MUST refuse
+recreation. An additional pre-read is not this fence.
+
+A new grant is appended at the observed policy revision. An existing id cannot change its capability
+or provenance and cannot become active again after revocation starts. Revocation first records
+`{state:"revoking",operationId,phase:"cutoff-required"}` at that revision. Unrelated writes preserve
+this intent. Repeated same-operation reads do not advance it or establish terminal retirement.
+Deleted, malformed or unreadable policies are not empty policies. Stored syntax and successful CAS
+do not establish current grantee, service, granter or ancestor authority; the native host must verify
+those before committing or using a grant. Neither a policy row nor a deny-new intent proves live
+connection absence.
+
+New caller-policy appends MUST reserve serialized status-growth headroom for every grant
+simultaneously under the unchanged 2 MiB policy limit. Compute canonical policy bytes plus each
+grant's nonnegative remaining growth to the largest supported closed status, including a
+512-character marker and maximum safe-integer revision/time fields. Refuse before the append CAS
+if that worst-case total exceeds the limit. This is not a retroactive repair of older near-cap
+policies: their bytes and grant history remain unchanged, append refuses insufficient headroom,
+and revocation can still fail the byte bound. Such residue blocks service writer/admission
+enablement pending a separately authorized compatibility protocol. No cap raise, pruning,
+reactivation or terminal absence claim follows from the headroom check.
+
+A local scoped Describe callback may receive immutable request context alongside the caller.
+Its subject comes from actual dispatch, and its fingerprint is the canonical digest of
+`{subject,envelope}`, using the complete original decoded JSON envelope after native Describe
+validation. A picked parser projection cannot substitute for that envelope. Local receive time
+is monotonic and captured before validation; deadlineMs remains the original relative budget.
+This is receiver-relative context, not a publisher-start timestamp. The context exposes no raw
+proof bytes. Neither a context value nor its digest establishes actual receipt or authority to
+another process; a trusted observer must establish that independently.
+
+The service authority's read-only `describe-view` request adds the complete current `witness` and
+`observation:{subject,fingerprint}` to its common coordinates. Only service-access proof is admitted.
+The subject must be an untargeted native Describe for this space and endpoint; an instance route
+must name this instance. Parsing does not prove that the request was observed. The host must verify
+current native service authority and an independent live observation before evaluating caller policy.
+
+Its successful result has `state:"view"`, the matching witness and observation,
+`basis:"principal-policy-v1"`, unique declared command names and positive integer `validForMs` no
+greater than 2000. That basis denotes current principal-policy visibility, not the connected
+credential's exact permission ceiling. The serving client verifies commands against its registered
+surface. It requires request and response no-store, original receive-relative budget and the host's
+remaining duration after subtracting the full local query roundtrip. Proof, preparation, HTTP body
+and validation work cannot restart the deadline. Missing access proof never triggers IdP login.
+Transport failure on this read is not an unknown mutation outcome. The host's current-root,
+observation, source/provenance and freshness checks remain mandatory beyond this wire shape.
+
+A service access bearer uses the user-token shape with `act.view: "service-endpoint"`.
+Its closed payload has `iss`, scalar `aud`, `sub`, `iat`, `nbf`, `exp`, `ver`, `scope` and `act`.
+Its protected header has only `alg: "EdDSA"` and `kid`. The closed actor has `owner`, `actor`,
+`scope`, `lifecycleUid`, `credentialId`, `view` and `service`. Both scopes are empty lists.
+The closed service claim is `{duty: "serve", witness}`. The complete witness binds the same
+space, owner, actor, native lifecycle UID and root credential as the outer bearer. Parent, manager,
+session and transfer claims are forbidden. Times are integer Unix seconds, `nbf` equals `iat`,
+and the fixed expiry is at most 60 seconds after issuance. Validation refuses at the original
+expiry, without extending it through clock tolerance. Ordinary exchange and profile construction
+MUST refuse this view. Only a dedicated service authority path may issue and authorize it after
+current native root, approval and registration checks. Signature validation alone does not
+establish that authority.
+
+The dedicated callout authenticates the sealed broker request before using its user key, server
+key or client id. It captures admission time before authority reads and fixes native expiry no
+later than the access expiry or admission plus 60 seconds. It derives serving permissions from
+the current native registration, preserves principal-name attribution and uses the separate
+client inbox nonce. Native issuance and receipt checks and final root authorization precede the
+encrypted response. An expiry reached while encoding or sealing that response refuses release.
+An unconfigured or non-native service authority cannot fall through to ordinary actor hooks.
+
+A service renewal proof is a separate EdDSA JWT class with protected `typ:
+"cotal-service-renewal+jwt"`, `alg` and `kid` headers. Its closed claims are `ver: 1`,
+`kind: "service-renewal"`, the complete registration `witness`, its canonical `witnessDigest`,
+and `iss`, `aud`, `sub`, `iat`, `nbf`, `exp`. Issuer and key resolution are pinned by the host;
+audience is the one space and subject is the witness owner. `nbf` equals `iat`; expiry is a fixed
+Unix-second deadline no more than 24 hours after issuance. Validation rejects the proof at its
+original expiry and binds every witness coordinate, not just the service name. User/connect token
+validation rejects this JWT class even if it carries actor-like claims. A normal user bearer is
+not a service renewal proof.
+
+The signature primitive does not establish current authority. Before issuing or accepting service
+authority, the host checks the current native root, approval, registration and operation eligibility.
+It bounds expiry by root and approval expiry. Signing cannot extend a supplied fixed deadline;
+material that expires while signing is not released. Renewal proofs contain no ordinary capability
+scope and are never native DATA-account credentials.
+
 **`holderPrincipal` is ALWAYS a CONNZ-attributable `<owner>.<actor>` in
 BOTH families** (the barrier KICKs it; an endpoint NAME is not attributable and never sits
 there): in `cred.` it is the caller principal; in `epcred.` it is the serving instance's own
@@ -1354,6 +1518,23 @@ stay disjoint (an `epcred` row that put the endpoint name in `holderPrincipal` c
 KICKed). The `cred.`/`epcred.` families hold ONLY conformant ledger rows:
 implementation staging, half-minted state, and tombstone fences live in a distinct
 `stage.` family, never under a ledger prefix a barrier enumerates.
+
+Service-callout `epcred` rows also carry the closed `serviceConnection` object
+`{userNkey, serverId, clientId}`. The user and server keys are checksum-valid NKeys of their
+respective kinds; clientId is a positive safe integer from the authenticated broker request.
+These fields are forbidden in the `cred` root family. Service issuance requires this binding,
+preserves it during staging and leader-reads the row and unchanged gate authority after its CAS.
+An ordinary serving issuance cannot carry service connection evidence. These rows prove issuance,
+not broker acceptance or response delivery. Native root authorization remains separate.
+
+Service-callout natkey evidence additionally carries
+`service:{witness,credentialId,connection}`. The outer credentialId is the native root; the nested
+credentialId identifies the issued service JWT in epcred. The connection is the same authenticated
+broker triple, and its user key must match the natkey key. Recording checks the active epcred
+binding before and after the create-only write, verifies its receipt, reauthorizes and checks the
+original expiry before release. Existing receipt history cannot be reused. Expired service evidence
+is retained until topology-qualified retirement authorizes removal; the ordinary expiry pruner
+reports it separately and cannot remove it. That terminal pruning path is not implemented yet.
 
 **Native-key issuance evidence.** Every callout success first writes one create-only
 `natkey.<userNkey>` row in the same auth bucket, where `userNkey` is the broker-generated
