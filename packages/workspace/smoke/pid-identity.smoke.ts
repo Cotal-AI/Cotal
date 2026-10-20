@@ -483,10 +483,43 @@ try {
         thrown === undefined && parsePid(readFileSync(wPath, "utf8")) === newTarget.pid && verifyIdentityPin(wPath).kind === "match" && seen.attempts === 3,
         { thrown: String(thrown), attempts: seen.attempts, ...state() });
     }
+
+    // #4175: one publish makes up to three renames, and they draw on ONE backoff budget. Each rename
+    // here is held until it has itself waited `holdMs` of backoff, so a budget per rename lets every
+    // rename through and the publish waits out all three holds in turn.
+    const holding = (holdMs: number) => {
+      const waited = new Map<string, number>();
+      let current = "";
+      const sleeps: number[] = [];
+      const error = Object.assign(new Error("EPERM: injected hold, rename"), { code: "EPERM" });
+      const replaceIo: RecordReplaceIo = {
+        platform: "win32",
+        sleep: (ms) => { sleeps.push(ms); waited.set(current, (waited.get(current) ?? 0) + ms); },
+        rename: (from, to) => {
+          current = from;
+          if ((waited.get(from) ?? 0) < holdMs) throw error;
+          renameSync(from, to);
+        },
+      };
+      return { error, replaceIo, total: () => sleeps.reduce((a, b) => a + b, 0) };
+    };
+    const held = [9_900, 2_900].map((holdMs) => {
+      publish(oldTarget.pid!);
+      const hold = holding(holdMs);
+      const thrown = publish(newTarget.pid!, hold.replaceIo);
+      return { holdMs, total: hold.total(), threwHold: thrown === hold.error, thrown: String(thrown), ...state() };
+    });
+    const [worst, spread] = held;
+    check("W7 a publish whose three renames are each held for 9.9 s of backoff waits under 7.5 s in all, not 29.85 s (#4175)",
+      worst!.total > 0 && worst!.total < 7_500, held.map(({ holdMs, total, thrown }) => ({ holdMs, total, thrown })));
+    check("W7b it then throws the held rename's refusal, leaving the OLD pid matching its record",
+      worst!.threwHold && parsePid(worst!.pidfile) === oldTarget.pid && worst!.verdict === "match", worst);
+    check("W8 holds of 2.9 s each, short enough for any one rename, still stop the publish under 7.5 s, because its renames share one budget",
+      spread!.total < 7_500 && spread!.threwHold && parsePid(spread!.pidfile) === oldTarget.pid && spread!.verdict === "match", spread);
     reap(oldTarget.child);
     reap(newTarget.child);
 
-    check("W6 no `.publish.` temporary survives ANY of W1 through W5",
+    check("W6 no `.publish.` temporary survives ANY of W1 through W8",
       !readdirSync(join(root, ".cotal")).some((n) => n.includes(".publish.")));
   }
 
