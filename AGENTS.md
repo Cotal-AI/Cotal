@@ -231,6 +231,30 @@ supersede a plan, update its row there in the same change; add a `planned` row f
 `plans: …` message) as you make the change — never leave plan/STATUS edits uncommitted in the
 shared submodule working tree, where another agent's commit could sweep in your half-done work.
 
+## Closing out a lane
+
+A lane is one piece of delegated work: its worktree, its workers, and what it built. The agent
+that spawned the lane cleans it up when the lane finishes. A scheduled cleanup job is only a
+backstop.
+
+1. **Keep what must survive.** Commit and push the source, and keep compact proof of the required
+checks: the tested head, the logs, and their hashes. Keeping proof does not keep every build or
+dependency copy.
+2. **Retire the lane's workers.** A worker is ready only when it is terminal and quiescent, with no
+live jobs, transfers, or unresolved ownership. A quiet worker can still be in a live, blocked turn.
+Confirm the lane owns it, stop only that worker through a native control that targets it alone,
+such as despawn, and confirm it exited. Never stop a manager as cleanup.
+3. **Remove the disposable copies.** Delete the lane's dependency installs, build outputs, test
+stores, downloads, and the finished worktree. Remove a directory only while holding a barrier that
+keeps new owners and new processes out of it, from the final check through the deletion. A
+one-time check that nothing runs there is not enough, because a process can enter after it.
+4. **Record the result.** Note the bytes reclaimed. For anything that stays, such as evidence or
+unfinished work, record who owns its cleanup and the condition that releases it.
+
+Never delete anything live, held, shared, foreign, or of unknown ownership, any credential, an
+unpushed commit, or an unmerged branch. Do not clean by age alone. The rule covers only what the
+lane can show it owns.
+
 ## Git and public messages
 
 - **No tool or AI attribution, anywhere.** Commit messages and PRs use plain Conventional
