@@ -1,5 +1,21 @@
 # @cotal-ai/auth
 
+## 0.89.0
+
+### Minor Changes
+
+- dc458a4: Add a host-only, short-lived account census credential and a bounded pinned-server connection reader. The credential grants only one account's CONNZ request and account-qualified replies. Incomplete observations remain unknown; the reader does not grant eviction or prove terminal retirement.
+
+### Patch Changes
+
+- 15bc2d7: Bound an exchanged bearer by its IdP proof's expiry at signing time. The exchange now carries the proof's absolute `exp`, and a `session-caller` session's `exp`, through the credential hook to the issuer, which signs the earlier of `now + ttl` and that ceiling and refuses once it has passed. A slow `mintConnectCredential` hook could previously push the bearer, and the NATS user JWT the callout mints from it, past the proof's expiry, or mint a bearer after the proof had expired.
+- Updated dependencies [dc458a4]
+- Updated dependencies [bab4ca8]
+- Updated dependencies [2905ae9]
+  - @cotal-ai/core@0.89.0
+  - @cotal-ai/workspace@0.89.0
+  - @cotal-ai/lang@0.89.0
+
 ## 0.88.0
 
 ### Minor Changes
