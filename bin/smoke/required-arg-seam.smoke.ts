@@ -185,8 +185,8 @@
  * run a build carries files a fresh clone does not. `node_modules`, `dist`, `build` and friends are
  * skipped, but a generated bundle landing outside those names is not: the Hermes sidecar at
  * `extensions/connector-hermes/plugin/cotal/_sidecar/` is gitignored build output and IS walked.
- * The bundle adds one outside-smoke call: a clean checkout has 265/212 and a built checkout has
- * 266/212. Its own one-site pin is required whenever that artifact exists. An EXACT count otherwise
+ * The bundle adds one outside-smoke call: a clean checkout has 266/213 and a built checkout has
+ * 267/213. Its own one-site pin is required whenever that artifact exists. An EXACT count otherwise
  * turns this divergence into a red that
  * depends on whether someone ran `pnpm bundle`, which is a property of a disk rather than of a
  * revision. Reading it is deliberate rather than an oversight, since that bundle SHIPS in the
@@ -443,9 +443,11 @@ const SEAMS: Seam[] = [
   //   • `mediatorNc` — the renewed run-mediator connection in R55 that reads the admission back
   //                    after the caller's generation has expired to verify it stays unrevoked.
   // Each of the five calls states `tls: false`.
+  // 265/212 -> 266/213: delegated-config.smoke.ts adds one issued-caller connection with
+  // `tls: false` to exercise delegated persona-config refusals through the public manager.
   // The audited source population is pinned per file in required-arg-sites.json. The generated
   // Hermes sidecar adds one separately pinned call after build, never a smoke-side call.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 265, untypecheckedSites: 212 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 266, untypecheckedSites: 213 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
@@ -2603,8 +2605,8 @@ console.log("\nB. the seam, across every source the compiler may or may not read
 }
 check("the literal per-file census accounts for the source and smoke totals",
   Object.values(SITE_COUNTS).every((n) => Number.isSafeInteger(n) && n > 0)
-  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === 265
-  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === 212);
+  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === 266
+  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === 213);
 const files = sources(ROOT);
 check("the scan reached a source tree at all (a zero-file walk would pass every cell below)", files.length > 500, files.length);
 

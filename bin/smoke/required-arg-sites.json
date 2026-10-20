@@ -37,6 +37,7 @@
   "implementations/manager/smoke/boot-delivery-lease.smoke.ts": 1,
   "implementations/manager/smoke/boot-self-heal-gate.smoke.ts": 2,
   "implementations/manager/smoke/browser-manager-caller.smoke.ts": 1,
+  "implementations/manager/smoke/delegated-config.smoke.ts": 1,
   "implementations/manager/smoke/gate-reconcile-auth.smoke.ts": 3,
   "implementations/manager/smoke/gate-reconcile-cli-e2e.smoke.ts": 2,
   "implementations/manager/smoke/hosted-retirement-native.acceptance.ts": 2,
