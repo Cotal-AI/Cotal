@@ -5094,6 +5094,9 @@ operator or read repairs a binding-only submission.
 
 Status reports `unbound`, `binding-only`, `admitted`, `activated` or `indeterminate`, with the
 original bound run and callback deadline when available. Absence is observation-time only.
+`activated` means a run status record was observed, including a completed or failed run. It
+does not mean currently running or occupying an active lane. Read native `run-status` for
+lifecycle state. Terminal bindings remain permanent and duplicates never launch them again.
 The scheduler preserves its original reservation and never allocates a replacement run or
 adopts another instance/epoch from these reads. A later repair protocol requires its own fence
 and review. This prerequisite introduces no second scheduler or generic cancellation.

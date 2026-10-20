@@ -28,6 +28,10 @@ already-issued broker publish, which may land later with the same frozen admissi
 No new attempt or activation starts after the deadline. Keep the reservation even if an
 earlier read observed no admission.
 
+Submission state `activated` reports evidence of activation, including completed and failed
+runs. It is not a running-state or active-lane signal. Use native `run-status` for lifecycle
+state. Terminal submission bindings remain permanent, and duplicate starts never relaunch them.
+
 This implementation is under validation. Static native and signerless issuer paths require
 separate acceptance evidence before release or integration.
 
