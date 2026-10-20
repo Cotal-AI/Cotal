@@ -1,5 +1,20 @@
 # @cotal-ai/auth
 
+## 0.88.0
+
+### Minor Changes
+
+- f2d461b: Add opt-in host-custodied tool-result consent signing and a closed capability-gated admission door. Verify fresh same-owner password proof and current holder and target lifecycles, then record each signed consent id create-only before release. Unknown persistence outcomes return no consent and never retry automatically. Only the auth mint writer receives consent persistence authority. Private result serving remains unavailable.
+
+### Patch Changes
+
+- Updated dependencies [fc923a5]
+- Updated dependencies [cb09213]
+- Updated dependencies [a3ae00f]
+  - @cotal-ai/workspace@0.88.0
+  - @cotal-ai/core@0.88.0
+  - @cotal-ai/lang@0.88.0
+
 ## 0.87.0
 
 ### Minor Changes
