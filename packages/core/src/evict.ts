@@ -31,9 +31,10 @@
  *    a fresh cid until its cred dies, so an evict-only loop would chase churn. The name says so.
  */
 import { randomUUID } from "node:crypto";
+import { fromPublic } from "@nats-io/nkeys";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { isAccountNkey, isUserNkey } from "./identity.js";
-import { connzRequestSubject, isPrincipalOwnerToken, parsePrincipalKey, principalFromConnz, serverKickSubject, MEMBERSHIP_INBOX_PREFIX } from "./subjects.js";
+import { credsClaims, isAccountNkey, isUserNkey } from "./identity.js";
+import { accountCensusInboxPrefix, connzRequestSubject, isPrincipalOwnerToken, parsePrincipalKey, principalFromConnz, serverKickSubject, MEMBERSHIP_INBOX_PREFIX } from "./subjects.js";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const MAX_PAGES = 64; // fan-out pagination guard (mirrors the membership feed's under-report ceiling)
@@ -59,7 +60,7 @@ interface ConnzReply {
    *  clustering is configured, absent only for a standalone process — the plane-reclaim
    *  discriminator (SPEC 13.13) reads it, never inferring topology from who happened to reply. */
   server?: { id?: string; cluster?: string };
-  data?: { server_id?: string; total?: number; offset?: number; connections?: ConnzConn[] };
+  data?: { server_id?: string; total?: number; offset?: number; num_connections?: number; connections?: ConnzConn[] };
   /** `ServerAPIResponse.error` — a reply carrying it is a FAILED request, never an empty page. */
   error?: unknown;
 }
@@ -173,15 +174,16 @@ function connzRound(
   opts: Required<Pick<EvictOptions, "settleMs" | "maxWaitMs" | "pageLimit">>,
   sweep: string,
   seq: number,
+  replyPrefix = MEMBERSHIP_INBOX_PREFIX,
+  invalidReply?: () => void,
 ): Promise<ConnzReply[]> {
   return new Promise((resolve) => {
-    // The reply inbox MUST sit under the prefix the observer cred (`membership-observer`) grants sub
-    // on — its ACL allows only `${MEMBERSHIP_INBOX_PREFIX}.>`, so a distinct `_INBOX.cotal-evict.*`
-    // subject is broker-denied and the scan gets ZERO replies (a fail-closed under-report).
+    // The reply inbox must sit under the observer credential's allowed subscription prefix.
+    // Legacy callers use the membership prefix; the census reader supplies its account prefix.
     // `sweep` is a per-call collision-resistant nonce: concurrent sweeps (a plane reclaim next to an
     // eviction verify) subscribe to DISJOINT inboxes, so one sweep's page reply can never satisfy —
     // or falsely complete — another's round.
-    const inbox = `${MEMBERSHIP_INBOX_PREFIX}.evict.${sweep}.${seq}`;
+    const inbox = `${replyPrefix}.evict.${sweep}.${seq}`;
     const out: ConnzReply[] = [];
     let settle: ReturnType<typeof setTimeout> | undefined;
     let done = false;
@@ -195,8 +197,8 @@ function connzRound(
     };
     const sub = observerConn.subscribe(inbox, {
       callback: (err, msg) => {
-        if (err) return;
-        try { out.push(msg.json<ConnzReply>()); } catch { /* skip undecodable */ }
+        if (err) { invalidReply?.(); return; }
+        try { out.push(msg.json<ConnzReply>()); } catch { invalidReply?.(); }
         if (settle) clearTimeout(settle);
         settle = setTimeout(finish, opts.settleMs);
       },
@@ -651,6 +653,72 @@ export async function observeAccountLivenessWithCreds(opts: {
   });
   try {
     return await livenessSweep(observer, opts.accountId, opts.options ?? {});
+  } finally {
+    await observer.drain().catch(() => observer.close());
+  }
+}
+
+export type AccountCensusResult = {
+  accountId: string; expectedServerId: string; observedAt: number;
+} & (
+  | { state: "complete"; connections: SweptConn[] }
+  | { state: "unknown"; reason: "no-reply" | "invalid-reply" | "unsupported-topology" | "incomplete-page" }
+);
+
+/** One complete account page from a pinned standalone server, using census-only credentials.
+ * No pagination, event subscriptions or KICK. The host must independently establish that its
+ * deployment has no leaf/gateway or foreign-restore predecessor. This observation is neither
+ * that deployment proof nor a terminal retirement verdict; cutoff/readiness checks stay outside.
+ */
+export async function observeAccountCensusWithCreds(opts: {
+  servers: string; observerCreds: string; accountId: string; expectedServerId: string;
+  options?: { settleMs?: number; maxWaitMs?: number; pageLimit?: number };
+}): Promise<AccountCensusResult> {
+  const { servers, observerCreds, accountId, expectedServerId } = opts;
+  const prefix = accountCensusInboxPrefix(accountId);
+  if (!/^N[A-Z2-7]{55}$/.test(expectedServerId)) throw new Error("account census requires a pinned server public key");
+  fromPublic(expectedServerId);
+  const bounds = { settleMs: opts.options?.settleMs ?? 250, maxWaitMs: opts.options?.maxWaitMs ?? 2000, pageLimit: opts.options?.pageLimit ?? 1024 };
+  if (!Object.values(bounds).every((v) => Number.isSafeInteger(v) && v > 0) || bounds.settleMs > bounds.maxWaitMs
+    || bounds.maxWaitMs > 2000 || bounds.pageLimit > 1024) throw new Error("account census bounds are unsupported");
+  // This is a local scope preflight, not signature verification. The broker authenticates the
+  // credential on connect. A legacy/shared-inbox or broader credential is not a substitute.
+  const claims = credsClaims(observerCreds), nats = claims.nats;
+  const exactly = (raw: unknown, expected: string) => Array.isArray(raw) && raw.length === 1 && raw[0] === expected;
+  if (!nats || typeof nats !== "object" || !exactly(nats.pub?.allow, connzRequestSubject(accountId))
+    || !exactly(nats.sub?.allow, `${prefix}.>`) || Object.hasOwn(nats, "resp")
+    || typeof claims.exp !== "number" || !Number.isSafeInteger(claims.exp) || claims.exp <= Math.floor(Date.now() / 1000))
+    throw new Error("account census requires its account-scoped request and reply credential");
+  const observer = await connect({ servers, authenticator: credsAuthenticator(enc(observerCreds)),
+    inboxPrefix: prefix, reconnect: false, timeout: bounds.maxWaitMs });
+  try {
+    let invalid = false;
+    const replies = await connzRound(observer, accountId, 0, bounds, randomUUID(), 0, prefix, () => { invalid = true; });
+    const base = { accountId, expectedServerId, observedAt: Date.now() };
+    const unknown = (reason: Extract<AccountCensusResult, { state: "unknown" }>["reason"]): AccountCensusResult => ({ ...base, state: "unknown", reason });
+    if (invalid) return unknown("invalid-reply");
+    if (replies.length === 0) return unknown("no-reply");
+    if (replies.length !== 1) return unknown("unsupported-topology");
+    const reply = replies[0];
+    if (!reply || typeof reply !== "object" || Array.isArray(reply) || reply.error !== undefined || !reply.server || !reply.data)
+      return unknown("invalid-reply");
+    if (reply.server.id !== expectedServerId || reply.server.cluster !== undefined) return unknown("unsupported-topology");
+    const data = reply.data;
+    if (data.server_id !== expectedServerId || data.offset !== 0 || !Array.isArray(data.connections)
+      || !Number.isSafeInteger(data.total) || data.total! < 0 || !Number.isSafeInteger(data.num_connections)) return unknown("invalid-reply");
+    if (data.total !== data.connections.length || data.num_connections !== data.connections.length || data.connections.length > bounds.pageLimit)
+      return unknown("incomplete-page");
+    const ids = new Set<number>(), connections: SweptConn[] = [];
+    for (const row of data.connections) {
+      if (!row || typeof row !== "object" || !Number.isSafeInteger(row.cid) || row.cid! <= 0 || ids.has(row.cid!)) return unknown("invalid-reply");
+      if ((row.tags !== undefined && (!Array.isArray(row.tags) || row.tags.some((tag) => typeof tag !== "string")))
+        || (row.authorized_user !== undefined && typeof row.authorized_user !== "string")) return unknown("invalid-reply");
+      ids.add(row.cid!);
+      const principal = principalFromConnz(row, { allowPlatform: true });
+      connections.push({ serverId: expectedServerId, cid: row.cid!, ...(principal === null ? {} : { principal }),
+        ...(isUserNkey(row.authorized_user) ? { userNkey: row.authorized_user } : {}) });
+    }
+    return { ...base, state: "complete", connections };
   } finally {
     await observer.drain().catch(() => observer.close());
   }

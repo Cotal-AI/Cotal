@@ -5730,6 +5730,13 @@ credential signed before it (or minted out-of-band with the account signing key)
 broker-valid until signing-key rotation, which is the revocation lever for static material; the
 guarantee therefore applies to spaces that never issued static user-facing credentials.
 
+The optional host-only `account-census` user has a fixed expiry of at most five minutes. Its only
+publish grant is `$SYS.REQ.ACCOUNT.<accountId>.CONNZ`; its only subscription grant is
+`_INBOX.cotal-account-census.<accountId>.>`. It has no KICK, account-event or response grant.
+The account id is the DATA account public key. A registered SYS signer mints the user; the service
+client never receives that signer or this credential. A pinned single-page observation is not a
+terminal retirement verdict. Incomplete or malformed observations remain unknown.
+
 The live channel subscribe depends on none of these; it is broker-enforced via `sub.allow`, so
 self-serve live join works with no host present; only the durable backstop and its membership writes
 require a privileged host. None of these profiles is ever issued to ordinary agents. On the v0.4

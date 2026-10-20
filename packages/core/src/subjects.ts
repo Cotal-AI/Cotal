@@ -26,7 +26,7 @@
  *
  * Presence lives in a JetStream KV bucket, not a subject (see presenceBucket()).
  */
-
+import { fromPublic } from "@nats-io/nkeys";
 
 const ILLEGAL = /[^A-Za-z0-9_-]/g;
 
@@ -1009,6 +1009,13 @@ export const MEMBERSHIP_INBOX_PREFIX = "_INBOX.cotal-membership";
  *  nkey. Account-scoped (over server-wide `$SYS.REQ.SERVER.PING.CONNZ`) keeps the cred to one account. */
 export function connzRequestSubject(accountId: string): string {
   return `$SYS.REQ.ACCOUNT.${accountId}.CONNZ`;
+}
+
+/** The account-census credential and reader share an account-qualified reply namespace. */
+export function accountCensusInboxPrefix(accountId: string): string {
+  const canonical = fromPublic(accountId).getPublicKey();
+  if (canonical !== accountId || !canonical.startsWith("A")) throw new Error("account census requires one account public key");
+  return `_INBOX.cotal-account-census.${accountId}`;
 }
 
 /** Account connection-lifecycle event subjects (`$SYS.ACCOUNT.<accountID>.CONNECT|DISCONNECT`). The
