@@ -1,7 +1,10 @@
 /** Recovery, contention and classification cells for the dormant service custody writer, on an
  * owned loopback broker with fixture fault injection (see `_service-custody-fixture.ts`). Labels
  * carry the r4 §9 / r4a §4 cell they cover. Fixture material is original material supplied by the
- * fixture; no cell exercises S2 durable host authentication, and none is native acceptance. */
+ * fixture; no cell exercises S2 durable host authentication, and none is native acceptance. Faults
+ * are simulated: a lost ACK is an ambiguous error reported over a real landed write, a deferred
+ * original is issued later by the fixture, and an interruption is a latch trip followed by a
+ * resealed invocation on a fresh host. No process exits. */
 import { createAccount } from "@nats-io/nkeys";
 import { contractDigest, endpointRegistrationBarrier, isCasLoss, mintLifecycleUid, type ServiceUidCustodyV1 } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
@@ -40,7 +43,7 @@ const passB4 = (r: ServiceUidCustodyV1) => fx.faults.onWrite(is.gate(r, "open"),
 const active = (o: ServiceBootstrapResult) => o.kind === "active";
 
 try {
-  console.log("cell 8: a lost ACK is classified by exact leader readback, one write applied");
+  console.log("cell 8: a simulated lost ACK (the real write lands, the fixture reports an ambiguous error) is classified by exact leader readback, one write applied");
   for (const target of ["uid", "RootPlan", "root", "gate touch", "stamp"] as const) {
     const r = fx.reservation(), k = fx.keys(r);
     if (target === "gate touch") passB4(r);
@@ -80,7 +83,7 @@ try {
     fx.faults.onRead("records", k.uid, async () => { if (++reads === 2 && original) late = await original().catch((e: unknown) => e); }, 2);
     const out = await fx.bootstrap(r);
     await w.stop(); fx.faults.clear();
-    check("an unknown create whose original lands after the classification read applies once", active(out) && typeof late === "number" && w.seen.length === 1, { out, late: String(late), writes: w.seen.length });
+    check("an unknown create whose deferred original the fixture issues after the classification read applies once", active(out) && typeof late === "number" && w.seen.length === 1, { out, late: String(late), writes: w.seen.length });
   }
   {
     const r = fx.reservation(), k = fx.keys(r), w = await fx.watch("records", k.head);
@@ -89,7 +92,7 @@ try {
     fx.faults.onWrite(is.plan(r), { after: async () => { late = await original?.().catch((e: unknown) => e); } });
     const out = await fx.bootstrap(r);
     await w.stop(); fx.faults.clear();
-    check("an unknown CAS whose original lands after the retry applies once; the original loses",
+    check("an unknown CAS whose deferred original the fixture issues after the retry applies once; the original loses",
       active(out) && isCasLoss(late) && w.seen.filter((v) => v?.rootPlan !== null && state(v) === "service-creating").length === 1, { out, late: String(late) });
   }
   {
@@ -98,11 +101,11 @@ try {
     fx.faults.onWrite(is.plan(r), { fault: "deferred", deferred: (issue) => { original = issue; } });
     let armed = false;
     fx.faults.onWrite(is.plan(r), { before: async () => { armed = true; } });
-    // The original lands between the post-write classification read and the retry: the retry loses.
+    // The fixture issues the original between the post-write classification read and the retry: the retry loses.
     fx.faults.onRead("records", k.head, async () => { if (original && !armed && late === undefined) late = await original().catch((e: unknown) => e); }, 20);
     const out = await fx.bootstrap(r);
     await w.stop(); fx.faults.clear();
-    check("an unknown CAS whose original lands before the retry applies once; the retry re-decides",
+    check("an unknown CAS whose deferred original the fixture issues before the retry applies once; the retry re-decides",
       active(out) && typeof late === "number" && w.seen.filter((v) => v?.rootPlan !== null && state(v) === "service-creating").length === 1, { out, late: String(late) });
   }
   {
@@ -381,17 +384,18 @@ try {
       && (await records.get(k.head)) === null && (await auth.get(k.gate)) === null, out);
   }
 
-  console.log("cell 4: a crash after every cancellation step resumes under the same operation");
+  // A latch trip stands in for an interruption; no process exits. The resumed call is a fresh host and reseal.
+  console.log("cell 4: a simulated interruption (latch trip) after every cancellation step, then a resealed invocation, resumes under the same operation");
   for (const at of [["L1", "auth", "epgate"], ["L2", "records", "head"], ["L3", "auth", "gate"], ["L4", "auth", "root"]] as const) {
     const r = fx.reservation(), k = fx.keys(r), op = fx.cancelOp();
     await fx.pausedBootstrap(r, "auth", `cred.${r.native.lifecycleUid}.*`, 1);
     const key = at[2] === "root" ? `cred.${r.native.lifecycleUid}.*` : k[at[2]];
-    const crashed = await fx.pausedCancel(r, op, at[1], key, 1);
+    const interrupted = await fx.pausedCancel(r, op, at[1], key, 1);
     const resumed = await fx.cancel(r, op);
     const p = await plan(r);
-    check(`a crash after ${at[0]} resumes to the same nonterminal fence`, crashed.kind === "held" && resumed.kind === "pending" && resumed.root === "revoked"
+    check(`a latch interruption after ${at[0]} and a resealed invocation reach the same nonterminal fence`, interrupted.kind === "held" && resumed.kind === "pending" && resumed.root === "revoked"
       && resumed.rootDetail === (at[0] === "L4" ? "already-revoked" : "cas-revoked") && state(await fx.value(auth, rootKeyOf(r, p))) === "revoked"
-      && (await readNativeServiceGate(fx.reg, fx.binding(r)))?.row.serviceAuthority.state === "revoked", { crashed, resumed });
+      && (await readNativeServiceGate(fx.reg, fx.binding(r)))?.row.serviceAuthority.state === "revoked", { interrupted, resumed });
   }
   {
     const r = fx.reservation(), k = fx.keys(r), op = fx.cancelOp();
@@ -410,7 +414,7 @@ try {
     fx.faults.onWrite(is.root(r, "revoked"), { fault: "ack-lost" });
     const out = await fx.cancel(r, fx.cancelOp());
     await w.stop(); fx.faults.clear();
-    check("a C-L4 create with a lost ACK reads back created-revoked, one write", out.kind === "pending" && out.rootDetail === "created-revoked" && w.seen.length === 1, { out, writes: w.seen.length });
+    check("a C-L4 create with a simulated lost ACK over its landed write reads back created-revoked, one write", out.kind === "pending" && out.rootDetail === "created-revoked" && w.seen.length === 1, { out, writes: w.seen.length });
   }
   {
     const r = fx.reservation(), w = await fx.watch("auth", `cred.${r.native.lifecycleUid}.*`);
