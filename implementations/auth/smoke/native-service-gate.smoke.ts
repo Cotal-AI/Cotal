@@ -85,7 +85,8 @@ try {
   const validHead = JSON.parse(new TextDecoder().decode((await stores.recordsKv.get(headKey))!.value));
   const validGate = { lifecycleUid, state: "open", generation: 1, serviceCustody: mirror };
   const proofNow = Date.now();
-  await assert.rejects(readRegistryServiceRoot(reg, binding, rootCredentialId, proofNow), /no durable gate/,
+  await assert.rejects(readRegistryServiceRoot(reg, binding, rootCredentialId, proofNow),
+    error => (error as { code?: string }).code === "permission-denied" && (error as Error).message.includes(`gate.${lifecycleUid}`),
     "missing native gate cannot be replaced by any endpoint gate");
   await stores.authKv.create(nativeGateKey, encode(validGate));
   assert.ok((await readRegistryServiceRoot(reg, binding, rootCredentialId, proofNow)).expiresAt > proofNow / 1000);
