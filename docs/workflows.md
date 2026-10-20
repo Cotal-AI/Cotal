@@ -23,6 +23,11 @@ binding-only debt. Later duplicates only read. A
 An absent admission is an observation at read time, not proof that the original callback cannot
 still write. A changed caller generation or manager epoch refuses rather than adopting the run.
 
+The original callback timer bounds waiting and starting more attempts. It does not cancel an
+already-issued broker publish, which may land later with the same frozen admission bytes.
+No new attempt or activation starts after the deadline. Keep the reservation even if an
+earlier read observed no admission.
+
 This implementation is under validation. Static native and signerless issuer paths require
 separate acceptance evidence before release or integration.
 

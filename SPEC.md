@@ -5085,7 +5085,11 @@ three classified transient attempts in the original callback deadline and author
 The admission bytes, timestamp, ceiling and
 provenance remain fixed. A failed create is classified by a leader read of that exact admission
 key. Matching bytes recover success, authoritative absence permits another same-callback
-attempt, and unreadable or conflicting state holds. No later callback, duplicate, restart,
+attempt, and unreadable or conflicting state holds. The timer bounds waiting and starting
+further attempts, not broker acceptance of an already-issued publish. Such a publish may land
+later with the original frozen bytes. No new attempt or activation starts after the deadline,
+and earlier admission absence never proves that this pending effect cannot land.
+No later callback, duplicate, restart,
 operator or read repairs a binding-only submission.
 
 Status reports `unbound`, `binding-only`, `admitted`, `activated` or `indeterminate`, with the

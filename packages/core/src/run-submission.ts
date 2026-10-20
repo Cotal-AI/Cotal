@@ -92,6 +92,8 @@ export async function readRunSubmission(args: {
 
 const transient = (e: unknown) => ["TIMEOUT", "503", "408", "unavailable", "timeout", "deadline-exceeded"].includes(String((e as { code?: unknown })?.code));
 async function beforeDeadline<T>(deadline: number, work: () => Promise<T>): Promise<T> {
+  // Bounds the await and later attempt starts, not an already-issued broker effect. A timed-out
+  // publish can still land with the original frozen bytes. Its reservation remains held.
   const ms = deadline - Date.now();
   if (ms <= 0) throw new EpEnvelopeError("deadline-exceeded", "original keyed callback deadline elapsed; retain its binding");
   let timer: ReturnType<typeof setTimeout> | undefined;
