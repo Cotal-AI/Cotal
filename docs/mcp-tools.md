@@ -365,6 +365,7 @@ Define a new persona and save it as config (the manager writes .cotal/agents/<na
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | yes | Unique name for the persona (also the spawn name): letters, digits, _ or -. |
+| `instance` | string | no | Optional manager instance id for a multi-manager space. When omitted, a seat a manager launched uses that manager and any other caller lets the mesh select one; on a user-auth mesh with several of your managers live, that selection refuses and lists their ids. A pin that cannot be resolved is refused without falling back to another manager. |
 | `prompt` | string | yes | The persona: an appended system prompt describing who this agent is. A complete agent file (leading --- frontmatter with subscribe / allowSubscribe / allowPublish) is merged, not wrapped. |
 | `model` | string | no | Optional model override (e.g. opus, sonnet). Wins over a model: in the prompt's frontmatter. |
 | `role` | string | no | Optional role written into the persona file (e.g. reviewer). Wins over a role: in the prompt's frontmatter. |

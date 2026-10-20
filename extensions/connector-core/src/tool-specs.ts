@@ -1611,6 +1611,7 @@ export function cotalToolSpecs(
           .string()
           .regex(/^[A-Za-z0-9_-]+$/, "letters, digits, _ or - only")
           .describe("Unique name for the persona (also the spawn name): letters, digits, _ or -."),
+        instance: managerInstanceArg,
         prompt: z.string().max(10_000).describe("The persona: an appended system prompt describing who this agent is. A complete agent file (leading --- frontmatter with subscribe / allowSubscribe / allowPublish) is merged, not wrapped."),
         model: z.string().max(120).optional().describe("Optional model override (e.g. opus, sonnet). Wins over a model: in the prompt's frontmatter."),
         role: z.string().max(120).optional().describe("Optional role written into the persona file (e.g. reviewer). Wins over a role: in the prompt's frontmatter."),
@@ -1628,9 +1629,10 @@ export function cotalToolSpecs(
       async run(
         agent,
         _config,
-        { name, prompt, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, announce }: {
+        { name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, announce }: {
           name: string;
           prompt: string;
+          instance?: string;
           model?: string;
           role?: string;
           agent?: string;
@@ -1641,9 +1643,9 @@ export function cotalToolSpecs(
         },
       ) {
         try {
-          const reply = await agent.definePersona({ name, prompt, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, announce });
+          const reply = await agent.definePersona({ name, prompt, instance, model, role, agent: agentType, subscribe, allowSubscribe, allowPublish, announce });
           if (!reply.ok) return err(`Couldn't define ${name}: ${reply.error ?? "manager refused"}`);
-          const spawnHint = `spawn it with cotal_spawn(name="${name}") to bring it online`;
+          const spawnHint = `spawn it with cotal_spawn(name="${name}"${instance === undefined ? "" : `, instance="${instance}"`}) to bring it online`;
           // The persona is SAVED whenever we get here, so a failed announcement is a partial success,
           // not a failure. Saying "couldn't define" would name the wrong remediation (the caller
           // would fix its spawn capability, which was never the problem) and invite a retry — and a
