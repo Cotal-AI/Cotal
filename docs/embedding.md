@@ -1053,3 +1053,41 @@ transports it, and `remoteRunHosting` supplies `RunHostingContext.revokeRun` for
 manager. The callback returns the stored `RunRevocation`, including on repeats. A host composing
 its own remote authority must supply that callback to revoke. No signer reaches the participant.
 CLI and MCP revoke verbs are a follow-up described in the [run-start design](design/user-auth-run-start.md).
+
+### Private tool-result prerequisites (not serving)
+
+`@cotal-ai/auth` exports `createToolResultRevocationCustody`,
+`recordToolResultRevocation`, `snapshotToolResultRevocations` and one-shot
+`consumeToolResultSnapshot`. These are host-only prerequisites, not material issuance,
+service registration or a browser/private-result path. `requireToolResultClockPrerequisite`
+always refuses `unavailable`: no native runtime clock-domain/generation/suspension proof
+exists, and no numeric delta is invented.
+
+Custody exclusively creates a **fresh** auth store after a private fsynced intent/generation.
+Existing stores or journals are never adopted. Only a standalone broker and owner-private local ext4 journal parent are supported. Only the creating process may use its sealed,
+non-reconnecting reader/writer custody. Unknown writes, missing/changed journals, stream
+identity/configuration drift or connection loss invalidate it. Crash/rebind recovery stays
+unavailable. The trusted composition supplies current authenticated consent/target authorizers
+and exclusively holds account/provisioning keys. Independently running privileged provisioners,
+uncontrolled legacy writers and existing roots have no qualified custody and are unsupported.
+This is not protection from a malicious host administrator or copied signing keys.
+
+Revocation creates only `revocation.<targetDigest>.<consentId>` with native expected-last-subject
+sequence zero, no operation/TTL headers and independently fsynced acknowledgement receipts.
+Consent bytes must match the recorded target and expiry. Markers persist indefinitely in this
+slice. A separate bounded-retention successor must prove consent expiry plus
+`EP_AUTH_MARKER_TTL_MS` and snapshot safety before a pruner/TTL may exist.
+
+A snapshot fixes T0 before IO and a leader W once, walks only through W, bounds count/bytes/time,
+and compares exact native sequence/subject/payload evidence to custody receipts. The committed-W
+artifact is a process-private invocation seal binding that evidence, account, generation and
+native created/config identity. It cannot be parsed, copied, reused or used after custody loss.
+No current INFO equality or operator safe flag establishes historical integrity. Journals are
+exclusive 0600 files with file and directory fsync, checked before/after IO, not adopted on restart.
+Leader changes may work only through the same intact native connection/store, otherwise refuse.
+
+New package-internal grants split revocation-only publish from INFO/MSG.GET reader authority.
+Retained issuance writers **already can enumerate** auth metadata. Raw ACLs cannot enforce CAS,
+DEL/TTL/schema/target conventions. Every raw MSG.GET profile carries SPEC13.9's caller-selected
+reply **foreign-subject response-injection** residual, even with only its own inbox subscription.
+The native `smoke:tool-result-prerequisites` is the bounded fixture, not serving acceptance.
