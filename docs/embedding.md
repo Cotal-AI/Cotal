@@ -1258,14 +1258,15 @@ endpoint deny residue and reports unconfirmed; a foreign or deleted reservation 
 write. Each write is a per-key create or revision CAS under a sealed host whose genuine plane-claim
 hold is re-read before and after the write, plus a fatal latch. That is local readiness control,
 not broker writer exclusion, so a paused writer can still land one late conditional write. Each
-request is bounded by the remaining original deadline, and the writer issues every endpoint-gate
-request itself, so none starts after an invocation returns. The caller supplies that deadline and the
+request is bounded by the remaining original deadline, and once a RootPlan exists also by its
+expiry. The writer issues every endpoint-gate request itself, so none starts after an invocation
+returns, and it re-reads the endpoint gate before every plan, root and stamp write attempt. The caller supplies that deadline and the
 reservation; nothing here authenticates a host, approves serving, retires terminally, releases an
 alias or rotates a root.
 
-This is a refusal foundation, not service endpoint admission. Service bootstrap, cancellation,
-terminal retirement, complete observer evidence, writer exclusion and restore readiness remain
-unavailable. Do not seed service reservations in an existing space, adopt old service-shaped rows,
+This is a refusal foundation, not service endpoint admission. The dormant writer above has no
+product caller, so service bootstrap and cancellation are not available to embedders, and terminal
+retirement, complete observer evidence, writer exclusion and restore readiness remain unavailable. Do not seed service reservations in an existing space, adopt old service-shaped rows,
 or use ordinary retirement to make them terminal. A signing-key or raw-store holder can bypass
 helper guards, so schema rejection alone does not make mixed-version writers safe. Restore must
 quarantine service work until a separately supported reconciliation protocol is available.

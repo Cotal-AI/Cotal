@@ -124,25 +124,41 @@ function held(reason: string, step: string, detail = reason): never {
 }
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-interface Ctx { h: HostInternals; jsm: JetStreamManager; kv: { records: KV; auth: KV }; bucket: { records: string; auth: string }; deadlineMs: number; step: string }
+/** `deadlineMs` is the live-authority bound: the original deadline, clipped to the RootPlan
+ *  expiry once a plan exists. `deadlineReason` names whichever of the two is binding. */
+interface Ctx {
+  h: HostInternals; jsm: JetStreamManager; kv: { records: KV; auth: KV }; bucket: { records: string; auth: string };
+  deadlineMs: number; deadlineReason: "deadline" | "plan-expired"; step: string;
+}
 
 function context(h: HostInternals, deadlineMs: number): Ctx {
   const stores = registryStores(h.registry);
   return { h, jsm: stores.jsm, kv: { records: stores.recordsKv, auth: stores.authKv },
-    bucket: { records: recordsBucket(h.space), auth: epAuthBucket(h.space) }, deadlineMs, step: "open" };
+    bucket: { records: recordsBucket(h.space), auth: epAuthBucket(h.space) }, deadlineMs, deadlineReason: "deadline", step: "open" };
+}
+
+/** From the moment a RootPlan exists, `liveUntilMs = min(deadline, plan.expMs)` bounds every request. */
+function clipToPlan(ctx: Ctx, plan: RootPlan): void {
+  if (plan.expMs < ctx.deadlineMs) { ctx.deadlineMs = plan.expMs; ctx.deadlineReason = "plan-expired"; }
 }
 
 type Bounded<T> = { ok: true; value: T } | { ok: false; error: unknown } | { ok: false; timedOut: true };
 
 /** Run one broker request with a timeout of `min(S1_REQUEST_TIMEOUT_MS, remaining)`. A request
- *  is never started at or past the deadline. The abandoned request's settlement is still handled. */
+ *  is never started at or past the live-authority bound, and a request still in flight when that
+ *  bound is reached ends the step held under the bound's reason. The abandoned request's
+ *  settlement is still handled. */
 async function bounded<T>(ctx: Ctx, start: () => Promise<T>): Promise<Bounded<T>> {
-  const ms = Math.min(S1_REQUEST_TIMEOUT_MS, ctx.deadlineMs - Date.now());
-  if (ms <= 0) return held("deadline", ctx.step, "the original deadline has passed; no request starts");
+  const remaining = ctx.deadlineMs - Date.now(), ms = Math.min(S1_REQUEST_TIMEOUT_MS, remaining);
+  const bound = ctx.deadlineReason === "plan-expired" ? "the RootPlan expiry" : "the original deadline";
+  if (ms <= 0) return held(ctx.deadlineReason, ctx.step, `${bound} has passed; no request starts`);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<{ ok: false; timedOut: true }>((r) => { timer = setTimeout(() => r({ ok: false, timedOut: true }), ms); });
   const settled = start().then((value): Bounded<T> => ({ ok: true, value }), (error): Bounded<T> => ({ ok: false, error }));
-  try { return await Promise.race([settled, timeout]); } finally { clearTimeout(timer); }
+  let r: Bounded<T>;
+  try { r = await Promise.race([settled, timeout]); } finally { clearTimeout(timer); }
+  if (!r.ok && "timedOut" in r && ms === remaining) held(ctx.deadlineReason, ctx.step, `${bound} was reached during a request`);
+  return r;
 }
 
 async function read<T>(ctx: Ctx, start: () => Promise<T>): Promise<T> {
@@ -196,9 +212,12 @@ type Expect = { create: true } | { revision: number; preimage: Uint8Array };
 /** One conditional write under readiness. Returns the landed revision, or `moved` when the key no
  *  longer matches this step's decision (the caller re-reads and re-decides). An unknown outcome
  *  is classified by an immediate leader read before anything is reissued; only exact absence for
- *  a create, or the exact preimage at the pinned revision for a CAS, permits the same write again. */
-async function write(ctx: Ctx, bucket: "records" | "auth", key: string, bytes: Uint8Array, expect: Expect): Promise<number | "moved"> {
+ *  a create, or the exact preimage at the pinned revision for a CAS, permits the same write again.
+ *  `precheck` runs before every attempt, including each reissue. */
+async function write(ctx: Ctx, bucket: "records" | "auth", key: string, bytes: Uint8Array, expect: Expect,
+  precheck?: () => Promise<void>): Promise<number | "moved"> {
   for (let round = 0; round < S1_MAX_UNKNOWN_ROUNDS; round++) {
+    if (precheck) await precheck();
     await readyBefore(ctx);
     const kv = ctx.kv[bucket];
     const r = await bounded(ctx, () => ("create" in expect ? kv.put(key, bytes, { previousSeq: 0 }) : kv.update(key, bytes, expect.revision)));
@@ -362,11 +381,13 @@ async function bootstrap(ctx: Ctx, m: BootstrapSnapshot): Promise<ServiceBootstr
     ctx.step = "B3-gate";
   }
 
+  // Endpoint rechecks before B5, B6 and B8 run once per step and again before every write attempt.
+  const recheck = () => endpointRecheck(ctx, m);
   ctx.step = "B5-plan";
+  await recheck();
   let plan: RootPlan | undefined;
   for (let i = 0; plan === undefined; i++) {
     if (i >= S1_MAX_CAS_REDECIDE) held("contention", ctx.step);
-    await endpointRecheck(ctx, m);
     const h = bootstrapHead(ctx, await head(ctx, m));
     if (h.state === "absent") held("head-vanished", ctx.step, "the creating head is no longer readable");
     if (h.row.state === "active") return verify(ctx, m, h.row.currentCredentialId);
@@ -374,11 +395,12 @@ async function bootstrap(ctx: Ctx, m: BootstrapSnapshot): Promise<ServiceBootstr
     if (h.row.rootPlan !== null) { plan = h.row.rootPlan; break; }
     // Fixed once: the id and expiry are chosen here and only a winning CAS persists them.
     const candidate: RootPlan = { credentialId: mintLifecycleUid(), expMs: Date.now() + ROOT_CREDENTIAL_TTL_MS };
-    await write(ctx, "records", headKey(m), encodeHead(m, { ...h.row, rootPlan: candidate }), { revision: h.revision, preimage: h.bytes });
+    await write(ctx, "records", headKey(m), encodeHead(m, { ...h.row, rootPlan: candidate }), { revision: h.revision, preimage: h.bytes }, recheck);
   }
+  clipToPlan(ctx, plan);
 
   ctx.step = "B6-root";
-  await endpointRecheck(ctx, m);
+  await recheck();
   for (let i = 0; ; i++) {
     if (i >= S1_MAX_CAS_REDECIDE) held("contention", ctx.step);
     if (Date.now() >= plan.expMs) held("plan-expired", ctx.step, "the persisted root plan has expired; cancel this incarnation");
@@ -395,7 +417,7 @@ async function bootstrap(ctx: Ctx, m: BootstrapSnapshot): Promise<ServiceBootstr
       if (r.row.state === "revoked") { bootstrapHead(ctx, await head(ctx, m)); held("root-revoked", ctx.step, "the planned root is revoked under a creating head"); }
       break;
     }
-    await write(ctx, "auth", rootKey(m, plan.credentialId), encodeRoot(m, rootRow(m, plan, "active")), { create: true });
+    await write(ctx, "auth", rootKey(m, plan.credentialId), encodeRoot(m, rootRow(m, plan, "active")), { create: true }, recheck);
   }
 
   ctx.step = "B7-finalize";
@@ -412,7 +434,7 @@ async function bootstrap(ctx: Ctx, m: BootstrapSnapshot): Promise<ServiceBootstr
   }
 
   ctx.step = "B8-stamp";
-  await endpointRecheck(ctx, m);
+  await recheck();
   for (let i = 0; ; i++) {
     if (i >= S1_MAX_CAS_REDECIDE) held("contention", ctx.step);
     if (Date.now() >= plan.expMs) held("plan-expired", ctx.step, "the persisted root plan has expired; cancel this incarnation");
@@ -424,7 +446,7 @@ async function bootstrap(ctx: Ctx, m: BootstrapSnapshot): Promise<ServiceBootstr
     }
     if (h.row.state !== "service-creating" || h.row.rootPlan?.credentialId !== plan.credentialId) held("head-moved", ctx.step);
     const active: ServiceHead = { ...headBase(m), state: "active", currentCredentialId: plan.credentialId };
-    await write(ctx, "records", headKey(m), encodeHead(m, active), { revision: h.revision, preimage: h.bytes });
+    await write(ctx, "records", headKey(m), encodeHead(m, active), { revision: h.revision, preimage: h.bytes }, recheck);
   }
   return verify(ctx, m, plan.credentialId);
 }
