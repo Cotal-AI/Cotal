@@ -140,7 +140,7 @@ try {
   // Instrument real leader API only. The fixture has no copied parser/authority implementation.
   const originalLeaderGet = stores.jsm.streams.getMessage, leaderSubjects: string[] = [];
   stores.jsm.streams.getMessage = async (...args) => {
-    leaderSubjects.push(String(args[1]?.last_by_subj));
+    leaderSubjects.push("last_by_subj" in args[1] ? String(args[1].last_by_subj) : "non-last-subject-read");
     return originalLeaderGet.apply(stores.jsm.streams, args);
   };
   try { await readRegistryServiceRoot(reg, binding, rootCredentialId, proofNow); }
