@@ -11,6 +11,9 @@
  * bucket). The KEY GRAMMAR + row parsers stay in `lifecycle-state.ts`; this module is the CAS
  * operations over them.
  */
+import { walkKvLatest } from "./kv-scan.js";
+import { contractDigest } from "./canonical.js";
+import { parseServiceRegistrationIdentity, serviceGateApprovalLive } from "./service-gate.js";
 import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { isCasLoss as isRawCasLoss } from "./endpoint-records.js";
@@ -28,7 +31,8 @@ const dec = new TextDecoder();
 export async function createRowByteIdempotent(kv: KV, key: string, value: unknown): Promise<void> {
   const bytes = JSON.stringify(value);
   try {
-    await kv.create(key, enc.encode(bytes));
+    // KV.create can recreate a tombstone. A staged identity must have no prior history.
+    await kv.put(key, enc.encode(bytes), { previousSeq: 0 });
   } catch (e) {
     if (!isRawCasLoss(e))
       throw new EpEnvelopeError("unavailable", `creating the row ${key} is ambiguous; the mint fails closed (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
@@ -130,9 +134,17 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
         throw new EpEnvelopeError("failed-precondition", `the staged serve row names ${row.endpoint}/${row.lifecycleUid} but this gate serves ${endpoint}/${instanceId}; a row never crosses families (SPEC 13.1)`);
       if (typeof row.exp !== "number")
         throw new EpEnvelopeError("failed-precondition", `the staged serve row for ${endpoint}/${instanceId} carries no expiry; the normative ledger row requires one (SPEC 13.1)`);
+      const current = await readEndpointGate(kv, key);
+      if (current?.row.serviceAuthority && (current.row.state !== "open"
+        || !current.row.serviceAuthority.activationIssued
+        || !serviceGateApprovalLive(current.row.serviceAuthority, Math.floor(Date.now() / 1000))))
+        throw new EpEnvelopeError("expired", "service approval does not permit staging issuance evidence");
+      if ((current?.row.authorityFamily === "service") !== (row.serviceConnection !== undefined))
+        throw new EpEnvelopeError("failed-precondition", "service connection evidence must match its native authority family");
       const ledgerRow: CredentialLedgerRow = {
         credentialId: row.credentialId, holderPrincipal: row.holderPrincipal,
         lifecycleUid: instanceId, endpoint, sourceChain: [...row.sourceChain], state: "active", exp: row.exp,
+        ...(row.serviceConnection ? { serviceConnection: row.serviceConnection } : {}),
       };
       const rowKey = epcredRowKey(endpoint, instanceId, row.credentialId);
       // Round-trip the writer's own bytes through the consuming parser BEFORE the create: a row
@@ -140,10 +152,29 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
       parseLedgerRow(enc.encode(JSON.stringify(ledgerRow)), rowKey);
       await createRowByteIdempotent(kv, rowKey, ledgerRow);
     },
+    verifyServiceIssuance: async (row, observed) => {
+      const rowKey = epcredRowKey(endpoint, instanceId, row.credentialId), entry = await kv.get(rowKey);
+      if (!entry || entry.operation !== "PUT") throw new EpEnvelopeError("unavailable", "native service issuance evidence is missing");
+      const stored = parseLedgerRow(entry.value, rowKey);
+      if (!row.serviceConnection || stored.state !== "active" || stored.holderPrincipal !== row.holderPrincipal
+        || stored.exp !== row.exp || row.credentialKey !== row.serviceConnection.userNkey
+        || contractDigest(stored.sourceChain) !== contractDigest(row.sourceChain)
+        || !stored.serviceConnection || contractDigest(stored.serviceConnection) !== contractDigest(row.serviceConnection))
+        throw new EpEnvelopeError("permission-denied", "native service issuance evidence does not match this connection");
+      const current = await endpointGateState(kv, space, endpoint, instanceId);
+      if (!current || current.authorityFamily !== "service" || current.state !== "open")
+        throw new EpEnvelopeError("permission-denied", "native service issuance gate is no longer open");
+      const { revision: beforeRevision, ...before } = observed, { revision: afterRevision, ...after } = current;
+      if (contractDigest(before) !== contractDigest(after))
+        throw new EpEnvelopeError("permission-denied", "native service issuance authority changed after its gate CAS");
+    },
     commit: async (expectedRevision: number) => {
       const entry = await kv.get(key);
       if (!entry || entry.operation !== "PUT" || entry.revision !== expectedRevision) return false;
-      if (parseEndpointGate(entry.value, key).state !== "open") return false;
+      const current = parseEndpointGate(entry.value, key);
+      if (current.state !== "open") return false;
+      if (current.serviceAuthority && (!current.serviceAuthority.activationIssued
+        || !serviceGateApprovalLive(current.serviceAuthority, Math.floor(Date.now() / 1000)))) return false;
       try {
         await kv.update(key, entry.value, expectedRevision);
         return true;
@@ -191,6 +222,8 @@ export async function commitSiblingIssuance(
   row: EpServeLedgerRow,
 ): Promise<void> {
   const at = `${observed.endpoint}/${observed.lifecycleUid}`;
+  if (observed.authorityFamily === "service")
+    throw new EpEnvelopeError("failed-precondition", "standalone service authority does not support sibling credential duties");
   if (observed.state !== "open")
     throw new EpEnvelopeError("expired", `the issuance gate for "${at}" is ${observed.state}; a sibling credential never mints against a closed gate (SPEC 13.1)`);
   await gate.stage(row);
@@ -366,7 +399,9 @@ export async function provisionEndpointGateOpen(
 export function endpointRegistrationBarrier(
   kv: KV,
   space: string,
-  args: { endpoint: string; instanceId: string; opId: string; evict?: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[] },
+  args: { endpoint: string; instanceId: string; opId: string;
+    serviceRegistration?: { requestId: string; requestDigest: string };
+    evict?: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[] },
 ): import("./endpoint-service.js").EpIssuanceBarrier {
   const { endpoint } = args;
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
@@ -374,21 +409,57 @@ export function endpointRegistrationBarrier(
   const key = epgateKey(endpoint, instanceId);
   const evict = args.evict ?? ((holderPrincipals: readonly string[]) => holderPrincipals.map(() => false)); // FAIL-CLOSED: no evictor ⇒ eviction not verified (a takeover fails closed)
   const observed = () => readEndpointGate(kv, key);
+  const assertEmptyServiceFamily = async () => {
+    const current = await observed();
+    if (!current?.row.serviceAuthority || current.row.state !== "frozen" || current.row.op.kind !== "registration" || current.row.op.opId !== opId)
+      throw new EpEnvelopeError("failed-precondition", "service issuance evidence cannot be checked outside its owned registration freeze");
+    const pending = current.row.serviceAuthority.pendingRegistration;
+    if (!pending || pending.operationId !== opId || (args.serviceRegistration &&
+      (pending.requestId !== args.serviceRegistration.requestId || pending.requestDigest !== args.serviceRegistration.requestDigest)))
+      throw new EpEnvelopeError("conflict", "pending registration request identity does not match the held operation");
+    if (current.row.serviceAuthority.activationIssued)
+      throw new EpEnvelopeError("failed-precondition", "activated service issuance evidence cannot be reconciled as pre-activation registration");
+    // The existing leader walk carries tombstones and propagates incomplete reads. A live-key
+    // iterator would erase deletion evidence and could mistake an interrupted scan for empty.
+    const evidence = await walkKvLatest(kv, `${epcredFamilyPrefix(endpoint, instanceId)}.>`);
+    if (evidence.length !== 0)
+      throw new EpEnvelopeError("failed-precondition", "unexpected service issuance evidence before activation; registration remains frozen");
+  };
   return {
     operationId: opId,
     observe: () => endpointGateState(kv, space, endpoint, instanceId),
     freeze: async (expectedRevision: number) => {
       const cur = await observed();
       if (cur === null || cur.revision !== expectedRevision || cur.row.state !== "open") return null;
+      if (cur.row.serviceAuthority && (cur.row.serviceAuthority.activationIssued
+        || !serviceGateApprovalLive(cur.row.serviceAuthority, Math.floor(Date.now() / 1000)))) return null;
       const frozen: import("./lifecycle-state.js").EndpointGateRow = { ...cur.row, state: "frozen", op: { opId, kind: "registration" } };
+      if (frozen.serviceAuthority) {
+        if (!args.serviceRegistration)
+          throw new EpEnvelopeError("failed-precondition", "service registration requires its request identity before freezing");
+        if (frozen.serviceAuthority.registration?.requestId === args.serviceRegistration.requestId)
+          throw new EpEnvelopeError("conflict", "completed registration request must be recovered without another barrier");
+        const pendingRegistration = parseServiceRegistrationIdentity({ operationId: opId,
+          requestId: args.serviceRegistration.requestId, requestDigest: args.serviceRegistration.requestDigest });
+        frozen.serviceAuthority = { ...frozen.serviceAuthority, pendingRegistration };
+      } else if (args.serviceRegistration) {
+        throw new EpEnvelopeError("failed-precondition", "service request identity cannot bind a nonservice gate");
+      }
+      parseEndpointGate(enc.encode(JSON.stringify(frozen)), key);
       try {
-        return await kv.update(key, enc.encode(JSON.stringify(frozen)), expectedRevision); // the fencing TOKEN
+        const token = await kv.update(key, enc.encode(JSON.stringify(frozen)), expectedRevision);
+        if (frozen.serviceAuthority) await assertEmptyServiceFamily();
+        return token;
       } catch (e) {
         if (isRawCasLoss(e)) return null; // a concurrent barrier froze first
         throw new EpEnvelopeError("unavailable", `the endpoint gate freeze CAS for ${key} is ambiguous; the registration fails closed (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
       }
     },
     enumerate: async () => {
+      if ((await observed())?.row.serviceAuthority) {
+        await assertEmptyServiceFamily();
+        return [];
+      }
       const rows: import("./endpoint-service.js").EpServeLedgerRow[] = [];
       const prefix = `${epcredFamilyPrefix(endpoint, instanceId)}.`;
       for await (const rowKey of await kv.keys(`${prefix}>`)) {
@@ -398,11 +469,12 @@ export function endpointRegistrationBarrier(
         const led = parseLedgerRow(entry.value, rowKey);
         // Reconstruct the EpServeLedgerRow the barrier consumers need: revoke keys by credentialId,
         // evict by holderPrincipal, the revoke loop reads state. The gate-coordinate fields and the
-        // holder nkey (`credentialKey`) are NOT persisted on the ledger row — the
-        // coordinates are pinned by the gate key, and revoke/evict never need the nkey; carried as
-        // the observed gate's coordinates + empty credentialKey, documented, not consumed here.
+        // ordinary holder nkey are not persisted. Service rows retain their authenticated user
+        // nkey in serviceConnection. Gate coordinates below are placeholders, not fresh authority;
+        // the barrier revokes by credentialId and evicts by holderPrincipal.
         rows.push({
-          credentialId: led.credentialId, credentialKey: "", holderPrincipal: led.holderPrincipal,
+          credentialId: led.credentialId, credentialKey: led.serviceConnection?.userNkey ?? "", holderPrincipal: led.holderPrincipal,
+          ...(led.serviceConnection ? { serviceConnection: led.serviceConnection } : {}),
           endpoint, lifecycleUid: instanceId, sourceChain: led.sourceChain, state: led.state, exp: led.exp,
           generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0,
         });
@@ -418,6 +490,7 @@ export function endpointRegistrationBarrier(
       // Token-pinned: only THIS barrier (still holding its freeze at `token`) reopens; a reconciler
       // or newer barrier that advanced the revision wins and this stale reopen loses.
       if (cur === null || cur.revision !== token || cur.row.state !== "frozen" || cur.row.op.opId !== opId) return false;
+      if (cur.row.serviceAuthority) await assertEmptyServiceFamily();
       const { op: _op, ...rest } = cur.row;
       void _op;
       const reopened: import("./lifecycle-state.js").EndpointGateRow = {
@@ -425,6 +498,23 @@ export function endpointRegistrationBarrier(
         generation: successor.generation, processEpoch: successor.processEpoch,
         registrationRevision: successor.registrationRevision, nameAuthorityRevision: successor.nameAuthorityRevision,
       };
+      if (reopened.serviceAuthority) {
+        const { pendingRegistration, ...authority } = reopened.serviceAuthority;
+        if (!pendingRegistration || pendingRegistration.operationId !== opId)
+          throw new EpEnvelopeError("conflict", "pending registration identity is absent at completion");
+        const completed = successor.processEpoch !== cur.row.processEpoch || successor.registrationRevision !== cur.row.registrationRevision
+          || successor.nameAuthorityRevision !== cur.row.nameAuthorityRevision;
+        if (completed) {
+          const registration = { ...pendingRegistration, processEpoch: successor.processEpoch,
+            registrationRevision: successor.registrationRevision, nameAuthorityRevision: successor.nameAuthorityRevision };
+          authority.registration = { ...registration, registrationProof: contractDigest({ v: 1, kind: "service-registration",
+            space, endpoint, instanceId, assignmentDigest: authority.assignmentDigest, principal: cur.row.principal,
+            lifecycleUid: authority.lifecycleUid, rootCredentialId: authority.rootCredentialId, approvalDigest: authority.approvalDigest,
+            ...registration }) };
+        }
+        reopened.serviceAuthority = authority;
+      }
+      parseEndpointGate(enc.encode(JSON.stringify(reopened)), key);
       try {
         await kv.update(key, enc.encode(JSON.stringify(reopened)), token);
         return true;
