@@ -114,8 +114,19 @@ try {
       label: "cotal:tool-result-revocation", toolResultCustody: true,
       grants: id => toolResultRevocationWriterGrants(account.space, id),
       log: () => { renewalLogs++; }, probeRenewal: { intervalMs: 10, fail: true } });
-    try { await sleep(50); await probe.nc.flush(); assert.equal(renewalLogs, 0); }
-    finally { await probe.close(); }
+    let ordinaryLogs = 0;
+    let ordinary: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
+    try {
+      ordinary = await openAuthorityClient({ server: fixture.servers, space: account.space,
+        dataAccount: { pub: account.accountPublicKey, signingSeed: account.auth.account.signingSeed! },
+        label: "custody-timer-positive-control", noReconnect: true,
+        grants: id => toolResultRevocationWriterGrants(account.space, id),
+        log: () => { ordinaryLogs++; }, probeRenewal: { intervalMs: 10, fail: true } });
+      for (let i = 0; i < 100 && ordinaryLogs === 0; i++) await sleep(10);
+      assert.ok(ordinaryLogs > 0, "ordinary-profile renewal timer positive control must fire");
+      await probe.nc.flush();
+      assert.equal(renewalLogs, 0);
+    } finally { await ordinary?.close(); await probe.close(); }
   });
   for (const [index, label] of ["cotal:tool-result-snapshot", "cotal:tool-result-revocation"].entries()) {
     const account = fixture.accounts[index]!;
