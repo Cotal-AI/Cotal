@@ -458,6 +458,51 @@ function lockPidRecord(pidfilePath: string): { release(): void } {
   return acquireLock(`${pidfilePath}.publish.lock`, { label: `the publish lock for ${pidfilePath}`, waitMs: 30_000, pollMs: 20 });
 }
 
+/** How {@link writePidPair} moves a temporary over the record. Production passes none; tests inject a
+ *  rename that refuses, a sleep that records and the platform, to drive the Windows retry without
+ *  Windows or a real wait. */
+export interface RecordReplaceIo {
+  rename?: (from: string, to: string) => void;
+  sleep?: (ms: number) => void;
+  platform?: NodeJS.Platform;
+}
+
+/** The codes Windows gives a rename over a file another handle holds open, until that handle closes. */
+const WIN32_HELD_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+/** The total backoff one replace may spend, a third of the publish lock's 30 s wait, so a writer queued
+ *  behind a retrying one still gets the lock. */
+const RECORD_REPLACE_BUDGET_MS = 10_000;
+
+/** Rename `from` over the record file `to`. On Windows the rename fails with EPERM, EACCES or EBUSY while
+ *  another handle holds either file open, such as a reader of the record, which the publish lock does
+ *  not serialize, or a virus scanner (#4168). As graceful-fs does for `fs.rename` on Windows, those
+ *  codes are retried with a backoff that grows from 0 by 10 ms to 100 ms. graceful-fs gives up when the
+ *  destination exists; here the destination is always the record being replaced, so the retry goes on
+ *  until {@link RECORD_REPLACE_BUDGET_MS} of backoff is spent, and then the last error is thrown. Any
+ *  other error, and any error on another platform, is thrown at once. */
+function replaceRecordFile(from: string, to: string, io: RecordReplaceIo = {}): void {
+  const rename = io.rename ?? renameSync;
+  const sleep = io.sleep ?? sleepSync;
+  const platform = io.platform ?? process.platform;
+  let spent = 0;
+  for (let backoff = 0; ; backoff = Math.min(backoff + 10, 100)) {
+    try {
+      rename(from, to);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (platform !== "win32" || code === undefined || !WIN32_HELD_RENAME_CODES.has(code) || spent + backoff > RECORD_REPLACE_BUDGET_MS) throw e;
+      sleep(backoff);
+      spent += backoff;
+    }
+  }
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /** Publish the pidfile and its identity pin as ONE transition (issue #1238). The pidfile rename is the
  *  single commit point. Just before it, a BRIDGE pin is renamed into place holding the old record's
  *  line and the new one, so whichever pid the pidfile names at any instant, the pin carries that pid's
@@ -483,13 +528,17 @@ function lockPidRecord(pidfilePath: string): { release(): void } {
  *  record under the same lock ({@link removePidPair}). A crashed holder's lock is reclaimed by the
  *  next writer.
  *
+ *  Each rename goes through {@link replaceRecordFile}, which retries the brief refusal Windows gives a
+ *  rename over a record another handle holds open. A refusal that outlasts its bound throws like any
+ *  other step, leaving the state the previous step reached.
+ *
  *  On any throw, the temporaries are removed (`finally`, best-effort) and the error rethrown; the
  *  temporary names are never read by any reader (`${path}.publish.<pid>.<hex>`, the same claim-file
  *  pattern {@link claimAuthPidSlot} uses for `.claim.`). */
 export function writePidPair(
   pidfilePath: string,
   pid: number,
-  opts: { tokenAt?: ProcessStartTokenReader; onStep?: (step: PidPairStep) => void } = {},
+  opts: { tokenAt?: ProcessStartTokenReader; onStep?: (step: PidPairStep) => void; replaceIo?: RecordReplaceIo } = {},
 ): void {
   const tokenAt = opts.tokenAt ?? defaultStartToken;
   const onStep = opts.onStep ?? (() => {});
@@ -508,11 +557,11 @@ export function writePidPair(
       const old = currentPinLine(pidfilePath);
       writeFileSync(bridgeTemp, (old !== undefined && old.pid !== pid ? [old, line] : [line]).map(formatRecord).join("\n"));
       onStep("temporaries");
-      renameSync(bridgeTemp, pinPath);
+      replaceRecordFile(bridgeTemp, pinPath, opts.replaceIo);
       onStep("bridge-pin");
-      renameSync(pidTemp, pidfilePath);
+      replaceRecordFile(pidTemp, pidfilePath, opts.replaceIo);
       onStep("publish-pid");
-      if ("token" in rec) renameSync(pinTemp, pinPath);
+      if ("token" in rec) replaceRecordFile(pinTemp, pinPath, opts.replaceIo);
       else rmSync(pinPath, { force: true });
       onStep("publish-pin");
     } finally {
