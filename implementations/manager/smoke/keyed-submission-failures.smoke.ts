@@ -80,7 +80,7 @@ try {
     return put.apply(kv, args);
   };
   jsm.streams.getMessage = async (...args) => {
-    if (args[1].last_by_subj?.endsWith(`.${admissionKey(endpoint, opaqueAdmission.runId)}`)) throw new Error("owned unavailable leader read");
+    if ("last_by_subj" in args[1] && args[1].last_by_subj?.endsWith(`.${admissionKey(endpoint, opaqueAdmission.runId)}`)) throw new Error("owned unavailable leader read");
     return getMessage.apply(jsm.streams, args);
   };
   try {
