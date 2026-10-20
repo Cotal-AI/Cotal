@@ -96,7 +96,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     "environment-manager-executor": () => environment("environment-manager-executor", `manager_exec_${instance}`),
     "environment-manager-goal-writer": () => environment("environment-manager-goal-writer", `manager_goal_${instance}`),
   };
-  const nonProfiles = ["membership-observer", "connection-evictor"];
+  const nonProfiles = ["membership-observer", "account-census", "connection-evictor"];
   assert.deepEqual(Object.keys(producers).sort(), Object.keys(CREDENTIAL_LIFETIMES).filter((kind) => !nonProfiles.includes(kind)).sort(), "every Profile must have a producer");
   for (const produce of Object.values(producers)) produce();
   const owner = deriveOwnerToken("census-prototype-secret".repeat(2), "view-owner");

@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/core": minor
+"@cotal-ai/auth": minor
 "@cotal-ai/connector-core": minor
 "cotal-ai": minor
 ---
