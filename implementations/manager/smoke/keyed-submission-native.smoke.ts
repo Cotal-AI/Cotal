@@ -80,8 +80,11 @@ try {
   assert.throws(() => core.prepareKeyedRunSubmission(space, old, core.mintLifecycleUid(), args), /distinct contracts/);
   check("unsupported old described surface refuses before keyed publish, no legacy fallback", true);
   const wrongEpoch = { ...service, responder: { ...service.responder, epoch: service.responder.epoch + 1 } };
-  const unrun = await core.invokeCommand(nc, space, wrongEpoch, "run-start-keyed", args, { id: core.mintLifecycleUid(), deadlineMs: 5000 });
-  check("exact epoch mismatch refuses before dispatch", unrun.reply.ok === false && unrun.reply.error?.outcome === "not-executed");
+  const epochSubmission = prepare();
+  await assert.rejects(core.invokeCommand(nc, space, wrongEpoch, "run-start-keyed", args, { id: epochSubmission.submissionId, deadlineMs: 5000 }),
+    error => core.respondedButUnbound(error));
+  assert.equal((await core.readKeyedRunSubmission(nc, space, epochSubmission, { deadlineMs: 5000 })).state, "unbound");
+  check("wrong epoch reply rejected, exact healthy-epoch read independently observes unbound", true);
   // Drop one actual native reply at the caller subscription, after broker delivery. Preserve its
   // decoded payload only as the oracle. This is local transport injection, not a network outage.
   const lost = prepare(), subscribe = nc.subscribe;
