@@ -74,7 +74,7 @@ import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, type UserTokenSession
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions, type UserCallerIssuer } from "./permissions.js";
-import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
+import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, isRenewal, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
@@ -1132,44 +1132,40 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             );
             return { credentials };
           }
-          if (r.operation === "renewStandingBundle") {
+          if (isRenewal(r.operation)) {
             // authorizeRenewal fresh-checked account, owner, epoch and the current-registration proof
-            // (which binds the held nkeys and lifecycle). Re-observe so every row binds one revision.
+            // (which binds the held nkeys and lifecycle). Re-observe once for either renewal, so a gate
+            // that moved since refuses both alike and every standing row binds one revision.
             const gate = managerIssuanceGate(r.instanceId);
             const observed = await gate.observe();
             if (!observed || observed.state !== "open" || observed.processEpoch !== r.processEpoch)
-              throw new EpEnvelopeError("conflict", "manager-service standing renewal gate moved before issuance");
-            credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
-              remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
-              expiresInSeconds: standingTtl,
-            });
-            credentials.executor = await credential("executor", "remote-manager", actors.executor, {
-              remoteManager: { instanceId: r.instanceId, owner, actor: actors.executor },
-              expiresInSeconds: 5 * 60,
-            });
-            credentials.serve = await mintPublicUserJwt(
-              issuerAuth(),
-              r.identities.serve.id,
-              "endpoint-serve",
-              bounded({
-                principal: { owner, actor: actors.serve },
-                lifecycleUid: r.managerLifecycleUid,
+              throw new EpEnvelopeError("conflict", `manager-service ${r.operation} gate moved before issuance`);
+            if (r.operation === "renewStandingBundle") {
+              credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
+                remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
                 expiresInSeconds: standingTtl,
-                endpointServe: remoteManagerServeGrantFromCluster(r, owner, await registeredManagerCluster(owner, r.instanceId, observed), observed),
-                serveIssuance: gate,
-              }),
-            );
-            const sibling = siblingOn(gate, observed);
-            credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
-            credentials.sessionLedger = await sibling("sessionLedger", "session-ledger", actors.sessionLedger);
-            return { credentials };
-          }
-          if (r.operation === "renewRunDriver") {
-            const gate = managerIssuanceGate(r.instanceId);
-            const observed = await gate.observe();
-            if (!observed || observed.state !== "open" || observed.processEpoch !== r.processEpoch)
-              throw new EpEnvelopeError("conflict", "manager-service run renewal gate moved before issuance");
-
+              });
+              credentials.executor = await credential("executor", "remote-manager", actors.executor, {
+                remoteManager: { instanceId: r.instanceId, owner, actor: actors.executor },
+                expiresInSeconds: 5 * 60,
+              });
+              credentials.serve = await mintPublicUserJwt(
+                issuerAuth(),
+                r.identities.serve.id,
+                "endpoint-serve",
+                bounded({
+                  principal: { owner, actor: actors.serve },
+                  lifecycleUid: r.managerLifecycleUid,
+                  expiresInSeconds: standingTtl,
+                  endpointServe: remoteManagerServeGrantFromCluster(r, owner, await registeredManagerCluster(owner, r.instanceId, observed), observed),
+                  serveIssuance: gate,
+                }),
+              );
+              const sibling = siblingOn(gate, observed);
+              credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
+              credentials.sessionLedger = await sibling("sessionLedger", "session-ledger", actors.sessionLedger);
+              return { credentials };
+            }
             if (!holdsRunFence(await observeManagerRun(r, r.run!.runId), r))
               throw new EpEnvelopeError("conflict", "manager-service run renewal authority moved before issuance");
 

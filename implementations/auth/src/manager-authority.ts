@@ -64,7 +64,7 @@ export async function authorizeRemoteManagerRenewal(args: {
   observeRun: ObserveManagerRun;
 }): Promise<void> {
   const r = parseRemoteManagerAuthorityRequest(args.request);
-  if (r.operation !== "renewStandingBundle" && r.operation !== "renewRunDriver")
+  if (!isRenewal(r.operation))
     requestError("requires a renewal operation");
   if (r.space !== args.space || r.accountPublicKey !== args.accountPublicKey)
     throw new EpEnvelopeError("permission-denied", "manager-service renewal is bound to the host-assigned space and account");
@@ -110,6 +110,13 @@ function requestError(what: string): never {
   throw new EpEnvelopeError("bad-request", `manager-service authority request ${what}`);
 }
 
+/** Whether a manager-service operation is a renewal. The account and process-epoch binding, the
+ * host renewal authorization, the closed credential-set check and the host's gate re-check before
+ * signing all key on this one test. */
+export function isRenewal(operation: unknown): operation is "renewStandingBundle" | "renewRunDriver" {
+  return operation === "renewStandingBundle" || operation === "renewRunDriver";
+}
+
 /** Closed request parser: unknown fields and profile-like extensions are refused, never ignored.
  * `allowPlatform` admits a platform `p_…` retirement target owner, for the platform control holder
  * only (SPEC 13.1); the retirement check still requires the target owner to equal the holder's. */
@@ -125,7 +132,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
     requestError("activate requires 1-64 canonical manager contractArtifacts");
   if (o.operation !== "activate" && o.contractArtifacts !== undefined)
     requestError(`${o.operation} must not carry contractArtifacts`);
-  const renewal = o.operation === "renewStandingBundle" || o.operation === "renewRunDriver";
+  const renewal = isRenewal(o.operation);
   if (renewal) {
     if (!isAccountNkey(o.accountPublicKey))
       requestError(`${o.operation} requires an accountPublicKey`);
@@ -213,7 +220,7 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
   if (r.run) ids.push(r.run.driverId, r.run.mediatorId);
   if (new Set(ids).size !== ids.length)
     throw new EpEnvelopeError("bad-request", "manager-service identities must be distinct; one nkey cannot collapse separate authority lifetimes");
-  if (r.operation === "renewStandingBundle" || r.operation === "renewRunDriver") {
+  if (isRenewal(r.operation)) {
     if (!args.authorizeRenewal)
       throw new EpEnvelopeError("unavailable", `manager-service ${r.operation} needs a host-owned current-account and duty-fence authorization`);
     await args.authorizeRenewal({ owner: args.owner, request: r });
@@ -240,8 +247,7 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
   for (const name of required)
     if (!(name in credentials))
       throw new EpEnvelopeError("internal", `manager-service ${r.operation} did not issue required credential ${name}`);
-  if ((r.operation === "renewStandingBundle" || r.operation === "renewRunDriver") &&
-      Object.keys(credentials).sort().join(",") !== [...required].sort().join(","))
+  if (isRenewal(r.operation) && Object.keys(credentials).sort().join(",") !== [...required].sort().join(","))
     throw new EpEnvelopeError("internal", `manager-service ${r.operation} returned credentials outside its closed profile set`);
   const issuedAt = (args.now ?? Date.now)();
   const exps = Object.values(credentials).map((credential) => credential!.exp * 1000);
