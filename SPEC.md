@@ -1191,6 +1191,18 @@ sufficient *authority* identity on this surface. Two further identity components
   or terminal service transition is enabled by this reserved shape. Legacy ordinary audit
   bytes and their existing validation remain unchanged. Mixed-version writer exclusion
   and restore reconciliation remain prerequisites for any future service admission.
+  A separate package-internal read-only service prerequisite accepts only the canonical active
+  marked head, open native `gate.<uid>` generation1 and active exact root row, with all three
+  `serviceCustody:{v:1,uidDigest}` mirrors matching the complete closed immutable reservation.
+  Head `managerInstance` MUST equal reservation assignment `instanceId`, and native
+  `processEpoch` is exactly1, independently of endpoint serving gate/witness epochs. Full
+  configured account/space/UID/assignment, derived actor, root key/current stamp/holder,
+  `sourceChain:["root"]` and unexpired millisecond root expiry are checked with sealed
+  primary leader-served readers. Missing or mismatched native gate evidence refuses, even
+  if an endpoint gate exists. Creating/cancelling states and their RootPlan recovery cannot
+  authorize through this active-only reader. It confers no writer, bootstrap, abort, rotation
+  or terminal authority and makes no atomic multi-key snapshot claim. Ordinary readers stay
+  closed to every marked service row.
   Only then does it mint **before the entity is reachable**, persisting a CAS-fenced
   mapping
   `{ owner, actor, lifecycleUid, managerInstance, processEpoch,

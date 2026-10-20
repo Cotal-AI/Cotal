@@ -1175,6 +1175,17 @@ no service reservation writer or marked-root minting path. A service access-view
 optional sealed native access/callout composition are shipped, but production registration and
 lifecycle wiring remain unavailable. Those unwired seams do not authorize service admission.
 
+The package-internal service prerequisite reader is separate from ordinary connect and lifecycle
+currency readers. It leader-reads immutable UID custody, the exact active service head, native
+`gate.<uid>` open at generation1, and the exact active root credential. All three custody mirrors
+must match the full reservation digest. Service head `managerInstance` equals immutable assignment
+`instanceId`, and native `processEpoch` is fixed at1. These are not ordinary enrollment coordinates
+or the separate endpoint gate/witness registration epochs. Creating/cancelling heads and their
+RootPlan recovery obligations remain outside this read-only active path. Missing or malformed
+native gate evidence cannot be replaced by an endpoint gate. This is no writer, bootstrap, root
+mint/abort, rotation, cancellation or terminal-retirement authority, and not an atomic multi-key
+snapshot. Positive fixtures raw-seed synthetic marked records, not production service admission.
+
 This is a refusal foundation, not service endpoint admission. Service bootstrap, cancellation,
 terminal retirement, complete observer evidence, writer exclusion and restore readiness remain
 unavailable. Do not seed service reservations in an existing space, adopt old service-shaped rows,

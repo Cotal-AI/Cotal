@@ -15,11 +15,12 @@ import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teard
 import { openLifecycleRegistry, reserveLifecycleUid, registryStores } from "../src/lifecycle-registry.js";
 import { bindNativeServiceName, nativeServiceNameAuthority, readNativeServiceName } from "../src/native-service-name.js";
 import { makeNativeIssuanceRecorder, nativeIssuanceRecord, parseNativeIssuanceRecord, pruneNativeIssuance, readNativeIssuance } from "../src/native-issuance.js";
-import { openConnectReader } from "../src/connect-reader.js";
+import { authorizeConnectCredential, openConnectReader } from "../src/connect-reader.js";
 import { createUserTokenIssuer, generateSigningKey } from "../src/issuer.js";
 import { validateUserToken } from "../src/token.js";
 import { ensureRootCredential } from "../src/root-credential.js";
 import { credRowKey, markLedgerRowRevoked } from "../src/credential-ledger.js";
+import { readConnectServiceRoot, readRegistryServiceRoot } from "../src/service-root-reader.js";
 import {
   approveNativeServiceGate, createPendingServiceGate, denyNativeServiceGate, fenceUncreatedServiceGate,
   markNativeServiceActivated, readNativeServiceGate, readNativeServiceAccess,
@@ -67,12 +68,102 @@ try {
   await assert.rejects(readNativeServiceName(reg, { ...nameContext, accountPublicKey: createAccount().getPublicKey() }, tuple.endpoint), /another account/);
   await assert.rejects(readNativeServiceName(reg, { ...nameContext, space: "other" }, tuple.endpoint), /native registry/);
   const actor = serviceEndpointActor(tuple);
-  const lifecycleUid = await reserveLifecycleUid(reg, { owner: tuple.owner, actor, mintedBy: "service-fixture" });
-  const binding = { ...tuple, lifecycleUid, assignmentDigest: contractDigest({ tuple, lifecycleUid }) };
+  // Synthetic test-operator seeding, NOT a service reservation/root writer or admission acceptance.
+  const lifecycleUid = mintLifecycleUid(), rootCredentialId = mintLifecycleUid(), stores = registryStores(reg);
+  const custody = { v: 1, kind: "native-service-uid", native: { accountPublicKey: tuple.accountPublicKey, space, lifecycleUid },
+    assignment: { owner: tuple.owner, actor, endpoint: tuple.endpoint, instanceId: tuple.instanceId, duty: "serve" },
+    creation: { operationId: mintLifecycleUid(), requestDigest: contractDigest({ syntheticFixture: true }) } };
+  const mirror = { v: 1, uidDigest: contractDigest(custody) }, encode = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
+  await stores.recordsKv.create(`uid.${lifecycleUid}`, encode(custody));
+  await stores.recordsKv.create(`lifecycle.${tuple.owner}.${actor}`, encode({ owner: tuple.owner, actor, lifecycleUid,
+    managerInstance: tuple.instanceId, processEpoch: 1, state: "active", currentCredentialId: rootCredentialId, serviceCustody: mirror }));
+  const rootRow = { credentialId: rootCredentialId, holderPrincipal: `${tuple.owner}.${actor}`, lifecycleUid,
+    sourceChain: ["root"], state: "active", exp: Date.now() + 60_000, serviceCustody: mirror };
+  await stores.authKv.create(`cred.${lifecycleUid}.${rootCredentialId}`, encode(rootRow));
+  const binding = { ...tuple, lifecycleUid, assignmentDigest: mirror.uidDigest };
+  const headKey = `lifecycle.${tuple.owner}.${actor}`, nativeGateKey = `gate.${lifecycleUid}`;
+  const validHead = JSON.parse(new TextDecoder().decode((await stores.recordsKv.get(headKey))!.value));
+  const validGate = { lifecycleUid, state: "open", generation: 1, serviceCustody: mirror };
+  const proofNow = Date.now();
+  await assert.rejects(readRegistryServiceRoot(reg, binding, rootCredentialId, proofNow), /no durable gate/,
+    "missing native gate cannot be replaced by any endpoint gate");
+  await stores.authKv.create(nativeGateKey, encode(validGate));
+  assert.ok((await readRegistryServiceRoot(reg, binding, rootCredentialId, proofNow)).expiresAt > proofNow / 1000);
+  await assert.rejects(readRegistryServiceRoot({ space }, binding, rootCredentialId, proofNow), /hand-assembled/);
+  await assert.rejects(readConnectServiceRoot({ space }, binding, rootCredentialId, proofNow), /hand-assembled/);
+  await assert.rejects(readRegistryServiceRoot(reg, { ...binding, accountPublicKey: createAccount().getPublicKey() }, rootCredentialId, proofNow), /immutable account/);
+  await assert.rejects(readRegistryServiceRoot(reg, { ...binding, space: "foreign" }, rootCredentialId, proofNow), /another sealed store/);
+  await assert.rejects(readRegistryServiceRoot(reg, { ...binding, assignmentDigest: contractDigest({ other: true }) }, rootCredentialId, proofNow), /assignment digest/);
+  for (const corrupt of [
+    { ...validHead, managerInstance: "ordinary-manager" }, { ...validHead, processEpoch: 2 },
+    { ...validHead, serviceCustody: { ...mirror, uidDigest: contractDigest({ wrong: true }) } },
+    { ...Object.fromEntries(Object.entries(validHead).filter(([key]) => key !== "currentCredentialId")), state: "service-creating", op: { kind: "service-create", opId: custody.creation.operationId,
+      requestDigest: custody.creation.requestDigest }, rootPlan: { credentialId: rootCredentialId, expMs: rootRow.exp } },
+    { ...validHead, state: "service-cancelling", op: { kind: "service-cancel", opId: mintLifecycleUid(),
+      requestDigest: contractDigest({ cancel: true }) }, rootPlan: { credentialId: rootCredentialId, expMs: rootRow.exp } },
+    Object.fromEntries(Object.entries(validHead).filter(([key]) => key !== "serviceCustody")),
+    { ...validHead, currentCredentialId: mintLifecycleUid() }, { ...validHead, extra: true },
+  ]) {
+    await stores.recordsKv.put(headKey, encode(corrupt));
+    await assert.rejects(readRegistryServiceRoot(reg, binding, rootCredentialId, proofNow));
+  }
+  await stores.recordsKv.put(headKey, encode(validHead));
+  for (const corrupt of [
+    { ...validGate, generation: 0 }, { ...validGate, generation: 2 },
+    { ...validGate, state: "frozen", op: { kind: "activation", opId: custody.creation.operationId } },
+    { ...validGate, serviceCustody: { ...mirror, uidDigest: contractDigest({ other: true }) } },
+    Object.fromEntries(Object.entries(validGate).filter(([key]) => key !== "serviceCustody")),
+    { ...validGate, op: { kind: "activation", opId: custody.creation.operationId } },
+  ]) {
+    await stores.authKv.put(nativeGateKey, encode(corrupt));
+    await assert.rejects(readRegistryServiceRoot(reg, binding, rootCredentialId, proofNow));
+  }
+  await stores.authKv.delete(nativeGateKey);
+  await assert.rejects(readRegistryServiceRoot(reg, binding, rootCredentialId, proofNow), /absent or deleted/);
+  await stores.authKv.put(nativeGateKey, encode(validGate));
+  for (const corrupt of [
+    { ...rootRow, state: "revoked" }, { ...rootRow, exp: proofNow }, { ...rootRow, exp: Number.MAX_SAFE_INTEGER + 1 },
+    { ...rootRow, holderPrincipal: `${tuple.owner}.other` }, { ...rootRow, lifecycleUid: mintLifecycleUid() },
+    { ...rootRow, sourceChain: ["root", "handle.key.id"] },
+    { ...rootRow, serviceCustody: { ...mirror, uidDigest: contractDigest({ root: "wrong" }) } },
+    Object.fromEntries(Object.entries(rootRow).filter(([key]) => key !== "serviceCustody")),
+    { ...rootRow, endpoint: tuple.endpoint },
+  ]) {
+    await stores.authKv.put(`cred.${lifecycleUid}.${rootCredentialId}`, encode(corrupt));
+    await assert.rejects(readRegistryServiceRoot(reg, binding, rootCredentialId, proofNow));
+  }
+  await stores.authKv.put(`cred.${lifecycleUid}.${rootCredentialId}`, encode(rootRow));
+  const uidKey = `uid.${lifecycleUid}`;
+  await stores.recordsKv.put(uidKey, encode({ owner: tuple.owner, actor, mintedBy: "synthetic-ordinary-residue" }));
+  await assert.rejects(readRegistryServiceRoot(reg, binding, rootCredentialId, proofNow), /ordinary reservation/);
+  await stores.recordsKv.put(uidKey, encode(custody));
+  // Instrument real leader API only. The fixture has no copied parser/authority implementation.
+  const originalLeaderGet = stores.jsm.streams.getMessage, leaderSubjects: string[] = [];
+  stores.jsm.streams.getMessage = async (...args) => {
+    leaderSubjects.push(String(args[1]?.last_by_subj));
+    return originalLeaderGet.apply(stores.jsm.streams, args);
+  };
+  try { await readRegistryServiceRoot(reg, binding, rootCredentialId, proofNow); }
+  finally { stores.jsm.streams.getMessage = originalLeaderGet; }
+  assert.equal(leaderSubjects.length, 4);
+  assert.ok(leaderSubjects.some(s => s.endsWith(`.${nativeGateKey}`)));
   let gate = await createPendingServiceGate(reg, binding);
   assert.equal(gate.row.serviceAuthority.state, "pending-root");
   assert.equal((await createPendingServiceGate(reg, binding)).revision, gate.revision);
-  const rootCredentialId = await ensureRootCredential(reg, { owner: tuple.owner, actor, lifecycleUid, managerInstance: "service-fixture" });
+  const ordinaryTuple = { ...tuple, instanceId: mintLifecycleUid() }, ordinaryActor = serviceEndpointActor(ordinaryTuple);
+  const ordinaryUid = mintLifecycleUid(), ordinaryRoot = mintLifecycleUid();
+  await stores.recordsKv.create(`uid.${ordinaryUid}`, encode({ owner: tuple.owner, actor: ordinaryActor, mintedBy: "synthetic-legacy-residue" }));
+  await stores.recordsKv.create(`lifecycle.${tuple.owner}.${ordinaryActor}`, encode({ owner: tuple.owner, actor: ordinaryActor,
+    lifecycleUid: ordinaryUid, managerInstance: ordinaryTuple.instanceId, processEpoch: 1, state: "active", currentCredentialId: ordinaryRoot }));
+  await stores.authKv.create(`cred.${ordinaryUid}.${ordinaryRoot}`, encode({ ...rootRow, credentialId: ordinaryRoot,
+    lifecycleUid: ordinaryUid, holderPrincipal: `${tuple.owner}.${ordinaryActor}` }));
+  const ordinaryBinding = { ...ordinaryTuple, lifecycleUid: ordinaryUid, assignmentDigest: contractDigest({ ordinary: true }) };
+  const ordinaryPending = await createPendingServiceGate(reg, ordinaryBinding);
+  await assert.rejects(approveNativeServiceGate(reg, ordinaryBinding, { expectedRevision: ordinaryPending.revision,
+    rootCredentialId: ordinaryRoot, approvalDigest: contractDigest({ approved: true }), nameAuthorityRevision: nameBinding.revision,
+    approvalExpiresAt: null, callerCeiling: [] }), /ordinary reservation/, "ordinary custody never supplies service approval authority");
+  await assert.rejects(ensureRootCredential(reg, { owner: tuple.owner, actor, lifecycleUid, managerInstance: tuple.instanceId }),
+    /service custody|immutable service/, "ordinary root reuse never accepts synthetic service custody");
   gate = await approveNativeServiceGate(reg, binding, { expectedRevision: gate.revision, rootCredentialId,
     approvalDigest: contractDigest({ approved: binding.assignmentDigest }), nameAuthorityRevision: nameBinding.revision, approvalExpiresAt: null, callerCeiling: [] });
   assert.equal(gate.row.serviceAuthority.state, "approved");
@@ -110,6 +201,8 @@ try {
   const expiresAt = Math.floor(Date.now() / 1000) + 45;
   const access = await validateUserToken(await issuer.issueServiceAccess({ witness, expiresAt }),
     { issuer: issuer.issuer, key: issuer.localKeySet(), audience: space });
+  await assert.rejects(authorizeConnectCredential(reader, access, Date.now), /service custody|immutable service/,
+    "ordinary connect guard remains closed to service roots");
   await assert.rejects(readNativeServiceAccess(reg, reader, binding, access, expiresAt), /current activated registration/);
   gate = await markNativeServiceActivated(reg, binding, { expectedRevision: gate.revision, witness });
   assert.equal(gate.row.serviceAuthority.activationIssued, true);
@@ -179,8 +272,11 @@ try {
     await assert.rejects(readNativeServiceAccess(reg, reader, binding, access, expiresAt), /authority changed during/);
   } finally { kv.get = originalGet; }
   assert.equal((await readNativeServiceAccess(reg, reader, binding, access, expiresAt)).gateRevision, gate.revision);
-  await markLedgerRowRevoked(registryStores(reg).authKv, credRowKey(lifecycleUid, rootCredentialId));
-  await assert.rejects(readNativeServiceAccess(reg, reader, binding, access, expiresAt), /not active/);
+  await assert.rejects(markLedgerRowRevoked(stores.authKv, credRowKey(lifecycleUid, rootCredentialId)), /serviceCustody/,
+    "ordinary raw revoke helper still refuses the service marker");
+  // Test-operator raw mutation only to inject revoked evidence. There is no service revoke writer here.
+  await stores.authKv.put(credRowKey(lifecycleUid, rootCredentialId), encode({ ...rootRow, state: "revoked" }));
+  await assert.rejects(readNativeServiceAccess(reg, reader, binding, access, expiresAt), /not live/);
   await assert.rejects(markNativeServiceActivated(reg, binding, { expectedRevision: gate.revision, witness }), /not live/);
   gate = await denyNativeServiceGate(reg, binding, { expectedRevision: gate.revision, operationId: mintLifecycleUid() });
   assert.equal(gate.row.serviceAuthority.state, "revoked");
@@ -193,7 +289,7 @@ try {
   const cancelledGate = await fenceUncreatedServiceGate(reg, cancelled, mintLifecycleUid());
   assert.equal(cancelledGate.row.serviceAuthority.state, "revoked");
   await assert.rejects(createPendingServiceGate(reg, cancelled), /FOREIGN content/);
-  console.log("native service gate: create-only name binding and native reservations, root binding, registration stamps, monotonic activation, native access prerequisites and cancellation fence passed; full host retirement not exercised");
+  console.log("native service gate: synthetic canonical marked custody/root prerequisites, ordinary refusal, name binding, registration stamps and activation checks passed; no production service writer/admission/retirement acceptance");
 } finally {
   await nc?.close();
   await killAndAwaitExit(broker);

@@ -16,8 +16,7 @@ import { createUserTokenIssuer, generateSigningKey } from "../src/issuer.js";
 import { validateUserToken } from "../src/token.js";
 import { pickFreePort } from "./_free-port.js";
 import { openAuthorityClient } from "../src/authority-client.js";
-import { openLifecycleRegistry, reserveLifecycleUid, registryStores } from "../src/lifecycle-registry.js";
-import { ensureRootCredential } from "../src/root-credential.js";
+import { openLifecycleRegistry, registryStores } from "../src/lifecycle-registry.js";
 import { openConnectReader } from "../src/connect-reader.js";
 import { bindNativeServiceName, nativeServiceNameAuthority } from "../src/native-service-name.js";
 import { approveNativeServiceGate, createPendingServiceGate, markNativeServiceActivated, readNativeServiceGate } from "../src/native-service-gate.js";
@@ -84,12 +83,23 @@ try {
     grants: (nonce) => ({ publish: [">"], subscribe: [`_INBOX_${nonce}.>`] }), log: () => {} });
   await createEndpointStreams(await jetstreamManager(setup.nc), new Kvm(setup.nc), space);
   const reg = await openLifecycleRegistry(setup.nc, space), stores = registryStores(reg);
-  const actor = serviceEndpointActor(identity), lifecycleUid = await reserveLifecycleUid(reg, { owner, actor, mintedBy: "service-fixture" });
-  const binding = { ...identity, lifecycleUid, assignmentDigest: contractDigest({ identity, lifecycleUid }) };
+  // Raw synthetic fixture rows, not a production service reservation/root writer or admission proof.
+  const actor = serviceEndpointActor(identity), lifecycleUid = mintLifecycleUid(), rootCredentialId = mintLifecycleUid();
+  const custody = { v: 1, kind: "native-service-uid", native: { accountPublicKey: auth.account.pub, space, lifecycleUid },
+    assignment: { owner, actor, endpoint, instanceId, duty: "serve" },
+    creation: { operationId: mintLifecycleUid(), requestDigest: contractDigest({ syntheticFixture: true }) } };
+  const mirror = { v: 1, uidDigest: contractDigest(custody) }, encode = (v: unknown) => enc(JSON.stringify(v));
+  await stores.recordsKv.create(`uid.${lifecycleUid}`, encode(custody));
+  await stores.recordsKv.create(`lifecycle.${owner}.${actor}`, encode({ owner, actor, lifecycleUid, managerInstance: instanceId,
+    processEpoch: 1, state: "active", currentCredentialId: rootCredentialId, serviceCustody: mirror }));
+  await stores.authKv.create(`gate.${lifecycleUid}`, encode({ lifecycleUid, state: "open", generation: 1, serviceCustody: mirror }));
+  const rootRow = { credentialId: rootCredentialId, holderPrincipal: `${owner}.${actor}`, lifecycleUid,
+    sourceChain: ["root"], state: "active", exp: Date.now() + 60_000, serviceCustody: mirror };
+  await stores.authKv.create(credRowKey(lifecycleUid, rootCredentialId), encode(rootRow));
+  const binding = { ...identity, lifecycleUid, assignmentDigest: mirror.uidDigest };
   const name = await bindNativeServiceName(reg, identity, { v: 1, kind: "service-endpoint-host", operation: "name-bind", requestId: "a".repeat(32),
     granter: { kind: "operator", auditId: "fixture-operator" }, input: { endpoint, owner, expectedRevision: 0, claimReference: "fixture-namespace" } });
   let gate = await createPendingServiceGate(reg, binding);
-  const rootCredentialId = await ensureRootCredential(reg, { owner, actor, lifecycleUid, managerInstance: "service-fixture" });
   gate = await approveNativeServiceGate(reg, binding, { expectedRevision: gate.revision, rootCredentialId,
     approvalDigest: contractDigest({ approval: binding.assignmentDigest }), nameAuthorityRevision: name.revision, approvalExpiresAt: null, callerCeiling: [] });
   const schema = { type: "object" }, document = { urn: endpoint, revision: 1, attributes: [], events: [], commands: [{ name: "read",
@@ -157,7 +167,9 @@ try {
   open = false;
   await assert.rejects(dial(actualBearer), /authorization violation/i);
   open = true;
-  await markLedgerRowRevoked(stores.authKv, credRowKey(lifecycleUid, rootCredentialId));
+  await assert.rejects(markLedgerRowRevoked(stores.authKv, credRowKey(lifecycleUid, rootCredentialId)), /serviceCustody/);
+  // Raw test-only revocation injection. Ordinary helper is deliberately not widened.
+  await stores.authKv.put(credRowKey(lifecycleUid, rootCredentialId), encode({ ...rootRow, state: "revoked" }));
   await assert.rejects(dial(actualBearer), /authorization violation/i);
   assert.equal(mints.length, 3, "fenced or revoked native authority never releases another mint");
   assert.deepEqual(hooks, []);

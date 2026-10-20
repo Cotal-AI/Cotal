@@ -77,6 +77,13 @@ function internals(reader: ConnectReader): ConnectReaderInternals {
   return i;
 }
 
+/** PACKAGE-INTERNAL, never exported from the package index. Service-specific leader reads
+ * use the same branded, shape-proved connection without broadening ordinary connect syntax. */
+export function serviceConnectReaderStores(reader: ConnectReader): { space: string; jsm: JetStreamManager } {
+  const { space, jsm } = internals(reader);
+  return { space, jsm };
+}
+
 /**
  * Open (or re-open, on reconnect) the connect reader on a DATA-account connection, shape-proving
  * BOTH stores at bind (SPEC 13.12) — primary/un-mirrored/non-evicting, and the auth store
