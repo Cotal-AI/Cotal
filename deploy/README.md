@@ -36,6 +36,13 @@ the mesh plugin:
 docker build -f deploy/docker/Dockerfile -t cotal-runner .
 ```
 
+> **Known issue: this build path is unsupported today.** The image copies the repo and runs
+> `pnpm cotal setup` from that source checkout, and the CLI refuses to seed connectors from a
+> source checkout. The step stops with
+> `refusing to <action> the operator-global seed store at <path> for generation <version> from <origin> (<entry>)`,
+> where `<action>` is `reconcile` and `<origin>` is `a source checkout`. This was reproduced by
+> running that step from a built checkout outside Docker. No image was built to confirm it.
+
 **3. Emit the signer.** Account signing material only, no operator key:
 
 ```bash
