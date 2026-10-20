@@ -37,6 +37,7 @@ import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { validateUserToken, type ValidatedUserToken } from "./token.js";
 import { SESSION_EXP } from "./permissions.js";
 import type { NativeIssuanceRecorder } from "./native-issuance.js";
+import { assertNativeServiceCalloutAuthority, issueNativeServiceCallout, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 
 /** The one subject the callout serves (ADR-26). */
 export const AUTH_CALLOUT_SUBJECT = "$SYS.REQ.USER.AUTH";
@@ -174,6 +175,8 @@ export interface StartAuthCalloutOpts {
    *  deny and the minted JWT is never sent. A thrown record write may still have landed: evidence of
    *  an issuance, never proof a client received the JWT or the connection was accepted. */
   recordIssuance: NativeIssuanceRecorder;
+  /** Optional sealed native service path. Absent means service-endpoint continues to refuse. */
+  serviceAuthority?: NativeServiceCalloutAuthority;
   /** Diagnostics sink (default: console.error). Never carries bearer contents. */
   log?: (line: string) => void;
   /** Audit hook fired on each successful mint, BEFORE the response is sent — the minted user JWT
@@ -191,6 +194,8 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
   const userSigner = fromSeed(new TextEncoder().encode(opts.dataAccount.signingSeed));
   if (!opts.space) throw new Error("auth callout: space is required");
   if (typeof opts.recordIssuance !== "function") throw new Error("auth callout: recordIssuance is required - refusing to start a callout whose successes leave no native-key issuance evidence");
+  const serviceAuthority = opts.serviceAuthority;
+  if (serviceAuthority) assertNativeServiceCalloutAuthority(serviceAuthority, opts.space, opts.dataAccount.pub);
   const log = opts.log ?? ((l: string) => console.error(l));
   const enc = (s: string) => new TextEncoder().encode(s);
   const dec = (u: Uint8Array) => new TextDecoder().decode(u);
@@ -201,6 +206,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
 
   const done = (async () => {
     for await (const msg of sub) {
+      const admittedAt = Math.floor(Date.now() / 1000);
       // ---- authenticate the REQUEST itself; shape violations get NO response ----
       const serverXkey = msg.headers?.get(SERVER_XKEY_HEADER);
       if (!serverXkey) {
@@ -243,7 +249,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
         continue;
       }
 
-      const respond = async (data: { jwt?: string; error?: string }) => {
+      const respond = async (data: { jwt?: string; error?: string }, notAfter?: number) => {
         const resp = await encodeAuthorizationResponse(
           fromPublic(req.user_nkey),
           fromPublic(req.server_id.id),
@@ -251,7 +257,10 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           { ...data, issuer_account: opts.authAccount.pub },
           { algorithm: Algorithms.v2 },
         );
-        msg.respond(xkp.seal(enc(resp), serverXkey));
+        const sealed = xkp.seal(enc(resp), serverXkey);
+        if (notAfter !== undefined && notAfter <= Math.floor(Date.now() / 1000))
+          throw new Error("service callout expired before encrypted response release");
+        msg.respond(sealed);
       };
 
       // ---- validate the bearer; failures are authenticated denials (signed error response) ----
@@ -263,8 +272,20 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
           issuer: opts.token.issuer,
           audience: opts.space,
         });
-        if (validated.act.view === "service-endpoint")
-          throw new Error("callout: service-endpoint requires dedicated native service authority; ordinary actor hooks refuse it");
+        if (validated.act.view === "service-endpoint") {
+          if (!serviceAuthority)
+            throw new Error("callout: service-endpoint requires dedicated native service authority; ordinary actor hooks refuse it");
+          const clientId = req.client_info?.id;
+          if (typeof clientId !== "number" || !Number.isSafeInteger(clientId) || clientId <= 0)
+            throw new Error("service callout requires an authenticated broker client id");
+          const minted = await issueNativeServiceCallout(serviceAuthority, validated, {
+            connection: { userNkey: req.user_nkey, serverId: req.server_id.id, clientId },
+            inboxNonce: assertInboxConnId(req.connect_opts?.name ?? ""), admittedAt,
+          });
+          opts.onMint?.(minted);
+          await respond({ jwt: minted.jwt }, minted.exp);
+          continue;
+        }
         await opts.authorizeActor(validated);
         // The private reply-inbox (`_INBOX_<connId>.>`) must scope on a token the CLIENT knows pre-connect
         // — but under the callout the connection nkey (`req.user_nkey`) is minted per-connect by NATS, so

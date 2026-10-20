@@ -10,7 +10,7 @@ import type { ValidatedUserToken } from "./token.js";
 import { credRowKey, parseLedgerRow } from "./credential-ledger.js";
 import { readLifecycleHeadForOperation, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
 
-interface ServiceAssignmentBinding {
+export interface ServiceAssignmentBinding {
   accountPublicKey: string;
   space: string;
   owner: string;

@@ -1429,6 +1429,14 @@ MUST refuse this view. Only a dedicated service authority path may issue and aut
 current native root, approval and registration checks. Signature validation alone does not
 establish that authority.
 
+The dedicated callout authenticates the sealed broker request before using its user key, server
+key or client id. It captures admission time before authority reads and fixes native expiry no
+later than the access expiry or admission plus 60 seconds. It derives serving permissions from
+the current native registration, preserves principal-name attribution and uses the separate
+client inbox nonce. Native issuance and receipt checks and final root authorization precede the
+encrypted response. An expiry reached while encoding or sealing that response refuses release.
+An unconfigured or non-native service authority cannot fall through to ordinary actor hooks.
+
 A service renewal proof is a separate EdDSA JWT class with protected `typ:
 "cotal-service-renewal+jwt"`, `alg` and `kid` headers. Its closed claims are `ver: 1`,
 `kind: "service-renewal"`, the complete registration `witness`, its canonical `witnessDigest`,

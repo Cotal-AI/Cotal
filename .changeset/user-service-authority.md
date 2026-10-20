@@ -14,3 +14,5 @@ Bind service serving-issuance evidence to broker connection coordinates and veri
 Add a host-only service-callout mint seam with principal attribution, a separate client inbox nonce and an original fixed expiry.
 
 Bind native service issuance receipts to the registered witness and epcred connection, and retain expired evidence until qualified retirement.
+
+Compose an optional sealed native service callout with current root authorization, registered serving grants, connection-bound receipts and fixed-expiry encrypted responses. Production registration and lifecycle wiring remain unavailable.

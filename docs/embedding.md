@@ -65,18 +65,22 @@ the host must do that before issuing or accepting authority. No client refresh l
 
 `UserTokenIssuer.issueServiceAccess` signs a serve-only user bearer with the full registration
 witness and a fixed deadline of at most 60 seconds. Validation requires empty scope and rejects
-ordinary parent, manager, session and transfer claims. Ordinary exchange, callout and permission construction
-refuse this view before actor lookup. The dedicated native callout path is not implemented yet,
-so signing this bearer does not enable a service connection.
+ordinary parent, manager, session and transfer claims. Ordinary exchange and permission construction
+refuse this view before actor lookup. Callout
+refuses it unless a sealed native service authority is configured. The private composition binds
+the current assignment, native root, registered serving grant and receipt before an encrypted
+response. Normal authority-plane startup does not enable it yet; public registration, restore
+readiness and coordinated root retirement remain required.
 
 Internal service-access reads retain native credential-root authorization and check the activated
 registration, assignment, current name and fixed expiry. They do not create a serving grant or
-release a native JWT. The dedicated callout still needs native issuance and final authorization.
+release a native JWT. The private callout composition performs native issuance and final
+authorization when explicitly configured.
 
 Service serving-issuance evidence binds the authenticated broker user key, server key and client id.
 The native release fence rechecks that record and the gate after its CAS. Ordinary serving and
 credential-root records cannot use this service binding. This is not proof of broker acceptance;
-the accepting callout, native receipt coordination and terminal retirement remain unfinished.
+production authority-plane wiring and terminal retirement remain unfinished.
 
 `mintServiceCalloutJwt` is a host-only mint seam. It uses the native serving grant, the actual
 principal name and tags, the authenticated broker user key and a separate client inbox nonce.
@@ -85,8 +89,8 @@ callout request, record natkey evidence or release an encrypted response; the ho
 
 Native service receipts bind the same epcred connection and registration witness to the broker user
 key. Recording rechecks the evidence, receipt, native authority and fixed expiry. Expired service
-receipts are retained, not pruned on elapsed JWT time. Qualified retirement and the accepting
-callout are still required before enabling the service path.
+receipts are retained, not pruned on elapsed JWT time. Qualified retirement and production
+authority-plane wiring are still required before enabling the service path for clients.
 
 Internal service-name bindings are create-only and return owner and revision from one native read.
 The trusted host must authenticate the operator and verify the namespace claim before writing.
