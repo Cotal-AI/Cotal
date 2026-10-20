@@ -210,7 +210,7 @@ try {
   assert.equal(await duplicate.freeze(gate.revision), null, "activated service cannot begin another registration");
   assert.deepEqual(await readNativeServiceAccess(reg, reader, binding, access, expiresAt),
     { witness, gateRevision: gate.revision, expiresAt }, "signed service access retains native root authorization without an ActorRow");
-  await assert.rejects(readNativeServiceAccess(reg, reader, { ...binding, assignmentDigest: contractDigest({ other: true }) }, access, expiresAt), /another immutable assignment/);
+  await assert.rejects(readNativeServiceAccess(reg, reader, { ...binding, assignmentDigest: contractDigest({ other: true }) }, access, expiresAt), /assignment digest/);
   await assert.rejects(readNativeServiceAccess(reg, reader, { ...binding, accountPublicKey: createAccount().getPublicKey() }, access, expiresAt), /native assignment/);
   await assert.rejects(readNativeServiceAccess(reg, reader, binding, access, expiresAt + 1), /original bounded expiry/);
   await assert.rejects(readNativeServiceAccess(reg, reader, binding, access, Math.floor(Date.now() / 1000)), /original bounded expiry/);
