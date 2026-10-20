@@ -50,6 +50,7 @@ import { Kvm, type KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
   EpEnvelopeError,
+  assertOrdinaryNativeMutation,
   recordsBucket as coreRecordsBucket,
   lifecycleHeadKey as headKey,
   parseLifecycleHead as parseMapping,
@@ -253,6 +254,14 @@ export async function openLifecycleMappingReader(nc: NatsConnection, space: stri
   const rd: LifecycleMappingReader = Object.freeze({ space });
   READERS.set(rd, { space, jsm });
   return rd;
+}
+
+/** Package-internal guard over this registry's bound stores, before ordinary executor work. */
+export async function assertOrdinaryRegistryMutation(
+  reg: LifecycleRegistry,
+  target: { lifecycleUid?: string; owner?: string; actor?: string },
+): Promise<void> {
+  await assertOrdinaryNativeMutation(transportOf(reg), target);
 }
 
 // ---- the head (records store) ---------------------------------------------------------------
@@ -556,6 +565,14 @@ export async function readLifecycleMappingLeader(
     throw new EpEnvelopeError("unavailable", `the leader-served lifecycle-head read for "${owner}/${actor}" failed; an authority read fails closed, never open (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
   }
   if (entry === undefined) return undefined;
+  await assertOrdinaryNativeMutation({
+    async getRecord(recordKey) {
+      const row = await readRecordLeader(jsm, space, recordKey);
+      return row === undefined ? undefined : {
+        value: enc.encode(JSON.stringify(row.value)), revision: row.revision, operation: "PUT",
+      };
+    },
+  }, { owner, actor });
   return { mapping: parseMapping(enc.encode(JSON.stringify(entry.value)), key, owner, actor), revision: entry.revision };
 }
 
