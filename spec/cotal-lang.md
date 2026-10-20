@@ -394,7 +394,7 @@ journal recorded. `channel()` and `run()` are pure primitives: they build a valu
 
 | Primitive | Signature | Journal kind | Name |
 | --- | --- | --- | --- |
-| `spawn` | `spawn(persona, { name?, worktree?, join?, role?, permits?, supervise?, onFork?, events? }) -> AgentHandle` | `spawn` | `name`, else the persona |
+| `spawn` | `spawn(persona, { name?, cwd?, placement?, worktree?, join?, role?, permits?, supervise?, onFork?, events? }) -> AgentHandle` | `spawn` | `name`, else the persona |
 | `turn` | `turn(agent, { name, deadline? }) -> { status, to?, note?, at }` | `turn` | required |
 | `ask` | `ask(agent, { name, schema, deadline?, attempts? }) -> record` | `ask` | required |
 | `checkpoint` | `checkpoint(name, prompt, { schema?, timeout?, onExpiry?, to? }) -> { status, value?, by?, at, artifact? }` | `checkpoint` | required, positional |
@@ -434,12 +434,13 @@ Each effect's **input hash** is `sha256:<hex>` over the canonical form of the pr
 which is exactly the set of inputs that decide whether a recorded result is still an answer to the
 question the program is asking. Everything else steers live execution and is reapplied from current
 source on a resume. An implementation MUST hash exactly these fields (an absent option is `null`; an
-absent `join` is `[]`); the reference implementation's option suite edits each one on a resumed run
-and requires exactly these to diverge (§11.1).
+absent `join` is `[]`; an absent `cwd` or `placement` on `spawn` contributes no key); the reference
+implementation's option suite edits each one on a resumed run and requires exactly these to diverge
+(§11.1).
 
 | Effect | Projection |
 | --- | --- |
-| `spawn` | `{ persona, model, variant, worktree, role, join: [channel names] }` |
+| `spawn` | `{ persona, model, variant, worktree, role, join: [channel names] }`, plus `cwd` when the option bag carries it and `placement: { endpoint, instanceId }` when the option bag carries it |
 | `turn` | `{ agent, deadline }` |
 | `ask` | `{ agent, schema, deadline, attempts }` |
 | `checkpoint` | `{ prompt, schema, timeout }`, plus `{ onExpiry: "escalate", to }` when and only when `onExpiry` is `"escalate"` |
@@ -458,6 +459,11 @@ asks a different question. And `onExpiry` is hashed **only** at `escalate`, beca
 `proceed` choose how to read a recorded expiry (a reapply that MUST replay clean) while `escalate`
 mints a second effect (a different question that MUST diverge). `permits`, `supervise`, `onFork`
 and `events` on `spawn` are policy over a result and are never hashed.
+
+`cwd` and `placement` were added after runs were recorded without them, so a spawn that omits both
+hashes the six-key object it hashed before. Adding or removing `cwd` or `placement`, or changing the
+canonical value of `cwd`, `placement.endpoint` or `placement.instanceId`, diverges (L5001). Other
+keys in a placement record are not projected, and key order never matters (§4.4).
 
 ### 6.5 Semantics of each primitive
 
@@ -1303,3 +1309,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-06 | A `conclave` counts toward `effectCeiling` (§8.3): opening one is a dispatch, so it is counted once before its entry begins, and a resume's tally counts its recorded key. Before this a program whose only effect was `conclave` could open any number of them, live or across a resume, without reaching L4009. A resume that re-enters a pending or refused step no longer counts it a second time: its key is already in the tally, and counting it again faulted the resumed run at a step where a fresh run went on. |
 | 2026-10-07 | A value the program throws out of a concurrency scope reaches `catch` as itself on resume, as it does live (§9.1, §10.6): the scope's `L4000` `scope-fault` record carries it as `error.thrown` (§10.1), the live run, a replay and a migration's dry walk (§11.2) all deliver that recorded copy, deep-frozen like a scope's result (§4.3). The copy is the value as JSON reads it back, so a record held at two places in it arrives as two on the live run as on a resume from a durable store, and a resume refuses a loaded `error.thrown` that is not `{ value }` or `{}` (L5024). Measured before it: a `conclave` body that threw `"failure"` was caught as `"failure"` live and as `{ code: "L4000", kind: "scope-fault", message: "failure" }` on resume, on both engines, and a `notify` branching on the caught value diverged (L5001) on the resume of unchanged source. A thrown value with no canonical form is delivered as the record live as well. |
 | 2026-10-18 | A `waitUntil` probe and its `terminal` may not write outside themselves (L2032, §7.7): both engines already call them one level deeper and refuse the write at run time, and the validator now walks them as it walks a `once` body. Measured before it: a probe that assigned an outer `let` or pushed onto an outer array, and a `terminal` that assigned an outer `let`, passed `validate` and then failed with L2032 after the first observation of every run. |
+| 2026-10-20 | Clarification with no change in meaning: §6.1 lists `spawn`'s `cwd` and `placement`, and §6.4 states that each is hashed only when the option bag carries it, `placement` as `{ endpoint, instanceId }`. A spawn that omits both keeps its six-key hash. The reference has hashed this way since lang 0.50.0. |
