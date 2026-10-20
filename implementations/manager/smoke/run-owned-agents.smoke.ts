@@ -96,6 +96,7 @@ if (subcommand === "tool-seat") {
       const { execFile } = await import("node:child_process");
       const other = process.env.MC_OTHER_INSTANCE!;
       const personas = cotalToolSpecs(config).find((s) => s.name === "cotal_personas")!;
+      const persona = cotalToolSpecs(config).find((s) => s.name === "cotal_persona")!;
       const call = async (spec: typeof tool, args: Record<string, unknown>) => {
         try { return await spec.run(mesh, config, parseToolArgs(spec, args)); }
         catch (error) { return { isError: true, text: error instanceof Error ? error.message : String(error) }; }
@@ -121,7 +122,14 @@ if (subcommand === "tool-seat") {
       trace({ kind: "unbound-cli-bearer", code, stderr });
       trace({ kind: "unbound-run-ps-on", ...await call(tool, { verb: "ps", instance: other }) });
       trace({ kind: "unbound-personas-on", ...await call(personas, { instance: other }) });
+      trace({ kind: "unbound-persona-on", ...await call(persona, {
+        name: "pinned_definition", prompt: "A persona on the selected manager.", instance: other,
+        subscribe: [], allowSubscribe: [], allowPublish: [],
+      }) });
       config.managerInstanceId = spawner;
+      trace({ kind: "bound-persona-other", ...await call(persona, {
+        name: "wrong_manager_definition", prompt: "Must not be written.", instance: other,
+      }) });
       trace({ kind: "pin-done" });
     } else {
       const started = await tool.run(mesh, config, { verb: "start", source: 'await checkpoint("child-owned", "Native child decision", { timeout: "1m" }); await checkpoint("child-finish", "Finish resumed child run", { timeout: "1m" });' });
@@ -460,6 +468,13 @@ try {
   cell("#4037 an unbound seat's `cotal agent-bearer --manager-call` refuses, lists both and names --manager-instance", seat("unbound-cli-bearer").code === 1 && namesBoth(seat("unbound-cli-bearer").stderr, "--manager-instance <instanceId>"), seat("unbound-cli-bearer"));
   cell("#3959 MCP cotal_run ps with instance succeeds against the named instance", answered("unbound-run-ps-on"), seat("unbound-run-ps-on"));
   cell("#3959 MCP cotal_personas with instance reads the named instance's catalog", answered("unbound-personas-on") && seat("unbound-personas-on").text === "No personas in the manager catalog.", seat("unbound-personas-on"));
+  cell("MCP cotal_persona with instance defines on the named manager", answered("unbound-persona-on") &&
+    existsSync(join(rootB, ".cotal", "agents", "pinned_definition.md")) &&
+    !existsSync(join(root, ".cotal", "agents", "pinned_definition.md")), seat("unbound-persona-on"));
+  cell("MCP cotal_persona keeps a bound seat on its own manager", seat("bound-persona-other").isError === true &&
+    String(seat("bound-persona-other").text).includes("differs from this credential's instance authority") &&
+    !existsSync(join(rootB, ".cotal", "agents", "wrong_manager_definition.md")) &&
+    !existsSync(join(root, ".cotal", "agents", "wrong_manager_definition.md")), seat("bound-persona-other"));
   cell("#3959 each seat call reached the manager it named (runs: spawner 2, other 1)", onA.runs === before.a.runs + 2 && onB.runs === before.b.runs + 1, { before, onA, onB });
   // The cells above leave one manager live and an empty trace, as the cells below expect.
   await managerB.stop({ withAgents: true });
