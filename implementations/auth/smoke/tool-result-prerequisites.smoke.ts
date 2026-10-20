@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, statfsSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { PermissionViolationError } from "@nats-io/transport-node";
@@ -17,6 +18,15 @@ function check(name: string, condition: unknown) { assert.ok(condition, name); p
 async function refuses(name: string, run: () => unknown | Promise<unknown>, code?: string) {
   await assert.rejects(async () => run(), error => error instanceof EpEnvelopeError && (!code || error.code === code));
   check(name, true);
+}
+if (process.platform !== "linux" || statfsSync(tmpdir()).type !== 0xef53) {
+  await refuses("unsupported platform/filesystem explicitly refuses custody", () => createToolResultRevocationCustody({
+    directory: join(tmpdir(), "unsupported-custody"), server: "nats://127.0.0.1:1", space: "unsupported",
+    dataAccount: { pub: "", signingSeed: "" }, log: () => {}, authorizeConsent: async () => {}, authorizeTarget: async () => {},
+  }), "unavailable");
+  console.log("Native positive custody cells unavailable: qualified Linux/ext4 required");
+  emitSentinel({ passed, failed: 0 });
+  process.exit(0);
 }
 const fixture = await startHostedAuthFixture("tool-result-prerequisites", 2);
 const account = fixture.accounts[0]!;
@@ -61,12 +71,12 @@ try {
   for (const id of ["one", "two", "three"]) {
     const c = consent(id); await kv.put(`consent.${id}`, new TextEncoder().encode(canonicalJson(c)), { previousSeq: 0 });
     for (const field of ["previousSeq", "operation", "ttl"]) {
-      await refuses(`mediated ${field} option rejected before write`, () => recordToolResultRevocation(custody, { ...c, [field]: field === "operation" ? "DEL" : 1 }), "bad-request");
+      await refuses(`consent parser rejects unknown ${field} field before write`, () => recordToolResultRevocation(custody, { ...c, [field]: field === "operation" ? "DEL" : 1 }), "bad-request");
     }
     const marker = await recordToolResultRevocation(custody, c);
     check(`mediated ${id} marker receives native durable ack`, marker.consentId === id);
   }
-  await refuses("identical recorded consent still conflicts on repeated revocation", async () => {
+  await refuses("in-process receipt rejects repeated identical consent", async () => {
     const c = (await kv.get("consent.one"))!.json<ToolResultConsent>();
     await recordToolResultRevocation(custody, c);
   }, "conflict");

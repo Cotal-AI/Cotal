@@ -1074,7 +1074,10 @@ This is not protection from a malicious host administrator or copied signing key
 
 Revocation creates only `revocation.<targetDigest>.<consentId>` with native expected-last-subject
 sequence zero, no operation/TTL headers and independently fsynced acknowledgement receipts.
-Consent bytes must match the recorded target and expiry. Markers persist indefinitely in this
+Consent bytes must match the recorded target and expiry. Persistence uncertainty reports effect
+outcome `unknown`. Acknowledged writes report `executed` even if receipt or later custody checks
+fail. Refusals before publication report `not-executed`. No automatic repeat follows uncertainty.
+Markers persist indefinitely in this
 slice. A separate bounded-retention successor must prove consent expiry plus
 `EP_AUTH_MARKER_TTL_MS` and snapshot safety before a pruner/TTL may exist.
 
@@ -1084,9 +1087,10 @@ artifact is a process-private invocation seal binding that evidence, account, ge
 native created/config identity. It cannot be parsed, copied, reused or used after custody loss.
 No current INFO equality or operator safe flag establishes historical integrity. Journals are
 exclusive 0600 files with file and directory fsync, checked before/after IO, not adopted on restart.
-Leader changes may work only through the same intact native connection/store, otherwise refuse.
+Clustered brokers and leader failover are unsupported. Any connection loss refuses; current INFO cannot restore custody.
 
-New package-internal grants split revocation-only publish from INFO/MSG.GET reader authority.
+A short-lived create-only provisioner holds API discovery and exact auth-stream CREATE, then closes.
+Separate package-internal grants split revocation-only publish from INFO/MSG.GET reader authority.
 Retained issuance writers **already can enumerate** auth metadata. Raw ACLs cannot enforce CAS,
 DEL/TTL/schema/target conventions. Every raw MSG.GET profile carries SPEC13.9's caller-selected
 reply **foreign-subject response-injection** residual, even with only its own inbox subscription.

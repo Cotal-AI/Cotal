@@ -38,8 +38,8 @@ interface State {
 const STATES = new WeakMap<ToolResultRevocationCustody, State>();
 const WITNESSES = new WeakMap<ToolResultSnapshotWitness, { state: State; target: string; used: boolean; artifact: string }>();
 const sha = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
-function fail(code: "bad-request" | "permission-denied" | "unavailable" | "conflict", message: string): never {
-  throw new EpEnvelopeError(code, message, undefined, "not-executed");
+function fail(code: "bad-request" | "permission-denied" | "unavailable" | "conflict", message: string, outcome: "not-executed" | "executed" | "unknown" = "not-executed"): never {
+  throw new EpEnvelopeError(code, message, undefined, outcome);
 }
 function stateOf(custody: ToolResultRevocationCustody): State {
   const state = STATES.get(custody);
@@ -188,18 +188,26 @@ export async function recordToolResultRevocation(custody: ToolResultRevocationCu
     catch (error) {
       s.valid = false;
       if (isCasLoss(error)) fail("conflict", "conflicting revocation; custody invalidated");
-      fail("unavailable", "revocation persistence unknown; no automatic repeat");
+      fail("unavailable", "revocation persistence unknown; no automatic repeat", "unknown");
     }
-    if (!Number.isSafeInteger(sequence) || sequence <= 0) { s.valid = false; fail("unavailable", "invalid native revocation acknowledgement"); }
-    const receipt = { key, sequence, digest: sha(data), consent };
-    const receiptName = `receipt-${sequence}.json`;
-    try { s.journal.set(receiptName, durableCreate(s.directory, receiptName, receipt)); }
-    catch { s.valid = false; fail("unavailable", "revocation acknowledged but custody receipt is unknown; no retry"); }
-    s.receipts.set(key, receipt);
-    await prove(s);
-    await s.authorizeConsent(consent);
-    stateOf(custody);
-    return marker;
+    if (!Number.isSafeInteger(sequence) || sequence <= 0) { s.valid = false; fail("unavailable", "invalid native revocation acknowledgement", "unknown"); }
+    // A native ACK proves the effect. A later local receipt, continuity or host-authority
+    // refusal cannot turn an already-committed revocation into a not-executed response.
+    try {
+      const receipt = { key, sequence, digest: sha(data), consent };
+      const receiptName = `receipt-${sequence}.json`;
+      try { s.journal.set(receiptName, durableCreate(s.directory, receiptName, receipt)); }
+      catch { s.valid = false; fail("unavailable", "revocation acknowledged but custody receipt is unknown; no retry", "executed"); }
+      s.receipts.set(key, receipt);
+      await prove(s);
+      await s.authorizeConsent(consent);
+      stateOf(custody);
+      return marker;
+    } catch (error) {
+      if (error instanceof EpEnvelopeError)
+        throw new EpEnvelopeError(error.code, error.message, error.details, "executed");
+      throw new EpEnvelopeError("unavailable", "revocation committed; post-commit custody or authorization failed", undefined, "executed");
+    }
   });
   s.tail = task.then(() => {}, () => {});
   return task;
