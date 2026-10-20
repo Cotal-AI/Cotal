@@ -32,17 +32,21 @@ function coordinates(reg: LifecycleRegistry, binding: ServiceAssignmentBinding) 
   return { kv: stores.authKv, key: epgateKey(binding.endpoint, binding.instanceId), actor, principal: principalKey(binding.owner, actor).key };
 }
 
+function parseFor(binding: ServiceAssignmentBinding, key: string, principal: string, value: Uint8Array): ServiceRow {
+  const row = parseEndpointGate(value, key);
+  if (row.authorityFamily !== "service" || !row.serviceAuthority || row.principal !== principal
+    || row.serviceAuthority.assignmentDigest !== binding.assignmentDigest || row.serviceAuthority.lifecycleUid !== binding.lifecycleUid)
+    conflict("service gate belongs to another immutable assignment");
+  return row as ServiceRow;
+}
+
 /** Internal host storage seam. Consent and name authority are not established by a gate write. */
 export async function readNativeServiceGate(reg: LifecycleRegistry, binding: ServiceAssignmentBinding): Promise<ServiceGateRead | undefined> {
   const { kv, key, principal } = coordinates(reg, binding);
   const entry = await kv.get(key);
   if (!entry) return undefined;
   if (entry.operation !== "PUT") throw new EpEnvelopeError("failed-precondition", "service gate is deleted; absence cannot be inferred from a tombstone");
-  const row = parseEndpointGate(entry.value, key);
-  if (row.authorityFamily !== "service" || !row.serviceAuthority || row.principal !== principal
-    || row.serviceAuthority.assignmentDigest !== binding.assignmentDigest || row.serviceAuthority.lifecycleUid !== binding.lifecycleUid)
-    conflict("service gate belongs to another immutable assignment");
-  return { row: row as ServiceRow, revision: entry.revision };
+  return { row: parseFor(binding, key, principal, entry.value), revision: entry.revision };
 }
 
 function pendingRow(reg: LifecycleRegistry, binding: ServiceAssignmentBinding): ServiceRow {
@@ -57,6 +61,55 @@ function pendingRow(reg: LifecycleRegistry, binding: ServiceAssignmentBinding): 
   };
   parseEndpointGate(bytes(row), key);
   return row;
+}
+
+function deniedRow(row: ServiceRow, operationId: string): ServiceRow | undefined {
+  assertLifecycleToken(operationId, "operationId");
+  if (row.serviceAuthority.state === "revoked") return undefined;
+  const authority = { ...row.serviceAuthority, state: "revoked" as const };
+  return row.state === "open"
+    ? { ...row, state: "frozen", op: { opId: operationId, kind: "retirement" }, serviceAuthority: authority }
+    : { ...row, serviceAuthority: authority };
+}
+
+function uncreatedFenceRow(reg: LifecycleRegistry, binding: ServiceAssignmentBinding, operationId: string): ServiceRow {
+  assertLifecycleToken(operationId, "operationId");
+  const { key } = coordinates(reg, binding), pending = pendingRow(reg, binding);
+  const row: ServiceRow = { ...pending, state: "frozen", op: { opId: operationId, kind: "retirement" },
+    serviceAuthority: { ...pending.serviceAuthority, state: "revoked" } };
+  parseEndpointGate(bytes(row), key);
+  return row;
+}
+
+/** Package-internal pure endpoint-gate rows for a writer that issues, bounds and re-checks every
+ *  request itself. No I/O: the same rows and checks the helpers below write and read. */
+export interface ServiceGateRows {
+  readonly key: string;
+  /** Parse bytes read at `key`; `conflict` when they belong to another immutable assignment. */
+  parse(value: Uint8Array): ServiceRow;
+  /** Bytes of the pending-root row that a zero-history create writes. */
+  readonly pending: Uint8Array;
+  /** Bytes of the frozen revoked row that a zero-history create writes before the gate exists. */
+  uncreatedFence(operationId: string): Uint8Array;
+  /** Bytes of the deny-new successor of `row`, or `undefined` when it is already revoked. */
+  deny(row: ServiceRow, operationId: string): Uint8Array | undefined;
+}
+
+/** The pure endpoint-gate rows of one assignment in this registry's space. */
+export function serviceGateRows(reg: LifecycleRegistry, binding: ServiceAssignmentBinding): ServiceGateRows {
+  const { key, principal } = coordinates(reg, binding), frozenBinding = { ...binding };
+  return Object.freeze({
+    key, pending: bytes(pendingRow(reg, frozenBinding)),
+    parse: (value: Uint8Array) => parseFor(frozenBinding, key, principal, value),
+    uncreatedFence: (operationId: string) => bytes(uncreatedFenceRow(reg, frozenBinding, operationId)),
+    deny: (row: ServiceRow, operationId: string) => {
+      const next = deniedRow(row, operationId);
+      if (next === undefined) return undefined;
+      const encoded = bytes(next);
+      parseEndpointGate(encoded, key);
+      return encoded;
+    },
+  });
 }
 
 /** Create the unmintable endpoint gate before native root activation. Never adopts a different assignment. */
@@ -195,22 +248,15 @@ export async function denyNativeServiceGate(reg: LifecycleRegistry, binding: Ser
   expectedRevision: number; operationId: string;
 }): Promise<ServiceGateRead> {
   assertLifecycleToken(args.operationId, "operationId");
-  const found = await current(reg, binding, args.expectedRevision), row = found.row;
-  if (row.serviceAuthority.state === "revoked") return found;
-  const authority = { ...row.serviceAuthority, state: "revoked" as const };
-  const next: ServiceRow = row.state === "open"
-    ? { ...row, state: "frozen", op: { opId: args.operationId, kind: "retirement" }, serviceAuthority: authority }
-    : { ...row, serviceAuthority: authority };
-  return replace(reg, binding, found, next);
+  const found = await current(reg, binding, args.expectedRevision);
+  const next = deniedRow(found.row, args.operationId);
+  return next === undefined ? found : replace(reg, binding, found, next);
 }
 
 /** Fence cancellation before the endpoint gate exists. Native UID cancellation remains a separate required barrier. */
 export async function fenceUncreatedServiceGate(reg: LifecycleRegistry, binding: ServiceAssignmentBinding, operationId: string): Promise<ServiceGateRead> {
   assertLifecycleToken(operationId, "operationId");
-  const { kv, key } = coordinates(reg, binding), pending = pendingRow(reg, binding);
-  const row: ServiceRow = { ...pending, state: "frozen", op: { opId: operationId, kind: "retirement" },
-    serviceAuthority: { ...pending.serviceAuthority, state: "revoked" } };
-  parseEndpointGate(bytes(row), key);
+  const { kv, key } = coordinates(reg, binding), row = uncreatedFenceRow(reg, binding, operationId);
   await createRowByteIdempotent(kv, key, row);
   const created = await readNativeServiceGate(reg, binding);
   if (!created) throw new EpEnvelopeError("unavailable", "created service gate is not readable; retain the operation identity");

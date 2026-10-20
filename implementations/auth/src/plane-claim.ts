@@ -126,12 +126,15 @@ export interface PlaneClaimHold {
   release(): Promise<void>;
 }
 
-/** Every hold `acquirePlaneClaim` returned, keyed to its space. A structural object with the same
- *  fields is not a hold: package-internal consumers that act under the claim check this brand. */
-const GENUINE_HOLDS = new WeakMap<PlaneClaimHold, string>();
+/** The frozen provenance of one acquired hold: its space and the original held-check closure. */
+export interface GenuinePlaneHold { readonly space: string; readonly assertHeld: ScanGuard["assertHeld"] }
+/** Every hold `acquirePlaneClaim` returned. A structural object with the same fields is not a hold,
+ *  and replacing a hold's `guard` later does not change the check its provenance carries. */
+const GENUINE_HOLDS = new WeakMap<PlaneClaimHold, GenuinePlaneHold>();
 
-/** The space of a hold this module returned, or `undefined` for any other object. */
-export function genuinePlaneHoldSpace(hold: unknown): string | undefined {
+/** The provenance captured when this module returned `hold`, or `undefined` for any other object.
+ *  Package-internal consumers that act under the claim call its `assertHeld`, never `hold.guard`. */
+export function genuinePlaneHold(hold: unknown): GenuinePlaneHold | undefined {
   return typeof hold === "object" && hold !== null ? GENUINE_HOLDS.get(hold as PlaneClaimHold) : undefined;
 }
 
@@ -360,7 +363,7 @@ export async function acquirePlaneClaim(opts: {
       return flight;
     },
   };
-  GENUINE_HOLDS.set(hold, space);
+  GENUINE_HOLDS.set(hold, Object.freeze({ space, assertHeld }));
   return hold;
 }
 

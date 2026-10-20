@@ -1258,7 +1258,8 @@ endpoint deny residue and reports unconfirmed; a foreign or deleted reservation 
 write. Each write is a per-key create or revision CAS under a sealed host whose genuine plane-claim
 hold is re-read before and after the write, plus a fatal latch. That is local readiness control,
 not broker writer exclusion, so a paused writer can still land one late conditional write. Each
-request is bounded by the remaining original deadline. The caller supplies that deadline and the
+request is bounded by the remaining original deadline, and the writer issues every endpoint-gate
+request itself, so none starts after an invocation returns. The caller supplies that deadline and the
 reservation; nothing here authenticates a host, approves serving, retires terminally, releases an
 alias or rotates a root.
 

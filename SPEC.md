@@ -1222,8 +1222,12 @@ sufficient *authority* identity on this surface. Two further identity components
   This is local readiness control, not broker writer exclusion. Each broker request is bounded
   by `min(5s, remaining original deadline)`; CAS re-decisions, native gate re-pins and
   unknown-outcome rounds are capped at 4, 8 and 3, and an unknown outcome is classified by a
-  leader read before any reissue. The deadline and reservation are caller-supplied original
-  material, not durable host authentication.
+  leader read before any reissue. Endpoint-gate reads and writes are the writer's own leader
+  reads and conditional writes built from pure package-internal rows, so no request starts
+  after an invocation returns. The held check is the closure captured when the hold was
+  acquired, not the hold's mutable guard field. A frozen activation native gate is valid only at
+  generation0; any other frozen activation form holds. The deadline and reservation are
+  caller-supplied original material, not durable host authentication.
   Only then does it mint **before the entity is reachable**, persisting a CAS-fenced
   mapping
   `{ owner, actor, lifecycleUid, managerInstance, processEpoch,

@@ -17,11 +17,12 @@ import {
   contractDigest, createEndpointStreams, epAuthBucket, epgateKey, isReachable, lifecycleHeadKey, mintLifecycleUid,
   recordsBucket, serviceEndpointActor, uidReservationKey, type ServiceUidCustodyV1,
 } from "@cotal-ai/core";
-import { openLifecycleRegistry, tryReserveUid, type LifecycleRegistry } from "../src/lifecycle-registry.js";
-import { acquirePlaneClaim, PLANE_CLAIM_KEY, type PlaneClaimHold, type PlaneLivenessOracle } from "../src/plane-claim.js";
+import { openLifecycleRegistry, registryStores, tryReserveUid, type LifecycleRegistry } from "../src/lifecycle-registry.js";
+import { acquirePlaneClaim, PLANE_CLAIM_KEY, type PlaneClaimHold, type PlaneLivenessOracle, type ScanGuard } from "../src/plane-claim.js";
 import { bindNativeServiceName } from "../src/native-service-name.js";
 import { readNativeServiceGate } from "../src/native-service-gate.js";
 import { readRegistryServiceRoot } from "../src/service-root-reader.js";
+import { parseServiceNativeGate, serviceCustodyIdentity } from "../src/service-custody-shapes.js";
 import {
   cancelServiceCustody, openServiceCustodyHost, runServiceBootstrap, sealServiceBootstrapIntent, sealServiceCancelIntent,
   type ServiceCustodyHost,
@@ -37,6 +38,8 @@ const throws = async (label: string, fn: () => unknown, pattern: RegExp) => {
   try { await fn(); check(label, false, "no throw"); } catch (e) { check(label, pattern.test((e as Error).message), (e as Error).message); }
 };
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** A bounded fixture wait; resolves `undefined` when the event never comes. */
+const within = <T>(p: Promise<T>, ms: number) => Promise.race([p, pause(ms).then(() => undefined)]);
 const dec = new TextDecoder();
 
 const SPACE = "s1custody", OTHER_SPACE = "s1custodyother", FENCE_SPACE = "s1custodyfence";
@@ -274,6 +277,97 @@ try {
     check("a later bootstrap refuses before reserving the UID", boot.kind === "endpoint-revoked" && (await records.get(k.uid)) === null, boot);
     const expired = await cancelServiceCustody(sealServiceCancelIntent(freshHost().host, { reservation: r, ...cancelOp() }), { deadlineMs: Date.now() - 1 });
     check("a cancel invocation past its explicit deadline holds", expired.kind === "held" && expired.reason === "deadline", expired);
+  }
+  const movePlane = async () => {
+    const plane = (await auth.get(PLANE_CLAIM_KEY))!;
+    const moved = await auth.update(PLANE_CLAIM_KEY, new TextEncoder().encode(JSON.stringify({ ...JSON.parse(dec.decode(plane.value)), claimId: "NFOREIGNCLAIM" })), plane.revision);
+    return async () => { await auth.update(PLANE_CLAIM_KEY, plane.value, moved); };
+  };
+  const active = async (r: ServiceUidCustodyV1) => {
+    const out = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() }));
+    if (out.kind !== "active") throw new Error(`fixture bootstrap did not reach active: ${JSON.stringify(out)}`);
+  };
+
+  console.log("F. a held endpoint-gate read on the writer's own request path");
+  {
+    // Hold the RESPONSE of the writer's own leader read of the endpoint gate, the read whose result
+    // drives the deny CAS, on the registry's own manager handle. The check first proves the hold
+    // was reached, then that no endpoint-gate write starts after the deadline or a claim loss.
+    const streams = registryStores(reg).jsm.streams;
+    const realGetMessage = streams.getMessage.bind(streams);
+    let arm: { subject: string; hit: () => void; release: Promise<void>; returned: () => void } | undefined;
+    streams.getMessage = (async (...args: Parameters<typeof realGetMessage>) => {
+      const m = await realGetMessage(...args);
+      const a = arm, q = args[1] as { last_by_subj?: string } | undefined;
+      if (a && q?.last_by_subj === a.subject) { arm = undefined; a.hit(); await a.release; queueMicrotask(a.returned); }
+      return m;
+    }) as typeof streams.getMessage;
+    for (const variant of ["deadline", "claim lost, released after return", "claim lost, released before return"] as const) {
+      const r = reservation(), k = keys(r);
+      await active(r);
+      const before = await revision(auth, k.epgate);
+      const writes: number[] = [];
+      const sub = conn.subscribe(`$KV.${epAuthBucket(SPACE)}.${k.epgate}`, { callback: () => { writes.push(Date.now()); } });
+      let hit!: () => void, release!: () => void, returned!: () => void;
+      const hitP = new Promise<void>((x) => { hit = x; }), returnedP = new Promise<void>((x) => { returned = x; });
+      arm = { subject: `$KV.${epAuthBucket(SPACE)}.${k.epgate}`, hit, returned, release: new Promise<void>((x) => { release = x; }) };
+      const deadlineMs = variant === "deadline" ? Date.now() + 1_500 : later();
+      const running = cancelServiceCustody(sealServiceCancelIntent(freshHost().host, { reservation: r, ...cancelOp() }), { deadlineMs });
+      const reached = (await within(hitP.then(() => true), 10_000)) === true;
+      const restore = variant !== "deadline" && reached ? await movePlane() : undefined;
+      if (variant === "claim lost, released before return") release();
+      const out = await running;
+      const atReturn = writes.length;
+      release();
+      await within(returnedP, 5_000);
+      await conn.flush();
+      await within(new Promise<void>((x) => { const t = setInterval(() => { if (writes.length > atReturn) { clearInterval(t); x(); } }, 25); setTimeout(() => clearInterval(t), 2_000); }), 2_000);
+      sub.unsubscribe();
+      if (restore) await restore();
+      arm = undefined;
+      check(`${variant}: the held endpoint-gate read was reached`, reached);
+      check(`${variant}: the writer reports held`, out.kind === "held" && (variant !== "claim lost, released before return" || out.reason === "readiness"), out);
+      check(`${variant}: no endpoint-gate write starts, before or after the writer returned`,
+        writes.length === 0 && (await revision(auth, k.epgate)) === before, { writes: writes.length, atReturn, before, after: await revision(auth, k.epgate) });
+    }
+    streams.getMessage = realGetMessage;
+  }
+
+  console.log("G. the genuine hold's own check, not its mutable guard field");
+  for (const variant of ["guard object replaced after open", "guard method replaced after open", "guard object replaced before open"] as const) {
+    const r = reservation(), k = keys(r);
+    const original: ScanGuard = hold.guard, originalMethod = hold.guard.assertHeld;
+    const mutate = () => {
+      if (variant === "guard method replaced after open") hold.guard.assertHeld = async () => {};
+      else (hold as { guard: ScanGuard }).guard = { assertHeld: async () => {} };
+    };
+    if (variant === "guard object replaced before open") mutate();
+    const { host } = freshHost();
+    if (variant !== "guard object replaced before open") mutate();
+    const restore = await movePlane();
+    const out = await runServiceBootstrap(sealServiceBootstrapIntent(host, { reservation: r, notAfterMs: later() }));
+    const wrote = (await records.get(k.uid)) !== null;
+    (hold as { guard: ScanGuard }).guard = original; original.assertHeld = originalMethod;
+    await restore();
+    check(`${variant}: a moved claim still holds with no reservation written`, out.kind === "held" && !wrote, { out, wrote });
+  }
+
+  console.log("H. a frozen activation native gate at generation 1 is not canonical");
+  for (const variant of ["creation op", "foreign op"] as const) {
+    const r = reservation(), k = keys(r), first = freshHost();
+    const sub = tripOnWrite(recordsBucket(SPACE), k.head, 1, first.trip);
+    await runServiceBootstrap(sealServiceBootstrapIntent(first.host, { reservation: r, notAfterMs: later() }));
+    sub.unsubscribe();
+    const seeded = { lifecycleUid: r.native.lifecycleUid, state: "frozen", generation: 1, serviceCustody: { v: 1, uidDigest: contractDigest(r) },
+      op: { opId: variant === "creation op" ? r.creation.operationId : mintLifecycleUid(), kind: "activation" } };
+    const seededRev = await auth.put(k.gate, new TextEncoder().encode(JSON.stringify(seeded)), { previousSeq: 0 });
+    let parsed = true;
+    try { parseServiceNativeGate(structuredClone(seeded), serviceCustodyIdentity(r)); } catch { parsed = false; }
+    check(`${variant}: the shared parser refuses it`, !parsed);
+    const boot = await runServiceBootstrap(sealServiceBootstrapIntent(freshHost().host, { reservation: r, notAfterMs: later() }));
+    check(`${variant}: bootstrap holds without touching the gate`, boot.kind === "held" && (await revision(auth, k.gate)) === seededRev, boot);
+    const cancel = await cancelServiceCustody(sealServiceCancelIntent(freshHost().host, { reservation: r, ...cancelOp() }), { deadlineMs: later() });
+    check(`${variant}: cancellation holds instead of normalizing the gate`, cancel.kind === "held" && (await revision(auth, k.gate)) === seededRev, cancel);
   }
 } finally {
   await nc?.close().catch(() => {});

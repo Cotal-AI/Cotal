@@ -1,7 +1,9 @@
 /** Package-internal closed shapes for canonical R9 service native custody: the head variants, the
  * native gate variants, the native root row and the digest mirror. The active-root reader and the
- * dormant custody writer both take their field sets and mirror rule from here, so a row one of
- * them accepts can never be classified differently by the other. Never exported from the index. */
+ * dormant custody writer share the closed field sets, the closed-record check and the mirror rule
+ * from here. Each keeps its own predicates: the writer's parsers also accept the creating,
+ * cancelling, frozen and revoked forms that the active-only reader refuses. Never exported from
+ * the index. */
 import {
   EpEnvelopeError, assertLifecycleToken, contractDigest, isContractDigest, serviceEndpointActor,
   type ServiceUidCustodyV1,
@@ -129,9 +131,10 @@ export function parseServiceNativeGate(value: unknown, id: ServiceCustodyIdentit
     return { lifecycleUid: id.lifecycleUid, state, generation: 1, serviceCustody: { ...id.mirror } };
   }
   const op = closedRecord(o.op, ["opId", "kind"], shapeFail("native gate operation"));
-  if ((o.generation !== 0 && o.generation !== 1) || !lifecycleToken(op.opId) || (op.kind !== "activation" && op.kind !== "service-cancel"))
+  // Activation freezes only the initial generation 0; a cancellation keeps the generation it froze.
+  if (!lifecycleToken(op.opId) || !(op.kind === "activation" ? o.generation === 0 : op.kind === "service-cancel" && (o.generation === 0 || o.generation === 1)))
     invalid("frozen native gate has invalid coordinates");
-  return { lifecycleUid: id.lifecycleUid, state, generation: o.generation as 0 | 1, serviceCustody: { ...id.mirror }, op: { opId: op.opId as string, kind: op.kind } };
+  return { lifecycleUid: id.lifecycleUid, state, generation: o.generation as 0 | 1, serviceCustody: { ...id.mirror }, op: { opId: op.opId as string, kind: op.kind as "activation" | "service-cancel" } };
 }
 
 /** Parse the native root row of this UID. Throws `failed-precondition` for any other identity or shape. */

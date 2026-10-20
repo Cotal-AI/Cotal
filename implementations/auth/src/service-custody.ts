@@ -14,9 +14,9 @@ import {
   lifecycleHeadKey, mintLifecycleUid, parseNativeUidCustody, recordsBucket, uidReservationKey, type ServiceUidCustodyV1,
 } from "@cotal-ai/core";
 import { registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
-import { createPendingServiceGate, denyNativeServiceGate, fenceUncreatedServiceGate, readNativeServiceGate, type ServiceAssignmentBinding } from "./native-service-gate.js";
+import { serviceGateRows, type ServiceAssignmentBinding, type ServiceGateRows } from "./native-service-gate.js";
 import { readNativeServiceName } from "./native-service-name.js";
-import { genuinePlaneHoldSpace, type PlaneClaimHold } from "./plane-claim.js";
+import { genuinePlaneHold, type PlaneClaimHold, type ScanGuard } from "./plane-claim.js";
 import { ROOT_CREDENTIAL_TTL_MS } from "./root-credential.js";
 import {
   encodeRoundTrip, parseServiceHead, parseServiceNativeGate, parseServiceNativeRoot, serviceCustodyIdentity,
@@ -50,8 +50,8 @@ export type ServiceCancelResult =
   | { kind: "foreign-operation"; opId: string }
   | ServiceCustodyHeld;
 
-interface HostInternals { registry: LifecycleRegistry; hold: PlaneClaimHold; space: string; accountPublicKey: string; tripped?: string }
-interface Material { host: HostInternals; id: ServiceCustodyIdentity; binding: ServiceAssignmentBinding; uidBytes: Uint8Array }
+interface HostInternals { registry: LifecycleRegistry; assertHeld: ScanGuard["assertHeld"]; space: string; accountPublicKey: string; tripped?: string }
+interface Material { host: HostInternals; id: ServiceCustodyIdentity; binding: ServiceAssignmentBinding; epgate: ServiceGateRows; uidBytes: Uint8Array }
 interface BootstrapSnapshot extends Material { notAfterMs: number }
 interface CancelSnapshot extends Material { op: CancelOp }
 const HOSTS = new WeakMap<ServiceCustodyHost, HostInternals>();
@@ -65,14 +65,15 @@ function denied(detail: string): never {
 }
 
 /** The one trusted composition: a genuine registry, a genuine hold for the same space, the
- *  configured account, and a fatal latch only the returned `trip` sets. */
+ *  configured account, and a fatal latch only the returned `trip` sets. The held check is the
+ *  closure captured when the hold was acquired, never the hold's mutable `guard` field. */
 export function openServiceCustodyHost(opts: { registry: LifecycleRegistry; hold: PlaneClaimHold; accountPublicKey: string }): { host: ServiceCustodyHost; trip(reason: string): void } {
   const { space } = registryStores(opts.registry);
-  const holdSpace = genuinePlaneHoldSpace(opts.hold);
-  if (holdSpace === undefined) denied("requires a plane claim hold this process acquired");
-  if (holdSpace !== space) denied(`hold belongs to another space than the registry's "${space}"`);
+  const genuine = genuinePlaneHold(opts.hold);
+  if (genuine === undefined) return denied("requires a plane claim hold this process acquired");
+  if (genuine.space !== space) denied(`hold belongs to another space than the registry's "${space}"`);
   if (typeof opts.accountPublicKey !== "string" || !isAccountNkey(opts.accountPublicKey)) denied("requires the configured account public key");
-  const internals: HostInternals = { registry: opts.registry, hold: opts.hold, space, accountPublicKey: opts.accountPublicKey };
+  const internals: HostInternals = { registry: opts.registry, assertHeld: genuine.assertHeld, space, accountPublicKey: opts.accountPublicKey };
   const host: ServiceCustodyHost = Object.freeze({ space, accountPublicKey: opts.accountPublicKey });
   HOSTS.set(host, internals);
   return { host, trip: (reason: string) => { if (internals.tripped === undefined) internals.tripped = reason; } };
@@ -88,8 +89,9 @@ function material(host: ServiceCustodyHost, reservation: ServiceUidCustodyV1): M
   if (custody.uid.native.accountPublicKey !== h.accountPublicKey || custody.uid.native.space !== h.space)
     denied("reservation belongs to another account or space than the host");
   const id = serviceCustodyIdentity(custody.uid);
-  return { host: h, id, uidBytes, binding: { accountPublicKey: h.accountPublicKey, space: h.space, owner: id.owner, endpoint: id.endpoint,
-    instanceId: id.instanceId, lifecycleUid, assignmentDigest: id.digest } };
+  const binding: ServiceAssignmentBinding = { accountPublicKey: h.accountPublicKey, space: h.space, owner: id.owner, endpoint: id.endpoint,
+    instanceId: id.instanceId, lifecycleUid, assignmentDigest: id.digest };
+  return { host: h, id, uidBytes, binding, epgate: serviceGateRows(h.registry, binding) };
 }
 
 /** Seal the original admitted bootstrap material once. `notAfterMs` is the creation authority's
@@ -156,7 +158,7 @@ function checkSync(ctx: Ctx): void {
 /** Awaited current-hold check before a write. */
 async function readyBefore(ctx: Ctx): Promise<void> {
   checkSync(ctx);
-  const r = await bounded(ctx, () => ctx.h.hold.guard.assertHeld("before"));
+  const r = await bounded(ctx, () => ctx.h.assertHeld("before"));
   if (!r.ok) held("readiness", ctx.step, "timedOut" in r ? "the plane claim check timed out" : message(r.error));
   checkSync(ctx);
 }
@@ -164,7 +166,7 @@ async function readyBefore(ctx: Ctx): Promise<void> {
 /** Awaited current-hold re-read after a write, then the latch. Any loss here means the write may
  *  have landed under a lost or fenced host: the step reports held, never success. */
 async function readyAfter(ctx: Ctx): Promise<void> {
-  const r = await bounded(ctx, () => ctx.h.hold.guard.assertHeld("after"));
+  const r = await bounded(ctx, () => ctx.h.assertHeld("after"));
   if (!r.ok) held("post-write-readiness", ctx.step, "timedOut" in r ? "the post-write plane claim check timed out" : message(r.error));
   if (ctx.h.tripped !== undefined) held("post-write-readiness", ctx.step, `the host was fenced during the write: ${ctx.h.tripped}`);
 }
@@ -212,29 +214,27 @@ async function write(ctx: Ctx, bucket: "records" | "auth", key: string, bytes: U
   return held("unknown", ctx.step, `the outcome of the write to ${key} stayed unknown`);
 }
 
-/** An existing endpoint-gate helper call under the same readiness, clipped to the deadline. */
-async function helper<T>(ctx: Ctx, call: () => Promise<T>): Promise<T | "retry"> {
-  await readyBefore(ctx);
-  const r = await bounded(ctx, call);
-  await readyAfter(ctx);
-  if (r.ok) return r.value;
-  if ("timedOut" in r || (r.error instanceof EpEnvelopeError && r.error.code === "conflict")) return "retry";
-  return held("unavailable", ctx.step, message(r.error));
-}
-
 // ---- classification -----------------------------------------------------------------------------
 
-type EndpointClass = { kind: "absent" } | { kind: "pending" | "approved" | "revoked"; revision: number } | { kind: "foreign" };
+type EndpointRow = ReturnType<ServiceGateRows["parse"]>;
+type EndpointClass = { kind: "absent" } | { kind: "foreign" }
+  | { kind: "pending" | "approved" | "revoked"; row: EndpointRow; bytes: Uint8Array; revision: number };
 
+/** Leader-read and classify this assignment's endpoint gate. Every endpoint-gate request is the
+ *  writer's own, so none can start after it returns. */
 async function endpoint(ctx: Ctx, m: Material): Promise<EndpointClass> {
-  const r = await bounded(ctx, () => readNativeServiceGate(m.host.registry, m.binding));
-  if (!r.ok) {
-    if ("error" in r && r.error instanceof EpEnvelopeError && r.error.code === "conflict") return { kind: "foreign" };
-    return held("unavailable", ctx.step, "timedOut" in r ? "the endpoint gate read timed out" : message(r.error));
+  const cur = await leader(ctx, "auth", m.epgate.key);
+  if (cur.state === "absent") return { kind: "absent" };
+  if (cur.state === "marker") return held("endpoint-tombstone", ctx.step, `the endpoint gate carries a ${cur.op} marker`);
+  if (cur.state === "malformed") return held("endpoint-malformed", ctx.step, "the endpoint gate is not JSON");
+  let row: EndpointRow;
+  try { row = m.epgate.parse(cur.bytes); }
+  catch (e) {
+    if (e instanceof EpEnvelopeError && e.code === "conflict") return { kind: "foreign" };
+    return held("endpoint-malformed", ctx.step, message(e));
   }
-  if (r.value === undefined) return { kind: "absent" };
-  const state = r.value.row.serviceAuthority.state;
-  return { kind: state === "pending-root" ? "pending" : state, revision: r.value.revision };
+  const state = row.serviceAuthority.state;
+  return { kind: state === "pending-root" ? "pending" : state, row, bytes: cur.bytes, revision: cur.revision };
 }
 
 type UidClass = "absent" | "exact" | "foreign" | "marker";
@@ -328,7 +328,7 @@ async function bootstrap(ctx: Ctx, m: BootstrapSnapshot): Promise<ServiceBootstr
     if (e.kind === "pending" || e.kind === "approved") break;
     if (e.kind === "revoked") return { kind: "endpoint-revoked" };
     if (e.kind === "foreign") held("foreign-assignment", ctx.step, "the endpoint gate belongs to another immutable assignment");
-    await helper(ctx, () => createPendingServiceGate(m.host.registry, m.binding));
+    await write(ctx, "auth", m.epgate.key, m.epgate.pending, { create: true });
   }
 
   ctx.step = "B2-head";
@@ -487,8 +487,10 @@ async function cancel(ctx: Ctx, m: CancelSnapshot): Promise<ServiceCancelResult>
     const e = await endpoint(ctx, m);
     if (e.kind === "revoked") break;
     if (e.kind === "foreign") held("foreign-assignment", ctx.step, "the endpoint gate belongs to another immutable assignment");
-    if (e.kind === "absent") await helper(ctx, () => fenceUncreatedServiceGate(m.host.registry, m.binding, opId));
-    else await helper(ctx, () => denyNativeServiceGate(m.host.registry, m.binding, { expectedRevision: e.revision, operationId: opId }));
+    if (e.kind === "absent") { await write(ctx, "auth", m.epgate.key, m.epgate.uncreatedFence(opId), { create: true }); continue; }
+    const next = m.epgate.deny(e.row, opId);
+    if (next === undefined) break;
+    await write(ctx, "auth", m.epgate.key, next, { revision: e.revision, preimage: e.bytes });
   }
   if (u === "absent") {
     // D3: endpoint-only denied residue under this intent. No head, gate or root authority.
