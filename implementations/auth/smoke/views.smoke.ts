@@ -2,7 +2,7 @@
  * ELEVATED-VIEWS smoke — the exchange-gated per-connection profiles (`act.view`) pinned
  * broker-free at every layer:
  *
- *   A. issuer ↔ validator inverse: every {@link USER_TOKEN_VIEWS} value round-trips; an unknown
+ *   A. ordinary issuer ↔ validator inverse, with service-only issuance refused; an unknown
  *      view is rejected at MINT and (via a hand-signed token) at VALIDATE — the enum is closed on
  *      both sides;
  *   B. the central policy table: `deployer` is spawn-gated (own-team deploys are spawn-grade),
@@ -75,6 +75,10 @@ const SESSION = { endpoint: "manager", sessionId: mintSessionId(), epoch: 1, exp
 // The one object a transfer-writer bearer may upload (#1499).
 const TRANSFER = { instanceId: "m".repeat(26), hex: "a".repeat(64) };
 for (const view of USER_TOKEN_VIEWS) {
+  if (view === "service-endpoint") {
+    await rejects("service-endpoint refuses ordinary issuer", () => issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", view }), "dedicated service authority");
+    continue;
+  }
   const required = VIEW_REQUIRED_SCOPE[view];
   const token = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: required ? [required] : [], view, lifecycleUid: smokeUid, ...(view === "manager-caller" ? { managerInstanceId: "m".repeat(26) } : {}), ...(view === "session-caller" ? { session: SESSION } : {}), ...(view === "transfer-writer" ? { transferWriter: TRANSFER } : {}) });
   const v = await validateUserToken(token, { key: issuer.localKeySet(), issuer: "https://views.test", audience: SPACE });
@@ -131,7 +135,7 @@ await rejects(
 console.log("B. view → required-scope policy table");
 check('deployer is spawn-gated (own-team deploys are spawn-grade)', VIEW_REQUIRED_SCOPE.deployer === "spawn");
 check('manager-service is supervise-gated (remote manager authority is distinct)', VIEW_REQUIRED_SCOPE["manager-service"] === "supervise");
-for (const view of USER_TOKEN_VIEWS.filter((v) => v !== "deployer" && v !== "manager-service" && v !== "manager-caller" && v !== "session-caller"))
+for (const view of USER_TOKEN_VIEWS.filter((v) => v !== "deployer" && v !== "manager-service" && v !== "manager-caller" && v !== "session-caller" && v !== "service-endpoint"))
   check(`${view} is admin-gated (operator authority)`, VIEW_REQUIRED_SCOPE[view] === "admin");
 check("manager-caller adds no capability requirement", VIEW_REQUIRED_SCOPE["manager-caller"] === undefined);
 check("session-caller adds no capability requirement (the redeemed session grant is the authority)", VIEW_REQUIRED_SCOPE["session-caller"] === undefined);

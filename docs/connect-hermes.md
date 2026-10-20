@@ -17,13 +17,13 @@ is **not** bundled in the container image (so no containerized Hermes, see [Depl
   AF_UNIX socket bridge and a Python sidecar).
 - **`uv` on your PATH.** The launcher runs `uv run --project <connector> hermes gateway run`, so
   `uv` provisions the Python environment that provides the `hermes` CLI.
-- **`hermes-agent` in the supported `0.18` to `0.21` range.** The launcher asserts the installed
-  version at startup and fails loudly outside it (no silent degrade), because a different
+- **`hermes-agent` 0.18 or later and below 0.22 (`>=0.18,<0.22`).** The launcher asserts the
+  installed version at startup and fails loudly outside it (no silent degrade), because a different
   major.minor can move the plugin/platform/hook API this connector targets. A plain `pip` or `uv`
-  resolve installs 0.19.0, the newest release on PyPI, which is inside the range. The 0.20.x and
-  0.21.x releases exist only on GitHub, and an install from git or the install script is also
-  inside the range. Below 0.18 the gateway does not send the reconnect signal the adapter needs,
-  so those versions are refused.
+  resolve installs 0.19.0, the newest release on PyPI, which is inside the range. Hermes's own
+  install script installs the latest stable release by default. That is 0.22.x since 2026-10-14,
+  which is outside the range and refused. Below 0.18 the gateway does not send the reconnect signal
+  the adapter needs, so those versions are refused too.
 
 ## Spawn it
 

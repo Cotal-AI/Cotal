@@ -46,6 +46,97 @@ The host still needs independent topology and restore guarantees, deny-new, a fi
 lifecycle fencing before using an observation for retirement. These helpers do not grant service
 registration or terminal retirement.
 
+## Service authority contracts
+
+`@cotal-ai/core` exports closed service-authority request, proof and result types and their
+runtime parsers. The parsers bind a result to the submitted request and registration witness.
+`AuthProvider.serviceEndpointAuthority` is an optional provider hook for this protocol. A provider
+without the hook must refuse service setup. The user-auth provider implements the HTTP client,
+including `serviceEndpointInfo` for the DATA-account binding. It uses the pinned exchange origin,
+refuses redirects and does not retry an unknown mutation outcome. Server-side HTTP failures
+remain unconfirmed even when their bodies resemble a protocol denial. A registered snapshot must
+name the submitted closure set. Inline artifacts include each closure manifest as well as its
+documents, within the envelope byte limit; native per-closure walk limits still apply. The client does not transmit
+the local host capability or read callout signing material. Local setup needs the client sentinel
+projection written by `prepareServer`; a missing projection refuses rather than reading server secrets.
+
+`@cotal-ai/auth` exports host request and view types with `parseServiceHostRequest`. Parsing checks
+structure only, not owner consent, current grants or admission state. The host handlers and complete native
+service lifecycle are not implemented yet, so these interfaces do not enable service registration.
+The native endpoint gate also carries service approval and activation fields. Registration and
+serving guards retain those fields and refuse expired or revoked approval; these guards are not
+a replacement for the missing host lifecycle. Internal host gate transitions bind approval to a
+current native root and make activation monotonic. Registration completion is stamped in the
+reopen CAS; a definite abort preserves the previous stamp. They do not provide consent, public handlers
+or terminal retirement. Pre-activation registration requires an empty issuance family, including
+deleted records, and release rechecks fixed expiry after asynchronous work.
+
+`UserTokenIssuer.issueServiceRenewal` signs a separate registration-bound renewal proof.
+`validateServiceRenewalProof` checks its signature, fixed expiry and full witness binding.
+It is not a connect bearer. These primitives do not authenticate a current approval or native root;
+the host must do that before issuing or accepting authority. No client refresh loop is provided yet.
+
+`UserTokenIssuer.issueServiceAccess` signs a serve-only user bearer with the full registration
+witness and a fixed deadline of at most 60 seconds. Validation requires empty scope and rejects
+ordinary parent, manager, session and transfer claims. Ordinary exchange and permission construction
+refuse this view before actor lookup. Callout
+refuses it unless a sealed native service authority is configured. The private composition binds
+the current assignment, native root, registered serving grant and receipt before an encrypted
+response. Normal authority-plane startup does not enable it yet; public registration, restore
+readiness and coordinated root retirement remain required.
+
+Internal service-access reads retain native credential-root authorization and check the activated
+registration, assignment, current name and fixed expiry. They do not create a serving grant or
+release a native JWT. The private callout composition performs native issuance and final
+authorization when explicitly configured.
+
+Service serving-issuance evidence binds the authenticated broker user key, server key and client id.
+The native release fence rechecks that record and the gate after its CAS. Ordinary serving and
+credential-root records cannot use this service binding. This is not proof of broker acceptance;
+production authority-plane wiring and terminal retirement remain unfinished.
+
+`mintServiceCalloutJwt` is a host-only mint seam. It uses the native serving grant, the actual
+principal name and tags, the authenticated broker user key and a separate client inbox nonce.
+Expiry stays bounded by the original admission and access deadline. It does not authenticate the
+callout request, record natkey evidence or release an encrypted response; the host must do those.
+
+Native service receipts bind the same epcred connection and registration witness to the broker user
+key. Recording rechecks the evidence, receipt, native authority and fixed expiry. Expired service
+receipts are retained, not pruned on elapsed JWT time. Qualified retirement and production
+authority-plane wiring are still required before enabling the service path for clients.
+
+Internal service-name bindings are create-only and return owner and revision from one native read.
+The trusted host must authenticate the operator and verify the namespace claim before writing.
+Native auth, delivery and manager names keep their existing authority; they cannot be application
+service bindings. No transfer, release or public name-binding handler is implemented yet.
+
+Internal caller-policy storage uses the sealed native registry and binds each row to one account,
+space and grantee UID. Grant ids are immutable; an append cannot replace or reactivate one.
+Initial writes require no prior native key history. A deletion arriving after an absence read
+cannot recreate a policy or a pending service gate.
+Revocation begins with a revision-pinned deny-new intent that unrelated appends preserve.
+These are storage operations, not entitlement checks. The effective policy resolver, host operations,
+cutoff evidence and terminal caller revocation are not implemented yet.
+
+Scoped Describe callbacks also receive an optional immutable local context with the actual subject,
+complete-envelope fingerprint, serving identity and receive-relative deadline information.
+`parseDescribeObservation` shares native syntax and full-JSON fingerprint checks with trusted observers.
+Neither the context nor a fingerprint proves broker receipt to a remote authority. The remote
+observer and policy projection are not implemented yet. The client contract admits an explicit
+read-only `describe-view` operation using only service-access proof. It checks witness, observation,
+principal-policy basis and remaining validity, requires no-store responses, and bounds preparation,
+HTTP streaming and validation by the same local deadline. Cancellation cannot restart that deadline.
+The native handler and serving adapter are still required before this can authorize a remote view.
+
+`parseEndpointCapabilities` normalizes the native caller capability shape. `endpointCapabilitiesWithin`
+checks route, instance, target and journal containment using the native grant builders. The host
+still authenticates the granter and checks current grantee, parent and approval records.
+Cross-principal relative-target comparisons refuse when containment is unproved.
+
+`authorizeServeGrant` accepts a read-only `ServiceSpecReader`. A trusted provider can supply
+verified registration and contract reads without constructing a writable KV adapter. The function
+still derives the complete serving surface and creates the process-local grant.
+
 ## Owner-bound platform supervisors
 
 A host can start one user's supervisor without retaining that user's login. Pass
@@ -1123,3 +1214,41 @@ refusals. It does not wait for credential expiry and is not serving acceptance.
 seconds and checks unchanged identities plus record/snapshot success. Run it explicitly or
 through the manual/weekly Custody lifetime workflow. Historical lifetime receipts remain
 source-pinned evidence, not a grade for a composed successor.
+
+
+## Native service custody guards
+
+Ordinary lifecycle executors refuse a UID reservation carrying `kind: "native-service-uid"`.
+The reservation has closed `native`, `assignment` and `creation` objects. It is not an ordinary
+`{ owner, actor, mintedBy }` audit, and a reader must not project it into one. Its assignment
+binds the full account, space, owner, endpoint, instance and serve-duty tuple. The actor is derived
+from that tuple, and the creation operation and request digest remain fixed.
+
+These guards run before ordinary root reuse, activation, gate and head changes, mint finalization,
+and native retirement. Ordinary connect and currency reads also refuse service custody, including
+rows whose head or credential mirror is missing. Existing ordinary reservation bytes are unchanged.
+Closed head, gate and credential parsers continue to reject service markers. This release provides
+no service reservation writer or marked-root minting path. A service access-view contract and
+optional sealed native access/callout composition are shipped, but production registration and
+lifecycle wiring remain unavailable. Those unwired seams do not authorize service admission.
+
+The package-internal service prerequisite reader is separate from ordinary connect and lifecycle
+currency readers. It leader-reads immutable UID custody, the exact active service head, native
+`gate.<uid>` open at generation1, and the exact active root credential. All three custody mirrors
+must match the full reservation digest. Service head `managerInstance` equals immutable assignment
+`instanceId`, and native `processEpoch` is fixed at1. These are not ordinary enrollment coordinates
+or the separate endpoint gate/witness registration epochs. Creating/cancelling heads and their
+RootPlan recovery obligations remain outside this read-only active path. Missing or malformed
+native gate evidence cannot be replaced by an endpoint gate. This is no writer, bootstrap, root
+mint/abort, rotation, cancellation or terminal-retirement authority, and not an atomic multi-key
+snapshot. Positive fixtures raw-seed synthetic marked records, not production service admission.
+The account is trusted host configuration. Sealed readers do not attest the broker account or
+detect a cross-account pair of legitimately constructed handles. Future service integration must
+construct the registry, reader and callout from the same authenticated account context.
+
+This is a refusal foundation, not service endpoint admission. Service bootstrap, cancellation,
+terminal retirement, complete observer evidence, writer exclusion and restore readiness remain
+unavailable. Do not seed service reservations in an existing space, adopt old service-shaped rows,
+or use ordinary retirement to make them terminal. A signing-key or raw-store holder can bypass
+helper guards, so schema rejection alone does not make mixed-version writers safe. Restore must
+quarantine service work until a separately supported reconciliation protocol is available.

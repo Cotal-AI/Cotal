@@ -81,6 +81,8 @@ export function calloutPermissions(
   issueUserCaller?: UserCallerIssuer,
 ): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
   return (t, connId, readerId) => {
+    if (t.act.view === "service-endpoint")
+      throw new Error("callout permissions: service-endpoint requires native service authorization; ordinary actor profiles refuse it");
     assertDerivedOwnerToken(t.owner); // user-mode owners are derived — never `local`, never an nkey
     const caps = t.act.scope ?? [];
     // Single capability authority: if a top-level `scope` is present it must equal `act.scope` exactly —

@@ -82,6 +82,7 @@ import {
 export { credRowKey, epcredRowKey, parseSourceMember, SOURCE_ROOT, parseLedgerRow, type CredentialLedgerRow } from "@cotal-ai/core";
 import {
   registryStores,
+  assertOrdinaryRegistryMutation,
   registryScanner,
   readLifecycleHeadForOperation,
   readUidReservation,
@@ -249,6 +250,7 @@ export async function stageAgentMint(
   reg: LifecycleRegistry,
   args: { lifecycleUid: string; credentialId: string; holderPrincipal: string; sourceChain: string[]; exp: number },
 ): Promise<StagedAgentMint> {
+  await assertOrdinaryRegistryMutation(reg, { lifecycleUid: args.lifecycleUid });
   const { authKv } = registryStores(reg);
   assertHolderPrincipal(args.holderPrincipal, "holderPrincipal");
   if (!uint(args.exp)) throw new EpEnvelopeError("failed-precondition", `exp ${JSON.stringify(args.exp)} is not a non-negative safe integer (SPEC 13.1)`);
@@ -321,6 +323,7 @@ export async function finalizeAgentMint(reg: LifecycleRegistry, staged: StagedAg
     throw new EpEnvelopeError("failed-precondition", "the staged mint was not produced by stageAgentMint(); a hand-assembled StagedAgentMint never authorizes a finalize (SPEC 13.12)");
   if (snap.pins.length === 0)
     throw new EpEnvelopeError("internal", `the staged mint for ${snap.rowKey} carries no gate pins; a finalize proves at least the lifecycle gate (SPEC 13.1)`);
+  await assertOrdinaryRegistryMutation(reg, { lifecycleUid: snap.rowKey.split(".")[1] });
   const byKey = new Map<string, number>();
   for (const pin of snap.pins) {
     const seen = byKey.get(pin.key);
@@ -542,6 +545,7 @@ export async function containLifecycleFamily(
   args: { owner: string; actor: string; lifecycleUid: string; barrier: "takeover" | "retirement" },
   deps: TakeoverDeps,
 ): Promise<{ revokedRows: number; evictedPrincipals: string[] }> {
+  await assertOrdinaryRegistryMutation(reg, args);
   const { authKv } = registryStores(reg);
   const { evictPrincipal, reconcileSessionPair } = deps;
   const family = await enumerateAgentFamily(reg, args.lifecycleUid);
@@ -591,6 +595,7 @@ export async function runAgentTakeoverBarrier(
   args: { owner: string; actor: string; lifecycleUid: string; opId: string },
   deps: TakeoverDeps,
 ): Promise<TakeoverResult> {
+  await assertOrdinaryRegistryMutation(reg, args);
   const { authKv } = registryStores(reg);
   const opId = assertLifecycleToken(args.opId);
   assertLifecycleToken(args.lifecycleUid);
@@ -770,6 +775,7 @@ export async function revokeHandleSource(
     if (!entry || entry.operation !== "PUT")
       throw new EpEnvelopeError("failed-precondition", `the lineage index ${key} names ${ref}, which ${!entry ? "does not exist" : `carries a ${entry.operation} marker`}; ledger rows are never deleted (corruption, SPEC 13.12)`);
     const row = parseLedgerRow(entry.value, ref);
+    if (ref.startsWith("cred.")) await assertOrdinaryRegistryMutation(reg, { lifecycleUid: row.lifecycleUid });
     principals.add(row.holderPrincipal);
     for (const member of row.sourceChain) {
       const parsed = parseSourceMember(member);

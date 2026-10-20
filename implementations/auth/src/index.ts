@@ -21,6 +21,7 @@ export {
   PUBLIC_EXCHANGE_VIEWS,
   VIEW_REQUIRED_SCOPE,
   type UserTokenActor,
+  type UserTokenService,
   type UserTokenView,
   type ValidatedUserToken,
   type ValidateUserTokenOpts,
@@ -35,6 +36,7 @@ export {
   type SigningKey,
   type SerializedSigningKey,
   type IssueClaims,
+  type ServiceAccessClaims,
   type UserTokenIssuer,
   type CreateIssuerOpts,
 } from "./issuer.js";
@@ -205,3 +207,7 @@ export { createToolResultConsentSigner, makeToolResultConsentRecorder, parseTool
 
 // Host-only prerequisites. No serving activation and no supported runtime clock witness.
 export { createToolResultRevocationCustody, recordToolResultRevocation, snapshotToolResultRevocations, consumeToolResultSnapshot, requireToolResultClockPrerequisite, type ToolResultRevocationCustody, type ToolResultSnapshotWitness, type ToolResultSnapshotRequest } from "./tool-result-prerequisites.js";
+
+export * from "./service-host-contract.js";
+
+export { SERVICE_RENEWAL_TYP, validateServiceRenewalProof, type ServiceRenewalClaims, type ValidatedServiceRenewal } from "./service-renewal.js";

@@ -440,9 +440,10 @@ roster instead of staying on it as a live peer.
 
 Hooks are relayed over the connector's **authenticated** local control endpoint (per-user
 socket + per-launch token, constant-time checked), so a local process that finds the path
-still can't drive presence or stop the agent. The full Claude Code hook-event list lives
-with the adapter:
-[`extensions/connector-claude-code`](../extensions/connector-claude-code/README.md).
+still can't drive presence or stop the agent. Claude Code's own
+[hooks reference](https://code.claude.com/docs/en/hooks) lists every hook event. The hooks the
+plugin registers, with their matchers, are listed in the
+[adapter README](../extensions/connector-claude-code/README.md#claude-code-hooks).
 
 ## Event plane
 

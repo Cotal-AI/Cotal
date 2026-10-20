@@ -240,6 +240,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
     throw new Error("idp bridge: a mintConnectCredential hook is required (SPEC 13.1, R1) - the v0.4 bridge must stamp every bearer's incarnation root credential; a claimless mint would silently disable deny-new in any composition without the connect arm");
   return {
     exchange: async (idpToken, req) => {
+      if (req.view === "service-endpoint") throw new Error("service-endpoint requires the dedicated service authority exchange");
       assertValidOwnerToken(req.actor);
       const { sub, exp: idpExp } = await verifyIdpToken(idpToken, opts.idp);
       // The (issuer, sub) → derivation-input encoding lives in ONE place (deriveOwnerForIdpSubject),

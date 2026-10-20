@@ -19,6 +19,7 @@
  */
 import {
   EpEnvelopeError,
+  assertOrdinaryNativeMutation,
   lifecycleBlocked,
   type LifecycleStateTransport,
   type LifecycleKvEntry,
@@ -358,6 +359,7 @@ export async function appendStaticCredentialRow(
   t: LifecycleStateTransport,
   args: { lifecycleUid: string; credentialId: string; holderPrincipal: string; exp: number },
 ): Promise<void> {
+  await assertOrdinaryNativeMutation(t, { lifecycleUid: args.lifecycleUid });
   const key = credRowKey(args.lifecycleUid, args.credentialId);
   const row: CredentialLedgerRow = {
     credentialId: args.credentialId,
@@ -393,6 +395,7 @@ export async function revokeStaticCredentialRows(
   credentialIds: readonly string[],
   log: (line: string) => void,
 ): Promise<string[]> {
+  await assertOrdinaryNativeMutation(t, { lifecycleUid });
   const holders = new Set<string>();
   for (const id of credentialIds) {
     const key = credRowKey(lifecycleUid, id);
@@ -419,6 +422,7 @@ export async function activateStaticLifecycle(
   t: LifecycleStateTransport,
   args: { owner: string; alias: string; actor: string; lifecycleUid: string; managerInstance: string; ownerInstanceId: string; runtime?: StaticManagedSlotRow["runtime"] },
 ): Promise<{ slotRevision: number }> {
+  await assertOrdinaryNativeMutation(t, args);
   const { revision } = await writeStaticSlotIntent(t, {
     owner: args.owner,
     alias: args.alias,
@@ -488,6 +492,7 @@ export async function runStaticTerminal(
   args: { owner: string; alias: string; actor: string; lifecycleUid: string; opId: string; managerInstance: string; managerProcessUid: string },
   hooks: { cleanup: () => Promise<void>; evict: (holderPrincipal: string) => Promise<EvictionResult>; log: (line: string) => void },
 ): Promise<"retired"> {
+  await assertOrdinaryNativeMutation(t, args);
   const slot = await readStaticSlot(t, args.owner, args.alias);
   if (slot === undefined)
     throw new EpEnvelopeError("failed-precondition", `no static slot exists for "${args.owner}/${args.alias}"; nothing to terminalize`);

@@ -134,7 +134,7 @@ check(
 check(
   "claim 4: CLI and operator guide refuse standalone deliver as the split repair",
   cli.includes("is not an independent repair") &&
-    /the manager and\n?the daemon must address one credential store/.test(cli) &&
+    /the manager and[ \n]the daemon must address one credential store/.test(cli) &&
     runAMesh.includes("is not a repair for that split") &&
     runAMesh.includes("manager root A writing and the daemon reloading root B"),
 );

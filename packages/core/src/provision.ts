@@ -88,6 +88,8 @@ import {
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
+import { parseServiceConnectionBinding, type ServiceConnectionBinding } from "./service-gate.js";
+import { SERVICE_ACCESS_TTL_SECONDS } from "./service-authority-limits.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, assertGeneration, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
 import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
@@ -1110,6 +1112,43 @@ export async function mintPublicUserJwt(
     });
   }
   return { jwt, exp: validDates.exp };
+}
+
+/** Host-only service-callout mint. The host authenticates the connection and bearer, fixes
+ * expiry before authority reads, and keeps this JWT inside its encrypted authorization response.
+ * Native root reauthorization and natkey recording remain the host's final release obligations.
+ */
+export async function mintServiceCalloutJwt(
+  auth: { space: string; account: Pick<SpaceAccountAuth["account"], "pub" | "signingSeed"> },
+  args: {
+    serve: EpServeGrant; gate: EpIssuanceGate; principal: { owner: string; actor: string };
+    connection: ServiceConnectionBinding; inboxNonce: string;
+    admittedAt: number; accessExpiresAt: number; expiresAt: number;
+  },
+): Promise<{ jwt: string; credentialId: string; iat: number; exp: number }> {
+  const connection = parseServiceConnectionBinding(args.connection), inboxNonce = assertInboxConnId(args.inboxNonce);
+  const principal = { ...args.principal }, { serve, gate, admittedAt, accessExpiresAt, expiresAt } = args;
+  const now = Math.floor(Date.now() / 1000);
+  if (![admittedAt, accessExpiresAt, expiresAt].every((v) => Number.isSafeInteger(v) && v > 0)
+    || admittedAt > now || expiresAt <= now || expiresAt > accessExpiresAt || expiresAt > admittedAt + SERVICE_ACCESS_TTL_SECONDS)
+    throw new Error("service callout mint requires the original admission-bounded expiry");
+  const identity = principalKey(principal.owner, principal.actor);
+  const snapshot = assertServeGrantMintable(serve, { space: auth.space, holderOwner: principal.owner });
+  if (snapshot.journalClass || snapshot.pools.length || snapshot.commands.some((command) => serve.surface[command].class !== "ephemeral"))
+    throw new Error("service callout mint supports only standalone ephemeral serving grants");
+  const permissions = endpointServePermissions(auth.space, { ...principal, connId: inboxNonce },
+    { endpointServe: serve, serveIssuance: gate });
+  const jwt = await encodeUser(identity.name, fromPublic(connection.userNkey), fromPublic(auth.account.pub),
+    { ...permissions, tags: principalTags(principal.owner, principal.actor) },
+    { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)), exp: expiresAt });
+  if (Buffer.byteLength(jwt, "utf8") > MAX_MINTED_JWT_BYTES)
+    throw new Error("service callout mint exceeds the native JWT byte limit");
+  const credentialId = rawDigest(jwt).replace("sha256:", "sha256-");
+  await finalizeServeIssuance(gate, serve, { credentialId, credentialKey: connection.userNkey,
+    serviceConnection: connection, holderActor: principal.actor, sourceChain: ["root"], exp: expiresAt });
+  if (expiresAt <= Math.floor(Date.now() / 1000))
+    throw new Error("service callout mint expired before release; its fixed expiry is not extended");
+  return { jwt, credentialId, iat: decode(jwt).iat, exp: expiresAt };
 }
 
 /** The profiles whose credential carries caller rails, and can therefore be minted as an
