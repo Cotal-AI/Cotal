@@ -3,14 +3,14 @@ import { statfsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { encodeUser } from "@nats-io/jwt";
+import { decode, encodeUser } from "@nats-io/jwt";
 import { createUser, fromPublic, fromSeed } from "@nats-io/nkeys";
 import { Kvm } from "@nats-io/kv";
 import { canonicalJson, connzRequestSubject, epAuthBucket, EpEnvelopeError, isReachable, MEMBERSHIP_INBOX_PREFIX,
   mintConnectionEvictorCreds, mintMembershipObserverCreds, newIdentity, rotateDataAccountSigningKey, serverKickSubject, type ToolResultConsent } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { AUTHORITY_CLIENT_TTL_SEC, authorityWriterGrants, openAuthorityClient } from "../src/authority-client.js";
-import { createToolResultRevocationCustody, recordToolResultRevocation, snapshotToolResultRevocations, type ToolResultRevocationCustody } from "../src/tool-result-prerequisites.js";
+import { createToolResultRevocationCustody, recordToolResultRevocation, snapshotToolResultRevocations, type ToolResultRevocationCustody, toolResultRevocationWriterGrants, toolResultSnapshotReaderGrants } from "../src/tool-result-prerequisites.js";
 import { startHostedAuthFixture, type HostedAuthAccount } from "./_hosted-auth-fixture.js";
 
 if (process.platform !== "linux" || statfsSync(tmpdir()).type !== 0xef53) {
@@ -46,12 +46,29 @@ async function observer(account: HostedAuthAccount) {
 }
 async function census(account: HostedAuthAccount, nc: NatsConnection): Promise<Tuple[]> {
   const r = (await nc.request(connzRequestSubject(account.accountPublicKey), enc(JSON.stringify({ subscriptions: false, auth: true, limit: 1024 })), { timeout: 3000 })).json<{
-    server?: { id?: string }; data?: { server_id?: string; num_connections?: number; total?: number; connections?: Array<{ cid: number; name?: string }> }; error?: unknown;
+    server?: { id?: string }; data?: { server_id?: string; num_connections?: number; total?: number; connections?: Array<{ cid: number; name?: string; jwt?: string }> }; error?: unknown;
   }>();
   assert.equal(r.error, undefined);
   const serverId = r.data?.server_id ?? r.server?.id;
   const rows = r.data?.connections;
   assert.ok(serverId && rows && (r.data?.total ?? rows.length) <= 1024, "complete singleton account census");
+  const custodyRows = rows.filter(c => c.name === "cotal:tool-result-snapshot" || c.name === "cotal:tool-result-revocation");
+  for (const row of custodyRows) {
+    // NATS2.12.12/2.15.1 ConnInfo.jwt is populated from client.opts.JWT when auth:true.
+    // Non-bearer JWTs are retained by redactBearerJWT. Inspect only in memory, never print.
+    assert.ok(typeof row.jwt === "string" && row.jwt.length > 0, "broker auth census must supply custody claims");
+    let claims: { sub?: string; exp?: number; nats?: { issuer_account?: string; pub?: { allow?: string[] }; sub?: { allow?: string[] }; bearer_token?: boolean } };
+    try { claims = decode(row.jwt) as unknown as typeof claims; }
+    catch { throw new Error("broker custody claim could not be decoded"); }
+    const grantBuilder = row.name === "cotal:tool-result-snapshot" ? toolResultSnapshotReaderGrants : toolResultRevocationWriterGrants;
+    assert.ok(typeof claims.sub === "string" && claims.exp === undefined && claims.nats?.bearer_token !== true &&
+      claims.nats?.issuer_account === account.accountPublicKey,
+      "custody must retain a non-expiring non-bearer claim");
+    const expected = grantBuilder(account.space, claims.sub);
+    assert.ok(JSON.stringify(claims.nats?.pub?.allow) === JSON.stringify(expected.publish) &&
+      JSON.stringify(claims.nats?.sub?.allow) === JSON.stringify(expected.subscribe), "custody claim grants must remain exact");
+  }
+  // Return no JWTs to callers or failure-formatting paths.
   return rows.filter(c => c.name?.startsWith("cotal:tool-result-")).map(c => ({ serverId, cid: c.cid, name: c.name! })).sort((a, b) => a.name.localeCompare(b.name));
 }
 async function bind(account: HostedAuthAccount, extra = false) {
@@ -87,6 +104,19 @@ async function lost(account: HostedAuthAccount, bound: Awaited<ReturnType<typeof
   await cell(`${label}-recreate-refuses`, () => refuses(() => createToolResultRevocationCustody(options(account, bound.directory + "-replacement"))));
 }
 try {
+  // The existing package-internal probeRenewal seam exercises the shipped timer, not a
+  // restated rule or public credential hook. A timer that runs emits the forced-failure log.
+  await cell("custody-profile-has-no-renewal-timer", async () => {
+    const account = fixture.accounts[0]!;
+    let renewalLogs = 0;
+    const probe = await openAuthorityClient({ server: fixture.servers, space: account.space,
+      dataAccount: { pub: account.accountPublicKey, signingSeed: account.auth.account.signingSeed! },
+      label: "cotal:tool-result-revocation", toolResultCustody: true,
+      grants: id => toolResultRevocationWriterGrants(account.space, id),
+      log: () => { renewalLogs++; }, probeRenewal: { intervalMs: 10, fail: true } });
+    try { await sleep(50); await probe.nc.flush(); assert.equal(renewalLogs, 0); }
+    finally { await probe.close(); }
+  });
   for (const [index, label] of ["cotal:tool-result-snapshot", "cotal:tool-result-revocation"].entries()) {
     const account = fixture.accounts[index]!;
     const bound = await bind(account, index === 0);

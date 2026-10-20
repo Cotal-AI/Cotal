@@ -1116,4 +1116,10 @@ Separate package-internal grants split revocation-only publish from INFO/MSG.GET
 Retained issuance writers **already can enumerate** auth metadata. Raw ACLs cannot enforce CAS,
 DEL/TTL/schema/target conventions. Every raw MSG.GET profile carries SPEC13.9's caller-selected
 reply **foreign-subject response-injection** residual, even with only its own inbox subscription.
-The native `smoke:tool-result-prerequisites` is the bounded fixture, not serving acceptance.
+Routine PR CI runs `smoke:tool-result-prerequisites`: bounded fixtures, broker-observed
+non-expiring exact grants, a no-renewal timer probe, census and actual KICK/key-removal
+refusals. It does not wait for credential expiry and is not serving acceptance.
+`pnpm smoke:tool-result-custody-lifetime` additionally waits `AUTHORITY_CLIENT_TTL_SEC + 15`
+seconds and checks unchanged identities plus record/snapshot success. Run it explicitly or
+through the manual/weekly Custody lifetime workflow. Historical lifetime receipts remain
+source-pinned evidence, not a grade for a composed successor.
