@@ -189,14 +189,28 @@ function readUnitFields(path: string, syntax: CommentSyntax): { mesh?: string; r
   return { mesh: field("cotal-mesh"), root: field("cotal-root"), marked: lines[0] === comment(syntax, MARKER) };
 }
 
-/** The mesh and root an installed unit records, for `status`. Both are REQUIRED, never
- *  synthesized: a unit with no recorded mesh is not provably this command's, so status does not
- *  present one as its own, and a unit with no absolute recorded root names no pidfile to judge
- *  its manager by (a blank or relative one resolves against the caller's directory, which may
- *  belong to another mesh). */
-function recordedService(path: string, fields: { mesh?: string; root?: string }): { mesh: string; root: string } {
+/** The provenance fields of a unit/plist this command owns for `mesh`, the one ownership rule
+ *  `status` and `uninstall` both apply. Provenance keys on the marker PLUS a recorded mesh equal
+ *  to the one named, never the unit name alone and never a substitution: a unit whose recorded
+ *  mesh is MISSING is not provably this command's (the marker line is text anyone can write), and
+ *  a mesh mismatch is a hard refusal. */
+function ownedUnitFields(path: string, syntax: CommentSyntax, mesh: string): { mesh: string; root?: string } {
+  const fields = readUnitFields(path, syntax);
+  if (!fields.marked)
+    throw new Error(`${path} was not written by \`cotal service install\` (no provenance header) - \`cotal service\` refuses to read or remove operator-managed units`);
   if (!fields.mesh)
-    throw new Error(`${path} carries no recorded mesh - it was not written by \`cotal service install\`; reinstall it under the mesh it should serve before removing or reading it as a service`);
+    throw new Error(`${path} carries no recorded mesh - it was not written by \`cotal service install\` (the marker alone is not ownership); \`cotal service\` refuses to read or remove it`);
+  if (fields.mesh !== mesh)
+    throw new Error(`${path} was installed for mesh "${fields.mesh}", not "${mesh}" - uninstall the unit under its own mesh name: \`cotal service uninstall --mesh ${fields.mesh}\``);
+  return { mesh: fields.mesh, root: fields.root };
+}
+
+/** The mesh and root an owned unit records, for `status`. The root is REQUIRED, never
+ *  synthesized: a unit with no absolute recorded root names no pidfile to judge its manager by (a
+ *  blank or relative one resolves against the caller's directory, which may belong to another
+ *  mesh). */
+function recordedService(path: string, syntax: CommentSyntax, mesh: string): { mesh: string; root: string } {
+  const fields = ownedUnitFields(path, syntax, mesh);
   if (!fields.root || !isAbsolute(fields.root))
     throw new Error(`${path} records mesh "${fields.mesh}" but no absolute root, so its manager cannot be read - remove it with \`cotal service uninstall --mesh ${fields.mesh}\` and install it again`);
   return { mesh: fields.mesh, root: fields.root };
@@ -501,7 +515,7 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
     const unit = systemdUnitName(mesh);
     const path = join(userUnitDir(), unit);
     if (!existsSync(path)) return out;
-    const recorded = recordedService(path, readUnitFields(path, SYSTEMD_COMMENT));
+    const recorded = recordedService(path, SYSTEMD_COMMENT, mesh);
     const state = systemdUnitStatus(unit);
     return {
       installed: true,
@@ -515,7 +529,7 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
     const label = launchdLabel(mesh);
     const path = join(launchAgentsDir(), `${label}.plist`);
     if (!existsSync(path)) return out;
-    const recorded = recordedService(path, readUnitFields(path, LAUNCHD_COMMENT));
+    const recorded = recordedService(path, LAUNCHD_COMMENT, mesh);
     const listed = run("launchctl", ["list", label]);
     const pid = Number(listed.output.split("\t")[0]);
     return {
@@ -564,20 +578,10 @@ function uninstall(values: { mesh?: string }): void {
     const path = join(dir, unit);
     if (!existsSync(path))
       throw new Error(`no service unit for mesh "${mesh}" at ${path} - nothing installed by \`cotal service install\``);
-    const fields = readUnitFields(path, SYSTEMD_COMMENT);
-    if (!fields.marked)
-      throw new Error(`${path} was not written by \`cotal service install\` (no provenance header) - this command refuses to remove operator-managed units`);
-    // Provenance keys on the marker PLUS a recorded mesh equal to the one named, never the unit
-    // name alone and never a substitution: a unit whose recorded mesh is MISSING is not
-    // provably this command's (the marker line is two lines of text anyone can write), so it is
-    // a hard refusal, the same rule `status` applies. The mesh is the identity an explicit
-    // `--mesh` pins, so uninstall works from any directory: the unit's own records name the root
-    // it serves, and a cwd-walked root here would refuse the very remedy this command's errors
-    // hand out. A mesh mismatch is still a hard refusal.
-    if (!fields.mesh)
-      throw new Error(`${path} carries no recorded mesh - it was not written by \`cotal service install\` (the marker alone is not ownership); this command refuses to remove it`);
-    if (fields.mesh !== mesh)
-      throw new Error(`${path} was installed for mesh "${fields.mesh}", not "${mesh}" - uninstall the unit under its own mesh name: \`cotal service uninstall --mesh ${fields.mesh}\``);
+    // The mesh is the identity an explicit `--mesh` pins, so uninstall works from any directory:
+    // the unit's own records name the root it serves, and a cwd-walked root here would refuse the
+    // very remedy this command's errors hand out.
+    const fields = ownedUnitFields(path, SYSTEMD_COMMENT, mesh);
     const stopped = systemctl(["disable", "--now", unit]);
     if (stopped.status !== 0) throw new Error(`disabling ${unit} failed: ${stopped.output}`);
     rmSync(path);
@@ -595,15 +599,7 @@ function uninstall(values: { mesh?: string }): void {
     const path = join(dir, `${label}.plist`);
     if (!existsSync(path))
       throw new Error(`no launchd agent for mesh "${mesh}" at ${path} - nothing installed by \`cotal service install\``);
-    const fields = readUnitFields(path, LAUNCHD_COMMENT);
-    if (!fields.marked)
-      throw new Error(`${path} was not written by \`cotal service install\` (no provenance header) - this command refuses to remove operator-managed units`);
-    // Same mesh-pinned provenance rule as the Linux arm: the recorded mesh must be present and
-    // equal; a missing record is a refusal, not a substitution.
-    if (!fields.mesh)
-      throw new Error(`${path} carries no recorded mesh - it was not written by \`cotal service install\` (the marker alone is not ownership); this command refuses to remove it`);
-    if (fields.mesh !== mesh)
-      throw new Error(`${path} was installed for mesh "${fields.mesh}", not "${mesh}" - uninstall the unit under its own mesh name: \`cotal service uninstall --mesh ${fields.mesh}\``);
+    const fields = ownedUnitFields(path, LAUNCHD_COMMENT, mesh);
     const unloaded = run("launchctl", ["unload", "-w", path]);
     if (unloaded.status !== 0) throw new Error(`unloading ${path} failed: ${unloaded.output}`);
     rmSync(path);
