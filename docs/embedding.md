@@ -1185,6 +1185,9 @@ RootPlan recovery obligations remain outside this read-only active path. Missing
 native gate evidence cannot be replaced by an endpoint gate. This is no writer, bootstrap, root
 mint/abort, rotation, cancellation or terminal-retirement authority, and not an atomic multi-key
 snapshot. Positive fixtures raw-seed synthetic marked records, not production service admission.
+The account is trusted host configuration. Sealed readers do not attest the broker account or
+detect a cross-account pair of legitimately constructed handles. Future service integration must
+construct the registry, reader and callout from the same authenticated account context.
 
 This is a refusal foundation, not service endpoint admission. Service bootstrap, cancellation,
 terminal retirement, complete observer evidence, writer exclusion and restore readiness remain

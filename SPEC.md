@@ -1198,8 +1198,10 @@ sufficient *authority* identity on this surface. Two further identity components
   `processEpoch` is exactly1, independently of endpoint serving gate/witness epochs. Full
   configured account/space/UID/assignment, derived actor, root key/current stamp/holder,
   `sourceChain:["root"]` and unexpired millisecond root expiry are checked with sealed
-  primary leader-served readers. Missing or mismatched native gate evidence refuses, even
-  if an endpoint gate exists. Creating/cancelling states and their RootPlan recovery cannot
+  primary leader-served readers. Account identity is trusted host configuration: sealed readers
+  do not attest the broker account or detect a cross-account pair of legitimately constructed
+  handles. Missing or mismatched native gate evidence refuses even if an endpoint gate exists.
+  Creating/cancelling states and their RootPlan recovery cannot
   authorize through this active-only reader. It confers no writer, bootstrap, abort, rotation
   or terminal authority and makes no atomic multi-key snapshot claim. Ordinary readers stay
   closed to every marked service row.
