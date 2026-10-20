@@ -1388,7 +1388,9 @@ A pending-root value has null root and approval fields, an empty ceiling, no reg
 `activationIssued: false`. An approved value binds the native root and immutable approval;
 only approval expiry may be null. Revocation retains any existing binding. An activated value
 requires the registration stamp. A service value without its family, or the family without
-its value, is invalid. Existing nonservice gates do not acquire this authority.
+its value, is invalid. Existing nonservice gates do not acquire this authority. A §13.6 session
+never serves on a service gate: the session's serving-gate read refuses the service family before
+it returns a pin or stages a ledger row.
 
 Service registration freeze requires live approval and `activationIssued: false` at the gate CAS.
 Under that freeze, a complete leader read must prove the issuance family empty. Active, revoked,

@@ -295,7 +295,9 @@ export async function writeEndpointGate(kv: KV, endpoint: string, instanceId: st
 }
 
 /** Observe the serving instance's endpoint gate (candidate read feeding the pinned touch). A
- *  DEL/PURGE marker refuses loudly — a gate is never deleted (corruption, not absence). */
+ *  DEL/PURGE marker refuses loudly — a gate is never deleted (corruption, not absence). A native
+ *  service gate is never a session serving gate: its issuance runs only through the service
+ *  callout, so both this observation and stagePair's fresh read refuse it before any pin or row. */
 async function observeEndpointGate(kv: KV, endpoint: string, instanceId: string, what: string): Promise<{ pin: LifecycleGatePin; gate: EndpointGateRow }> {
   const key = epgateKey(endpoint, instanceId);
   const entry = await kv.get(key);
@@ -304,6 +306,8 @@ async function observeEndpointGate(kv: KV, endpoint: string, instanceId: string,
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the endpoint gate ${key} carries a ${entry.operation} marker; a gate is never deleted (corruption, not absence, SPEC 13.12)`);
   const gate = parseEndpointGate(entry.value, key);
+  if (gate.authorityFamily === "service")
+    throw new EpEnvelopeError("permission-denied", `${what}'s endpoint gate ${key} belongs to a native service; a session never serves on a service gate (SPEC 13.6)`);
   if (gate.state !== "open")
     throw new EpEnvelopeError("permission-denied", `${what}'s endpoint issuance gate is "${gate.state}"; only an open gate mints (a frozen gate is a barrier in flight, a retired one is terminal, SPEC 13.1)`);
   return { pin: { key, revision: entry.revision }, gate };
