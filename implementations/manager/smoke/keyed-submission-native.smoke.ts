@@ -57,6 +57,14 @@ try {
   }));
   nc = await connect({ servers, ...core.standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   const any = await core.resolveService(nc, space, "manager", caller, { deadlineMs: 10_000 });
+  await nc.close();
+  const pinnedIssued = { generation: core.mintGeneration(), acceptedToken: core.mintAcceptedToken() };
+  Object.assign(caller, { generation: pinnedIssued.generation });
+  const pinnedCreds = await core.withIssuerSession({ servers, space, auth, tls: false }, (session) => core.mintCreds(auth, identity, "manager-caller", {
+    lifecycleUid: uid, managerInstanceId: any.responder.instanceId, capabilities: ["run"], expiresInSeconds: 300, issued: pinnedIssued,
+    issuance: { mode: "issue", store: session.store, accepted: session.accepted, sources: [] },
+  }));
+  nc = await connect({ servers, ...core.standaloneConnectOpts({ creds: pinnedCreds, tls: false }), maxReconnectAttempts: 0 });
   const service = await core.resolveService(nc, space, "manager", caller, { deadlineMs: 10_000, instanceId: any.responder.instanceId });
   const args = { source: 'log("keyed submission native");', file: "submission.cotal.js" };
   const prepare = (id = core.mintLifecycleUid()) => core.prepareKeyedRunSubmission(space, service, id, args);
