@@ -69,7 +69,7 @@ built `dist/`, so run `pnpm build` after `pnpm install` and after editing a pack
 | `deploy/`                               | Containerized agent teams against an external broker.                                                                                                                                                                             |
 | `scripts/`                              | Maintenance scripts (schema generation, feedback admin).                                                                                                                                                                          |
 | `assets/`, `remotion/`, `presentation/` | README images, the animation project, and a slide deck.                                                                                                                                                                           |
-| `reserved/`                             | npm name placeholders (`cotal`, `cotal-mesh`, `cotal-web`).                                                                                                                                                                       |
+| `reserved/`                             | npm name placeholders (`cotal`, `cotal-mesh`).                                                                                                                                                                                    |
 
 
 ### The packages (one-way dependency tiers)
@@ -104,8 +104,10 @@ program with no broker. Depends on nothing else in the repo; it knows about effe
 detached custodian process per seat. The custodian owns the `node-pty` object, child relationship,
 screen mirror, and exit observation. A manager worker adopts a proxy handle over a permissioned
 Unix socket. Depends on nothing else in the repo; it knows about PTYs, not about NATS. Linux is
-the production transport in this cut; other platforms throw from this package. The manager still
-spawns pty seats in-process off Linux and only `adopt` throws.
+the only platform this package supports; others throw from it. The built-in `pty` runtime does not
+launch through it: the manager spawns pty seats in-process on every platform, and uses this
+package only to adopt and reap seats that an earlier manager left under a custodian (on Linux;
+elsewhere `adopt` throws).
 - `**@cotal-ai/runtime**` (`implementations/runtime`): the host that runs a cotal-lang program on
 the mesh: the mesh handler binding the effect interface onto the real planes, the durable step
 journal, and the `RunDriver` the manager daemon hosts. Depends on core and lang.
@@ -118,6 +120,11 @@ adapter (installed plugin + `claude/channel` push).
 (native in-process plugin injected via `OPENCODE_CONFIG_CONTENT`).
 - `**@cotal-ai/connector-hermes**` (`extensions/connector-hermes`): the Hermes (Nous Research)
 adapter; includes a Python sidecar.
+- `**@cotal-ai/connector-codex**` (`extensions/connector-codex`): the OpenAI Codex adapter: a
+host-mode peer that drives `codex app-server`, with Codex's own TUI attached and the `cotal_*`
+tools served on a loopback MCP endpoint.
+- `**@cotal-ai/connector-jcode**` (`extensions/connector-jcode`): the Jcode adapter: a host-mode
+peer driven through Jcode's Harness API bridge.
 - `**@cotal-ai/pi**` (`extensions/pi`): the pi adapter — a pi extension (loaded into the
 user's own pi, no bundled runtime) that embeds `MeshAgent` in the session's process and
 drives it off the inbox with true mid-turn steering; also covers agents built on pi's SDK.
@@ -141,11 +148,15 @@ registered endpoint that agents call with `cotal_describe` and `cotal_invoke`, p
 `cotal linear` operator command. A `cotal ext`-installable package that peer-depends on core +
 workspace.
 - `**@cotal-ai/manager**` (`implementations/manager`): the agent supervisor: spawns and manages
-nodes via a pluggable Runtime (`pty` built-in; `tmux`, `cmux`, `orca`, and `herdr` via extensions), with `start`/`stop`/`ps`/`attach` and
+nodes via a pluggable Runtime (`pty` built-in; `tmux`, `cmux`, `orca`, and `herdr` via extensions), with `spawn --detach`/`stop`/`ps`/`attach` and
 a WebSocket attach endpoint.
 - `**@cotal-ai/delivery**` (`implementations/delivery`): the server-side Plane-3 delivery daemon
 — the durable backstop (fan-out writer + trusted reader + membership/ACL authority), a scoped,
 least-privilege NATS client co-located with the broker. Self-registers the `deliver` command.
+- `**@cotal-ai/auth**` (`implementations/auth`): per-user auth: owner-token derivation,
+user-token validation for the NATS auth callout, and the auth service. Self-registers the
+`auth-service`, `actor`, `agent-bearer`, `login`, and `logout` commands. Depends on core, lang,
+and workspace.
 
 An example only *configures and orchestrates* (roles, config, space name, runbook, optional
 driver) and picks which extensions to register. It never adds message kinds, subjects, or

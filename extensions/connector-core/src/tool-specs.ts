@@ -1548,7 +1548,7 @@ export function cotalToolSpecs(
         page: z.strictObject({
           limit: z.number().int().min(1).max(16).optional(),
           cursor: z.string().min(1).max(3072).regex(/^[A-Za-z0-9_-]+$/).optional(),
-        }).optional().describe("ps only: one bounded diagnostic JSON page, default 8 rows. Pin the manager with instance unless this session is already bound. Continuation is not snapshot, absence or ownership proof."),
+        }).optional().describe("ps only: one bounded diagnostic JSON page, default 8 rows. Pin the manager with instance unless this session is already bound. Continuation is not snapshot, absence or ownership proof. A manager from release 0.88.0 or earlier refuses `page`."),
         instance: managerInstanceArg,
       },
       async run(
