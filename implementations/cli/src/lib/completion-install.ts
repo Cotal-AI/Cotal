@@ -108,6 +108,10 @@ function remove(path: string, expected: Snapshot): void {
   try { unlinkSync(path); }
   catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "shell-file removal was submitted but its outcome is unconfirmed; no removal was retried", { target: { path } }); }
 }
+/** A startup file its owner made read-only is not replaced. Callers check it before the first write. */
+function writable(path: string, snapshot: Snapshot | undefined): void {
+  if (snapshot && (snapshot.mode & 0o200) === 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the shell startup file is read-only; no completion file was changed", { target: { path }, remedy: "make it writable by its owner and run the command again" });
+}
 function text(snapshot: Snapshot | undefined): string | undefined {
   if (!snapshot) return undefined;
   try { return new TextDecoder("utf-8", { fatal: true }).decode(snapshot.bytes); }
@@ -177,7 +181,7 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     }
     if (operation === "uninstall") {
       if (paths.rc && nextStartup.includes(paths.stub)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an unowned startup reference still names this stub; removing the file would break custom wiring", { remedy: "review and remove that custom reference manually before uninstalling" });
-      if (paths.rc && nextStartup !== current) { write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644); changed.push(paths.rc); }
+      if (paths.rc && nextStartup !== current) { writable(paths.rc, startup); write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644); changed.push(paths.rc); }
       if (stub) { remove(paths.stub, stub); changed.push(paths.stub); }
       if (owned.snapshot) { remove(recordPath(paths), owned.snapshot); changed.push(recordPath(paths)); }
     } else {
@@ -186,6 +190,7 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
         installedBlock = (current && !current.endsWith("\n") ? "\n" : "") + blockFor(paths.stub, shell);
         nextStartup = current + installedBlock;
       }
+      if (paths.rc && nextStartup !== current) writable(paths.rc, startup);
       if (!stub || text(stub) !== script) { write(paths.stub, stub, script, stub?.mode ?? 0o644); changed.push(paths.stub); }
       if (paths.rc && nextStartup !== current) { write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644); changed.push(paths.rc); }
       record.stubHash = hash(script);

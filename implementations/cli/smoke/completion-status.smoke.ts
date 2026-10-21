@@ -200,7 +200,12 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
     chmodSync(rc, 0o400);
     const readOnly = s.run(["completion", "install", "zsh"]);
     chmodSync(rc, 0o600);
-    check("an rc it can read but not extend fails, exit 5, naming the stub it wrote and the line to add", readOnly.status === 5 && /wrote .*completion\.zsh but could not add its line/.test(readOnly.stderr) && readOnly.stderr.includes(`source "${stub}"`) && existsSync(stub), shown(readOnly));
+    check("install refuses an rc its owner cannot write, exit 2, with nothing written", readOnly.status === 2 && /the shell startup file is read-only/.test(readOnly.stderr) && !existsSync(stub) && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
+    const installed = s.run(["completion", "install", "zsh"]);
+    chmodSync(rc, 0o400);
+    const lockedOut = s.run(["completion", "uninstall", "zsh"]);
+    chmodSync(rc, 0o600);
+    check("uninstall refuses an rc its owner cannot write, exit 2, and leaves the stub and its line", installed.status === 0 && lockedOut.status === 2 && /the shell startup file is read-only/.test(lockedOut.stderr) && existsSync(stub) && readFileSync(rc, "utf8").includes(stub), shown(lockedOut));
   }
 }
 
