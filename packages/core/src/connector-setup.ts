@@ -75,6 +75,10 @@ export interface ConnectorSetupProvider extends Extension {
   /** Native executables required to run this provider. If none are present on PATH, setup skips this
    * provider while still reconciling the cross-vendor skills drop. */
   readonly requires?: readonly string[];
+  /** Optional bounded native readiness check, including an app-bundled executable outside PATH.
+   * Overrides the setup executable check, not the connector's managed-launch requirements. Evaluated
+   * at setup discovery/action boundaries, never during registration. Refresh obligations bypass it. */
+  readonly available?: () => boolean;
   readonly connector?: ConnectorSetupAction<ConnectorSetupInput>;
   /** Brings what {@link connector} installed earlier up to this release and installs nothing new. A
    * repeat `cotal setup` and `cotal update` run it, so an upgrade reaches the harness's own copy. */

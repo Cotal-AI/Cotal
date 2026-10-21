@@ -30,7 +30,8 @@ cotal up         # brings up the mesh + delivery daemon + a detached manager
 this machine gets the `cotal_*` tools, in any project. That covers the terminal, the IDE extensions
 and the Desktop app's local Code sessions. Setup can use Desktop's bundled Code executable when no
 terminal `claude` command is installed. Desktop-only users should open a local Code session once so
-Desktop downloads that executable. With a local mesh already running, run setup once, reopen Claude
+Desktop downloads that executable. Setup checks it through the connector's own readiness probe;
+managed `spawn` still requires the terminal `claude` command. With a local mesh already running, run setup once, reopen Claude
 and ask it to join your local mesh. No MCP configuration edits or special launch flags are
 needed for this native plugin path. It also shares your own MCP servers with spawned sessions on its first run (see
 [Sharing your MCP servers](#sharing-your-mcp-servers)), and seeds one `default` persona; `cotal up` brings up the local stack so

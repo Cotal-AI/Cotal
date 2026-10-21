@@ -102,7 +102,7 @@ const MARKETPLACE = "cotal-mesh";
 
 /** Desktop includes a Code executable even when the person has not installed the terminal CLI. */
 function claudeCommand(): string {
-  const terminal = spawnSync("claude", ["--version"], { stdio: "ignore" });
+  const terminal = spawnSync("claude", ["--version"], { stdio: "ignore", timeout: 5_000, killSignal: "SIGKILL" });
   if (terminal.status === 0) return "claude";
   if ((terminal.error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT")
     throw new Error("The installed Claude Code command could not run. Repair it before running cotal setup.");
@@ -110,7 +110,7 @@ function claudeCommand(): string {
   const app = config ? dirname(config) : process.platform === "linux"
     ? join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "Claude")
     : undefined;
-  if (!app || !existsSync(join(app, "claude-code"))) return "claude";
+  if (!app || !existsSync(join(app, "claude-code"))) throw new Error("Claude Code is unavailable. Install it or open Desktop's Code tab, then retry setup.");
   const cache = join(app, "claude-code");
   const versions = readdirSync(cache, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && /^\d+\.\d+\.\d+$/.test(entry.name))
@@ -125,16 +125,23 @@ function claudeCommand(): string {
         : [join(root, entry.name, executable)];
       for (const candidate of candidates) {
         if (!existsSync(candidate)) continue;
-        if (spawnSync(candidate, ["--version"], { stdio: "ignore" }).status !== 0)
+        if (spawnSync(candidate, ["--version"], { stdio: "ignore", timeout: 5_000, killSignal: "SIGKILL" }).status !== 0)
           throw new Error("Claude Desktop's bundled Code executable could not run. Update or reinstall Claude Desktop.");
         return candidate;
       }
     }
   }
-  return "claude";
+  throw new Error("Claude Code is unavailable. Install it or open Desktop's Code tab, then retry setup.");
 }
 
-const CLAUDE = claudeCommand();
+function claudeAvailable(): boolean {
+  try {
+    claudeCommand();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function cotalHome(): string {
   if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
@@ -206,7 +213,7 @@ function command(...args: string[]): { status: number | null; output: string } {
 /** A spawn error (output past the limit, a directory that cannot be entered) is a failure whatever the
  *  exit status says, and its message is the output. */
 function commandIn(cwd: string, ...args: string[]): { status: number | null; output: string } {
-  const result = spawnSync(CLAUDE, args, { cwd, encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT });
+  const result = spawnSync(claudeCommand(), args, { cwd, encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT, timeout: 120_000, killSignal: "SIGKILL" });
   if (result.error) return { status: null, output: result.error.message };
   return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }
@@ -268,8 +275,6 @@ function writeMarketplace(): void {
 /** A missing executable must not make an already installed integration disappear from an upgrade.
  * Only inspect native records to detect that obligation; never rewrite them ourselves. */
 function installedForRefresh(): PluginEntry[] {
-  const probe = spawnSync(CLAUDE, ["--version"], { stdio: "ignore" });
-  if ((probe.error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") return listPlugins();
   const config = process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude");
   const cache = process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR?.trim() || join(config, "plugins");
   const path = join(cache, "installed_plugins.json");
@@ -284,8 +289,10 @@ function installedForRefresh(): PluginEntry[] {
     throw new Error("Claude's plugin records have an unsupported shape, so Cotal cannot verify their upgrade");
   for (const name of ["cotal", "cotal-skills"]) {
     const entries = (records as Record<string, unknown>)[`${name}@${MARKETPLACE}`];
-    if (entries !== undefined && (!Array.isArray(entries) || entries.length > 0))
-      throw new Error(`${name}@${MARKETPLACE} is installed, but Claude Code is unavailable. Restore Claude Code or open Desktop's Code tab, then retry the Cotal update.`);
+    if (entries !== undefined && (!Array.isArray(entries) || entries.length > 0)) {
+      if (!claudeAvailable()) throw new Error(`${name}@${MARKETPLACE} is installed, but Claude Code is unavailable. Restore Claude Code or open Desktop's Code tab, then retry the Cotal update.`);
+      return listPlugins();
+    }
   }
   return [];
 }
@@ -407,10 +414,10 @@ function retireProjectInstalls(): number {
 /** The installed Claude Code plugins, or undefined when Claude cannot be launched or queried (both of
  *  which status renders as "unknown" rather than "absent"). ONE spawn serves both rows. */
 function pluginList(): PluginEntry[] | undefined {
-  const result = spawnSync(CLAUDE, ["plugin", "list", "--json"], { encoding: "utf8", maxBuffer: CLAUDE_OUTPUT_LIMIT });
-  if (result.error || result.status !== 0) return undefined;
   try {
-    const parsed: unknown = JSON.parse(result.stdout || "[]");
+    const result = command("plugin", "list", "--json");
+    if (result.status !== 0) return undefined;
+    const parsed: unknown = JSON.parse(result.output || "[]");
     return Array.isArray(parsed) ? (parsed as PluginEntry[]) : undefined;
   } catch {
     return undefined;
@@ -508,7 +515,8 @@ function materializeSkills({ skillsDir, version, stateDir }: ConnectorSkillsSetu
 export const claudeSetupProvider: ConnectorSetupProvider = {
   kind: "connector-setup",
   name: "claude",
-  requires: [CLAUDE],
+  requires: ["claude"],
+  available: claudeAvailable,
   connector: {
     name: "claude-plugin",
     title: "Install the Claude Code plugin",
@@ -588,7 +596,7 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     title: "Claude",
     run(prompt) {
       const sessionArgs = assistSession ? ["--resume", assistSession] : ["--session-id", (assistSession = randomUUID())];
-      const child = spawn(CLAUDE, [prompt, "--permission-mode", "auto", ...sessionArgs], { stdio: "inherit" });
+      const child = spawn(claudeCommand(), [prompt, "--permission-mode", "auto", ...sessionArgs], { stdio: "inherit" });
       return new Promise<void>((resolve, reject) => {
         child.on("exit", () => resolve());
         child.on("error", reject);

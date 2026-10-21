@@ -312,7 +312,7 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const dir = project("p-claude");
   const partial = await json(FULL("claudespace", dir, "claude"));
   check("a harness not on PATH is partial, exit 4, naming the tool",
-    partial.status === 4 && partial.env?.outcome === "partial" && partial.env.error?.code === "OPERATION_PARTIAL" && /claude needs claude on PATH/.test(partial.env.error.message) && partial.env.result.harness.missing.join() === "claude", shown(partial));
+    partial.status === 4 && partial.env?.outcome === "partial" && partial.env.error?.code === "OPERATION_PARTIAL" && /claude is unavailable/.test(partial.env.error.message) && partial.env.result.harness.missing.join() === "claude", shown(partial));
   check("and the rest is saved: the space, the persona and the preference",
     findPreparedSpace("claudespace")?.root === dir && existsSync(join(dir, ".cotal", "agents", "default.md")) && harnessOf("claudespace") === "claude");
   check("a later setup with another application leaves your own harness as it was",

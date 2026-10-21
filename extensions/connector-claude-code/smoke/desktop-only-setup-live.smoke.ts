@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const binary = process.argv[2];
@@ -15,6 +15,7 @@ const version = spawnSync(actual, ["--version"], { encoding: "utf8" });
 assert.equal(version.status, 0, version.stderr);
 const number = /\b(\d+\.\d+\.\d+)\b/.exec(version.stdout)?.[1];
 assert.ok(number, version.stdout);
+const oldUmask = process.umask(0o077);
 const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-desktop-setup-")));
 const app = process.platform === "darwin" ? join(root, "Library", "Application Support", "Claude")
   : process.platform === "win32" ? join(root, "AppData", "Roaming", "Claude") : join(root, ".config", "Claude");
@@ -37,21 +38,31 @@ Object.assign(env, {
   LOCALAPPDATA: join(root, "AppData", "Local"),
   PATH: process.platform === "win32" ? join(process.env.SystemRoot || "C:\\Windows", "System32") : "/usr/bin:/bin",
 });
-const setup = new URL("../src/setup.ts", import.meta.url).href;
-const command = fileURLToPath(new URL("../../../bin/cotal.ts", import.meta.url));
-const cotal = [process.execPath, "--import", import.meta.resolve("tsx"), command];
+const tools = join(root, "bin");
+mkdirSync(tools);
+if (process.platform !== "win32") {
+  symlinkSync(process.execPath, join(tools, "node"));
+  symlinkSync(join(dirname(process.execPath), "npm"), join(tools, "npm"));
+  env.PATH = [tools, env.PATH].join(delimiter);
+} else env.PATH = [dirname(process.execPath), env.PATH].join(delimiter);
+const command = fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url));
+const project = join(root, "project");
+mkdirSync(project);
 try {
   assert.notEqual(spawnSync("claude", ["--version"], { env }).status, 0, "fixture must have no standalone Claude CLI");
-  const script = `
-    import assert from 'node:assert/strict';
-    const { claudeSetupProvider: p } = await import(${JSON.stringify(setup)});
-    assert.notEqual(p.requires[0], 'claude', 'setup must discover Desktop bundled Code');
-    console.log(await p.connector.run({ cotal: ${JSON.stringify(cotal)} }));
-  `;
-  const installed = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), "--input-type=module", "-e", script], {
-    env, encoding: "utf8", timeout: 120_000,
+  const seeded = spawnSync(process.execPath, [command, "ext", "seed"], {
+    env: { ...env, COTAL_ALLOW_CHECKOUT_SEED: "1" }, encoding: "utf8", timeout: 180_000,
+  });
+  assert.equal(seeded.status, 0, `${seeded.stdout}\n${seeded.stderr}`);
+  const installed = spawnSync(process.execPath, [command, "setup", "--destination", "local", "--harness", "claude", "--project", project, "--space", "desktop-setup", "--configure-only", "--no-input", "--json"], {
+    env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_SKIP_ASSIST: "1" }, cwd: project, encoding: "utf8", timeout: 180_000,
   });
   assert.equal(installed.status, 0, `${installed.stdout}\n${installed.stderr}`);
+  const result = JSON.parse(installed.stdout) as { result: { harness: { missing: string[]; failed: unknown }; actions: { action: string }[]; startup: { state: string } } };
+  assert.deepEqual(result.result.harness.missing, []);
+  assert.equal(result.result.harness.failed, null);
+  assert.deepEqual(result.result.actions.map((action) => action.action), ["claude-plugin", "claude-mcp-servers", "claude-skills-plugin"]);
+  assert.equal(result.result.startup.state, "not-requested");
   const plugin = join(root, ".cotal", "claude-plugin", "cotal");
   const hooks = JSON.parse(readFileSync(join(plugin, "hooks", "hooks.json"), "utf8")) as { modules: string[] };
   assert.deepEqual(hooks.modules, ["./native-wake.js"]);
@@ -67,4 +78,5 @@ try {
   console.log("DESKTOP-ONLY SETUP PASSED: no standalone Claude CLI, copied login, manual MCP config or launch flags");
 } finally {
   rmSync(root, { recursive: true, force: true });
+  process.umask(oldUmask);
 }

@@ -466,7 +466,7 @@ function bundleSpace(file: string): string {
  *  no official connector provides is refused as a usage error, and the remedy names `cotal ext seed`
  *  only where it runs: it refuses a source checkout unless a sandboxed release test opts in. */
 async function harnessCandidates(harness?: string): Promise<SetupConnectorCandidate[]> {
-  const candidates = setupConnectorCandidates(await setupConnectorSurface());
+  const candidates = await setupConnectorCandidates(await setupConnectorSurface());
   if (candidates.length > 0) return candidates;
   if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw usage(`no harness "${harness}"; the official connectors are ${Object.keys(OFFICIAL_CONNECTORS).join(", ")}`);
   const seeds = seedWriterKind() === "released" || process.env.COTAL_ALLOW_CHECKOUT_SEED === "1";
@@ -586,7 +586,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   }
   // A connector's skills action runs for every connector whose harness is present, so someone using
   // that harness gets Cotal's skills even without joining the mesh through it.
-  for (const other of setupConnectorCandidates(await setupConnectorSurface())) {
+  for (const other of await setupConnectorCandidates(await setupConnectorSurface())) {
     if (other.missing.length > 0) continue;
     const skills = (await availableSetupProvider(other.connector))?.skills;
     if (skills) await actions.run(other.value, actionStep(skills, connectorSkillsInput()));
@@ -622,7 +622,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   };
   const problems: Problem[] = [
     ...(candidate.missing.length > 0
-      ? [{ message: `${candidate.value} needs ${candidate.missing.join(", ")} on PATH, so its own setup did not run`, remedy: `install ${candidate.missing.join(", ")}, then run the same setup again` }]
+      ? [{ message: candidate.unavailable ? `${candidate.value} is unavailable, so its own setup did not run` : `${candidate.value} needs ${candidate.missing.join(", ")} on PATH, so its own setup did not run`, remedy: `install or repair ${candidate.missing.join(", ")}, then run the same setup again` }]
       : failed
         ? [{ message: `${failed.title} did not finish (${failed.message})`, remedy: "fix it, then run the same setup again" }]
         : []),
@@ -944,33 +944,41 @@ export interface SetupConnectorCandidate {
   label: string;
   hint: string;
   missing: string[];
+  unavailable: boolean;
 }
 
-/** Every connector on the setup surface becomes a choice. Its OWN declarations drive the hints —
- *  `requires` for readiness, `setup` for whether it runs connector-owned setup at all, `pluginRoot`
- *  for how that reads — and connector names never gate membership. Exported for the genericity smoke. */
-export function setupConnectorCandidates(
+/** Every connector becomes a choice. Its provider owns setup readiness; the connector's launch
+ * requirements apply when no provider overrides them. Names never gate membership. */
+export async function setupConnectorCandidates(
   connectors: readonly Connector[],
   pathProbe: (bin: string) => boolean = (bin) => !!resolveOnPath(bin),
-): SetupConnectorCandidate[] {
-  return [...connectors]
+  providerFor: (connector: Connector) => Promise<ConnectorSetupProvider | null> = connectorSetupProvider,
+): Promise<SetupConnectorCandidate[]> {
+  return Promise.all([...connectors]
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map((connector) => {
-      const missing = (connector.requires ?? []).filter((bin) => !pathProbe(bin));
+    .map(async (connector) => {
+      const provider = await providerFor(connector);
+      const available = provider?.available?.();
+      const missing = available === undefined
+        ? (provider?.requires ?? connector.requires ?? []).filter((bin) => !pathProbe(bin))
+        : available ? [] : [provider!.name];
       return {
         connector,
         value: connector.name,
         label: connector.name,
         missing,
-        hint: missing.length
-          ? `${missing.join(", ")} not on PATH`
-          : connector.setup
-            ? connector.pluginRoot
-              ? "installs a plugin"
-              : "runs its own setup"
-            : "ready at spawn",
+        unavailable: available === false,
+        hint: available === false
+          ? `${provider!.name} unavailable`
+          : missing.length
+            ? `${missing.join(", ")} not on PATH`
+            : connector.setup
+              ? connector.pluginRoot
+                ? "installs a plugin"
+                : "runs its own setup"
+              : "ready at spawn",
       };
-    });
+    }));
 }
 
 /** Materialize every connector advertised by the registry or installed manifest. Exported so the
@@ -1056,10 +1064,10 @@ async function connectorAssists(): Promise<ConnectorAssist[]> {
   return assists;
 }
 
-/** Pure availability rule for connector-owned setup actions. No executable means no harness write;
- * the caller still continues to the cross-vendor Agent Skills reconcile. */
-export function setupProviderAvailable(provider: Pick<ConnectorSetupProvider, "requires">): boolean {
-  return !(provider.requires?.some((command) => !resolveOnPath(command)) ?? false);
+/** Provider-owned readiness or the declared executable check. An unavailable harness is skipped;
+ * an installed integration's refresh obligation is checked separately, without this filter. */
+export function setupProviderAvailable(provider: Pick<ConnectorSetupProvider, "requires" | "available">): boolean {
+  return provider.available?.() ?? !(provider.requires?.some((command) => !resolveOnPath(command)) ?? false);
 }
 
 /** Reconcile Cotal's authored skills into the cross-vendor `~/.agents/skills` directory that Codex,

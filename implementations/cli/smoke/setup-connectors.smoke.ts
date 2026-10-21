@@ -41,23 +41,31 @@ check(
   `${testRegistry.all<Connector>("connector").length} of ${EXPECTED_CONNECTORS}`,
 );
 
-const candidates = setupConnectorCandidates(testRegistry.all<Connector>("connector"), (bin) => bin !== "opencode");
+const noProvider = async () => null;
+const candidates = await setupConnectorCandidates(testRegistry.all<Connector>("connector"), (bin) => bin !== "opencode", noProvider);
 check("every registered connector appears in setup candidates", candidates.length === EXPECTED_CONNECTORS, `${candidates.length} of ${EXPECTED_CONNECTORS}`);
 check("an unknown capability-empty connector appears and is selectable", candidates.find((candidate) => candidate.value === "never-heard-of")?.hint === "ready at spawn");
 check("a non-claude connector with pluginRoot gets the plugin hint", candidates.find((candidate) => candidate.value === "not-claude-plugin")?.hint === "installs a plugin");
 check("missing requirements derive the PATH hint", candidates.find((candidate) => candidate.value === "opencode")?.hint === "opencode not on PATH");
 
-const claudeWithoutPlugin = setupConnectorCandidates(
+const claudeWithoutPlugin = await setupConnectorCandidates(
   [{ kind: "connector", name: "claude", requires: ["claude"], setup: providerRef("claude"), buildLaunch: launch }],
   () => true,
+  noProvider,
 );
 check("claude without pluginRoot does not get the plugin hint", claudeWithoutPlugin[0]?.hint === "runs its own setup");
 
-const claudeWithoutProvider = setupConnectorCandidates(
+const claudeWithoutProvider = await setupConnectorCandidates(
   [{ kind: "connector", name: "claude", requires: ["claude"], buildLaunch: launch }],
   () => true,
+  noProvider,
 );
 check("claude declaring no setup provider is not privileged into a setup step", claudeWithoutProvider[0]?.hint === "ready at spawn");
+
+const appReady = await setupConnectorCandidates([connectors[0]!], () => false, async () => ({ kind: "connector-setup", name: "fixture-app", requires: ["absent-cli"], available: () => true }));
+check("provider readiness accepts an app without weakening launch requirements", appReady[0]?.missing.length === 0 && connectors[0]!.requires?.[0] === "claude");
+const appBroken = await setupConnectorCandidates([connectors[0]!], () => true, async () => ({ kind: "connector-setup", name: "fixture-app", available: () => false }));
+check("provider readiness reports an unusable app despite a present launch command", appBroken[0]?.unavailable === true && appBroken[0]?.missing[0] === "fixture-app");
 
 // Membership itself, through the surface guided setup derives it from: a connector this CLI has
 // never heard of joins purely because it is registered. No installed manifest here, so the live
@@ -76,7 +84,7 @@ try {
 }
 check("registry-registered connectors join the derived setup membership", surfaced.includes(UNFAMILIAR), surfaced.join(", ") || "(empty surface)");
 
-const EXPECTED_CELLS = 8;
+const EXPECTED_CELLS = 10;
 check("every generic connector cell ran", pass + fail === EXPECTED_CELLS, `${pass + fail} of ${EXPECTED_CELLS}`);
 console.log(`SETUP CONNECTOR GENERICITY: ${candidates.length} of ${EXPECTED_CONNECTORS} registered connectors examined`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
