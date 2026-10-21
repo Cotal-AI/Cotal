@@ -6,13 +6,19 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
-import { canonicalJson, contractDigest, epgateKey, uidReservationKey } from "@cotal-ai/core";
+import {
+  canonicalJson, contractDigest, epAuthBucket, epgateKey, lifecycleHeadKey, recordsBucket, uidReservationKey, type ServiceUidCustodyV1,
+} from "@cotal-ai/core";
 import { grantActor, revokeActor } from "../src/ledger.js";
 import { openLifecycleRegistry } from "../src/lifecycle-registry.js";
-import { parseServiceHostResult } from "../src/service-host-contract.js";
-import { openServiceHostOperations, serviceHostOperationId, type ServiceHostOperations, type ServiceHostOperationsOptions } from "../src/service-host-ops.js";
-import { bytesOf, checks, openFixture, type Fixture } from "./_service-custody-fixture.js";
+import { parseServiceHostResult, type ServiceApprovalResult } from "../src/service-host-contract.js";
+import {
+  S2A_INVOCATION_MS, openServiceHostOperations, parseServiceAdmissionRecord, parseServiceAssignmentRecord, parseServiceCapacityRecord,
+  parseServiceHostOperationRecord, parseServiceProposalRecord, serviceHostOperationId, type ServiceHostOperations, type ServiceHostOperationsOptions,
+} from "../src/service-host-ops.js";
+import { bytesOf, checks, openFixture, type Fixture, type WriteCall } from "./_service-custody-fixture.js";
 
 const c = checks();
 const rid = () => randomBytes(16).toString("hex");
@@ -458,6 +464,894 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
         && !live.some((y) => y.registerRequestId === rq.requestId) && (await f.value(f.auth, `svcprop.${pid}`))?.state === "expired", { r1, r2 });
       c.check("G9 (S-13) a late zero-history proposal create loses on the fenced key", late === "refused");
     }
+  } finally { await f.close(); }
+}
+
+// ==== Further schedules: r3 §12 and r3a §J cells reachable in Phase A ===========================
+// Stops are deterministic: the latch trips inside the fixture's own write hook, so it is set before
+// the writer's post-write readiness check. "sim" marks a record or clock the fixture moved; every
+// other write is the engine's or native custody's own.
+
+type Loose = { state: string; reason?: string; phase?: string; denyNew?: string; outcome?: string; root?: string; operationId?: string;
+  boundOperationId?: string; debt?: Array<{ kind: string; proposalId: string }>; proposalId?: string; revision?: number;
+  approval?: ServiceApprovalResult; proposal?: { reason: string | null; state: string };
+  record?: { value: Record<string, unknown>; revision: number } };
+const L = (r: unknown) => r as Loose;
+type Match = (w: WriteCall) => boolean;
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const opKeyOf = (f: Fixture, requestId: string) => `svcop.${serviceHostOperationId(f.space, requestId)}`;
+const opIdOf = (f: Fixture, r: { requestId: string }) => serviceHostOperationId(f.space, r.requestId);
+const at = (key: string, kind?: WriteCall["kind"], pred: (v: Record<string, unknown>) => boolean = () => true): Match =>
+  (w) => w.key === key && (kind === undefined || w.kind === kind) && w.value !== undefined && pred(w.value);
+const sub = (v: Record<string, unknown>, k: string) => (v[k] as { state?: string } | null | undefined)?.state;
+/** The engine's writes, by step. */
+const W = {
+  binding: (f: Fixture, requestId: string) => at(opKeyOf(f, requestId), "create"),
+  custody: (f: Fixture, requestId: string) => at(opKeyOf(f, requestId), "cas", (v) => sub(v, "progress") === "custody"),
+  approving: (pid: string) => at(`svcprop.${pid}`, "cas", (v) => sub(v, "state") === "approving"),
+  closing: (pid: string) => at(`svcprop.${pid}`, "cas", (v) => v.kind === "service-proposal-terminal"),
+  capacity: (requestId: string): Match => (w) => w.key === "svccap.space" && JSON.stringify(w.value?.pending ?? []).includes(requestId),
+  assign: (f: Fixture, i: string) => at(asg(f, i), "create", (v) => v.state === "bound"),
+  fence: (f: Fixture, i: string) => at(asg(f, i), "create", (v) => v.state === "fenced"),
+  cancel: (f: Fixture, i: string) => at(asg(f, i), "cas", (v) => v.cancel !== null),
+  approval: (f: Fixture, i: string) => at(epgateKey(f.endpoint, i), "cas", (v) => sub(v, "serviceAuthority") === "approved"),
+  denyNew: (f: Fixture, i: string) => at(epgateKey(f.endpoint, i), undefined, (v) => sub(v, "serviceAuthority") === "revoked"),
+};
+/** An S2-A authority-increasing write for this selector: A1, A2 or the A4 approval. */
+const authorityWrite = (f: Fixture, i: string): Match => (w) => (w.key.startsWith("svcprop.") && w.value !== undefined && sub(w.value, "state") === "approving")
+  || W.assign(f, i)(w) || W.approval(f, i)(w);
+const approveReq = (f: Fixture, p: { proposalId: string; revision: number }, g: object = ownerOf(f), requestId = rid()) =>
+  decide(p.proposalId, p.revision, f.name.revision, "approve", g, requestId);
+/** Run `go` on a fresh engine whose latch trips once the first matching write has landed. */
+async function stopAfter<T>(f: Fixture, dir: string, match: Match, go: (x: ServiceHostOperations) => Promise<T>): Promise<T> {
+  const x = await engine(f, dir);
+  const arm = f.faults.onWrite(match, { after: async () => x.trip("fixture stop after a write") });
+  try { return await go(x); } finally { arm.disarm(); }
+}
+/** The first matching write is held back for the fixture to issue later; the writer's two
+ *  reissues are never sent, so that step ends held{unknown}. */
+function paused(f: Fixture, match: Match) {
+  const p: { issue?: () => Promise<unknown> } = {};
+  f.faults.onWrite(match, { fault: "deferred", deferred: (issue) => { p.issue = issue; } });
+  f.faults.onWrite(match, { fault: "not-sent" }, 2);
+  return p;
+}
+const unsent = (f: Fixture, match: Match, rounds = 3) => f.faults.onWrite(match, { fault: "not-sent" }, rounds);
+const unsentRelease = (f: Fixture) => unsent(f, (w) => w.key === "svccap.space" && w.kind === "cas");
+/** Every write the engine and native custody issue while `go` runs; none is altered. */
+async function writing<T>(f: Fixture, go: () => Promise<T>): Promise<{ r: T; writes: WriteCall[] }> {
+  const writes: WriteCall[] = [];
+  const spy = f.faults.onWrite((w) => { writes.push(w); return false; }, {}, Number.MAX_SAFE_INTEGER);
+  try { return { r: await go(), writes }; } finally { spy.disarm(); }
+}
+async function patchOp(f: Fixture, requestId: string, change: (o: Record<string, unknown>) => Record<string, unknown>) {
+  const key = opKeyOf(f, requestId), cur = (await f.auth.get(key))!;
+  await f.auth.update(key, bytesOf(change(JSON.parse(new TextDecoder().decode(cur.value)))), cur.revision);
+}
+/** Simulated elapsed time: the binding's original deadline moves into the past. */
+const pastDeadline = (f: Fixture, requestId: string) => patchOp(f, requestId, (o) => ({ ...o, notAfterMs: Date.now() - 1 }));
+const capHas = async (f: Fixture, pid: string) => (((await f.value(f.auth, "svccap.space"))?.pending ?? []) as Array<{ proposalId: string }>).some((x) => x.proposalId === pid);
+const digestAt = async (f: Fixture, pid: string) => ((await f.value(f.auth, `svcprop.${pid}`))?.state as { assignmentDigest: string }).assignmentDigest;
+const gateOf = async (f: Fixture, i: string) => (await f.value(f.auth, epgateKey(f.endpoint, i)))?.serviceAuthority as { state: string; approvalDigest: string | null } | undefined;
+async function lastSeqs(f: Fixture) {
+  const jsm = await jetstreamManager(f.conn);
+  const seq = async (bucket: string) => (await jsm.streams.info(`KV_${bucket}`)).state.last_seq;
+  return { auth: await seq(epAuthBucket(f.space)), records: await seq(recordsBucket(f.space)) };
+}
+/** Stored writes in both buckets since `b`. A create or CAS the stream refused is never stored. */
+const writesSince = async (f: Fixture, b: { auth: number; records: number }) => { const n = await lastSeqs(f); return n.auth - b.auth + n.records - b.records; };
+/** One schedule cell: an unexpected error is a named failure, and no fault arm outlives it. */
+async function cell(f: Fixture, label: string, run: () => Promise<void>) {
+  try { await run(); }
+  catch (err) { c.check(`${label}: ran without an unexpected error`, false, (err as Error).stack?.split("\n").slice(0, 4).join(" | ")); }
+  finally { f.faults.clear(); }
+}
+
+// ---- H: register concurrency, selector collisions and requestId reuse --------------------------
+{
+  const f = await openFixture("s2a-next-register");
+  try {
+    const dir = ledger(f.owner), e = await engine(f, dir), e2 = await engine(f, dir);
+    await cell(f, "H1", async () => {
+      const req = reg(f);
+      const [x, y] = (await Promise.all([e.register(req), e2.register(req)])).map(L);
+      const cap = (await f.value(f.auth, "svccap.space"))?.pending as Array<{ registerRequestId: string }>;
+      c.check("H1 (S-2) the same register invoked twice concurrently: both report one proposal at one revision under one operationId",
+        x.state === "registered" && y.state === "registered" && x.proposalId === y.proposalId && x.revision === y.revision
+          && x.operationId === opIdOf(f, req) && y.operationId === x.operationId, { x, y });
+      c.check("H1 (S-2) one invocation applied it and the other adopted the stored binding (recorded)", [x.outcome, y.outcome].sort().join() === "applied,recorded", { x: x.outcome, y: y.outcome });
+      c.check("H1 (S-2) one capacity entry and one compacted binding", cap.filter((p) => p.registerRequestId === req.requestId).length === 1
+        && (await opRecord(f, req.requestId))?.kind === "service-host-operation-terminal");
+    });
+    await cell(f, "H2", async () => {
+      const i = rid(), a = reg(f, f.owner, { instanceId: i }), b = reg(f, f.owner, { instanceId: i });
+      let rb: Loose | undefined;
+      const arm = f.faults.onWrite(W.capacity(a.requestId), { before: async () => { rb = L(await e2.register(b)); } });
+      const ra = L(await e.register(a));
+      const cap = (await f.value(f.auth, "svccap.space"))?.pending as Array<{ instanceId: string }>;
+      c.check("H2 (S-2) two bound register requests for one selector: the first capacity CAS registers", arm.hits === 1 && rb?.state === "registered" && rb.outcome === "applied", rb);
+      c.check("H2 (S-1/S-2) the other records refused{selector-pending} at its R5 re-decision, compacted", ra.state === "refused" && ra.reason === "selector-pending"
+        && ra.operationId === opIdOf(f, a) && (await opRecord(f, a.requestId))?.kind === "service-host-operation-terminal", ra);
+      c.check("H2 one capacity entry for the selector, and the refusal replays recorded", cap.filter((x) => x.instanceId === i).length === 1
+        && L(await e.register(a)).reason === "selector-pending");
+    });
+    await cell(f, "H3", async () => {
+      const p = await registered(f, e), ok = L(await e.handle(approveReq(f, p)));
+      const b0 = await lastSeqs(f), r = L(await e.register(reg(f, f.owner, { instanceId: p.instanceId })));
+      c.check("H3 (S-9) a selector whose assignment is bound is a zero-write denial selector-bound", ok.state === "approved" && r.state === "denied" && r.reason === "selector-bound"
+        && (await writesSince(f, b0)) === 0, r);
+      const q = await registered(f, e), y = approveReq(f, q);
+      await stopAfter(f, dir, W.approving(q.proposalId), (x) => x.handle(y));
+      const fenced = L(await e.handle(revoke(f.endpoint, q.instanceId, await digestAt(f, q.proposalId), "operator-request", operator)));
+      const b1 = await lastSeqs(f), r2 = L(await e.register(reg(f, f.owner, { instanceId: q.instanceId })));
+      c.check("H3 (S-9) a fenced selector is selector-bound too, with zero writes", fenced.phase === "assignment-fenced" && r2.state === "denied" && r2.reason === "selector-bound"
+        && (await writesSince(f, b1)) === 0, { fenced, r2 });
+    });
+    await cell(f, "H4", async () => {
+      const rq = reg(f);
+      await stopAfter(f, dir, W.binding(f, rq.requestId), (x) => x.register(rq));
+      const live = await opRecord(f, rq.requestId);
+      const b0 = await lastSeqs(f), r = L(await e.register({ ...rq, input: { ...rq.input, instanceId: rid() } }));
+      c.check("H4 (S-10, V-ID) before compaction: a changed-body reuse of the live binding is conflict with zero writes", live?.kind === "service-host-operation"
+        && r.state === "denied" && r.reason === "conflict" && (await writesSince(f, b0)) === 0, r);
+      const r2 = L(await e.register(rq));
+      c.check("H4 the original body then completes from its binding (applied) with one capacity entry", r2.state === "registered" && r2.outcome === "applied"
+        && ((await f.value(f.auth, "svccap.space"))?.pending as Array<{ registerRequestId: string }>).filter((x) => x.registerRequestId === rq.requestId).length === 1, r2);
+    });
+    await cell(f, "H5", async () => {
+      const pend = await registered(f, e), rq = reg(f, f.owner, { instanceId: pend.instanceId });
+      const b0 = await lastSeqs(f), r1 = L(await e.register(rq)), zero = (await writesSince(f, b0)) === 0;
+      const rq2 = { ...rq, input: { ...rq.input, instanceId: rid() } }, r2 = L(await e.register(rq2));
+      c.check("H5 (S-10, D-A1) a zero-write R3 denial binds nothing: the same requestId with another body is then admitted", r1.state === "denied" && r1.reason === "selector-pending"
+        && zero && r2.state === "registered", { r1, r2 });
+      const b1 = await lastSeqs(f), r3 = L(await e.register(rq2));
+      c.check("H5 (V-ID) a replay of the compacted binding writes nothing and returns the same operation and proposal", r3.state === "registered" && r3.outcome === "recorded"
+        && r3.operationId === r2.operationId && r3.proposalId === r2.proposalId && (await writesSince(f, b1)) === 0, r3);
+    });
+  } finally { await f.close(); }
+}
+
+// ---- I: the approve table, the unknown A4 and the landing rule ---------------------------------
+{
+  const f = await openFixture("s2a-next-approve");
+  try {
+    const dir = ledger(f.owner), e = await engine(f, dir), e2 = await engine(f, dir);
+    const tomb = (pid: string) => f.value(f.auth, `svcprop.${pid}`);
+    const asgDigest = async (i: string) => (await f.value(f.auth, asg(f, i)))!.assignmentDigest as string;
+    await cell(f, "I1", async () => {
+      const p = await registered(f, e), x = approveReq(f, p), y = approveReq(f, p);
+      let ry: Loose | undefined;
+      const arm = f.faults.onWrite(W.binding(f, x.requestId), { after: async () => { ry = L(await stopAfter(f, dir, W.approving(p.proposalId), (z) => z.handle(y))); } });
+      const rx = L(await e.handle(x)), prop = await tomb(p.proposalId);
+      c.check("I1 (S-3 row 9) a bound approve that finds approving{other} is superseded naming it", arm.hits === 1 && ry?.state === "held"
+        && rx.state === "refused" && rx.reason === "superseded" && rx.boundOperationId === opIdOf(f, y), { rx, ry });
+      c.check("I1 (S-3 row 9) the superseded approve closes and releases nothing", (prop?.state as { operationId?: string })?.operationId === opIdOf(f, y) && (await capHas(f, p.proposalId)));
+      c.check("I1 the other approve then completes", L(await e.handle(y)).state === "approved");
+    });
+    await cell(f, "I2", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      let rv: Loose | undefined;
+      const arm = f.faults.onWrite(W.assign(f, p.instanceId), { before: async () => {
+        const d = await digestAt(f, p.proposalId);
+        rv = L(await stopAfter(f, dir, W.fence(f, p.instanceId), (z) => z.handle(revoke(f.endpoint, p.instanceId, d, "operator-request", operator))));
+      } });
+      const rx = L(await e.handle(x)), t = await tomb(p.proposalId);
+      c.check("I2 (S-3 row 11) A2 loses to a fence carrying my digest: R-fence, refused{revoked}", arm.hits === 1 && rv?.state === "held" && rx.state === "refused" && rx.reason === "revoked", { rx, rv });
+      c.check("I2 (S-3 row 11) proposal-first: the approver closed its proposal refused{revoked} under its own operation, then released", t?.state === "refused"
+        && t?.reason === "revoked" && t?.operationId === opIdOf(f, x) && !(await capHas(f, p.proposalId)), t);
+    });
+    await cell(f, "I3", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      await stopAfter(f, dir, W.approving(p.proposalId), (z) => z.handle(x));
+      await patchOp(f, x.requestId, (o) => ({ ...o, progress: { state: "custody", step: "A3-bootstrap" } }));   // simulation: custody progress with no row
+      const b0 = await lastSeqs(f), r = L(await e.handle(x));
+      c.check("I3 (S-3 row 12, sim progress) custody with no assignment row is held{reference-unavailable} with zero writes", r.state === "held" && r.reason === "reference-unavailable"
+        && (await writesSince(f, b0)) === 0 && (await f.value(f.auth, asg(f, p.instanceId))) === null, r);
+    });
+    await cell(f, "I4", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      await stopAfter(f, dir, W.approving(p.proposalId), (z) => z.handle(x));
+      const key = `svcprop.${p.proposalId}`, cur = (await f.auth.get(key))!, live = JSON.parse(new TextDecoder().decode(cur.value)) as Record<string, unknown>;
+      await f.auth.update(key, bytesOf({ v: 1, kind: "service-proposal-terminal", proposalId: live.proposalId, proposalDigest: live.proposalDigest, owner: live.owner,
+        endpoint: live.endpoint, instanceId: live.instanceId, register: live.register, state: "approved", operationId: opIdOf(f, x), approvalDigest: D("sim-approval"),
+        reason: null, atMs: Date.now() }), cur.revision);                                       // simulation: approved{me} with no landed gate
+      const b0 = await lastSeqs(f), r = L(await e.handle(x));
+      c.check("I4 (S-3 row 4, sim tombstone) approved{me} without my gate approval fabricates no result: held with zero writes", r.state === "held" && (await writesSince(f, b0)) === 0, r);
+    });
+    await cell(f, "I5", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      const arm = unsent(f, W.approval(f, p.instanceId)), r1 = L(await e.handle(x));
+      f.faults.clear();
+      const g1 = await gateOf(f, p.instanceId);
+      c.check("I5 (S-3 A4 unknown, V-UK 3 rounds) three unsent approval CAS rounds hold unknown at A4; the gate stays pending-root", arm.hits === 3 && r1.state === "held"
+        && r1.reason === "unknown" && r1.phase === "A4-approve" && g1?.state === "pending-root", { r1, g1 });
+      const r2 = L(await e.handle(x)), rev = await f.revision(f.auth, epgateKey(f.endpoint, p.instanceId));
+      c.check("I5 (S-3 A4 unknown) the replay re-decides from A4 and applies at its own CAS revision", r2.state === "approved" && r2.outcome === "applied" && r2.approval?.approvedGateRevision === rev, r2);
+    });
+    await cell(f, "I6", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      const arm = f.faults.onWrite(W.approval(f, p.instanceId), { fault: "ack-lost" });
+      const r = L(await e.handle(x)), rev = await f.revision(f.auth, epgateKey(f.endpoint, p.instanceId));
+      c.check("I6 (S-3 A4 unknown, §F) a lost ACK on the approval CAS is classified by readback: applied, approvedGateRevision from that read", arm.hits === 1
+        && r.state === "approved" && r.outcome === "applied" && r.approval?.approvedGateRevision === rev, r);
+    });
+    await cell(f, "I7", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      const late = paused(f, W.approval(f, p.instanceId)), r1 = L(await e.handle(x));
+      f.faults.clear();
+      await pastDeadline(f, x.requestId);
+      await late.issue!();                                                                    // the A4 issued in authority lands after the deadline
+      const r2 = L(await e.handle(x)), row = await f.value(f.auth, asg(f, p.instanceId));
+      parsesClosed("I7", r2);
+      c.check("I7 (S-17a, sim deadline) an A4 CAS issued before the deadline that lands after it is a historical landing: applied", r1.state === "held" && r1.reason === "unknown"
+        && r2.state === "approved" && r2.outcome === "applied" && (await tomb(p.proposalId))?.state === "approved", { r1, r2 });
+      c.check("I7 (S-32) a landing seen only by a later read records approvedGateRevision null", r2.approval?.approvedGateRevision === null, r2.approval);
+      c.check("I7 (S-28) row 3 precedes row 6: no expiry cancel is bound", row?.cancel === null, row);
+    });
+    await cell(f, "I8", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      const late = paused(f, W.approval(f, p.instanceId)), r1 = L(await e.handle(x));
+      f.faults.clear();
+      await pastDeadline(f, x.requestId);
+      const { r, writes } = await writing(f, () => e.handle(x)), r2 = L(r);
+      let lost = false;
+      try { await late.issue!(); } catch { lost = true; }
+      const g = await gateOf(f, p.instanceId);
+      c.check("I8 (S-17b/S-28, sim deadline) pending-root with an engine-paused A4 past the deadline self-settles refused{expired}", r1.state === "held" && r2.state === "refused"
+        && r2.reason === "expired" && (await tomb(p.proposalId))?.reason === "expired", { r1, r2 });
+      c.check("I8 (S-28) that settlement issues no authority-increasing write", !writes.some(authorityWrite(f, p.instanceId)), writes.map((w) => w.key));
+      c.check("I8 (S-17b) the released paused A4 loses: the gate stays revoked with no approval", lost && g?.state === "revoked" && g.approvalDigest === null, g);
+    });
+    await cell(f, "I9", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      let rv: Loose | undefined, mineRev = 0;
+      const arm = f.faults.onWrite(W.approval(f, p.instanceId), { after: async () => {
+        mineRev = await f.revision(f.auth, epgateKey(f.endpoint, p.instanceId));
+        rv = L(await e2.handle(revoke(f.endpoint, p.instanceId, await asgDigest(p.instanceId), "operator-request", operator)));
+      } });
+      const rx = L(await e.handle(x)), t = await tomb(p.proposalId), g = await gateOf(f, p.instanceId);
+      c.check("I9 (S-16) an approval CAS that lands before deny-new is applied", arm.hits === 1 && rx.state === "approved" && rx.outcome === "applied", rx);
+      c.check("I9 (§F) its approvedGateRevision is the revision of my CAS, whose success reply was observed", rx.approval?.approvedGateRevision === mineRev,
+        { approvedGateRevision: rx.approval?.approvedGateRevision, mineRev });
+      c.check("I9 (S-16) the revoke lands deny-new and V4 closes the proposal approved{me} from the gate", rv?.state === "pending" && rv.denyNew === "landed"
+        && t?.state === "approved" && t?.operationId === opIdOf(f, x) && g?.state === "revoked" && g.approvalDigest === rx.approval?.approvalDigest, { rv, t, g });
+    });
+    await cell(f, "I10", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      let rv: Loose | undefined;
+      const arm = f.faults.onWrite(W.approval(f, p.instanceId), { before: async () => {
+        rv = L(await e2.handle(revoke(f.endpoint, p.instanceId, await asgDigest(p.instanceId), "operator-request", operator)));
+      } });
+      const rx = L(await e.handle(x)), t = await tomb(p.proposalId), g = await gateOf(f, p.instanceId);
+      c.check("I10 (S-16) after deny-new the paused approval CAS loses at its pinned revision: refused{revoked}", arm.hits === 1 && rv?.denyNew === "landed"
+        && rx.state === "refused" && rx.reason === "revoked", { rx, rv });
+      c.check("I10 (S-16) the gate stays revoked with no approval and V4 closed the proposal refused{revoked}", g?.state === "revoked" && g.approvalDigest === null
+        && t?.state === "refused" && t?.reason === "revoked", { g, t });
+    });
+    await cell(f, "I11", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      await stopAfter(f, dir, W.assign(f, p.instanceId), (z) => z.handle(x));
+      const row = (await f.value(f.auth, asg(f, p.instanceId)))!, uid = (row.reservation as ServiceUidCustodyV1).native.lifecycleUid;
+      let rv: Loose | undefined;
+      const arm = f.faults.onWrite(W.custody(f, x.requestId), { after: async () => {
+        rv = L(await e2.handle(revoke(f.endpoint, p.instanceId, row.assignmentDigest as string, "operator-request", operator)));
+      } });
+      const rx = L(await e.handle(x));
+      c.check("I11 (S-23) the revoke's deny-new lands before the approver's open; its result is defined: pending{uid-unconfirmed, landed}", arm.hits === 1
+        && rv?.state === "pending" && rv.phase === "uid-unconfirmed" && rv.denyNew === "landed", rv);
+      c.check("I11 (S-23) the approver stops at open and ends refused{revoked}, with no UID reservation", rx.state === "refused" && rx.reason === "revoked"
+        && (await f.records.get(uidReservationKey(uid))) === null, rx);
+    });
+    await cell(f, "I12", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      const late = paused(f, W.assign(f, p.instanceId)), r1 = L(await e.handle(x));
+      f.faults.clear();
+      await pastDeadline(f, x.requestId);
+      const r2 = L(await e.handle(x)), t = await tomb(p.proposalId);
+      c.check("I12 (S-25, sim deadline) an expired approve with the assignment absent settles proposal-first: refused{expired}", r1.state === "held" && r2.state === "refused"
+        && r2.reason === "expired" && t?.state === "refused" && t?.reason === "expired" && !(await capHas(f, p.proposalId)), { r1, r2, t });
+      const p2 = await registered(f, e, p.instanceId);
+      await late.issue!();                                                                    // T4 (a): the A2 issued in authority lands late
+      const row = await f.value(f.auth, asg(f, p.instanceId));
+      c.check("I12 (S-26 T4 a) the late A2 leaves svcasg bound to the settled approve with a null cancel", row?.state === "bound" && row.cancel === null
+        && (row.creation as { operationId: string }).operationId === opIdOf(f, x), row);
+      const ry = L(await e.handle(approveReq(f, p2))), t2 = await tomb(p2.proposalId);
+      c.check("I12 (S-26 T4 a) a later approve of the same selector ends R-bound: op refused{conflict}", ry.state === "refused" && ry.reason === "conflict", ry);
+      c.check("I12 (S-26 T4 a, r3 §5.1 R-bound) its target proposal is closed refused{selector-bound} and released", t2?.kind === "service-proposal-terminal"
+        && t2?.reason === "selector-bound" && !(await capHas(f, p2.proposalId)), t2);
+      const rv = L(await e.handle(revoke(f.endpoint, p.instanceId, row!.assignmentDigest as string, "operator-request", operator)));
+      c.check("I12 (S-26 T4 a) the residue is revocable through the bound branch: pending{uid-unconfirmed, landed}", rv.state === "pending" && rv.phase === "uid-unconfirmed"
+        && rv.denyNew === "landed", rv);
+    });
+    await cell(f, "I13", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      await stopAfter(f, dir, W.assign(f, p.instanceId), (z) => z.handle(x));
+      const row = (await f.value(f.auth, asg(f, p.instanceId)))!, res = row.reservation as ServiceUidCustodyV1;
+      await f.records.put(lifecycleHeadKey(res.assignment.owner, res.assignment.actor), bytesOf({ fixture: "colliding-head" }), { previousSeq: 0 });   // simulation
+      const r = L(await e.handle(x)), t = await tomb(p.proposalId), g = await gateOf(f, p.instanceId);
+      c.check("I13 (S-26 T4 b, sim collision) an S1 refusal at A3 is proposal-first: proposal refused{custody-refused}, released, op refused{custody-refused}",
+        r.state === "refused" && r.reason === "custody-refused" && t?.reason === "custody-refused" && !(await capHas(f, p.proposalId)), { r, t });
+      c.check("I13 (S-26 T4 b) the residue is the bound row with a null cancel beside a non-authorizing pending-root gate",
+        (await f.value(f.auth, asg(f, p.instanceId)))?.cancel === null && g?.state === "pending-root", g);
+      const rv = L(await e.handle(revoke(f.endpoint, p.instanceId, row.assignmentDigest as string, "operator-request", operator))), g2 = await gateOf(f, p.instanceId);
+      c.check("I13 (S-26 T4 b) a revoke through the bound branch lands deny-new on that gate", rv.denyNew === "landed" && g2?.state === "revoked" && g2.approvalDigest === null, { rv, g2 });
+    });
+    await cell(f, "I14", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      await stopAfter(f, dir, W.assign(f, p.instanceId), (z) => z.handle(x));
+      const o1 = await opRecord(f, x.requestId);
+      await stopAfter(f, dir, W.custody(f, x.requestId), (z) => z.handle(x));
+      const o2 = await opRecord(f, x.requestId);
+      c.check("I14 (V-DL) a replay never changes the persisted notAfterMs or admittedAtMs", o1?.notAfterMs === o2?.notAfterMs && o1?.admittedAtMs === o2?.admittedAtMs
+        && (o2?.progress as { state: string }).state === "custody", { o1: o1?.notAfterMs, o2: o2?.notAfterMs });
+      c.check("I14 the approve then completes", L(await e.handle(x)).state === "approved");
+    });
+    // Last in this fixture: it leaves admission at epoch 2.
+    await cell(f, "I15", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      const late = paused(f, W.approval(f, p.instanceId)), r1 = L(await e.handle(x));
+      f.faults.clear();
+      const adm = (await f.auth.get("svchost.admission"))!;
+      await f.auth.update("svchost.admission", bytesOf({ v: 1, kind: "service-host-admission", state: "open", epoch: 2, restoreId: null }), adm.revision);   // simulation: an epoch change
+      const r2 = L(await e.handle(x));
+      c.check("I15 (S-6, sim epoch, no S2-Q) a bound approve across an epoch change holds admission-held before any landing", r1.reason === "unknown"
+        && r2.state === "held" && r2.reason === "admission-held", { r1, r2 });
+      await late.issue!();
+      const r3 = L(await e.handle(x));
+      c.check("I15 (S-6 a, documentation cell) without S2-Q the A4 issued at epoch 1 still lands; the replay records a historical landing", r3.state === "approved"
+        && r3.outcome === "applied" && r3.approval?.approvedGateRevision === null, r3);
+    });
+  } finally { await f.close(); }
+}
+
+// ---- J: revoke: unknown cancel and fence writes, resumption, deny-new order, spent requests ----
+{
+  const f = await openFixture("s2a-next-revoke");
+  try {
+    const dir = ledger(f.owner), e = await engine(f, dir), e2 = await engine(f, dir);
+    const approved = async () => { const p = await registered(f, e), a = L(await e.handle(approveReq(f, p))); return { ...p, digest: a.approval!.assignment.assignmentDigest }; };
+    const atA1 = async () => { const p = await registered(f, e), x = approveReq(f, p); await stopAfter(f, dir, W.approving(p.proposalId), (z) => z.handle(x));
+      return { ...p, x, digest: await digestAt(f, p.proposalId) }; };
+    const atA2 = async () => { const p = await registered(f, e), x = approveReq(f, p); await stopAfter(f, dir, W.assign(f, p.instanceId), (z) => z.handle(x));
+      return { ...p, x, digest: (await f.value(f.auth, asg(f, p.instanceId)))!.assignmentDigest as string }; };
+    const cancelAt = async (i: string) => (await f.value(f.auth, asg(f, i)))?.cancel as { operationId: string; cause: string } | null | undefined;
+    await cell(f, "J1", async () => {
+      const p = await approved(), rq = revoke(f.endpoint, p.instanceId, p.digest, "owner-request", ownerOf(f));
+      const arm = unsent(f, W.cancel(f, p.instanceId)), r1 = L(await e.handle(rq));
+      f.faults.clear();
+      c.check("J1 (S-5 unknown cancel CAS, V-UK 3 rounds) three unsent cancel CAS rounds hold unknown at V2 with no cancel bound", arm.hits === 3 && r1.state === "held"
+        && r1.reason === "unknown" && r1.phase === "V2-cancel" && (await cancelAt(p.instanceId)) === null, r1);
+      const r2 = L(await e.handle(rq));
+      c.check("J1 the replay binds its cancel once and lands deny-new", r2.state === "pending" && r2.denyNew === "landed" && (await cancelAt(p.instanceId))?.operationId === opIdOf(f, rq), r2);
+    });
+    await cell(f, "J2", async () => {
+      const p = await approved();
+      const x = revoke(f.endpoint, p.instanceId, p.digest, "owner-request", ownerOf(f)), y = revoke(f.endpoint, p.instanceId, p.digest, "operator-request", operator);
+      const arm = f.faults.onWrite(W.cancel(f, p.instanceId), { fault: "ack-lost" });
+      const rx = L(await e.handle(x)), ry = L(await e2.handle(y));
+      const res = (await f.value(f.auth, asg(f, p.instanceId)))!.reservation as ServiceUidCustodyV1;
+      const head = JSON.stringify(await f.value(f.records, lifecycleHeadKey(res.assignment.owner, res.assignment.actor)));
+      c.check("J2 (S-5, V-UK) a lost-ACK cancel CAS is classified by readback and the binder lands deny-new", arm.hits === 1 && rx.state === "pending" && rx.denyNew === "landed", rx);
+      c.check("J2 (S-5) the second revoke adopts the bound cancel; native custody carries only the binder's identity", ry.state === "pending" && ry.denyNew === "landed"
+        && (await cancelAt(p.instanceId))?.operationId === opIdOf(f, x) && head.includes(opIdOf(f, x)) && !head.includes(opIdOf(f, y)), { ry, head });
+    });
+    await cell(f, "J3", async () => {
+      const p = await atA1(), rq = revoke(f.endpoint, p.instanceId, p.digest, "operator-request", operator);
+      const arm = unsent(f, W.fence(f, p.instanceId)), r1 = L(await e.handle(rq));
+      f.faults.clear();
+      c.check("J3 (S-5/S-4 unknown fence create, V-UK) three unsent fence creates hold unknown at V2-fence with no row", arm.hits === 3 && r1.state === "held"
+        && r1.reason === "unknown" && r1.phase === "V2-fence" && (await f.value(f.auth, asg(f, p.instanceId))) === null, r1);
+      const r2 = L(await e.handle(rq)), t = await f.value(f.auth, `svcprop.${p.proposalId}`);
+      c.check("J3 the replay fences once; V4 closes the proposal refused{revoked} and releases", r2.state === "pending" && r2.phase === "assignment-fenced"
+        && t?.state === "refused" && t?.reason === "revoked" && !(await capHas(f, p.proposalId)), { r2, t });
+      c.check("J3 (S-19) the abandoned approver's replay ends refused{revoked}", L(await e.handle(p.x)).reason === "revoked");
+    });
+    for (const [label, which] of [["J4", "fence"], ["J5", "binding"]] as const) await cell(f, label, async () => {
+      const p = await atA1(), rq = revoke(f.endpoint, p.instanceId, p.digest, "operator-request", operator);
+      let ax: Loose | undefined;
+      const arm = f.faults.onWrite(which === "fence" ? W.fence(f, p.instanceId) : W.binding(f, rq.requestId), { before: async () => { ax = L(await e2.handle(p.x)); } });
+      const rv = L(await e.handle(rq)), g = await gateOf(f, p.instanceId);
+      c.check(`${label} (S-18) a revoke that read svcasg absent, paused at its ${which} write while the approve completed, re-reads bound and cancels`, arm.hits === 1
+        && ax?.state === "approved" && rv.state === "pending" && rv.phase === "cancelled-nonterminal" && rv.denyNew === "landed", { ax, rv });
+      c.check(`${label} (S-18) never not-found: the gate is revoked and keeps the approval`, g?.state === "revoked" && g.approvalDigest === ax?.approval?.approvalDigest, g);
+    });
+    await cell(f, "J6", async () => {
+      const p = await atA2(), rq = revoke(f.endpoint, p.instanceId, p.digest, "operator-request", operator);
+      const rv1 = L(await stopAfter(f, dir, W.denyNew(f, p.instanceId), (z) => z.handle(rq)));
+      const t0 = await f.value(f.auth, `svcprop.${p.proposalId}`);
+      c.check("J6 (S-25) a revoke stopped right after deny-new landed, before its V4: held, the proposal still approving", rv1.state === "held"
+        && (await gateOf(f, p.instanceId))?.state === "revoked" && (t0?.state as { state: string }).state === "approving", { rv1, t0: t0?.state });
+      const ra = L(await e.handle(p.x)), t1 = await f.value(f.auth, `svcprop.${p.proposalId}`);
+      c.check("J6 (S-25) the approver replayed before that V4 ends R-revoked proposal-first: refused{revoked}, released", ra.state === "refused" && ra.reason === "revoked"
+        && t1?.reason === "revoked" && t1?.operationId === opIdOf(f, p.x) && !(await capHas(f, p.proposalId)), { ra, t1 });
+      const rv2 = L(await e.handle(rq));
+      c.check("J6 (S-25) the revoke's replay re-runs S1 cancel to a defined pending with deny-new landed", rv2.state === "pending" && rv2.denyNew === "landed", rv2);
+    });
+    await cell(f, "J7", async () => {
+      const p = await atA2(), rq = revoke(f.endpoint, p.instanceId, p.digest, "operator-request", operator);
+      await stopAfter(f, dir, W.denyNew(f, p.instanceId), (z) => z.handle(rq));
+      await pastDeadline(f, p.x.requestId);
+      const ra = L(await e.handle(p.x));
+      c.check("J7 (S-25/S-28, sim deadline) deny-new landed before the approver's deadline; its replay after it ends refused{revoked}, the cause's reason", ra.state === "refused"
+        && ra.reason === "revoked" && (await cancelAt(p.instanceId))?.cause === "operator-request", ra);
+    });
+    await cell(f, "J8", async () => {
+      const p = await atA2(), rv = L(await e.handle(revoke(f.endpoint, p.instanceId, p.digest, "owner-request", ownerOf(f))));
+      await pastDeadline(f, p.x.requestId);
+      const ra = L(await e.handle(p.x));
+      c.check("J8 (S-25, sim deadline) replayed after that revoke's V4 and past its deadline, the approver ends refused{revoked} from the tombstone", rv.state === "pending"
+        && ra.state === "refused" && ra.reason === "revoked", { rv, ra });
+    });
+    await cell(f, "J9", async () => {
+      const p = await atA1(), expire = Date.now() - 1;                                        // simulation: the canonical expiry has passed
+      const capE = (await f.auth.get("svccap.space"))!, cap = JSON.parse(new TextDecoder().decode(capE.value)) as { pending: Array<{ proposalId: string }> };
+      await f.auth.update("svccap.space", bytesOf({ ...cap, pending: cap.pending.map((x) => (x.proposalId === p.proposalId ? { ...x, expiresAtMs: expire } : x)) }), capE.revision);
+      const pe = (await f.auth.get(`svcprop.${p.proposalId}`))!;
+      await f.auth.update(`svcprop.${p.proposalId}`, bytesOf({ ...JSON.parse(new TextDecoder().decode(pe.value)), expiresAtMs: expire }), pe.revision);
+      await patchOp(f, p.x.requestId, (o) => ({ ...o, notAfterMs: expire }));
+      const b0 = await lastSeqs(f), rv = L(await e.handle(revoke(f.endpoint, p.instanceId, p.digest, "operator-request", operator)));
+      c.check("J9 (S-27 T5, sim expiry) a revoke after the entry expires finds no eligible approving proposal: not-found with zero writes", rv.state === "denied"
+        && rv.reason === "not-found" && (await writesSince(f, b0)) === 0, rv);
+      const pr = L(await e.handle({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "proposal-read", input: { proposalId: p.proposalId }, granter: ownerOf(f) }));
+      c.check("J9 (S-27) proposal-read shows the approving proposal with its past expiresAt", pr.state === "present" && pr.record?.value.state === "approving"
+        && (pr.record.value.expiresAt as number) * 1000 <= Date.now(), pr);
+      const ra = L(await e.handle(p.x));
+      c.check("J9 (S-27/S-25) the approver's own settlement closes it refused{expired}", ra.state === "refused" && ra.reason === "expired"
+        && (await f.value(f.auth, `svcprop.${p.proposalId}`))?.reason === "expired", ra);
+    });
+    await cell(f, "J10", async () => {
+      const p = await approved(), rq = revoke(f.endpoint, p.instanceId, p.digest, "owner-request", ownerOf(f));
+      await stopAfter(f, dir, W.cancel(f, p.instanceId), (z) => z.handle(rq));
+      await pastDeadline(f, rq.requestId);
+      const r1 = L(await e.handle(rq));
+      c.check("J10 (V-DL, sim deadline) a revoke past its own deadline is spent: held{expired, spent} with no native step", r1.state === "held" && r1.reason === "expired"
+        && r1.phase === "spent" && r1.denyNew === "not-landed" && (await gateOf(f, p.instanceId))?.state === "approved", r1);
+      const r2 = L(await e.handle(revoke(f.endpoint, p.instanceId, p.digest, "operator-request", operator)));
+      c.check("J10 (V-DL, S-11) a new revoke request adopts the bound cancel and lands deny-new", r2.state === "pending" && r2.denyNew === "landed"
+        && (await cancelAt(p.instanceId))?.operationId === opIdOf(f, rq), r2);
+    });
+  } finally { await f.close(); }
+}
+
+// ---- K: refuse, stale approving and late writes --------------------------------------------------
+{
+  const f = await openFixture("s2a-next-refuse");
+  try {
+    const dir = ledger(f.owner), e = await engine(f, dir);
+    const tomb = (pid: string) => f.value(f.auth, `svcprop.${pid}`);
+    const refuseReq = (p: { proposalId: string }, rev: number, g: object = ownerOf(f)) => decide(p.proposalId, rev, f.name.revision, "refuse", g);
+    await cell(f, "K1", async () => {
+      const p = await registered(f, e), rf = refuseReq(p, p.revision), x = approveReq(f, p);
+      const arm = f.faults.onWrite(W.binding(f, rf.requestId), { after: async () => { await stopAfter(f, dir, W.approving(p.proposalId), (z) => z.handle(x)); } });
+      const r = L(await e.handle(rf)), t = await tomb(p.proposalId);
+      c.check("K1 (S-7) a refuse admitted at revision R and overtaken by an A1 records refused{conflict} and closes nothing", arm.hits === 1 && r.state === "refused"
+        && r.reason === "conflict" && (t?.state as { state: string }).state === "approving", { r, t: t?.state });
+      c.check("K1 the overtaking approve then completes", L(await e.handle(x)).state === "approved");
+    });
+    await cell(f, "K2", async () => {
+      const p = await registered(f, e), rf = refuseReq(p, p.revision);
+      await stopAfter(f, dir, W.binding(f, rf.requestId), (z) => z.handle(rf));
+      await pastDeadline(f, rf.requestId);
+      const r = L(await e.handle(rf)), t = await tomb(p.proposalId);
+      c.check("K2 (V-DL, sim deadline) a bound refuse past its deadline records refused{expired}; the proposal stays proposed with its entry", r.state === "refused"
+        && r.reason === "expired" && (t?.state as { state: string }).state === "proposed" && (await capHas(f, p.proposalId)), { r, t: t?.state });
+    });
+    await cell(f, "K3", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      const late = paused(f, W.approving(p.proposalId));
+      await e.handle(x);
+      f.faults.clear();
+      await pastDeadline(f, x.requestId);
+      const { r, writes } = await writing(f, () => e.handle(x)), settled = L(r);
+      c.check("K3 (S-28, sim deadline) an expired-admitted replay records refused{expired} and writes only its own operation record", settled.state === "refused"
+        && settled.reason === "expired" && writes.length > 0 && writes.every((w) => w.key === opKeyOf(f, x.requestId)), writes.map((w) => w.key));
+      await late.issue!();                                                                    // T5: the paused A1 lands late
+      const stale = (await f.auth.get(`svcprop.${p.proposalId}`))!;
+      const b0 = await lastSeqs(f), y = L(await e.handle(approveReq(f, { proposalId: p.proposalId, revision: stale.revision })));
+      c.check("K3 (S-27 T5) a new approve on the stale approving{X} is a zero-write denial approval-in-progress naming X", y.state === "denied"
+        && y.reason === "approval-in-progress" && y.boundOperationId === opIdOf(f, x) && (await writesSince(f, b0)) === 0, y);
+      const rr = L(await e.handle(refuseReq(p, stale.revision, operator))), t = await tomb(p.proposalId);
+      c.check("K3 (S-27 T5) an operator refuse closes the stale approving{X} refused{operator} and releases", rr.state === "refused" && rr.proposal?.reason === "operator"
+        && t?.reason === "operator" && !(await capHas(f, p.proposalId)), { rr, t });
+    });
+    await cell(f, "K4", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      const late = paused(f, W.approving(p.proposalId)), r1 = L(await e.handle(x));
+      f.faults.clear();
+      const rf = L(await e.handle(refuseReq(p, p.revision)));
+      let lost = false;
+      try { await late.issue!(); } catch { lost = true; }
+      const t = await tomb(p.proposalId), rx = L(await e.handle(x));
+      c.check("K4 (S-7) an A1 CAS released after the refuse closed the proposal loses; the refused tombstone stands", r1.reason === "unknown" && rf.state === "refused" && lost
+        && t?.state === "refused" && t?.reason === "owner", { r1, rf, t });
+      c.check("K4 (S-7) the approver's replay ends refused{owner} from the tombstone", rx.state === "refused" && rx.reason === "owner", rx);
+    });
+    await cell(f, "K5", async () => {
+      const rq = reg(f);
+      const create: Match = (w) => w.key.startsWith("svcprop.") && w.kind === "create" && (w.value?.register as { requestId?: string } | undefined)?.requestId === rq.requestId;
+      const late = paused(f, create), r1 = L(await e.register(rq));
+      f.faults.clear();
+      await pastDeadline(f, rq.requestId);
+      const r2 = L(await e.register(rq)), pid = ((await opRecord(f, rq.requestId))?.projection as { proposalId: string }).proposalId;
+      let lost = false;
+      try { await late.issue!(); } catch { lost = true; }
+      c.check("K5 (S-7/S-13, sim deadline) a register whose proposal create stayed unknown is fenced past its bound: refused{expired}, released", r1.state === "held"
+        && r1.reason === "unknown" && r1.phase === "R6-proposal" && r2.state === "refused" && r2.reason === "expired" && !(await capHas(f, pid)), { r1, r2 });
+      c.check("K5 (S-7) the engine's own deferred proposal create then loses on the fenced key", lost && (await tomb(pid))?.state === "expired");
+    });
+    await cell(f, "K6", async () => {
+      const p = await registered(f, e), capE = (await f.auth.get("svccap.space"))!;
+      const cap = JSON.parse(new TextDecoder().decode(capE.value)) as { pending: Array<{ proposalId: string }> };
+      await f.auth.update("svccap.space", bytesOf({ ...cap, pending: cap.pending.filter((x) => x.proposalId !== p.proposalId) }), capE.revision);   // simulation: no entry
+      const b0 = await lastSeqs(f), r = L(await e.handle(approveReq(f, p)));
+      c.check("K6 (S-13 N5, sim capacity row) approve without the proposal's eligible entry is a zero-write denial expired", r.state === "denied" && r.reason === "expired"
+        && (await writesSince(f, b0)) === 0, r);
+    });
+  } finally { await f.close(); }
+}
+
+// ---- L: S-31, an unknown capacity release in each refusal branch ----------------------------------
+{
+  const f = await openFixture("s2a-next-debt");
+  try {
+    const dir = ledger(f.owner), e = await engine(f, dir);
+    const debtAt = async (requestId: string) => ((await opRecord(f, requestId))?.debt ?? null) as Array<{ kind: string }> | null;
+    const owes = (label: string, arm: { hits: number }, r: Loose, requestId: string) => async (extra: boolean) =>
+      c.check(`${label} with capacity-release debt in the result and the live op`, arm.hits === 3 && extra && r.debt?.[0]?.kind === "capacity-release"
+        && (await debtAt(requestId))?.length === 1, r);
+    const clears = async (label: string, r: Loose, requestId: string, pid: string) =>
+      c.check(`${label} a replay observes the release, clears the debt and compacts`, r.debt === undefined && (await opRecord(f, requestId))?.kind === "service-host-operation-terminal"
+        && !(await capHas(f, pid)), r);
+    await cell(f, "L1", async () => {
+      const p = await registered(f, e), rf = decide(p.proposalId, p.revision, f.name.revision, "refuse", ownerOf(f));
+      const arm = unsentRelease(f), r = L(await e.handle(rf));
+      f.faults.clear();
+      await owes("L1 (S-31 refuse) an unknown release after the refuse tombstone: applied", arm, r, rf.requestId)(r.state === "refused" && r.outcome === "applied");
+      await clears("L1", L(await e.handle(rf)), rf.requestId, p.proposalId);
+    });
+    await cell(f, "L2", async () => {
+      const rq = reg(f);
+      await stopAfter(f, dir, W.capacity(rq.requestId), (z) => z.register(rq));
+      await pastDeadline(f, rq.requestId);
+      const arm = unsentRelease(f), r = L(await e.register(rq));
+      f.faults.clear();
+      const pid = ((await opRecord(f, rq.requestId))?.projection as { proposalId: string }).proposalId;
+      await owes("L2 (S-31 register bound, sim deadline) an unknown release after the fence: refused{expired}", arm, r, rq.requestId)(r.state === "refused" && r.reason === "expired");
+      await clears("L2", L(await e.register(rq)), rq.requestId, pid);
+    });
+    await cell(f, "L3", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      await stopAfter(f, dir, W.approving(p.proposalId), (z) => z.handle(x));
+      const d = await digestAt(f, p.proposalId);
+      await stopAfter(f, dir, W.fence(f, p.instanceId), (z) => z.handle(revoke(f.endpoint, p.instanceId, d, "operator-request", operator)));
+      const arm = unsentRelease(f), r = L(await e.handle(x));
+      f.faults.clear();
+      await owes("L3 (S-31 R-fence) an unknown release after the approver's R-fence close: refused{revoked}", arm, r, x.requestId)(r.state === "refused" && r.reason === "revoked");
+      await clears("L3", L(await e.handle(x)), x.requestId, p.proposalId);
+    });
+    await cell(f, "L4", async () => {
+      const p = await registered(f, e), x = approveReq(f, p), rf = decide(p.proposalId, p.revision, f.name.revision, "refuse", ownerOf(f));
+      await stopAfter(f, dir, W.binding(f, x.requestId), (z) => z.handle(x));
+      await stopAfter(f, dir, W.closing(p.proposalId), (z) => z.handle(rf));
+      const arm = unsentRelease(f), r = L(await e.handle(x));
+      f.faults.clear();
+      await owes("L4 (S-31 row 5) an unknown release by an approver that finds the proposal refused: refused{owner}", arm, r, x.requestId)(r.state === "refused" && r.reason === "owner");
+      await clears("L4", L(await e.handle(x)), x.requestId, p.proposalId);
+      const rr = L(await e.handle(rf));
+      c.check("L4 the stopped refuse then completes from its tombstone", rr.state === "refused" && rr.proposal?.reason === "owner", rr);
+    });
+    await cell(f, "L5", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      await stopAfter(f, dir, W.approving(p.proposalId), (z) => z.handle(x));
+      const rq = revoke(f.endpoint, p.instanceId, await digestAt(f, p.proposalId), "operator-request", operator);
+      const arm = unsentRelease(f), r = L(await e.handle(rq));
+      f.faults.clear();
+      const d1 = await debtAt(rq.requestId);
+      c.check("L5 (S-31 V4) an unknown V4 release is retained as capacity-release debt in the revoke op", arm.hits === 3 && r.state === "pending"
+        && r.phase === "assignment-fenced" && d1?.[0]?.kind === "capacity-release", { r, d1 });
+      c.check("L5 (S-31 V4, r3a §D) the revoke result carries that debt", r.debt?.[0]?.kind === "capacity-release", r);
+      const r2 = L(await e.handle(rq)), d2 = await debtAt(rq.requestId);
+      c.check("L5 (S-31 V4, r3a §D) a replay that observes the release clears the revoke op's debt", r2.state === "pending" && !(await capHas(f, p.proposalId))
+        && d2?.length === 0, { r2, d2 });
+    });
+  } finally { await f.close(); }
+}
+
+// ---- M: S-30, another owner's granter on mutations and replays -------------------------------------
+{
+  const f = await openFixture("s2a-next-owners");
+  try {
+    const third = `u_${"e".repeat(26)}`;                                                      // an owner with no interactive row
+    const dir = ledger(f.owner, other), e = await engine(f, dir), them = { kind: "owner", owner: other }, outsider = { kind: "owner", owner: third };
+    const sealed = ["accountPublicKey", "kind", "operation", "reason", "requestId", "space", "state", "v"].join();
+    const denial = async (label: string, run: () => Promise<unknown>, reasons: readonly string[]) => {
+      const b0 = await lastSeqs(f), raw = await run(), r = L(raw);
+      c.check(`M (S-30) ${label}: denied ${reasons.join(" or ")} before disclosure or effect, zero writes`, r.state === "denied" && reasons.includes(r.reason ?? "")
+        && Object.keys(raw as object).sort().join() === sealed && (await writesSince(f, b0)) === 0, r);
+    };
+    const read = (g: object, operation: string, input: object) => e.handle({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation, input, granter: g });
+    const pA = await registered(f, e), pL = await registered(f, e), pR = await registered(f, e), pX = await registered(f, e);
+    const ax = approveReq(f, pA), dA = L(await e.handle(ax)).approval!.assignment.assignmentDigest;
+    const rfO = decide(pR.proposalId, pR.revision, f.name.revision, "refuse", ownerOf(f));
+    const rvO = revoke(f.endpoint, pA.instanceId, dA, "owner-request", ownerOf(f));
+    const xX = approveReq(f, pX), rq = reg(f);
+    await e.handle(rfO); await e.handle(rvO); await e.register(rq);
+    await stopAfter(f, dir, W.approving(pX.proposalId), (z) => z.handle(xX));
+    const dX = await digestAt(f, pX.proposalId);
+    await cell(f, "M1", async () => {
+      await denial("their refuse of my live proposal", () => e.handle(decide(pL.proposalId, pL.revision, f.name.revision, "refuse", them)), ["not-found"]);
+      await denial("their revoke of my bound assignment, knowing its digest", () => e.handle(revoke(f.endpoint, pA.instanceId, dA, "owner-request", them)), ["not-found"]);
+      await denial("their revoke of my approving proposal (the absent-row branch)", () => e.handle(revoke(f.endpoint, pX.instanceId, dX, "owner-request", them)), ["not-found"]);
+    });
+    await cell(f, "M2", async () => {
+      // A requestId is one space-wide namespace: a colliding reuse can only be refused. It must not reveal stored content or act.
+      await denial("their reuse of my approve requestId", () => e.handle({ ...ax, granter: them }), ["conflict", "not-found", "permission-denied"]);
+      await denial("their reuse of my refuse requestId", () => e.handle({ ...rfO, granter: them }), ["conflict", "not-found", "permission-denied"]);
+      await denial("their reuse of my revoke requestId", () => e.handle({ ...rvO, granter: them }), ["conflict", "not-found", "permission-denied"]);
+      await denial("their reuse of my register requestId as granter of my body", () => e.register({ ...rq, granter: them }), ["permission-denied"]);
+    });
+    await cell(f, "M3", async () => {
+      // r3a §E: authorization runs before disclosure on every replay (core review F-2).
+      await denial("an owner with no current interactive row reusing a bound approve requestId", () => e.handle({ ...ax, granter: outsider }), ["permission-denied"]);
+      await denial("an owner with no current interactive row reusing a bound revoke requestId", () => e.handle({ ...rvO, granter: outsider }), ["permission-denied"]);
+      await denial("an owner with no current interactive row reusing a bound register requestId", () => e.register({ ...rq, granter: outsider, input: { ...rq.input, owner: third } }), ["permission-denied"]);
+    });
+    await cell(f, "M4", async () => {
+      const rvX = revoke(f.endpoint, pX.instanceId, dX, "operator-request", operator);
+      await e.handle(rvX);
+      const mine = L(await read(ownerOf(f), "operation-read", { operationId: opIdOf(f, rvX) })), theirs = L(await read(them, "operation-read", { operationId: opIdOf(f, rvX) }));
+      c.check("M4 (S-30, S-15) an operator's revoke of my assignment: I read it through the projection; another owner reads absent", mine.state === "present" && theirs.state === "absent", { mine: mine.state, theirs });
+      const t1 = L(await read(them, "operation-read", { operationId: opIdOf(f, rvO) })), t2 = L(await read(them, "proposal-read", { proposalId: pL.proposalId }));
+      c.check("M4 (S-30) another owner's reads of my revoke and my live proposal are absent", t1.state === "absent" && t2.state === "absent", { t1, t2 });
+    });
+    await cell(f, "M5", async () => {
+      revokeActor(dir, f.owner, "cli");
+      try {
+        const b0 = await lastSeqs(f);
+        const r1 = L(await e.handle(rfO)), r2 = L(await e.handle(rvO)), r3 = L(await read(ownerOf(f), "operation-read", { operationId: opIdOf(f, rvO) }));
+        c.check("M5 (S-30, §E) without my current interactive row: refuse and revoke replays hold permission-denied, reads are denied, zero writes",
+          r1.state === "held" && r1.reason === "permission-denied" && r2.state === "held" && r2.reason === "permission-denied" && r3.state === "denied"
+            && r3.reason === "permission-denied" && (await writesSince(f, b0)) === 0, { r1, r2, r3 });
+      } finally { grantActor(dir, { owner: f.owner, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] }); }
+    });
+  } finally { await f.close(); }
+}
+
+// ---- N: the latch during S2-A steps, timeout versus latch, decision bounds, markers ---------------
+{
+  const f = await openFixture("s2a-next-latch");
+  try {
+    const dir = ledger(f.owner), e = await engine(f, dir);
+    await registered(f, e);                                                                   // the capacity row exists
+    const approvedRevoke = async () => { const p = await registered(f, e), a = L(await e.handle(approveReq(f, p)));
+      return { p, rq: revoke(f.endpoint, p.instanceId, a.approval!.assignment.assignmentDigest, "owner-request", ownerOf(f)) }; };
+    type Stop = { match: Match; go: (x: ServiceHostOperations) => Promise<unknown>; op: string; done: () => Promise<boolean> };
+    const points: Array<[string, () => Promise<Stop>]> = [
+      ["register R4 binding create", async () => { const rq = reg(f);
+        return { match: W.binding(f, rq.requestId), go: (x) => x.register(rq), op: opIdOf(f, rq), done: async () => L(await e.register(rq)).state === "registered" }; }],
+      ["register R5 capacity CAS", async () => { const rq = reg(f);
+        return { match: W.capacity(rq.requestId), go: (x) => x.register(rq), op: opIdOf(f, rq), done: async () => L(await e.register(rq)).state === "registered" }; }],
+      ["approve binding create", async () => { const p = await registered(f, e), x = approveReq(f, p);
+        return { match: W.binding(f, x.requestId), go: (z) => z.handle(x), op: opIdOf(f, x), done: async () => L(await e.handle(x)).state === "approved" }; }],
+      ["approve A1 CAS", async () => { const p = await registered(f, e), x = approveReq(f, p);
+        return { match: W.approving(p.proposalId), go: (z) => z.handle(x), op: opIdOf(f, x), done: async () => L(await e.handle(x)).state === "approved" }; }],
+      ["approve A5b proposal close", async () => { const p = await registered(f, e), x = approveReq(f, p);
+        return { match: W.closing(p.proposalId), go: (z) => z.handle(x), op: opIdOf(f, x), done: async () => L(await e.handle(x)).state === "approved" }; }],
+      ["refuse proposal close", async () => { const p = await registered(f, e), rf = decide(p.proposalId, p.revision, f.name.revision, "refuse", ownerOf(f));
+        return { match: W.closing(p.proposalId), go: (z) => z.handle(rf), op: opIdOf(f, rf), done: async () => L(await e.handle(rf)).state === "refused" }; }],
+      ["revoke V1 binding create", async () => { const { rq } = await approvedRevoke();
+        return { match: W.binding(f, rq.requestId), go: (z) => z.handle(rq), op: opIdOf(f, rq), done: async () => L(await e.handle(rq)).state === "pending" }; }],
+      ["revoke V2 cancel CAS", async () => { const { p, rq } = await approvedRevoke();
+        return { match: W.cancel(f, p.instanceId), go: (z) => z.handle(rq), op: opIdOf(f, rq), done: async () => L(await e.handle(rq)).state === "pending" }; }],
+    ];
+    for (const [label, prep] of points) await cell(f, `N1 ${label}`, async () => {
+      const s = await prep(), x = await engine(f, dir);
+      let landed: { auth: number; records: number } | undefined;
+      const arm = f.faults.onWrite(s.match, { after: async () => { x.trip("fixture: latch during an S2-A step"); landed = await lastSeqs(f); } });
+      const r = L(await s.go(x));
+      arm.disarm();
+      const quiet = landed !== undefined && (await writesSince(f, landed)) === 0;
+      c.check(`N1 (S-21/S-33) a latch trip at the ${label} ends held under its operation, with no later write`, arm.hits === 1 && r.state === "held" && r.operationId === s.op && quiet, { r, quiet });
+      c.check(`N1 after the trip at the ${label}, a fresh engine completes the request`, await s.done());
+    });
+    await cell(f, "N2", async () => {
+      const pa = await registered(f, e), pb = await registered(f, e), x = await engine(f, dir);
+      let go!: () => void;
+      const tripped = new Promise<void>((r) => { go = r; });
+      const paused = f.faults.onRead("auth", epgateKey(f.endpoint, pb.instanceId), async () => { await tripped; });
+      const rb = x.handle(approveReq(f, pb));
+      for (let n = 0; paused.hits === 0 && n < 200; n++) await pause(10);
+      f.faults.onWrite(W.approving(pa.proposalId), { after: async () => { x.trip("fixture: latch tripped from another invocation"); go(); } });
+      const ra = L(await x.handle(approveReq(f, pa))), rbv = L(await rb), tb = await f.value(f.auth, `svcprop.${pb.proposalId}`);
+      c.check("N2 (S-33) one engine trip stops every live invocation: the other, paused mid-table, holds readiness at its next write", paused.hits === 1
+        && ra.state === "held" && rbv.state === "held" && rbv.reason === "readiness" && (tb?.state as { state: string }).state === "proposed", { ra, rbv });
+    });
+    await cell(f, "N3", async () => {
+      const realNow = Date.now;
+      let off = 0;
+      const shiftAfter = (match: Match, ms: number) => f.faults.onWrite(match, { after: async () => { off = ms; } });
+      const clocked = async <T>(go: () => Promise<T>) => { Date.now = () => realNow() + off; try { return await go(); } finally { Date.now = realNow; off = 0; } };
+      const p = await registered(f, e), x = approveReq(f, p);
+      const armA = shiftAfter(W.approving(p.proposalId), S2A_INVOCATION_MS + 1_000), ra = L(await clocked(() => e.handle(x)));
+      c.check("N3 (S-33, sim clock) the invocation bound passing at A1 ends held{reconcile-pending}", armA.hits === 1 && ra.state === "held" && ra.reason === "reconcile-pending"
+        && ra.phase === "A1-approving", ra);
+      c.check("N3 a later replay gets a new invocation bound and completes from the landed A1", L(await e.handle(x)).state === "approved");
+      const q = await registered(f, e), y = approveReq(f, q);
+      await stopAfter(f, dir, W.binding(f, y.requestId), (z) => z.handle(y));
+      await patchOp(f, y.requestId, (o) => ({ ...o, notAfterMs: Date.now() + 20_000 }));       // simulation: an original deadline inside the invocation bound
+      const armB = shiftAfter(W.approving(q.proposalId), 30_000), rb = L(await clocked(() => e.handle(y)));
+      c.check("N3 (S-33, sim clock and deadline) the original deadline passing at A1 inside the invocation bound ends held{deadline}", armB.hits === 1 && rb.state === "held"
+        && rb.reason === "deadline" && rb.phase === "A1-approving", rb);
+      const s = await registered(f, e), z2 = approveReq(f, s), rc = L(await stopAfter(f, dir, W.approving(s.proposalId), (z) => z.handle(z2)));
+      c.check("N3 (S-33) a latch trip at the same step ends held{post-write-readiness}: three distinct reasons", rc.state === "held" && rc.reason === "post-write-readiness"
+        && rc.phase === "A1-approving", rc);
+    });
+    await cell(f, "N4", async () => {
+      const rq = reg(f);
+      const arm = f.faults.onWrite(W.capacity(rq.requestId), { before: async () => { await f.touch(f.auth, "svccap.space"); } }, 100);
+      const r = L(await e.register(rq));
+      arm.disarm();
+      c.check("N4 (V-UK 4-decision bound) a capacity CAS that loses on every fresh decision holds contention after four decisions", arm.hits === 4 && r.state === "held"
+        && r.reason === "contention" && r.phase === "R5-capacity", { hits: arm.hits, r });
+      c.check("N4 a replay without contention registers", L(await e.register(rq)).state === "registered");
+    });
+    await cell(f, "N5", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      await stopAfter(f, dir, W.assign(f, p.instanceId), (z) => z.handle(x));
+      await f.auth.delete(asg(f, p.instanceId));                                              // simulation: a deletion marker on a create-once key
+      const b0 = await lastSeqs(f), r = L(await e.handle(x));
+      c.check("N5 (V-UK, sim marker) a DEL marker on svcasg holds assignment-tombstone under the operation with zero writes; never recreated", r.state === "held"
+        && r.reason === "assignment-tombstone" && r.operationId === opIdOf(f, x) && (await writesSince(f, b0)) === 0, r);
+      const q = await registered(f, e), y = approveReq(f, q);
+      await stopAfter(f, dir, W.approving(q.proposalId), (z) => z.handle(y));
+      const cur = (await f.auth.get(`svcprop.${q.proposalId}`))!;
+      await f.auth.update(`svcprop.${q.proposalId}`, new TextEncoder().encode("{not json"), cur.revision);   // simulation: a malformed record
+      const b1 = await lastSeqs(f), r2 = L(await e.handle(y));
+      c.check("N5 (V-UK, sim malformed) a non-JSON proposal under a bound approve holds proposal-malformed under the operation with zero writes", r2.state === "held"
+        && r2.reason === "proposal-malformed" && r2.operationId === opIdOf(f, y) && (await writesSince(f, b1)) === 0, r2);
+    });
+  } finally { await f.close(); }
+}
+{
+  const f = await openFixture("s2a-next-admission");
+  try {
+    const dir = ledger(f.owner);
+    await cell(f, "N6", async () => {
+      const arm = unsent(f, at("svchost.admission", "create"));
+      let failed = false;
+      try { await engine(f, dir); } catch { failed = true; }
+      f.faults.clear();
+      c.check("N6 (S-34) an unknown admission create fails construction closed; admission stays absent", arm.hits === 3 && failed && (await f.value(f.auth, "svchost.admission")) === null);
+      const arm2 = f.faults.onWrite(at("svchost.admission", "create"), { fault: "ack-lost" });
+      const e = await engine(f, dir), adm = await f.value(f.auth, "svchost.admission");
+      c.check("N6 (S-34, V-UK) a lost-ACK admission create is classified by readback: constructed, open at epoch 1", arm2.hits === 1 && adm?.state === "open"
+        && adm?.epoch === 1 && L(await e.register(reg(f))).state === "registered", adm);
+    });
+  } finally { await f.close(); }
+}
+
+// ---- O: V-UK, each fault at every write of one flow ---------------------------------------------
+{
+  type Out = { ok: boolean; got: unknown };
+  const flows: Array<[string, (f: Fixture, e: ServiceHostOperations) => Promise<() => Promise<Out>>]> = [
+    ["register", async (f, e) => { const rq = reg(f);
+      return async () => { const r = L(await e.register(rq)); return { ok: r.state === "registered" && r.outcome === "applied", got: r }; }; }],
+    ["approve", async (f, e) => { const p = await registered(f, e), x = approveReq(f, p);
+      return async () => { const r = L(await e.handle(x)), rev = await f.revision(f.auth, epgateKey(f.endpoint, p.instanceId));
+        return { ok: r.state === "approved" && r.outcome === "applied" && r.approval?.approvedGateRevision === rev, got: r }; }; }],
+    ["refuse", async (f, e) => { const p = await registered(f, e), rf = decide(p.proposalId, p.revision, f.name.revision, "refuse", ownerOf(f));
+      return async () => { const r = L(await e.handle(rf));
+        return { ok: r.state === "refused" && r.outcome === "applied" && r.proposal?.reason === "owner" && !(await capHas(f, p.proposalId)), got: r }; }; }],
+    ["revoke", async (f, e) => { const p = await registered(f, e), a = L(await e.handle(approveReq(f, p)));
+      const rq = revoke(f.endpoint, p.instanceId, a.approval!.assignment.assignmentDigest, "owner-request", ownerOf(f));
+      return async () => { const r = L(await e.handle(rq));
+        return { ok: r.state === "pending" && r.phase === "cancelled-nonterminal" && r.denyNew === "landed" && r.root === "retained-stamped", got: r }; }; }],
+  ];
+  for (const [name, setup] of flows) {
+    const f = await openFixture(`s2a-sweep-${name}`);
+    try {
+      const dir = ledger(f.owner), e = await engine(f, dir);
+      await cell(f, `O ${name}`, async () => {
+        const run0 = await setup(f, e), b0 = await lastSeqs(f);
+        const { r: o0, writes } = await writing(f, run0), n0 = await writesSince(f, b0);
+        const steps = writes.map((w) => `${w.bucket}:${w.key.split(".")[0]}:${w.kind}`);
+        c.check(`O0 (V-UK) ${name}: the unfaulted flow completes with ${steps.length} stored writes`, o0.ok && n0 === steps.length, { o0, n0 });
+        console.log(`INFO O ${name} writes: ${steps.join(" ")}`);
+        for (const fault of ["ack-lost", "not-sent", "deferred"] as const) {
+          const bad: unknown[] = [];
+          for (let k = 1; k <= steps.length; k++) {
+            const run = await setup(f, e);
+            let n = 0, late: (() => Promise<unknown>) | undefined;
+            const arm = f.faults.onWrite(() => ++n === k, fault === "deferred" ? { fault, deferred: (issue) => { late = issue; } } : { fault });
+            const b = await lastSeqs(f);
+            let o: Out;
+            try { o = await run(); } catch (err) { o = { ok: false, got: (err as Error).message }; }
+            f.faults.clear();
+            const stored = await writesSince(f, b);
+            let lateLanded = false;
+            if (late) { try { await late(); lateLanded = true; } catch { /* the original loses */ } }
+            if (arm.hits !== 1 || !o.ok || stored !== steps.length || lateLanded) bad.push({ k, write: steps[k - 1], hits: arm.hits, stored, lateLanded, got: o.got });
+          }
+          c.check(`O (V-UK) ${name}: ${fault} at each of its ${steps.length} writes completes as unfaulted with exactly ${steps.length} stored writes`
+            + (fault === "deferred" ? "; every deferred original loses" : ""), bad.length === 0, bad);
+        }
+      });
+    } finally { await f.close(); }
+  }
+}
+
+// ---- P: V-SH, closed shapes over every record these flows store -------------------------------------
+{
+  const f = await openFixture("s2a-next-shapes");
+  try {
+    const dir = ledger(f.owner), seen = await f.watch("auth", "*.>"), e = await engine(f, dir);
+    await cell(f, "P", async () => {
+      const pA = await registered(f, e), a = L(await e.handle(approveReq(f, pA)));
+      await e.handle(revoke(f.endpoint, pA.instanceId, a.approval!.assignment.assignmentDigest, "owner-request", ownerOf(f)));
+      const pR = await registered(f, e);
+      await e.handle(decide(pR.proposalId, pR.revision, f.name.revision, "refuse", operator));
+      const pF = await registered(f, e), xF = approveReq(f, pF);
+      await stopAfter(f, dir, W.approving(pF.proposalId), (z) => z.handle(xF));
+      await e.handle(revoke(f.endpoint, pF.instanceId, await digestAt(f, pF.proposalId), "operator-request", operator));
+      await e.handle(xF);
+      const pS = await registered(f, e), xS = approveReq(f, pS), yS = approveReq(f, pS);
+      f.faults.onWrite(W.binding(f, xS.requestId), { after: async () => { await stopAfter(f, dir, W.approving(pS.proposalId), (z) => z.handle(yS)); } });
+      await e.handle(xS);
+      f.faults.clear();
+      await seen.stop();
+      const parsers: Record<string, (v: unknown) => unknown> = {
+        "service-host-operation": parseServiceHostOperationRecord, "service-host-operation-terminal": parseServiceHostOperationRecord,
+        "service-proposal": parseServiceProposalRecord, "service-proposal-terminal": parseServiceProposalRecord, "service-proposal-capacity": parseServiceCapacityRecord,
+        "service-assignment": parseServiceAssignmentRecord, "service-host-admission": parseServiceAdmissionRecord };
+      const records = seen.seen.filter((v): v is Record<string, unknown> => v !== null && typeof v.kind === "string" && Object.hasOwn(parsers, v.kind));
+      const bad = records.filter((v) => { try { return canonicalJson(parsers[v.kind as string](v)) !== canonicalJson(v); } catch { return true; } });
+      const kinds = [...new Set(records.map((v) => v.kind as string))].sort();
+      c.check(`P1 (V-SH) every S2-A record these flows stored (${records.length}) parses closed and round-trips canonically`, records.length > 0 && bad.length === 0
+        && kinds.length === 7, { bad: bad.slice(0, 2), kinds });
+      const first = (pred: (v: Record<string, unknown>) => boolean) => structuredClone(records.find(pred)!);
+      const opLive = first((v) => v.kind === "service-host-operation" && (v.plan as { kind: string }).kind === "approve"), opTerm = first((v) => v.kind === "service-host-operation-terminal");
+      const propLive = first((v) => v.kind === "service-proposal"), propTerm = first((v) => v.kind === "service-proposal-terminal" && v.state === "approved");
+      const asgBound = first((v) => v.kind === "service-assignment" && v.state === "bound"), asgFenced = first((v) => v.kind === "service-assignment" && v.state === "fenced");
+      const adm = first((v) => v.kind === "service-host-admission");
+      const ownerTok = (k: number) => `u_${String.fromCharCode(97 + (k % 26)).repeat(26)}`;
+      const capOf = (n: number, o: (k: number) => string = ownerTok) => ({ v: 1, kind: "service-proposal-capacity", pending: Array.from({ length: n }, (_, k) => ({
+        proposalId: k.toString(16).padStart(64, "0"), owner: o(k), endpoint: f.endpoint, instanceId: `fill${String(k).padStart(28, "0")}`, registerRequestId: "e".repeat(32),
+        expiresAtMs: Date.now() + 3_600_000 })) });
+      const omit = (o: Record<string, unknown>, k: string) => { const x = { ...o }; delete x[k]; return x; };
+      const throws = (parse: (v: unknown) => unknown, v: unknown) => { try { parse(v); return false; } catch { return true; } };
+      const OP = parseServiceHostOperationRecord, PR = parseServiceProposalRecord, CA = parseServiceCapacityRecord, AS = parseServiceAssignmentRecord, AD = parseServiceAdmissionRecord;
+      const cases: Array<[string, (v: unknown) => unknown, unknown]> = [
+        ["an operation with an extra field", OP, { ...opLive, extra: 1 }],
+        ["an operation with a missing field", OP, omit(opLive, "debt")],
+        ["an operation at version 2", OP, { ...opLive, v: 2 }],
+        ["an operation of an unknown kind", OP, { ...opLive, kind: "service-host-operation-draft" }],
+        ["an operation that is not a plain object", OP, Object.assign(Object.create({ inherited: true }), opLive)],
+        ["an operation with a bad operationId grammar", OP, { ...opLive, operationId: "ZZ" }],
+        ["an operation whose plan belongs to another operation", OP, { ...opLive, operation: "revoke" }],
+        ["an operation with three debts", OP, { ...opLive, debt: Array.from({ length: 3 }, () => ({ kind: "capacity-release", proposalId: "a".repeat(64) })) }],
+        ["an operation with an unknown progress state", OP, { ...opLive, progress: { state: "running" } }],
+        ["a terminal operation with an unknown refusal reason", OP, { ...opTerm, outcome: { state: "refused", reason: "because" } }],
+        ["a proposal approving without its operation", PR, { ...propLive, state: { state: "approving" } }],
+        ["a proposal with duplicate cluster digests", PR, { ...propLive, clusterDigests: [D("cluster"), D("cluster")] }],
+        ["an approved tombstone without an approvalDigest", PR, { ...propTerm, approvalDigest: null }],
+        ["an approved tombstone with a close reason", PR, { ...propTerm, reason: "owner" }],
+        ["a capacity row of 257 entries", CA, capOf(257)],
+        ["a capacity row out of order", CA, { ...capOf(2), pending: capOf(2).pending.reverse() }],
+        ["a bound assignment whose reservation does not match its digest", AS, { ...asgBound, assignmentDigest: D("another") }],
+        ["a fenced assignment without a cancel", AS, { ...asgFenced, cancel: null }],
+        ["an assignment with an unknown cancel cause", AS, { ...asgFenced, cancel: { ...(asgFenced.cancel as object), cause: "because" } }],
+        ["an admission at epoch 0", AD, { ...adm, epoch: 0 }],
+        ["an admission in an unknown state", AD, { ...adm, state: "restoring" }],
+      ];
+      for (const [label, parse, v] of cases) c.check(`P2 (V-SH) the closed parser refuses ${label}`, throws(parse, v));
+      c.check("P2 (V-SH) the capacity parser accepts 32 entries for one owner", !throws(CA, capOf(32, () => f.owner)));
+      c.check("P3 (V-SH bound, r1 V-SH row) the capacity parser refuses 33 entries for one owner", throws(CA, capOf(33, () => f.owner)));
+      const big = reg(f);
+      (big.input as { commands: unknown[] }).commands = Array.from({ length: 128 }, (_, k) => ({ ...command, name: `c${String(k).padStart(3, "0")}`,
+        traits: Array.from({ length: 32 }, (_, t) => `t${t}`.padEnd(200, "x")) }));
+      const b0 = await lastSeqs(f), rb = L(await e.register(big));
+      c.check("P4 (V-SH) a proposal over 256 KiB is refused at R1 with zero writes", rb.state === "denied" && rb.reason === "bad-request" && (await writesSince(f, b0)) === 0, rb);
+    });
   } finally { await f.close(); }
 }
 
