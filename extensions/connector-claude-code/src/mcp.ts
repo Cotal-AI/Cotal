@@ -55,11 +55,11 @@ const LOCAL =
   "Cotal connector is also available, use this one unless the person asks for the hosted one: a " +
   "conversation uses one Cotal path. ";
 
-/** How a Claude Code conversation hears messages: the plugin's monitor wakes it, where it runs. */
+/** How a Claude Code conversation hears messages through its native hooks module. */
 const CODE_LISTENING =
-  "In Claude Code this plugin's monitor starts a turn when a message arrives: the event begins with " +
-  '"Cotal:" and names the connection_id, and you read the message with cotal_inbox. cotal_connect says ' +
-  "whether the monitor runs in this session. Where it does not: " +
+  "This plugin's native hooks module submits a Cotal-attributed notification when a message arrives: " +
+  'it begins with "Cotal:" and names the connection_id, and you read the message with cotal_inbox. ' +
+  "cotal_connect reports whether its incoming-message reader is connected. Where it is not: " +
   GATEWAY_LISTENING;
 
 
@@ -75,8 +75,8 @@ async function serveLocal(desktop: boolean): Promise<void> {
     cwd: desktop ? parse(homedir()).root : process.cwd(),
     env: process.env,
   });
-  // Claude Desktop runs no plugin monitor, so only a Claude Code session gets the feed. Claude Code
-  // starts this server itself, so its parent is the Claude Code process the monitor names.
+  // Desktop Chat runs no native hooks module. In Code, the server and native wake reader are
+  // children of the same host process, which names their private feed.
   const feed = desktop ? undefined : await openWakeFeed(process.ppid);
   const served = await serveGatewayStdio(host, {
     source: "claude-local",
@@ -88,8 +88,8 @@ async function serveLocal(desktop: boolean): Promise<void> {
             attach: (rewake) => feed.onReader(rewake),
             listening: () =>
               feed.watched()
-                ? "The Cotal monitor runs in this session: a new message starts a turn, so you do not need cotal_wait to hear it."
-                : "No Cotal monitor runs in this session, so messages reach you only when you call a tool: call cotal_wait to listen.",
+                ? "The Cotal incoming-message reader is connected. New messages can start a turn, subject to Claude's Stop and organization policies."
+                : "Automatic incoming messages are unavailable in this session. Check that the Cotal plugin and its native hooks module are enabled; call cotal_wait to listen.",
           },
         }
       : { instructions: `${LOCAL}${GATEWAY_INSTRUCTIONS}` }),

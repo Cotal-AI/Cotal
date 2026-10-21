@@ -17,6 +17,8 @@ try {
   process.env.HOME = home;
   process.env.PATH = join(home, "empty-bin");
   assert.equal(setupProviderAvailable({ requires: ["missing-harness"] }), false, "an unavailable harness provider is skipped");
+  assert.equal(setupProviderAvailable({ requires: ["missing-harness"], available: () => true }), true, "provider readiness can find an app outside PATH");
+  assert.equal(setupProviderAvailable({ requires: [], available: () => false }), false, "provider health can refuse an unusable harness");
   const result = installAgentSkills();
   assert.ok(result.installed.includes("team-topology"), "cross-vendor skills still reconcile when a harness provider is unavailable");
   assert.equal(existsSync(join(home, ".agents", "skills", "team-topology", "SKILL.md")), true, "the .agents skill was written without the harness");

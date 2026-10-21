@@ -1,9 +1,8 @@
 /**
- * The Cotal plugin's monitor. Claude Code runs it for the whole of an interactive session and starts
- * a turn for every line it prints, so it prints one fixed line for each wake the session's local
- * servers announce (`wake-feed.ts`), and nothing else. What it reads is only ever a connection id,
- * checked before use, so no text from a socket reaches the model. A session Cotal launched has its
- * own push, so there it exits.
+ * The Cotal plugin's wake reader. The native hooks module runs it for the session's life and
+ * submits each fixed line as a plugin-attributed notification. What it reads is only a connection
+ * id, checked before use, so no text from a socket reaches the model. A session Cotal launched has
+ * its own channel, so there it exits.
  */
 import { createConnection } from "node:net";
 import { hasIdentity } from "@cotal-ai/connector-core/relay";
@@ -17,7 +16,9 @@ const wakeEvent = (id: string) => `Cotal: a new message for connection_id ${id}.
 
 function main(): void {
   if (hasIdentity()) return;
-  const claude = Number(process.env.CLAUDE_PID);
+  // A native process.spawn child and the MCP server have the same host parent. Classic plugin
+  // monitors instead receive that host's pid in CLAUDE_PID.
+  const claude = process.argv.includes("--native") ? process.ppid : Number(process.env.CLAUDE_PID);
   if (!Number.isInteger(claude) || claude <= 0) {
     process.stderr.write("[cotal-monitor] no CLAUDE_PID, so this is not a Claude Code session\n");
     process.exitCode = 1;
