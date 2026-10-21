@@ -67,6 +67,7 @@ import {
   authDir,
   brokerAddressForDisplay,
   getSoleSpaceAuth,
+  soleSpaceOf,
   getSpaceAuth,
   hasUserAuthState,
   listSpaceAccounts,
@@ -592,7 +593,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       throw new Error(NO_MANAGER_DURING_RECOVERY);
     // Refuse first-enable IdP failures and explicit pin conflicts before even recovery's lock
     // creates its layout. Existing recovery keeps its own recorded startup and trust checks.
-    const stackSpace = values.space ?? resolveSpace(process.cwd());
+    const stackSpace = values.space ?? folderSpace();
     recordOperationSpace(stackSpace);
     if (!readMaintenanceJournal(root) && controllerStackApplies(root, stackSpace, values)) {
       const recordedStack = readStackJournal(root);
@@ -883,7 +884,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // Dry-run must not pin (mkdir is a mutation). Validation still uses whatever root is visible;
   // persistence is already suppressed below.
   if (!values["dry-run"]) {
-    const spaceForRoot = values.space ?? resolveSpace(process.cwd());
+    const spaceForRoot = values.space ?? folderSpace();
     if (values.file) {
       try {
         const prepared = loadManifest(resolve(values.file));
@@ -941,8 +942,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // CONTROLLER-OWNED STACK. A root whose stack the service controller owns, or a fresh prepared
   // static-auth, open or user-auth root with nothing legacy retained, starts as exact controller members instead
   // of the pidfile launcher. The decision is made once here; neither route falls back to the other.
-  if (!values.file && controllerStackApplies(meshRoot, values.space ?? resolveSpace(process.cwd()), values)) {
-    const stackSpace = values.space ?? resolveSpace(process.cwd());
+  if (!values.file && controllerStackApplies(meshRoot, values.space ?? folderSpace(), values)) {
+    const stackSpace = values.space ?? folderSpace();
     recordOperationSpace(stackSpace);
     const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? (values.host ? reconcileHostAndServer(values.host, undefined) : DEFAULT_SERVER);
     const stackMode = requestedStackMode(values);
@@ -1054,7 +1055,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Without --server the default URL only seeds a first boot. A first boot that found it taken ran
     // on a free port, which this root's record keeps; a re-run must start from that URL, or every
     // lookup below misses its own mesh and the space claim refuses it (#3889).
-    const recordedSpace = values.space ?? resolveSpace(process.cwd());
+    const recordedSpace = values.space ?? folderSpace();
     const implicitServer = localMeshesForRoot(cotalRoot()).find((m) => m.space === recordedSpace)?.server ?? DEFAULT_SERVER;
     let server = values.server ?? implicitServer;
     const host = values.host ?? "127.0.0.1";
@@ -1072,7 +1073,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // here is reused as `listenerReachable` further down instead of probing twice.
     let repairProbe: boolean | undefined;
     if (!resumeAttempt) {
-      const repairSpace = values.space ?? resolveSpace(process.cwd());
+      const repairSpace = values.space ?? folderSpace();
       const repairRoot = cotalRoot();
       const heldForRepair = loadMeshes().find(
         (m) => m.origin !== "manual" && m.origin !== "catalog" && m.server === server && m.root === repairRoot && m.space === repairSpace,
@@ -1141,7 +1142,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     if (resumeAttempt && listenerReachable)
       throw new Error(`resume attempt ${resumeAttempt} refuses the unproven occupied listener at ${server}`);
     if (listenerReachable) {
-    const space = values.space ?? resolveSpace(process.cwd());
+    const space = values.space ?? folderSpace();
     const root = cotalRoot();
     // A broker is already on this port. Same root means "this project is already up" unless the
     // operator explicitly asked for a second space in the same `.cotal/` root (unsupported today: pid,
@@ -1493,7 +1494,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   }
 
   const useAuth = !values.open;
-  const space = values.space ?? resolveSpace(process.cwd());
+  const space = values.space ?? folderSpace();
   ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
   refuseOpenOverUserState(Boolean(values.open), space);
   const storeDir = values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats");
@@ -3241,7 +3242,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   // rather than refused. Callers guard this too; this is the seam that cannot be bypassed.
   if (opts.rotateSys && !useAuth)
     throw new Error("startMeshDetached: --rotate-sys is for auth meshes; an open mesh has no system account or $SYS credentials to rotate");
-  const space = opts.space ?? resolveSpace(process.cwd());
+  const space = opts.space ?? folderSpace();
   ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
   refuseOpenOverUserState(Boolean(opts.open), space);
   const root = cotalRoot();
@@ -3397,8 +3398,32 @@ function ensureRootForSpace(space: string): void {
   }
   throw new CommandFailure("refused", "CONFLICT", `this folder is the root of ${names} (${root}/.cotal), so it can't also run "${space}"`, {
     target: { space, root, hosted: existing },
-    remedy: `drop \`--space\` to run ${existing.length === 1 ? names : "one of those"}, or start "${space}" from a different folder (it becomes that mesh's own root)`,
+    remedy: `${existing.length === 1 ? `run ${names} with \`cotal up --space ${existing[0]}\`` : "run one of those with `cotal up --space <name>`"}, or start "${space}" from a different folder (it becomes that mesh's own root)`,
   });
+}
+
+/** The space a `cotal up` that names none runs in this folder. The root's sole account names it
+ *  first, as {@link resolveSpace} does. An open mesh has no account, and its first start replaces
+ *  the prepared record with a registration, so the space this root's stack journal or its locally
+ *  started registration names comes next. Without it a second `up` in the same folder resolved the
+ *  default space and refused its own mesh. Several names there are refused, never picked. Then the
+ *  space prepared here, then the default.
+ *
+ *  Only `up` asks this. `resolveSpace` also decides whether identity cleanup may attribute a root to
+ *  a space (`reset-space-plan.ts`) and, through `resolveRuntimeSpace`, which space a legacy `down`
+ *  removes credentials for; those keep their own answer. */
+function folderSpace(): string {
+  const root = cotalRoot();
+  if (soleSpaceOf(authDir(root)) === undefined) {
+    const named = [...new Set([readStackJournal(root)?.journal.space, ...localMeshesForRoot(root).map((m) => m.space)])].filter((s): s is string => s !== undefined);
+    if (named.length > 1)
+      throw new CommandFailure("refused", "CONFLICT", `this folder's stack and registrations name ${named.length} spaces (${named.map((s) => `"${s}"`).join(", ")}), so up cannot pick one`, {
+        target: { root, spaces: named },
+        remedy: "name the space to run with `--space`",
+      });
+    if (named.length === 1) return named[0];
+  }
+  return resolveSpace(process.cwd());
 }
 
 function realpathSafe(p: string): string {

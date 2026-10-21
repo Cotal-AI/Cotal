@@ -125,11 +125,14 @@ try {
   cliIn(autoRoot, "down");
   if (startedOccupant) cliIn(occupantRoot, "down");
 
+  // The warning needs a real invocation id, 32 hex characters, and the unit's MainPID equal to the
+  // up process. up runs systemctl as its own direct child, so the fake's $PPID is that pid.
+  const invocationId = "0123456789abcdef0123456789abcdef";
   const fakeSystemctl = join(fakeBin, "systemctl");
-  writeFileSync(fakeSystemctl, "#!/bin/sh\nprintf '%s\\n' 'Type=oneshot' 'RemainAfterExit=yes' 'Id=cotal-warning.service' 'InvocationID=warning-smoke'\n");
+  writeFileSync(fakeSystemctl, `#!/bin/sh\nprintf '%s\\n' 'Type=oneshot' 'RemainAfterExit=yes' 'Id=cotal-warning.service' 'InvocationID=${invocationId}' "MainPID=$PPID"\n`);
   chmodSync(fakeSystemctl, 0o755);
   const warned = cliInEnv(warningRoot, {
-    INVOCATION_ID: "warning-smoke",
+    INVOCATION_ID: invocationId,
     PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
   }, "up", "--detach", "--open", "--space", "warning");
   const warnedOutput = plain(warned.stdout + warned.stderr);

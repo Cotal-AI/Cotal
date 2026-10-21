@@ -30,7 +30,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { clearCurrent, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { clearCurrent, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { stackJournalPath, writeStackJournal } = await import("../src/lib/stack-journal.js");
@@ -384,6 +384,8 @@ setCurrent("keep");
   check("up --space for it from another folder refuses, naming its root, and makes nothing there", refused(away, 2, "TARGET_UNAVAILABLE") && away.env?.error?.message.includes(`prepared in ${fresh}`) && !existsSync(join(elsewhere, ".cotal")), shown(away));
   const otherName = await json(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "other"], fresh);
   check("up --space for another space in its root refuses", refused(otherName, 2, "CONFLICT") && /root of "demo"/.test(otherName.env?.error?.message ?? "") && findMesh("other") === undefined, shown(otherName));
+  check("that refusal names the command that runs the folder's own space",
+    (otherName.env?.error?.remedy ?? "").includes("cotal up --space demo") && !(otherName.env?.error?.remedy ?? "").includes("drop"), shown(otherName));
   // The address is the suite's own broker, so without the check this up would still refuse before
   // its broker started, and the cell would go red on the code and the files it wrote.
   const cotalFiles = () => (readdirSync(join(fresh, ".cotal"), { recursive: true }) as string[]).sort().map((p) => {
@@ -413,6 +415,18 @@ setCurrent("keep");
   const reup = await json(["up", "--detach", "--open", "--no-manager", "--server", server], fresh);
   check("another up leaves an edited default persona byte-identical and is a no-op",
     reup.status === 0 && reup.env?.outcome === "no-op" && readFileSync(personaFile, "utf8") === editedPersona && reup.env.result.written?.length === 0, shown(reup));
+  // A bare up names no space, address or mode. The folder's stack journal and its registration name
+  // the space, so it runs the same stack again. --no-manager keeps the stack as this suite started it.
+  const bare = await json(["up", "--detach", "--no-manager"], fresh);
+  check("a second bare up in the same root runs the same space and is a no-op",
+    bare.status === 0 && bare.env?.outcome === "no-op" && bare.env.result.space === "demo" && bare.env.result.server === server && findMesh("demo")?.root === fresh, shown(bare));
+  // Two locally started registrations for one root give a bare up no single space to run.
+  recordMesh({ space: "twin", server, root: fresh, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const twin = await json(["up", "--detach", "--no-manager"], fresh);
+  removeMesh("twin");
+  const twinMessage = twin.env?.error?.message ?? "";
+  check("a bare up in a root registered to two spaces refuses, naming both, and picks neither",
+    refused(twin, 2, "CONFLICT") && /"demo"/.test(twinMessage) && /"twin"/.test(twinMessage) && (twin.env?.error?.remedy ?? "").includes("--space"), shown(twin));
   // A prepared root starts as a controller stack, whose whole-stack down takes --yes outside a terminal.
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
   const down = await run(["down", "--yes"], {}, fresh);

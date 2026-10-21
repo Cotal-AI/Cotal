@@ -279,6 +279,33 @@
       "expectRed": "up of the running space writes back a missing default persona and lists the write",
       "cell": "up of the running space writes back a missing default persona and lists the write",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a bare up in a running open root resolves the default space",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    if (named.length === 1) return named[0];\n",
+      "replace": "",
+      "expectRed": "a second bare up in the same root runs the same space and is a no-op",
+      "cell": "a second bare up in the same root runs the same space and is a no-op",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a root its stack and registrations name two spaces for runs the first",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    if (named.length > 1)\n",
+      "replace": "    if (named.length > 1) return named[0];\n    if (named.length > 1)\n",
+      "expectRed": "a bare up in a root registered to two spaces refuses, naming both, and picks neither",
+      "cell": "a bare up in a root registered to two spaces refuses, naming both, and picks neither",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the refusal for another space in a space's root tells you to drop --space",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    remedy: `${existing.length === 1 ? `run ${names} with \\`cotal up --space ${existing[0]}\\`` : \"run one of those with `cotal up --space <name>`\"}, or start \"${space}\" from a different folder (it becomes that mesh's own root)`,\n",
+      "replace": "    remedy: `drop \\`--space\\` to run ${existing.length === 1 ? names : \"one of those\"}, or start \"${space}\" from a different folder (it becomes that mesh's own root)`,\n",
+      "expectRed": "that refusal names the command that runs the folder's own space",
+      "cell": "that refusal names the command that runs the folder's own space",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }
