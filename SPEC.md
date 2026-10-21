@@ -4871,7 +4871,8 @@ a client that bypasses stock registration can still rewrite that one row. Live e
 host's retirement barrier.
 
 **Compatibility.** A command whose semantics require the binding (this revision: `run-start`,
-§14.8) MUST refuse a legacy-rail request with `permission-denied` carrying the detail kind
+§14.8, and `run-start-keyed` and `run-submission-status`, §14) MUST refuse a legacy-rail request
+with `permission-denied` carrying the detail kind
 `ai.cotal.ep.unbound-caller-authority` naming the caller triple, never route it through the
 host's own authority. Every other command serves both rails unchanged. Origin (that a request on
 a generation-pinned subject was published by the grant holder) is a property of the grant set,

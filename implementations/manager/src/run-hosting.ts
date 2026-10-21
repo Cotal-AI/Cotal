@@ -250,8 +250,13 @@ export class RunHosting {
    *  receive sample; it never leaves this process. */
   private keyedCoordinates(ctx: EpServeContext): { caller: EpCaller; requestEndsAt: number } {
     const caller = ctx.subject.caller, bind = ctx.request.bind;
-    if (ctx.subject.rail !== "v1" || !isIssuedCaller(caller) || ctx.subject.route !== "inst"
-      || ctx.subject.instanceId !== this.ctx.instanceId || !bind || bind.instanceId !== this.ctx.instanceId
+    if (ctx.subject.rail !== "v1" || !isIssuedCaller(caller))
+      throw new EpEnvelopeError(
+        "permission-denied",
+        `keyed runs bind to the caller's issued authority, and this request rode the legacy rail with none; re-mint the credential as an issuance and call on the versioned rail (SPEC 13.15, 14)`,
+        [{ kind: EP_UNBOUND_CALLER_AUTHORITY, owner: caller.owner, actor: caller.actor, uid: caller.uid }],
+      );
+    if (ctx.subject.route !== "inst" || ctx.subject.instanceId !== this.ctx.instanceId || !bind || bind.instanceId !== this.ctx.instanceId
       || bind.epoch !== ctx.identity.epoch || !Number.isFinite(ctx.receivedAtMonotonicMs)
       || !Number.isSafeInteger(ctx.request.deadlineMs) || ctx.request.deadlineMs! <= 0)
       throw new EpEnvelopeError("permission-denied", "keyed runs require fresh issued exact-instance/epoch contracts and original receive deadline");

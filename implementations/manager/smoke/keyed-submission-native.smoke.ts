@@ -68,6 +68,29 @@ try {
   const service = await core.resolveService(nc, space, "manager", caller, { deadlineMs: 10_000, instanceId: any.responder.instanceId });
   const args = { source: 'log("keyed submission native");', file: "submission.cotal.js" };
   const prepare = (id = core.mintLifecycleUid()) => core.prepareKeyedRunSubmission(space, service, id, args);
+  // The same triple on the legacy rail reaches both keyed handlers and is refused by name (SPEC 13.15)
+  // before any binding: that submission ID then reads unbound and no run exists.
+  const legacyCreds = await core.mintCreds(auth, identity, "manager-caller", {
+    lifecycleUid: uid, managerInstanceId: any.responder.instanceId, capabilities: ["run"], expiresInSeconds: 300 });
+  const legacyNc = await connect({ servers, ...core.standaloneConnectOpts({ creds: legacyCreds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    const legacyCaller = { owner: core.DEV_OWNER, actor: identity.id, uid } as import("@cotal-ai/core").EpCaller;
+    const legacy = await core.resolveService(legacyNc, space, "manager", legacyCaller, { deadlineMs: 10_000, instanceId: any.responder.instanceId });
+    const legacyId = core.mintLifecycleUid();
+    const named = (r: Awaited<ReturnType<typeof core.invokeCommand>>) => {
+      const details = r.reply.error?.details as { kind?: string; owner?: string; actor?: string; uid?: string }[] | undefined;
+      return r.reply.ok === false && r.reply.error?.code === "permission-denied" && details?.length === 1
+        && details[0]!.kind === core.EP_UNBOUND_CALLER_AUTHORITY && details[0]!.owner === core.DEV_OWNER
+        && details[0]!.actor === identity.id && details[0]!.uid === uid;
+    };
+    check("legacy-rail run-start-keyed refused with the unbound-caller-authority detail naming the triple",
+      named(await core.invokeCommand(legacyNc, space, legacy, "run-start-keyed", args, { id: legacyId, deadlineMs: 5000 })));
+    check("legacy-rail run-submission-status refused with the unbound-caller-authority detail naming the triple",
+      named(await core.invokeCommand(legacyNc, space, legacy, "run-submission-status", { submissionId: legacyId }, { deadlineMs: 5000 })));
+    const unbound = (await core.readKeyedRunSubmission(nc, space, prepare(legacyId), { deadlineMs: 5000 })).state === "unbound";
+    const runs = await core.invokeCommand(nc, space, service, "run-ps", {}, { deadlineMs: 5000 });
+    check("legacy-rail keyed refusal binds nothing and starts no run", unbound && runs.reply.ok && JSON.stringify(runs.reply.data) === "[]");
+  } finally { await legacyNc.close(); }
   const submission = prepare();
   const races = await Promise.all(Array.from({ length: 5 }, () => core.invokeKeyedRunSubmission(nc!, space, submission, { deadlineMs: 30_000 })));
   const first = races[0]!.runId!, second = races.at(-1)!.runId!;
