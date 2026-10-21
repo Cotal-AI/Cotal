@@ -521,10 +521,10 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     return inv.bound ? { state: "held", operationId: inv.operationId, reason, phase: e.step, ...(inv.assignmentDigest ? { assignmentDigest: inv.assignmentDigest } : {}) } : denied("unavailable");
   };
   /** A discovery read failed. A request that is or may be bound is never a zero-write denial; one
-   *  bound to another body is the conflict its admission would report. */
-  const discoveryHeld = (operationId: string, requestDigest: string, found: Read<Op> | undefined, e: Held, assignmentDigest?: string): Arms => {
+   *  bound to another body gets the answer its admission would give. */
+  const discoveryHeld = (operationId: string, requestDigest: string, authorized: boolean, found: Read<Op> | undefined, e: Held, assignmentDigest?: string): Arms => {
     if (found?.state === "absent") return denied("unavailable");
-    if (found?.state === "value" && found.row.requestDigest !== requestDigest) return denied("conflict");
+    if (found?.state === "value" && found.row.requestDigest !== requestDigest) return denied(authorized ? "conflict" : "permission-denied");
     return { state: "held", operationId, reason: e.reason, phase: e.step, ...(assignmentDigest ? { assignmentDigest } : {}) };
   };
   const interactive = (o: string) => {
@@ -754,7 +754,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       if (op.state === "value" && op.row.kind === "service-host-operation" && op.row.plan.kind === "approve") scope.lifecycleUid = op.row.plan.reservation.native.lifecycleUid;
       if (prop.state === "value") { scope.endpoint = prop.row.endpoint; scope.instanceId = prop.row.instanceId; }
       if (op.state === "absent" && approve) scope.lifecycleUid = mintLifecycleUid();
-    } catch (e) { if (e instanceof Held) return discoveryHeld(operationId, requestDigest, found, e); throw e; }
+    } catch (e) { if (e instanceof Held) return discoveryHeld(operationId, requestDigest, authorized, found, e); throw e; }
     try {
       return await invoke(scope, async (inv) => {
         inv.operationId = operationId;
@@ -763,14 +763,15 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
           for (let n = 0; ; n++) {
             if (n >= S2A_MAX_REDECIDE) held("contention", ctx.step);
             const op = await readOp(ctx, operationId);
-            if (op.state === "value") {
-              if (op.row.requestDigest !== requestDigest) return denied("conflict");
+            if (op.state === "value" && op.row.requestDigest === requestDigest) {
               inv.bound = true;
               if (!authorized || (req.granter.kind === "owner" && op.row.projection.subjectOwner !== req.granter.owner))
                 return { state: "held", operationId, reason: "permission-denied", phase: "authorize" };
               return approve ? await advanceApprove(inv, op.row) : await advanceRefuse(inv, op.row);
             }
+            // Authorization comes before any answer that discloses another body's binding.
             if (!authorized) return denied("permission-denied");
+            if (op.state === "value") return denied("conflict");
             const admitted = approve ? await admitApprove(inv, ctx, scope.lifecycleUid!) : await admitRefuse(inv, ctx);
             if (admitted.kind === "out") return admitted.out;
             inv.bound = true;
@@ -780,7 +781,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
           }
         } catch (err) { if (err instanceof Held) return heldArm(inv, err); throw err; }
       });
-    } catch (err) { if (err instanceof Held) return discoveryHeld(operationId, requestDigest, found, err); throw err; }
+    } catch (err) { if (err instanceof Held) return discoveryHeld(operationId, requestDigest, authorized, found, err); throw err; }
 
 
     async function admitApprove(inv: Inv, ctx: Ctx, lifecycleUid: string): Promise<Admitted> {
@@ -1049,7 +1050,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       const asg = await readAssignment(dctx, e, i);
       if (asg.state === "value") { scope.proposalId = asg.row.proposalId; if (asg.row.state === "bound") scope.lifecycleUid = asg.row.reservation.native.lifecycleUid; }
       else scope.proposalId = eligible(await readCapacity(dctx), Date.now()).find((x) => x.endpoint === e && x.instanceId === i)?.proposalId ?? null;
-    } catch (err) { if (err instanceof Held) return discoveryHeld(operationId, requestDigest, found, err, expectedAssignmentDigest); throw err; }
+    } catch (err) { if (err instanceof Held) return discoveryHeld(operationId, requestDigest, authorized, found, err, expectedAssignmentDigest); throw err; }
     try {
       return await invoke(scope, async (inv) => {
         inv.operationId = operationId;
@@ -1058,14 +1059,14 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
           for (let n = 0; ; n++) {
             if (n >= S2A_MAX_REDECIDE) held("contention", ctx.step);
             const op = await readOp(ctx, operationId);
-            if (op.state === "value") {
-              if (op.row.requestDigest !== requestDigest) return denied("conflict");
+            if (op.state === "value" && op.row.requestDigest === requestDigest) {
               inv.bound = true; inv.assignmentDigest = expectedAssignmentDigest;
               if (!authorized || (req.granter.kind === "owner" && op.row.projection.subjectOwner !== req.granter.owner))
                 return { state: "held", operationId, reason: "permission-denied", phase: "authorize", assignmentDigest: expectedAssignmentDigest };
               return await advanceRevoke(inv, op.row);
             }
             if (!authorized) return denied("permission-denied");
+            if (op.state === "value") return denied("conflict");
             // V0: the assignment, else an approving proposal at the selector, then the assignment again.
             let asg = await readAssignment(ctx, e, i);
             let prop: Read<Proposal> = { state: "absent" };
@@ -1092,7 +1093,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
           }
         } catch (err) { if (err instanceof Held) return heldArm(inv, err); throw err; }
       });
-    } catch (err) { if (err instanceof Held) return discoveryHeld(operationId, requestDigest, found, err, expectedAssignmentDigest); throw err; }
+    } catch (err) { if (err instanceof Held) return discoveryHeld(operationId, requestDigest, authorized, found, err, expectedAssignmentDigest); throw err; }
 
     async function advanceRevoke(inv: Inv, first: Op): Promise<Arms> {
       const ctx = readCtx(inv, "V-replay");
