@@ -2856,7 +2856,7 @@ loopback health URL answers 200:
   "launch": { "type": "process", "executable": "/usr/bin/node", "args": ["/srv/reviews/server.mjs"], "cwd": "/srv/reviews" },
   "readiness": { "type": "http", "url": "http://127.0.0.1:8080/health", "expectedStatus": 200, "timeoutMs": 10000 },
   "envRefs": { "REVIEWS_TOKEN": "REVIEWS_TOKEN" },
-  "credentialRef": { "kind": "file", "path": "/home/me/.cotal-creds/reviews.creds" }
+  "credentialRef": { "kind": "file", "path": "/srv/reviews/reviews.creds" }
 }
 ```
 
