@@ -294,7 +294,9 @@ and fork proxy-based deployments.
 The loopback face also serves four host-only doors, all capability-gated and never on the public
 face. Two retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)
 and `/managed-lifecycle/retire`, which finishes a managed agent's terminal retirement after its
-remote manager is gone. The third decides one:
+remote manager is gone. The interactive door answers every refusal it makes before the retirement
+barrier with `outcome: "not-executed"`. An error without that outcome may follow a barrier that had
+begun, so `cotal actor grant` and `cotal actor revoke` report it as unknown. The third decides one:
 `POST /manager-service-authority/verify-enrollment` answers whether a remote manager may have a
 managed agent enrolled or released under its authenticated owner. The body is
 `{ owner, request }` and nothing else. The caller's capability scope is read from this machine's

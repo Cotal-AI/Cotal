@@ -12,13 +12,15 @@
     "A rotated row can remain unused while the authority head still names its retired predecessor. A second re-grant must treat that current uid as not started rather than conflict with a lifecycle that is already terminal.",
     "The retirement endpoint is a same-user loopback operator surface: browser origins and callers without the per-start capability must be rejected before any ledger or authority state is touched.",
     "The request shape and current ledger row bind the operation to one exact actor incarnation. Unknown fields or a non-current lifecycle uid must not turn retirement into a takeover primitive.",
-    "If the daemon cannot confirm retirement, re-grant must fail before grantActor writes anything. Treating a transport failure as a no-op would rotate the row without fencing the predecessor."
+    "If the daemon cannot confirm retirement, re-grant must fail before grantActor writes anything. Treating a transport failure as a no-op would rotate the row without fencing the predecessor.",
+    "A retirement that provably did not run, such as a connection the dead daemon refused, is a classified refusal (exit 2) naming the unchanged row and `cotal up`. Only a request that may have reached the service is an unknown outcome.",
+    "The service states `outcome: \"not-executed\"` on every refusal it answers before the retirement barrier, the token checks included (SPEC 13.3). The CLI refuses only on that statement; an error the service answers without it, such as a failure inside the barrier, stays unknown."
   ],
   "mutations": [
     {
       "name": "R1 interactive re-grant preserves the predecessor UID instead of retiring and rotating it",
       "file": "implementations/auth/src/commands.ts",
-      "find": "        retired = await retireInteractiveActorLifecycle(dir, current, \"re-grant\");\n      }\n      mutationAttempted = true;\n      const grantRow = {\n        owner,\n        actor,\n",
+      "find": "        retired = await retireInteractiveActorLifecycle(dir, space, current, \"re-grant\");\n      }\n      mutationAttempted = true;\n      const grantRow = {\n        owner,\n        actor,\n",
       "replace": "        retired = false;\n      }\n      mutationAttempted = true;\n      const grantRow = {\n        owner,\n        actor,\n        lifecycleUid: current?.lifecycleUid,\n",
       "expectRed": "copied elevated bearer is refused after re-grant rotates its lifecycle",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
@@ -33,7 +35,7 @@
     {
       "name": "R3 actor revoke deletes the row without retiring its current lifecycle",
       "file": "implementations/auth/src/commands.ts",
-      "find": "      const retired = await retireInteractiveActorLifecycle(dir, current, \"revoke\");",
+      "find": "      const retired = await retireInteractiveActorLifecycle(dir, space, current, \"revoke\");",
       "replace": "      const retired = false;",
       "expectRed": "user-mode send works again after the heal",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
@@ -49,15 +51,15 @@
     {
       "name": "R5 the private retirement route accepts a browser-origin request",
       "file": "implementations/auth/src/service.ts",
-      "find": "async function handleInteractiveLifecycleRetirement(\n  req: IncomingMessage,\n  res: ServerResponse,\n  ctx: HandlerCtx,\n): Promise<void> {\n  if (req.method !== \"POST\") return send(res, 405, { error: \"POST only\" });\n  if (req.headers.origin !== undefined) return send(res, 403, { error: \"browser-origin requests are not served here\" });\n  if (!/^application\\/json\\b/.test(req.headers[\"content-type\"] ?? \"\"))\n    return send(res, 415, { error: \"content-type must be application/json\" });\n  if (req.headers.authorization !== `Bearer ${ctx.cap}`)",
-      "replace": "async function handleInteractiveLifecycleRetirement(\n  req: IncomingMessage,\n  res: ServerResponse,\n  ctx: HandlerCtx,\n): Promise<void> {\n  if (req.method !== \"POST\") return send(res, 405, { error: \"POST only\" });\n  if (!/^application\\/json\\b/.test(req.headers[\"content-type\"] ?? \"\"))\n    return send(res, 415, { error: \"content-type must be application/json\" });\n  if (req.headers.authorization !== `Bearer ${ctx.cap}`)",
+      "find": "async function handleInteractiveLifecycleRetirement(\n  req: IncomingMessage,\n  res: ServerResponse,\n  ctx: HandlerCtx,\n): Promise<void> {\n  const before = { outcome: \"not-executed\" } as const;\n  if (req.method !== \"POST\") return send(res, 405, { error: \"POST only\", ...before });\n  if (req.headers.origin !== undefined) return send(res, 403, { error: \"browser-origin requests are not served here\", ...before });\n  if (!/^application\\/json\\b/.test(req.headers[\"content-type\"] ?? \"\"))\n    return send(res, 415, { error: \"content-type must be application/json\", ...before });\n  if (req.headers.authorization !== `Bearer ${ctx.cap}`)",
+      "replace": "async function handleInteractiveLifecycleRetirement(\n  req: IncomingMessage,\n  res: ServerResponse,\n  ctx: HandlerCtx,\n): Promise<void> {\n  const before = { outcome: \"not-executed\" } as const;\n  if (req.method !== \"POST\") return send(res, 405, { error: \"POST only\", ...before });\n  if (!/^application\\/json\\b/.test(req.headers[\"content-type\"] ?? \"\"))\n    return send(res, 415, { error: \"content-type must be application/json\", ...before });\n  if (req.headers.authorization !== `Bearer ${ctx.cap}`)",
       "expectRed": "interactive lifecycle retirement refuses browser-origin requests",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
     },
     {
       "name": "R6 the private retirement route accepts a caller without the operator capability",
       "file": "implementations/auth/src/service.ts",
-      "find": "  if (req.headers.authorization !== `Bearer ${ctx.cap}`)\n    return send(res, 401, { error: \"missing/invalid exchange capability - interactive lifecycle retirement is a loopback operator action\" });",
+      "find": "  if (req.headers.authorization !== `Bearer ${ctx.cap}`)\n    return send(res, 401, { error: \"missing/invalid exchange capability - interactive lifecycle retirement is a loopback operator action\", ...before });",
       "replace": "",
       "expectRed": "interactive lifecycle retirement refuses a missing operator capability",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
@@ -65,7 +67,7 @@
     {
       "name": "R7 the private retirement body accepts an unknown operation field",
       "file": "implementations/auth/src/service.ts",
-      "find": "  for (const key of Object.keys(body))\n    if (!INTERACTIVE_RETIRE_KEYS.has(key))\n      return send(res, 400, { error: `interactive lifecycle retirement carries the unknown field \"${key}\"` });",
+      "find": "  for (const key of Object.keys(body))\n    if (!INTERACTIVE_RETIRE_KEYS.has(key))\n      return send(res, 400, { error: `interactive lifecycle retirement carries the unknown field \"${key}\"`, ...before });",
       "replace": "",
       "expectRed": "interactive lifecycle retirement body is closed",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
@@ -73,7 +75,7 @@
     {
       "name": "R8 the private retirement route does not bind the request to the current row UID",
       "file": "implementations/auth/src/service.ts",
-      "find": "  if (row.lifecycleUid !== lifecycleUid)\n    return send(res, 409, { error: `interactive actor \"${owner}/${actor}\" is current at lifecycle ${row.lifecycleUid ?? \"<missing>\"}, not ${lifecycleUid}` });",
+      "find": "  if (row.lifecycleUid !== lifecycleUid)\n    return send(res, 409, { error: `interactive actor \"${owner}/${actor}\" is current at lifecycle ${row.lifecycleUid ?? \"<missing>\"}, not ${lifecycleUid}`, ...before });",
       "replace": "",
       "expectRed": "interactive lifecycle retirement refuses a UID other than the current actor row",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
@@ -81,7 +83,7 @@
     {
       "name": "R9 a retirement transport failure is treated as success and the row rotates anyway",
       "file": "implementations/auth/src/commands.ts",
-      "find": "  } catch (error) {\n    throw new Error(`cannot ${operation} \"${row.owner}/${row.actor}\": its lifecycle retirement could not reach the auth service (${error instanceof Error ? error.message : String(error)}). The actor row was not changed; recover with \\`cotal up\\`, then retry.`);\n  }",
+      "find": "  } catch (error) {\n    // A refused connection carried no request. Any other transport failure, a timeout included, may\n    // have followed a request the service received.\n    if ((error as { cause?: { code?: unknown } } | null)?.cause?.code === \"ECONNREFUSED\")\n      throw notRun(\"DEPENDENCY_UNAVAILABLE\", `the auth service at ${service.url} refused the connection`, \"restart the stack with `cotal up`, then retry\");\n    throw mayHaveRun(`its lifecycle retirement request failed (${error instanceof Error ? error.message : String(error)})`);\n  }",
       "replace": "  } catch {\n    return false;\n  }",
       "expectRed": "re-grant with a dead auth service is refused before changing the row",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
@@ -103,6 +105,41 @@
       "expectRed": "a daemon alive past the bound is refused loudly as alive-and-still-starting",
       "afterRestore": "pnpm --filter @cotal-ai/auth build",
       "command": "pnpm --filter @cotal-ai/auth build && pnpm build && pnpm smoke:user-auth-launch:live"
+    },
+    {
+      "name": "R12 a refused connection is reported as an unknown outcome",
+      "file": "implementations/auth/src/commands.ts",
+      "find": "?.cause?.code === \"ECONNREFUSED\")",
+      "replace": "?.cause?.code === \"NO-SUCH-CODE\")",
+      "expectRed": "re-grant with a dead auth service is refused before changing the row",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "R13 a token the door cannot parse is refused without stating that nothing was retired",
+      "file": "implementations/auth/src/service.ts",
+      "find": "    return send(res, 400, { error: e instanceof Error ? e.message : String(e), ...before });\n",
+      "replace": "    return send(res, 400, { error: e instanceof Error ? e.message : String(e) });\n",
+      "expectRed": "an owner that is not a derived token is refused before the barrier and states nothing was retired",
+      "cell": "an owner that is not a derived token is refused before the barrier and states nothing was retired",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "R14 the door's guard refusals no longer state that nothing was retired",
+      "file": "implementations/auth/src/service.ts",
+      "find": "): Promise<void> {\n  const before = { outcome: \"not-executed\" } as const;\n  if (req.method !== \"POST\") return send(res, 405, { error: \"POST only\", ...before });\n",
+      "replace": "): Promise<void> {\n  const before = {} as const;\n  if (req.method !== \"POST\") return send(res, 405, { error: \"POST only\", ...before });\n",
+      "expectRed": "each guard refusal of interactive lifecycle retirement states nothing was retired",
+      "cell": "each guard refusal of interactive lifecycle retirement states nothing was retired",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "R15 the CLI ignores the service's statement that the retirement did not run",
+      "file": "implementations/auth/src/commands.ts",
+      "find": "if (body.outcome !== \"not-executed\") throw mayHaveRun(",
+      "replace": "if (body.outcome !== \"never-stated\") throw mayHaveRun(",
+      "expectRed": "re-grant the live auth service refuses before retiring is a classified refusal with the row unchanged",
+      "cell": "re-grant the live auth service refuses before retiring is a classified refusal with the row unchanged",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
     }
   ]
 }

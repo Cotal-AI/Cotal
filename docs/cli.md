@@ -4786,7 +4786,10 @@ Choose `--sub` or `--owner`, never both. Grant requires explicit scope/read/post
 `--full` deliberately selects the native wide defaults. These usage errors refuse with exit 1 before
 the space or its authority is read, and one refusal names every missing input. Re-grant/revoke
 retain predecessor lifecycle retirement and concurrent-row checks before replacing or deleting
-authority. Grant
+authority. A retirement that did not run, because the auth service is not running, refused the
+connection or answered that the retirement did not run, is refused (exit 2) with the actor row
+unchanged and the recovery named, usually `cotal up`. Any other failed retirement request may have
+started the retirement, so it is unknown (exit 3) and is not retried. Grant
 rows in reports contain scope and ACL metadata, not token hashes or secret material.
 
 Revocation receipts separate committed deny-new from the delivery daemon's live-eviction notice.
