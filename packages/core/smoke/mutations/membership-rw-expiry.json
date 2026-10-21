@@ -19,8 +19,8 @@
     {
       "name": "the rw expiry checkpoint never fires",
       "file": "packages/core/src/membership-feed.ts",
-      "find": "    if (typeof exp !== \"number\" || exp * 1000 > Date.now()) return;",
-      "replace": "    if (typeof exp !== \"number\" || exp * 1000 > 0) return;",
+      "find": "    const exp = credsClaims(currentRwCreds).exp;\n    if (typeof exp !== \"number\" || exp * 1000 > Date.now()) return;",
+      "replace": "    const exp = credsClaims(currentRwCreds).exp;\n    if (typeof exp !== \"number\" || exp * 1000 > 0) return;",
       "expectRed": "conn B's own wire expires ONCE and no redial presents the dead cred to the broker",
       "cell": "conn B's own wire expires ONCE and no redial presents the dead cred to the broker",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
