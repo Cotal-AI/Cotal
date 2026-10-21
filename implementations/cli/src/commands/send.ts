@@ -20,6 +20,7 @@ import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { openTransient } from "../lib/transient.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { mentionsIn } from "../lib/mentions.js";
+import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 
 /**
  * One explicit --to, --channel or --role chooses the native delivery mode. The command
@@ -170,6 +171,7 @@ export async function send(args: ParsedArgs): Promise<void> {
       if (peer) {
         const { msg, ack } = await ep.unicastAttributed(peer.card.id, text, { replyTo: values["reply-to"] });
         messageId = msg.id; sequence = ack.seq;
+        if (peer.status === "offline") warnings.push({ code: "RECIPIENT_OFFLINE", target, message: offlineRecipientNotice(peer.card.name) });
       } else if (input.mode === "ask") {
         const { msg, ack } = await ep.anycastAttributed(input.target, text);
         messageId = msg.id; sequence = ack.seq;

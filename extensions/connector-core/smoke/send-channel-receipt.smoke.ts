@@ -316,6 +316,13 @@ const proto = MeshAgent.prototype as unknown as {
       dmText.text.includes("stored as seq 7") && dmText.text.includes("delivery not confirmed"),
       dmText.text,
     );
+    // Only an offline recipient gets the notice of what happens to the stored DM.
+    const notice = "otto is offline: the DM is delivered when otto reconnects, and a new agent spawned as otto does not receive it.";
+    check(
+      `1229:i cotal_dm text for a ${status} recipient ${status === "offline" ? "says" : "does not say"} otto is offline and when the DM arrives`,
+      status === "offline" ? dmText.text.includes(notice) : !dmText.text.includes("is offline"),
+      dmText.text,
+    );
   }
 }
 

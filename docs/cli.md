@@ -3044,7 +3044,9 @@ still has no inbox and does not promise thread continuity.
 
 The receipt names the destination and message identifier without repeating the body. Direct and
 role sends include the broker's stored sequence. Storage does not confirm delivery, acceptance
-or completion. Use `--json/-j` for the same receipt as one versioned envelope, `--plain` for a text report, or
+or completion. A direct send to an agent the roster shows offline also warns on stderr:
+`<agent> is offline. The message is stored and delivered when <agent> reconnects; a new agent spawned as <agent> does not receive it.`
+`--json` lists it as the `RECIPIENT_OFFLINE` warning. Use `--json/-j` for the same receipt as one versioned envelope, `--plain` for a text report, or
 `--verbose/-v` to show the actual sending principal. An unregistered channel is labeled; its native
 space policy still controls publication and no registry metadata is created. Unreadable metadata
 stays not checked. An unconfirmed publish outcome is unknown and never retried automatically.
@@ -3101,6 +3103,10 @@ The terminal view needs a terminal for input and output; without one, `chat` ref
 `--stdio` runs the NDJSON participant protocol for programs: requests on stdin, records on stdout,
 diagnostics on stderr. Closing stdin ends the session. `--stdio` does not combine with `--plain`,
 and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
+
+A direct message to an agent the roster shows offline is stored, and the view adds a notice that
+the agent receives it when it reconnects, as [`send`](#send) warns. `--stdio` carries that roster
+status as `recipientStatusAtSend` in the stored result.
 
 Every admission presents the session as an endpoint, so `--kind endpoint` is accepted and changes
 nothing. `--kind agent` refuses with exit 1 because a chat session never presents as an agent, and

@@ -1130,7 +1130,12 @@ export function cotalToolSpecs(
             recipientStatusAtSend === "unrostered"
               ? "recipient had no roster row at send: it messaged you from a connection that never joined the roster or has left it, so the space's DM history keeps this DM under its id and it may never reach an inbox"
               : `recipient was ${recipientStatusAtSend} at send`;
-          return ok(`DM stored as seq ${ack.seq} for ${recipient.name} (${at}; delivery not confirmed).${dup}`);
+          // The DM durable belongs to the recipient's lifecycle (SPEC §8): the same session gets it on
+          // reconnect, and a new spawn under that name starts after it.
+          const offline = recipientStatusAtSend === "offline"
+            ? ` ${recipient.name} is offline: the DM is delivered when ${recipient.name} reconnects, and a new agent spawned as ${recipient.name} does not receive it.`
+            : "";
+          return ok(`DM stored as seq ${ack.seq} for ${recipient.name} (${at}; delivery not confirmed).${offline}${dup}`);
         } catch (e) {
           if (e instanceof AmbiguousPeerError) {
             const who = e.candidates
