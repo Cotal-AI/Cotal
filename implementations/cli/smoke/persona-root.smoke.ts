@@ -239,8 +239,9 @@ try {
   // `spawnComplete([""])`); the trailing "" is the word being completed.
   check("completion: spawn --role offers the MESH's declared roles", sorted(spawnComplete(["--role", ""])).join(",") === "mesh-builder,mesh-reviewer", sorted(spawnComplete(["--role", ""])));
   check("completion: spawn --subscribe offers the MESH's declared channels", sorted(spawnComplete(["--subscribe", ""])).join(",") === "mesh-alpha,mesh-beta", sorted(spawnComplete(["--subscribe", ""])));
-  check("completion: send ask <role> offers the MESH's declared roles", sorted(sendComplete(["ask", ""])).join(",") === "mesh-builder,mesh-reviewer", sorted(sendComplete(["ask", ""])));
-  check("completion: send msg <channel> offers the MESH's declared channels", sorted(sendComplete(["msg", ""])).join(",") === "mesh-alpha,mesh-beta", sorted(sendComplete(["msg", ""])));
+  // `send ask <role>` and `send msg <channel>` became the `--role` and `--channel` destination flags.
+  check("completion: send --role offers the MESH's declared roles", sorted(sendComplete(["--role", ""])).join(",") === "mesh-builder,mesh-reviewer", sorted(sendComplete(["--role", ""])));
+  check("completion: send --channel offers the MESH's declared channels", sorted(sendComplete(["--channel", ""])).join(",") === "mesh-alpha,mesh-beta", sorted(sendComplete(["--channel", ""])));
   check("completion: personas show offers the MESH's persona names", sorted(personasComplete(["show", ""])).join(",") === "mesh-default,mesh-lead", sorted(personasComplete(["show", ""])));
   check("completion: personas show --space alpha offers ALPHA's names", sorted(personasComplete(["--space", "alpha", "show", ""])).join(",") === "alpha-only", sorted(personasComplete(["--space", "alpha", "show", ""])));
 

@@ -37,14 +37,14 @@
       "note": "An open checkpoint is answered by step key, and the only place a person can read WHAT it asks is this render. Without it the journal shows a pending row and no question, and the answerer has to guess what they are approving."
     },
     {
-      "name": "the journal render drops a settled pause's accepted value",
-      "file": "implementations/runtime/src/run-command.ts",
-      "find": "        ...(Object.hasOwn(r.answer, \"value\") ? [`value=${JSON.stringify(r.answer.value)}`] : []),",
-      "replace": "        ...(Object.hasOwn(r.answer, \"value\") ? [] : []),",
-      "expectRed": "the journal render shows the accepted value, answerer, artifact, answer id and time under the settled pause",
+      "name": "the journal row drops a settled pause's accepted value",
+      "file": "implementations/runtime/src/run-host.ts",
+      "find": "        ...(result.value !== undefined ? { value: result.value } : {}),",
+      "replace": "        ...({}),",
+      "expectRed": "show --json carries the accepted value, answerer, artifact, answer id and time on the settled pause",
       "completionMarker": "run-command:",
-      "cell": "the journal render shows the accepted value, answerer, artifact, answer id and time under the settled pause",
-      "note": "The outcome column remains `resolved`; only the accepted value disappears, so the end-to-end render cell must name that loss."
+      "cell": "show --json carries the accepted value, answerer, artifact, answer id and time on the settled pause",
+      "note": "The outcome column remains `resolved`; only the accepted value disappears, so the end-to-end cell must name that loss. Re-anchored for the redesign, whose rendered journal is a summary table and whose JSON result carries the answer facts from this row."
     },
     {
       "name": "an expired pause is exposed as answered",

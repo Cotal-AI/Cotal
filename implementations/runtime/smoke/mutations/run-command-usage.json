@@ -2,31 +2,31 @@
   "suite": [
     "implementations/runtime/smoke/run-command-usage.smoke.ts"
   ],
-  "guard": "`cotal run` refuses an unroutable verb before any plane opens, printing the usage line, and that usage line names every verb the gate routes",
+  "guard": "`cotal run` refuses an unroutable verb as a usage error before any plane opens, and every verb the gate routes is a declared run subcommand or alias",
   "command": "pnpm smoke:runtime-run-command-usage",
   "completionMarker": "run-command-usage:",
   "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/run-command-usage.json   # --config resolves against the repo root, never the cwd",
   "why": [
-    "The unknown-verb case supplies both answer positionals so the hosted answer branch cannot print the same usage line for missing arguments. Invalid JSON stops that wrong path before a broker connection. Removing the verb gate must lose the usage line."
+    "The unknown-verb case supplies both answer positionals and invalid JSON, so the verb gate must answer before the answer arity or the value check. Without the gate the verb still reaches a usage refusal, but one that names the arity rather than the declared commands, so the cell grades the gate's own sentence."
   ],
   "mutations": [
     {
-      "name": "the verb gate is gone, so an unroutable verb reaches answer parsing",
+      "name": "the verb gate is gone, so an unroutable verb reaches the per-verb arity checks",
       "file": "implementations/runtime/src/run-command.ts",
-      "find": "  if (verb === undefined || ![\"start\", \"resume\", \"ps\", \"journal\", \"answer\", \"amend\", \"revoke\", \"migrate\"].includes(verb)) {\n    console.error(USAGE);\n    process.exit(1);\n  }",
-      "replace": "  if (false) {\n    console.error(USAGE);\n    process.exit(1);\n  }",
-      "expectRed": "and the usage line is printed for it too",
-      "cell": "and the usage line is printed for it too",
-      "note": "An unknown verb carries complete answer-shaped arguments and invalid JSON. Without the gate it reaches answer parsing, which refuses without printing usage; neither path contacts a broker. Re-anchored for #2363, which added `amend` to the routed verbs."
+      "find": "  if (extra.length || ![\"start\", \"resume\", \"ps\", \"journal\", \"answer\", \"amend\", \"revoke\", \"migrate\", \"validate\", \"plan\", \"simulate\", \"turns\", \"yield\"].includes(verb)) usage(\"choose a declared run command; run it bare to list workflows\");",
+      "replace": "  if (extra.length) usage(\"choose a declared run command; run it bare to list workflows\");",
+      "expectRed": "an unknown verb is refused as a usage error before any plane is opened",
+      "cell": "an unknown verb is refused as a usage error before any plane is opened",
+      "note": "Re-anchored for the redesign, which moved the gate from the dispatcher's usage print into workflowArguments. Without the list check, `frobnicate run-0 <step>` falls through to the one-identifier arity rule and is refused with a sentence that does not name the declared commands. The validate-hook cell goes red with it, since the hook calls the same grammar."
     },
     {
-      "name": "the usage line loses a verb the gate still routes",
-      "file": "implementations/runtime/src/run-command.ts",
-      "find": "| ps [--endpoint <ep>] [--json] | journal",
-      "replace": "| journal",
-      "expectRed": "the usage line names `ps`",
-      "cell": "the usage line names `ps`",
-      "note": "The two lists drift independently; this is the drift the loop of verb cells exists to catch. Measured 2026-09-03: exactly one red, the `ps` cell, 9 ok, 1 failed. Re-anchored 2026-09-06 when `ps` grew `[--endpoint <ep>]` in the usage line."
+      "name": "the declaration loses a verb the gate still routes",
+      "file": "implementations/runtime/src/index.ts",
+      "find": "    { name: \"list\", aliases: [\"ps\"], hidden: true, ",
+      "replace": "    { name: \"list\", hidden: true, ",
+      "expectRed": "the declared run command names `ps`",
+      "cell": "the declared run command names `ps`",
+      "note": "The two lists drift independently; this is the drift the loop of declared-verb cells exists to catch. Re-anchored for the redesign, which moved the verbs from the usage line into the command's subcommand declaration, where `ps` is the hidden list subcommand's alias."
     }
   ]
 }

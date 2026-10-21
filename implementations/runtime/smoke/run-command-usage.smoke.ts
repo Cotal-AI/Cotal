@@ -1,7 +1,8 @@
 /**
- * `cotal run`'s verb gate, with no broker: an invocation the dispatcher cannot route is refused
- * before any plane is opened, with the usage line and a non-zero exit, and the usage line names
- * every verb the gate accepts.
+ * `cotal run`'s verb gate, with no broker: an invocation the dispatcher cannot route is refused as a
+ * usage error before any plane is opened, with exit 1, and every verb the gate routes is a declared
+ * `run` subcommand or alias that the command's usage line names. Bare `cotal run` is the list
+ * command, so it is not a refusal (docs/cli.md, "Workflow command forms").
  *
  * This is the runtime package's own `test` script, which the Windows required job runs on a box
  * with no nats-server, so everything here must stay off the wire. Every other runtime suite drives
@@ -9,17 +10,18 @@
  *
  * Run: pnpm smoke:runtime-run-command-usage   (no broker)
  */
-import { EpEnvelopeError, EP_UNANSWERED } from "@cotal-ai/core";
+import { EpEnvelopeError, EP_UNANSWERED, registry, type Command } from "@cotal-ai/core";
+import { exitCode, isCommandFailure } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
-import { unansweredManagerRefusal } from "../src/run-command.js";
+import { unansweredManagerRefusal, workflowArguments } from "../src/run-command.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
   if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, extra ?? ""); }
 };
 
-// The gate refuses through `process.exit`; the suite turns that into a thrown sentinel so the
-// exit code is graded rather than taken.
+// A hosted refusal that is not part of the grammar still ends through `process.exit`; the suite
+// turns that into a thrown sentinel so the exit code is graded rather than taken.
 class Exited extends Error { constructor(readonly code: number | string | null | undefined) { super(`exit ${code}`); } }
 const ERR: string[] = [];
 const origErr = console.error;
@@ -29,34 +31,53 @@ process.exit = ((code?: number | string | null) => { throw new Exited(code); }) 
 const reset = () => { ERR.length = 0; };
 const restore = () => { console.error = origErr; process.exit = origExit; };
 
+// The address names a port nothing listens on, so a call that got past the grammar to a connect
+// would come back as a broker failure rather than a usage refusal.
 const attempt = async (positionals: string[], values: Record<string, string | boolean> = {}): Promise<Exited | Error | undefined> =>
   runWorkflow({ values: { server: "nats://127.0.0.1:1", space: "usage", ...values }, positionals, raw: [] })
     .then(() => undefined, (e: Error) => e);
-
-const VERBS = ["start", "resume", "ps", "journal", "answer", "migrate"];
+/** The grammar's refusal, read the way the kernel reads it: a USAGE_INVALID failure that exits 1. */
+const usageRefusal = (got: unknown, says: string) =>
+  isCommandFailure(got) && got.outcome === "refused" && got.code === "USAGE_INVALID" && exitCode(got.outcome, got.code) === 1 && got.message.includes(says);
+const gateMessage = "choose a declared run command";
+const gate = (positionals: string[], values: Record<string, string | boolean> = {}) => {
+  try { return workflowArguments({ values, positionals, raw: [] }); } catch (e) { return e as Error; }
+};
 
 {
-  reset();
-  const got = await attempt([]);
-  c("no verb at all is refused before any plane is opened", got instanceof Exited, got);
-  c("with exit code 1", got instanceof Exited && got.code === 1, got);
-  c("and the usage line on stderr", ERR.some((l) => l.startsWith("usage: cotal run")), ERR);
+  const bare = gate([]);
+  c("no verb at all is the list command, not a refusal", !(bare instanceof Error) && bare.verb === "ps", bare);
 }
 
-let usage = "";
 {
   reset();
-  // Complete answer-shaped arguments prevent the hosted answer branch's own usage error
-  // from impersonating the verb gate. Invalid JSON stops that wrong branch before a connect.
+  // Complete answer-shaped arguments and invalid JSON: the verb gate must answer before either the
+  // answer arity or the value check could.
   const got = await attempt(["frobnicate", "run-0", "/checkpoint:probe#0"], { value: "{" });
-  c("an unknown verb is refused the same way", got instanceof Exited && got.code === 1, got);
-  usage = ERR.find((l) => l.startsWith("usage: cotal run")) ?? "";
-  c("and the usage line is printed for it too", usage !== "", ERR);
+  c("an unknown verb is refused as a usage error before any plane is opened", usageRefusal(got, gateMessage), got);
+  const run = registry.resolve<Command>("command", "run");
+  let hooked: unknown;
+  try { run.validate?.({ values: {}, positionals: ["frobnicate"], raw: [] }); } catch (e) { hooked = e; }
+  c("and the registered command's validate hook, which the kernel runs before the command, refuses it the same way",
+    usageRefusal(hooked, gateMessage), hooked);
 }
 
-// The gate and the usage text are two lists of the same verbs, kept by hand. Grade that they agree:
-// every verb the gate routes appears in the usage the refusal prints.
-for (const verb of VERBS) c(`the usage line names \`${verb}\``, usage.includes(verb), usage);
+// The gate and the declaration are two lists of the same verbs, kept by hand. Grade that they agree:
+// every verb the gate routes is declared, every declared name passes the gate, and the usage line
+// names every listed subcommand.
+const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", "migrate", "validate", "plan", "simulate", "turns", "yield"];
+{
+  const run = registry.resolve<Command>("command", "run");
+  const subcommands = run.subcommands ?? [];
+  const declared = new Set(subcommands.flatMap((s) => [s.name, ...(s.aliases ?? [])]));
+  for (const verb of VERBS) c(`the declared run command names \`${verb}\``, declared.has(verb), [...declared]);
+  for (const name of declared) {
+    const routed = gate([name]);
+    c(`the verb gate routes the declared \`${name}\``, !(routed instanceof Error && routed.message.includes(gateMessage)), routed);
+  }
+  for (const s of subcommands.filter((s) => !s.hidden))
+    c(`the usage line names \`${s.name}\``, new RegExp(`(^|[\\s[|])${s.name}( |\\]|$)`).test(run.usage ?? ""), run.usage);
+}
 
 // Flags the HOSTED path does not take are refused by name before any plane is opened, never
 // dropped: a hosted drive is recorded under the manager's own endpoint, the manager resumes from
@@ -64,25 +85,30 @@ for (const verb of VERBS) c(`the usage line names \`${verb}\``, usage.includes(v
 {
   reset();
   const got = await attempt(["start"], { file: "p.cotal.js", endpoint: "elsewhere" });
-  c("hosted `start --endpoint` is refused", got instanceof Exited && got.code === 1 && ERR.some((l) => l.includes("--endpoint is not taken on the hosted path")), ERR);
+  c("hosted `start --endpoint` is refused", usageRefusal(got, "--endpoint is only for the local path"), got);
   reset();
   const got2 = await attempt(["resume", "run-0"], { endpoint: "elsewhere" });
-  c("hosted `resume --endpoint` is refused", got2 instanceof Exited && got2.code === 1 && ERR.some((l) => l.includes("--endpoint is not taken on the hosted path")), ERR);
+  c("hosted `resume --endpoint` is refused", usageRefusal(got2, "--endpoint is only for the local path"), got2);
   reset();
   const got3 = await attempt(["resume", "run-0"], { file: "p.cotal.js" });
   c("hosted `resume --file` is refused, and the sentence hands back a command with the run id in it",
     got3 instanceof Exited && got3.code === 1 && ERR.some((l) => l.includes("cotal run resume run-0 --local --file <program>")), ERR);
   reset();
   const got4 = await attempt(["answer", "run-0", "/checkpoint:approve#0"], { by: "dana" });
-  c("hosted `answer --by` is refused: the manager records the caller", got4 instanceof Exited && got4.code === 1 && ERR.some((l) => l.includes("--by is not taken on the hosted path")), ERR);
-  c("and the usage line advertises `--file` and `--by` only beside `--local`",
-    usage.includes("resume <runId> [--local --file <program>]") && usage.includes("[--local --by <who>]") && !usage.includes("--by <who> [--value"), usage);
-  // The manager serves no `run-migrate` command (SPEC 14.3's table), so the hosted path refuses
-  // with the sentence that names `--local` rather than routing into an unanswered describe.
-  reset();
-  const got5 = await attempt(["migrate", "run-0"], { file: "p.cotal.js" });
-  c("hosted `migrate` is refused with the `--local` sentence, never routed to a manager",
-    got5 instanceof Exited && got5.code === 1 && ERR.some((l) => l.includes("no run-migrate command") && l.includes("cotal run migrate <runId> --local --file <program>")), ERR);
+  c("hosted `answer --by` is refused: the manager records the caller", usageRefusal(got4, "--by is only for the local path"), got4);
+  const flags = registry.resolve<Command>("command", "run").flags ?? [];
+  const help = (name: string) => flags.find((f) => f.name === name)?.description ?? "";
+  c("and the declared flag help places `--file` on resume and `--by` on answer and amend only beside `--local`",
+    help("file").includes("resume --local") && help("by").includes("answer --local") && help("by").includes("amend --local"),
+    { file: help("file"), by: help("by") });
+  // The manager serves no `run-migrate` command (SPEC 14.3's table), so the grammar runs every
+  // check on the local drive rather than routing it into an unanswered describe.
+  const check = gate(["migrate", "run-0"], { file: "p.cotal.js" });
+  const checkAlias = gate(["check", "run-0", "p.cotal.js"]);
+  c("hosted `migrate` is never routed to a manager: the grammar runs every check on the local drive",
+    !(check instanceof Error) && check.verb === "migrate" && check.values.local === true
+    && !(checkAlias instanceof Error) && checkAlias.verb === "migrate" && checkAlias.values.local === true && checkAlias.values.file === "p.cotal.js",
+    { check, checkAlias });
 }
 
 // #1630: what a hosted verb prints when the manager describe drew no answer. The rail the describe
