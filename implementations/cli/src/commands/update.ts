@@ -314,9 +314,11 @@ function isNoMeshRefusal(e: unknown): boolean {
  *  outlives its broker and reconnects when it returns, so a refused connection alone leaves its
  *  custody in place; a supervisor whose argv names this space or none, a peer that accepts, answers
  *  or stalls, a mesh registered by hand, or a `--server` the operator named may still have a manager
- *  behind it. */
-async function isStoppedLocalMesh(target: MeshTarget): Promise<boolean> {
-  if (!localMeshesForRoot(target.root).some((m) => m.space === target.space && m.server === target.server)) return false;
+ *  behind it. A project that only ran setup has no registry entry yet; its implicit local default
+ *  is eligible for the same process and listener checks, but an explicit server is not. */
+export async function isStoppedLocalMesh(target: MeshTarget): Promise<boolean> {
+  const registered = localMeshesForRoot(target.root).some((m) => m.space === target.space && m.server === target.server);
+  if (!registered && target.source !== "local-space") return false;
   if (supervisorMayServe(target.space)) return false;
   return assertEndpointUnreachable(target.server).then(() => true, () => false);
 }

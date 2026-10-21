@@ -97,8 +97,10 @@ records them through the `seed` input the CLI hands it. That is workspace's `see
 which writes the operator-level cotal config under a lock and only when it declares no list for that
 connector, so two setups run at once record one list. The `skills` action runs for every
 present connector that declares one, selected or not, because Cotal's authored skills are
-independent of mesh membership. With `--demo`, two experts (david, the engineer; sven, the guide)
-plus the operator's own driving session (`me`) are written too, and `me` is the persona
+independent of mesh membership. An upgrade also supplies the current authored skills to each
+refresh action, which updates an existing skills installation without adding a removed one.
+With `--demo`, two experts (david, the engineer; sven, the guide) plus the operator's own driving
+session (`me`) are written too, and `me` is the persona
 `cotal spawn me` drives.
 
 **`--yes`** asks nothing even on a TTY, so every input must be a flag. Optional and `confirm`
@@ -111,8 +113,8 @@ is the agent/CI contract; keep it working.
 | Thing | Must stay in sync across | Why |
 |---|---|---|
 | Marketplace name **`cotal-mesh`** | `MARKETPLACE` in the claude connector's [`src/setup.ts`](../extensions/connector-claude-code/src/setup.ts) (materialized `marketplace.json`), repo [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json) | Setup installs and verifies the plugin as `cotal@cotal-mesh`. The wake channel does not use this name: `CHANNEL_REF` in [`extension.ts`](../extensions/connector-claude-code/src/extension.ts) is `server:cotal` |
-| Plugin assets | the claude connector's own [`src/setup.ts`](../extensions/connector-claude-code/src/setup.ts) copy list `COTAL_ASSETS` (`dist/mcp.cjs`, `dist/hook.cjs`, `dist/monitor.cjs`, `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json`, `monitors/monitors.json`, plus the `dist/cli.json` that setup writes beside them), its `package.json` `files` field, and the release tree's list in [`scripts/materialize-claude-plugin.mjs`](../scripts/materialize-claude-plugin.mjs) | The connector materializes its own plugin; missing or renamed assets break the install, and the base CLI has no copy of the list. The release script refuses a plugin whose `.mcp.json` or hooks reference a file it did not copy |
-| `cotal` plugin copy | `materializeCotal` and `refresh` in the claude connector's `src/setup.ts`; `pluginVersion` stamps the release, `+`, then a digest of every file setup copies, `cli.json` included | Claude Code runs a plugin from a local-directory marketplace in place, so this copy is what the user-scope install runs in every project. A repeat `cotal setup` and `cotal update` rewrite it, and the stamp lets `cotal status` name a copy an earlier release wrote |
+| Plugin assets | the claude connector's own [`src/setup.ts`](../extensions/connector-claude-code/src/setup.ts) copy list `COTAL_ASSETS` (`dist/mcp.cjs`, `dist/hook.cjs`, `dist/monitor.cjs`, `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json`, `hooks/native-wake.js`, `monitors/monitors.json`, plus the `dist/cli.json` that setup writes beside them), its `package.json` `files` field, and the release tree's list in [`scripts/materialize-claude-plugin.mjs`](../scripts/materialize-claude-plugin.mjs) | The connector materializes its own plugin; missing or renamed assets break the install, and the base CLI has no copy of the list. The release script refuses a plugin whose `.mcp.json` or hooks reference a file it did not copy |
+| `cotal` plugin copy | `materializeCotal` and `refresh` in the claude connector's `src/setup.ts`; `pluginVersion` stamps the release, `+`, then a digest of every file setup copies, `cli.json` included | A repeat `cotal setup` and `cotal update` replace the materialized payload and update existing registrations with Claude's own plugin command. Refresh preserves disabled settings and verifies the recorded version and resolved files. Status checks the same payload rather than trusting the marketplace alone. Running sessions need a plugin reload or restart |
 | Claude Desktop entry | `desktopConfigPath` and the `cotal` server name in the claude connector's `src/desktop-config.ts`, and `desktopEntry` in its `src/setup.ts` | Desktop reads its config only when it starts. The entry runs the materialized `dist/mcp.cjs` with `--desktop`, so the materialize path and the entry must agree |
 | `Connector.pluginRoot` | [`packages/core/src/connector.ts`](../packages/core/src/connector.ts) (contract) plus set in the claude connector's `extension.ts` | A connector's declaration that it ships installable plugin assets; the picker phrases its hint from it |
 | `BUNDLED_PKG_PREFIX` | [`lib/nats-bin.ts`](../implementations/cli/src/lib/nats-bin.ts) ↔ the `@eplightning/nats-server-*` `optionalDependencies` in [`implementations/cli/package.json`](../implementations/cli/package.json) | The bundled NATS binary is resolved by `${prefix}-${platform}-${arch}`. (Future: swap the prefix to our own `@cotal-ai/nats-server-*`.) |
@@ -279,6 +281,25 @@ and generation GC rather than migrating the operator-global store. The refusal n
 in-tree seed smokes set `COTAL_ALLOW_CHECKOUT_SEED=1` after pointing `$XDG_CONFIG_HOME` at a scratch
 dir. An unproven entry is refused the same way: a missing identity answer is not treated as a
 released install.
+
+Before an upgraded generation commits, reconciliation also refreshes already installed harness
+copies through each connector's setup provider. The provider runs even when its native executable
+is unavailable: an installed integration that cannot be updated must fail, not disappear from the
+upgrade checks. A refresh failure leaves the older stamp and recovery cursor intact. The reconcile
+lock stays held while the extension writer lock is released for provider loading and native refresh,
+then reacquired. A manifest change during that interval refuses the generation commit. This keeps
+ordinary first use after an npm upgrade on the same harness-refresh path as `cotal update`.
+
+Connector import and registration do not probe Claude. Setup discovers readiness through the
+provider, including Desktop's bundled executable, rather than the managed launch requirements.
+Claude's version probes have a five-second kill timeout. An unavailable unrelated harness is
+skipped during setup. Refresh reads Cotal's native plugin records first: no installed integration
+means no native probe, while an installed integration with an unusable executable still refuses.
+Selected setup actions recheck readiness inside the recorded step. Losing it after discovery
+produces a partial result; no skipped native action is reported as completed.
+
+Claude's generated MCP entry and classic hook commands use the recorded Node executable. Those
+generated bytes, the native module and the CLI record all contribute to the plugin version digest.
 
 **Crash safety.** One shared advisory lock ([`packages/workspace/src/advisory-lock.ts`](../packages/workspace/src/advisory-lock.ts):
 atomic hard-link publish, PID + process-start liveness, bounded wait, dead-owner reclaim) guards the
