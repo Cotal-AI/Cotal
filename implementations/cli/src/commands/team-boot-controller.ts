@@ -123,7 +123,7 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "fresh boot intent creation or its durability did not confirm; no trust preparation, launch spec or listener was requested", { target: { space: plan.space, deploymentId, root: plan.root }, remedy: "inspect the exact intent path before deciding whether any further boot can be attempted" }); }
     if (binding) recheckStackResume(binding, deploymentId); else await recheckFreshTeamBoot(plan, { deploymentId });
     const started = await startControllerStack({
-      root: plan.root, space: plan.space, server: plan.server, transport: plan.transport, runtime: plan.runtime, noManager: false, mode: plan.mode,
+      maintenanceLock: lock, root: plan.root, space: plan.space, server: plan.server, transport: plan.transport, runtime: plan.runtime, noManager: false, mode: plan.mode,
       ...(plan.idp !== undefined ? { idp: plan.idp } : {}), ...(plan.host ? { host: plan.host } : {}), ...(plan.maxSessions !== undefined ? { maxSessions: plan.maxSessions } : {}),
       foreground: request.foreground, presentation: request.presentation,
       ...(binding ? { expectPriorDown: { journalSha256: binding.journalSha256, operationId: binding.priorDown } } : {}),

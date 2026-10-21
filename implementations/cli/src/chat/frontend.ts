@@ -6,6 +6,7 @@
  */
 import { writeSync } from "node:fs";
 import { colorEnabled, inputDisabledByFlag, terminalWidth } from "@cotal-ai/workspace";
+import { ownStdoutErrors } from "../lib/stdout-owner.js";
 import type { AdmittedChatSession, CloseReport } from "./session.js";
 import type { Recipient } from "./view.js";
 
@@ -131,6 +132,20 @@ async function withLineSignals<T>(run: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * Line modes own stdout's errors. A reader that closes stdout, or any failed write, ends input the
+ * way a signal does, so the front end still closes its session once and the caller sets the exit
+ * status from that close. The binary's closed-pipe exit would otherwise end the process first.
+ */
+async function withOwnedStdout<T>(run: () => Promise<T>): Promise<T> {
+  const release = ownStdoutErrors(() => process.stdin.destroy());
+  try {
+    return await run();
+  } finally {
+    release();
+  }
+}
+
+/**
  * A loaded front end. Starting it runs one admitted session and returns its close report, with
  * diagnostics on stderr. It installs its signal handling before its first await, so a caller that
  * holds the signals until then hands them over with no gap. The caller maps the report to an exit
@@ -148,11 +163,11 @@ export type StartChatFrontEnd = (opts: {
 export async function loadChatFrontEnd(frontEnd: FrontEnd): Promise<StartChatFrontEnd> {
   if (frontEnd === "stdio") {
     const { runStdio } = await import("./stdio-io.js");
-    return ({ session }) => withLineSignals(() => runStdio({ session, stdin: process.stdin, stdout: process.stdout, diagnostic: (line) => process.stderr.write(`cotal chat: ${line}\n`) }));
+    return ({ session }) => withLineSignals(() => withOwnedStdout(() => runStdio({ session, stdin: process.stdin, stdout: process.stdout, diagnostic: (line) => process.stderr.write(`cotal chat: ${line}\n`) })));
   }
   if (frontEnd === "plain") {
     const { runPlain } = await import("./plain.js");
-    return async ({ session, initialRecipient }) => (await withLineSignals(() => runPlain({ session, input: process.stdin, output: process.stdout, width: terminalWidth(process.stdout), initialRecipient }))).ended;
+    return async ({ session, initialRecipient }) => (await withLineSignals(() => withOwnedStdout(() => runPlain({ session, input: process.stdin, output: process.stdout, width: terminalWidth(process.stdout), initialRecipient })))).ended;
   }
   const tui = await loadTui();
   return ({ session, initialRecipient, notice }) => runTui(tui, session, initialRecipient, notice);

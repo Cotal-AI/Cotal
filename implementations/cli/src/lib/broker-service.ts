@@ -3,7 +3,7 @@
  *  kernel-exit stop. Planning prepares no trust, writes no broker config and starts nothing else. */
 import { createHash } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync } from "node:fs";
-import { isIP } from "node:net";
+import { createServer, isIP } from "node:net";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { isReachable, registry, writeSecretFileCreateOnly } from "@cotal-ai/core";
@@ -29,10 +29,11 @@ const LEGACY_BROKER_PIDFILE = "nats.pid";
 
 interface BrokerTarget { root: string; space: string; server: string; host: string; port: number; scheme: "nats" | "tls"; config: string; binary: string }
 
-const refuse = (code: "CONFLICT" | "LIFECYCLE_BLOCKED" | "UNSUPPORTED" | "TARGET_UNAVAILABLE", message: string, target?: unknown): never => {
-  throw new CommandFailure("refused", code, message, target === undefined ? {} : { target });
+const refuse = (code: "CONFLICT" | "LIFECYCLE_BLOCKED" | "UNSUPPORTED" | "TARGET_UNAVAILABLE", message: string, target?: unknown, remedy?: string): never => {
+  throw new CommandFailure("refused", code, message, { ...(target === undefined ? {} : { target }), ...(remedy ? { remedy } : {}) });
 };
 
+const LISTENER_PROBE_TIMEOUT_MS = 5000;
 const portsDirectory = (context: ServiceAdapterContext) => join(context.stateDirectory, `.broker-ports-${context.launchRequestId}`);
 const launchReceipt = (context: ServiceAdapterContext) => join(context.stateDirectory, `.broker-launch-${context.launchRequestId}.json`);
 
@@ -75,19 +76,11 @@ function restoreAdmits(root: string, space: string, server: string): boolean {
   return maintenanceAdmitsStackWork(canonical, space, server, maintenanceStackView(canonical, space));
 }
 
-/** The declared root, space, broker address, configuration and binary, checked against the local
- *  registrations. Registry absence never proves that a broker is exclusive, so every known
- *  sharing, maintenance and legacy-custody record refuses instead of being reconciled here. */
-function brokerTarget(context: ServiceAdapterContext, purpose: BrokerPurpose = "launch"): BrokerTarget {
-  const options = context.options;
-  const root = physical(String(options.root)), config = physical(String(options.config)), binary = physical(String(options.binary));
-  const server = String(options.server);
-  if (canonicalRoot(root) === canonicalRoot(homedir())) refuse("CONFLICT", "the machine home is not an isolated broker root; no broker was launched", { root });
-  const control = join(root, ".cotal");
-  const controlStat = lstatSync(control, { throwIfNoEntry: false });
-  if (!controlStat?.isDirectory() || controlStat.isSymbolicLink()) refuse("TARGET_UNAVAILABLE", "the broker root has no physical .cotal control directory; prepare it first", { root });
-  const inside = relative(control, config);
-  if (!inside || inside.startsWith(`..${sep}`) || inside === ".." || isAbsolute(inside)) refuse("CONFLICT", "the broker configuration is not inside the selected root's .cotal directory; another root's configuration was not used", { root, config });
+/** The address rules the broker service applies before any launch: one nats:// or tls:// URL
+ *  without credentials, path, query or fragment, one concrete TCP port and one concrete IP literal.
+ *  `cotal up` runs them before it writes anything, so an address the service would refuse never
+ *  becomes a stack's recorded address. The host is returned URL-shaped. */
+export function brokerListenAddress(server: string): { protocol: string; host: string; port: number } {
   let url: URL;
   try { url = new URL(server); } catch { return refuse("UNSUPPORTED", "the broker address must be one nats:// or tls:// URL"); }
   if (!["nats:", "tls:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || (url.pathname && url.pathname !== "/") || server.includes(",")) refuse("UNSUPPORTED", "the broker address must be one nats:// or tls:// URL without credentials, path, query or fragment");
@@ -102,11 +95,28 @@ function brokerTarget(context: ServiceAdapterContext, purpose: BrokerPurpose = "
   if (family === 0) refuse("UNSUPPORTED", "the broker address must name a concrete IP literal; a DNS name cannot be matched to the broker's own listener report, so no listener readiness would be attributable", { server });
   if (family === 4 ? host === "0.0.0.0" : /^[0:]+$/.test(host)) refuse("UNSUPPORTED", "the broker address is a wildcard bind; its listener report names every interface, so no single declared address could be attributed to this broker", { server });
   if (family === 6 && /^(0{0,4}:){0,5}:?ffff:/i.test(host)) refuse("UNSUPPORTED", "the broker address is an IPv4-mapped IPv6 literal, which nats-server reports in IPv4 form; declare the IPv4 address itself", { server });
+  return { protocol: url.protocol, host: new URL(`nats://${family === 6 ? `[${host}]` : host}:${port}`).hostname, port };
+}
+
+/** The declared root, space, broker address, configuration and binary, checked against the local
+ *  registrations. Registry absence never proves that a broker is exclusive, so every known
+ *  sharing, maintenance and legacy-custody record refuses instead of being reconciled here. */
+function brokerTarget(context: ServiceAdapterContext, purpose: BrokerPurpose = "launch"): BrokerTarget {
+  const options = context.options;
+  const root = physical(String(options.root)), config = physical(String(options.config)), binary = physical(String(options.binary));
+  const server = String(options.server);
+  if (canonicalRoot(root) === canonicalRoot(homedir())) refuse("CONFLICT", "the machine home is not an isolated broker root; no broker was launched", { root });
+  const control = join(root, ".cotal");
+  const controlStat = lstatSync(control, { throwIfNoEntry: false });
+  if (!controlStat?.isDirectory() || controlStat.isSymbolicLink()) refuse("TARGET_UNAVAILABLE", "the broker root has no physical .cotal control directory; prepare it first", { root });
+  const inside = relative(control, config);
+  if (!inside || inside.startsWith(`..${sep}`) || inside === ".." || isAbsolute(inside)) refuse("CONFLICT", "the broker configuration is not inside the selected root's .cotal directory; another root's configuration was not used", { root, config });
+  const { protocol, host, port } = brokerListenAddress(server);
   let policy;
   try { policy = readBrokerPolicy(root); }
   catch { return refuse("CONFLICT", "the root's recorded broker transport policy is unreadable; no plaintext or TLS mode was inferred"); }
   const scheme = policy?.transport.kind === "tls-required" ? "tls" : "nats";
-  if (scheme === "tls" && url.protocol !== "tls:" && url.protocol !== "nats:") refuse("UNSUPPORTED", "the TLS-required broker needs a nats:// or tls:// address");
+  if (scheme === "tls" && protocol !== "tls:" && protocol !== "nats:") refuse("UNSUPPORTED", "the TLS-required broker needs a nats:// or tls:// address");
   const registered = findMesh(context.space), prepared = findPreparedSpace(context.space);
   if (registered) {
     if (registered.origin !== "up" || canonicalRoot(registered.root) !== canonicalRoot(root) || registered.server !== server) refuse("CONFLICT", "the space is registered to another root, broker address or external origin; no broker was launched", { space: context.space });
@@ -118,7 +128,30 @@ function brokerTarget(context: ServiceAdapterContext, purpose: BrokerPurpose = "
   if (localMeshesForRoot(root).some((mesh) => mesh.space !== context.space)) refuse("CONFLICT", "another locally started space uses this root; its broker custody was not shared");
   if (loadMeshes().some((mesh) => mesh.space !== context.space && mesh.server === server)) refuse("CONFLICT", "another registration names this exact broker address; no shared broker was launched or stopped");
   if (readMaintenanceJournal(root) && !controllerMaintenanceAdmits(root, context, purpose) && !restoreAdmits(root, context.space, server)) refuse("LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; the broker service did not substitute an ordinary lifecycle");
-  return { root, space: context.space, server, host: new URL(`nats://${family === 6 ? `[${host}]` : host}:${port}`).hostname, port, scheme, config, binary };
+  return { root, space: context.space, server, host, port, scheme, config, binary };
+}
+
+/** Bind the declared client listener once and release it. nats-server exits on a bind failure with
+ *  only a line in its log, so a held address is refused here, before launch, with the OS bind error.
+ *  The address can still be taken between this check and the broker's own bind; that broker then
+ *  exits before readiness and its log keeps the cause. */
+async function assertListenerFree(target: BrokerTarget): Promise<void> {
+  // The target host is URL-shaped: an IPv6 literal keeps its brackets there.
+  const host = target.host.startsWith("[") ? target.host.slice(1, -1) : target.host, address = `${target.host}:${target.port}`;
+  const probe = createServer();
+  let timer: NodeJS.Timeout | undefined;
+  const error = await new Promise<NodeJS.ErrnoException | "timeout" | undefined>((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), LISTENER_PROBE_TIMEOUT_MS);
+    probe.once("error", resolve);
+    probe.listen({ host, port: target.port, exclusive: true }, () => resolve(undefined));
+  });
+  // Closed on every path, bound or not, so a refusal leaves no handle that keeps the command alive.
+  clearTimeout(timer);
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  if (!error) return;
+  if (error === "timeout") return refuse("TARGET_UNAVAILABLE", `the broker address ${address} could not be checked: binding it did not finish within ${LISTENER_PROBE_TIMEOUT_MS / 1000}s; no broker was launched`, { server: target.server, address });
+  const reason = error.code === "EADDRINUSE" ? "address already in use" : error.code === "EACCES" ? "permission denied" : error.code === "EADDRNOTAVAIL" ? "address not available on this host" : error.code ?? "unknown error";
+  refuse(error.code === "EADDRINUSE" ? "CONFLICT" : "TARGET_UNAVAILABLE", `the broker cannot listen on ${address}: bind failed (${reason}); no broker was launched`, { server: target.server, address, bindError: error.code ?? null }, error.code === "EADDRINUSE" ? `stop the process listening on ${address}, then run the command again; the stack keeps its recorded broker address` : undefined);
 }
 
 function configDigest(path: string): string {
@@ -133,14 +166,18 @@ function refuseLegacyBroker(target: BrokerTarget): void {
   if (raw !== undefined) refuse("LIFECYCLE_BLOCKED", "a legacy nats.pid record exists under this root; the broker service neither adopts nor clears it", { root: target.root, remedy: "inspect and stop the legacy broker with its original route before using the broker service" });
 }
 
-/** Every non-broker legacy record that might still front a process depends on this broker. */
+/** Every non-broker legacy record that might still front a process depends on this broker. A record
+ *  whose PID is a live service instance of this space is that controller child's own native record,
+ *  not a legacy daemon; the service-instance check below names it by its definition. */
 function liveLegacyDependants(target: BrokerTarget): string[] {
+  const owned = new Set(serviceInstances(target.space).flatMap((row) => row.record.value.process && observeServiceProcess(row.record.value) === "running" ? [row.record.value.process.pid] : []));
   const live: string[] = [];
   for (const component of localProcessSurface()) {
     if (component.name === "nats") continue;
     const raw = readPidfile(localProcessPath(component.pidFile, { root: target.root, space: target.space }));
     if (!raw) continue;
     const pid = parsePid(raw);
+    if (pid !== undefined && owned.has(pid)) continue;
     if (pid === undefined || probeLiveness(pid) !== "dead") live.push(component.name);
   }
   return live;
@@ -235,6 +272,7 @@ export const brokerService: LocalProcess = {
     const target = brokerTarget(context, "launch");
     refuseLegacyBroker(target);
     if (await isReachable(target.server, { timeoutMs: 1500 })) refuse("CONFLICT", "something already answers at the declared broker address; no second listener was launched and none was adopted", { server: target.server });
+    await assertListenerFree(target);
     // Only a controller resume carries an attempt; its server name lets the listener proof bind.
     const attempt = context.attempt === undefined ? undefined : serviceAdapterAttempt(context.attempt, ["serverName"]);
     const configSha256 = configDigest(target.config);
@@ -259,10 +297,11 @@ export const brokerService: LocalProcess = {
     const binding = brokerScope(context, target);
     refuseLegacyBroker(target);
     const legacy = liveLegacyDependants(target);
-    if (legacy.length) refuse("LIFECYCLE_BLOCKED", "legacy local daemons on this root may still depend on the broker; it was not stopped under them", { dependants: legacy });
+    if (legacy.length) refuse("LIFECYCLE_BLOCKED", `legacy local daemons on this root (${legacy.join(", ")}) may still depend on the broker; it was not stopped under them`, { space: context.space, dependants: legacy });
     const others = serviceInstances(context.space).filter((row) => row.name !== context.instanceId)
       .filter((row) => !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state));
-    if (others.length) refuse("LIFECYCLE_BLOCKED", "other service instances in this space are live or unresolved; the broker was not stopped under them", { dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) });
+    const names = [...new Set(others.map((row) => row.record.value.definition))];
+    if (others.length) refuse("LIFECYCLE_BLOCKED", `other service instances in this space (${names.join(", ")}) are live or unresolved; the broker was not stopped under them`, { space: context.space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, `stop the whole stack with bare cotal down, or stop ${names.join(" and ")} first with cotal service stop <name> --space ${context.space} --yes`);
     return { kind: "kernel-exit", scopeSha256: serviceMetadataDigest({ binding, instanceId: context.instanceId, launchRequestId: context.launchRequestId, process: context.process, dependants: [] }), observedAt: new Date().toISOString(), binding };
   },
   observeKernelStop(context) {

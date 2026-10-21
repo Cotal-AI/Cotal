@@ -9,17 +9,27 @@
  * process is launched. The named `down <service>` form runs the same stop path as `service stop`
  * and is not driven here.
  *
+ * A Linear service whose definition gives the child its own HOME, with COTAL_HOME unset, refuses
+ * before a child in two isolated homes: with the account only in the child's home and only in the
+ * controller's. Its space is registered in both homes as `up` records a started one, with static
+ * authority at its root, so a start without that refusal reaches the account lookup. The built
+ * Linear package is loaded with `--import`, as an installed extension is.
+ *
  * Run: pnpm smoke:service-preparation-refusal
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { createSpaceAuth } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
-if (!existsSync(BIN)) {
-  console.error(`✗ ${BIN} missing - build first: pnpm --filter cotal-ai... build`);
+const LINEAR = join(import.meta.dirname, "..", "..", "linear", "dist", "index.js");
+for (const built of [BIN, LINEAR]) if (!existsSync(built)) {
+  console.error(`✗ ${built} missing - build first: pnpm --filter cotal-ai... build`);
   process.exit(1);
 }
 
@@ -72,6 +82,54 @@ const listed = run(["service", "--space", "b1"]);
 const instances = listed.envelope?.result?.instances;
 const definitions = listed.envelope?.result?.definitions;
 check("no definition or instance record remains", Array.isArray(instances) && instances.length === 0 && Array.isArray(definitions) && definitions.length === 0, listed.envelope?.result);
+
+// A Linear service whose envRefs give the child HOME from SERVICE_HOME. With COTAL_HOME unset, each
+// process reads the Cotal home under its own HOME: the controller's is `a`, the child's `b`.
+const homes = mkdtempSync(join(home, "linear-"));
+const [homeA, homeB, linearRoot] = ["a", "b", "project"].map((name) => join(homes, name));
+for (const dir of [homeA, homeB, linearRoot]) mkdirSync(dir, { mode: 0o700 });
+const token = join(homes, "token"), definition = join(homes, "lin.json");
+writeFileSync(token, "lin_local_not_a_real_token\n", { mode: 0o600 });
+writeFileSync(definition, JSON.stringify({ schemaVersion: 1, space: "lin", launch: { type: "adapter", adapter: "linear-service", options: { root: linearRoot, account: "work", endpoint: "com.example.linear" } }, readiness: { type: "adapter", timeoutMs: 20000 }, envRefs: { HOME: "SERVICE_HOME" } }));
+const linear = (homeDir: string, args: string[], extra: NodeJS.ProcessEnv = {}) => {
+  const r = spawnSync(process.execPath, ["--import", pathToFileURL(LINEAR).href, BIN, ...args, "--json"], { cwd: linearRoot, env: { ...HOST_ENV, HOME: homeDir, USERPROFILE: homeDir, XDG_CONFIG_HOME: join(home, ".config"), SERVICE_HOME: homeB, COTAL_SKIP_CONNECTOR_SEED: "1", ...extra }, encoding: "utf8", timeout: 120_000 });
+  let envelope: Envelope | undefined;
+  try { envelope = JSON.parse(r.stdout) as Envelope; } catch { envelope = undefined; }
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr, envelope };
+};
+const refusedBeforeChild = (r: ReturnType<typeof linear>) => r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "UNSUPPORTED"
+  && /envRefs set HOME for the Linear child/.test(r.envelope.error.message) && /COTAL_HOME/.test(r.envelope.error.remedy ?? "")
+  && r.envelope.target?.recordedState === "failed" && r.envelope.target.observedProcess === "gone" && r.envelope.target.pid === null;
+
+// Static authority at the root and the space's registration in both homes, as a started `up` leaves
+// them, so the controller and the child each resolve the space under their own home.
+mkdirSync(join(linearRoot, ".cotal"), { mode: 0o700 });
+saveSpaceAuth(authDir(linearRoot), await createSpaceAuth("lin"));
+for (const homeDir of [homeA, homeB]) {
+  process.env.COTAL_HOME = join(homeDir, ".cotal");
+  recordMesh({ space: "lin", server: "nats://127.0.0.1:4222", root: linearRoot, mode: "auth", origin: "up", ts: new Date().toISOString() });
+}
+delete process.env.COTAL_HOME;
+const linearAdded = linear(homeA, ["service", "add", "lin", "--file", definition, "--space", "lin"]);
+check("rig: the Linear definition with a HOME reference is saved", linearAdded.status === 0 && linearAdded.envelope?.outcome === "ok", shown(linearAdded));
+
+const childAccount = linear(homeB, ["linear", "account", "add", "work", "--mode", "readonly", "--token-file", token]);
+check("rig: the account is recorded only in the child's home", childAccount.status === 0 && existsSync(join(homeB, ".cotal", "linear", "work.json")) && !existsSync(join(homeA, ".cotal", "linear", "work.json")), shown(childAccount));
+const validChild = linear(homeA, ["service", "start", "lin", "--space", "lin"]);
+check("with the account only in the child's home, the start refuses the moved home before a child, not as a missing account", refusedBeforeChild(validChild), shown(validChild));
+
+// With COTAL_HOME set, the child inherits it and reads the controller's home, so the same definition
+// passes the home check and reaches the account lookup there, which has no account yet. It runs
+// before the account moves to `a`, so no child is launched.
+const pinned = linear(homeA, ["service", "start", "lin", "--space", "lin"], { COTAL_HOME: join(homeA, ".cotal") });
+check("with COTAL_HOME set, the HOME reference is not refused and the start reaches the account lookup", pinned.status === 2 && pinned.envelope?.error?.code === "TARGET_NOT_FOUND"
+  && /no Linear account with this name is recorded/.test(pinned.envelope.error.message) && pinned.envelope.target?.pid === null, shown(pinned));
+
+rmSync(join(homeB, ".cotal", "linear"), { recursive: true, force: true });
+const controllerAccount = linear(homeA, ["linear", "account", "add", "work", "--mode", "readonly", "--token-file", token]);
+check("rig: the account is recorded only in the controller's home", controllerAccount.status === 0 && existsSync(join(homeA, ".cotal", "linear", "work.json")) && !existsSync(join(homeB, ".cotal", "linear", "work.json")), shown(controllerAccount));
+const missingChild = linear(homeA, ["service", "start", "lin", "--space", "lin"]);
+check("with the account missing from the child's home, the start refuses before a child is launched", refusedBeforeChild(missingChild), shown(missingChild));
 
 finish();
 process.exit(process.exitCode ?? 0);

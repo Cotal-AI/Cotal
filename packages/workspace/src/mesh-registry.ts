@@ -210,6 +210,12 @@ export function homeCotalDir(): string {
   return join(homedir(), ".cotal");
 }
 
+/** The variables {@link homeCotalDir} falls back to on `platform` when `COTAL_HOME` is unset:
+ *  `homedir()` reads `HOME` on POSIX, and Windows reads `LOCALAPPDATA`, then `USERPROFILE`. */
+export function homeCotalDirFallbacks(platform: NodeJS.Platform = process.platform): readonly string[] {
+  return platform === "win32" ? ["LOCALAPPDATA", "USERPROFILE"] : ["HOME"];
+}
+
 /** Directory holding the per-mesh registry files (`~/.cotal/meshes`). */
 export function meshesDir(): string {
   return join(homeCotalDir(), "meshes");

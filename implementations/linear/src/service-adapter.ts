@@ -1,12 +1,12 @@
 import { isAbsolute } from "node:path";
 import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, colorEnabled, hasUserAuthState, observeServiceStartup,
+  CommandFailure, colorEnabled, hasUserAuthState, homeCotalDirFallbacks, observeServiceStartup,
   publishServiceStartup, resolveNativeServiceTarget, serviceOperationId,
   serviceStartupPath, validateServiceStartupPath, type LocalProcess, type ServicePreset,
 } from "@cotal-ai/workspace";
 import { assertAccountName } from "./account.js";
-import { serveLinearAccount } from "./cli.js";
+import { accountForRead, serveLinearAccount } from "./cli.js";
 import { assertLinearEndpointName } from "./serve.js";
 
 function nativeTarget(root: string, space: string, server?: string) {
@@ -44,8 +44,14 @@ export const linearService: LocalProcess = {
   buildServiceLaunch(context) {
     if (!context.cliInvocation?.length) throw new CommandFailure("refused", "UNSUPPORTED", "the Linear service requires the verified cotal entry; no PATH binary was selected");
     if (context.credentialRef) throw new CommandFailure("refused", "UNSUPPORTED", "Linear service authority comes from its selected native static root and recorded upstream account, not a generic caller reference");
+    // The child inherits COTAL_HOME, which envRefs cannot set. Without it, a reference to a variable the
+    // Cotal home falls back to can give the child another home than the one this process reads.
+    const moved = process.env.COTAL_HOME ? [] : Object.keys(context.envRefs ?? {}).filter((name) => homeCotalDirFallbacks().includes(name));
+    if (moved.length) throw new CommandFailure("refused", "UNSUPPORTED", `the definition's envRefs set ${moved.join(" and ")} for the Linear child, so it can read its account from another Cotal home than this start checks; no account was read`, { remedy: `set COTAL_HOME where the service starts, or remove ${moved.join(" and ")} from the definition's envRefs` });
     const target = nativeTarget(String(context.options.root), context.space, context.options.server as string | undefined);
     const selected = inputs(context.options.account, context.options.endpoint);
+    // The child now reads the same Cotal home as this process, so an absent account refuses here, before a launch.
+    accountForRead(selected.account);
     const [executable, ...self] = context.cliInvocation;
     return { executable: executable!, cwd: target.root, args: [...self, ...(colorEnabled() ? [] : ["--no-color"]), "__service-linear", "--root", target.root, "--space", context.space, "--server", target.server, "--account", selected.account, "--endpoint", selected.endpoint, "--service-instance", context.instanceId, "--launch-request", context.launchRequestId, "--ready-file", serviceStartupPath(context)] };
   },

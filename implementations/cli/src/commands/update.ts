@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { FlagSpec, ParsedArgs } from "@cotal-ai/core";
 import {
@@ -18,6 +19,7 @@ import { selfArgv } from "../lib/self-exec.js";
 import { withInstallUmask } from "../lib/install-umask.js";
 import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
+import { seedWriterKind } from "../seed/paths.js";
 import { refreshConnectorInstalls } from "./setup.js";
 import { c } from "../ui.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
@@ -67,6 +69,8 @@ export interface UpdateRuntime {
   claimUpdatePass(): () => void;
   claimGlobalUpdate(root: string): () => void;
   selfArgv(): string[];
+  /** Whether this CLI runs from a source checkout, where `--self` installs a separate global copy. */
+  checkout(): boolean;
   npm(args: string[], inherit?: boolean): CommandResult;
   spawn(file: string, args: string[], env: NodeJS.ProcessEnv, inherit?: boolean): CommandResult;
   spawnGlobal(
@@ -107,6 +111,7 @@ const runtime: UpdateRuntime = {
   claimUpdatePass: () => claimExtensionUpdatePass(),
   claimGlobalUpdate: (root) => claimGlobalNpmUpdateLock(root),
   selfArgv,
+  checkout: () => seedWriterKind() === "checkout",
   npm: runNpm,
   spawn: runProcess,
   spawnGlobal: runGlobalProcess,
@@ -157,7 +162,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
   }, (r) => ({ sections: [
     { title: "Update availability", blocks: [{ kind: "fields", rows: [["Running CLI", r.current], ["Registry latest", r.latest ?? "not established"], ["CLI update", r.updateAvailable === null ? { text: "unknown", tone: "waiting" } : r.updateAvailable ? { text: "available", tone: "waiting" } : comparison === 0 ? "matches latest tag" : "running version is ahead of latest tag"]] }] },
     { title: "Recorded extensions", blocks: [r.extensions === null ? { kind: "lines", lines: [{ text: "Inventory unavailable. No repair was attempted.", tone: "waiting" }] } : r.extensions.length ? { kind: "table", columns: [{ key: "package", label: "Package" }, { key: "version", label: "Recorded version" }, { key: "state", label: "Generation" }], rows: r.extensions.map((entry) => ({ package: entry.package, version: entry.version, state: !entry.firstParty ? { text: "third party", tone: "hint" } : entry.matchesCli ? { text: "matches running CLI", tone: "ok" } : { text: "differs from running CLI", tone: "waiting" } })) } : { kind: "lines", lines: ["No extensions in the recorded inventory."] }, { kind: "lines", lines: [{ text: "Version records only. Package contents, signatures and running processes were not checked. No installation was reconciled or restarted.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal update", description: "Reconcile the current generation through the existing guarded updater" }, ...(r.updateAvailable ? [{ command: "cotal update --self", description: "Install the verified latest CLI and reconcile its generation" }] : []), { command: "cotal status", description: "Inspect this machine and its selected space" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal update", description: "Reconcile the current generation through the existing guarded updater" }, ...(r.updateAvailable ? [{ command: "cotal update --self", description: rt.checkout() ? "Install the verified latest CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the verified latest CLI and reconcile its generation" }] : []), { command: "cotal status", description: "Inspect this machine and its selected space" }] }] },
   ] }));
 }
 
@@ -450,13 +455,20 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
   return "legacy";
 }
 
+/** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
+ *  notifier off, so the read leaves nothing in npm's own cache, log directory or notifier stamp. */
 function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string } {
-  const result = rt.npm(["view", "cotal-ai@latest", "version", "--json"]);
-  if (result.status !== 0) return { ok: false, error: failure(result) };
+  const cache = mkdtempSync(join(tmpdir(), "cotal-npm-view-"));
   try {
-    return { ok: true, version: parseNpmVersion(result.stdout) };
-  } catch (e) {
-    return { ok: false, error: message(e) };
+    const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false"]);
+    if (result.status !== 0) return { ok: false, error: failure(result) };
+    try {
+      return { ok: true, version: parseNpmVersion(result.stdout) };
+    } catch (e) {
+      return { ok: false, error: message(e) };
+    }
+  } finally {
+    rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
 }
 
@@ -545,7 +557,7 @@ function reportVersion(current: string, latest: string, rt: UpdateRuntime): void
   const available = compareSemver(latest, current) > 0;
   rt.out(renderReport({ sections: [
     { title: "CLI version", blocks: [{ kind: "fields", rows: [["This process", current], ["Registry latest", latest], ["Update", available ? { text: "available", tone: "waiting" } : "no newer latest tag"]] }, { kind: "lines", lines: [{ text: "Running processes keep the generation they loaded. This version report does not prove every live service was upgraded.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: available ? "cotal update --self" : "cotal status", description: available ? "Install the validated CLI and reconcile its matching extensions" : "Inspect the machine and selected space" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: available ? "cotal update --self" : "cotal status", description: !available ? "Inspect the machine and selected space" : rt.checkout() ? "Install the validated CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the validated CLI and reconcile its matching extensions" }] }] },
   ] }, "rich", terminalWidth(process.stdout)));
 }
 

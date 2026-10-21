@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
@@ -45,6 +45,7 @@ import { refuseControllerCut } from "../lib/stack-journal.js";
 import { authorityFingerprint } from "../lib/maintenance-files.js";
 import { connectIsolatedBroker, createAttemptClone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "../lib/isolated-broker.js";
 import { cotalRoot } from "../lib/paths.js";
+import { restoreNextStep } from "../lib/restore.js";
 import { liveMeshProcesses } from "./clean.js";
 import { backupMaintenance } from "./backup-maintenance.js";
 import { backupRead } from "./backup-read.js";
@@ -87,13 +88,21 @@ function localOwner(id: string): ProcessOwner {
   return { pid: process.pid, host: hostname(), startedAt: new Date().toISOString(), id };
 }
 
+/** This root has no stopped preserved cut to back up. Nothing was claimed or copied. */
+function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
+  if (!record) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy: "stop the stack with cotal down --preserve-state, then create the backup" });
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup requires the stopped preserved cut; maintenance state is ${record.state}`, {
+    target: { root, space: record.space, state: record.state },
+    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId) : "finish this root's current maintenance attempt first; check it with cotal status",
+  });
+}
+
 function requireReady(root: string, storeDir: string): MaintenanceReadyRecord {
   const record = readMaintenanceJournal(root);
-  if (!record) throw new Error("backup requires a completed cut; run `cotal down --preserve-state` first");
-  if (record.state !== "ready") throw new Error(`backup requires stable ready maintenance state; current state is ${record.state}`);
+  if (!record || record.state !== "ready") throw notReady(root, record);
   const actual = readStoreIdentity(storeDir);
   if (!sameStoreIdentity(record.source, actual))
-    throw new Error(`--store-dir does not match the preserved source ${record.source.path}`);
+    throw new CommandFailure("refused", "CONFLICT", `--store-dir does not match the preserved source ${record.source.path}`, { target: { root, space: record.space }, remedy: "omit --store-dir, or name the preserved store" });
   assertStoreIdentity(record.source);
   // Backup coupling: a controller cut is backed up only while every member is the
   // stopped record the cut recorded, with its receipt, the broker definition is the expected one, and
@@ -375,7 +384,7 @@ export function validateBackupArguments(args: ParsedArgs): void {
   const [mode, directory, ...extra] = args.positionals;
   if (!mode || !["create", "inspect", "verify", "restore", "recover", "cleanup-fallback"].includes(mode) || !directory?.trim() || extra.length || /[\u0000-\u001f\u007f]/u.test(directory)) throw new CommandFailure("refused", "USAGE_INVALID", "use backup create/inspect/verify/restore <directory>, or backup recover/cleanup-fallback <full-attempt-id>");
   const maintenance = mode === "recover" || mode === "cleanup-fallback";
-  if (maintenance && !/^restore-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(directory)) throw new CommandFailure("refused", "USAGE_INVALID", "name the full native restore attempt, not a prefix, path or backup directory");
+  if (maintenance && !/^restore-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(directory)) throw new CommandFailure("refused", "USAGE_INVALID", "name the full restore attempt id, restore-<uuid>; a prefix, path or backup directory is refused", { remedy: "cotal status shows the attempt this root holds, under Maintenance" });
   const allowed = new Set(["json", "plain", ...(mode === "create" ? ["only", "store-dir"] : mode === "restore" ? ["only", "store-dir", "accept-missing-source"] : maintenance ? ["yes", "dry-run"] : [])]);
   if (Object.keys(args.values).some((flag) => !allowed.has(flag))) throw new CommandFailure("refused", "USAGE_INVALID", mode === "restore" ? "backup restore accepts only --only, --store-dir and --accept-missing-source; the space, broker and runtime come from the preserved cut" : "backup inspection and verification accept no creation, target or restore inputs");
   if (mode === "create") selection(args.values.only as string | undefined);
@@ -430,12 +439,16 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   try { assertSingleSpaceBroker(authDir(root), "cotal backup"); }
   catch (error) { throw new CommandFailure("refused", "CONFLICT", (error as Error).message, { target: { root } }); }
   const live = liveMeshProcesses(root);
-  if (live.length) throw new Error(`backup is offline-only; still running: ${live.join(", ")}. Run \`cotal down --preserve-state\` first`);
+  if (live.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup is offline-only; still running: ${live.join(", ")}`, { target: { root }, remedy: "stop the stack with cotal down --preserve-state, then create the backup" });
+  // Refusals that need no lock come first, so a refused create leaves no maintenance state behind.
+  if (!readMaintenanceJournal(root)) throw notReady(root, undefined);
+  const destinationPath = resolve(destination);
+  if (lstatSync(destinationPath, { throwIfNoEntry: false }))
+    throw new CommandFailure("refused", "CONFLICT", "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: "name a directory that does not exist yet" });
   const storeDir = resolve(values["store-dir"] ?? resolve(root, ".cotal", "nats"));
   const attemptId = `backup-${randomUUID()}`;
   observed.attemptId = attemptId;
   const deadline = new Date(Date.now() + OPERATION_TIMEOUT_MS);
-  const destinationPath = resolve(destination);
   const clonePath = join(ensurePrivateAttemptsDir(root).path, `${attemptId}-clone`);
   let lock = acquireMaintenanceLock(root);
   let ready: MaintenanceReadyRecord;

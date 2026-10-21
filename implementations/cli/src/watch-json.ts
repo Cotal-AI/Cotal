@@ -2,6 +2,7 @@ import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { oneLine, renderReport, streamRecord, terminalWidth, writeStreamRecord } from "@cotal-ai/workspace";
 import { feedLine, isFeedView, matchesWatchFilter, observedText, watchReport, type WatchFilter } from "./watch-data.js";
 import { MeshView, type FeedEntry, type MeshSnapshot } from "./view/mesh-view.js";
+import { ownStdoutErrors } from "./lib/stdout-owner.js";
 
 const WINDOW = 300;
 
@@ -74,7 +75,7 @@ export async function runWatchStream(ep: CotalEndpoint, space: string, tapSubjec
   };
   process.once("SIGINT", interrupt);
   process.once("SIGTERM", terminate);
-  process.stdout.on("error", outputClosed);
+  const releaseOutput = ownStdoutErrors(outputClosed);
   view.on("change", changed);
   try {
     if (presentation === "plain" && isFeedView(filter)) console.log(renderReport({ space, sections: [] }, "plain", terminalWidth(process.stdout)));
@@ -94,6 +95,6 @@ export async function runWatchStream(ep: CotalEndpoint, space: string, tapSubjec
     process.off("SIGINT", interrupt);
     process.off("SIGTERM", terminate);
     emit("end", { reason });
-    process.stdout.off("error", outputClosed);
+    releaseOutput();
   }
 }

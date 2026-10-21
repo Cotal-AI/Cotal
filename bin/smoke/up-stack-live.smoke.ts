@@ -108,6 +108,14 @@ try {
     authService: false,
     manager: false,
   }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: cotal down");
+  // Bare `down` refuses the machine home, so the home stack's summary names the stop that works.
+  ok("a machine-home summary names down --preserve-state, the stop that reaches the home stack", renderDetachedSummary({
+    pid: 42,
+    delivery: true,
+    authService: false,
+    manager: true,
+    machineHome: true,
+  }) === "✓ running in the background: nats-server (pid 42), delivery daemon, manager - stop with: cotal down --preserve-state");
 
   // Default-port collision: `up` without an explicit `--server` should allocate a free port and
   // record it, not fail with "use --server ...:<port>". If the developer already has a real :4222

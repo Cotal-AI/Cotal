@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, closeSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, openSync, closeSync, writeFileSync, readFileSync, readSync, statSync } from "node:fs";
 import {
   DEFAULT_SERVER,
   LEASE_TTL_MS,
@@ -200,6 +200,23 @@ export function startDeliveryDetached(o: Opts = {}): number {
   return child.pid ?? 0;
 }
 
+/** The `✗` failure lines a daemon wrote to its log from byte `from` on, without the shard-release
+ *  notice: the reason one launch gave for exiting. An unreadable log gives no reason. */
+function loggedFailure(path: string, from: number): string | undefined {
+  let text: string;
+  try {
+    const fd = openSync(path, "r");
+    try {
+      const buffer = Buffer.alloc(64 * 1024);
+      text = buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, from)).toString("utf8");
+    } finally { closeSync(fd); }
+  } catch { return undefined; }
+  const lines = text.split("\n").map((line) => line.replace(/\u001b\[[0-9;]*m/g, ""))
+    .filter((line) => line.startsWith("\u2717 ") && !line.includes("releasing the shard"))
+    .map((line) => line.slice(2).trim());
+  return lines.length ? lines.join("; ") : undefined;
+}
+
 /** Make the server-side delivery daemon available (auth mode only). FAILS CLOSED: refuses to launch
  *  while an old Plane-3-hosting manager is live (the preflight should have stopped it) so the daemon
  *  never double-binds. Mints a SCOPED `delivery` cred from the local signer ONCE, writes it to
@@ -249,6 +266,7 @@ export async function ensureDelivery(
         `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`${delivery.path}\` and re-run. If it is running, use it or stop it.`,
     );
   let launched: number | undefined;
+  let logStart = 0;
   if (delivery.state !== "alive") {
     const credsKey = deliveryCredsKey(space, { injected: false, root: findCotalRoot() });
     // #4092: no daemon is recorded alive here, but the one before it may still hold shard 0. A daemon
@@ -285,6 +303,7 @@ export async function ensureDelivery(
     // otherwise the daemon that is about to start reads the canonical location, finds nothing, and
     // this write lands a SECOND live delivery cred beside the one the flat file still holds.
     await credsStore().put(credsKey, creds);
+    logStart = statSync(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)), { throwIfNoEntry: false })?.size ?? 0;
     launched = startDeliveryDetached({ ...o, space, server });
   }
   // ALWAYS wait for the daemon to be READY (lease flipped ready AFTER it bound ctl.delivery) before
@@ -307,13 +326,20 @@ export async function ensureDelivery(
   // #837 false-green: the daemon lost the single-flight CAS to a live-or-stale lease and exited (it
   // says so in `.cotal/delivery.log`), while this returned `running: true` over a pidfile fronting a
   // dead pid. No fallback — the caller hears it.
-  if (!ready && launched !== undefined && probe(launched) === "dead")
+  if (!ready && launched !== undefined && probe(launched) === "dead") {
+    // The daemon's own reason first. A start-up failure is not a lost lease, and calling every exit
+    // one sent a restored store's real error to a wait that could never help.
+    const log = canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space));
+    const reason = loggedFailure(log, logStart);
     throw new Error(
       `the delivery daemon started for space "${space}" (pid ${launched}) exited without becoming ready, and the shard-0 lease is not held by it.\n` +
-        `That is what a lost single-flight CAS looks like: another daemon holds the lease, or a crashed holder's lease has not yet expired (it does after ${LEASE_TTL_MS / 1000}s).\n` +
-        `Refusing to report a daemon that is not running. The daemon logged its own reason to ${canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space))}.\n` +
-        `NEXT: read that log; if no other daemon is running, wait for the stale lease to expire and re-run.`,
+        (reason
+          ? `It logged this reason: ${reason}\n`
+          : `It logged no failure for this start. That is what a lost single-flight CAS looks like: another daemon holds the lease, or a crashed holder's lease has not yet expired (it does after ${LEASE_TTL_MS / 1000}s).\n`) +
+        `Refusing to report a daemon that is not running. Its log is ${log}.\n` +
+        (reason ? `NEXT: resolve the logged reason, then re-run.` : `NEXT: read that log; if no other daemon is running, wait for the stale lease to expire and re-run.`),
     );
+  }
   if (!ready)
     // #1576. THIS USED TO PRINT A PROMISE AND RETURN SUCCESS, and that combination is the defect.
     // The promise was true — `reconcileBootJoin` really does retry with capped backoff and really

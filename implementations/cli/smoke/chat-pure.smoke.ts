@@ -6,19 +6,30 @@
  *   - parseRequestLine / serializeRecord / messageRecord (stdio.ts): strict request validation and
  *     single-line output records;
  *   - the view reducers and renderers (view.ts): paste-as-data, Enter/Shift+Enter, draft bound,
- *     leave/discard/quit, disconnect and ended handling, publish results, slash parsing, escaping.
- * It constructs plain data values (SessionIdentity, SessionMessage, PublishResult, CloseReport) and
- * NEVER an AdmittedChatSession: no fake session, no factory, no authority claim. runStdio (EPIPE,
- * backpressure) and StdioParticipant need an admitted session and are deliberately NOT covered here.
- * Nothing here proves admission, confinement, delivery or any native behavior.
+ *     leave/discard/quit, disconnect and ended handling, publish results, slash parsing, escaping;
+ *   - replies and shared names (view.ts, picker.ts): the reply recipient, `/reply`, and the principal
+ *     shown beside a display name another principal carries;
+ *   - resolveDmTarget (native-session.ts) over plain roster data and a real ParticipantEngine, with
+ *     senders heard on a DM and on a channel;
+ *   - grantRefusal (native-session.ts): the pre-effect refusal for a channel outside the grant;
+ *   - transcript times, shown in local time as `history` shows them.
+ * It constructs plain data values (SessionIdentity, SessionMessage, PublishResult, CloseReport,
+ * Presence) and NEVER an AdmittedChatSession: no fake session, no factory, no authority claim.
+ * runStdio (EPIPE, backpressure), StdioParticipant and the controller's publish routing need an
+ * admitted session and are deliberately NOT covered here. Nothing here proves admission,
+ * confinement, delivery or any native behavior.
  */
 import { LineFramer } from "../src/chat/stdio-io.js";
 import { MAX_REQUEST_ID, MAX_REQUEST_LINE, MAX_MESSAGE_ID, INVOKE_DEFAULT_TIMEOUT_MS, INVOKE_MAX_TIMEOUT_MS, messageRecord, parseRequestLine, serializeRecord } from "../src/chat/stdio.js";
 import {
   MAX_DRAFT, MAX_TRANSCRIPT, addNotice, applyEvent, applyKey, applyPublishResult, closeSummary, composerRows, headerRows,
-  initialState, parseSlash, transcriptRows, type ChatState,
+  initialState, parseSlash, replyTo, replyToLatest, transcriptRows, type ChatState,
 } from "../src/chat/view.js";
-import type { CloseReport, SessionIdentity, SessionMessage } from "../src/chat/session.js";
+import { listChoices } from "../src/chat/picker.js";
+import { ParticipantEngine } from "../src/chat/engine.js";
+import { grantRefusal, resolveDmTarget } from "../src/chat/native-session.js";
+import type { Presence } from "@cotal-ai/core";
+import type { CloseReport, RosterView, SessionIdentity, SessionMessage } from "../src/chat/session.js";
 
 let pass = 0, fail = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -278,8 +289,8 @@ console.log("6. rendering: untrusted text is escaped; open mode claims routing o
   const s = applyEvent(s0(), { type: "message", message: msg({ text: "a\u2028b\u202eevil" }) });
   check("line separators and bidi controls are escaped", transcriptRows(s, 80).every((r) => !/[\u2028\u202e]/.test(r.text)));
 }
-check("open-mode header claims routing only", /routing only/.test(headerRows(s0())[0].text));
-check("the header names the resolved operating mesh", headerRows(s0()).some((row) => row.text === "Mesh: selected-space"));
+check("open-mode header claims routing only", /routing only/.test(headerRows(s0())[1].text));
+check("the header opens with the resolved operating mesh", headerRows(s0())[0]?.text === "Mesh: selected-space", headerRows(s0()));
 check("the header never prints a credential-like field", !/creds|jwt|token|seed/i.test(headerRows(s0()).map((r) => r.text).join(" ")));
 {
   const close: CloseReport = { retirement: "not-applicable", connectionClosed: "confirmed", message: "" };
@@ -289,6 +300,147 @@ check("the header never prints a credential-like field", !/creds|jwt|token|seed/
   const st: SessionIdentity = { ...identity, mode: "static" };
   const until = Date.UTC(2026, 9, 20, 13, 0, 0);
   check("static close with an unconfirmed connection names the credential's validity", new RegExp(new Date(until).toISOString()).test(closeSummary(st, { retirement: "requested", connectionClosed: "not-confirmed", credentialValidUntil: until, message: "" })));
+}
+
+// ---- 7. replies and shared names --------------------------------------------------------------------
+console.log("7. a reply addresses the sender's principal, and a shared display name shows its principal");
+const presence = (id: string, name: string, status: Presence["status"] = "idle"): Presence => ({ card: { id, name, kind: "agent" }, status, ts: 0 });
+/** An engine that received one DM from each sender, so it knows each as a heard sender. */
+const heard = (...senders: readonly (readonly [string, string])[]): ParticipantEngine => {
+  const engine = new ParticipantEngine(identity.principal);
+  senders.forEach(([id, name], i) =>
+    engine.accept({ id: `h${i}`, ts: 0, space: "selected-space", from: { id, name }, to: identity.principal, parts: [{ kind: "text", text: "hi" }] },
+      { ack() {}, nak() {}, durable: false }, { historical: false, kind: "dm" }, false));
+  return engine;
+};
+const task = msg({ id: "t1", kind: "anycast", service: "reviewer", from: { id: "u_a.alice", name: "alice" } });
+{
+  const r = replyTo(s0(), task);
+  check("a reply to a role task addresses its sender's principal and quotes the task id",
+    JSON.stringify(r.recipient) === JSON.stringify({ kind: "peer", principal: "u_a.alice", name: "alice", replyTo: "t1" }), r.recipient);
+  const dm = replyTo(s0(), msg({ id: "d1", from: { id: "u_b.alice", name: "alice" } }));
+  check("a reply to a DM addresses its sender's principal", dm.recipient?.kind === "peer" && dm.recipient.principal === "u_b.alice" && dm.recipient.replyTo === "d1", dm.recipient);
+  check("a channel message leaves the recipient alone", replyTo(s0(), msg({ kind: "channel", channel: "review" })).recipient === dmBob);
+}
+{
+  check("/reply takes no arguments", sl("/reply").ok && !sl("/reply x").ok);
+  const none = replyToLatest(s0());
+  check("/reply with no DM or role task keeps the recipient and says so",
+    none.recipient === dmBob && none.transcript.some((e) => e.kind === "notice" && /nothing to reply to/.test(e.text)));
+  let s = applyEvent(s0(), { type: "message", message: msg({ id: "d1", from: { id: "u_b.alice", name: "alice" } }) });
+  s = applyEvent(s, { type: "message", message: task });
+  s = applyEvent(s, { type: "message", message: msg({ id: "c1", kind: "channel", channel: "review", from: { id: "o.carol", name: "carol" } }) });
+  const r = replyToLatest(s);
+  check("/reply answers the latest DM or role task and skips channel messages",
+    r.recipient?.kind === "peer" && r.recipient.principal === "u_a.alice" && r.recipient.replyTo === "t1", r.recipient);
+  check("the header names the principal a reply goes to", headerRows(r).some((row) => row.text.includes("to DM alice (u_a.alice) (reply)")), headerRows(r));
+  const offline = keys(applyEvent(s, { type: "connection", state: "disconnected" }), [{ kind: "char", text: "/reply" }, { kind: "enter", shift: false }]);
+  check("/reply runs while disconnected, since it only picks a recipient", offline.intent?.kind === "slash");
+  const sent = keys(r, [{ kind: "char", text: "on it" }, { kind: "enter", shift: false }]);
+  check("the answer is published to that principal with the task id", sent.intent?.kind === "publish" && sent.intent.to === r.recipient);
+  const stored = applyPublishResult(sent.state, { outcome: "stored", messageId: "m10" });
+  check("after a stored reply the recipient stays that principal without the quoted id",
+    JSON.stringify(stored.recipient) === JSON.stringify({ kind: "peer", principal: "u_a.alice", name: "alice" }), stored.recipient);
+}
+{
+  let s = applyEvent(s0(), { type: "message", message: msg({ id: "a1", from: { id: "u_a.alice", name: "alice" } }) });
+  check("a name one principal carries shows alone", transcriptRows(s, 200)[0].text.includes(" DM alice: "), transcriptRows(s, 200));
+  s = applyEvent(s, { type: "message", message: msg({ id: "a2", from: { id: "u_b.alice", name: "ALICE" } }) });
+  const rows = transcriptRows(s, 200).map((row) => row.text);
+  check("two principals sharing a name, compared case-insensitively, each show their principal",
+    rows[0].includes(" DM alice (u_a.alice): ") && rows[1].includes(" DM ALICE (u_b.alice): "), rows);
+  const roster: RosterView = { view: "current", rows: [{ id: "u_c.alice", name: "alice", kind: "agent", status: "idle" }, { id: "o.bob", name: "bob", kind: "agent", status: "idle" }] };
+  const choices = listChoices(undefined, roster, identity.principal, [{ id: "u_a.alice", name: "alice" }]);
+  check("the picker shows a present peer's principal when a heard sender shares its name",
+    choices.some((c) => c.label === "DM alice (u_c.alice)") && choices.some((c) => c.label === "DM bob"), choices);
+  check("without such a sender the picker shows the name alone", listChoices(undefined, roster, identity.principal).some((c) => c.label === "DM alice"));
+}
+{
+  const roster = [presence("u_c.alice", "alice"), presence("o.bob", "bob")];
+  const engine = heard(["u_a.alice", "alice"]);
+  const both = resolveDmTarget("alice", roster, "current", engine, identity.principal);
+  check("a name a present peer and a heard sender both carry refuses and lists both principals",
+    "outcome" in both && both.code === "TARGET_AMBIGUOUS" && both.message.includes("u_c.alice") && both.message.includes("u_a.alice"), both);
+  const exact = resolveDmTarget("u_a.alice", roster, "current", engine, identity.principal);
+  check("a heard sender's principal resolves to that sender", !("outcome" in exact) && exact.id === "u_a.alice" && exact.name === "alice", exact);
+  const named = resolveDmTarget("u_a.alice", [...roster, presence("u_d.mallory", "u_a.alice")], "current", engine, identity.principal);
+  check("a present peer whose display name is a heard principal does not capture that principal", !("outcome" in named) && named.id === "u_a.alice", named);
+  const unheard = resolveDmTarget("u_z.alice", [...roster, presence("u_d.mallory", "u_z.alice")], "current", heard(), identity.principal);
+  check("a typed principal absent from the roster and never heard goes to that principal, not to a peer whose display name spells it",
+    !("outcome" in unheard) && unheard.id === "u_z.alice" && unheard.name === "u_z.alice", unheard);
+  const typedSelf = resolveDmTarget(identity.principal, roster, "current", engine, identity.principal);
+  check("a typed target that is this session's principal refuses as usage, as the exact target does", "outcome" in typedSelf && typedSelf.code === "USAGE_INVALID", typedSelf);
+  const bob = resolveDmTarget("bob", roster, "current", engine, identity.principal);
+  check("a name one principal carries still resolves", !("outcome" in bob) && bob.id === "o.bob", bob);
+  const went = resolveDmTarget("alice", [presence("u_c.alice", "alice"), presence("u_a.alice", "alice", "offline")], "current", engine, identity.principal);
+  check("a heard sender now offline still makes its name ambiguous beside a live peer", "outcome" in went && went.code === "TARGET_AMBIGUOUS", went);
+  const reply = resolveDmTarget({ principal: "u_a.alice" }, roster, "current", engine, identity.principal);
+  check("an exact principal is sent as is and keeps the name this session heard", !("outcome" in reply) && reply.id === "u_a.alice" && reply.name === "alice", reply);
+  const absent = resolveDmTarget({ principal: "u_z.zed" }, [], "stale", heard(), identity.principal);
+  check("an exact principal needs neither the roster nor a current view", !("outcome" in absent) && absent.id === "u_z.zed", absent);
+  const bad = resolveDmTarget({ principal: "not a principal" }, roster, "current", engine, identity.principal);
+  check("an exact target that is not <owner>.<actor> refuses as usage", "outcome" in bad && bad.code === "USAGE_INVALID", bad);
+  const self = resolveDmTarget({ principal: identity.principal }, roster, "current", engine, identity.principal);
+  check("an exact target that is this session refuses as usage", "outcome" in self && self.code === "USAGE_INVALID", self);
+  const unknown = resolveDmTarget("zed", roster, "stale", engine, identity.principal);
+  check("an unknown name on a stale roster is unavailable, never absent", "outcome" in unknown && unknown.code === "TARGET_UNAVAILABLE", unknown);
+}
+/** An engine that received one message on #review from each sender. A channel's subject names its
+ *  sender as a DM's does, so each is a heard sender. */
+const heardOnChannel = (...senders: readonly (readonly [string, string])[]): ParticipantEngine => {
+  const engine = new ParticipantEngine(identity.principal);
+  senders.forEach(([id, name], i) =>
+    engine.accept({ id: `c${i}`, ts: 0, space: "selected-space", from: { id, name }, channel: "review", parts: [{ kind: "text", text: "hi" }] },
+      { ack() {}, nak() {}, durable: false }, { historical: false, kind: "channel" }, false));
+  return engine;
+};
+{
+  const engine = heardOnChannel(["u_a.alice", "alice"]);
+  const only = resolveDmTarget("alice", [presence("o.bob", "bob")], "current", engine, identity.principal);
+  check("a name only a channel sender carries resolves to that sender's principal", !("outcome" in only) && only.id === "u_a.alice" && only.name === "alice", only);
+  const offline = resolveDmTarget("alice", [presence("u_c.alice", "alice")], "current", engine, identity.principal);
+  check("a channel sender no longer present still makes its name ambiguous beside a live peer",
+    "outcome" in offline && offline.code === "TARGET_AMBIGUOUS", offline);
+  check("...and the refusal lists both principals", "outcome" in offline && offline.message.includes("u_c.alice") && offline.message.includes("u_a.alice"), offline);
+  const live = resolveDmTarget("alice", [presence("u_c.alice", "alice"), presence("u_a.alice", "alice")], "current", engine, identity.principal);
+  check("a name a live peer and a live channel sender both carry refuses", "outcome" in live && live.code === "TARGET_AMBIGUOUS", live);
+  const blind = new ParticipantEngine(identity.principal);
+  blind.accept({ id: "n1", ts: 0, space: "selected-space", from: { id: "u_a.alice", name: "alice" }, channel: "review", parts: [{ kind: "text", text: "hi" }] },
+    { ack() {}, nak() {}, durable: false }, undefined, false);
+  check("a message that came with no delivery meta leaves no heard sender", blind.senderName("u_a.alice") === undefined);
+}
+
+// ---- 8. a channel outside the grant --------------------------------------------------------------
+console.log("8. a channel outside the session's grant refuses before any effect");
+{
+  const none = grantRefusal([], "review", "post");
+  check("a session opened on no channel refuses a post as a permission denial",
+    none?.outcome === "refused" && none.code === "PERMISSION_DENIED", none);
+  check("...says so and names the command that opens a session on the channel",
+    /opened on no channel/.test(none?.message ?? "") && (none?.message ?? "").includes("cotal chat review"), none);
+  const read = grantRefusal(["general"], "other", "read");
+  check("a channel outside a read grant refuses as a permission denial", read?.code === "PERMISSION_DENIED" && read.message === "#other is outside this session's read grant", read);
+  check("no refusal shows a broker subject or calls the session an agent",
+    [none, read].every((r) => !/cotal\.|subject|agent/i.test(r?.message ?? "")), [none, read]);
+  check("a granted channel, a matching wildcard and an open grant pass",
+    grantRefusal(["general"], "general", "post") === undefined && grantRefusal(["team.>"], "team.a", "read") === undefined && grantRefusal([">"], "review", "post") === undefined);
+}
+
+// ---- 9. times -------------------------------------------------------------------------------------
+console.log("9. transcript times are local, as history shows them");
+{
+  const saved = process.env.TZ;
+  process.env.TZ = "Asia/Kolkata";
+  try {
+    const ts = Date.UTC(2026, 0, 2, 8, 33, 43);
+    const row = transcriptRows(applyEvent(s0(), { type: "message", message: msg({ ts }) }), 200)[0]?.text ?? "";
+    const at = new Date(ts);
+    check("a message shows its local time and date, not the UTC time of day",
+      row.startsWith(`${at.toLocaleDateString()} ${at.toLocaleTimeString()} `) && !row.includes("08:33:43"), row);
+  } finally {
+    if (saved === undefined) delete process.env.TZ;
+    else process.env.TZ = saved;
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

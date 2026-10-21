@@ -77,6 +77,13 @@ const SESSION_COOKIE = "cotal_web_session";
 function pathOf(req: IncomingMessage): string {
   return (req.url ?? "/").split("?")[0];
 }
+/** The class of an error for a managed service log: its name and code when each is a short
+ *  identifier. Never its message, which can carry peer-supplied text or a request target. */
+export function errorClassForLog(error: unknown): string {
+  const token = (value: unknown) => (typeof value === "string" || Number.isSafeInteger(value)) && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(String(value)) ? String(value) : undefined;
+  const parts = error instanceof Error ? [token(error.name), token((error as { code?: unknown }).code)] : [];
+  return parts.filter(Boolean).join(" ") || "unclassified";
+}
 /** Keep request diagnostics useful without copying a contiguous live launch credential into the
  *  operator log, wherever it appears in the target. Match each ASCII token byte in raw or percent-
  *  encoded form so paths, unrelated query fields, mixed encodings, and hex case are covered. */
@@ -837,9 +844,9 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
     registerPresence: false,
     watchPresence: true,
   });
-  const reportEndpoint = (e: Error) => console.error(c.red(lifecycle ? "! native dashboard endpoint reported an error; diagnostic body omitted" : "! " + e.message));
+  const reportEndpoint = (e: Error) => console.error(c.red(lifecycle ? `! native dashboard endpoint reported an error (${errorClassForLog(e)}); diagnostic body omitted` : "! " + e.message));
   ep.on("error", reportEndpoint);
-  ep.on("warning", (e: Error) => console.error(c.yellow(lifecycle ? "! native dashboard endpoint reported a warning; diagnostic body omitted" : "! " + e.message)));
+  ep.on("warning", (e: Error) => console.error(c.yellow(lifecycle ? `! native dashboard endpoint reported a warning (${errorClassForLog(e)}); diagnostic body omitted` : "! " + e.message)));
   await ep.start();
 
   // The dashboard does not yet have a manager/session-store observer. Carry the absence as data so

@@ -626,6 +626,31 @@ function removeOwnedDirectory(path: string, identity: { dev: bigint; ino: bigint
   } catch { /* absent or identity cannot be proven */ }
 }
 
+/** The step that moves a full restore attempt on from `state`, for a refusal to name. A committed or
+ *  degraded attempt goes forward through bare `up`, which continues it. */
+export function restoreNextStep(state: string, attemptId: string): string {
+  if (state === "restore-ready") return `roll the pre-commit attempt back: review cotal backup recover ${attemptId} --dry-run, then run it without --dry-run`;
+  if (state === "active") return `the restore completed: review cotal backup cleanup-fallback ${attemptId} --dry-run, then run it without --dry-run to retire its journal`;
+  return `recover forward with bare cotal up from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
+}
+
+/** The restore attempt the root's journal holds, with the step that moves it on, so a failure can
+ *  name the full attempt a recovery command needs. An unreadable journal names none. */
+export function heldRestoreAttempt(root: string): { attemptId: string; journalState: string; remedy: string } | undefined {
+  let journal: ReturnType<typeof readMaintenanceJournal>;
+  try { journal = readMaintenanceJournal(root); } catch { return undefined; }
+  if (!journal || !("restore" in journal)) return undefined;
+  return { attemptId: journal.restore.attemptId, journalState: journal.state, remedy: restoreNextStep(journal.state, journal.restore.attemptId) };
+}
+
+/** A root with no stopped preserved cut to restore into. Nothing was staged, moved or claimed. */
+function notRestorable(root: string, journal: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
+  const remedy = !journal ? "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root"
+    : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId)
+    : "this root's maintenance attempt must finish first; check it with cotal status";
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`, { target: { root, ...(journal ? { state: journal.state } : {}) }, remedy });
+}
+
 /** `progress` receives the seat admission lines. `up --restore` leaves them on stdout; `backup restore`
  *  routes them to stderr so its receipt stays the only stdout document. */
 export async function prepareRestore(root: string, flags: RestoreFlags, progress?: (line: string) => void): Promise<PreparedRestore> {
@@ -636,6 +661,9 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     pid: process.pid, host: hostname(), startedAt: new Date().toISOString(), id: `${attemptId}-coordinator`,
   };
   const deadline = new Date(Date.now() + RESTORE_TIMEOUT_MS);
+  // With no journal there is no cut to restore into. Refuse before the lock creates the maintenance
+  // directory, so a refused restore leaves the folder as it found it and `up` there sees no state.
+  if (!readMaintenanceJournal(root)) throw notRestorable(root, undefined);
   let lock = acquireMaintenanceLock(root);
   let staged: StagedArtifact | undefined;
   let transitioned = false;
@@ -666,7 +694,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
         throw new Error(`restore attempt ${journal.restore.attemptId} owners cannot be proven dead; inspect the recorded coordinator, watchdog, and broker processes before recovery`);
       journal = rollbackRestoreWithBroker(lock);
     }
-    if (!journal || journal.state !== "ready") throw new Error(`restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`);
+    if (!journal || journal.state !== "ready") throw notRestorable(root, journal);
     // A controller cut restores only through its recorded members,
     // checked here before staging, a claim or any store move. Its broker address is the cut's.
     const controller = cutController(journal.cut);

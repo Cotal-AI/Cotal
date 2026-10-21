@@ -25,12 +25,14 @@ import {
   addNotice,
   applyEvent,
   applyPublishResult,
-  closeSummary,
   headerRows,
+  heardFrom,
   initialState,
   parseSlash,
   recipientLabel,
+  runsOffline,
   setRecipient,
+  sharedNames,
   transcriptRows,
   MAX_DRAFT,
   type ChatState,
@@ -64,6 +66,8 @@ export async function runPlain(opts: {
   // Total transcript entries ever appended = entries still held + entries dropped by the bound.
   // Printing tracks that monotonic count, so a dropped entry is never re-printed or skipped.
   let printedEntries = 0;
+  // Names two principals carry, as of the last flush. A printed line is never relabeled.
+  let shared: ReadonlyMap<string, readonly string[]> = new Map();
   const unacked: string[] = [];
 
   const print = (line: string): void => { output.write(`${line}\n`); };
@@ -71,11 +75,16 @@ export async function runPlain(opts: {
   const flush = (): void => {
     const total = state.dropped + state.transcript.length;
     const fresh = Math.min(total - printedEntries, state.transcript.length);
+    const now = sharedNames(heardFrom(state));
     if (total - printedEntries > fresh) print(`... ${total - printedEntries - fresh} entries were dropped before they could be shown`);
     if (fresh > 0) {
       const tail = { ...state, dropped: 0, transcript: state.transcript.slice(state.transcript.length - fresh) };
-      for (const r of transcriptRows(tail, width)) print(r.text);
+      for (const r of transcriptRows(tail, width, now)) print(r.text);
     }
+    // Lines already printed show a name alone, so a name that more than one principal now carries is
+    // named once with its principals.
+    for (const [name, ids] of now) if (!shared.has(name)) print(`more than one principal uses the name ${oneLine(name)}: ${ids.map(oneLine).join(", ")}`);
+    shared = now;
     printedEntries = total;
     if (unacked.length) session.surfaced(unacked.splice(0));
   };
@@ -84,7 +93,7 @@ export async function runPlain(opts: {
       case "compose": print(`[to ${recipientLabel(state.recipient)}] type a message, /command, :to, :multi`); break;
       case "confirm": print(`send to ${recipientLabel(mode.to)}? y = send, anything else = keep as draft`); break;
       case "multi": print("(multi-line: end with a line containing only .)"); break;
-      case "pick": mode.choices.forEach((c, i) => print(`  ${i + 1}. ${c.label}${c.detail ? ` - ${c.detail}` : ""}`)); print("choose a number, or type #channel / @name / role:<role>; empty line cancels"); break;
+      case "pick": mode.choices.forEach((c, i) => print(`  ${i + 1}. ${c.label}${c.detail ? ` - ${c.detail}` : ""}`)); print("choose a number, or type #channel / @name / @owner.actor / role:<role>; empty line cancels"); break;
       case "confirm-leave": print("you have an unsent draft. y = discard and leave, anything else = keep editing"); break;
     }
   };
@@ -113,7 +122,7 @@ export async function runPlain(opts: {
   const startPick = async (): Promise<void> => {
     const [conn, roster] = await Promise.all([session.connection(), session.roster()]).catch(() => [undefined, undefined] as const);
     if (roster && roster.outcome !== "ok") state = addNotice(state, roster.outcome === "refused" ? "failed" : "waiting", `roster ${roster.outcome}: ${roster.message}`);
-    mode = { kind: "pick", choices: listChoices(conn?.outcome === "ok" ? conn.value : undefined, roster?.outcome === "ok" ? roster.value : undefined, state.identity.principal) };
+    mode = { kind: "pick", choices: listChoices(conn?.outcome === "ok" ? conn.value : undefined, roster?.outcome === "ok" ? roster.value : undefined, state.identity.principal, heardFrom(state)) };
   };
 
   const choose = async (r: Recipient): Promise<void> => {
@@ -194,9 +203,8 @@ export async function runPlain(opts: {
           const parsed = parseSlash(line);
           if (!parsed.ok) { state = addNotice(state, "failed", parsed.error); return; }
           if (parsed.command.name === "quit") return state.draft ? void (mode = { kind: "confirm-leave" }) : leave();
-          const offlineOk = parsed.command.name === "reconnect" || parsed.command.name === "connection" || parsed.command.name === "whoami";
-          if (state.connection !== "connected" && !offlineOk) {
-            state = addNotice(state, "waiting", "not connected: only /reconnect, /connection and /whoami run now");
+          if (state.connection !== "connected" && !runsOffline(parsed.command)) {
+            state = addNotice(state, "waiting", "not connected: only /reconnect, /connection, /whoami and /reply run now");
             return;
           }
           const { state: next, ack } = await runSlash(session, state, parsed.command);
@@ -227,8 +235,8 @@ export async function runPlain(opts: {
     unsubscribe();
     rl.close();
   }
+  // The close summary is a transcript notice, so this flush prints it once.
   state = await closeSession(session, state);
   flush();
-  if (state.ended) print(oneLine(closeSummary(state.identity, state.ended)));
   return state;
 }

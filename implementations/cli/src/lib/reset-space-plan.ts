@@ -30,6 +30,11 @@ const within = (parent: string, path: string): boolean => {
   return tail === "" || !isAbsolute(tail) && tail !== ".." && !tail.startsWith(`..${sep}`);
 };
 
+/** A scope refusal about one local path, named relative to the root. Only metadata is read for it. */
+class ScopePathRefusal extends Error {
+  constructor(message: string, readonly path: string, readonly writable: boolean) { super(message); }
+}
+
 /** Metadata only. Values and content fingerprints never enter the reset impact report. */
 function observePaths(root: string, space: string, inputs: readonly string[]): PathObservation[] {
   const control = join(root, ".cotal"), rows = new Map<string, PathObservation>();
@@ -41,7 +46,10 @@ function observePaths(root: string, space: string, inputs: readonly string[]): P
     if (rows.size >= 10_000 || !within(control, path) || path === control) throw new Error("identity cleanup scope exceeds its local path bound");
     const stat = lstatSync(path, { bigint: true, throwIfNoEntry: false });
     if (!stat) { rows.set(name, { path: name, kind: "absent", identity: null }); return; }
-    if (stat.isSymbolicLink() || !stat.isDirectory() && !stat.isFile() || stat.uid !== uid || (stat.mode & 0o022n) !== 0n || stat.isFile() && stat.nlink !== 1n) throw new Error("identity cleanup needs unchanged owned physical files and directories");
+    if (stat.isSymbolicLink() || !stat.isDirectory() && !stat.isFile()) throw new ScopePathRefusal("is a link or special file", name, false);
+    if (stat.uid !== uid) throw new ScopePathRefusal("is owned by another user", name, false);
+    if ((stat.mode & 0o022n) !== 0n) throw new ScopePathRefusal("is writable by group or other users", name, true);
+    if (stat.isFile() && stat.nlink !== 1n) throw new ScopePathRefusal("has another hard link", name, false);
     const kind = stat.isDirectory() ? "directory" : "file";
     rows.set(name, { path: name, kind, identity: [stat.dev, stat.ino, stat.mode, stat.uid, stat.size, stat.mtimeNs, stat.ctimeNs].join(":") });
     if (kind === "directory") for (const child of readdirSync(path).sort()) {
@@ -109,8 +117,13 @@ export async function planResetSpaceIdentity(root: string, space: string, mode: 
     const after = observePaths(root, space, planned.paths);
     if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("identity paths changed while trust was validated");
     return { root, space, controlIdentity: planned.controlIdentity, paths: after, provider, providerKeys: planned.providerKeys, agentKeys: planned.agentKeys, secretKeys: planned.secretKeys };
-  } catch {
-    throw new CommandFailure("refused", "CONFLICT", "the named reset could not establish one complete unchanged local identity scope, valid trust and declared provider keys; no identity deletion was submitted", { target: { root, space }, remedy: "inspect reset space <space> --dry-run; shared roots, foreign segments, links and providers without cleanup metadata cannot be reset by this route" });
+  } catch (error) {
+    // A refusal about one path names it and what is wrong with it, so the reader can act.
+    if (error instanceof ScopePathRefusal) {
+      const path = join(root, error.path);
+      throw new CommandFailure("refused", "CONFLICT", `the named reset could not establish one complete unchanged local identity scope: ${path} ${error.message}; no identity deletion was submitted`, { target: { root, space, path }, remedy: error.writable ? `remove group and other write permission (chmod go-w ${path}), then preview again with cotal reset space ${space} --dry-run` : `inspect ${path}; the reset removes only owned physical files and directories with one link` });
+    }
+    throw new CommandFailure("refused", "CONFLICT", "the named reset could not establish one complete unchanged local identity scope, valid trust and declared provider keys; no identity deletion was submitted", { target: { root, space }, remedy: "shared roots, foreign segments, links and providers without cleanup metadata cannot be reset by this route; inspect the root's .cotal directory" });
   }
 }
 

@@ -7,6 +7,7 @@
  *  exact service-controller instance. Trust and the broker configuration are prepared explicitly
  *  here, outside any adapter plan. A failure after the first effect is reported as partial or
  *  unknown with the members it changed; nothing already started is rolled back. */
+import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -15,17 +16,18 @@ import { isReachable, mintCreds, newIdentity, type BrokerTransport, type ParsedA
 import {
   CommandFailure, accountInventory, authDir, canonicalRoot, deliveryCredsKey, findMesh, findPreparedSpace, getSpaceAuth, hasUserAuthState,
   isCommandFailure, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveOnPath,
-  terminalWidth, workspaceSecretStore, writeResult, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
+  terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
+import { brokerListenAddress } from "../lib/broker-service.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
-import { prepareProcessService, removeStoppedInstanceRecords, startProcessService } from "../lib/service-process.js";
+import { prepareProcessService, removeStoppedInstanceRecords, settleExitedInstances, startProcessService } from "../lib/service-process.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
-import { foreignLocalProcesses, newStackOperation, readStackJournal, stackMaintenanceFence, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, newStackOperation, readStackJournal, settleStackOperation, stackMaintenanceFence, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userLoginRequired, userLoginState, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
 
 /** Callbacks into the native broker preparation that `up.ts` owns. They hold private authority
@@ -73,6 +75,9 @@ export function recheckExistingStore(pin: ExistingStorePin, target: Record<strin
 }
 
 export interface StackUpRequest {
+  /** The root maintenance lock the caller holds for this whole start. Holding it proves no other
+   *  whole-stack operation is in flight, which is what lets an unsettled earlier one be settled. */
+  maintenanceLock: MaintenanceLock;
   root: string;
   space: string;
   server: string;
@@ -117,6 +122,8 @@ export interface StackUpResult {
   launch?: { path: string; sha256: string };
   /** A settled active restore of this stack that its retained journal did not fence. */
   admittedRestore?: string;
+  /** An earlier operation with no recorded outcome that this call settled before it started. */
+  settled?: StackSettlement;
 }
 
 /** Inputs that name a legacy-only startup refuse on the controller route. They are not dropped. */
@@ -194,8 +201,10 @@ function canonicalBinary(bin: string): string {
  *  definition naming another adapter or root refuses. One whose volatile launch options differ (the
  *  broker's freshly allocated websocket port, a different selected binary) is redefined only when
  *  every recorded instance of it is stopped with its terminal receipt; those stopped records are
- *  removed with the definition under its writer lock, exactly as `service remove` requires. */
-function ensureDefinition(space: string, role: StackRole, input: ServiceDefinitionInput, root: string): ServiceDefinitionSnapshot {
+ *  removed with the definition under its writer lock, exactly as `service remove` requires. `replace`
+ *  journals the replacement's IDs before that retirement and the new definition's revision after it,
+ *  so an `up` cut off before the replacement's readiness is recorded leaves a resolvable transition. */
+function ensureDefinition(space: string, role: StackRole, input: ServiceDefinitionInput, root: string, replace: (definitionRevision?: string) => void): ServiceDefinitionSnapshot {
   const store = serviceDefinitionStore(space), name = STACK_DEFINITION[role];
   const existing = store.read(name);
   const wanted = input.launch;
@@ -206,10 +215,15 @@ function ensureDefinition(space: string, role: StackRole, input: ServiceDefiniti
     if (JSON.stringify(launch.options) === JSON.stringify(wanted.options)) return existing;
     // A running member keeps the definition it was launched from; it is reused, never redefined.
     if (serviceInstances(space, name).some((row) => observeServiceProcess(row.record.value) === "running")) return existing;
+    // A member that crashed is recorded as such first, so its record can go with the definition.
+    settleExitedInstances(existing);
+    replace();
     store.commit(name, existing, undefined, () => removeStoppedInstanceRecords(space, name));
   }
   store.commit(name, undefined, validateServiceDefinition(input, space));
-  return store.read(name)!;
+  const saved = store.read(name)!;
+  if (existing) replace(saved.record.revision);
+  return saved;
 }
 
 function adapterDefinition(space: string, adapter: string, options: Record<string, unknown>, timeoutMs: number): ServiceDefinitionInput {
@@ -217,9 +231,12 @@ function adapterDefinition(space: string, adapter: string, options: Record<strin
 }
 
 function membersView(journal: StackJournal, title: string): Report {
+  // A role the stack's mode never plans (auth on a static or open stack, delivery on an open one)
+  // is not a member of it; it stays in the journal and JSON only.
+  const members = journal.members.filter((member) => stackRoleApplies(journal.mode, member.role));
   return { sections: [{ title, blocks: [
     { kind: "fields", rows: [["Space", journal.space], ["Root", journal.root], ["Broker", journal.server], ["Mode", journal.mode === "open" ? "open, no authentication" : journal.mode === "user" ? "user auth" : "static auth"], ["Operation", `${journal.operation.kind} ${journal.operation.phase}`], ...(journal.mode === "user" ? [["Registration", userRegistrationIncomplete(journal.space) ? "incomplete: no confirmed auth-service endpoint" : "auth-service endpoint confirmed by its provider"] as [string, string]] : [])] },
-    { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: journal.members.map((member) => ({ role: member.role, definition: member.definition, instance: member.instanceId ?? "not allocated", state: { text: member.state.replaceAll("-", " "), tone: ["started", "reused", "stopped", "already-stopped"].includes(member.state) ? "ok" as const : ["refused", "failed"].includes(member.state) ? "failed" as const : "waiting" as const } })) },
+    { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: members.map((member) => ({ role: member.role, definition: member.definition, instance: member.instanceId ?? "not allocated", state: { text: member.state.replaceAll("-", " "), tone: ["started", "reused", "stopped", "already-stopped"].includes(member.state) ? "ok" as const : ["refused", "failed"].includes(member.state) ? "failed" as const : "waiting" as const } })) },
     { kind: "lines", lines: [journal.mode === "open"
       ? "Open stack: no authentication, no delivery member and no delivery credential. Each member is one exact service-controller instance. Broker readiness means its own process reported its listener; manager readiness is the child's own local receipt, not an attributed endpoint response. This is not agent or task readiness, and a partial start is not rolled back."
       : journal.mode === "user"
@@ -231,20 +248,25 @@ function membersView(journal: StackJournal, title: string): Report {
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its
  *  own receipt. The stack is up by then, so a persona that cannot be written is a warning. */
 export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
-  const { journal, changed, allReused, admittedRestore } = await startControllerStack(request, native);
+  const { journal, changed, allReused, admittedRestore, settled } = await startControllerStack(request, native);
   const { root, space, server, mode } = journal;
+  const managed = journal.members.some((row) => row.role === "manager" && (row.state === "started" || row.state === "reused"));
   const written: { what: string; path: string }[] = [];
-  const warnings: OutputWarning[] = [];
+  const warnings: OutputWarning[] = settled ? [{ code: "OPERATION_SETTLED", target: { root, space, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : [];
   try {
     const persona = seedDefaultPersona(root);
     if (persona) written.push(persona);
   } catch (error) {
     warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
   }
-  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, written }, warnings, ...(allReused && written.length === 0 ? { noOp: true } : {}) }, (result) => {
+  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, written }, warnings, ...(allReused && written.length === 0 ? { noOp: true } : {}) }, (result) => {
     const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started");
     const view: Report = result.written.length ? { ...members, sections: [...members.sections, { blocks: [{ kind: "fields", rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] } : members;
-    return admittedRestore ? { ...view, sections: [...view.sections, { title: "Retained restore journal", blocks: [{ kind: "lines", lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] } : view;
+    const next: Report["sections"] = request.foreground ? [] : [{ title: "Next", blocks: [{ kind: "commands", items: [
+      managed ? { command: "cotal spawn", description: "Launch your default agent" } : { command: "cotal up", description: "Add the manager to this stack" },
+      { command: "cotal down", description: "Stop every recorded member" },
+    ] }] }];
+    return { ...view, sections: [...view.sections, ...(admittedRestore ? [{ title: "Retained restore journal", blocks: [{ kind: "lines" as const, lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] : []), ...next] };
   });
 }
 
@@ -288,6 +310,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const admittedRestore = stackPreflight(root, space, previous?.journal, request.manifest?.deploymentId);
   if (previous && (previous.journal.space !== space || previous.journal.server !== request.server))
     throw new CommandFailure("refused", "CONFLICT", "this root's stack journal names another space or broker address; it was not rebound", { target: { root, space, recorded: { space: previous.journal.space, server: previous.journal.server } } });
+  // The broker service's own address rules run before anything is written, so an address it would
+  // refuse never becomes this root's recorded broker address.
+  brokerListenAddress(request.server);
   // The broker service launches only for a space registered or prepared at this root. That is
   // checked here, before trust, configuration, definitions, instances or the journal are written,
   // so the refusal leaves the folder as it was.
@@ -296,8 +321,11 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     throw new CommandFailure("refused", "CONFLICT", "the space is registered to another root, broker address or external origin; nothing was prepared or started", { target: { root, space }, remedy: `inspect it with cotal space show ${space}` });
   if (!registration && (!preparedSpace || canonicalRoot(preparedSpace.root) !== root))
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the space has no prepared or locally started registration at this root; nothing was prepared or started", { target: { root, space }, remedy: `prepare it with cotal space create ${space} --root ${root}, then run cotal up` });
-  if (previous && ["planned", "applying", "unknown"].includes(previous.journal.operation.phase))
-    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "an earlier whole-stack operation on this root has no settled outcome; it was not retried", { target: { root, space, operation: previous.journal.operation }, remedy: `inspect the stack's members with cotal service --space ${space} before another whole-stack operation` });
+  // An earlier up or down that never recorded its outcome is settled from its members' process
+  // evidence under the held maintenance lock. Only a preserve or resume can remain unsettled here.
+  const { snapshot: current, settled } = previous ? settleStackOperation(request.maintenanceLock, previous) : { snapshot: undefined, settled: undefined };
+  if (current && stackOperationUnsettled(current.journal))
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an earlier preserve or resume on this root has no settled outcome; it is decided by its own maintenance attempt and no member was started", { target: { root, space, operation: current.journal.operation }, remedy: `inspect the root's maintenance attempt and the stack's members with cotal service --space ${space} before another whole-stack operation` });
   const server = previous?.journal.server ?? request.server;
   if (request.noManager) {
     const running = serviceInstances(space, STACK_DEFINITION.manager).filter((row) => observeServiceProcess(row.record.value) === "running");
@@ -310,10 +338,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     if (request.idp !== undefined || !(brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running")) await preflightUserStack(root, space, request.idp);
   }
   const roles = STACK_ROLES.filter((role) => stackRoleApplies(mode, role) && !(role === "manager" && request.noManager));
-  const members: StackMember[] = STACK_ROLES.map((role) => ({ role, definition: STACK_DEFINITION[role], instanceId: previous?.journal.members.find((row) => row.role === role)?.instanceId ?? null, state: roles.includes(role) ? "planned" : "not-attempted" }));
+  // A replacement an earlier `up` journaled is resolved from its own record before it is carried over.
+  const recordedMembers = current ? withSettledMembers(current.journal, undefined).members : [];
+  const members: StackMember[] = STACK_ROLES.map((role) => ({ role, definition: STACK_DEFINITION[role], instanceId: recordedMembers.find((row) => row.role === role)?.instanceId ?? null, state: roles.includes(role) ? "planned" : "not-attempted" }));
   let journal: StackJournal = { schemaVersion: 1, kind: "cotal-stack-controller", root, space, server, mode, ...(recordedBroker ? { broker: recordedBroker } : {}), members, operation: newStackOperation("up"), updatedAt: new Date().toISOString() };
-  // The whole scoped plan is durable before the first effect. A crash after this reads as unsettled.
-  let snapshot: StackJournalSnapshot = writeStackJournal(root, previous, journal);
+  // The whole scoped plan is durable before the first effect. A crash after this reads as unsettled
+  // until the next whole-stack operation settles it from its members' evidence.
+  let snapshot: StackJournalSnapshot = writeStackJournal(root, current, journal);
   const changed: unknown[] = [];
   const settle = (phase: StackJournal["operation"]["phase"]) => {
     journal = { ...journal, operation: { ...journal.operation, phase }, updatedAt: new Date().toISOString() };
@@ -323,14 +354,24 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     journal = { ...journal, members: journal.members.map((row) => row.role === role ? { ...row, ...change } : row), updatedAt: new Date().toISOString() };
     snapshot = writeStackJournal(root, snapshot, journal);
   };
+  // A redefinition retires the member's recorded instance with its old definition. The replacement's
+  // IDs are journaled before that retirement and the new definition's revision before its launch.
+  const replace = (role: StackRole) => (definitionRevision?: string) => {
+    const row = journal.members.find((member) => member.role === role)!;
+    mark(role, { replacement: definitionRevision === undefined ? { operation: journal.operation.id, instanceId: randomUUID(), launchRequestId: randomUUID() } : { ...row.replacement!, definitionRevision } });
+  };
   const start = async (role: StackRole, definition: ServiceDefinitionSnapshot) => {
     prepareProcessService(definition);
     const current = serviceInstances(space, definition.name);
     if (current.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a stack definition has several instance records; no instance was chosen", { target: { space, definition: definition.name, candidates: current.map((row) => row.name) } });
-    const recorded = journal.members.find((row) => row.role === role)!.instanceId;
+    const { instanceId: recorded, replacement } = journal.members.find((row) => row.role === role)!;
     if (current[0] && recorded && current[0].name !== recorded) throw new CommandFailure("refused", "CONFLICT", "the stack journal and the definition's instance record name different instances; neither was adopted", { target: { space, definition: definition.name } });
-    const started = await startProcessService(definition, current[0] ? { instance: current[0].name } : {});
-    mark(role, { instanceId: started.instance.name, state: started.noOp ? "reused" : "started" });
+    // A readiness wait can take many seconds, so a text run says what it waits for instead of going silent.
+    if (request.presentation !== "json" && !(current[0] && observeServiceProcess(current[0].record.value) === "running"))
+      process.stderr.write(`Starting ${definition.name}; waiting up to ${Math.round(definition.record.value.readiness.timeoutMs / 1000)}s for its readiness check\n`);
+    // A redefined member starts its replacement under the IDs the journal already names.
+    const started = await startProcessService(definition, replacement ? { replacement: { instanceId: replacement.instanceId, launchRequestId: replacement.launchRequestId } } : current[0] ? { instance: current[0].name } : {});
+    mark(role, { instanceId: started.instance.name, state: started.noOp ? "reused" : "started", replacement: undefined });
     if (!started.noOp) changed.push(instanceProjection(started.instance));
     return started.instance;
   };
@@ -365,7 +406,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const savedOptions = savedBroker?.record.value.launch.type === "adapter" ? savedBroker.record.value.launch.options : undefined;
     if (!prepared && !savedOptions) throw new CommandFailure("refused", "CONFLICT", "a broker instance runs without its saved stack definition; it was not adopted", { target: { space, definition: STACK_DEFINITION.broker } });
     const brokerOptions = prepared ? { root, config: prepared.confPath, binary: canonicalBinary(prepared.bin), server } : { ...savedOptions! };
-    const broker = ensureDefinition(space, "broker", adapterDefinition(space, STACK_ADAPTER.broker, brokerOptions, 30000), root);
+    const broker = ensureDefinition(space, "broker", adapterDefinition(space, STACK_ADAPTER.broker, brokerOptions, 30000), root, replace("broker"));
     if (storePin) recheckExistingStore(storePin, { root, space });
     await start("broker", broker);
     if (prepared) {
@@ -387,7 +428,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const authRows = serviceInstances(space, STACK_DEFINITION.auth);
       const authRunning = authRows.length === 1 && observeServiceProcess(authRows[0]!.record.value) === "running";
       if (!prepared?.user && !authRunning) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the user stack's auth service is stopped while its broker still runs; its native preparation runs only with a broker start, so it was not started from other material", { target: { root, space }, remedy: "stop the stack with bare cotal down, then run bare cotal up" });
-      const authService = ensureDefinition(space, "auth", adapterDefinition(space, STACK_ADAPTER.auth, { root, server }, 60000), root);
+      const authService = ensureDefinition(space, "auth", adapterDefinition(space, STACK_ADAPTER.auth, { root, server }, 60000), root, replace("auth"));
       const instance = await start("auth", authService);
       if (prepared?.user) {
         failedRole = "auth";
@@ -407,7 +448,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const credsPath = join(root, ".cotal", credsKey);
       const deliveryRows = serviceInstances(space, STACK_DEFINITION.delivery);
       if (!(deliveryRows.length === 1 && observeServiceProcess(deliveryRows[0]!.record.value) === "running")) await store.put(credsKey, await mintCreds(auth, newIdentity(), "delivery"));
-      const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server }, 40000), root);
+      const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server }, 40000), root, replace("delivery"));
       await start("delivery", delivery);
     }
     // A user stack's manager is read and stopped as the invoking user's existing login. Without a
@@ -432,7 +473,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         options.launch = launch.path;
         options["launch-sha256"] = launch.sha256;
       }
-      const manager = ensureDefinition(space, "manager", adapterDefinition(space, STACK_ADAPTER.manager, options, 60000), root);
+      const manager = ensureDefinition(space, "manager", adapterDefinition(space, STACK_ADAPTER.manager, options, 60000), root, replace("manager"));
       await start("manager", manager);
     }
     if (!loginBlock) settle("completed");
@@ -449,7 +490,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       : error instanceof JetStreamApiError && Number.isSafeInteger(error.code) && error.code >= 10000 && error.code < 20000
         ? { code: String(error.code), ...(Number.isSafeInteger(error.status) && error.status >= 400 && error.status < 600 ? { detail: { status: error.status } } : {}) }
         : undefined;
-    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, "the controller stack did not start every planned member; started members were kept and nothing was retried", { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: `inspect the stack's members with cotal service --space ${space} before another cotal up; a later bare cotal down stops only the recorded members` });
+    // The member's own sentence and remedy are what a reader can act on, such as a busy broker port.
+    const cause = pending && failure ? ` (${pending.role}: ${failure.message})` : "";
+    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${space} before another cotal up; a later bare cotal down stops only the recorded members` });
   }
   if (loginBlock) {
     mark("manager", { state: "not-attempted", code: "AUTH_REQUIRED" });
@@ -465,7 +508,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       : "the user stack's other members were already running and were reused; the manager was not attempted because no signed-in, granted login exists. This is not whole-stack readiness", { target: detail, changed, native: { code: "AUTH_REQUIRED", outcome: "refused", detail: loginBlock.message }, ...(loginBlock.remedy ? { remedy: loginBlock.remedy } : {}) });
   }
   const allReused = journal.members.every((row) => row.state === "reused" || row.state === "not-attempted");
-  return { journal, changed, allReused, ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}) };
+  return { journal, changed, allReused, ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}) };
 }
 
 /** The member table and evidence text a caller embeds in its own receipt. */

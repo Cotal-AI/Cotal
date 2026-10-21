@@ -5,6 +5,8 @@
  * mark; a ready lease held by ANOTHER daemon does not satisfy a wait for the daemon we launched
  * (#837); release frees it so a fresh acquire succeeds. A lease-watch bind still in flight at stop or
  * reconnect deletes its consumer instead of installing a watch for the retired connection (#3966).
+ * A rearm binds the fan-out and reader durables a full restore recreated with their start bound,
+ * and any other existing config still conflicts.
  *
  * Run: pnpm smoke:delivery-lease:auth   (needs `nats-server` on PATH; auth/JetStream, local-only)
  */
@@ -13,10 +15,10 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease, chatStream, standaloneConnectOpts, deliveryBucket, leaseKey, fanoutDurableConfig, FANOUT_DURABLE, idFromCreds, deliveryLeaseHolderFor, controlServiceSubject, CONTROL_DELIVERY, DEV_OWNER } from "../src/index.js";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease, chatStream, standaloneConnectOpts, deliveryBucket, leaseKey, fanoutDurableConfig, FANOUT_DURABLE, idFromCreds, deliveryLeaseHolderFor, controlServiceSubject, CONTROL_DELIVERY, DEV_OWNER, inboxStream, INBOX_READER_DURABLE, recreateConsumerCheckpoint } from "../src/index.js";
+import { connect, credsAuthenticator, nanos } from "@nats-io/transport-node";
 import { Kvm, type KV } from "@nats-io/kv";
-import { jetstreamManager, AckPolicy } from "@nats-io/jetstream";
+import { jetstreamManager, AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -432,6 +434,39 @@ try {
   check("Q7 REFUSING CASE: once the broker recovers, the SAME retry path resumes serving", d3.plane3IsQuiesced() === false);
   const fanoutBack = await jsmConflict.consumers.info(chat, FANOUT_DURABLE).then(() => true, () => false);
   check("Q8 and the fan-out durable is really bound again, read from the broker", fanoutBack);
+
+  // ---- R: DURABLES A FULL RESTORE RECREATED MUST BIND, AND ONLY THEIR SHAPE IS ACCEPTED ----
+  // `backup restore` recreates the fan-out and reader durables from their checkpoints with a
+  // `StartSequence` start bound, through `recreateConsumerCheckpoint`, the create the restore itself
+  // uses. A create of the canonical config meets them as `consumer already exists`. Before the fix
+  // this rearm threw, as the delivery daemon did on every restored store, and `up` reported a lost
+  // lease. Q's incompatible durable above still fails, and so does a start-bounded one whose other
+  // settings differ (R4).
+  console.log("\nR. durables recreated by a full restore bind; another config still conflicts");
+  await d3.quiescePlane3();
+  const inbox = inboxStream(space);
+  const restored = [[chat, FANOUT_DURABLE], [inbox, INBOX_READER_DURABLE]] as const;
+  for (const [stream, name] of restored) {
+    await jsmConflict.consumers.delete(stream, name).catch(() => {});
+    const state = (await jsmConflict.streams.info(stream)).state;
+    await recreateConsumerCheckpoint(conflictNc, space, { stream, name, ackFloorStreamSequence: 0, creationLowerBound: 1, streamState: { messages: state.messages, first_seq: state.first_seq, last_seq: state.last_seq } });
+  }
+  let restoredRearm: unknown;
+  try { await d3.rearmPlane3(); } catch (e) { restoredRearm = e; }
+  check("R1 a rearm over the restored fan-out and reader durables succeeds", restoredRearm === undefined, restoredRearm);
+  check("R2 and the endpoint serves again", d3.plane3IsQuiesced() === false);
+  const kept = await Promise.all(restored.map(([stream, name]) => jsmConflict.consumers.info(stream, name)));
+  check("R3 both keep the restored start bound; neither was replaced", kept.every((info) => info.config.deliver_policy === DeliverPolicy.StartSequence));
+
+  await d3.quiescePlane3();
+  await jsmConflict.consumers.delete(chat, FANOUT_DURABLE).catch(() => {});
+  await jsmConflict.consumers.add(chat, { ...fanoutDurableConfig(space), deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: 1, ack_wait: nanos(5_000) });
+  let otherAckWaitThrew = false;
+  try { await d3.rearmPlane3(); } catch { otherAckWaitThrew = true; }
+  check("R4 a start-bounded fan-out durable with another ACK wait still conflicts, and the endpoint stays quiesced", otherAckWaitThrew && d3.plane3IsQuiesced() === true);
+  await jsmConflict.consumers.delete(chat, FANOUT_DURABLE).catch(() => {});
+  await d3.rearmPlane3();
+  check("R5 CONTROL: with that durable removed, the same rearm serves over the restored reader", d3.plane3IsQuiesced() === false);
 
   // ── V. A UNIT ALREADY IN FLIGHT MUST NOT TAKE EFFECT AFTER THE QUIESCE ─────────────────
   //

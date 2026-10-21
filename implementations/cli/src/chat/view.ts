@@ -9,6 +9,7 @@
 import { displayWidth, wrapWords } from "@cotal-ai/workspace";
 import { oneLine } from "@cotal-ai/core";
 import type { AttentionMode, ChannelMode } from "@cotal-ai/core";
+import { shownTime } from "../lib/shown-time.js";
 import type { CloseReport, ConnectionState, PublishResult, Result, SessionEvent, SessionIdentity, SessionMessage } from "./session.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 
@@ -17,9 +18,12 @@ export const MAX_TRANSCRIPT = 500;
 /** Bounded draft length, in UTF-16 code units. Provisional. */
 export const MAX_DRAFT = 65_536;
 
+/** `dm` is a typed name or principal the session resolves. `peer` is an exact principal taken from a
+ *  received message, sent as is with no name lookup; its `name` is display only. */
 export type Recipient =
   | { readonly kind: "channel"; readonly channel: string }
-  | { readonly kind: "dm"; readonly to: string; readonly replyTo?: string }
+  | { readonly kind: "dm"; readonly to: string }
+  | { readonly kind: "peer"; readonly principal: string; readonly name: string; readonly replyTo?: string }
   | { readonly kind: "role"; readonly role: string };
 
 export type TranscriptEntry =
@@ -186,10 +190,10 @@ function submit(state: ChatState): { state: ChatState; intent?: Intent } {
     if (!parsed.ok) return { state: notice(state, "failed", parsed.error) };
     // /quit is leaving: the slash line itself is the only draft, so it leaves directly. Every other
     // slash command talks to the mesh, so it waits for a connection like a message does, except
-    // /reconnect, /connection and /whoami, which are the ones useful while disconnected.
+    // /reconnect, /connection and /whoami, which are the ones useful while disconnected, and /reply,
+    // which only picks a recipient.
     if (parsed.command.name === "quit") return { state: { ...state, draft: "" }, intent: { kind: "leave" } };
-    const offlineOk = parsed.command.name === "reconnect" || parsed.command.name === "connection" || parsed.command.name === "whoami";
-    if (state.connection !== "connected" && !offlineOk) return { state: notice(state, "waiting", "not connected: only /reconnect, /connection and /whoami run now; your line is kept") };
+    if (state.connection !== "connected" && !runsOffline(parsed.command)) return { state: notice(state, "waiting", "not connected: only /reconnect, /connection, /whoami and /reply run now; your line is kept") };
     return { state: { ...state, draft: "" }, intent: { kind: "slash", command: parsed.command } };
   }
   if (state.connection !== "connected") return { state: notice(state, "waiting", "not connected: sending is off; your draft is kept") };
@@ -208,10 +212,10 @@ export function applyPublishResult(state: ChatState, result: PublishResult): Cha
   const { to, text, draft: submitted } = state.pending;
   const s = append({ ...state, pending: undefined }, { kind: "sent", to, text, result });
   if (result.outcome === "stored") {
-    // A DM reply is answered once: if the user has not picked another recipient meanwhile, the
-    // recipient falls back to a plain DM to that peer. A recipient chosen during the send is kept.
+    // A reply is answered once: if the user has not picked another recipient meanwhile, the
+    // recipient falls back to a plain DM to the same principal. A recipient chosen during the send is kept.
     const unchanged = state.recipient === to;
-    const recipient = unchanged && to.kind === "dm" && to.replyTo ? { kind: "dm" as const, to: to.to } : state.recipient;
+    const recipient: Recipient | undefined = unchanged && to.kind === "peer" && to.replyTo ? { kind: "peer", principal: to.principal, name: to.name } : state.recipient;
     // Only clear the draft if it is still exactly what was submitted; a user may have typed on.
     const draft = state.draft === submitted ? "" : state.draft;
     const next = { ...s, draft, recipient };
@@ -227,10 +231,26 @@ export function setRecipient(state: ChatState, recipient: Recipient): ChatState 
   return { ...state, recipient };
 }
 
-/** Start a reply to a received DM, keeping its id as `replyTo`. */
+/** Start a reply to a received DM or role task: to its sender's principal, with no name lookup,
+ *  keeping the message id as `replyTo`. A channel message is answered on its channel. */
 export function replyTo(state: ChatState, m: SessionMessage): ChatState {
-  if (m.kind !== "dm") return state;
-  return setRecipient(state, { kind: "dm", to: m.from.id, replyTo: m.id });
+  if (m.kind === "channel") return state;
+  return setRecipient(state, { kind: "peer", principal: m.from.id, name: m.from.name, replyTo: m.id });
+}
+
+/** The latest received DM or role task still in the transcript. */
+export function latestDirected(state: ChatState): SessionMessage | undefined {
+  for (let i = state.transcript.length - 1; i >= 0; i--) {
+    const e = state.transcript[i]!;
+    if (e.kind === "message" && e.message.kind !== "channel") return e.message;
+  }
+  return undefined;
+}
+
+/** `/reply`: answer the latest received DM or role task. */
+export function replyToLatest(state: ChatState): ChatState {
+  const m = latestDirected(state);
+  return m ? replyTo(state, m) : notice(state, "hint", "nothing to reply to: no direct message or role task is in this session's transcript");
 }
 
 export function applyEnded(state: ChatState, close: CloseReport): ChatState {
@@ -280,13 +300,20 @@ export type SlashCommand =
   | { readonly name: "inbox"; readonly peek: boolean }
   | { readonly name: "connection" }
   | { readonly name: "reconnect" }
+  | { readonly name: "reply" }
   | { readonly name: "quit" };
 
-/** The spec's slash set, plus `/whoami` (spec "History and presence reads") and `/quit`. */
+/** Whether a slash command runs while disconnected: the reads of this session's own state, and
+ *  `/reply`, which only picks a recipient. */
+export function runsOffline(command: SlashCommand): boolean {
+  return command.name === "reconnect" || command.name === "connection" || command.name === "whoami" || command.name === "reply";
+}
+
+/** The spec's slash set, plus `/whoami` (spec "History and presence reads"), `/reply` and `/quit`. */
 export const SLASH_COMMANDS = [
   "/who", "/whoami", "/status <idle|working|waiting> [activity]", "/attention <open|dnd|focus>",
   "/quiet <channel>", "/mute <channel>", "/normal <channel>", "/join <channel>", "/leave <channel>",
-  "/info <channel>", "/history [n]", "/inbox [--peek]", "/connection", "/reconnect", "/quit",
+  "/info <channel>", "/history [n]", "/inbox [--peek]", "/connection", "/reconnect", "/reply", "/quit",
 ] as const;
 
 const HISTORY_DEFAULT = 50;
@@ -305,10 +332,11 @@ export function parseSlash(line: string): { ok: true; command: SlashCommand } | 
     case "/whoami":
     case "/connection":
     case "/reconnect":
+    case "/reply":
     case "/quit":
     case "/exit":
       if (rest.length) return { ok: false, error: `${head} takes no arguments` };
-      return { ok: true, command: { name: head === "/exit" ? "quit" : (head.slice(1) as "who" | "whoami" | "connection" | "reconnect" | "quit") } };
+      return { ok: true, command: { name: head === "/exit" ? "quit" : (head.slice(1) as "who" | "whoami" | "connection" | "reconnect" | "reply" | "quit") } };
     case "/status": {
       if (arg !== "idle" && arg !== "working" && arg !== "waiting") return { ok: false, error: "usage: /status <idle|working|waiting> [activity]" };
       const activity = rest.slice(1).join(" ");
@@ -359,10 +387,44 @@ export function recipientLabel(r: Recipient | undefined): string {
   if (!r) return "no recipient (Tab)";
   if (r.kind === "channel") return `#${oneLine(r.channel)}`;
   if (r.kind === "role") return `role ${oneLine(r.role)}`;
-  return `DM ${oneLine(r.to)}${r.replyTo ? " (reply)" : ""}`;
+  if (r.kind === "peer") return `DM ${oneLine(r.name)} (${oneLine(r.principal)})${r.replyTo ? " (reply)" : ""}`;
+  return `DM ${oneLine(r.to)}`;
 }
 
-/** The header: who this session is and under which mode's guarantees. Never a credential. */
+/** A principal and the display name it carries. */
+export interface Person {
+  readonly id: string;
+  readonly name: string;
+}
+
+const nameKey = (name: string): string => name.trim().toLowerCase();
+
+/** Each display name more than one principal carries among `people`, with those principals. Names
+ *  compare trimmed and case-insensitively. */
+export function sharedNames(people: Iterable<Person>): ReadonlyMap<string, readonly string[]> {
+  const ids = new Map<string, Set<string>>();
+  for (const p of people) {
+    const key = nameKey(p.name);
+    const seen = ids.get(key) ?? new Set<string>();
+    seen.add(p.id);
+    ids.set(key, seen);
+  }
+  return new Map([...ids].filter(([, seen]) => seen.size > 1).map(([key, seen]) => [key, [...seen]]));
+}
+
+/** A person's display name, followed by their principal when another principal shares the name.
+ *  Unescaped: the caller escapes it like any other untrusted text. */
+export function personLabel(p: Person, shared: ReadonlyMap<string, readonly string[]>): string {
+  return shared.has(nameKey(p.name)) ? `${p.name} (${p.id})` : p.name;
+}
+
+/** The senders of the received messages still in the transcript. */
+export function heardFrom(state: ChatState): Person[] {
+  return state.transcript.flatMap((e) => (e.kind === "message" ? [e.message.from] : []));
+}
+
+/** The header: the mesh first, as every command's report opens, then who this session is and under
+ *  which mode's guarantees. Never a credential. */
 export function headerRows(state: ChatState): Row[] {
   const id = state.identity;
   const mode =
@@ -374,23 +436,22 @@ export function headerRows(state: ChatState): Row[] {
     : state.connection === "ended" ? { text: "ended", tone: "failed" }
     : { text: `${state.connection}: sending off`, tone: "waiting" };
   return [
-    { text: `${oneLine(id.label)} · ${oneLine(id.principal)} · session …${shortUid(id.lifecycleUid)} · ${mode}`, tone: "label" },
     { text: `Mesh: ${oneLine(id.space)}`, tone: "label" },
+    { text: `${oneLine(id.label)} · ${oneLine(id.principal)} · session …${shortUid(id.lifecycleUid)} · ${mode}`, tone: "label" },
     conn,
     { text: `to ${recipientLabel(state.recipient)} · attention ${state.attention}`, tone: "selected" },
   ];
 }
 
-const time = (ts: number): string => new Date(ts).toISOString().slice(11, 19);
-
-function senderOf(m: SessionMessage): string {
+function senderOf(m: SessionMessage, shared: ReadonlyMap<string, readonly string[]>): string {
   const where = m.kind === "channel" ? `#${m.channel}` : m.kind === "anycast" ? `role ${m.service}` : "DM";
-  return `${where} ${m.from.name}`;
+  return `${where} ${personLabel(m.from, shared)}`;
 }
 
 /** Transcript lines fitted to `width` columns. Untrusted text is escaped; a body's own newlines
- *  become separate indented lines, never a forged new entry. */
-export function transcriptRows(state: ChatState, width: number): Row[] {
+ *  become separate indented lines, never a forged new entry. `shared` defaults to the names shared
+ *  within `state`; a caller rendering part of a transcript passes the whole one's. */
+export function transcriptRows(state: ChatState, width: number, shared = sharedNames(heardFrom(state))): Row[] {
   const rows: Row[] = [];
   if (state.dropped > 0) rows.push({ text: `… ${state.dropped} earlier entries are no longer shown`, tone: "hint" });
   const body = (prefix: string, text: string, tone: Tone): void => {
@@ -405,7 +466,7 @@ export function transcriptRows(state: ChatState, width: number): Row[] {
       case "message": {
         const m = e.message;
         const flags = [m.mentionsMe ? "@you" : "", m.historical ? "earlier" : "", (m.deliveryCount ?? 1) > 1 ? "redelivered" : ""].filter(Boolean).join(", ");
-        body(`${time(m.ts)} ${oneLine(senderOf(m))}${flags ? ` (${flags})` : ""}: `, m.text, m.mentionsMe ? "selected" : "body");
+        body(`${shownTime(m.ts)} ${oneLine(senderOf(m, shared))}${flags ? ` (${flags})` : ""}: `, m.text, m.mentionsMe ? "selected" : "body");
         break;
       }
       case "sent": {
@@ -432,7 +493,7 @@ export function composerRows(state: ChatState, width: number, shiftEnterDistinct
     return [{ text: "You have an unsent draft. Esc: keep editing · Ctrl-C again: discard and leave", tone: "waiting" }];
   const lines = state.draft.split("\n");
   const shown = lines.map((l, i) => ({ text: `${i === 0 ? "> " : "  "}${oneLine(l)}`, tone: "body" as Tone }));
-  const keys = `Enter send${shiftEnterDistinct ? " · Shift+Enter newline" : ""} · Tab recipient · /who /inbox /status · Ctrl-D leave`;
+  const keys = `Enter send${shiftEnterDistinct ? " · Shift+Enter newline" : ""} · Tab recipient · /reply /who /inbox /status · Ctrl-D leave`;
   return [...shown.flatMap((r) => wrapWords(r.text, width).map((text) => ({ text, tone: r.tone }))), ...wrapWords(keys, width).map((text) => ({ text, tone: "hint" as Tone }))];
 }
 

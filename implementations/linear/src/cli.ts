@@ -3,7 +3,7 @@ import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { acquireLock, credsClaims, writeSecretFileCreateOnly, type ParsedArgs, type SpaceAuth } from "@cotal-ai/core";
 import { CommandFailure, recordOperationSpace, assertExternalCredentialExport, getSpaceAuth, hasUserAuthState, inputDisabledByFlag, isCommandFailure, presentationOf, protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource, resolveMeshTarget, resolveNativeServiceTarget, workspaceSecretStore, writeResult, type MeshTarget, type Report } from "@cotal-ai/workspace";
-import { assertAccountName, loadAccount, saveAccount, storedTokenPath } from "./account.js";
+import { accountMissing, assertAccountName, loadAccount, saveAccount, storedTokenPath } from "./account.js";
 import { loginAccount } from "./oauth.js";
 import { isLinearMode } from "./origin.js";
 import { DEFAULT_LIMITS, LinearUpstream } from "./upstream.js";
@@ -67,9 +67,14 @@ export function validateLinearArguments(args: ParsedArgs): void {
   }
 }
 
-function accountForRead(name: string) {
+/** The recorded account metadata, read without credential contents. An absent record is its own
+ *  refusal with the route that creates one. */
+export function accountForRead(name: string) {
   try { return loadAccount(name); }
-  catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the selected Linear account metadata could not be read; no token or account-file contents were printed", { target: { account: name } }); }
+  catch (error) {
+    if (accountMissing(error)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no Linear account with this name is recorded; nothing was opened or sent", { target: { account: name }, remedy: `record it first with cotal linear account add ${name} --mode <write|readonly> --token-file <path>, or cotal linear account login ${name} --mode <write|readonly>` });
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the selected Linear account metadata could not be read; no token or account-file contents were printed", { target: { account: name } });
+  }
 }
 
 function emitAccount(args: ParsedArgs, account: ReturnType<typeof loadAccount>, saved: boolean): void {

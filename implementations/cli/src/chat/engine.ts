@@ -5,7 +5,8 @@
  *   1. per-session attention and per-channel quiet/mute buffering (the session's own inbox);
  *   2. bounded coalescing of the live and durable copies of one message, keyed by the
  *      subject-verified sender principal plus message id;
- *   3. reply resolution for senders that have no roster row, from authenticated senders only.
+ *   3. reply resolution for senders that have no roster row, from authenticated senders only:
+ *      a DM, an anycast or a channel message, whose sender the delivering subject names.
  *
  * It holds no authority, opens nothing, publishes nothing. It consumes exactly what the native
  * `"message"` event hands a listener: `(CotalMessage, Delivery, MessageMeta)`. Every decision reads
@@ -64,7 +65,8 @@ export class ParticipantEngine {
   private readonly byId = new Map<string, string>();
   private handled = new Set<string>();
   private handledPrev = new Set<string>();
-  /** Authenticated senders seen on DM/anycast: principal -> last display name. Insertion-ordered LRU. */
+  /** Authenticated senders seen on a DM, an anycast or a channel: principal -> last display name.
+   *  Insertion-ordered LRU. */
   private readonly senders = new Map<string, string>();
   private seq = 0;
   private overflow: Overflow = { channelDropped: 0, directedDeferred: 0 };
@@ -109,7 +111,9 @@ export class ParticipantEngine {
         return { kind: "coalesced" };
       }
     }
-    if (kind !== "channel") this.rememberSender(msg.from.id, msg.from.name);
+    // Every class carries its sender in the subject (SPEC §5), so a channel sender is as authenticated
+    // as a DM's. A message without meta came by no known path, so its sender is not remembered.
+    if (meta !== undefined) this.rememberSender(msg.from.id, msg.from.name);
     const channel = kind === "channel" ? msg.channel : undefined;
     const mode = channel === undefined ? undefined : this.modes.get(channel);
     if (kind === "channel" && mode === "muted") {
@@ -183,21 +187,19 @@ export class ParticipantEngine {
     return o;
   }
 
-  /**
-   * Resolve a DM target that the roster resolver did not find. Only exact authenticated principals
-   * this session received a DM or anycast from are eligible (their id came from the subject sender).
-   * A display name is accepted only when exactly one such unrostered sender carried it. Returns
-   * `ambiguous` instead of picking.
-   */
-  resolveUnrostered(target: string, rosteredIds: ReadonlySet<string>): { id: string; name: string } | "ambiguous" | undefined {
-    const byId = this.senders.get(target);
-    if (byId !== undefined) return { id: target, name: byId };
-    const want = target.trim().toLowerCase();
-    if (!want) return undefined;
-    const matches = [...this.senders].filter(([id, n]) => !rosteredIds.has(id) && n.toLowerCase() === want);
-    if (matches.length > 1) return "ambiguous";
-    const m = matches[0];
-    return m ? { id: m[0], name: m[1] } : undefined;
+  /** The last display name of a sender this session received a DM, an anycast or a channel message
+   *  from, by its exact principal. The principal came from the delivering subject, never from the
+   *  payload. */
+  senderName(id: string): string | undefined {
+    return this.senders.get(id);
+  }
+
+  /** Every sender this session received a DM, an anycast or a channel message from whose last
+   *  display name is `name`, both sides trimmed and compared case-insensitively. */
+  sendersNamed(name: string): { id: string; name: string }[] {
+    const want = name.trim().toLowerCase();
+    if (!want) return [];
+    return [...this.senders].filter(([, n]) => n.trim().toLowerCase() === want).map(([id, n]) => ({ id, name: n }));
   }
 
   /** Release everything on close without acking: undelivered durable copies redeliver to the

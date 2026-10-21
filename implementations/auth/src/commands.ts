@@ -9,7 +9,7 @@ import { authServiceFlags } from "./daemon-flags.js";
 import { readFileSync } from "node:fs";
 import * as prompts from "@clack/prompts";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, isLoopbackLiteral, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, writePrivateRecord, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CommandFailure, credentialMintFlags, validateCredentialMintArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceSecretStore, type AgentAuthHealth, type CredentialAction, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, credentialMintFlags, validateCredentialMintArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type AgentAuthHealth, type CredentialAction, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   deleteIdpSpaceCatalog,
@@ -223,8 +223,19 @@ async function runLogout(args: ParsedArgs): Promise<void> {
  *  layout; nothing user-auth lives flat in `.cotal/auth/`) plus the local secret store (these are
  *  workstation commands — the ledger machine — so the workspace FS composition IS the correct
  *  one, not a fallback). */
-function actorState(target: { root: string; space: string }): { dir: string; space: string; store: SecretStore } {
-  return { dir: userAuthStateDir(target.root, target.space), space: target.space, store: workspaceSecretStore(target.root) };
+function actorState(target: AuthTarget): { dir: string; space: string; mode?: MeshTarget["mode"]; store: SecretStore } {
+  return { dir: userAuthStateDir(target.root, target.space), space: target.space, mode: target.mode, store: workspaceSecretStore(target.root) };
+}
+
+/** The refusal of a grant read or change on a root that holds no owner secret and IdP pin for the
+ *  space. A static or open space has no user-auth ledger on any machine, so its refusal says grants
+ *  need a user-auth space; another space's ledger may live at another root. `unwritten` says what
+ *  this command did not do. */
+function noLedger(st: { space: string; mode?: MeshTarget["mode"] }, unwritten: string): CommandFailure {
+  const target = { space: st.space };
+  if (st.mode === "auth" || st.mode === "open")
+    return new CommandFailure("refused", "UNSUPPORTED", `space "${st.space}" is ${st.mode === "auth" ? "a static-credential" : "an open"} space and has no user-auth ledger; ${unwritten}`, { target, remedy: "actor grants apply only to a space started with `cotal up --user-auth`" });
+  return new CommandFailure("refused", "UNSUPPORTED", `this root does not hold the space's authoritative user-auth ledger; ${unwritten}`, { target, remedy: "manage grants on the machine and root that host this space's user-auth ledger; a space started without `--user-auth` has none" });
 }
 
 /** Resolve the operator's target (owner) for `actor grant`/`revoke`: an explicit derived `--owner`
@@ -234,13 +245,13 @@ function actorState(target: { root: string; space: string }): { dir: string; spa
  *  them a grant would write an INERT LOCAL row and print a misleading success while the mesh's real
  *  ledger is untouched (an off-machine `--owner` cannot mutate authority), so we refuse instead. */
 async function resolveGrantOwner(
-  st: { dir: string; space: string; store: SecretStore },
+  st: ReturnType<typeof actorState>,
   values: { owner?: string; sub?: string },
+  unwritten: string,
 ): Promise<string> {
   const secret = await loadOwnerSecret(st.store, st.space);
   const idp = loadPinnedIdp(st.dir);
-  if (!secret || !idp)
-    throw new CommandFailure("refused", "UNSUPPORTED", "the selected local root has no authoritative user-auth owner secret and IdP pin; no inert grant was written", { target: { space: st.space }, remedy: "manage grants on the machine and root that host this space's user-auth ledger" });
+  if (!secret || !idp) throw noLedger(st, unwritten);
   if (values.owner) return values.owner;
   return deriveOwnerForIdpSubject(secret, idp.issuer, values.sub!);
 }
@@ -298,7 +309,7 @@ function grantView(space: string, rows: readonly ReturnType<typeof publicActor>[
 
 /** A grant read or change, `auth grants|grant|revoke` or its `actor list|grant|revoke` spelling, at
  *  the target {@link localAuthTarget} resolved, once {@link validateGrantUsage} has passed. */
-async function runActor(args: ParsedArgs, target: { root: string; space: string }, command: "auth" | "actor"): Promise<void> {
+async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | "actor"): Promise<void> {
   const [sub, actor] = args.positionals;
   const values = args.values as {
     sub?: string; owner?: string; scope?: string; "allow-subscribe"?: string;
@@ -320,14 +331,14 @@ async function runActor(args: ParsedArgs, target: { root: string; space: string 
   };
   await legibly(async () => {
     if (sub === "list") {
-      if (!(await loadOwnerSecret(st.store, space)) || !loadPinnedIdp(dir)) throw new CommandFailure("refused", "UNSUPPORTED", "this root does not hold the space's authoritative user-auth ledger; an empty grant list was not inferred", { target: { space } });
+      if (!(await loadOwnerSecret(st.store, space)) || !loadPinnedIdp(dir)) throw noLedger(st, "an empty grant list was not inferred");
       const items = loadActorLedger(dir).sort((a, b) => (a.owner + a.actor).localeCompare(b.owner + b.actor)).map(publicActor);
       writeResult(presentationOf(args.values), { command, target: { space }, result: { kind: "actor-grants", items } }, (result) => grantView(space, result.items));
       return;
     }
     if (sub === "grant") {
       if (!actor) throw new CommandFailure("refused", "USAGE_INVALID", grantUsage(command));
-      const owner = await resolveGrantOwner(st, values);
+      const owner = await resolveGrantOwner(st, values, "no inert grant was written");
       //
       // A re-grant rotates the lifecycle so a copied bearer cannot cross the authorization update.
       // Retire the predecessor through the auth plane first; issuance is not allowed to perform a
@@ -373,7 +384,7 @@ async function runActor(args: ParsedArgs, target: { root: string; space: string 
     }
     if (sub === "revoke") {
       if (!actor) throw new CommandFailure("refused", "USAGE_INVALID", grantUsage(command));
-      const owner = await resolveGrantOwner(st, values);
+      const owner = await resolveGrantOwner(st, values, "nothing was revoked");
       const current = findInteractiveActor(dir, owner, actor);
       if (!current) {
         if (findManagedActor(dir, owner, actor))
@@ -697,12 +708,18 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
   } catch { throw new CommandFailure("refused", "USAGE_INVALID", "invalid actor, owner, parent, role, scope or channel-pattern input; no grant was changed"); }
 }
 
-function localAuthTarget(values: { space?: string }): { root: string; space: string } {
-  try { const target = resolveMeshTarget(process.cwd(), { ...values, readOnly: true }); return { root: target.root, space: target.space }; }
+/** The root and space a local auth command reads, and the space's auth mode when it is recorded or
+ *  found on disk. A prepared space that has not started has no mode yet. */
+interface AuthTarget { root: string; space: string; mode?: MeshTarget["mode"] }
+
+function localAuthTarget(values: { space?: string }): AuthTarget {
+  try { const target = resolveMeshTarget(process.cwd(), { ...values, readOnly: true }); return { root: target.root, space: target.space, mode: target.mode }; }
   catch (error) {
     if (isWorkspaceTargetError(error)) {
       if (error.code === "not-started" && error.details.root && error.details.space) return { root: error.details.root, space: error.details.space };
-      throw new CommandFailure("refused", targetErrorCode(error.code), "the selected space's local authority root could not be resolved; no different root was selected");
+      // These commands take no --server, so the no-mesh step names only `cotal up`.
+      const remedy = error.code === "no-meshes" ? "run `cotal up` in a project" : workspaceErrorParts({ kind: "target", error }).remedy;
+      throw new CommandFailure("refused", targetErrorCode(error.code), "the selected space's local authority root could not be resolved; no different root was selected", remedy === undefined ? {} : { remedy });
     }
     throw error;
   }
@@ -771,9 +788,19 @@ async function authGroup(args: ParsedArgs): Promise<void> {
     const expiry = new Date(account.expiresAt * 1000);
     return { provider: account.idp, subject: account.sub ?? null, cachedExpiry: account.expiresAt, cachedExpiryIso: Number.isFinite(expiry.getTime()) ? expiry.toISOString() : null, cachedExpiryPassed: account.expiresAt * 1000 <= Date.now(), verification: "not-checked" };
   });
+  // The Next lines name a real space: the requested one, else the one a bare command resolves. With
+  // none, they point to the space list rather than print an unfilled `--space`.
+  let space = args.values.space as string | undefined;
+  if (space === undefined) {
+    try { space = resolveMeshTarget(process.cwd(), { readOnly: true }).space; }
+    catch (error) { if (!isWorkspaceTargetError(error)) throw error; }
+  }
+  const spaceSteps = space === undefined
+    ? [{ command: "cotal space", description: "See registered spaces and choose one" }]
+    : [{ command: `cotal whoami --space ${space}`, description: "Resolve the selected space's actual CLI caller" }, { command: `cotal auth grants --space ${space}`, description: "Read the locally authoritative actor ledger" }];
   writeResult(presentationOf(args.values), { command: "auth", target: { requestedSpace: args.values.space ?? null }, result: { kind: "account-cache", items, liveAuthorization: "not-checked" } }, (result) => ({ sections: [
     { title: "Cached accounts", blocks: [result.items.length ? { kind: "table", columns: [{ key: "provider", label: "Provider" }, { key: "subject", label: "Account subject" }, { key: "expiry", label: "Cached expiry" }, { key: "state", label: "Cache state" }], rows: result.items.map((account) => ({ provider: account.provider, subject: account.subject ?? "not cached", expiry: account.cachedExpiryIso ?? "not representable", state: account.cachedExpiryPassed ? "expiry passed" : "not verified online" })) } : { kind: "lines", lines: ["No cached provider accounts."] }, { kind: "lines", lines: [{ text: "Cache metadata only. A sign-in is not a space grant and this view does not prove current session validity or live authorization. Tokens and grant secrets are not printed.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal whoami --space <space>", description: "Resolve the selected space's actual CLI caller" }, { command: "cotal auth grants --space <space>", description: "Read the locally authoritative actor ledger" }, { command: "cotal login", description: "Choose a provider and approve sign-in" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [...spaceSteps, { command: "cotal login", description: "Choose a provider and approve sign-in" }] }] },
   ] }));
 }
 

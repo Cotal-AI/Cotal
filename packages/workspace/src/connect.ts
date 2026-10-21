@@ -12,6 +12,7 @@ import {
   mintGeneration,
   mintAcceptedToken,
   newIdentity,
+  oneLine,
   withIssuerSession,
   type IssuedCaller,
   probeConnect,
@@ -383,6 +384,13 @@ export type CredentialFailure = "signed-out" | "unavailable" | "refused";
 /** An error a user-auth provider throws, carrying its {@link CredentialFailure}. */
 export function credentialFailure(code: CredentialFailure, message: string): Error {
   return Object.assign(new Error(message), { code });
+}
+
+/** The provider's own sentence when it answered and refused this actor, such as the scope an elevated
+ *  view needs and the whole-row re-grant that adds it, shown on one line. Undefined for any other
+ *  error. */
+export function credentialRefusalMessage(e: unknown): string | undefined {
+  return e instanceof Error && (e as { code?: unknown }).code === "refused" ? oneLine(e.message) : undefined;
 }
 
 function credentialCode(e: unknown): RefusalCode {

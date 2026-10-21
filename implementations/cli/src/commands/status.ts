@@ -26,7 +26,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, isCommandFailure, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
+import { accountInventory, authDir, isCommandFailure, readMaintenanceJournal, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -45,6 +45,8 @@ import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/serv
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
+import { restoreNextStep } from "../lib/restore.js";
+import { readStackJournal } from "../lib/stack-journal.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` is a broad, recovery-oriented report: it exits 0, or 4 when it could not read part of what
@@ -151,6 +153,9 @@ export interface StatusResult {
     processes: ProcessRow[] | null;
     processSpace: string | null;
     storedState: boolean;
+    /** Whether this root records a controller stack for the process space. Its members are service
+     *  instances, so the legacy pidfile rows say nothing about them. */
+    controllerStack: boolean;
   };
   meshes: {
     current: string | null;
@@ -177,6 +182,9 @@ export interface StatusResult {
   services?: OwnedServiceStatus;
   /** Selected folder's local boot intents, not a live broker or ownership census. */
   bootAttempts?: { root: string; state: "read" | "partial" | "not-checked"; observedAt: string; unsettled: { deploymentId: string; space: string; server: string; createdAt: string }[]; additive: { deploymentId: string; space: string; server: string; createdAt: string; recordedState: ReturnType<typeof additiveTeamRecordedState> }[]; unreadable: string[] };
+  /** This folder's maintenance journal: a preserved cut, a restore or a resume, with the full attempt
+   *  a recovery command names. Null when the root holds none; older inputs may omit it. */
+  maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null } | null;
   hints: string[];
 }
 
@@ -259,7 +267,8 @@ export async function status(args: ParsedArgs): Promise<void> {
   const target = await readSelected(selected, responder, gaps, hints);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts = readBootAttempts(root, gaps);
-  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, hints };
+  const maintenance = readMaintenance(root, gaps);
+  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, hints };
   const parts = gaps.warnings.length;
   writeResult(
     presentation,
@@ -274,6 +283,21 @@ export async function status(args: ParsedArgs): Promise<void> {
     (result) => statusView(result, Boolean(values.verbose)),
   );
   if (values.components) await printComponentHealth(cwd, values);
+}
+
+/** The folder's maintenance journal, read only. An unreadable one is reported, never taken for none. */
+function readMaintenance(root: string, gaps: Gaps): NonNullable<StatusResult["maintenance"]> | null {
+  try {
+    const journal = readMaintenanceJournal(root);
+    if (!journal) return null;
+    const attemptId = "restore" in journal ? journal.restore.attemptId : journal.cut.attemptId;
+    const next = "restore" in journal ? restoreNextStep(journal.state, attemptId)
+      : journal.state === "ready" ? `create a backup with ${displayCmd()} backup create <dir>, or resume with bare ${displayCmd()} up` : null;
+    return { root, space: journal.space, state: journal.state, attemptId, next };
+  } catch {
+    gaps.add("MAINTENANCE_JOURNAL_UNREADABLE", "this folder's maintenance journal could not be read; no absent or settled state was inferred", { root });
+    return { root, space: null, state: "unreadable", attemptId: null, next: null };
+  }
 }
 
 /** Local boot and additive intents are recovery coordinates, not evidence of native state. */
@@ -507,13 +531,14 @@ async function readResponderAxis(selected: Selected): Promise<DeliveryResponderS
 
 async function readFolder(root: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState, gaps: Gaps, hints: string[]): Promise<StatusResult["folder"]> {
   const cmd = displayCmd();
-  const folder = (auth: StatusResult["folder"]["auth"], processes: ProcessRow[] | null = null, storedState = false, processSpace: string | null = null): StatusResult["folder"] => ({
+  const folder = (auth: StatusResult["folder"]["auth"], processes: ProcessRow[] | null = null, storedState = false, processSpace: string | null = null, controllerStack = false): StatusResult["folder"] => ({
     root,
     auth,
     ...folderPersonas(root, selected, values, gaps, hints),
     processes,
     processSpace,
     storedState,
+    controllerStack,
   });
   const unreadable = (error: string, hint: string): StatusResult["folder"] => {
     gaps.add("AUTH_UNREADABLE", `this folder's trust material could not be read: ${error}`, { root });
@@ -596,9 +621,12 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // A stopped mesh with a persisted store: name the reset verb. Stale state (e.g. durables from
   // an older Cotal generation) is otherwise invisible until a spawn fails on it. The restart is
   // deliberately "your usual flags", never a bare `up` (mode/name/store-dir aren't recorded).
-  const storedState = nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
+  // A controller stack's broker has no legacy pidfile, so that heuristic says nothing about it.
+  let controllerStack = false;
+  try { controllerStack = readStackJournal(root)?.journal.space === space; } catch { controllerStack = false; }
+  const storedState = !controllerStack && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
   if (storedState) hints.push(`if the stored JetStream state is stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
-  return folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space);
+  return folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack);
 }
 
 /** The folder's persona catalog, which must never let a catalog imply a `spawn` the operator does
@@ -1212,7 +1240,9 @@ function selectedOverview(r: StatusResult): Section | undefined {
   }
   if (s.snapshot.state === "unavailable") rows.push(["Live details", stateCell(`unavailable · ${s.snapshot.reason}`, "waiting")]);
   const blocks: Section["blocks"][number][] = [{ kind: "fields", rows }];
-  if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.processes) {
+  if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack) {
+    blocks.push({ kind: "lines", lines: [cell("Controller stack · its members are the stack-* rows under Owned services", "hint")] });
+  } else if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.processes) {
     blocks.push({ kind: "lines", lines: [cell("Legacy local process records", "label")] });
     blocks.push({
       kind: "table", header: false,
@@ -1245,6 +1275,9 @@ function nextActions(r: StatusResult): Section {
     items.push({ command: `${cmd} use`, description: "Choose another space" });
     if (r.meshes.items.length > 1) items.push({ command: `${cmd} status --all`, description: "Check every registered space" });
   }
+  // A local controller stack that does not answer restarts its stopped members from its own records.
+  if (r.selected.resolved && r.selected.connection !== "ok" && r.selected.connection !== "reachable" && r.folder.controllerStack && r.folder.root === r.selected.root && r.folder.processSpace === r.selected.space)
+    items.unshift({ command: `${cmd} up --root ${r.selected.root}`, description: "Restart this stack's stopped members from its recorded inputs" });
   if (r.selected.resolved && r.selected.mode === "user" && r.selected.login && !r.selected.login.subject) items.unshift({ command: `${cmd} login --idp ${r.selected.login.idp}`, description: "Sign in to the selected space" });
   return { title: "Next", blocks: [{ kind: "commands", items }, ...r.hints.map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
 }
@@ -1285,12 +1318,21 @@ function bootAttemptOverview(snapshot: StatusResult["bootAttempts"]): Section | 
   ] };
 }
 
+function maintenanceOverview(maintenance: StatusResult["maintenance"]): Section | undefined {
+  if (!maintenance) return undefined;
+  return { title: "Maintenance", blocks: [
+    { kind: "fields", rows: [["Folder root", maintenance.root], ["Space", maintenance.space ?? "not read"], ["State", maintenance.state], ["Attempt", maintenance.attemptId ?? "not read"]] },
+    ...(maintenance.next ? [{ kind: "lines" as const, lines: [maintenance.next] }] : []),
+  ] };
+}
+
 /** The approved screen hierarchy; record-level diagnostics are opt-in. */
 export function statusView(r: StatusResult, verbose = false): Report {
   const selected = selectedOverview(r);
   const owned = ownedServicesOverview(r.services);
   const attempts = bootAttemptOverview(r.bootAttempts);
-  const sections = [machineOverview(r), brokerOverview(r), ...(selected ? [selected] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
+  const maintenance = maintenanceOverview(r.maintenance);
+  const sections = [machineOverview(r), brokerOverview(r), ...(selected ? [selected] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
   if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected));
   sections.push(nextActions(r));
   return { sections };

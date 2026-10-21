@@ -1,5 +1,5 @@
 import { formatAge, presenceAges, presenceText, type PresenceStamps, type PresenceStatus } from "@cotal-ai/core";
-import { c, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { c, findCotalRoot, readMaintenanceJournal, terminalWidth, wrapWords } from "@cotal-ai/workspace";
 
 // The ANSI helpers moved into `@cotal-ai/workspace` (stage 4), shared with @cotal-ai/web.
 // Re-exported so the CLI's many importers keep resolving them from here.
@@ -62,12 +62,16 @@ export function activityAge(p: PresenceStamps, now = Date.now()): string {
 /** A follow-up hint for failures whose signature is stale on-disk broker state: streams/durable
  *  consumers minted by an older, incompatible Cotal generation survive every down/up cycle, and
  *  JetStream rejects a same-name re-create with a different config. Rendered dim under the red
- *  line by the error surfaces - the error itself stays the broker's own sentence. */
-export function staleStoreHint(msg: string): string | undefined {
+ *  line by the error surfaces - the error itself stays the broker's own sentence. A root whose
+ *  maintenance journal holds a restore or a preserved cut gets no clean recipe: its store is that
+ *  data, and the hint never names a command that would delete it. */
+export function staleStoreHint(msg: string, root?: string): string | undefined {
+  if (!/consumer already exists|stream already exists/i.test(msg)) return undefined;
+  let held: string | undefined;
+  try { held = readMaintenanceJournal(root ?? findCotalRoot())?.state; } catch { held = "unreadable"; }
+  if (held) return `this root's maintenance journal holds a restore or a preserved cut (state ${held}), so its store holds that data and must not be cleaned; check it with cotal status before any recovery`;
   // The recipe must not promise a configuration-preserving restart: a bare `cotal up` would turn
   // a named/open/user-auth mesh into the default authenticated one, and a custom --store-dir is
   // not recorded - so both variable parts are called out instead of implied.
-  return /consumer already exists|stream already exists/i.test(msg)
-    ? "likely stale on-disk mesh state from an older Cotal version - reset: cotal down, cotal clean store --force (repeat any custom --store-dir), then `cotal up` with your usual flags"
-    : undefined;
+  return "likely stale on-disk mesh state from an older Cotal version - reset: cotal down, cotal clean store --force (repeat any custom --store-dir), then `cotal up` with your usual flags";
 }

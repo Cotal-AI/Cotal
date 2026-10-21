@@ -5,7 +5,7 @@
  */
 import { assertValidChannel, assertValidRole, isConcreteChannel, oneLine } from "@cotal-ai/core";
 import type { AdmittedChatSession, ConnectionReport, RosterView } from "./session.js";
-import { recipientLabel, type Recipient } from "./view.js";
+import { personLabel, recipientLabel, sharedNames, type Person, type Recipient } from "./view.js";
 
 /** Bound on listed choices; the rest stay reachable by typing an explicit name. Provisional. */
 export const MAX_CHOICES = 50;
@@ -19,10 +19,12 @@ export interface Choice {
 /**
  * Listed choices: the session's joined concrete channels first, then present peers by name. Roles
  * are not listed (there is no role directory); they are typed as `role:<name>`. A partial roster
- * says so in the detail of the last row rather than looking complete.
+ * says so in the detail of the last row rather than looking complete. A peer whose name another
+ * principal carries, on the roster or among `heard` (the transcript's senders), shows its principal.
  */
-export function listChoices(conn: ConnectionReport | undefined, roster: RosterView | undefined, selfPrincipal: string): Choice[] {
+export function listChoices(conn: ConnectionReport | undefined, roster: RosterView | undefined, selfPrincipal: string, heard: readonly Person[] = []): Choice[] {
   const out: Choice[] = [];
+  const shared = sharedNames([...(roster?.rows ?? []), ...heard]);
   for (const ch of conn?.joinedChannels ?? []) {
     if (!isConcreteChannel(ch)) continue;
     out.push({ recipient: { kind: "channel", channel: ch }, label: `#${oneLine(ch)}` });
@@ -31,7 +33,7 @@ export function listChoices(conn: ConnectionReport | undefined, roster: RosterVi
     if (row.id === selfPrincipal || row.status === "offline") continue;
     out.push({
       recipient: { kind: "dm", to: row.id },
-      label: `DM ${oneLine(row.name)}`,
+      label: `DM ${oneLine(personLabel(row, shared))}`,
       detail: `${row.sessionKind === "chat" ? "human session" : oneLine(row.kind)}${row.role ? ` · ${oneLine(row.role)}` : ""} · ${row.status}`,
     });
   }

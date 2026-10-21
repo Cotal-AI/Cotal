@@ -20,7 +20,7 @@
     {
       "name": "web stops subscribing to recoverable endpoint warnings",
       "file": "implementations/web/src/web.ts",
-      "find": "  ep.on(\"warning\", (e: Error) => console.error(c.yellow(lifecycle ? \"! native dashboard endpoint reported a warning; diagnostic body omitted\" : \"! \" + e.message)));",
+      "find": "  ep.on(\"warning\", (e: Error) => console.error(c.yellow(lifecycle ? `! native dashboard endpoint reported a warning (${errorClassForLog(e)}); diagnostic body omitted` : \"! \" + e.message)));",
       "replace": "  void reportEndpoint;",
       "cell": "web surfaces endpoint warnings through its operator stderr",
       "expectRed": "web surfaces endpoint warnings through its operator stderr",

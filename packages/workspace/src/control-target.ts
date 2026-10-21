@@ -14,6 +14,7 @@ import {
   DEV_OWNER,
   dialerFor,
   epCallerGrantRows,
+  isAuthRejection,
   jwtFromCreds,
   mintCreds,
   mintLifecycleUid,
@@ -28,7 +29,7 @@ import {
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths } from "./agent-secrets.js";
 import { authDir, findCotalRoot, soleSpaceOf } from "./auth-paths.js";
-import { connectOrExit, connectOrThrow, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, userViewAuth, type ConnectFlags } from "./connect.js";
+import { connectOrExit, connectOrThrow, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, preflightOrThrow, userViewAuth, type ConnectFlags } from "./connect.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type MeshTargetErrorCode } from "./mesh-target.js";
 import { findMesh } from "./mesh-registry.js";
 import { pruneStaleMeshes } from "./preflight.js";
@@ -200,10 +201,17 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
     throw new Error(`managed seat credential is missing at ${path}; refusing to act as a different caller`);
   const creds = readFileSync(path, "utf8");
   const tls = mesh.tlsRequired;
+  // As the operator mint does, a dial that did not reach a broker is reported in the preflight's
+  // classified words rather than as the raw transport error; the probe uses the seat's own credential
+  // and never prunes. A broker that refused the seat's credential answered, so that refusal is kept
+  // as it is and never reported as a registry mismatch.
   const nc = await dialerFor(mesh.server)({
     servers: mesh.server,
     ...standaloneConnectOpts({ creds, tls }),
     maxReconnectAttempts: 0,
+  }).catch(async (e: unknown) => {
+    if (!isAuthRejection(e)) await preflightOrThrow(mesh, creds, true);
+    throw e;
   });
   let epCaller: IssuedCaller;
   try {

@@ -11,6 +11,8 @@
  *   - `EpEnvelopeError` with `outcome: "unknown"`, timeouts, and
  *     anything else thrown after a publish or request was issued   -> unknown (never retried)
  *   - local validation thrown before any I/O                       -> refused USAGE_INVALID
+ *   - a send, join or channel mode outside the session's grant     -> refused PERMISSION_DENIED,
+ *     before any I/O ({@link grantRefusal})
  * A denial is never turned into an empty `ok`.
  */
 import {
@@ -18,6 +20,7 @@ import {
   channelInAllow,
   isConcreteChannel,
   isPublishPermissionDenied,
+  parsePrincipalKey,
   partsToText,
   resolvePeer,
   type CotalEndpoint,
@@ -26,6 +29,7 @@ import {
   type MessageMeta,
   type Presence,
   type PresenceStatus,
+  type PresenceView,
 } from "@cotal-ai/core";
 import type { RefusalCode } from "@cotal-ai/workspace";
 import { ParticipantEngine } from "./engine.js";
@@ -35,8 +39,10 @@ import type {
   CloseReport,
   ConnectionReport,
   ConnectionState,
+  DmTarget,
   HistoryPage,
   PublishResult,
+  Refused,
   Result,
   RosterRow,
   RosterView,
@@ -69,6 +75,60 @@ function classify(e: unknown): { outcome: "refused"; code: RefusalCode; message:
 }
 
 const refusedUsage = (message: string) => ({ outcome: "refused" as const, code: "USAGE_INVALID" as const, message });
+
+/**
+ * Refuse a channel outside the session's read or post grant before any effect, so the broker's
+ * refusal and its subject never reach the caller. A session opened on no channel holds no grant,
+ * and the refusal says how to open one that does. The broker remains the enforcement point.
+ */
+export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post"): Refused | undefined {
+  if (channelInAllow([...grant], channel)) return undefined;
+  const message = grant.length === 0
+    ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. Leave and run cotal chat ${channel} to open a session on it`
+    : `#${channel} is outside this session's ${use} grant`;
+  return { outcome: "refused", code: "PERMISSION_DENIED", message };
+}
+
+/**
+ * Resolve a DM target before any effect. A `{ principal }` target, or a typed string that parses as
+ * a principal `<owner>.<actor>`, goes to that principal as is, whether or not it is present or was
+ * heard from. It is never matched against display names, so a peer whose display name spells a
+ * principal cannot capture it; that peer is reached by its own principal or `/reply`. Any other
+ * string is a display name, which must name one principal across the roster and the heard senders:
+ * a name both carry refuses and lists them instead of picking the present one. Absence is a verdict
+ * only on a current roster (endpoint.ts:2816-2823).
+ */
+export function resolveDmTarget(
+  to: DmTarget,
+  roster: readonly Presence[],
+  rosterState: PresenceView["state"],
+  engine: ParticipantEngine,
+  selfPrincipal: string,
+): { readonly id: string; readonly name: string } | Refused {
+  if (typeof to !== "string" || parsePrincipalKey(to)) {
+    const principal = typeof to === "string" ? to : to.principal;
+    if (!parsePrincipalKey(principal)) return refusedUsage(`"${principal}" is not a principal <owner>.<actor>`);
+    if (principal === selfPrincipal) return refusedUsage("a direct message needs a principal other than this session");
+    return { id: principal, name: roster.find((p) => p.card.id === principal)?.card.name ?? engine.senderName(principal) ?? principal };
+  }
+  const peers = roster.filter((p) => p.card.id !== selfPrincipal);
+  let peer: Presence | undefined;
+  try {
+    peer = resolvePeer(peers, to);
+  } catch (e) {
+    // core resolvePeer throws AmbiguousPeerError or a roster-label refusal: both are pre-effect.
+    return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: (e as Error).message };
+  }
+  const named = new Map<string, { id: string; name: string }>();
+  if (peer) named.set(peer.card.id, { id: peer.card.id, name: peer.card.name });
+  for (const sender of engine.sendersNamed(to)) if (!named.has(sender.id)) named.set(sender.id, sender);
+  if (named.size > 1)
+    return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names more than one principal (${[...named.keys()].join(", ")}); use the full principal` };
+  const only = [...named.values()][0];
+  if (only) return only;
+  if (rosterState !== "current") return { outcome: "refused", code: "TARGET_UNAVAILABLE", message: `cannot verify "${to}": the roster is ${rosterState}` };
+  return { outcome: "refused", code: "TARGET_NOT_FOUND", message: `no peer "${to}" in this space` };
+}
 
 /** Inputs the admission adapter supplies with the endpoint whose start it owns. */
 export interface NativeSessionInputs {
@@ -130,6 +190,8 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async send(text: string, channel: string, mentions: readonly string[]): Promise<PublishResult> {
     if (!isConcreteChannel(channel)) return refusedUsage("a send needs a concrete channel");
+    const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post");
+    if (outside) return outside;
     let registered: boolean;
     try {
       registered = this.inputs.endpoint.getChannelConfig(channel) !== undefined;
@@ -141,31 +203,11 @@ export class NativeChatSession implements AdmittedChatSession {
     }
   }
 
-  async dm(to: string, text: string, replyTo?: string): Promise<PublishResult> {
+  async dm(to: DmTarget, text: string, replyTo?: string): Promise<PublishResult> {
     const ep = this.inputs.endpoint;
-    let recipient: { id: string; name: string };
-    let recipientStatusAtSend: PresenceStatus | "unrostered" = "unrostered";
-    try {
-      const peer = resolvePeer(ep.getRoster(), to, { selfId: this.inputs.identity.principal });
-      if (peer) {
-        recipient = { id: peer.card.id, name: peer.card.name };
-        recipientStatusAtSend = peer.status;
-      } else {
-        const rostered = new Set(ep.getRoster().map((p) => p.card.id));
-        const held = this.engine.resolveUnrostered(to, rostered);
-        if (held === "ambiguous") return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names more than one sender; use the full principal` };
-        if (!held) {
-          // Absence is a verdict only on a current roster (endpoint.ts:2816-2823).
-          const view = ep.presenceView();
-          if (view.state !== "current") return { outcome: "refused", code: "TARGET_UNAVAILABLE", message: `cannot verify "${to}": the roster is ${view.state}` };
-          return { outcome: "refused", code: "TARGET_NOT_FOUND", message: `no peer "${to}" in this space` };
-        }
-        recipient = held;
-      }
-    } catch (e) {
-      // core resolvePeer throws AmbiguousPeerError or a roster-label refusal: both are pre-effect.
-      return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: (e as Error).message };
-    }
+    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.inputs.identity.principal);
+    if ("outcome" in recipient) return recipient;
+    const recipientStatusAtSend: PresenceStatus | "unrostered" = ep.getRoster().find((p) => p.card.id === recipient.id)?.status ?? "unrostered";
     try {
       const { msg, ack } = await ep.unicastAttributed(recipient.id, text, replyTo !== undefined ? { replyTo } : {});
       return { outcome: "stored", messageId: msg.id, seq: ack.seq, duplicate: ack.duplicate, recipient, recipientStatusAtSend };
@@ -210,14 +252,16 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async setChannelMode(channel: string, mode: "quiet" | "muted" | "normal"): Promise<Result<void>> {
     if (!isConcreteChannel(channel)) return refusedUsage("a channel mode needs a concrete channel");
-    if (!channelInAllow([...this.inputs.identity.allowSubscribe], channel))
-      return { outcome: "refused", code: "PERMISSION_DENIED", message: `#${channel} is outside this session's read grant` };
+    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read");
+    if (outside) return outside;
     // Local first, as for attention; the presence mirror is advisory (endpoint.ts:2874-2877).
     this.engine.setChannelMode(channel, mode);
     return this.call(() => this.inputs.endpoint.setChannelModes(this.engine.channelModes()));
   }
 
-  join(channel: string): Promise<Result<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }>> {
+  async join(channel: string): Promise<Result<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }>> {
+    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read");
+    if (outside) return outside;
     return this.call(() => this.inputs.endpoint.joinChannel(channel));
   }
 

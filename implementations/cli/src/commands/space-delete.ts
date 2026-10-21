@@ -10,12 +10,36 @@ import {
   type ParsedArgs, type Presence, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
-  brokerAddressForDisplay, CommandFailure, findMesh, findPreparedSpace, getSpaceAuth, oneLine, presentationOf,
-  renderReport, resolveNativeServiceTarget, terminalWidth, workspaceSecretStore, writeResult, type Report,
+  brokerAddressForDisplay, CommandFailure, findMesh, findPreparedSpace, getSpaceAuth, localProcessPath, oneLine, presentationOf,
+  renderReport, resolveNativeServiceTarget, terminalWidth, workspaceSecretStore, writeResult, type MeshEntry, type Report,
 } from "@cotal-ai/workspace";
+import { pidfileState } from "./down.js";
+import { localProcessSurface } from "../ext-loader.js";
+import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
+import { processGone, readStackJournal, STACK_ADAPTER } from "../lib/stack-journal.js";
 
 interface DeletionStream { name: string; kind: "stream" | "bucket" | "object-store"; state: "present" | "absent"; messages: number | null }
 interface PresenceImpact { id: string; name: string | null; status: string | null; lastHeartbeat: number | null }
+
+/** A space this machine started whose own services still read and write its streams. Deleting the
+ *  streams under them leaves a stack that can neither start nor stop. On a controller root every
+ *  service instance of the space other than its broker counts, and on a legacy root every recorded
+ *  daemon other than the broker, unless its process is proven gone. The delete needs the broker
+ *  itself, so it is not counted. A space registered for another machine's broker is not checked. */
+function liveStackRefusal(entry: MeshEntry, space: string): CommandFailure | undefined {
+  if (entry.origin !== "up") return undefined;
+  let controller: boolean, users: string[];
+  try {
+    controller = readStackJournal(entry.root)?.journal.space === space;
+    users = controller
+      ? serviceInstances(space).filter((row) => row.record.value.adapter?.name !== STACK_ADAPTER.broker && !processGone(observeServiceProcess(row.record.value))).map((row) => row.record.value.definition)
+      : localProcessSurface().filter((component) => !component.stopLast && pidfileState(localProcessPath(component.pidFile, { root: entry.root, space })).liveness !== "dead").map((component) => component.label);
+  } catch { return new CommandFailure("refused", "TARGET_UNAVAILABLE", "this space's local service and process records could not be read, so a running stack was not ruled out; no broker was contacted", { target: { space, root: entry.root } }); }
+  if (!users.length) return undefined;
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this space's stack still runs here (${[...new Set(users)].join(", ")}) and uses these streams; no broker was contacted and nothing was deleted`, { target: { space, root: entry.root, running: [...new Set(users)] }, remedy: controller
+    ? `stop it with cotal down --yes from ${entry.root}, then remove its stored streams with cotal reset store ${space} --yes`
+    : `stop it with cotal down from ${entry.root}, then remove its stored streams with cotal clean store --force there` });
+}
 
 /** A finite native observation. It does not authorize deletion or form an atomic impact plan. */
 async function readSpaceDeletion(name: string) {
@@ -229,11 +253,19 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "USAGE_INVALID", "--yes belongs to a guarded live deletion, not to a dry-run");
   if (args.values["dry-run"] === true) {
     // The preview reads its whole scope, so it is complete; its limits are a note, not a partial read.
-    const { result } = await readSpaceDeletion(name);
-    writeResult(presentation, { command: "space delete", target: { space: name }, result }, (data) => ({ sections: [...previewView(data).sections, { blocks: [{ kind: "lines", lines: ["This is a non-atomic native read of first-party stream targets and presence entries, not a guarded deletion plan. A fresh exact-scope check and confirmation are still required before any apply."] }] }] }));
+    const { result, entry } = await readSpaceDeletion(name);
+    const blocked = liveStackRefusal(entry, name);
+    writeResult(presentation, { command: "space delete", target: { space: name }, result: { ...result, applyBlockedBy: blocked?.detail() ?? null },
+      ...(blocked ? { warnings: [{ code: blocked.code, target: blocked.target, message: `the apply would refuse: ${blocked.message}; ${blocked.remedy}` }] } : {}) },
+      (data) => ({ sections: [...previewView(data).sections, { blocks: [{ kind: "lines", lines: ["This is a non-atomic native read of first-party stream targets and presence entries, not a guarded deletion plan. A fresh exact-scope check and confirmation are still required before any apply."] }] }] }));
     return;
   }
   const yes = args.values.yes === true;
+  // A running local stack refuses before any broker connection or prompt.
+  let registered: ReturnType<typeof findMesh>;
+  try { registered = findMesh(name); } catch { registered = undefined; }
+  const blocked = registered && liveStackRefusal(registered, name);
+  if (blocked) throw blocked;
   if (!yes && (!canPrompt() || presentation === "json"))
     throw new CommandFailure("refused", "USAGE_INVALID", "live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect cotal space delete ${name} --dry-run first` });
   const initial = await readSpaceDeletion(name);
@@ -256,13 +288,16 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   });
   if (fingerprint(initial) !== fingerprint(refreshed))
     throw new CommandFailure("refused", "CONFLICT", "the native streams or presence identities changed since the reviewed impact; no delete request was submitted", { target: { space: name }, remedy: "inspect the new impact with space delete <name> --dry-run before confirming again" });
+  // A stack started while the impact was reviewed refuses here too.
+  const started = liveStackRefusal(refreshed.entry, name);
+  if (started) throw started;
   const receipt = await applySpaceDeletion(refreshed);
   writeResult(presentation, { command: "space delete", target: { space: name, broker: refreshed.result.recordedBroker },
     result: { kind: "live-space-delete", space: name, brokerServerId: refreshed.result.serverId, open: refreshed.entry.mode === "open", ...receipt },
     ...(receipt.acknowledged.length === 0 ? { noOp: true } : {}) }, (data): Report => ({ sections: [{ title: data.acknowledged.length ? "Space streams deleted" : "Space streams already absent", blocks: [
       { kind: "fields", rows: [["Space", data.space], ["Broker server ID", data.brokerServerId], ["Mode", data.open ? "open: any broker client can delete" : "static auth"], ["Deletion acknowledgements", String(data.acknowledged.length)], ["Already absent", String(data.alreadyAbsent.length)], ["Post-read remaining", String(data.postReadRemaining.length)]] },
-      { kind: "table", columns: [{ key: "name", label: "Deleted stream or bucket" }], rows: data.acknowledged.slice(0, 100).map((name) => ({ name })) },
-      { kind: "table", columns: [{ key: "name", label: "Already absent" }], rows: data.alreadyAbsent.slice(0, 100).map((name) => ({ name })) },
+      ...(data.acknowledged.length ? [{ kind: "table" as const, columns: [{ key: "name", label: "Deleted stream or bucket" }], rows: data.acknowledged.slice(0, 100).map((name) => ({ name })) }] : []),
+      ...(data.alreadyAbsent.length ? [{ kind: "table" as const, columns: [{ key: "name", label: "Already absent" }], rows: data.alreadyAbsent.slice(0, 100).map((name) => ({ name })) }] : []),
       { kind: "lines", lines: ["Native delete acknowledgements are not a guarantee that another writer has not recreated a stream. No registration, trust or local file was removed.", ...(data.acknowledged.length > 100 || data.alreadyAbsent.length > 100 ? ["Each table shows at most 100 rows; --json retains every row."] : [])] },
     ] }] }));
 }

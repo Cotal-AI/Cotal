@@ -5,9 +5,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, admittedControllerRestore, canonicalRoot, decodeLocalJson, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, stackJournalPath } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, type MaintenanceLock, stackJournalPath } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
-import { observeServiceProcess, serviceInstances } from "./service-instances.js";
+import { serviceDefinitionStore } from "./service-definitions.js";
+import { observeServiceProcess, serviceInstances, type ServiceInstance } from "./service-instances.js";
+import { retainedStopRequest, settleExitedInstance } from "./service-process.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -28,7 +30,12 @@ export function stackRoleApplies(mode: StackMode, role: StackRole): boolean {
 }
 
 export type StackMemberState = "planned" | "not-attempted" | "started" | "reused" | "stopped" | "already-stopped" | "refused" | "failed" | "unknown";
-export interface StackMember { role: StackRole; definition: string; instanceId: string | null; state: StackMemberState; code?: string }
+/** A redefinition in flight: the instance an `up` launches for a member after it retires the
+ *  member's recorded instance with the old definition. Its IDs are journaled before that retirement
+ *  and the new definition's revision before the launch, so a crash in between is resolved from the
+ *  replacement's own record (see {@link withSettledMembers}). */
+export interface StackReplacement { operation: string; instanceId: string; launchRequestId: string; definitionRevision?: string }
+export interface StackMember { role: StackRole; definition: string; instanceId: string | null; state: StackMemberState; code?: string; replacement?: StackReplacement }
 export interface StackJournal {
   schemaVersion: 1;
   kind: "cotal-stack-controller";
@@ -71,11 +78,12 @@ function validate(input: unknown, root: string): StackJournal {
     value.members = [value.members[0], { role: "auth", definition: STACK_DEFINITION.auth, instanceId: null, state: "not-attempted" }, ...value.members.slice(1)];
   if (value.schemaVersion !== 1 || value.kind !== "cotal-stack-controller" || value.root !== root || typeof value.space !== "string" || !value.space || typeof value.server !== "string" || !value.server || !STACK_MODES.includes(value.mode as StackMode) || typeof value.updatedAt !== "string" || !Array.isArray(value.members) || value.members.length !== STACK_ROLES.length) invalid();
   const members = (value.members as unknown[]).map((row, index) => {
-    const member = localRecordObject(row, ["role", "definition", "instanceId", "state", "code"]);
+    const member = localRecordObject(row, ["role", "definition", "instanceId", "state", "code", "replacement"]);
     const role = STACK_ROLES[index]!;
     if (member.role !== role || member.definition !== STACK_DEFINITION[role] || !STATES.includes(String(member.state)) || member.code !== undefined && (typeof member.code !== "string" || !/^[A-Z_]{1,64}$/.test(member.code))) invalid();
     if (member.instanceId !== null) { try { serviceOperationId(member.instanceId); } catch { invalid(); } }
-    if (!stackRoleApplies(value.mode as StackMode, role) && (member.instanceId !== null || member.state !== "not-attempted")) invalid();
+    if (member.replacement !== undefined) replacementOf(member.replacement);
+    if (!stackRoleApplies(value.mode as StackMode, role) && (member.instanceId !== null || member.state !== "not-attempted" || member.replacement !== undefined)) invalid();
     return member as unknown as StackMember;
   });
   const operation = localRecordObject(value.operation, ["id", "kind", "phase", "recordedAt", "withAgents", "maintenanceAttemptId"]);
@@ -86,6 +94,12 @@ function validate(input: unknown, root: string): StackJournal {
   const broker = value.broker === undefined ? undefined : brokerInputs(value.broker);
   const { broker: _broker, ...rest } = value as unknown as StackJournal;
   return { ...rest, members, ...(broker ? { broker } : {}), operation: operation as unknown as StackJournal["operation"] };
+}
+
+function replacementOf(input: unknown): StackReplacement {
+  const value = localRecordObject(input, ["operation", "instanceId", "launchRequestId", "definitionRevision"]);
+  try { for (const id of [value.operation, value.instanceId, value.launchRequestId, ...(value.definitionRevision === undefined ? [] : [value.definitionRevision])]) serviceOperationId(id); } catch { invalid(); }
+  return value as unknown as StackReplacement;
 }
 
 export interface StackBrokerInputs { storeDir: string; maxFileStore?: number; host?: string }
@@ -170,8 +184,147 @@ export function maintenanceStackView(root: string, space: string): ControllerSta
   return journal?.space === space ? controllerStackView(journal) : undefined;
 }
 
+/** Take the root's maintenance lock for one whole-stack operation. Every whole-stack operation
+ *  holds it for its whole run, and a dead holder is reclaimed only when its PID is proven dead. A
+ *  live holder is a known refusal that names its PID; nothing was read or changed. */
+export function acquireStackOperationLock(root: string): MaintenanceLock {
+  try { return acquireMaintenanceLock(root); }
+  catch (error) {
+    if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
+    let holder: number | undefined;
+    try { holder = (decodeLocalJson(readLocalRecordSource(maintenancePaths(root).lock, 64 * 1024) ?? Buffer.from("null")) as { owner?: { pid?: unknown } } | null)?.owner?.pid as number | undefined; } catch { holder = undefined; }
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `another whole-stack or maintenance operation holds this root${Number.isSafeInteger(holder) ? ` (pid ${holder})` : ""}; nothing was changed`, { target: { root, ...(Number.isSafeInteger(holder) ? { holderPid: holder } : {}) }, remedy: "run the command again after that operation exits; a foreground cotal up holds the root only while it starts" });
+  }
+}
+
+/** An earlier operation that had no recorded outcome, and the member evidence it was settled from. */
+export interface StackSettlement { operation: StackJournal["operation"]; members: { role: StackRole; instanceId: string; process: "running" | "gone" }[] }
+
+const UNSETTLED_PHASES: readonly StackJournal["operation"]["phase"][] = ["planned", "applying", "unknown"];
+
+/** Whether the journal's last operation has no recorded outcome. */
+export function stackOperationUnsettled(journal: StackJournal): boolean {
+  return UNSETTLED_PHASES.includes(journal.operation.phase);
+}
+
+/** One stack definition's single instance, classified from its own record and exact process: live,
+ *  or gone with nothing of ours in flight. With `settle`, the caller holds the root's maintenance
+ *  lock and a crash is recorded under the definition's writer lock. Without it nothing is written.
+ *  A member that is neither refuses, naming the instance and the read that shows it. */
+function classifyStackMember(journal: StackJournal, role: StackRole, settle: boolean): StackSettlement["members"][number] | undefined {
+  const space = journal.space, name = STACK_DEFINITION[role];
+  const store = serviceDefinitionStore(space), definition = store.read(name);
+  const target = { root: journal.root, space, operation: journal.operation.id, definition: name };
+  const inspect = (instanceId: string) => `inspect it with cotal service status ${name} --instance ${instanceId} --space ${space}`;
+  if (!definition) {
+    const orphans = serviceInstances(space, name);
+    if (orphans.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a stack member instance has no saved definition; the earlier operation was not settled", { target: { ...target, instances: orphans.map((row) => row.name) }, remedy: inspect(orphans[0]!.name) });
+    return undefined;
+  }
+  const launch = definition.record.value.launch;
+  if (launch.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== journal.root)
+    throw new CommandFailure("refused", "CONFLICT", "a saved definition under a stack name belongs to another adapter or root; the earlier operation was not settled", { target, remedy: `inspect cotal service show ${name} --space ${space}` });
+  const hold = settle ? store.pin(definition) : undefined;
+  try {
+    const rows = serviceInstances(space, name);
+    if (rows.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a stack definition has several instance records; the earlier operation was not settled", { target: { ...target, candidates: rows.map((row) => row.name) } });
+    if (!rows.length) return undefined;
+    const row = settle ? settleExitedInstance(rows[0]!) : rows[0]!;
+    const value: ServiceInstance = row.record.value, observed = observeServiceProcess(value);
+    // A stop request the member retains is neither live nor gone here; only its own receipt settles
+    // it. Read-only, a crash-like record whose launch holds one is found before the settlement would
+    // record it `stopping`.
+    const retained = retainedStopRequest(value), stopRetained = value.state === "stopping" || retained !== undefined;
+    if (observed === "running" && !stopRetained) return { role, instanceId: row.name, process: "running" };
+    const gone = processGone(observed);
+    // Read-only, a crash is classified as the settled `failed` record it will become.
+    if (gone && !stopRetained && (["failed", "stopped"].includes(value.state) || !settle && value.process !== undefined && ["starting", "running", "unknown"].includes(value.state))) return { role, instanceId: row.name, process: "gone" };
+    // Nothing was changed by this command, so its own outcome is a known refusal.
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", !stopRetained
+      ? "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
+      : retained?.publication === "unknown"
+        ? "a stack member's stop request file does not read as its own, so whether a stop was published is unknown and the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
+        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: inspect(row.name) });
+  } finally { hold?.release(); }
+}
+
+/** Settle an earlier `up` or `down` that has no recorded outcome, from evidence only. The caller
+ *  holds the root's maintenance lock, which every whole-stack operation holds for its whole run, so
+ *  none of them is in flight. Each member is then classified under its definition's writer lock, so
+ *  no launch or stop of it is in flight either: its exact process runs, or it is proven gone (PID and
+ *  creation token) and recorded so. The operation is recorded as failed. A member it planned is
+ *  recorded as unknown when an instance exists and not attempted when none does. A member that is
+ *  neither live nor proven gone refuses; instances settled before that refusal stay settled, and
+ *  the operation stays unsettled. A settled journal, and a preserve or resume (decided by its
+ *  maintenance attempt), are returned unchanged. */
+export function settleStackOperation(lock: MaintenanceLock, snapshot: StackJournalSnapshot): { snapshot: StackJournalSnapshot; settled?: StackSettlement } {
+  const journal = snapshot.journal, operation = journal.operation;
+  if (!stackOperationUnsettled(journal) || operation.kind !== "up" && operation.kind !== "down") return { snapshot };
+  if (lock.root !== journal.root) throw new CommandFailure("refused", "CONFLICT", "the held maintenance lock belongs to another root; the earlier operation was not settled", { target: { root: journal.root } });
+  const members = STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role)).flatMap((role) => classifyStackMember(journal, role, true) ?? []);
+  const settled = writeStackJournal(journal.root, snapshot, { ...journal, members: withSettledMembers(journal, { operation, members }).members.map((row) => row.state !== "planned" && row.state !== "unknown" ? row : members.some((member) => member.role === row.role) ? { ...row, state: "unknown", code: "OPERATION_UNKNOWN" } : { ...row, state: "not-attempted", code: undefined }), operation: { ...operation, phase: "failed" }, updatedAt: new Date().toISOString() });
+  return { snapshot: settled, settled: { operation, members } };
+}
+
+/** The journal with each journaled replacement resolved, and each member row that has no recorded
+ *  instance given the one the settlement classified under that member's stack definition. An `up`
+ *  cut off during a member's readiness leaves that member's instance unrecorded; it is the stack's
+ *  own member, never another dependant. */
+export function withSettledMembers(journal: StackJournal, settlement: StackSettlement | undefined): StackJournal {
+  const members = journal.members.map((row) => resolveReplacement(journal, row));
+  return { ...journal, members: settlement ? members.map((row) => row.instanceId !== null ? row : { ...row, instanceId: settlement.members.find((member) => member.role === row.role)?.instanceId ?? null }) : members };
+}
+
+/** A member row with its journaled replacement resolved from the definition's single instance
+ *  record. The recorded instance stays when the retirement never happened, and none remains when
+ *  nothing was launched. The replacement is adopted only when its record carries the journaled
+ *  launch request and definition revision, the saved definition is that revision, and this journal's
+ *  operation journaled it. Any other record refuses, and nothing is adopted. */
+function resolveReplacement(journal: StackJournal, row: StackMember): StackMember {
+  const { replacement, ...member } = row;
+  if (!replacement) return row;
+  const space = journal.space, rows = serviceInstances(space, row.definition), found = rows[0];
+  const target = { root: journal.root, space, operation: journal.operation.id, definition: row.definition, recorded: row.instanceId, replacement: replacement.instanceId, launchRequestId: replacement.launchRequestId, found: rows.map((item) => item.name) };
+  if (rows.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a stack definition has several instance records; the journaled replacement was not resolved", { target });
+  if (!found) return { ...member, instanceId: null };
+  if (found.name === row.instanceId) return member;
+  const value = found.record.value;
+  if (replacement.operation === journal.operation.id && replacement.definitionRevision !== undefined && found.name === replacement.instanceId && value.launchRequestId === replacement.launchRequestId && value.definitionRevision === replacement.definitionRevision && serviceDefinitionStore(space).read(row.definition)?.record.revision === replacement.definitionRevision)
+    return { ...member, instanceId: found.name };
+  throw new CommandFailure("refused", "CONFLICT", "the definition's instance record is not the replacement this stack journal recorded for its operation; neither was adopted", { target, remedy: `inspect it with cotal service status ${row.definition} --instance ${found.name} --space ${space}` });
+}
+
+/** The read-only classification `settleStackOperation` would record, for a preview. Writes nothing. */
+export function previewStackSettlement(journal: StackJournal): StackSettlement | undefined {
+  if (!stackOperationUnsettled(journal) || journal.operation.kind !== "up" && journal.operation.kind !== "down") return undefined;
+  return { operation: journal.operation, members: STACK_ROLES.filter((role) => stackRoleApplies(journal.mode, role)).flatMap((role) => classifyStackMember(journal, role, false) ?? []) };
+}
+
+/** The one-line notice a command prints after it settled an earlier operation. */
+export function stackSettlementNotice(settled: StackSettlement): string {
+  const gone = settled.members.filter((row) => row.process === "gone").map((row) => row.role), running = settled.members.filter((row) => row.process === "running").map((row) => row.role);
+  return `the earlier ${settled.operation.kind} ${settled.operation.id} had no recorded outcome; it was recorded as failed from its members' processes (gone: ${gone.join(", ") || "none"}; running: ${running.join(", ") || "none"})`;
+}
+
 export function newStackOperation(kind: "up" | "down", withAgents = false): StackJournal["operation"] {
   return { id: randomUUID(), kind, phase: "planned", recordedAt: new Date().toISOString(), withAgents };
+}
+
+/** Whether this root records a controller stack for `space` with no live manager instance. False
+ *  when it records none, or an unreadable one, so a remote or legacy mesh keeps its own answer. */
+export function stackManagerAbsent(root: string, space: string): boolean {
+  try {
+    if (readStackJournal(root)?.journal.space !== space) return false;
+    return !serviceInstances(space, STACK_DEFINITION.manager).some((row) => observeServiceProcess(row.record.value) === "running");
+  } catch { return false; }
+}
+
+/** The controller stack definition a legacy component name stands for in `space`, when that
+ *  definition is saved there. A controller stack names its members stack-<role>. */
+export function stackMemberFor(space: string, name: string): string | undefined {
+  const role = ({ nats: "broker", broker: "broker", auth: "auth", delivery: "delivery", manager: "manager" } as Record<string, StackRole | undefined>)[name];
+  if (!role) return undefined;
+  try { return serviceDefinitionStore(space).read(STACK_DEFINITION[role]) ? STACK_DEFINITION[role] : undefined; } catch { return undefined; }
 }
 
 /** Legacy pidfile records under the root that may front a process, excluding the settled records
