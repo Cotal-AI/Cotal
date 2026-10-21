@@ -408,7 +408,9 @@ try {
   check("up --open on the running user mesh is refused (names cotal down)", openUp.status !== 0 && openUp.out.includes("cotal down"), openUp.out);
   // THE FLIP: user-facing static creds are retired on user-auth spaces — `cotal auth mint` must
   // refuse with the login/enrollment recourse, never write a working `local.<nkey>` identity file.
-  const staticMint = await cotal(["auth", "mint", "flip-probe", "--profile", "agent"]);
+  // A label is one owner token ([A-Za-z0-9_]); a `-` would be refused USAGE_INVALID before the
+  // user-mesh check, so these labels use `_`.
+  const staticMint = await cotal(["auth", "mint", "flip_probe", "--profile", "agent"]);
   check(
     "the flip: `cotal auth mint` on a user mesh is refused UNSUPPORTED, naming the login/enrollment recourse",
     staticMint.status === 2 && staticMint.out.includes("UNSUPPORTED") && staticMint.out.includes("static credentials are not issued for open or per-user-auth spaces") && staticMint.out.includes("login/enrollment path"),
@@ -417,9 +419,9 @@ try {
   // Asserted at the segment `mint` would actually have written to (P1). The flat level is where a
   // pre-segment mint wrote, so checking it now would read absent whatever the refused mint did.
   check("the flip: no creds file was written by the refused mint",
-    !existsSync(join(root, ".cotal", "auth", "creds", spaceSegment(SPACE), "flip-probe.creds")));
+    !existsSync(join(root, ".cotal", "auth", "creds", spaceSegment(SPACE), "flip_probe.creds")));
   // observer/admin are retired too: the refusal covers every fixed profile, not only the agent one.
-  const observerMint = await cotal(["auth", "mint", "flip-observer", "--profile", "observer"]);
+  const observerMint = await cotal(["auth", "mint", "flip_observer", "--profile", "observer"]);
   check(
     "the flip: `auth mint --profile observer` is refused the same way",
     observerMint.status === 2 && observerMint.out.includes("UNSUPPORTED") && observerMint.out.includes("static credentials are not issued for open or per-user-auth spaces"),

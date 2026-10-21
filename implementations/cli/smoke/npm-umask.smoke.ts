@@ -22,6 +22,10 @@ const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
 
+// The `cotal ext` child must not inherit a managed session's mesh identity from whatever runs this
+// suite; it gets only the values set on its own spawn below.
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+
 const root = mkdtempSync(join(tmpdir(), "cotal-npm-umask-"));
 const fakeBin = join(root, "bin");
 const recorded = join(root, "npm-umask");

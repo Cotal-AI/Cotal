@@ -279,10 +279,13 @@ try {
 
   process.chdir(neutral);
 
-  // No meshes recorded anywhere and nothing saved → `down web` refuses as not found.
+  // No meshes recorded anywhere → `down web` has no space to look in. The target resolves before
+  // any saved-definition lookup, so it refuses as not found and says how to name a space.
   const noMesh = await rejection(run(["web"]));
-  check("no meshes: `down web` refuses TARGET_NOT_FOUND, naming no saved definition",
-    noMesh?.code === "TARGET_NOT_FOUND" && /no saved service definition resolves this name/.test(noMesh.message ?? ""), noMesh?.message);
+  check("no meshes: `down web` refuses TARGET_NOT_FOUND, naming no mesh to look in",
+    noMesh?.code === "TARGET_NOT_FOUND" && /no mesh running/.test(noMesh.message ?? "") && !/no saved service definition/.test(noMesh.message ?? "") &&
+      /name a prepared or registered space with `--space <name>`/.test(noMesh.remedy ?? ""),
+    noMesh && { code: noMesh.code, message: noMesh.message, remedy: noMesh.remedy });
 
   // Current mesh set → `down web` from an unrelated directory looks in THAT mesh's saved services.
   // The legacy dashboard in its root is not one, so nothing is signalled and its record stays.
