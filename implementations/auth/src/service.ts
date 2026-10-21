@@ -192,6 +192,11 @@ const MANAGER_PIN_REMEDY: Record<ManagerCaller | "wire", string> = {
   wire: "name one as managerInstanceId",
 };
 
+/** An unpinned manager-caller selection that found no single live manager. It is raised only after
+ *  the exchange's credential verified, and it describes the caller's own owner, so it is not probing:
+ *  the exchange arms neither count it against the refused-exchange budget nor hide it behind 429. */
+class ManagerSelectionRefusal extends Error {}
+
 /** One Manager instance of an owner, as `/manager-instances` lists it. `state` is the verdict
  *  selection reads: `candidate` is an open gate of this owner whose current service registration and
  *  status match the gate's registration revision and process epoch. That is registration evidence,
@@ -788,11 +793,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     remoteLive.sort();
     if (remoteLive.length === 1) return remoteLive[0];
     if (remoteLive.length > 1)
-      throw new Error(`manager-caller selection found ${remoteLive.length} live remote manager candidates for owner ${owner} (${remoteLive.join(", ")}); exactly one is required, so ${MANAGER_PIN_REMEDY[caller ?? "wire"]}`);
+      throw new ManagerSelectionRefusal(`manager-caller selection found ${remoteLive.length} live remote manager candidates for owner ${owner} (${remoteLive.join(", ")}); exactly one is required, so ${MANAGER_PIN_REMEDY[caller ?? "wire"]}`);
     if (remoteInstances.length > 0)
-      throw new Error(`the remote manager for owner ${owner} is unavailable (${remoteInstances.length} gate${remoteInstances.length === 1 ? "" : "s"}, none live); start one with \`cotal supervise\` and retry, as this call is never routed to the local manager`);
+      throw new ManagerSelectionRefusal(`the remote manager for owner ${owner} is unavailable (${remoteInstances.length} gate${remoteInstances.length === 1 ? "" : "s"}, none live); start one with \`cotal supervise\` and retry, as this call is never routed to the local manager`);
     if (localCandidate !== undefined) return localCandidate;
-    throw new Error(`manager-caller selection found no manager candidate for owner ${owner}`);
+    throw new ManagerSelectionRefusal(`manager-caller selection found no manager candidate for owner ${owner}`);
   };
   // Every authority operation refuses once the plane is fenced: a half-dead plane keeps NO face up.
   // AUDIENCE SPLIT (ux): these refusals reach a CONNECTING AGENT during the brief fence→exit
@@ -3003,9 +3008,10 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
       const { exp } = decodeJwt(token);
       return send(res, 200, { token, owner, exp, ...(selectedManagerInstanceId ? { managerInstanceId: selectedManagerInstanceId } : {}) });
     } catch (e) {
-      policy.recordFailure(ctx, peer);
       const reason = e instanceof Error ? e.message : String(e);
       console.error(`auth-service: refused an agent exchange: ${reason}`);
+      if (e instanceof ManagerSelectionRefusal) return send(res, 401, { error: reason });
+      policy.recordFailure(ctx, peer);
       if (peerThrottled)
         return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
       return send(res, 401, { error: reason });
@@ -3040,9 +3046,10 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   } catch (e) {
     // A refused exchange (bad IdP token, ungranted actor, expired proof) is an AUTHENTICATED
     // denial with the reason — the client shows it to the operator verbatim.
-    policy.recordFailure(ctx, peer);
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`auth-service: refused an exchange: ${reason}`);
+    if (e instanceof ManagerSelectionRefusal) return send(res, 401, { error: reason });
+    policy.recordFailure(ctx, peer);
     if (peerThrottled)
       return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
     return send(res, 401, { error: reason });

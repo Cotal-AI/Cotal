@@ -297,7 +297,9 @@ more than 1024 trusted-proxy last hops can evict earlier 429 state. It is not a 
 credential is still required, so use upstream reverse-proxy rate limiting when that throttle-escape
 matters to the deployment. A refusal at `POST /manager-service-authority` counts against the same
 budget as one at `/exchange` on that face, so after 30 refusals in a minute either route answers a
-further refusal with 429.
+further refusal with 429. An unpinned manager-caller exchange that finds no single live manager for
+its owner is refused only after its credential verified. It does not count against the budget and
+always answers with its own reason, because a session that no manager launched polls its manager this way.
 
 ### Enrollment redeem
 

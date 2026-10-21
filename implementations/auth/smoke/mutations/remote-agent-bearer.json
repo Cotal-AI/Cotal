@@ -46,7 +46,7 @@
     {
       "name": "two live remote manager candidates select the first instead of refusing ambiguity",
       "file": "implementations/auth/src/service.ts",
-      "find": "    if (remoteLive.length > 1)\n      throw new Error(`manager-caller selection found ${remoteLive.length} live remote manager candidates for owner ${owner} (${remoteLive.join(\", \")}); exactly one is required, so ${MANAGER_PIN_REMEDY[caller ?? \"wire\"]}`);",
+      "find": "    if (remoteLive.length > 1)\n      throw new ManagerSelectionRefusal(`manager-caller selection found ${remoteLive.length} live remote manager candidates for owner ${owner} (${remoteLive.join(\", \")}); exactly one is required, so ${MANAGER_PIN_REMEDY[caller ?? \"wire\"]}`);",
       "replace": "    if (remoteLive.length > 1) return remoteLive[0];",
       "expectRed": "two live remote managers refuse and name the count",
       "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-exchange:live",
@@ -57,7 +57,7 @@
     {
       "name": "an unavailable owner remote manager falls through to the co-located manager",
       "file": "implementations/auth/src/service.ts",
-      "find": "    if (remoteInstances.length > 0)\n      throw new Error(`the remote manager for owner ${owner} is unavailable (${remoteInstances.length} gate${remoteInstances.length === 1 ? \"\" : \"s\"}, none live); start one with \\`cotal supervise\\` and retry, as this call is never routed to the local manager`);",
+      "find": "    if (remoteInstances.length > 0)\n      throw new ManagerSelectionRefusal(`the remote manager for owner ${owner} is unavailable (${remoteInstances.length} gate${remoteInstances.length === 1 ? \"\" : \"s\"}, none live); start one with \\`cotal supervise\\` and retry, as this call is never routed to the local manager`);",
       "replace": "    if (remoteInstances.length > 0 && localCandidate === undefined)\n      throw new Error(`the remote manager for owner ${owner} is unavailable`);",
       "expectRed": "an owner whose remote manager gates are all dead is refused with the start-a-manager remedy, not routed to the local manager",
       "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-exchange:live",
