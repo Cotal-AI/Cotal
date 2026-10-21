@@ -29,6 +29,11 @@ read. A `binding-only` result is a visible reconciliation hold, not a queue or p
 An absent admission is an observation at read time, not proof that the original callback cannot
 still write. A changed caller generation or manager epoch refuses rather than adopting the run.
 
+The receiving manager or issuing host measures the request budget on its own monotonic clock,
+and checks the caller's authority expiry on the wall clock. A wall-clock step moves neither. The
+callback deadline a status read returns is a wall-clock record of that window, not something a
+caller or host enforces.
+
 The original callback timer bounds waiting and starting more attempts. It does not cancel an
 already-issued broker publish, which may land later with the same frozen admission bytes.
 No new attempt or activation starts after the deadline. Keep the reservation even if an

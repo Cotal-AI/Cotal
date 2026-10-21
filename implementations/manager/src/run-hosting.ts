@@ -246,23 +246,25 @@ export class RunHosting {
     return { runId };
   }
 
-  private keyedCoordinates(ctx: EpServeContext): { caller: EpCaller; deadline: number } {
+  /** `requestEndsAt` is on this process's monotonic clock, measured from the serve layer's own
+   *  receive sample; it never leaves this process. */
+  private keyedCoordinates(ctx: EpServeContext): { caller: EpCaller; requestEndsAt: number } {
     const caller = ctx.subject.caller, bind = ctx.request.bind;
     if (ctx.subject.rail !== "v1" || !isIssuedCaller(caller) || ctx.subject.route !== "inst"
       || ctx.subject.instanceId !== this.ctx.instanceId || !bind || bind.instanceId !== this.ctx.instanceId
-      || bind.epoch !== ctx.identity.epoch || !Number.isSafeInteger(ctx.receivedAt)
+      || bind.epoch !== ctx.identity.epoch || !Number.isFinite(ctx.receivedAtMonotonicMs)
       || !Number.isSafeInteger(ctx.request.deadlineMs) || ctx.request.deadlineMs! <= 0)
       throw new EpEnvelopeError("permission-denied", "keyed runs require fresh issued exact-instance/epoch contracts and original receive deadline");
     if (ctx.request.deadlineMs! > KEYED_SUBMISSION_MAX_DEADLINE_MS)
       throw new EpEnvelopeError("bad-request", `keyed deadlineMs exceeds the ${KEYED_SUBMISSION_MAX_DEADLINE_MS}ms request budget`);
-    return { caller, deadline: ctx.receivedAt! + ctx.request.deadlineMs! };
+    return { caller, requestEndsAt: ctx.receivedAtMonotonicMs! + ctx.request.deadlineMs! };
   }
 
   /** The binding winner alone launches. Duplicates observe, even if an earlier admission is
    * absent. A lost reply never allocates a replacement run or repairs an incomplete binding. */
   async startKeyed(ctx: EpServeContext, args: { source: string; file?: string; timeout?: string }): Promise<RunSubmissionView> {
     this.assertReconciled();
-    const { caller, deadline } = this.keyedCoordinates(ctx), host = this.host();
+    const { caller, requestEndsAt } = this.keyedCoordinates(ctx), host = this.host();
     const verdict = host.validate(args.source, args.file);
     if (!verdict.ok) throw new EpEnvelopeError("bad-request", "keyed program does not validate", verdict.errors.map(e => ({ kind: LANG_PROBLEM_DETAIL_KIND, ...withoutFrame(e) })));
     const placements = verdict.placements ?? [];
@@ -295,7 +297,8 @@ export class RunHosting {
           provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now() };
         result = await this.withAdmitter(runId, (kv, jsm) => bindAndAdmitRunSubmission({ kv, jsm, admission,
           submissionId: ctx.request.id, fingerprint: submissionFingerprint(ctx.request, ctx.subject).fingerprint,
-          processEpoch: ctx.identity.epoch, callbackDeadline: Math.min(deadline, resolved.evidence.expiresAt === undefined ? Infinity : resolved.evidence.expiresAt * 1000),
+          processEpoch: ctx.identity.epoch, deadline: { requestEndsAt,
+            ...(resolved.evidence.expiresAt !== undefined ? { authorityExpiresAt: resolved.evidence.expiresAt * 1000 } : {}) },
           assertCurrent: async () => {
             const fresh = await withIssuerSession({ servers: this.ctx.servers ?? DEFAULT_SERVER, space: this.ctx.space, auth, tls: false }, s => s.store.resolve(ref, s.sourceIsLive));
             if (fresh.revision !== resolved.revision || canonicalJson(fresh.evidence) !== canonicalJson(resolved.evidence))
@@ -308,7 +311,7 @@ export class RunHosting {
         || admission.caller.owner !== caller.owner || admission.caller.actor !== caller.actor || admission.caller.uid !== caller.uid
         || !isIssuedCaller(admission.caller) || !isIssuedCaller(caller) || admission.caller.generation !== caller.generation)
         throw new EpEnvelopeError("internal", "keyed admission names another caller/run/instance");
-      if (Date.now() >= deadline) return { ...result.view, reason: "reconcile-held; original callback deadline elapsed before activation" };
+      if (performance.now() >= requestEndsAt) return { ...result.view, reason: "reconcile-held; original callback deadline elapsed before activation" };
       // The signerless issuer mints the run id, so that slot is claimed on the winning reply.
       slot ??= this.claim(admission.runId, placements);
       await this.launch(host, { mode: "new", runId: admission.runId, source: args.source,

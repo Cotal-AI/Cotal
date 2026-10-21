@@ -5376,15 +5376,18 @@ contracts and an exact-instance/epoch bind. Old credentials gain no reach by rec
 Legacy `run-start` remains unchanged and is never an automatic fallback.
 A keyed request's `deadlineMs` is at most 30000. A host refuses a larger value as `bad-request`
 before any read or binding. This maximum is a request budget. It does not show that a publish
-has settled or that a credential is still valid. The callback deadline stays the earlier of the
-receive deadline and the caller's authority expiry, and a request that outlives a credential
-still has an unknown outcome.
+has settled or that a credential is still valid. The process that receives the request measures
+the budget on its own monotonic clock from its own receive sample; that reading is never
+persisted, sent or compared with another process's clock. The caller's authority expiry is
+checked separately on the wall clock. A request that outlives a credential still has an unknown
+outcome.
 
 The admission authority writes one `submission.v1.<endpointToken>.<callerDigest>.<id>` binding
 in the existing write-once admission store. `callerDigest` is the canonical SHA-256 digest of
 `[owner,actor,lifecycleUid]` without its `sha256:` prefix. The closed value records the caller
 generation, semantic fingerprint, accepting instance/epoch, host-minted run ID, frozen
-admission digest and original callback deadline. Bindings are permanent, including terminal
+admission digest and original callback deadline. That deadline is a wall-clock projection of the
+callback's window, rounded down. It is a record only: no host enforces or recovers from it. Bindings are permanent, including terminal
 runs. Capacity exhaustion refuses new submissions rather than deleting authority history.
 The manager takes its stopping and launch-capacity refusals, and reserves the launch, before it
 reads or writes the binding, so such a refusal writes nothing. It says nothing about an earlier

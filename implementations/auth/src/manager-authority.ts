@@ -348,13 +348,14 @@ export async function handleRemoteRunSubmission(args: {
   const id = observed.operation.command === "run-submission-status" ? observed.operation.submissionId : observed.submission.id;
   const runId = newSubmissionRunId();
   const result = await args.withStore(runId, { caller: c, id }, async (kv, jsm) => {
-    if (Date.now() >= observed.submission!.deadline) throw new EpEnvelopeError("deadline-exceeded", "original observed keyed deadline elapsed");
+    if (performance.now() >= observed.submission!.requestEndsAt) throw new EpEnvelopeError("deadline-exceeded", "original observed keyed deadline elapsed");
     if (parsed.command === "run-submission-status") return { winner: false, view: await readRunSubmission({
       jsm, space: r.space, endpoint: args.endpoint, caller: c, submissionId: id, instanceId: r.instanceId, processEpoch: r.processEpoch }) };
     const admission: RunAdmission = { version: 1, space: r.space, endpoint: args.endpoint, runId, instanceId: r.instanceId,
       caller: c, ceiling: resolved.evidence.permissions, provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now() };
     return bindAndAdmitRunSubmission({ kv, jsm, admission, submissionId: id, fingerprint: observed.submission!.fingerprint,
-      processEpoch: r.processEpoch, callbackDeadline: Math.min(observed.submission!.deadline, resolved.evidence.expiresAt === undefined ? Infinity : resolved.evidence.expiresAt * 1000),
+      processEpoch: r.processEpoch, deadline: { requestEndsAt: observed.submission!.requestEndsAt,
+        ...(resolved.evidence.expiresAt !== undefined ? { authorityExpiresAt: resolved.evidence.expiresAt * 1000 } : {}) },
       assertCurrent: async () => {
         await authenticateRegisteredManager(r, args, "keyed admission recheck");
         const fresh = await args.issued.resolve(ref, args.sourceIsLive);
@@ -555,7 +556,9 @@ export type RunRequestOperation =
 export interface ObservedRunRequest {
   operation: RunRequestOperation | { command: "run-start" | "run-start-keyed" } | { command: "run-submission-status"; submissionId: string };
   envelope: Pick<EndpointRequest, "class" | "op" | "bind">;
-  submission?: { id: string; fingerprint: string; deadline: number };
+  /** `requestEndsAt` is on this issuing process's monotonic clock, from its own observation; it
+   *  never leaves this process. */
+  submission?: { id: string; fingerprint: string; requestEndsAt: number };
 }
 
 /** The run-start, resume or answer request its caller published on `subject`, or undefined for a
@@ -578,7 +581,7 @@ export function observedRunRequest(subject: string, data: Uint8Array): ObservedR
     // (a lone surrogate, nesting past the stack) leaves the request unobserved, never a throw.
     let fingerprint: string;
     try { fingerprint = submissionFingerprint(env, parsed).fingerprint; } catch { return undefined; }
-    const submission = { id: env.id, fingerprint, deadline: Date.now() + env.deadlineMs! };
+    const submission = { id: env.id, fingerprint, requestEndsAt: performance.now() + env.deadlineMs! };
     if (parsed.command === "run-start-keyed") return { operation: { command: "run-start-keyed" }, envelope, submission };
     if (typeof env.args?.submissionId !== "string") return undefined;
     return { operation: { command: "run-submission-status", submissionId: env.args.submissionId }, envelope, submission };

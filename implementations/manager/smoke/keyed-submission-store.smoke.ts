@@ -34,7 +34,7 @@ try {
     ceiling: { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } }, admittedAt: Date.now(),
     provenance: { kind: "issued", ref: { space, ...caller }, resolvedRevision: 1 } });
   const run = (id: string, a = admission(), fingerprint = contractDigest({ source: "same" })) => bindAndAdmitRunSubmission({ kv, jsm,
-    admission: a, submissionId: id, fingerprint, processEpoch, callbackDeadline: Date.now() + 3000 });
+    admission: a, submissionId: id, fingerprint, processEpoch, deadline: { requestEndsAt: performance.now() + 3000 } });
   const read = (id: string, who: EpCaller = caller, epoch = processEpoch) => readRunSubmission({ jsm, space, endpoint, caller: who, submissionId: id, instanceId, processEpoch: epoch });
   const id = mintLifecycleUid(), contenders = await Promise.all(Array.from({ length: 8 }, () => run(id)));
   assert.equal(contenders.filter(r => r.winner).length, 1);
@@ -98,16 +98,70 @@ try {
   check("lost binding ACK cannot confer winner authority or repair from matching bytes");
   const changedId = mintLifecycleUid(); let freshnessReads = 0;
   await assert.rejects(bindAndAdmitRunSubmission({ kv, jsm, admission: admission(), submissionId: changedId,
-    fingerprint: contractDigest({ changedAuthority: true }), processEpoch, callbackDeadline: Date.now() + 3000,
+    fingerprint: contractDigest({ changedAuthority: true }), processEpoch, deadline: { requestEndsAt: performance.now() + 3000 },
     assertCurrent: async () => { if (++freshnessReads === 2) throw new Error("original authority changed after binding"); } }));
   assert.equal((await read(changedId)).state, "binding-only");
   assert.equal((await run(changedId, admission(), contractDigest({ changedAuthority: true }))).winner, false);
   check("changed authority after binding holds original identity, never admits with new ceiling");
   const deadlineId = mintLifecycleUid();
   await assert.rejects(bindAndAdmitRunSubmission({ kv, jsm, admission: admission(), submissionId: deadlineId,
-    fingerprint: contractDigest({ late: true }), processEpoch, callbackDeadline: Date.now() - 1 }));
+    fingerprint: contractDigest({ late: true }), processEpoch, deadline: { requestEndsAt: performance.now() - 1 } }));
   assert.equal((await read(deadlineId)).state, "unbound");
   check("expired original deadline writes no binding");
+  // Clock controls. The request budget is read on this process's monotonic clock and the authority
+  // expiry on the wall clock, each on its own; a wall step moves neither the budget nor the record.
+  const bind = (submissionId: string, deadline: import("@cotal-ai/core").KeyedSubmissionDeadline, assertCurrent?: () => Promise<void>) =>
+    bindAndAdmitRunSubmission({ kv, jsm, admission: admission(), submissionId, fingerprint: contractDigest({ clock: submissionId }),
+      processEpoch, deadline, ...(assertCurrent ? { assertCurrent } : {}) });
+  const code = (e: unknown) => (e as { code?: string }).code;
+  const hold = (ms: number) => () => new Promise<void>(resolve => setTimeout(resolve, ms));
+  for (const bad of [{ requestEndsAt: Number.NaN }, { requestEndsAt: Number.POSITIVE_INFINITY },
+    { requestEndsAt: performance.now() + 3000, authorityExpiresAt: Number.NaN }]) {
+    const badId = mintLifecycleUid(); let reached = false;
+    await assert.rejects(bind(badId, bad, async () => { reached = true; }), e => code(e) === "bad-request");
+    assert.equal(reached, false); assert.equal((await read(badId)).state, "unbound");
+  }
+  check("non-finite deadline fields refuse before any read or write");
+  const expiredId = mintLifecycleUid(); let expiredReached = false;
+  await assert.rejects(bind(expiredId, { requestEndsAt: performance.now() + 3000, authorityExpiresAt: Date.now() - 1 },
+    async () => { expiredReached = true; }), e => code(e) === "deadline-exceeded");
+  assert.equal(expiredReached, false); assert.equal((await read(expiredId)).state, "unbound");
+  check("an authority already expired on the wall clock refuses while the request budget remains");
+  type Timed = { code: string | undefined; elapsedMs: number; state: string };
+  const timed = async (deadline: import("@cotal-ai/core").KeyedSubmissionDeadline): Promise<Timed> => {
+    const timedId = mintLifecycleUid(), started = performance.now();
+    const error = await bind(timedId, deadline, hold(600)).then(() => undefined, (e: unknown) => e);
+    return { code: code(error), elapsedMs: performance.now() - started, state: (await read(timedId)).state };
+  };
+  const budgetMid = await timed({ requestEndsAt: performance.now() + 150 });
+  const authorityMid = await timed({ requestEndsAt: performance.now() + 5000, authorityExpiresAt: Date.now() + 150 });
+  const realNow = Date.now;
+  let backward: Timed | undefined, forwardAuthority: Timed | undefined, forward: string | undefined;
+  let forwardRecord: { recorded: number | undefined; wallBefore: number } | undefined;
+  try {
+    Date.now = () => realNow() - 3_600_000;
+    backward = await timed({ requestEndsAt: performance.now() + 150 });
+    Date.now = () => realNow() + 3_600_000;
+    const forwardId = mintLifecycleUid(), wallBefore = Date.now();
+    forward = await bind(forwardId, { requestEndsAt: performance.now() + 3000 }).then(r => r.view.state, (e: unknown) => code(e));
+    forwardRecord = { recorded: (await read(forwardId)).callbackDeadline, wallBefore };
+    forwardAuthority = await timed({ requestEndsAt: performance.now() + 3000, authorityExpiresAt: realNow() + 60_000 });
+  } finally { Date.now = realNow; }
+  console.log(JSON.stringify({ cell: "K4d-clock-controls", budgetMid, authorityMid, backward, forward, forwardRecord, forwardAuthority }));
+  const endedEarly = (r: Timed) => r.code === "deadline-exceeded" && r.state === "unbound"
+    && r.elapsedMs >= 140 && r.elapsedMs < 550;
+  assert.ok(endedEarly(budgetMid), "request budget ends a held bind on the monotonic clock");
+  check("a request budget that elapses mid-bind ends the wait and writes no binding");
+  assert.ok(endedEarly(authorityMid), "authority expiry ends a held bind on the wall clock");
+  check("an authority expiry reached mid-bind ends the wait and writes no binding");
+  assert.ok(endedEarly(backward!), "a backward wall step does not extend the request budget");
+  assert.equal(forward, "admitted", "a forward wall step does not spend the request budget");
+  assert.ok(Number.isSafeInteger(forwardRecord!.recorded) && forwardRecord!.recorded! >= forwardRecord!.wallBefore
+    && forwardRecord!.recorded! <= forwardRecord!.wallBefore + 3000, "the record is a projection on the wall clock it was taken from");
+  check("wall-clock steps neither extend nor spend the monotonic request budget");
+  assert.equal(forwardAuthority!.code, "deadline-exceeded"); assert.equal(forwardAuthority!.state, "unbound");
+  assert.ok(forwardAuthority!.elapsedMs < 140, "the wall-clock authority check runs before the held recheck");
+  check("authority expiry stays a wall-clock check, refused before the bind even with budget left");
   const b = await kv.get(runSubmissionKey(endpoint, caller, id)); assert.ok(b);
   await assert.rejects(kv.put(runSubmissionKey(endpoint, caller, id), b.value));
   await assert.rejects(kv.delete(runSubmissionKey(endpoint, caller, id)));

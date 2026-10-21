@@ -19,6 +19,8 @@ export interface RunSubmissionBinding {
   processEpoch: number;
   runId: string;
   admissionDigest: string;
+  /** Wall-clock projection of the binding callback's window, in epoch milliseconds. A record
+   *  only: no host enforces a deadline or recovers anything from it. */
   callbackDeadline: number;
 }
 export interface RunSubmissionView {
@@ -32,8 +34,8 @@ export interface RunSubmissionView {
   reason?: string;
 }
 /** The largest `deadlineMs` a keyed request may carry. A request budget only: it proves nothing
- * about broker settlement or credential validity, and the callback deadline stays the earlier of
- * this and the caller's authority expiry. */
+ * about broker settlement or credential validity. The receiving process measures it on its own
+ * monotonic clock, and checks the caller's authority expiry on the wall clock as well. */
 export const KEYED_SUBMISSION_MAX_DEADLINE_MS = 30_000;
 const enc = new TextEncoder(), dec = new TextDecoder("utf-8", { fatal: true });
 const refuse = (message: string): never => { throw new EpEnvelopeError("failed-precondition", message); };
@@ -94,11 +96,21 @@ export async function readRunSubmission(args: {
   return { ...bound, state: "admitted" };
 }
 
+/** A keyed request's two windows, each read on its own clock in the process that binds.
+ *  `requestEndsAt` is the `performance.now()` reading at which the request budget ends: it is
+ *  local to this process, never persisted or sent. `authorityExpiresAt` is the caller authority's
+ *  wall-clock expiry in epoch milliseconds, checked against `Date.now()`. */
+export interface KeyedSubmissionDeadline {
+  readonly requestEndsAt: number;
+  readonly authorityExpiresAt?: number;
+}
+const remainingMs = (d: KeyedSubmissionDeadline): number => Math.min(d.requestEndsAt - performance.now(),
+  d.authorityExpiresAt === undefined ? Infinity : d.authorityExpiresAt - Date.now());
 const transient = (e: unknown) => ["TIMEOUT", "503", "408", "unavailable", "timeout", "deadline-exceeded"].includes(String((e as { code?: unknown })?.code));
-async function beforeDeadline<T>(deadline: number, work: () => Promise<T>): Promise<T> {
+async function beforeDeadline<T>(deadline: KeyedSubmissionDeadline, work: () => Promise<T>): Promise<T> {
   // Bounds the await and later attempt starts, not an already-issued broker effect. A timed-out
   // publish can still land with the original frozen bytes. Its reservation remains held.
-  const ms = deadline - Date.now();
+  const ms = remainingMs(deadline);
   if (ms <= 0) throw new EpEnvelopeError("deadline-exceeded", "original keyed callback deadline elapsed; retain its binding");
   let timer: ReturnType<typeof setTimeout> | undefined;
   try { return await Promise.race([work(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", "keyed admission outcome is unknown at its original deadline")), ms); })]); }
@@ -110,41 +122,49 @@ async function beforeDeadline<T>(deadline: number, work: () => Promise<T>): Prom
  * debt. Only that winner performs at most3 creates. The bytes/timestamp never change. */
 export async function bindAndAdmitRunSubmission(args: {
   kv: KV; jsm: JetStreamManager; admission: RunAdmission; submissionId: string; fingerprint: string;
-  processEpoch: number; callbackDeadline: number;
+  processEpoch: number; deadline: KeyedSubmissionDeadline;
   /** Fresh checks may refuse/hold, never replace the original frozen admission bytes. */
   assertCurrent?: () => Promise<void>;
 }): Promise<{ winner: boolean; view: RunSubmissionView; admission?: RunAdmission }> {
-  if (args.callbackDeadline - Date.now() > KEYED_SUBMISSION_MAX_DEADLINE_MS)
-    throw new EpEnvelopeError("bad-request", `keyed callback deadline exceeds the ${KEYED_SUBMISSION_MAX_DEADLINE_MS}ms request budget`);
+  const d = args.deadline;
+  if (!d || !Number.isFinite(d.requestEndsAt) || (d.authorityExpiresAt !== undefined && !Number.isFinite(d.authorityExpiresAt)))
+    throw new EpEnvelopeError("bad-request", "keyed deadline needs a finite request end and a finite authority expiry");
+  const deadline: KeyedSubmissionDeadline = Object.freeze({ requestEndsAt: d.requestEndsAt,
+    ...(d.authorityExpiresAt !== undefined ? { authorityExpiresAt: d.authorityExpiresAt } : {}) });
+  if (deadline.requestEndsAt - performance.now() > KEYED_SUBMISSION_MAX_DEADLINE_MS)
+    throw new EpEnvelopeError("bad-request", `keyed request window exceeds the ${KEYED_SUBMISSION_MAX_DEADLINE_MS}ms request budget`);
+  // The binding records a wall-clock projection of the window, rounded down so it never names a
+  // later instant than the one enforced here. Nothing enforces or recovers from the record.
+  const callbackDeadline = Math.floor(Date.now() + remainingMs(deadline));
   const a = admissionSnapshot(args.admission), binding = runSubmissionSnapshot({ v: 1, space: a.space, endpoint: a.endpoint,
     caller: a.caller, submissionId: args.submissionId, fingerprint: args.fingerprint, instanceId: a.instanceId,
-    processEpoch: args.processEpoch, runId: a.runId, admissionDigest: contractDigest(a), callbackDeadline: args.callbackDeadline });
+    processEpoch: args.processEpoch, runId: a.runId, admissionDigest: contractDigest(a), callbackDeadline });
   const key = runSubmissionKey(a.endpoint, a.caller, args.submissionId), bytes = enc.encode(canonicalJson(a));
   const read = () => readRunSubmission({ ...binding, jsm: args.jsm });
   let winner = false;
-  if (args.assertCurrent) await beforeDeadline(args.callbackDeadline, args.assertCurrent);
-  try { await beforeDeadline(args.callbackDeadline, () => args.kv.put(key, enc.encode(canonicalJson(binding)), { previousSeq: 0 })); winner = true; }
+  if (args.assertCurrent) await beforeDeadline(deadline, args.assertCurrent);
+  try { await beforeDeadline(deadline, () => args.kv.put(key, enc.encode(canonicalJson(binding)), { previousSeq: 0 })); winner = true; }
   catch (error) {
     // First-wins/per-subject-limit and unknown create outcomes all classify by exact leader read.
-    const found = await beforeDeadline(args.callbackDeadline, () => readSubmissionRecord(args.jsm, a.space, key));
+    const found = await beforeDeadline(deadline, () => readSubmissionRecord(args.jsm, a.space, key));
     if (!found) throw error;
     const prior = runSubmissionSnapshot(found.value);
     if (prior.fingerprint !== binding.fingerprint) throw new EpEnvelopeError("conflict", "submission id is already bound to another semantic fingerprint");
     // Even exact bytes after a lost binding-create reply do not prove THIS callback won.
-    return { winner: false, view: await beforeDeadline(args.callbackDeadline, read) };
+    return { winner: false, view: await beforeDeadline(deadline, read) };
   }
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (args.assertCurrent) await beforeDeadline(args.callbackDeadline, args.assertCurrent);
+    if (args.assertCurrent) await beforeDeadline(deadline, args.assertCurrent);
     try {
-      await beforeDeadline(args.callbackDeadline, () => args.kv.put(admissionKey(a.endpoint, a.runId), bytes, { previousSeq: 0 }));
-      return { winner, view: await beforeDeadline(args.callbackDeadline, read), admission: a };
+      await beforeDeadline(deadline, () => args.kv.put(admissionKey(a.endpoint, a.runId), bytes, { previousSeq: 0 }));
+      return { winner, view: await beforeDeadline(deadline, read), admission: a };
     } catch (error) {
-      const found = await beforeDeadline(args.callbackDeadline, () => readSubmissionRecord(args.jsm, a.space, admissionKey(a.endpoint, a.runId)));
+      const found = await beforeDeadline(deadline, () => readSubmissionRecord(args.jsm, a.space, admissionKey(a.endpoint, a.runId)));
       if (found) {
         if (canonicalJson(admissionSnapshot(found.value)) !== canonicalJson(a)) return refuse("keyed admission conflicts with the original frozen bytes");
-        return { winner, view: await beforeDeadline(args.callbackDeadline, read), admission: a };
+        return { winner, view: await beforeDeadline(deadline, read), admission: a };
       }
-      if (!transient(error) || attempt === 2 || Date.now() >= args.callbackDeadline) throw error;
+      if (!transient(error) || attempt === 2 || remainingMs(deadline) <= 0) throw error;
     }
   }
   return refuse("keyed admission remains reconcile-held");

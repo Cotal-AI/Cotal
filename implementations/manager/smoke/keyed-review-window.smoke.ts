@@ -105,6 +105,15 @@ try {
   check("keyed deadline over the request budget refuses before any binding", refusedUnbound(overBudget));
   check("keyed deadline over the timer range refuses before any binding", refusedUnbound(overTimer));
   check("far-expiry caller over the timer range refuses as bad-request, not an unknown outcome", refusedUnbound(farExpiry));
+  // Clock controls at the entry: a 1ms budget is spent on this manager's monotonic clock before the
+  // bind, and a budget within range still binds and starts.
+  const spent = await rawKeyed(nc, service, caller, 1);
+  const inBudget = await rawKeyed(nc, service, caller, 30_000);
+  console.log(JSON.stringify({ cell: "K4d-entry-monotonic-budget", spent, inBudget,
+    scope: "actual static native manager, actual issued pinned caller, raw envelope on the inst rail" }));
+  check("a request budget spent before the bind refuses as deadline-exceeded and binds nothing",
+    spent.ok === false && spent.code === "deadline-exceeded" && spent.state === "unbound");
+  check("a request within the budget binds and starts", inBudget.ok === true && inBudget.state === "activated");
   const { jetstreamManager } = await import("@nats-io/jetstream");
   const { Kvm } = await import("@nats-io/kv");
   const probeId = core.newIdentity(), runId = core.newSubmissionRunId();
@@ -123,7 +132,7 @@ try {
     const timerSubmission = core.mintLifecycleUid();
     try { await core.bindAndAdmitRunSubmission({ kv, jsm, admission, submissionId: timerSubmission,
       fingerprint: core.contractDigest({ timer: true }), processEpoch: service.responder.epoch,
-      callbackDeadline: Date.now() + 2_147_483_648 + 10_000,
+      deadline: { requestEndsAt: performance.now() + 2_147_483_648 + 10_000 },
       assertCurrent: () => { asserted = true; return new Promise(resolve => setTimeout(resolve, 25)); } }); }
     catch (error) { timerError = { message: String(error), code: (error as any).code }; }
     finally { process.off("warning", onWarning); }

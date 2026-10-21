@@ -26,7 +26,7 @@ if (process.argv[2] === "owned-crash-child") {
     return revision;
   };
   await bindAndAdmitRunSubmission({ kv, jsm, admission: p.admission, submissionId: p.id,
-    fingerprint: p.fingerprint, processEpoch: 4, callbackDeadline: p.deadline,
+    fingerprint: p.fingerprint, processEpoch: 4, deadline: { requestEndsAt: performance.now() + p.budgetMs },
     assertCurrent: async () => {
       checks++;
       if ((p.mode === "before-binding" && checks === 1) || (p.mode === "after-binding" && checks === 2)) process.exit(73);
@@ -52,12 +52,12 @@ try {
     ceiling: { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } } });
   const read = (id: string, who: EpCaller = caller, inst = instanceId) => readRunSubmission({ jsm, space, endpoint,
     caller: who, submissionId: id, instanceId: inst, processEpoch });
-  const run = (id: string, admission = make(), deadline = Date.now() + 3000) => bindAndAdmitRunSubmission({ kv, jsm,
-    admission, submissionId: id, fingerprint, processEpoch, callbackDeadline: deadline });
+  const run = (id: string, admission = make(), budgetMs = 3000) => bindAndAdmitRunSubmission({ kv, jsm,
+    admission, submissionId: id, fingerprint, processEpoch, deadline: { requestEndsAt: performance.now() + budgetMs } });
   for (const mode of ["before-binding", "after-binding", "after-admission"] as const) {
     const id = mintLifecycleUid(), admission = make();
     const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "owned-crash-child"], {
-      env: { ...process.env, AGENT41_OWNED_CRASH_PAYLOAD: JSON.stringify({ mode, id, admission, fingerprint, servers, deadline: Date.now() + 10_000 }) },
+      env: { ...process.env, AGENT41_OWNED_CRASH_PAYLOAD: JSON.stringify({ mode, id, admission, fingerprint, servers, budgetMs: 10_000 }) },
       stdio: ["ignore", "inherit", "inherit"],
     });
     const pid = child.pid;
@@ -103,20 +103,23 @@ try {
   await assert.rejects(read(divergentId), /diverges/);
   await assert.rejects(run(divergentId), /diverges/);
   console.log("PASS immutable divergent admission never overwrites, read and duplicate fail closed");
-  const delayedId = mintLifecycleUid(), delayed = make(), deadline = Date.now() + 50;
-  let releaseLate!: () => void, landed!: () => void;
+  const delayedId = mintLifecycleUid(), delayed = make(), budgetMs = 50, wallAtCall = Date.now();
+  let releaseLate!: () => void, landed!: () => void, recorded: number | undefined;
   const held = new Promise<void>(resolve => { releaseLate = resolve; }), done = new Promise<void>(resolve => { landed = resolve; });
   kv.put = async (...args) => {
     if (args[0] === admissionKey(endpoint, delayed.runId)) { await held; const r = await put.apply(kv, args); landed(); return r; }
     return put.apply(kv, args);
   };
   try {
-    await assert.rejects(run(delayedId, delayed, deadline), /deadline|unknown/);
-    const before = await read(delayedId); assert.equal(before.state, "binding-only"); assert.equal(before.callbackDeadline, deadline);
+    await assert.rejects(run(delayedId, delayed, budgetMs), /deadline|unknown/);
+    const before = await read(delayedId); assert.equal(before.state, "binding-only");
+    // The recorded projection is a rounded-down wall reading of the same 50ms window, never later.
+    recorded = before.callbackDeadline;
+    assert.ok(Number.isSafeInteger(recorded) && recorded! <= Date.now() && Math.abs(recorded! - (wallAtCall + budgetMs)) <= 5, String(recorded));
     assert.equal((await run(delayedId)).winner, false);
     releaseLate(); await done;
   } finally { releaseLate(); kv.put = put; }
-  const late = await read(delayedId); assert.equal(late.state, "admitted"); assert.equal(late.runId, delayed.runId); assert.equal(late.callbackDeadline, deadline);
+  const late = await read(delayedId); assert.equal(late.state, "admitted"); assert.equal(late.runId, delayed.runId); assert.equal(late.callbackDeadline, recorded);
   assert.deepEqual((await kv.get(admissionKey(endpoint, delayed.runId)))!.value, enc.encode(canonicalJson(delayed)));
   console.log("PASS original timed-out publish can land later at same run/frozen bytes, earlier absence never proves non-admission or authorizes replacement");
   await assert.rejects(read(delayedId, caller, mintLifecycleUid()));
