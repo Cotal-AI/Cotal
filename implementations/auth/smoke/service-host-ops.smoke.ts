@@ -875,6 +875,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
       const r2 = L(await e.handle(rq)), t = await f.value(f.auth, `svcprop.${p.proposalId}`);
       c.check("J3 the replay fences once; V4 closes the proposal refused{revoked} and releases", r2.state === "pending" && r2.phase === "assignment-fenced"
         && t?.state === "refused" && t?.reason === "revoked" && !(await capHas(f, p.proposalId)), { r2, t });
+      c.check("J3 the fenced assignment is its own deny-new evidence: landed", r2.denyNew === "landed", r2);
       c.check("J3 (S-19) the abandoned approver's replay ends refused{revoked}", L(await e.handle(p.x)).reason === "revoked");
     });
     for (const [label, which] of [["J4", "fence"], ["J5", "binding"]] as const) await cell(f, label, async () => {
@@ -944,6 +945,37 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
       c.check("J10 (V-DL, S-11) a new revoke request adopts the bound cancel and lands deny-new", r2.state === "pending" && r2.denyNew === "landed"
         && (await cancelAt(p.instanceId))?.operationId === opIdOf(f, rq), r2);
     });
+    // Simulation: the endpoint gate is rewritten to the same row bound to another immutable assignment (a foreign gate), still
+    // approved or revoked. Both revoke paths read it as no evidence about this assignment's deny-new.
+    const foreignGate = async (i: string, revoked: boolean) => {
+      const key = epgateKey(f.endpoint, i), cur = (await f.auth.get(key))!, row = JSON.parse(new TextDecoder().decode(cur.value));
+      let next = { ...row, serviceAuthority: { ...row.serviceAuthority, assignmentDigest: D(`foreign-${i}`) } };
+      if (revoked) next = next.state === "open" ? { ...next, state: "frozen", op: { opId: serviceHostOperationId(f.space, rid()), kind: "retirement" },
+        serviceAuthority: { ...next.serviceAuthority, state: "revoked" } } : { ...next, serviceAuthority: { ...next.serviceAuthority, state: "revoked" } };
+      const bytes = bytesOf(next);
+      await f.auth.update(key, bytes, cur.revision);
+      return async () => { const g = await f.auth.get(key); return !!g && Buffer.from(g.value).equals(Buffer.from(bytes)); };
+    };
+    for (const revoked of [false, true]) {
+      const tag = revoked ? "a revoked foreign gate" : "an approved foreign gate";
+      await cell(f, "J11", async () => {
+        const p = await approved(), rq = revoke(f.endpoint, p.instanceId, p.digest, "owner-request", ownerOf(f));
+        await stopAfter(f, dir, W.cancel(f, p.instanceId), (z) => z.handle(rq));
+        await pastDeadline(f, rq.requestId);
+        const unchanged = await foreignGate(p.instanceId, revoked), { r, writes } = await writing(f, () => e.handle(rq)), r1 = L(r);
+        parsesClosed(`J11 spent over ${tag}`, r);
+        c.check(`J11 (I-3, sim gate and deadline) a spent revoke over ${tag} reports deny-new unknown, with zero writes and the gate unchanged`, r1.state === "held"
+          && r1.reason === "expired" && r1.phase === "spent" && r1.denyNew === "unknown" && writes.length === 0 && (await unchanged()), { r1, writes: writes.map((w) => w.key) });
+      });
+      await cell(f, "J12", async () => {
+        const p = await approved(), rq = revoke(f.endpoint, p.instanceId, p.digest, "owner-request", ownerOf(f));
+        await stopAfter(f, dir, W.cancel(f, p.instanceId), (z) => z.handle(rq));
+        const unchanged = await foreignGate(p.instanceId, revoked), { r, writes } = await writing(f, () => e.handle(rq)), r1 = L(r);
+        parsesClosed(`J12 native cancel over ${tag}`, r);
+        c.check(`J12 (I-3, sim gate) native cancel over ${tag} holds foreign-assignment with deny-new unknown, zero writes and the gate unchanged`, r1.state === "held"
+          && r1.reason === "foreign-assignment" && r1.phase === "L1-endpoint" && r1.denyNew === "unknown" && writes.length === 0 && (await unchanged()), { r1, writes: writes.map((w) => w.key) });
+      });
+    }
   } finally { await f.close(); }
 }
 

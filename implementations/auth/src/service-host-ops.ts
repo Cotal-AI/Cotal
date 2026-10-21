@@ -798,6 +798,9 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     return prop.row.kind === "service-proposal-terminal" ? releaseFor(ctx, prop.row) : [];
   }
 
+  /** Deny-new from one read of this assignment's endpoint gate, on every revoke path. Another
+   *  assignment's row at the key is no evidence about this one's deny-new: `unknown`, as a failed read. */
+  const denyNewOf = (gate: EndpointClass): ServiceDenyNew => (gate.kind === "revoked" ? "landed" : gate.kind === "foreign" ? "unknown" : "not-landed");
   type CancelRun = { s1: ServiceCancelResult | { kind: "seal-refused"; detail: string }; denyNew: ServiceDenyNew; gate?: EndpointClass };
   /** V3: native cancellation of a bound assignment with the material recorded in `svcasg`, then
    *  the endpoint gate read that decides whether deny-new landed. S1 is awaited, never raced. */
@@ -814,7 +817,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     ctx.step = "V3-gate";
     try {
       const gate = await endpoint(ctx, serviceAssignmentGate(inv.host, asg.reservation));
-      return { s1, gate, denyNew: gate.kind === "revoked" ? "landed" : gate.kind === "foreign" ? "unknown" : "not-landed" };
+      return { s1, gate, denyNew: denyNewOf(gate) };
     } catch (e) {
       if (e instanceof Held || e instanceof EpEnvelopeError) return { s1, denyNew: "unknown" };
       throw e;
@@ -1249,7 +1252,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
         if (Date.now() >= op.notAfterMs) {
           // Spent: no further native step under this request; a new revoke adopts the binding.
           let denyNew: ServiceDenyNew = "unknown";
-          try { denyNew = (await endpoint(ctx, serviceAssignmentGate(inv.host, row.reservation))).kind === "revoked" ? "landed" : "not-landed"; }
+          try { denyNew = denyNewOf(await endpoint(ctx, serviceAssignmentGate(inv.host, row.reservation))); }
           catch (err) { if (!(err instanceof Held) && !(err instanceof EpEnvelopeError)) throw err; }
           return { state: "held", operationId, reason: "expired", phase: "spent", assignmentDigest: a, denyNew, ...owing() };
         }

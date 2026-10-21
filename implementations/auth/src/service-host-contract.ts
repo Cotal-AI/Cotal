@@ -107,7 +107,8 @@ export const SERVICE_OPERATION_REFUSALS = Object.freeze([
   "resource-exhausted", "selector-pending", "selector-bound", "name-owned", "restore", "owner", "operator",
 ] as const);
 export type ServiceOperationRefusal = (typeof SERVICE_OPERATION_REFUSALS)[number];
-/** Whether the endpoint gate shows committed deny-new, from a leader read; unknown only when that read failed. */
+/** Whether this assignment's endpoint gate shows committed deny-new, from a leader read; unknown when that read
+ *  failed or found another assignment's gate row at the key. An already fenced assignment reports landed. */
 export type ServiceDenyNew = "landed" | "not-landed" | "unknown";
 /** A bookkeeping write whose outcome was not observed. Replays retry it; only a read clears it. */
 export type ServiceHostDebt = { kind: "capacity-release" | "proposal-close"; proposalId: string };
