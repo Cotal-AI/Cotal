@@ -38,6 +38,7 @@ import {
   type StaleSystemCred, type MaterialMigrationReceipt,
   workspaceSecretStore,
   writeRenewalRecord,
+  recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { displayCmd } from "../lib/self-exec.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
@@ -145,6 +146,7 @@ async function repairDoctorCredentials(root: string, auth: NonNullable<Awaited<R
   let target: ReturnType<typeof resolveMeshTarget> | undefined;
   try {
     target = resolveMeshTarget(root, { space: auth.space, readOnly: true });
+    recordOperationSpace(target.space);
     if (target.mode !== "auth" || canonicalRoot(target.root) !== canonicalRoot(root) || target.auth?.account.pub !== auth.account.pub) throw new CommandFailure("refused", "CONFLICT", "the resolved repair target differs from this local static authority; no broader root or auth mode was substituted");
     const preflight = await preflightTarget(target);
     if (!preflight.ok) {

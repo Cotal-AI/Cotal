@@ -2,7 +2,7 @@ import * as prompts from "@clack/prompts";
 import { chatStream, dmStream, dialerFor, standaloneConnectOpts } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { PermissionViolationError } from "@nats-io/transport-node";
-import { CommandFailure, brokerAddressForDisplay, connectOrThrow, isConnectRefusal, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, isConnectRefusal, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 
 interface Values { space?: string; server?: string; creds?: string; dms?: boolean; yes?: boolean; json?: boolean; plain?: boolean; "dry-run"?: boolean }
@@ -22,6 +22,7 @@ export async function historyClear(values: Values): Promise<void> {
   if (!values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", "history clear requires --yes outside an interactive terminal", { remedy: "preview the space-wide scope with cotal history clear --dry-run before confirming it" });
   const conn = await connectOrThrow(values, "purger");
   const target = { space: conn.space, broker: brokerLabel(conn.server), includeDms: values.dms === true };
+  recordOperationSpace(conn.space);
   if (!values.yes) {
     const answer = await prompts.confirm({ message: `Permanently clear all retained channel history${values.dms ? " and DM history" : " (DMs kept)"} in ${oneLine(conn.space)} at ${oneLine(target.broker)}? Agents and identity are not reset.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) {

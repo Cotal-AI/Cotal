@@ -1,6 +1,6 @@
 import { basename, join, resolve } from "node:path";
 import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { assertSingleSpaceBroker, authDir, CommandFailure, brokerAddressForDisplay, canonicalRoot, connectOrThrow, findMesh, findPreparedSpace, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, brokerAddressForDisplay, canonicalRoot, connectOrThrow, findMesh, findPreparedSpace, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manifest/ledger.js";
@@ -111,6 +111,7 @@ export async function team(args: ParsedArgs): Promise<void> {
   if (mode === "deploy") return previewDeploy(subject!, values);
   if (mode === "remove") return previewRemove(subject!, values);
   const catalog = personaCatalog(values);
+  recordOperationSpace(catalog.space);
   if (mode === "show") {
     let summary: FreshTeamSummary | undefined;
     let additiveAttempt: ReturnType<typeof findAdditiveTeamAttempt>;
@@ -363,6 +364,7 @@ async function previewRemove(deploymentId: string, values: TeamValues): Promise<
     return removeAgentTeam(deploymentId, values);
   }
   const catalog = personaCatalog(values);
+  recordOperationSpace(catalog.space);
   let summary: FreshTeamSummary | undefined;
   try { summary = findFreshTeamSummary(catalog.root, deploymentId); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this ID is unreadable; it cannot be treated as absent or as an additive removal target", { target: { space: catalog.space, deploymentId } }); }

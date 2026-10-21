@@ -2,7 +2,7 @@ import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { agentFilePath, token, type AgentDef, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, presentationOf, resolveAgentType, resolveMeshTarget, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, presentationOf, resolveAgentType, resolveMeshTarget, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
 import { callerHarness, spawnPersona } from "../lib/spawn-defaults.js";
 import type { spawnFlags } from "./spawn.js";
 
@@ -24,6 +24,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     else if (error.code === "unknown-space" && values["enrollment-file"] && values.file && values.space && token(values.space) === values.space) { root = process.cwd(); space = values.space; }
     else throw new CommandFailure("refused", targetErrorCode(error.code), "the preview target could not be resolved without changing the catalog; no different space was selected");
   }
+  recordOperationSpace(space);
   const { ref, from } = spawnPersona(values.config, args.positionals, { space, preferences: cachedPreferences() });
   const requested = { persona: ref, source: values.file ? "file" : from ?? "explicit-or-product-default", harness: values.agent ?? null, name: values.name ?? null, model: values.model ?? null, cwd: values.cwd ?? null, instanceId: values.on ?? null, restarts: values.restarts === undefined ? null : Number(values.restarts), restartWindowMs: values["restart-window"] === undefined ? null : Number(values["restart-window"]) };
   const target = { space, broker, authMode: targetMode };

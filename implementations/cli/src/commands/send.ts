@@ -15,7 +15,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, loadMeshes, resolveMeshTarget, targetFlags, type OutputWarning } from "@cotal-ai/workspace";
+import { CommandFailure, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, loadMeshes, resolveMeshTarget, targetFlags, type OutputWarning } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { openTransient } from "../lib/transient.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
@@ -137,6 +137,7 @@ export async function send(args: ParsedArgs): Promise<void> {
     warnings.push({ code: level === "error" ? "SENDER_CONNECTION_WARNING" : "SENDER_WARNING", target: { destination: input.target }, message: "The transient sender reported a connection or delivery warning; its receipt confirms only the stated storage outcome." });
   } });
   const { ep, space, connection } = opened;
+  recordOperationSpace(space);
   const target = { space, mode: input.mode, destination: input.target };
   let receipt: {
     kind: "send"; messageId: string; sequence: number | null; destination: string;

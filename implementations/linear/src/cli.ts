@@ -2,7 +2,7 @@
 import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { acquireLock, credsClaims, writeSecretFileCreateOnly, type ParsedArgs, type SpaceAuth } from "@cotal-ai/core";
-import { CommandFailure, assertExternalCredentialExport, getSpaceAuth, hasUserAuthState, inputDisabledByFlag, isCommandFailure, presentationOf, protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource, resolveMeshTarget, resolveNativeServiceTarget, workspaceSecretStore, writeResult, type MeshTarget, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, recordOperationSpace, assertExternalCredentialExport, getSpaceAuth, hasUserAuthState, inputDisabledByFlag, isCommandFailure, presentationOf, protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource, resolveMeshTarget, resolveNativeServiceTarget, workspaceSecretStore, writeResult, type MeshTarget, type Report } from "@cotal-ai/workspace";
 import { assertAccountName, loadAccount, saveAccount, storedTokenPath } from "./account.js";
 import { loginAccount } from "./oauth.js";
 import { isLinearMode } from "./origin.js";
@@ -142,6 +142,7 @@ async function forward(args: ParsedArgs, account: string, operation: string, run
  *  client for, so it is refused rather than signed locally. */
 async function staticAuthority(v: Record<string, unknown>, root?: string): Promise<{ target: MeshTarget; auth: SpaceAuth }> {
   const target = resolveMeshTarget(root ?? process.cwd(), { space: v.space as string | undefined, server: v.server as string | undefined, readOnly: true });
+  recordOperationSpace(target.space);
   if (root) resolveNativeServiceTarget(root, target.space, v.server as string | undefined);
   if (target.mode === "user" || hasUserAuthState(target.root, target.space, { readOnly: true })) throw new CommandFailure("refused", "UNSUPPORTED", "Linear's native local issuer does not support per-user-auth spaces; no remote or broader caller was substituted", { target: { space: target.space } });
   if (target.mode !== "auth") throw new CommandFailure("refused", "UNSUPPORTED", "an open space has no static credential system for this native Linear action", { target: { space: target.space } });

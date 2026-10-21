@@ -293,7 +293,7 @@ async function ensureMesh() {
 async function clearHistory(why = "fresh boot") {
   log(`${why} — clearing chat history on space "${SPACE}"`);
   await new Promise((resolve) => {
-    const p = spawn("pnpm", ["cotal", "history", "clear", "--force", "--dms", "--space", SPACE], {
+    const p = spawn("pnpm", ["cotal", "history", "clear", "--yes", "--dms", "--space", SPACE], {
       cwd: AUTH_ROOT,
       stdio: "ignore",
       env: cleanEnv(),

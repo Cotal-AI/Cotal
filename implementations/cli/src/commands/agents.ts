@@ -24,6 +24,7 @@ import {
   type Section,
   type Styled,
   type Tone,
+  recordOperationSpace,
 } from "@cotal-ai/workspace";
 import * as prompts from "@clack/prompts";
 import { canPrompt } from "./meshes-wizard.js";
@@ -133,6 +134,7 @@ export async function stop(args: ParsedArgs): Promise<void> {
     on = await pinForTarget({ ...v, name } as never, "cotal stop");
     t = await resolveControlTarget(v, "control-caller-admin", on);
   }
+  recordOperationSpace(t.space);
   const reply = await askManager(t.space, t.server, v.self ? "stopSelf" : "stop", { ...(name ? { name } : {}), graceful: v.force !== true }, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId: on });
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, selection: v.self ? "verified-self" : "named", ...(name ? { agent: name } : {}) };
   if (!reply.ok) throw managerFailure(reply, "agent stop", target);
@@ -702,6 +704,7 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
   // this resolve, and a credential cannot gain an instance rail after it is minted.
   const t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
+  recordOperationSpace(t.space);
 
   // One manager instance: `--on <instance>` pins ps to its `inst` route on a multi-manager mesh,
   // and in USER MODE (bearer present) the borrowed manager view pins one authorized instance and
@@ -965,6 +968,7 @@ async function establishAttachSession(
   const seat = v.asSeat ? await resolveSeatControlTarget(v, on) : undefined;
   if (v.asSeat && !seat) throw new SeatAttachCallerUnavailable();
   const t = seat ?? await resolveControlTarget(v, "control-caller-admin", on, first ? {} : { onRefusal: "throw" });
+  recordOperationSpace(t.space);
   const reach = t.auth.bearer ? "owner" : "any";
   if (first) console.error(renderReport({ space: t.space, sections: [{ title: "Attach", blocks: [{ kind: "fields", rows: [["Agent", v.name], ["Manager", on ?? t.auth.managerInstanceId ?? "native selection"]] }] }] }, "rich", terminalWidth(process.stderr)));
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on, expectedTarget: v.expectedTarget });
@@ -1549,7 +1553,7 @@ async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ nam
     if (!on) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the agent's manager instance was not established", { target: census.target });
     return { name: row.name, on, expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid }, status: typeof row.status === "string" ? row.status : "not reported" };
   });
-  if (census.partial) console.error(renderReport({ sections: [{ title: "Agent list is partial", blocks: [{ kind: "lines", lines: [{ text: census.partial.message, tone: "waiting" }] }] }] }, "rich", terminalWidth(process.stderr)));
+  if (census.partial) console.error(renderReport({ space: census.target.space, sections: [{ title: "Agent list is partial", blocks: [{ kind: "lines", lines: [{ text: census.partial.message, tone: "waiting" }] }] }] }, "rich", terminalWidth(process.stderr)));
   if (!choices.length) throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy: "run cotal ps, or launch an agent with cotal spawn" });
   const choice = await prompts.select({
     message: `Return to an agent in ${oneLine(census.target.space)}`,
@@ -1610,6 +1614,7 @@ export async function input(args: ParsedArgs): Promise<void> {
   const v = { ...args.values, ...parsed } as FlagValues<typeof inputFlags> & { name: string; text: string };
   const on = await pinForTarget(v as never, "cotal input");
   const t = await resolveControlTarget(v, "control-caller-admin", on);
+  recordOperationSpace(t.space);
   const reach = t.auth.bearer ? "owner" : "any";
   const reply = await askManager(t.space, t.server, "input", { name: v.name, text: v.text, enter: v["no-enter"] !== true }, t.auth, reach, undefined, { instanceId: on });
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, agent: v.name };

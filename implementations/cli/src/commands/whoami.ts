@@ -1,5 +1,5 @@
 import { resolveAuthProvider, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
-import { brokerAddressForDisplay, CLI_USER_ACTOR, CommandFailure, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 
 export const whoamiFlags = [spaceFlag, serverFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
@@ -47,6 +47,7 @@ export async function whoami(args: ParsedArgs): Promise<void> {
     throw error;
   }
   const target = { space: t.space };
+  recordOperationSpace(t.space);
   const warnings: OutputWarning[] = [];
   const server = brokerAddressForDisplay(t.server);
   if (server === undefined) throw new CommandFailure("refused", v.server === undefined ? "SCHEMA_INVALID" : "USAGE_INVALID", "the server address cannot be parsed safely; the raw value was not printed", { target });

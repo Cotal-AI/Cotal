@@ -64,7 +64,7 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
     return;
   }
   if (!yes) {
-    console.error(renderReport(impactView(), presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr)));
+    console.error(renderReport({ ...impactView(), space }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr)));
     const answer = await prompts.confirm({ message: `Remove the reviewed stopped store and local identity for ${oneLine(space)}?`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) {
       writeResult(presentation, { command: "reset", target, result: { kind: "reset-space", confirmed: false, removedPaths: [], registrationRemoved: false }, noOp: true }, (): Report => ({ sections: [{ title: "Space kept", blocks: [{ kind: "lines", lines: ["No reset was submitted. Local store, identity and registration were kept."] }] }] }));

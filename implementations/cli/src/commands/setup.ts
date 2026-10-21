@@ -649,7 +649,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
           startup.joinedAt = new Date().toISOString();
           startup.state = "joined";
           warnings.push(...notices);
-          if (opts.interactive && !opts.detach) console.error(renderReport({ sections: [{ title: "Agent joined", blocks: [{ kind: "fields", rows: [["Agent", agent.name], ["Identity", agent.id], ["Manager", agent.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Opening the allocated incarnation's terminal. Leaving the view sends no stop request.", tone: "hint" }] }] }] }, "rich"));
+          if (opts.interactive && !opts.detach) console.error(renderReport({ space: inputs.space, sections: [{ title: "Agent joined", blocks: [{ kind: "fields", rows: [["Agent", agent.name], ["Identity", agent.id], ["Manager", agent.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Opening the allocated incarnation's terminal. Leaving the view sends no stop request.", tone: "hint" }] }] }] }, "rich"));
         },
       });
       if (!startup.agent) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "setup received no native joined receipt; no readiness was inferred");

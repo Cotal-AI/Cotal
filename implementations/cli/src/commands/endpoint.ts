@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import * as prompts from "@clack/prompts";
 import type { FlagSpec, ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
 import { endpointDeregister, validateEndpointDeregisterArguments } from "./endpoint-deregister.js";
 import { endpointAuthoring, validateEndpointAuthoringArguments } from "./endpoint-authoring.js";
 import { readEndpointInventory } from "../lib/endpoint-inventory.js";
@@ -69,6 +69,7 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
   if (modeRequested === "invoke") return invokeCmd({ ...args, positionals: args.positionals.slice(1) }, "endpoint");
   const presentation = presentationOf(args.values);
   const space = selectedSpace(args.values as { space?: string });
+  recordOperationSpace(space);
   const [mode = "list", suppliedName] = args.positionals;
   if (mode === "list") {
     const items = listEndpointReferences(space).map(projection);

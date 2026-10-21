@@ -12,6 +12,7 @@ import {
   protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource,
   validateCredentialMintArguments,
   writeResult, type MeshTarget, type Report,
+  recordOperationSpace,
 } from "@cotal-ai/workspace";
 
 import { staticMintAuthority } from "../lib/credential-authority.js";
@@ -41,6 +42,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
     const { target: resolvedTarget, currentRoot, store, auth } = await staticMintAuthority(values, target);
     const { root, space } = resolvedTarget;
     target = { ...target, space };
+    recordOperationSpace(space);
     if (values.identity !== undefined) {
       const path = resolve(values.identity);
       protectedCredentialReference(path);

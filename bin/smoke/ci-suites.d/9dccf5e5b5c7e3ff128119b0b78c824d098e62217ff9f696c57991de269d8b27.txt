@@ -1,0 +1,2 @@
+# service stop prints Mesh: <space> before the broker stop scope it shows for review.
+smoke:service-stop-mesh:live

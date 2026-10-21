@@ -259,8 +259,9 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
   if (mode === "restart") assertRestartAdmitted(definition);
   const nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined;
   const kernelPlan = mode === "stop" || mode === "restart" ? await prepareKernelServiceStop(definition, selected!) : undefined;
-  if (nativePlan && presentation !== "json") console.log(renderReport(nativeImpactView(nativePlan), presentation, terminalWidth(process.stdout)));
-  if (kernelPlan && presentation !== "json") console.log(renderReport(kernelImpactView(kernelPlan), presentation, terminalWidth(process.stdout)));
+  // The impact is the first report the operation prints, so it carries the space's Mesh line.
+  const impact = [...(nativePlan ? nativeImpactView(nativePlan).sections : []), ...(kernelPlan ? kernelImpactView(kernelPlan).sections : [])];
+  if (impact.length && presentation !== "json") console.log(renderReport({ space, sections: impact }, presentation, terminalWidth(process.stdout)));
   if (confirmStop && !values.yes) {
     const answer = await untilInputEnds((signal) => prompts.confirm({ message: `${mode === "stop" ? "Stop" : "Restart"} ${oneLine(name)} instance ${selected!.name} on ${oneLine(selected!.record.value.host.name)}? ${nativePlan ? "Apply the displayed native seat policy only if its full scope is unchanged." : kernelPlan ? "Signal only the displayed broker process, only if its scope is unchanged." : "Only its pinned direct process is controlled."}`, initialValue: false, signal }));
     if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -271,7 +272,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
     writeResult(presentation, { command: commandName, target, result: { kind: "service-stop", ...result, originalIncarnationGone: true, impact: nativePlan ?? kernelPlan ?? null, cleanup: result.nativeStop?.cleanup ?? result.kernelStop?.cleanup ?? "not-checked" }, noOp: stopped.noOp }, (row) => instanceView(row, stopped.noOp ? "Service was not running; nothing was stopped" : row.kernelStop ? "Original broker process exited" : "Service stopped"));
     return;
   }
-  if (values.foreground) console.log(renderReport({ sections: [{ title: "Foreground service lifetime", blocks: [
+  if (values.foreground) console.log(renderReport({ space, sections: [{ title: "Foreground service lifetime", blocks: [
     { kind: "fields", rows: [["Definition", name], ["Space", space], ["Instance", selected?.name ?? "assigned once at launch"], ["Execution", "owned terminal-bound process; not a detachable view"], ["Output", "this terminal; not captured in the background log"]] },
     { kind: "lines", lines: ["Ctrl-C or terminal loss may end this process and its native in-process work. Controlled shutdown uses the selected process identity and declared stop policy. An external kill or interrupted startup is not a confirmed stop or proof of descendant, registration or authority cleanup."] },
   ] }] }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stdout)));

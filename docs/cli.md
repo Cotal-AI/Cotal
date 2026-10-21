@@ -143,11 +143,14 @@ Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table t
 terminal is written as one labeled record per row, so no value is cut off.
 
 Shared human reports for a resolved space begin with `Mesh: <space>`, including
-empty `ps` results, manager inventories and classified failures. The label comes
-from the operation's target, not a new read of the current selection. Global
-reports do not invent a selected mesh. JSON retains `target.space` without a
-text header. Plain watch feeds and followed history prefix each new row with
-the mesh name so the context remains visible as output scrolls.
+empty `ps` results, manager inventories, the impact a command shows before it
+stops something, and classified failures. A failure raised after the command
+resolved its space carries that space in `target.space`, even when the failing
+step named no space. The label comes from the operation's target, not a new read
+of the current selection. Global reports do not invent a selected mesh. JSON
+retains `target.space` without a text header. Plain watch feeds and followed
+history prefix each new row with the mesh name so the context remains visible as
+output scrolls.
 
 On a terminal, a long value, line, warning or failure wraps at spaces, and each continuation line
 starts under the text it continues. A word wider than the line, such as a path, keeps a line of its

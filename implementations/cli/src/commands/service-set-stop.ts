@@ -1,6 +1,6 @@
 import * as prompts from "@clack/prompts";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, oneLine, presentationOf, renderReport, terminalWidth, writeResult, type Report, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
+import { CommandFailure, recordOperationSpace, isCommandFailure, oneLine, presentationOf, renderReport, terminalWidth, writeResult, type Report, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
@@ -70,6 +70,7 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
   const allowed = new Set(["space", "yes", "dry-run", "json", "plain"]);
   if (Object.keys(args.values).some((key) => !allowed.has(key))) throw new CommandFailure("refused", "USAGE_INVALID", "a service set accepts no per-member instance selector or unreviewed stop policy");
   const { space } = personaCatalog(args.values as { space?: string });
+  recordOperationSpace(space);
   const store = serviceDefinitionStore(space), members: Member[] = [];
   for (const name of args.positionals) {
     const definition = store.read(name);
@@ -97,7 +98,7 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
     rows[index]!.impact = member.impact ?? null;
   }
   distinctNativeTargets(members);
-  if (presentation !== "json") console.log(renderReport({ sections: [...setView(rows, "Named service stop review").sections, ...members.flatMap((member) => member.impact ? nativeImpactView(member.impact).sections : [])] }, presentation, terminalWidth(process.stdout)));
+  if (presentation !== "json") console.log(renderReport({ space, sections: [...setView(rows, "Named service stop review").sections, ...members.flatMap((member) => member.impact ? nativeImpactView(member.impact).sections : [])] }, presentation, terminalWidth(process.stdout)));
   if (!args.values.yes) {
     const answer = await untilInputEnds((signal) => prompts.confirm({ message: "Stop all displayed owned service incarnations with only the displayed native impact?", initialValue: false, signal }));
     if (prompts.isCancel(answer) || !answer) {

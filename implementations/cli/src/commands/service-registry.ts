@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import * as prompts from "@clack/prompts";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput } from "@cotal-ai/workspace";
+import { CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
@@ -69,6 +69,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const presentation = presentationOf(args.values);
   const catalog = personaCatalog(args.values as { space?: string });
   const { space, root } = catalog;
+  recordOperationSpace(space);
   const store = serviceDefinitionStore(space);
   const [mode = "list", suppliedName] = args.positionals;
   const target = { space, executionHost: "this-machine" };

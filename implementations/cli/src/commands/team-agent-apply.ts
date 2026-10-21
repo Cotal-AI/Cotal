@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { DEV_OWNER, assertLifecycleToken, mintCreds, newIdentity, validateChannelConfig, type MeshLaunchSpec } from "@cotal-ai/core";
-import { acquireMaintenanceLock, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
 import { askManager, managerFailure, resolveControlTarget } from "../lib/control.js";
 import { buildLaunchSpec, cardOf, genRunId } from "../lib/manifest/apply.js";
 import { hashManifestSource, listLedgerFiles } from "../lib/manifest/ledger.js";
@@ -25,6 +25,7 @@ export async function applyAgentTeam(file: string, values: TeamValues): Promise<
   try { prepared = loadManifest(path); source = readFileSync(path, "utf8"); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest and referenced personas could not be resolved; no agent launch was requested", { target: { root, path } }); }
   const { manifest } = prepared, space = manifest.space, target = { root, space, path };
+  recordOperationSpace(space);
   // A retained deployment of this exact manifest is verified, never re-created; a local read only.
   const retained = retainedTeamMatches(root, space, hashManifestSource(source));
   if (retained) return applyRetainedTeam(file, values, retained[0]!);

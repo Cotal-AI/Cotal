@@ -90,6 +90,7 @@ import {
   type ControlTarget,
   type MeshTarget,
   type SpaceMaterialComposition,
+  recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { liveMeshNames } from "../lib/live-names.js";
@@ -538,6 +539,7 @@ export async function launchManagedPersona(
     if (!seat) throw new CommandFailure("refused", "UNSUPPORTED", "the managed seat cannot act as itself through this CLI; missing/mismatched caller context and user-auth self impersonation do not fall back to the operator");
   }
   const t = seat ?? await resolveControlTarget(flags, "control-caller-privileged", on, { onRefusal: "throw" });
+  recordOperationSpace(t.space);
   let policy: typeof t.policy;
   try {
     policy = await refreshRegistrationPolicy(t);
@@ -660,6 +662,7 @@ async function carryTranscriptOrExit(flags: ConnectFlags, on: string | undefined
   const bytes = readFileSync(found.path);
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const t = await resolveControlTarget(flags, "control-caller-admin", on);
+  recordOperationSpace(t.space);
   const bucket = transferBucket(t.space, on);
   const writer = await transferWriterOrExit(flags, t, on, sha256);
   let sent = 0;

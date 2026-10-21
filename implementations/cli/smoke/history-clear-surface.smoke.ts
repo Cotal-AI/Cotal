@@ -15,7 +15,7 @@
  * Run: pnpm smoke:history-clear-surface
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chatStream } from "@cotal-ai/core";
@@ -88,6 +88,22 @@ const section = docs.slice(docs.indexOf("\n## history\n"), docs.indexOf("\n## co
 const clearLine = section.split("\n").find((line) => line.startsWith("cotal history clear")) ?? "";
 check("docs: the history synopsis names --yes and --dry-run for clear", clearLine.includes("--yes") && clearLine.includes("--dry-run") && !clearLine.includes("--force"), clearLine);
 check("docs: the history flag table has no --force row", !section.includes("| `--force` |"), section.slice(0, 400));
+
+// Scripts, examples and other smokes that still pass the removed spelling would be refused at run time.
+const REMOVED = [/history clear --force/, /"clear",(?:\s*\.\.\.\w+,)?\s*"--force"/];
+const scanned: string[] = [];
+const walk = (dir: string): void => {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === "node_modules" || entry.name === "dist" || entry.name.startsWith(".")) continue;
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) walk(path);
+    else if (/\.(?:ts|mjs|js|sh)$/.test(entry.name) && path !== import.meta.filename) scanned.push(path);
+  }
+};
+for (const dir of ["examples", "scripts", "bin/smoke", ...readdirSync(join(REPO, "implementations")).map((name) => `implementations/${name}/smoke`)])
+  if (existsSync(join(REPO, dir))) walk(join(REPO, dir));
+const stale = scanned.filter((path) => REMOVED.some((pattern) => pattern.test(readFileSync(path, "utf8")))).map((path) => path.slice(REPO.length + 1));
+check("no script, example or smoke passes the removed history clear --force", scanned.length > 0 && stale.length === 0, stale);
 
 finish();
 process.exit(process.exitCode ?? 0);

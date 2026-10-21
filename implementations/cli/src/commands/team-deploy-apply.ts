@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { mintCreds, newIdentity, validateChannelConfig } from "@cotal-ai/core";
-import { acquireMaintenanceLock, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, findPreparedSpace, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, serviceMetadataDigest, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, findPreparedSpace, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, serviceMetadataDigest, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { buildLaunchSpec, cardOf, genRunId } from "../lib/manifest/apply.js";
 import { resolveControlTarget } from "../lib/control.js";
 import { verifyOriginalIncarnations } from "../lib/team-retained.js";
@@ -22,6 +22,7 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
   try { prepared = loadManifest(path); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive manifest could not be resolved; no broker was contacted", { target: { path } }); }
   const manifest = prepared.manifest, space = manifest.space;
+  recordOperationSpace(space);
   if (values.space !== undefined && values.space !== space) throw new CommandFailure("refused", "CONFLICT", "--space differs from this manifest's exact target; no broker was contacted", { target: { space, selected: values.space } });
   if (prepared.agents.length || manifest.runtime !== undefined || values.runtime !== undefined || values["allow-stale"] !== undefined)
     throw new CommandFailure("refused", "UNSUPPORTED", "this channel-only route accepts no agent or runtime phase; no channel card was created in place of that request", { target: { space, requestedAgents: prepared.agents.length } });
@@ -190,6 +191,7 @@ export async function applyRetainedTeam(file: string, values: TeamValues, previo
   try { prepared = loadManifest(path); source = readFileSync(path, "utf8"); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest and referenced personas could not be resolved; no retained deployment was checked", { target: { root, path } }); }
   const { manifest } = prepared, space = manifest.space, target = { root, space, path, deploymentId: previous.deploymentId };
+  recordOperationSpace(space);
   if (values.space !== undefined && values.space !== space) throw new CommandFailure("refused", "CONFLICT", "the selected space differs from this manifest; no target was substituted", { target });
   const runtime = values.runtime ?? manifest.runtime ?? "pty";
   const inventory = listAdditiveTeamAttempts(root);

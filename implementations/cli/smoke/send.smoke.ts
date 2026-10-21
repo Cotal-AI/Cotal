@@ -1,5 +1,5 @@
 /**
- * One-shot send commands (`cotal send dm|msg|ask`) — live end-to-end through the real CLI parser,
+ * One-shot send commands (`cotal send -t|-c|-r`) — live end-to-end through the real CLI parser,
  * transient endpoint, and broker. The suite owns an OS-assigned authenticated JetStream broker.
  * CLI children resolve it through an isolated two-entry registry whose current pointer is the only
  * no-flag disambiguator, so they cannot borrow or collide with an ambient mesh.
@@ -204,9 +204,9 @@ try {
   const dmText = `outside-u-${randomUUID().slice(0, 6)}`;
   const msgText = `outside-m-${randomUUID().slice(0, 6)}`;
   const askText = `outside-a-${randomUUID().slice(0, 6)}`;
-  const dm = await run(["send", "dm", "bob", dmText]);
-  const msg = await run(["send", "msg", "general", msgText]);
-  const ask = await run(["send", "ask", "reviewer", askText]);
+  const dm = await run(["send", "-t", "bob", dmText]);
+  const msg = await run(["send", "-c", "general", msgText]);
+  const ask = await run(["send", "-r", "reviewer", askText]);
   await wait(700);
   const consumersAfter = await watchConsumers();
   const listed = await run(["channels", "list"]);
@@ -230,12 +230,12 @@ try {
     { before: consumersAfter, after: consumersAfterList },
   );
 
-  check("`cotal send dm` outside a seat exits 0", dm.code === 0, dm.stderr);
-  check("`cotal send msg` outside a seat exits 0", msg.code === 0, msg.stderr);
-  check("`cotal send ask` outside a seat exits 0", ask.code === 0, ask.stderr);
+  check("`cotal send -t` outside a seat exits 0", dm.code === 0, dm.stderr);
+  check("`cotal send -c` outside a seat exits 0", msg.code === 0, msg.stderr);
+  check("`cotal send -r` outside a seat exits 0", ask.code === 0, ask.stderr);
   check(
-    "the live `send dm` line reports a stored sequence and the live recipient's status, never delivered",
-    /stored seq \d+/.test(dm.stdout) && dm.stdout.includes("recipient idle at send") && !dm.stdout.includes("delivered"),
+    "the `send -t` receipt to a live recipient reports a stored sequence and unconfirmed delivery, never delivered",
+    /Stored sequence:\s+\d+/.test(dm.stdout) && /Delivery:\s+not confirmed/.test(dm.stdout) && !dm.stdout.includes("delivered"),
     dm.stdout,
   );
   check(
@@ -255,7 +255,7 @@ try {
   );
 
   const spoofText = `spoof-${randomUUID().slice(0, 6)}`;
-  const spoof = await run(["send", "dm", "bob", spoofText], {
+  const spoof = await run(["send", "-t", "bob", spoofText], {
     COTAL_NAME: "forged-seat",
     COTAL_ID: "forged_actor",
     COTAL_OWNER: "forged-owner",
@@ -287,7 +287,7 @@ try {
   const explicitPrincipal = principalKey(DEV_OWNER, explicitIdentity.id).key;
   const explicitText = `explicit-${randomUUID().slice(0, 6)}`;
   const explicit = await run([
-    "send", "dm", "bob", explicitText,
+    "send", "-t", "bob", explicitText,
     "--space", space, "--server", servers, "--creds", explicitCreds,
   ]);
   await wait(400);
@@ -298,9 +298,9 @@ try {
     got,
   );
 
-  const missing = await run(["send", "dm", "nobody-here", "x"]);
-  check("`cotal send dm` to an absent agent exits non-zero", missing.code !== 0, missing.code);
-  check("`cotal send dm` to an absent agent says 'no agent'", /no agent/i.test(missing.stderr), missing.stderr);
+  const missing = await run(["send", "-t", "nobody-here", "x"]);
+  check("`cotal send -t` to an absent agent is refused, exit 2", missing.code === 2, missing.code);
+  check("`cotal send -t` to an absent agent says TARGET_NOT_FOUND and no matching participant", missing.stderr.includes("TARGET_NOT_FOUND") && missing.stderr.includes("no matching participant"), missing.stderr);
 
   // The admin credential for the `deliver pending` reads below is minted before bob stops, so no
   // setup sits inside the retained-card window that the by-name read depends on.
@@ -335,8 +335,8 @@ try {
   await wait(300);
   await carol.stop();
   const carolText = `carol-held-${randomUUID().slice(0, 6)}`;
-  const carolDm = await run(["send", "dm", "carol", carolText]);
-  check("`cotal send dm` to carol (stopped) exits 0", carolDm.code === 0, carolDm.stderr);
+  const carolDm = await run(["send", "-t", "carol", carolText]);
+  check("`cotal send -t` to carol (stopped) exits 0", carolDm.code === 0, carolDm.stderr);
 
   // Dave is a live, non-consuming recipient (consume:false: no inbound consumers, so nothing acks
   // his DM durable, while registerPresence keeps his card heartbeating after the lifecycle proof).
@@ -365,8 +365,8 @@ try {
   await dave.start();
   const daveDurable = dmDurable(DEV_OWNER, daveIdentity.id, daveUid);
   const daveText = `dave-held-${randomUUID().slice(0, 6)}`;
-  const daveDm = await run(["send", "dm", "dave", daveText]);
-  check("`cotal send dm` to live non-consuming dave exits 0", daveDm.code === 0, daveDm.stderr);
+  const daveDm = await run(["send", "-t", "dave", daveText]);
+  check("`cotal send -t` to live non-consuming dave exits 0", daveDm.code === 0, daveDm.stderr);
   const candidateIds = (out: string) => [...out.matchAll(/^\s+([0-9a-f-]{36})\s+from=/gm)].map((m) => m[1]);
   const daveLive = await run(["deliver", "pending", "dave", "--creds", adminCreds, "--space", space, "--server", servers]);
   const daveIds = candidateIds(daveLive.stdout);
@@ -395,15 +395,15 @@ try {
   );
 
   // M3: stop bob, send within the retained-card window (a graceful stop publishes `offline`
-  // synchronously, before its lifecycle uid is retired), and assert the line names the offline
-  // status rather than fabricating "delivered". This send is the only launch after bob's stop.
+  // synchronously, before its lifecycle uid is retired), and assert the receipt claims storage
+  // only, never "delivered". This send is the only launch after bob's stop.
   await bob.stop();
   const offlineText = `offline-${randomUUID().slice(0, 6)}`;
-  const offlineDm = await run(["send", "dm", "bob", offlineText]);
-  check("`cotal send dm` to a just-stopped recipient still exits 0", offlineDm.code === 0, offlineDm.stderr);
+  const offlineDm = await run(["send", "-t", "bob", offlineText]);
+  check("`cotal send -t` to a just-stopped recipient still exits 0", offlineDm.code === 0, offlineDm.stderr);
   check(
-    "the offline-window `send dm` line reports the recipient as offline at send, never delivered",
-    /stored seq \d+/.test(offlineDm.stdout) && offlineDm.stdout.includes("recipient offline at send") && !offlineDm.stdout.includes("delivered"),
+    "the offline-window `send -t` receipt reports a stored sequence and unconfirmed delivery, never delivered",
+    /Stored sequence:\s+\d+/.test(offlineDm.stdout) && /Delivery:\s+not confirmed/.test(offlineDm.stdout) && !offlineDm.stdout.includes("delivered"),
     offlineDm.stdout,
   );
   // Bob's held send is read through his exact durable, which does not depend on his card.

@@ -18,6 +18,7 @@ import {
   type Connection,
   type OutputWarning,
   type Report,
+  recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
@@ -171,6 +172,7 @@ export async function history(args: ParsedArgs): Promise<void> {
 
   const conn = await connectOrThrow(v, v.dms ? "admin" : "observer");
   const target = { space: conn.space, channel: channel ?? null, dms: Boolean(v.dms) };
+  recordOperationSpace(conn.space);
   const errors: string[] = [];
   const ep = new CotalEndpoint({
     space: conn.space,

@@ -11,6 +11,7 @@ import {
   failureEnvelope,
   globalFlagDeclarationProblems,
   hasMeshTargetFlags,
+  inOperationSpace,
   isCommandFailure,
   isConnectRefusal,
   isSeededCommand,
@@ -18,9 +19,11 @@ import {
   outputDeclarationProblems,
   renderReport,
   renderWorkspaceError,
+  runOperation,
   workspaceErrorParts,
   targetErrorCode,
   terminalWidth,
+  type OperationScope,
 } from "@cotal-ai/workspace";
 import { c, staleStoreHint, stderrLine } from "./ui.js";
 import {
@@ -415,30 +418,34 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
     }
   }
+  // A failure raised after the command recorded the space it resolved is reported in that space.
+  const scope: OperationScope = {};
   try {
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
     }
     await prepareCatalogForCommand(cmd, parsed);
-    if (cmd.prepare) await cmd.prepare(parsed);
-    await cmd.run(parsed);
+    await runOperation(scope, async () => {
+      if (cmd.prepare) await cmd.prepare(parsed);
+      await cmd.run(parsed);
+    });
   } catch (e) {
     const mode = parsed.positionals[0];
     const json = structured(cmd, mode) && parsed.values.json === true;
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
     if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json);
-    if (isCommandFailure(e)) failureExit(cmd, e, json, parsed.values.plain === true);
+    if (isCommandFailure(e)) failureExit(cmd, inOperationSpace(e, scope.space), json, parsed.values.plain === true);
     // A command that declares a structured output reports by the outcome table. A target it could
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
     if (structured(cmd, mode)) {
-      if (isConnectRefusal(e)) failureExit(cmd, e.failure(), json, parsed.values.plain === true);
+      if (isConnectRefusal(e)) failureExit(cmd, inOperationSpace(e.failure(), scope.space), json, parsed.values.plain === true);
       if (isWorkspaceTargetError(e)) {
         const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
         failureExit(cmd, new CommandFailure("refused", targetErrorCode(e.code), message, remedy ? { remedy } : {}), json, parsed.values.plain === true);
       }
       if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json, parsed.values.plain === true);
-      failureExit(cmd, new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e)), json, parsed.values.plain === true);
+      failureExit(cmd, inOperationSpace(new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e)), scope.space), json, parsed.values.plain === true);
     }
     // A workspace TARGET error carries structured recovery — which entry, whether it was removed,
     // what to run next — and has its own renderer. Its raw `.message` is deliberately dev-safe

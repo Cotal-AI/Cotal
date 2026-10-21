@@ -664,6 +664,8 @@
     "smoke:setup-no-connector": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/setup-no-connector.smoke.ts",
     "smoke:send-refusal-mesh": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/send-refusal-mesh.smoke.ts",
     "smoke:history-clear-surface": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/history-clear-surface.smoke.ts",
+    "smoke:operation-space": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/operation-space.smoke.ts",
+    "smoke:service-stop-mesh:live": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/service-stop-mesh-live.smoke.ts",
     "smoke:who-roster": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/who-roster.smoke.ts",
     "smoke:history-read": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/history-read.smoke.ts",
     "smoke:docs-ext-read": "pnpm --filter cotal-ai... build && tsx bin/smoke/docs-ext-read.smoke.ts",

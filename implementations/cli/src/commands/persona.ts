@@ -5,6 +5,7 @@ import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-
 import {
   CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
   loadMeshes, loadPreparedSpaces, writeResult, type Presentation, type Report,
+  recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { readPersonas } from "../lib/personas.js";
@@ -46,6 +47,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   if (sub !== "create" && createOnly.some(flag => values[flag] !== undefined)) throw usage("file and definition flags are only accepted by persona create");
   if (sub !== "remove" && values.yes !== undefined) throw usage("--yes is only accepted by persona remove");
   const catalog = personaCatalog(values);
+  recordOperationSpace(catalog.space);
   if (sub === undefined) return list(catalog, presentation);
   const path = personaPath(catalog.root, name!);
   if (sub === "show") {

@@ -462,7 +462,7 @@ export function stackMembersView(journal: StackJournal, title: string): Report {
   return membersView(journal, title);
 }
 
-export function stackUpForegroundNotice(presentation: ReturnType<typeof presentationOf>): void {
+export function stackUpForegroundNotice(presentation: ReturnType<typeof presentationOf>, space: string): void {
   if (presentation === "json") return;
-  console.log(renderReport({ sections: [{ title: "Foreground stack lifetime", blocks: [{ kind: "lines", lines: ["This terminal holds the stack's lifetime. Ctrl-C or SIGTERM runs the same guarded whole-stack stop as bare cotal down, including its manager impact review. Terminal loss or an external kill is not a confirmed stop."] }] }] }, presentation, terminalWidth(process.stdout)));
+  console.log(renderReport({ space, sections: [{ title: "Foreground stack lifetime", blocks: [{ kind: "lines", lines: ["This terminal holds the stack's lifetime. Ctrl-C or SIGTERM runs the same guarded whole-stack stop as bare cotal down, including its manager impact review. Terminal loss or an external kill is not a confirmed stop."] }] }] }, presentation, terminalWidth(process.stdout)));
 }

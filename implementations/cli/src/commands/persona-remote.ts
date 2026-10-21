@@ -9,6 +9,7 @@ import {
 import {
   CommandFailure, canonicalRoot, isCommandFailure, isConnectRefusal, presentationOf,
   readLocalRecordSource, writeResult, type OutputWarning, type Report,
+  recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { openEndpointConnection } from "../lib/endpoint-client.js";
 import { nativeEndpointRefusal } from "../lib/endpoint-errors.js";
@@ -118,6 +119,7 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
   try {
     connection = await openEndpointConnection(values, "control-caller-privileged", BASELINE_LIFECYCLE_ENDPOINT, instanceId);
     target = { ...target, space: connection.space, endpoint: BASELINE_LIFECYCLE_ENDPOINT };
+    recordOperationSpace(connection.space);
     if (connection.auth.managerInstanceId !== undefined && connection.auth.managerInstanceId !== instanceId) throw new CommandFailure("refused", "CONFLICT", "the supplied manager pin differs from the caller's bound instance; no class fallback was used", { target });
     const service = await resolveService(connection.nc, connection.space, BASELINE_LIFECYCLE_ENDPOINT, connection.auth.epCaller!, { instanceId, deadlineMs: 10_000 });
     if (values.announce !== undefined) {

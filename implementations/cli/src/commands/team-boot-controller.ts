@@ -175,7 +175,7 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     // settled, never replayed. A stack journal, when one was written, names the exact members.
     throw isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the fresh controller team boot did not confirm its outcome; its retained intent and any started members were kept", { target: { space: plan.space, root: plan.root } });
   } finally { releaseMaintenanceLock(lock); }
-  if (request.foreground && request.presentation !== "json") stackUpForegroundNotice(request.presentation);
+  if (request.foreground && request.presentation !== "json") stackUpForegroundNotice(request.presentation, result.space);
   writeResult(request.presentation, { command: "team boot", target: { space: result.space, root: result.root, deploymentId: result.deploymentId }, result, completeness: "partial", partial: { message: "Agent joins are not checked by this receipt." }, warnings: plan.prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })) }, (data) => bootView(data, journal));
   if (request.foreground) await holdForegroundStack(plan.root);
 }

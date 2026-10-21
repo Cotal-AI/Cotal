@@ -10,8 +10,8 @@
  *   C. a real device-code login (auto-approved) + `cotal actor grant cli --sub …` → a plain
  *      `cotal send msg` connects USER-MODE (login → exchange → bearer → callout) and the message
  *      lands on the wire as the derived `u_….cli` principal (witnessed on a static admin tap);
- *      the ported operator surfaces: `channels list` on the plain grant, `history clear` refused
- *      without scope "admin" (naming the purger view + the ADD re-grant) then passing after it.
+ *      the ported operator surfaces: `channels list` on the plain grant, `history clear --yes`
+ *      refused without scope "admin" (the purger view is not issued) then passing after it.
  *   D. the deny matrix at the operator surface: revoked actor → refused exchange with the reason;
  *      logged-out machine → the exact `cotal login --idp …` line. No fallback anywhere.
  *   E. recovery: a crashed (SIGKILLed) auth service surfaces the exact `cotal up` recovery on a
@@ -293,21 +293,21 @@ try {
   // PORTED OPERATOR SURFACES (elevated views): `channels list` rides the operator's OWN agent
   // bearer, so the plain grant is enough — no view, no extra scope. `history clear` is
   // destructive, so it asks the exchange for the one-shot "purger" view, which only mints
-  // against a FRESH ledger row carrying scope "admin": the refusal names the view, the missing
-  // scope, and the ADD-to-current re-grant — never static mint repair.
+  // against a FRESH ledger row carrying scope "admin". Without it the classified refusal says the
+  // purger view was not issued and nothing was purged, and it never suggests static mint repair.
   const chList = await cotal(["channels", "list", "--space", SPACE]);
   // A fresh mesh has no registry ENTRIES (only `channels set` writes one), so the proof of the
   // read is the space-default line, not a channel row.
   check("`channels list` works user-mode on the plain grant (own agent bearer, no view)", chList.status === 0 && chList.out.includes("default replay"), chList.out);
-  const clearNoAdmin = await cotal(["history", "clear", "--force", "--space", SPACE]);
+  const clearNoAdmin = await cotal(["history", "clear", "--yes", "--space", SPACE]);
   check(
-    '`history clear` without scope "admin" is refused, naming the purger view + the scope',
-    clearNoAdmin.status !== 0 && clearNoAdmin.out.includes('view "purger"') && clearNoAdmin.out.includes('needs scope "admin"'),
+    '`history clear --yes` without scope "admin" is refused as PERMISSION_DENIED, naming the purger view',
+    clearNoAdmin.status === 2 && clearNoAdmin.out.includes("PERMISSION_DENIED") && clearNoAdmin.out.includes("purger view was not issued"),
     clearNoAdmin.out,
   );
   check(
-    "…and the ADD-to-current re-grant (never static mint repair), on the WHOLE row",
-    clearNoAdmin.out.includes("ADDED") && !clearNoAdmin.out.includes("cotal mint") && clearNoAdmin.out.includes("WHOLE ROW"),
+    "…submits no purge and never suggests static mint repair",
+    clearNoAdmin.out.includes("no history purge was submitted") && !clearNoAdmin.out.includes("cotal mint"),
     clearNoAdmin.out,
   );
   // Every field named, deliberately: this is a re-grant of a row that was narrowed above, and
@@ -372,8 +372,8 @@ try {
   // active lifecycle. The second rotation must therefore succeed without manufacturing a bearer.
   const rerotateUnused = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
   check("an unused successor can be re-granted again after its predecessor retired", rerotateUnused.status === 0 && rerotateUnused.out.includes("admin"), rerotateUnused.out);
-  const cleared = await cotal(["history", "clear", "--force", "--space", SPACE]);
-  check("`history clear --force` passes over the one-shot purger view", cleared.status === 0 && cleared.out.includes("cleared"), cleared.out);
+  const cleared = await cotal(["history", "clear", "--yes", "--space", SPACE]);
+  check("`history clear --yes` passes over the one-shot purger view", cleared.status === 0 && cleared.out.includes("History purge acknowledged"), cleared.out);
 
   // ---------- D. the deny matrix at the operator surface ----------
   console.log("D) revoke → refused; logout → the exact login line");

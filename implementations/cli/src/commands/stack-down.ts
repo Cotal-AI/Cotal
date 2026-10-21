@@ -10,6 +10,7 @@ import {
   CommandFailure, canonicalRoot, deliveryCredsKey, isCommandFailure, oneLine, presentationOf,
   removeMeshesByRoot, recordPreparedSpace, renderReport, terminalWidth, workspaceSecretStore, writeResult,
   type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan,
+  recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { kernelImpactView, nativeImpactView } from "./service-actions.js";
@@ -89,6 +90,7 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
   if (!previous) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this root has no controller stack journal", { target: { root } });
   if (["planned", "applying", "unknown"].includes(previous.journal.operation.phase)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "an earlier whole-stack operation on this root has no settled outcome; it was not retried", { target: { root, operation: previous.journal.operation }, remedy: `inspect the stack's members with cotal service --space ${previous.journal.space} before another whole-stack operation` });
   const journal0 = previous.journal;
+  recordOperationSpace(journal0.space);
   if (values.space !== undefined && values.space !== journal0.space) throw new CommandFailure("refused", "CONFLICT", "the selected space differs from this root's recorded controller stack; no member was stopped", { target: { root, selectedSpace: values.space, recordedSpace: journal0.space } });
   const members = readMembers(journal0);
   const target = { root, space: journal0.space, server: journal0.server };

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { FlagSpec, OutputMode } from "@cotal-ai/core";
 
 /**
@@ -151,6 +152,37 @@ export class CommandFailure extends Error {
 
 export function isCommandFailure(e: unknown): e is CommandFailure {
   return typeof e === "object" && e !== null && (e as { [FAILURE_BRAND]?: unknown })[FAILURE_BRAND] === true;
+}
+
+/** The space one command run resolved, as {@link recordOperationSpace} set it. */
+export interface OperationScope { space?: string }
+
+// Kept on a global key so two copies of this module share one scope, as the failure brand does.
+const operationScope = ((globalThis as { [key: symbol]: unknown })[Symbol.for("cotal.operationScope")] ??= new AsyncLocalStorage<OperationScope>()) as AsyncLocalStorage<OperationScope>;
+
+/** Run one command inside `scope`, so the space it records there is readable after it throws. */
+export function runOperation<T>(scope: OperationScope, body: () => Promise<T>): Promise<T> {
+  return operationScope.run(scope, body);
+}
+
+/** Record the one space this command's operation resolved, as soon as it is resolved. A command
+ *  that works across spaces, or on none, never calls this. Outside {@link runOperation} it does
+ *  nothing. */
+export function recordOperationSpace(space: string): void {
+  const scope = operationScope.getStore();
+  if (scope) scope.space = space;
+}
+
+/** `failure` with the operation's recorded space added to its target, so its report begins with
+ *  `Mesh: <space>` and its envelope carries `target.space`. A target that already has a `space`
+ *  field, or is not an object, is kept as it is. */
+export function inOperationSpace(failure: CommandFailure, space: string | undefined): CommandFailure {
+  const target = failure.target;
+  if (space === undefined || target !== null && (typeof target !== "object" || Array.isArray(target) || Object.hasOwn(target, "space"))) return failure;
+  const fields = target === null ? {} : target as Record<string, unknown>;
+  const placed = new CommandFailure(failure.outcome, failure.code, failure.message, { remedy: failure.remedy, native: failure.native, changed: failure.changed, target: { space, ...fields } });
+  placed.stack = failure.stack;
+  return placed;
 }
 
 /** The envelope for a command that did not succeed. */

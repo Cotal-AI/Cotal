@@ -62,7 +62,7 @@ import {
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
 import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
-import { CommandFailure, presentationOf, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
+import { CommandFailure, presentationOf, recordOperationSpace, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
 import { offlineWorkflow } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
 import { printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
@@ -668,6 +668,7 @@ async function resolveRunControlTarget(values: RunValues): Promise<ControlTarget
   const on = values.on;
   const seat = values.creds === undefined ? await resolveSeatControlTarget(values, on) : undefined;
   const target = seat?.mode === "auth" ? seat : await resolveControlTarget(values, "control-caller-privileged", on);
+  recordOperationSpace(target.space);
   if (on === undefined) return target;
   if (target.auth.managerInstanceId !== undefined && target.auth.managerInstanceId !== on)
     throw new CommandFailure("refused", "CONFLICT", "the requested manager instance differs from this credential's instance authority; no other manager was selected");

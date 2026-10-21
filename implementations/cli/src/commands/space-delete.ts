@@ -231,7 +231,7 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "USAGE_INVALID", "live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect cotal space delete ${name} --dry-run first` });
   const initial = await readSpaceDeletion(name);
   if (!yes) {
-    process.stderr.write(`${renderReport(previewView(initial.result), presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+    process.stderr.write(`${renderReport({ ...previewView(initial.result), space: name }, presentation === "plain" ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
     const answer = await prompts.text({ message: `Permanently delete ${oneLine(name)} on ${oneLine(initial.result.recordedBroker ?? "the registered broker")}? Type the exact space name`, validate: (value) => value === name ? undefined : `Type ${oneLine(name)} to confirm, or cancel.` });
     if (prompts.isCancel(answer)) {
       writeResult(presentation, { command: "space delete", target: { space: name }, result: { kind: "live-space-delete", confirmed: false, deleted: false }, noOp: true }, () => ({ sections: [{ title: "Space kept", blocks: [{ kind: "lines", lines: ["No native delete was submitted. The registration and local files were kept."] }] }] }));

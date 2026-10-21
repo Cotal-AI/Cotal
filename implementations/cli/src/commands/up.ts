@@ -146,6 +146,7 @@ import {
   isLoopbackHost,
   connectUserControlOrThrow,
   userViewAuth,
+  recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/auth-proc.js";
 import { resolveSpace } from "../lib/status.js";
@@ -582,6 +583,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Refuse first-enable IdP failures and explicit pin conflicts before even recovery's lock
     // creates its layout. Existing recovery keeps its own recorded startup and trust checks.
     const stackSpace = values.space ?? resolveSpace(process.cwd());
+    recordOperationSpace(stackSpace);
     if (!readMaintenanceJournal(root) && controllerStackApplies(root, stackSpace, values)) {
       const recordedStack = readStackJournal(root);
       if ((recordedStack?.journal.mode ?? requestedStackMode(values)) === "user" && (!recordedStack || values.idp !== undefined)) {
@@ -931,13 +933,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // of the pidfile launcher. The decision is made once here; neither route falls back to the other.
   if (!values.file && controllerStackApplies(meshRoot, values.space ?? resolveSpace(process.cwd()), values)) {
     const stackSpace = values.space ?? resolveSpace(process.cwd());
+    recordOperationSpace(stackSpace);
     const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? (values.host ? reconcileHostAndServer(values.host, undefined) : DEFAULT_SERVER);
     const stackMode = requestedStackMode(values);
     const presentation = presentationOf(values);
     const stackLock = acquireMaintenanceLock(meshRoot);
     const native = controllerStackNative();
     try {
-      if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation);
+      if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace);
       await stackUp({ root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), foreground: values.foreground === true, presentation }, native);
     } finally { releaseMaintenanceLock(stackLock); }
     if (values.foreground) await holdForegroundStack(meshRoot);

@@ -9,6 +9,7 @@ import { type NatsConnection } from "@nats-io/transport-node";
 import {
   CommandFailure, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, terminalWidth, writeEnvelope, writeResult, writeStreamRecord,
   loadMeshes, targetFlags, type Report,
+  recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { followEndpointAction, type AcceptedEndpointGoal } from "../lib/endpoint-goal.js";
 import { endpointResolution, resolveEndpointSelection, validateEndpointSelector } from "../lib/endpoint-selection.js";
@@ -73,6 +74,7 @@ export async function describeCmd(args: ParsedArgs, commandName = "describe"): P
   const requestedInstance = args.values.on === undefined ? undefined : onInstance(String(args.values.on), "cotal endpoint describe");
   const selection = resolveEndpointSelection(args.positionals[0]!, args.values as { space?: string; server?: string; creds?: string }, requestedInstance);
   const { endpoint, instanceId: on } = selection;
+  recordOperationSpace(selection.space);
   let connection: Awaited<ReturnType<typeof epConnection>> | undefined;
   const target = { space: selection.space, endpoint, requestedInstanceId: on ?? null, ...(selection.reference ? { reference: selection.reference } : {}) };
   let result;
@@ -110,6 +112,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
   const requestedInstance = values.on === undefined ? undefined : onInstance(values.on, "cotal endpoint invoke");
   const selection = resolveEndpointSelection(selector, values, requestedInstance);
   const { endpoint, instanceId: on } = selection;
+  recordOperationSpace(selection.space);
   let connection: Awaited<ReturnType<typeof epConnection>> | undefined;
   const requestId = randomUUID();
   const target = { space: selection.space, endpoint, command, requestedInstanceId: on ?? null, requestId, ...(selection.reference ? { reference: selection.reference } : {}) };

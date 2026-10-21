@@ -1,5 +1,5 @@
 import { peerLabel, type FlagSpec, type FlagValues, type ParsedArgs, type Presence, type PresenceCondition } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, isConnectRefusal, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Cell, type Column, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
+import { CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Cell, type Column, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
 import { openTransient } from "../lib/transient.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { activityAge, c, presenceFacts } from "../ui.js";
@@ -99,6 +99,7 @@ export async function who(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("failed", "OPERATION_FAILED", `could not open the roster: ${message}`);
   });
   const target = { space, scope };
+  recordOperationSpace(space);
   let roster: Presence[];
   let view: WhoResult["view"];
   try {
