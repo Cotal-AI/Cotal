@@ -770,7 +770,8 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
   } catch (error) {
     if (isCommandFailure(error)) throw error;
     const beforeEffects = error instanceof GateReconcileRefused && ["no-gate", "not-frozen", "wrong-op-kind", "holder-alive", "holder-unknown", "liveness-unestablishable"].includes(error.condition);
-    if (beforeEffects) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the native gate-repair guard refused (${error.condition}); the repair did not pass its pre-effect guard`, { target: { ...target, condition: error.condition }, remedy: "inspect the selected gate and the delivery liveness oracle; a timeout is not proof that its holder is gone" });
+    // The guard's own sentence names the freeze-holder and the next step for this condition.
+    if (beforeEffects) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the native gate-repair guard refused (${error.condition}); the repair did not pass its pre-effect guard`, { target: { ...target, condition: error.condition }, native: { code: error.condition, detail: error.message }, remedy: "inspect the selected gate and the delivery liveness oracle; a timeout is not proof that its holder is gone" });
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native gate repair did not confirm completion; revocation, eviction or reopen work may have occurred. No mutation was retried", { target: { ...target, ...(error instanceof GateReconcileRefused ? { condition: error.condition } : {}) }, remedy: "re-observe this gate and its operation-bound native repair cursor before another explicit repair" });
   } finally { await nc.drain().catch(() => nc.close()); }
 }

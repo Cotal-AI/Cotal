@@ -4231,7 +4231,9 @@ TLS requirement across repair, liveness and eviction connections. It requires th
 material and verified holder liveness. Review defaults to cancellation; scripts require `--yes`.
 `--dry-run` checks only the local coordinate and issues no credential or native guard query.
 
-A pre-effect native guard refusal returns exit 2. A failure after the repair may have submitted
+A pre-effect native guard refusal returns exit 2. Its error names the guard's condition and keeps
+the guard's own sentence as its native cause, which names the freeze-holder and the next step.
+A failure after the repair may have submitted
 work returns exit 3, without replaying mutations or hiding possible revocation/eviction progress.
 Re-observe that gate and its operation-bound durable cursor before another explicit repair.
 The final receipt reports the native operation and before/after coordinates, not a running-manager
