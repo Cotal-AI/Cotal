@@ -92,6 +92,10 @@ const deprovisionSecretKeys = (space: string) => [authCalloutKey(space), authIss
 export const cotalAuthProvider: AuthProvider = {
   kind: "auth-provider",
   name: AUTH_PROVIDER_NAME,
+  async requestRemoteRunSubmission({ store, dir, request }) {
+    const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "keyed run submission");
+    return postManagerAuthority(endpoint, idpUrl, authorization, request, "keyed run submission") as Promise<import("@cotal-ai/core").RemoteRunSubmissionResult>;
+  },
   async requestRemoteRunAdmission({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteRunAdmissionRequest }): Promise<RemoteRunAdmissionResult> {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "admitting a hosted run");
     return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run admission") as Promise<RemoteRunAdmissionResult>;

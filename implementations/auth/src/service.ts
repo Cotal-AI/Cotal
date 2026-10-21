@@ -76,7 +76,7 @@ import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, type UserTokenSession
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions, type UserCallerIssuer } from "./permissions.js";
-import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
+import { admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
@@ -327,6 +327,7 @@ export interface AuthAuthorityPlane {
   admitManagerRun: (args: ManagerAuthorityHolder & {
     request: unknown;
   }) => Promise<import("@cotal-ai/core").RemoteRunAdmissionResult>;
+  submitManagerRun: (args: ManagerAuthorityHolder & { request: unknown }) => Promise<import("@cotal-ai/core").RemoteRunSubmissionResult>;
   /** Revoke under the authenticated holder and the recorded admission owner. */
   revokeManagerRun: (args: ManagerAuthorityHolder & { request: unknown }) => Promise<import("@cotal-ai/core").RemoteRunRevokeResult>;
   /** First-attempt/resume or operator issuance for one hosted run, asked by a registered signerless manager.
@@ -1677,6 +1678,29 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         observeManagerGate: observeLegacyManagerGate,
       });
     },
+    submitManagerRun: async ({ request, ...holder }) => {
+      refuseIfFenced();
+      const { owner } = holder;
+      requireManagerAuthorityHolder(holder, String((request as { instanceId?: unknown })?.instanceId), 'keyed run submission needs scope "supervise"');
+      return withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, session => handleRemoteRunSubmission({
+        request, owner, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed, endpoint: "manager",
+        observeManagerGate: observeLegacyManagerGate, issued: session.store, sourceIsLive: composedSourceIsLive(session),
+        takeObserved: takeObservedRunRequest,
+        registeredCommand: async (instanceId, registrationRevision, command) => {
+          const registered = remoteManagerSurface(await registeredManagerCluster(owner, instanceId, { registrationRevision }))[command];
+          if (!registered) throw new EpEnvelopeError("failed-precondition", "registered manager has no keyed contract");
+          return registered;
+        },
+        withStore: async (runId, submission, work) => {
+          const nc = await connect({ servers: server, ...standaloneConnectOpts({
+            creds: await mintCreds(issuerAuth(), newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId, submission }, expiresInSeconds: 60 }), tls: false,
+          }), maxReconnectAttempts: 0 });
+          onConnection?.(nc, `cotal:keyed-admitter:${space}`);
+          try { return await work(await new Kvm(nc).open(admissionBucket(space)), await jetstreamManager(nc)); }
+          finally { await nc.drain().catch(() => nc.close()); }
+        },
+      }));
+    },
     admitManagerRun: async ({ request, ...holder }) => {
       refuseIfFenced();
       const { owner } = holder;
@@ -2409,6 +2433,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       scanManagerGoalIndex: plane.scanManagerGoalIndex,
       authorizeManagerAdmin: plane.authorizeManagerAdmin,
       admitManagerRun: plane.admitManagerRun,
+      submitManagerRun: plane.submitManagerRun,
       revokeManagerRun: plane.revokeManagerRun,
       issueManagerRunAttempt: plane.issueManagerRunAttempt,
       secrets,
@@ -2604,6 +2629,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
               case "manager-goal-index-scan": return plane.scanManagerGoalIndex({ ...holder, request });
               case "manager-admin-authorization": return plane.authorizeManagerAdmin({ ...holder, request });
               case "manager-run-admission": return plane.admitManagerRun({ ...holder, request });
+              case "manager-run-submission": return plane.submitManagerRun({ ...holder, request });
               case "manager-run-attempt": return plane.issueManagerRunAttempt({ ...holder, request });
               case "manager-retained-agent-validation": return validateRetainedForHolder(holder, request);
             }
@@ -2677,6 +2703,7 @@ interface HandlerCtx {
   scanManagerGoalIndex: (args: HumanHolder & { request: import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest }) => ReturnType<AuthAuthorityPlane["scanManagerGoalIndex"]>;
   authorizeManagerAdmin: (args: HumanHolder & { request: RemoteManagerAdminAuthorizationRequest }) => ReturnType<AuthAuthorityPlane["authorizeManagerAdmin"]>;
   admitManagerRun: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["admitManagerRun"]>;
+  submitManagerRun?: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["submitManagerRun"]>;
   revokeManagerRun?: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["revokeManagerRun"]>;
   issueManagerRunAttempt: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["issueManagerRunAttempt"]>;
   secrets: SecretStore;
@@ -2699,7 +2726,7 @@ interface HandlerCtx {
   retireChatSession: AuthAuthorityPlane["retireChatSession"];
 }
 
-type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun">;
+type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "submitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun">;
 
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 export async function dispatchManagerAuthorityRequest(
@@ -2747,6 +2774,10 @@ export async function dispatchManagerAuthorityRequest(
     return ctx.authorizeManagerAdmin({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAdminAuthorizationRequest });
   if (request.kind === "manager-run-admission")
     return ctx.admitManagerRun({ owner, scope: row.scope ?? [], request: body.request });
+  if (request.kind === "manager-run-submission") {
+    if (!ctx.submitManagerRun) throw new EpEnvelopeError("unimplemented", "issuing host has no keyed submission handler");
+    return ctx.submitManagerRun({ owner, scope: row.scope ?? [], request: body.request });
+  }
   if (request.kind === "manager-run-revoke") {
     if (ctx.revokeManagerRun === undefined) throw new EpEnvelopeError("unimplemented", "this issuing host has no run revoke handler");
     return ctx.revokeManagerRun({ owner, scope: row.scope ?? [], request: body.request });

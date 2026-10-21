@@ -226,7 +226,7 @@ export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect"
  *  block names it, and the manager scopes what a caller may see by the run's own record.
  *  A program can `spawn`, so the `run` capability implies the spawn set as well
  *  ({@link runCallerCapabilities}): a caller that may start a program that spawns may spawn. */
-export const RUN_WRITE_COMMANDS = Object.freeze(["run-start", "run-resume"] as const);
+export const RUN_WRITE_COMMANDS = Object.freeze(["run-start", "run-resume", "run-start-keyed", "run-submission-status"] as const);
 export const RUN_ANSWER_COMMAND = "run-answer" as const;
 export const RUN_READ_COMMANDS = Object.freeze(["run-status", "run-ps"] as const);
 /** A static manager's chat-session admission and retirement. Both MINT or END a credential for a

@@ -863,6 +863,14 @@ const RUN_RESUME_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId"],
   properties: { runId: { type: "string", minLength: 1 }, timeout: { type: "string", minLength: 1 } },
 } as const;
+const RUN_SUBMISSION_INPUT_SCHEMA = { type: "object", additionalProperties: false, required: ["submissionId"],
+  properties: { submissionId: { type: "string", minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9_-]+$" } } } as const;
+const RUN_SUBMISSION_OUTPUT_SCHEMA = { type: "object", additionalProperties: false,
+  required: ["submissionId", "state", "instanceId", "processEpoch"], properties: {
+    submissionId: { type: "string" }, state: { type: "string", enum: ["unbound", "binding-only", "admitted", "activated", "indeterminate"] },
+    instanceId: { type: "string" }, processEpoch: { type: "integer", minimum: 0 }, runId: { type: "string" },
+    fingerprint: { type: "string" }, callbackDeadline: { type: "integer", minimum: 1 }, reason: { type: "string" },
+  } } as const;
 const RUN_ID_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId"],
   properties: { runId: { type: "string", minLength: 1 }, endpoint: { type: "string", minLength: 1 } },
@@ -1077,6 +1085,8 @@ const ROWS: CommandRow[] = [
   // `manager.run` class (minted by the `run` capability and the privileged instrument); the reads
   // ride `manager.read` beside every other read.
   { name: "run-start", capability: "manager.run", input: RUN_START_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runStart" },
+  { name: "run-start-keyed", capability: "manager.run", input: RUN_START_INPUT_SCHEMA, output: RUN_SUBMISSION_OUTPUT_SCHEMA, targeted: false, handler: "runStartKeyed" },
+  { name: "run-submission-status", capability: "manager.run", input: RUN_SUBMISSION_INPUT_SCHEMA, output: RUN_SUBMISSION_OUTPUT_SCHEMA, targeted: false, handler: "runSubmissionStatus" },
   { name: "run-resume", capability: "manager.run", input: RUN_RESUME_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runResume" },
   { name: "run-answer", capability: "manager.run", input: RUN_ANSWER_INPUT_SCHEMA, output: RUN_ANSWER_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "runAnswer" },
   { name: "run-status", capability: "manager.read", input: RUN_ID_INPUT_SCHEMA, output: RUN_STATUS_OUTPUT_SCHEMA, targeted: false, handler: "runStatus" },
@@ -1259,7 +1269,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 34,
+    revision: 35,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -1342,6 +1352,8 @@ export interface ManagerServiceHandlers {
   cancel(ctx: EpServeContext): unknown | Promise<unknown>;
   stopSelf(ctx: EpServeContext): unknown | Promise<unknown>;
   runStart(ctx: EpServeContext): unknown | Promise<unknown>;
+  runStartKeyed(ctx: EpServeContext): unknown | Promise<unknown>;
+  runSubmissionStatus(ctx: EpServeContext): unknown | Promise<unknown>;
   runResume(ctx: EpServeContext): unknown | Promise<unknown>;
   runAnswer(ctx: EpServeContext): unknown | Promise<unknown>;
   runStatus(ctx: EpServeContext): unknown | Promise<unknown>;

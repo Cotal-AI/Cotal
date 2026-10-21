@@ -96,6 +96,7 @@ import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedger
 import { epsSubject, epCallerReplyFilter, assertGeneration, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
 import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
 import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js";
+import { runSubmissionKey } from "./run-submission.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
 import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
@@ -739,7 +740,7 @@ export interface MintOpts {
   issuance?: IssuanceSeam;
   /** `run-admitter` profile only: the ONE hosted run whose admission record and revocation marker
    *  this connection may create. */
-  runAdmitter?: { endpoint: string; runId: string };
+  runAdmitter?: { endpoint: string; runId: string; submission?: { caller: import("./endpoint-subjects.js").EpCaller; id: string } };
   /** `transfer-writer` profile only: the ONE object (the transcript's hex digest) in the ONE manager
    *  instance's transfer bucket this instrument may write. */
   transferWriter?: { instanceId: string; hex: string };
@@ -2475,7 +2476,7 @@ function issuerPermissions(space: string, pr: MintPrincipal): Record<string, unk
 /** The RUN ADMITTER permission set (SPEC 14.8): exactly ONE run's admission record and
  *  revocation marker on the admission store (both create-only), plus the leader-served read the
  *  create-before-read and the marker's own re-read ride. No other run's keys, no other store. */
-function runAdmitterPermissions(space: string, pr: MintPrincipal, pin: { endpoint: string; runId: string }): Record<string, unknown> {
+function runAdmitterPermissions(space: string, pr: MintPrincipal, pin: NonNullable<MintOpts["runAdmitter"]>): Record<string, unknown> {
   const bucket = admissionBucket(space);
   return {
     pub: {
@@ -2483,6 +2484,7 @@ function runAdmitterPermissions(space: string, pr: MintPrincipal, pin: { endpoin
         "$JS.API.INFO",
         `$KV.${bucket}.${admissionKey(pin.endpoint, pin.runId)}`,
         `$KV.${bucket}.${revocationKey(pin.endpoint, pin.runId)}`,
+        ...(pin.submission ? [`$KV.${bucket}.${runSubmissionKey(pin.endpoint, pin.submission.caller, pin.submission.id)}`] : []),
         `$JS.API.STREAM.MSG.GET.KV_${bucket}`,
       ],
     },

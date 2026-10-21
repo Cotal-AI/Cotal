@@ -131,6 +131,8 @@ export * from "./sealed-reply.js";
 export * from "./run-host.js";
 export * from "./issued-authority.js";
 export * from "./run-admission.js";
+export * from "./run-submission.js";
+export * from "./run-submission-client.js";
 export * from "./issuer-session.js";
 
 export * from "./service-gate.js";
