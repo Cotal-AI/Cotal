@@ -4748,9 +4748,11 @@ submission, and a missing effect outcome is not a proved pre-execution refusal.
 Goal observation keeps the caller's authorized route. A class caller reads its original goal on
 that class route; an explicit `--on` or credential-bound instance stays pinned. Learning the
 accepting instance ID does not confer an instance route or cause another launch. The native
-follower verifies the returned fact against the original caller and goal. A missing connector
-refused before allocation carries `not-executed`; failures after allocation keep their native
-outcome rather than being reclassified from their message.
+follower verifies the returned fact against the original caller and goal. A launch the manager
+refuses before its first effect, such as a missing persona file or connector, carries
+`not-executed`. The CLI reports it `refused` with exit 2 and prints the manager's reason, which
+names the file it looked for. A failure after the manager reserved the name or wrote a launch file
+keeps its native outcome, and the CLI never reclassifies it from its message.
 
 
 ### Stopping an agent
@@ -4765,6 +4767,12 @@ not a separate measurement of process exit. Stop and input do not seed connector
 Failed name resolution refuses before a stop, terminal input or first attach is submitted. The
 receipt retains the inspect error and responding manager. It records local pre-submission proof
 without inventing a native effect outcome.
+
+When the manager refuses a stop, terminal input or first attach before anything ran, for example
+because the agent is not running or the caller may not control it, its reply carries
+`not-executed`. The CLI reports `refused` with exit 2, names the agent and prints the manager's
+reason on one line. A failure after an effect may have started, such as a terminal write the
+runtime rejected, stays `unknown` with exit 3, still shows the manager's reason, and is not retried.
 
 Managed imperative spawn accepts `--restarts <n> --restart-window <ms>` as a pair, using the
 existing native `supervise` object. Both values must be positive safe integers. Direct foreground

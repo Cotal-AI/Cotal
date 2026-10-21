@@ -36,9 +36,10 @@
  *   8. THE CLI PATH, end to end: the real binary as a subprocess runs
  *      `cotal input --name <seat> --text "/compact"`, exits 0, prints a receipt naming the seat and
  *      the acknowledged byte count, and the child receives `/compact\r`. A rejected or dropped
- *      runtime write instead exits 3 as an unconfirmed outcome, is not sent again, and prints no
- *      written receipt. An external UI calls the CLI before anything else, and a
- *      defect anywhere in agents.ts -> control.ts -> the mint -> the subject leaves cells 2-7 green.
+ *      runtime write instead exits 3 as an unconfirmed outcome naming the agent and the manager's
+ *      reason, is not sent again, and prints no written receipt. An external UI calls the CLI
+ *      before anything else, and a defect anywhere in agents.ts -> control.ts -> the mint -> the
+ *      subject leaves cells 2-7 green.
  *
  * COVERAGE BOUNDARY, stated so it is not over-read. This is a STATIC-auth mesh, so cell 4's refusal
  * is the own-child arm of the shared `authorizeNamedControl` policy (the caller is not the
@@ -185,7 +186,7 @@ const M = mgr as unknown as {
   agents: Map<string, { id: string; lifecycleUid: string; handle: PrivHandle }>;
 };
 
-type Call = (c: string, a?: Record<string, unknown>, t?: { actor: string; lifecycleUid: string }) => Promise<{ reply: { ok: boolean; data?: unknown; error?: { code?: string; message?: string } } }>;
+type Call = (c: string, a?: Record<string, unknown>, t?: { actor: string; lifecycleUid: string }) => Promise<{ reply: { ok: boolean; data?: unknown; error?: { code?: string; message?: string; outcome?: string } } }>;
 
 /** `spawn` is an ACTION: its reply is the acceptance, returned before the child is live. Poll `ps`
  *  for the allocated row, which carries the id + lifecycle uid a targeted call needs. */
@@ -265,10 +266,10 @@ const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
  *  on one line with its label padded; matching the whole line keeps `9` from matching `19`. */
 const field = (out: string, label: string, value: string): boolean =>
   out.split("\n").some((line) => line.trim().startsWith(`${label}:`) && line.trim().slice(label.length + 1).trim() === value);
-/** The report `cotal input` prints when the manager did not confirm the write. It carries no agent
- *  row, so the space and the answering manager are what attribute it. */
-const unconfirmed = (out: string): boolean => out.includes("Outcome unconfirmed")
-  && out.includes("the manager did not confirm the outcome of terminal input; it was not submitted again")
+/** The report `cotal input` prints when the manager did not confirm the write. Its message names the
+ *  agent and ends with the manager's own reason; the space and the answering manager attribute it. */
+const unconfirmed = (out: string, agent: string, reason: string): boolean => out.includes("Outcome unconfirmed")
+  && out.includes(`the manager did not confirm the outcome of terminal input for agent "${agent}"; it was not submitted again: ${reason}`)
   && field(out, "Code", "OPERATION_UNKNOWN") && field(out, "Space", space) && field(out, "Manager", M.managerInstanceId)
   && field(out, "Native code", "unavailable");
 /** Any part of the success receipt. */
@@ -433,6 +434,8 @@ try {
     check("input into a seat whose process is gone refuses (failed-precondition), naming the state",
       r.reply.ok === false && r.reply.error?.code === "failed-precondition"
       && String(r.reply.error?.message ?? "").includes("is not running"), r.reply);
+    // Refused before the first write, so the reply states that nothing ran (SPEC 13.3).
+    check("...and the refusal carries the not-executed outcome", r.reply.ok === false && r.reply.error?.outcome === "not-executed", r.reply);
     check("...and nothing was typed into it", sinkBytes(deadseat.name).length === 0, sinkBytes(deadseat.name).toString("hex"));
     await A.call("despawn", { graceful: false }, { actor: deadseat.id, lifecycleUid: deadseat.lifecycleUid });
   }
@@ -478,11 +481,13 @@ try {
     mustHaveRun(rejectedRun, "`cotal input` with a rejected PTY write");
     const rejectedOut = strip(rejectedRun.out);
     check("a rejected PTY write exits 3 as an unconfirmed outcome, is not sent again, and prints NO written receipt",
-      rejectedRun.status === 3 && unconfirmed(rejectedOut) && !written(rejectedOut), { status: rejectedRun.status, tail: rejectedOut.slice(-500) });
+      rejectedRun.status === 3 && unconfirmed(rejectedOut, dropseat.name, `input for seat "${dropseat.name}" failed: custodian write rejected`)
+      && !written(rejectedOut), { status: rejectedRun.status, tail: rejectedOut.slice(-500) });
     mustHaveRun(droppedRun, "`cotal input` with a dropped PTY write");
     const droppedOut = strip(droppedRun.out);
     check("a dropped PTY write exits 3 as an unconfirmed outcome, is not sent again, and prints NO written receipt",
-      droppedRun.status === 3 && unconfirmed(droppedOut) && !written(droppedOut), { status: droppedRun.status, tail: droppedOut.slice(-500) });
+      droppedRun.status === 3 && unconfirmed(droppedOut, dropseat.name, `input for seat "${dropseat.name}" failed: runtime accepted undefined of 9 bytes`)
+      && !written(droppedOut), { status: droppedRun.status, tail: droppedOut.slice(-500) });
     await wait(750);
     check("...and the dropped bytes never reached the child", sinkBytes(dropseat.name).length === 0,
       { hex: sinkBytes(dropseat.name).toString("hex") });
@@ -670,7 +675,7 @@ try {
 // evidence without removing the green. Bumping this number is the deliberate edit that makes such
 // a drop impossible to miss. The count is read BEFORE this cell is tallied, so it is the number of
 // preceding cells (37), not 38.
-const EXPECTED_CELLS = 37;
+const EXPECTED_CELLS = 38;
 check(`every cell ran (a silently skipped cell must not read as green): expected ${EXPECTED_CELLS}`,
   pass + fail === EXPECTED_CELLS, { ran: pass + fail, expected: EXPECTED_CELLS });
 

@@ -63,7 +63,7 @@
     {
       "name": "the authorization is dropped from the `input` handler, keeping everything else",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);\n        if (denied) throw new EpEnvelopeError(\"permission-denied\", denied);\n        return this.inputAuthorized(a, args(ctx));",
+      "find": "        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);\n        if (denied) throw new EpEnvelopeError(\"permission-denied\", denied, undefined, \"not-executed\");\n        return this.inputAuthorized(a, args(ctx));",
       "replace": "        return this.inputAuthorized(a, args(ctx));",
       "expectRed": "a caller that did NOT spawn the seat is refused (permission-denied, the shared named-control policy)",
       "cell": "a caller that did NOT spawn the seat is refused (permission-denied, the shared named-control policy)",
@@ -104,6 +104,35 @@
       "expectRed": "the child received the text wrapped in paste markers with the return after the close marker",
       "cell": "the child received the text wrapped in paste markers with the return after the close marker",
       "note": "The SECOND half of #1649, and the one that survived the first fix. Separating the return is necessary but not sufficient: a TUI classifies a fast burst as a paste and consumes the newline trailing it, so any text long enough to need more than one write still sat in the composer until the NEXT call's return. Measured on a real jcode seat through a real pty with this exact mutant shape: 120 and 700 bytes submitted on their own call, while 2500 and 3100 bytes did not, each appearing only on the following call. The end-to-end proof is `implementations/manager/smoke/acceptance-1649-e2e.mjs`, which went from `submitted match [true,true,false]` to `[true,true,true]` when the markers were added."
+    },
+    {
+      "name": "a dead-seat input refusal stops stating that nothing ran, so a client reads it as an unknown outcome",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      throw new EpEnvelopeError(\"failed-precondition\", `agent \"${a.name}\" is not running (${a.handle.status()}); nothing to type into`, undefined, \"not-executed\");",
+      "replace": "      throw new EpEnvelopeError(\"failed-precondition\", `agent \"${a.name}\" is not running (${a.handle.status()}); nothing to type into`);",
+      "expectRed": "...and the refusal carries the not-executed outcome",
+      "cell": "...and the refusal carries the not-executed outcome",
+      "note": "The code and the message are untouched, so the cell above it stays green. Only the SPEC 13.3 outcome goes, and without it `cotal input` reports an unconfirmed outcome (exit 3) for a seat it never typed into."
+    },
+    {
+      "name": "a rejected PTY write is claimed as not-executed, so the CLI calls a possibly delivered input a refusal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${rejectionText(error)}`);",
+      "replace": "        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${rejectionText(error)}`, undefined, \"not-executed\");",
+      "expectRed": "a rejected PTY write exits 3 as an unconfirmed outcome, is not sent again, and prints NO written receipt",
+      "cell": "a rejected PTY write exits 3 as an unconfirmed outcome, is not sent again, and prints NO written receipt",
+      "note": "The over-claim in the other direction. A write the runtime rejected may follow slices that already reached the seat, so the manager cannot say nothing ran. The mutant says it anyway: the CLI prints a refusal and exits 2, so the rejected-write cell, which requires exit 3 and an unconfirmed report, reddens."
+    },
+    {
+      "name": "the CLI drops the manager's reason from an unconfirmed input",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "  const reason = reply.error ? `: ${oneLine(reply.error)}` : \"\";",
+      "replace": "  const reason = \"\";",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:seat-input",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "expectRed": "a rejected PTY write exits 3 as an unconfirmed outcome, is not sent again, and prints NO written receipt",
+      "cell": "a rejected PTY write exits 3 as an unconfirmed outcome, is not sent again, and prints NO written receipt",
+      "note": "Cell 8 runs the real bin/cotal.ts, whose client half rides the CLI dist, so this row builds the mutant and rebuilds after restore. Without the reason the report still names the agent and an unknown outcome, but not that the custodian rejected the write, and the cell requires that reason. The dropped-write cell reddens with it."
     }
   ]
 }

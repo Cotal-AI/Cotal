@@ -36,10 +36,11 @@ import {
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { CommandFailure, controlCaller, loadSpaceAuth, renderWorkspaceError, type ControlAuth, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, controlCaller, loadSpaceAuth, oneLine, renderWorkspaceError, type ControlAuth, type RefusalCode } from "@cotal-ai/workspace";
 import { DEV_OWNER, type SpaceAuth } from "@cotal-ai/core";
 import { c, staleStoreHint, stderrLine } from "../ui.js";
 import { cliVersion } from "./version.js";
+import { nativeEndpointRefusal } from "./endpoint-errors.js";
 
 /** The control auth shape and target resolver live in `@cotal-ai/workspace` (shared with every
  *  command surface that addresses the manager: this CLI, `cotal run`, the web dashboard). Re-exported
@@ -211,7 +212,7 @@ async function askManagerEp(
         },
       })
       : await submit();
-    if (r.reply.ok !== true) return { ...controlReplyFrom(r.reply), managerInstanceId: r.responder.instanceId, managerEpoch: r.responder.epoch, ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request } : {}), ...(r.reply.error?.outcome ? { nativeOutcome: r.reply.error.outcome } : {}) };
+    if (r.reply.ok !== true) return { ...controlReplyFrom(r.reply), answered: true, managerInstanceId: r.responder.instanceId, managerEpoch: r.responder.epoch, ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request } : {}), ...(r.reply.error?.outcome ? { nativeOutcome: r.reply.error.outcome } : {}) };
     // The ep `models` reply is normalized to `{catalogs}` — unwrap so call sites keep the ctl shape.
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, managerInstanceId: r.responder.instanceId, managerEpoch: r.responder.epoch, ...(observationCause ? { observationCause } : {}), ...(intent ? { intent } : {}), ...(request ? { request } : {}), ...(data !== undefined ? { data } : {}) };
@@ -250,18 +251,23 @@ export interface ManagerRequestReceipt {
  *  the call went UNANSWERED, as core marks it (`EP_UNANSWERED`: no responder, or the reply
  *  deadline elapsed with nothing attributed to the request). `up`'s resume readiness poll keys on it;
  *  it used to key on the message prefix, which turned an operator-facing string into a control-flow
- *  predicate in another file. */
-export type ManagerReply = ControlReply & { unanswered?: boolean; preSubmitRefusal?: true; managerInstanceId?: string; managerEpoch?: number; observationCause?: { code?: string; outcome?: string }; intent?: ManagerRequestIntent; request?: ManagerRequestReceipt; nativeOutcome?: "executed" | "not-executed" | "unknown" };
+ *  predicate in another file. `answered` marks a refusal a manager responder sent itself; one the
+ *  broker or this client raised leaves it unset. */
+export type ManagerReply = ControlReply & { unanswered?: boolean; answered?: true; preSubmitRefusal?: true; managerInstanceId?: string; managerEpoch?: number; observationCause?: { code?: string; outcome?: string }; intent?: ManagerRequestIntent; request?: ManagerRequestReceipt; nativeOutcome?: "executed" | "not-executed" | "unknown" };
 
-/** Classify only a proved pre-effect refusal as refused; a missing effect outcome is not proof. */
+/** Classify only a proved pre-effect refusal as refused; a missing effect outcome is not proof.
+ *  Every message names the agent when the target carries one and ends with the manager's own
+ *  reason, kept to one line. */
 export function managerFailure(reply: ManagerReply, operation: string, target: unknown): CommandFailure {
-  const refusals: Record<string, RefusalCode> = { "permission-denied": "PERMISSION_DENIED", "unauthenticated": "AUTH_REQUIRED", "not-found": "TARGET_NOT_FOUND", "unavailable": "TARGET_UNAVAILABLE", "bad-request": "SCHEMA_INVALID", "failed-precondition": "LIFECYCLE_BLOCKED", "already-exists": "CONFLICT", "unimplemented": "UNSUPPORTED" };
   const native = { code: reply.code, outcome: reply.nativeOutcome, ...(reply.preSubmitRefusal ? { detail: { phase: "target-resolution", actionSubmitted: false } } : reply.request || reply.intent ? { detail: { request: reply.request ?? null, intent: reply.intent ?? null, observation: reply.observationCause ?? null } } : {}) };
-  const code = reply.code === undefined ? undefined : refusals[reply.code];
-  if (reply.preSubmitRefusal && code) return new CommandFailure("refused", code, reply.error ?? `${operation} was not submitted because its target could not be resolved`, { target, native, remedy: "run cotal ps to check the selected manager and agent name" });
-  if (reply.nativeOutcome === "not-executed" && code) return new CommandFailure("refused", code, `the manager refused ${operation} before execution`, { target, native });
-  if (reply.nativeOutcome === "executed" && !reply.unanswered) return new CommandFailure("failed", "OPERATION_FAILED", `the manager reported that ${operation} failed`, { target, native });
-  return new CommandFailure("unknown", "OPERATION_UNKNOWN", `the manager did not confirm the outcome of ${operation}; it was not submitted again`, { target, native, remedy: "inspect the recorded manager, request and target before retrying" });
+  const code = nativeEndpointRefusal(reply.code);
+  const agent = (target as { agent?: unknown } | null)?.agent;
+  const what = typeof agent === "string" ? `${operation} for agent "${oneLine(agent)}"` : operation;
+  const reason = reply.error ? `: ${oneLine(reply.error)}` : "";
+  if (reply.preSubmitRefusal && code) return new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : `${operation} was not submitted because its target could not be resolved`, { target, native, remedy: "run cotal ps to check the selected manager and agent name" });
+  if (reply.nativeOutcome === "not-executed" && code) return new CommandFailure("refused", code, `the manager refused ${what} before execution${reason}`, { target, native, remedy: "nothing ran; fix what the manager reported, then run the command again" });
+  if (reply.nativeOutcome === "executed" && !reply.unanswered) return new CommandFailure("failed", "OPERATION_FAILED", `the manager reported that ${what} failed${reason}`, { target, native });
+  return new CommandFailure("unknown", "OPERATION_UNKNOWN", `the manager did not confirm the outcome of ${what}; it was not submitted again${reason}`, { target, native, remedy: "inspect the recorded manager, request and target before retrying" });
 }
 
 /** What the calling command declares about pinning. Passed ONLY by a command that offers `--on`
