@@ -15,9 +15,10 @@ import { isReachable, mintCreds, newIdentity, type BrokerTransport, type ParsedA
 import {
   CommandFailure, accountInventory, authDir, canonicalRoot, deliveryCredsKey, findMesh, findPreparedSpace, getSpaceAuth, hasUserAuthState,
   isCommandFailure, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveOnPath,
-  terminalWidth, workspaceSecretStore, writeResult, type Report, type ServiceDefinitionInput, type UserAuthInfo,
+  terminalWidth, workspaceSecretStore, writeResult, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
+import { seedDefaultPersona } from "../lib/default-persona.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 import { prepareProcessService, removeStoppedInstanceRecords, startProcessService } from "../lib/service-process.js";
@@ -227,12 +228,22 @@ function membersView(journal: StackJournal, title: string): Report {
   ] }] };
 }
 
-/** `cotal up`'s controller route: start, then write its own receipt. */
+/** `cotal up`'s controller route: start, seed the default persona into the root, then write its
+ *  own receipt. The stack is up by then, so a persona that cannot be written is a warning. */
 export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
   const { journal, changed, allReused, admittedRestore } = await startControllerStack(request, native);
   const { root, space, server, mode } = journal;
-  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null }, ...(allReused ? { noOp: true } : {}) }, (result) => {
-    const view = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started");
+  const written: { what: string; path: string }[] = [];
+  const warnings: OutputWarning[] = [];
+  try {
+    const persona = seedDefaultPersona(root);
+    if (persona) written.push(persona);
+  } catch (error) {
+    warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
+  }
+  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, written }, warnings, ...(allReused && written.length === 0 ? { noOp: true } : {}) }, (result) => {
+    const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started");
+    const view: Report = result.written.length ? { ...members, sections: [...members.sections, { blocks: [{ kind: "fields", rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] } : members;
     return admittedRestore ? { ...view, sections: [...view.sections, { title: "Retained restore journal", blocks: [{ kind: "lines", lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] } : view;
   });
 }

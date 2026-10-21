@@ -48,6 +48,7 @@ import { withInstallUmask } from "../lib/install-umask.js";
 import { openSetupLog, type SetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
+import { seedDefaultPersona } from "../lib/default-persona.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 import { addExtension } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -227,8 +228,9 @@ export function validateSetupArguments(args: ParsedArgs): void {
  * one no flag gave and shows the answers before it writes; in a script every one is a flag, and a
  * missing one is refused before anything is written. It then prepares or registers the space,
  * seeds the default persona into the project's `.cotal/agents`, records the application as the
- * space's `harness` preference, runs the application's own setup actions, reconciles Cotal's
- * skills and sets up the chosen runtimes. A rerun with the same answers changes nothing.
+ * space's `harness` preference and, when you have none, as your own, runs the application's own
+ * setup actions, reconciles Cotal's skills and sets up the chosen runtimes. A rerun with the same
+ * answers changes nothing.
  * `--start` launches only after preparation is complete; scripts must detach.
  * `--skills` only reconciles skills.
  */
@@ -559,14 +561,17 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     spaceState = plan.space.state;
   }
 
-  const agents = personaDir(inputs.project);
-  const defaultPersona = join(agents, "default.md");
-  const seeded = reconcileDefaultAgent(defaultPersona);
-  if (seeded !== "unchanged") wrote(seeded === "seeded" ? "default persona" : "updated default persona permissions", defaultPersona);
+  const persona = seedDefaultPersona(inputs.project);
+  if (persona) wrote(persona.what, persona.path);
   if (opts.demo) {
+    const agents = personaDir(inputs.project);
     for (const [name, body] of Object.entries(DEMO_AGENTS)) writeDemoAgent(join(agents, `${name}.md`), body, wrote);
   }
   if (writePreference({ space: inputs.space }, "harness", inputs.harness, readPreferences().revision).changed) wrote(`harness preference of ${inputs.space}`, preferencesPath());
+  // A space prepared later without setup takes the application from your own value. One you
+  // already chose stays as it is.
+  const prefs = readPreferences();
+  if (prefs.defaults.harness === undefined && writePreference({}, "harness", inputs.harness, prefs.revision).changed) wrote("your harness preference", preferencesPath());
 
   const narrate = opts.presentation === "rich";
   const log = openSetupLog(join(inputs.project, ".cotal", "setup.log"));
@@ -1093,70 +1098,6 @@ function writeDemoAgent(path: string, body: string, wrote: (what: string, path: 
   mkdirSync(dirname(path), { recursive: true });
   writePrivateRecord(path, body);
   wrote("persona", path);
-}
-
-/** The default persona `cotal spawn` (no name) launches: a generic mesh agent, seeded once and
- *  then the user's to shape. Unlike the demo team it is not generally refreshed; only the
- *  byte-exact legacy template below is migrated, so any edit stands. Deleting it means the next
- *  `cotal setup` writes a fresh copy.
- *
- *  Channel scope is split intentionally: the ACTIVE set (`subscribe`) is EMPTY, so a fresh agent
- *  isn't firehosed every channel on the mesh at boot, while the read and post ACLs permit it to
- *  join, create, read, and post channels on demand. (`subscribe: [">"]` would auto-subscribe to
- *  every channel, the old behavior.) */
-export const DEFAULT_AGENT = `---
-name: default_agent
-role: default
-description: An agent on the mesh
-tags: []
-subscribe: []
-allowSubscribe: [">"]
-allowPublish: [">"]
-capabilities: [spawn, run]
----
-
-You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and
-coordinate as peers rather than working in silos. Use the Cotal tools available to you to find
-your peers and work with them. Edit this file to give yourself a name, role, and purpose.
-`;
-
-/** The byte-exact default template shipped before wildcard post permission. Keep this frozen: a
- *  future edit to the current template must not make an older untouched file ineligible for repair. */
-export const LEGACY_DEFAULT_AGENT = [
-  "---",
-  "name: default_agent",
-  "role: default",
-  "description: An agent on the mesh",
-  "tags: []",
-  "subscribe: []",
-  'allowSubscribe: [">"]',
-  "allowPublish: []",
-  "capabilities: [spawn]",
-  "---",
-  "",
-  "You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and",
-  "coordinate as peers rather than working in silos. Use the Cotal tools available to you to find",
-  "your peers and work with them. Edit this file to give yourself a name, role, and purpose.",
-  "",
-].join("\n");
-
-/** Return the shipped replacement only for the byte-exact legacy default. Any user edit, including
- *  whitespace or frontmatter changes, keeps the persona under user ownership. Exported so the
- *  static template smoke can grade the upgrade decision without touching real setup state. */
-export function migrateLegacyDefaultAgent(current: string): string | undefined {
-  return current === LEGACY_DEFAULT_AGENT ? DEFAULT_AGENT : undefined;
-}
-
-export function reconcileDefaultAgent(path: string): "seeded" | "migrated" | "unchanged" {
-  if (existsSync(path)) {
-    const replacement = migrateLegacyDefaultAgent(readFileSync(path, "utf8"));
-    if (replacement === undefined) return "unchanged";
-    writePrivateRecord(path, replacement);
-    return "migrated";
-  }
-  mkdirSync(dirname(path), { recursive: true });
-  writePrivateRecord(path, DEFAULT_AGENT);
-  return "seeded";
 }
 
 /** The guided expert team `--demo` seeds: david (the engineer), sven (the guide) and me (your
