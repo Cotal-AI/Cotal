@@ -101,6 +101,7 @@ import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { askManager, failIfNotOk, onInstance, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { callerHarness, spawnPersona } from "../lib/spawn-defaults.js";
+import { defaultPersonaFix } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
 import { attachSeat } from "./agents.js";
@@ -957,10 +958,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // Name the absolute directory checked and the mesh that root came from: the two facts that
       // make the disagreement visible in one read.
       const where = `${target.personaRoot} (mesh "${target.space}" at ${target.server}${target.source === "current" ? ", your current mesh" : target.source === "registry" ? ", the only mesh running" : ""})`;
+      const fix = defaultPersonaFix(target);
+      const write = fix.cwd ? `run \`${fix.command}\` in ${fix.cwd} to write one` : `create one with \`${fix.command}\``;
       console.error(
         c.red(
           ref === "default" && personaFrom === undefined
-            ? `✗ no default persona in ${where} - run \`cotal setup\` here to seed one into that directory, or name a persona: \`cotal spawn <name>\``
+            ? `✗ no default persona in ${where} - ${write}, or name a persona: \`cotal spawn <name>\``
             : `✗ no persona "${ref}"${fromEnv} in ${where} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
         ),
       );

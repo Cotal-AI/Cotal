@@ -241,7 +241,8 @@ function spacesView(result: SpacesResult): Report {
     }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [
       { command: "cotal use <name>", description: "Select the space commands use" },
       { command: "cotal space show <name>", description: "Inspect its connection and project" },
-      { command: "cotal setup", description: "Prepare or connect to another space" },
+      { command: "cotal space create <name>", description: "Prepare another local space in this folder" },
+      { command: "cotal space add <name> --server <url>", description: "Register an existing broker" },
     ] }] }],
   };
 }

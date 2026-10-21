@@ -129,6 +129,8 @@ supervised restart or a preserved seat resumed after maintenance.
 Preferences are the defaults your own commands use when nothing more specific names a value. You set
 them with [`cotal config`](cli.md#config), for yourself or for one space, and they are saved in
 `preferences.json` in the configuration directory (see [Configuration files](#configuration-files)).
+`cotal setup` saves the application it sets up as the space's `harness`, and as yours when you have
+none, so a space you prepare later starts with it.
 
 | Key | Values | Per space | Environment | Default | Read by |
 |---|---|---|---|---|---|
