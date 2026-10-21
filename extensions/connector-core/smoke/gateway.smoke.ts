@@ -39,6 +39,7 @@ import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { GATEWAY_INSTRUCTIONS, NameTaken, handleGatewayRequest, registerCotalGatewayTools, serveGatewayStdio, type GatewayConnection, type GatewayHost } from "../src/gateway.js";
+import { DOCS_VERSION } from "../src/docs.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -189,6 +190,7 @@ try {
 
   // ---- the handler ----
   check("the handler sends the default instructions", a.getInstructions() === GATEWAY_INSTRUCTIONS, a.getInstructions());
+  check("the handler's serverInfo names the loaded Cotal release", a.getServerVersion()?.name === "cotal" && a.getServerVersion()?.version === DOCS_VERSION, a.getServerVersion());
   for (const method of ["GET", "DELETE"]) {
     const r = await fetch(url, { method, headers: { authorization: "Bearer tok-a", accept: "text/event-stream, application/json" } });
     const allow = r.headers.get("allow");
@@ -597,8 +599,9 @@ try {
     const r = await rpc("tools/call", { name, arguments: args });
     return { text: (r.result?.content ?? []).map((c) => c.text).join("\n"), isError: r.result?.isError === true };
   };
-  const hello = (await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "stdio-smoke", version: "0" } })) as { result?: { instructions?: string } };
+  const hello = (await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "stdio-smoke", version: "0" } })) as { result?: { instructions?: string; serverInfo?: { name?: string; version?: string } } };
   check("the stdio server sends the default instructions", hello.result?.instructions === GATEWAY_INSTRUCTIONS, hello.result?.instructions);
+  check("the stdio server's serverInfo names the loaded Cotal release", hello.result?.serverInfo?.name === "cotal" && hello.result?.serverInfo?.version === DOCS_VERSION, hello.result?.serverInfo);
   send({ method: "notifications/initialized" });
   const stdioTools = (await rpc("tools/list", {})).result?.tools?.map((t) => t.name) ?? [];
   check("the stdio server offers the gateway surface", ["cotal_connect", "cotal_wait", "cotal_inbox"].every((n) => stdioTools.includes(n)), stdioTools);

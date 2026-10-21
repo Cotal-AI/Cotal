@@ -35,6 +35,7 @@ import {
   GATEWAY_INSTRUCTIONS,
   GATEWAY_LISTENING,
   serveGatewayStdio,
+  DOCS_VERSION,
   JsonlFileSource,
   type DurableSource,
 } from "@cotal-ai/connector-core";
@@ -390,7 +391,8 @@ async function startSession(
   agent.start(); // custody is claimed before background broker connect, after control bind
 
   const server = new McpServer(
-    { name: "cotal", version: "0.0.0" },
+    // The Cotal release this process loaded, the same value cotal_orientation reports.
+    { name: "cotal", version: DOCS_VERSION },
     {
       // `claude/channel` makes this MCP server a Claude Code *channel*: peer
       // messages can be pushed straight into the session (waking it if idle).

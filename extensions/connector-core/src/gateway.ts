@@ -23,6 +23,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { assertValidName } from "@cotal-ai/core";
+import { DOCS_VERSION } from "./docs.js";
 import { cotalToolSpecs, parseToolArgs, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
 import type { MeshAgent } from "./agent.js";
 import type { AgentConfig } from "./config.js";
@@ -527,7 +528,7 @@ export async function handleGatewayRequest(host: GatewayHost, r: GatewayRequest)
       .end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null }));
     return;
   }
-  const server = new McpServer({ name: "cotal", version: "0.0.0" }, { instructions: r.instructions ?? GATEWAY_INSTRUCTIONS });
+  const server = new McpServer({ name: "cotal", version: DOCS_VERSION }, { instructions: r.instructions ?? GATEWAY_INSTRUCTIONS });
   registerCotalGatewayTools(server, host, r.source, r.waitSeconds === undefined ? {} : { waitSeconds: r.waitSeconds });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   r.res.on("close", () => {
@@ -562,7 +563,7 @@ export interface GatewayStdio {
  * cancels a call aborts its signal, as a closed HTTP request does.
  */
 export async function serveGatewayStdio(host: GatewayHost, o: GatewayStdio = {}): Promise<{ close(): Promise<void> }> {
-  const server = new McpServer({ name: "cotal", version: "0.0.0" }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });
+  const server = new McpServer({ name: "cotal", version: DOCS_VERSION }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });
   registerCotalGatewayTools(server, host, o.source, {
     ...(o.waitSeconds === undefined ? {} : { waitSeconds: o.waitSeconds }),
     ...(o.wake ? { wake: o.wake } : {}),
