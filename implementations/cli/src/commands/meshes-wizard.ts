@@ -1,4 +1,4 @@
-import * as p from "@clack/prompts";
+import * as p from "../lib/prompts.js";
 import { findMesh, inputDisabledByFlag, type MeshEntry } from "@cotal-ai/workspace";
 import { bold, brand, brandBold, dim, ok } from "../lib/theme.js";
 import { abortIfCancel } from "../lib/cancel.js";

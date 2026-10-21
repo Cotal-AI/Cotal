@@ -1,5 +1,4 @@
-import { createInterface } from "node:readline/promises";
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import {
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
   isConcreteChannel, readChannelRegistry, seedChannelRegistry, validateChannelConfig,
@@ -179,11 +178,7 @@ async function confirmRemoval(name: string, space: string, values: Values, prese
   if (values.yes) return true;
   if (presentation === "json" || !canPrompt()) throw usage("channel removal requires --yes without an interactive terminal; --purge also deletes retained history for that channel");
   const question = `Remove #${name} from ${space}? ${values.purge ? "Its retained history will also be deleted." : "Its retained history will be kept."} Access grants and members are unchanged.`;
-  if (presentation === "plain") {
-    const io = createInterface({ input: process.stdin, output: process.stderr });
-    try { return (await io.question(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `)).trim() === "2"; }
-    finally { io.close(); }
-  }
+  if (presentation === "plain") return (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
   const answer = await prompts.confirm({ message: question, initialValue: false });
   return !prompts.isCancel(answer) && answer;
 }

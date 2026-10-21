@@ -1,4 +1,4 @@
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import { assertLifecycleToken, endpointToken, registry, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, brokerAddressForDisplay, isCommandFailure, isWorkspaceTargetError, oneLine,

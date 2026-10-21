@@ -1,0 +1,3 @@
+# space delete names a prepared space that is not running and its remedies, space forget says it
+# is not running, and the delete help describes -y for delete.
+smoke:space-prepared-delete

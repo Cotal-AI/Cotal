@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
-import { createInterface } from "node:readline/promises";
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
@@ -88,9 +87,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
       if (presentation === "json" || !canPrompt()) throw usage(`removing '${name}' at ${path} requires --yes without an interactive terminal`);
       let confirmed = false;
       if (presentation === "plain") {
-        const io = createInterface({ input: process.stdin, output: process.stderr });
-        try { confirmed = (await io.question(`Remove '${name}' at ${path}?\n1) Cancel\n2) Remove\nChoice [1]: `)).trim() === "2"; }
-        finally { io.close(); }
+        confirmed = (await prompts.askLine(`Remove '${name}' at ${path}?\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
       } else {
         const answer = await prompts.confirm({ message: `Remove '${name}' at ${path}?`, initialValue: false });
         confirmed = !prompts.isCancel(answer) && answer;

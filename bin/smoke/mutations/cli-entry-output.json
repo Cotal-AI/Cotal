@@ -24,8 +24,8 @@
     {
       "name": "leading global flags are not read",
       "file": "implementations/cli/src/command.ts",
-      "find": "  while (lead < argv.length && takeGlobalFlag(argv[lead]!)) lead++;\n",
-      "replace": "  while (false && lead < argv.length && takeGlobalFlag(argv[lead]!)) lead++;\n",
+      "find": "    else if (!takeGlobalFlag(word)) break;\n",
+      "replace": "    else break;\n",
       "expectRed": "--no-input before the command word is accepted",
       "cell": "--no-input before the command word is accepted",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",

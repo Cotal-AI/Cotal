@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
@@ -12,7 +12,6 @@ import { serviceInstanceId, serviceInstances, instanceProjection } from "../lib/
 import { readLocalServiceAttempts } from "../lib/service-census.js";
 import { removableServiceInstances, removeStoppedInstanceRecords } from "../lib/service-process.js";
 import { localRecordName } from "../lib/protected-records.js";
-import { untilInputEnds } from "../lib/prompt-input.js";
 
 export const serviceFlags = [spaceFlag, jsonFlag, plainFlag,
   { name: "preset", type: "string", value: "<name>", description: "add: use a declared preset and that adapter's schema-derived options; starts nothing" },
@@ -126,7 +125,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     removableServiceInstances(space, row.name);
     if (!args.values.yes) {
       if (!canPrompt() || presentation === "json") throw new CommandFailure("refused", "USAGE_INVALID", "removing a service definition outside interactive input requires --yes", { target: { ...target, name: row.name }, remedy: `confirm with cotal svc remove ${row.name} --yes` });
-      const answer = await untilInputEnds((signal) => prompts.confirm({ message: `Forget ${oneLine(row.name)} in ${oneLine(space)}? No process or OS unit will be removed.`, initialValue: false, signal }));
+      const answer = await prompts.confirm({ message: `Forget ${oneLine(row.name)} in ${oneLine(space)}? No process or OS unit will be removed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled("Service definition kept");
     }
     removableServiceInstances(space, row.name);
@@ -136,7 +135,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   }
   let name = suppliedName;
   if (!name) {
-    const answer = await untilInputEnds((signal) => prompts.text({ message: "Local service name", validate: (value) => { try { localRecordName(value ?? ""); } catch { return "Use 1 to 64 letters, digits, underscores or dashes, beginning with a letter or digit."; } }, signal }));
+    const answer = await prompts.text({ message: "Local service name", validate: (value) => { try { localRecordName(value ?? ""); } catch { return "Use 1 to 64 letters, digits, underscores or dashes, beginning with a letter or digit."; } } });
     if (prompts.isCancel(answer)) return cancelled("Service creation cancelled");
     name = localRecordName(answer);
   }
@@ -155,7 +154,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   } else if (typeof args.values.file === "string") { const file = args.values.file; definition = forName(() => importServiceDefinition(resolve(file), space)); }
   else {
     const available = servicePresets();
-    const choice = available.length ? await untilInputEnds((signal) => prompts.select({ message: "Definition source", options: [{ value: "file:", label: "Import a version-1 definition file" }, ...available.map((row) => ({ value: `preset:${row.preset.name}`, label: oneLine(row.preset.name), hint: oneLine(row.preset.summary) }))], signal })) : "file:";
+    const choice = available.length ? await prompts.select({ message: "Definition source", options: [{ value: "file:", label: "Import a version-1 definition file" }, ...available.map((row) => ({ value: `preset:${row.preset.name}`, label: oneLine(row.preset.name), hint: oneLine(row.preset.summary) }))] }) : "file:";
     if (prompts.isCancel(choice)) return cancelled("Service creation cancelled");
     if (choice.startsWith("preset:")) {
       const presetName = chosenPreset = choice.slice("preset:".length);
@@ -165,11 +164,11 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       const values = guided;
       definition = forName(() => servicePresetDefinition(preset, space, values));
     } else {
-      const file = await untilInputEnds((signal) => prompts.text({ message: "Version-1 service definition file", placeholder: "./reviews.service.json", signal }));
+      const file = await prompts.text({ message: "Version-1 service definition file", placeholder: "./reviews.service.json" });
       if (prompts.isCancel(file)) return cancelled("Service creation cancelled");
       definition = forName(() => importServiceDefinition(resolve(file), space));
     }
-    const answer = await untilInputEnds((signal) => prompts.confirm({ message: `Save ${oneLine(name)} in ${oneLine(space)}? Its program will not be started.`, initialValue: false, signal }));
+    const answer = await prompts.confirm({ message: `Save ${oneLine(name)} in ${oneLine(space)}? Its program will not be started.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) return cancelled("Service creation cancelled");
   }
   const checked = definition;
@@ -203,16 +202,16 @@ async function guidedPreset(preset: ReturnType<typeof resolveServicePreset>): Pr
   const values: ParsedArgs["values"] = {};
   for (const [name, option] of Object.entries(properties)) {
     if (!required?.includes(name)) {
-      const set = await untilInputEnds((signal) => prompts.confirm({ message: `Set optional --${name}?`, initialValue: false, signal }));
+      const set = await prompts.confirm({ message: `Set optional --${name}?`, initialValue: false });
       if (prompts.isCancel(set)) return undefined;
       if (!set) continue;
     }
     if (option.type === "boolean") {
-      const answer = await untilInputEnds((signal) => prompts.confirm({ message: `Enable --${name}?`, initialValue: false, signal }));
+      const answer = await prompts.confirm({ message: `Enable --${name}?`, initialValue: false });
       if (prompts.isCancel(answer)) return undefined;
       values[name] = answer;
     } else {
-      const answer = await untilInputEnds((signal) => prompts.text({ message: option.type === "string" ? `Non-secret value for --${name}` : `JSON ${String(option.type)} for --${name}`, signal }));
+      const answer = await prompts.text({ message: option.type === "string" ? `Non-secret value for --${name}` : `JSON ${String(option.type)} for --${name}` });
       if (prompts.isCancel(answer)) return undefined;
       values[name] = answer;
     }

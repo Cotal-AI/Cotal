@@ -33,7 +33,7 @@ export const spaceFlags = [
   { name: "tls", type: "boolean", description: "add: require TLS on every connection to the space (a tls:// or wss:// --server implies it)" },
   { name: "allow-unencrypted-overlay", type: "boolean", description: "add: accept that an overlay address is protected only while its tunnel is up" },
   { name: "force", type: "boolean", description: "add: replace a registration added by hand, and add a --server space without checking its broker" },
-  { name: "yes", short: "y", type: "boolean", description: "add: skip terminal confirmation, but still confirm fetched pins; delete: confirm the exact named space in a script" },
+  { name: "yes", short: "y", type: "boolean", description: "confirm without the terminal question; a delete must name the exact space, and an add still confirms fetched pins" },
   { name: "dry-run", type: "boolean", description: "delete: read native first-party impact without deleting anything" },
 ] as const satisfies readonly FlagSpec[];
 

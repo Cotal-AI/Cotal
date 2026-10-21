@@ -9,7 +9,7 @@ import { authServiceFlags } from "./daemon-flags.js";
 import { readFileSync } from "node:fs";
 import * as prompts from "@clack/prompts";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, isLoopbackLiteral, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, writePrivateRecord, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CommandFailure, credentialMintFlags, validateCredentialMintArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, userAuthStateDir, deprecatedDaemonEntry, workspaceSecretStore, type AgentAuthHealth, type CredentialAction } from "@cotal-ai/workspace";
+import { CommandFailure, credentialMintFlags, validateCredentialMintArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceSecretStore, type AgentAuthHealth, type CredentialAction } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   deleteIdpSpaceCatalog,
@@ -104,13 +104,13 @@ async function chooseAccount(args: ParsedArgs, mode: "login" | "logout"): Promis
   if (mode === "logout" && providers.size === 0) return undefined;
   if (!canChooseAccount() || presentationOf(args.values) === "json") throw new CommandFailure("refused", "USAGE_INVALID", "select the provider explicitly with --idp outside an interactive terminal");
   if (providers.size) {
-    const chosen = await prompts.select({ message: mode === "login" ? "Choose a sign-in provider" : "Choose the account to sign out", options: [...providers].map(([idp, sub]) => ({ value: idp, label: oneLine(idp), ...(sub ? { hint: oneLine(sub) } : {}) })) });
+    const chosen = await untilInputEnds((signal) => prompts.select({ message: mode === "login" ? "Choose a sign-in provider" : "Choose the account to sign out", options: [...providers].map(([idp, sub]) => ({ value: idp, label: oneLine(idp), ...(sub ? { hint: oneLine(sub) } : {}) })), signal }));
     return prompts.isCancel(chosen) ? undefined : chosen;
   }
-  const answer = await prompts.text({ message: "Sign-in provider auth URL", placeholder: "https://example.org/api/auth", validate: (value) => {
+  const answer = await untilInputEnds((signal) => prompts.text({ message: "Sign-in provider auth URL", placeholder: "https://example.org/api/auth", signal, validate: (value) => {
     try { normalizeIdpUrl(value ?? ""); }
     catch { return "Enter the HTTPS auth base URL without a query, fragment or embedded credentials."; }
-  } });
+  } }));
   return prompts.isCancel(answer) ? undefined : normalizeIdpUrl(answer);
 }
 

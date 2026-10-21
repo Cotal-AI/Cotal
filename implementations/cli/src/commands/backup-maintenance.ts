@@ -1,4 +1,4 @@
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import type { ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, acquireMaintenanceLock, assertSingleSpaceBroker, assessRestoreClaim, authDir,

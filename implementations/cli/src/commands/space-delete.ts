@@ -1,4 +1,4 @@
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import { Kvm } from "@nats-io/kv";
 import { JetStreamApiCodes, jetstreamManager } from "@nats-io/jetstream";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
@@ -10,7 +10,7 @@ import {
   type ParsedArgs, type Presence, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
-  brokerAddressForDisplay, CommandFailure, findMesh, getSpaceAuth, oneLine, presentationOf,
+  brokerAddressForDisplay, CommandFailure, findMesh, findPreparedSpace, getSpaceAuth, oneLine, presentationOf,
   renderReport, resolveNativeServiceTarget, terminalWidth, workspaceSecretStore, writeResult, type Report,
 } from "@cotal-ai/workspace";
 
@@ -22,7 +22,14 @@ async function readSpaceDeletion(name: string) {
   let entry: ReturnType<typeof findMesh>;
   try { entry = findMesh(name); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local registry could not be read; no live space deletion target was inferred", { target: { space: name } }); }
-  if (!entry) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no registered space has this exact name; no broker was contacted", { target: { space: name } });
+  if (!entry) {
+    // A prepared space has a name and a root but no running broker whose streams could be deleted.
+    let prepared: ReturnType<typeof findPreparedSpace>;
+    try { prepared = findPreparedSpace(name); }
+    catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local prepared-space records could not be read; no live space deletion target was inferred", { target: { space: name } }); }
+    if (prepared) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `"${oneLine(name)}" is prepared and not running, so it has no live broker to delete from; no broker was contacted`, { target: { space: name, root: prepared.root }, remedy: `start it with cotal up in ${oneLine(prepared.root)} and delete it then, or remove only the local record with cotal space forget ${oneLine(name)}` });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no registered space has this exact name; no broker was contacted", { target: { space: name }, remedy: "see the registered spaces with cotal space" });
+  }
   if (entry.mode === "user") throw new CommandFailure("refused", "UNSUPPORTED", "this native deletion inventory has no supported user-auth view; no open or static identity was substituted", { target: { space: name } });
   try {
     const selected = resolveNativeServiceTarget(entry.root, name, entry.server);
@@ -221,9 +228,9 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   if (args.values["dry-run"] === true && args.values.yes === true)
     throw new CommandFailure("refused", "USAGE_INVALID", "--yes belongs to a guarded live deletion, not to a dry-run");
   if (args.values["dry-run"] === true) {
+    // The preview reads its whole scope, so it is complete; its limits are a note, not a partial read.
     const { result } = await readSpaceDeletion(name);
-    writeResult(presentation, { command: "space delete", target: { space: name }, result,
-      completeness: "partial", partial: { message: "This is a non-atomic native read of first-party stream targets and presence entries, not a guarded deletion plan. A fresh exact-scope check and confirmation are still required before any apply." } }, previewView);
+    writeResult(presentation, { command: "space delete", target: { space: name }, result }, (data) => ({ sections: [...previewView(data).sections, { blocks: [{ kind: "lines", lines: ["This is a non-atomic native read of first-party stream targets and presence entries, not a guarded deletion plan. A fresh exact-scope check and confirmation are still required before any apply."] }] }] }));
     return;
   }
   const yes = args.values.yes === true;

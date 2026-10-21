@@ -27,7 +27,7 @@ import {
 } from "@cotal-ai/core";
 import {
   authDir, canonicalLocalProcessPath, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
-  c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
+  c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
   brokerAddressForDisplay, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   deprecatedDaemonEntry, type MeshEntry,
@@ -712,7 +712,7 @@ async function confirmMaintenance(args: ParsedArgs, target: unknown, review: Rep
   const presentation = presentationOf(args.values);
   if (presentation === "json" || !process.stdin.isTTY || !process.stdout.isTTY || inputDisabledByFlag() || process.env.COTAL_NO_PROMPT === "1") throw new CommandFailure("refused", "USAGE_INVALID", "manager maintenance requires --yes outside an interactive terminal", { target, remedy: "inspect the same operation with --dry-run before confirming its scope" });
   console.log(renderReport(review, presentation, terminalWidth(process.stdout)));
-  const answer = await prompts.confirm({ message: question, initialValue: false });
+  const answer = await untilInputEnds((signal) => prompts.confirm({ message: question, initialValue: false, signal }));
   if (!prompts.isCancel(answer) && answer) return true;
   writeResult(presentation, { command: "manager", target, result: { kind: "manager-maintenance-cancelled", changed: false }, noOp: true }, (): Report => ({ sections: [{ title: "Manager maintenance cancelled", blocks: [{ kind: "lines", lines: ["The maintenance action was not submitted. No repair or seat drain was performed."] }] }] }));
   return false;

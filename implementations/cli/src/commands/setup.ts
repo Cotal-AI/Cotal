@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import * as p from "@clack/prompts";
+import * as p from "../lib/prompts.js";
 import { registry, writePrivateRecord, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
 import {
   CommandFailure,

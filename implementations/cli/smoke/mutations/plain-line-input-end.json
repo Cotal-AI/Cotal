@@ -1,0 +1,46 @@
+{
+  "suite": [
+    "implementations/cli/smoke/prompt-input-end.smoke.ts"
+  ],
+  "guard": "a plain line question settles as a cancel when its input ends, closes, or takes Ctrl-D or Ctrl-C, and no CLI source asks a readline question outside askLine",
+  "command": "pnpm smoke:prompt-input-end",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/plain-line-input-end.json",
+  "why": [
+    "The plain removal questions of channel remove and persona remove read one line with readline. A closed input only closes readline, which leaves its question pending, so the process exited 13 with Node's unsettled-await warning. A line with no newline before the input ended was not an answer either, and it also left the question pending.",
+    "askLine asks through untilInputEnds, whose abort rejects the question, and readline itself rejects it for Ctrl-D on an empty line and for Ctrl-C. Each AbortError is the cancel. The suite drives askLine over in-memory streams, in terminal mode for the keypress cases, and a census reads the CLI sources.",
+    "The suite command builds the CLI and its dependencies first and imports workspace's dist, so each mutation rebuilds in afterRestore."
+  ],
+  "mutations": [
+    {
+      "name": "the line question ignores the input-end abort",
+      "file": "implementations/cli/src/lib/prompts.ts",
+      "find": "io.question(query, { signal })",
+      "replace": "io.question(query)",
+      "expectRed": "closed input settles a plain line question as a cancel",
+      "cell": "closed input settles a plain line question as a cancel",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "The pre-fix question: readline closes on input end and its question stays pending."
+    },
+    {
+      "name": "readline's own Ctrl-D rejection escapes as an error",
+      "file": "implementations/cli/src/lib/prompts.ts",
+      "find": "      if ((error as { name?: unknown } | null)?.name === \"AbortError\") return undefined;\n",
+      "replace": "      if (signal.aborted) return undefined;\n",
+      "expectRed": "Ctrl-D on an empty plain line question settles it as a cancel",
+      "cell": "Ctrl-D on an empty plain line question settles it as a cancel",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "Readline rejects Ctrl-D before the input-end abort runs, so only the AbortError check makes it a cancel."
+    },
+    {
+      "name": "persona remove asks a raw readline question again",
+      "file": "implementations/cli/src/commands/persona.ts",
+      "find": "        confirmed = (await prompts.askLine(`Remove '${name}' at ${path}?\\n1) Cancel\\n2) Remove\\nChoice [1]: `))?.trim() === \"2\";\n",
+      "replace": "        const io = (await import(\"node:readline/promises\")).createInterface({ input: process.stdin, output: process.stderr });\n        try { confirmed = (await io.question(`Remove '${name}' at ${path}?\\n1) Cancel\\n2) Remove\\nChoice [1]: `)).trim() === \"2\"; }\n        finally { io.close(); }\n",
+      "expectRed": "no CLI source asks a readline question directly; a plain line question goes through askLine",
+      "cell": "no CLI source asks a readline question directly; a plain line question goes through askLine",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "The released persona.ts question, with its import inlined so the mutant still compiles."
+    }
+  ]
+}

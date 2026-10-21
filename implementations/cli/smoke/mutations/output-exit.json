@@ -53,7 +53,7 @@
     {
       "name": "global flags after the command word reach its parser",
       "file": "implementations/cli/src/command.ts",
-      "find": "  return cmd && (cmd.rawArgs || cmd.name.startsWith(\"__\")) ? [...words] : stripGlobalFlags(words);\n",
+      "find": "  return takesWordsRaw(cmd) ? [...words] : stripGlobalFlags(words);\n",
       "replace": "  return [...words];\n",
       "expectRed": "--no-input after the command's words disables input",
       "cell": "--no-input after the command's words disables input"

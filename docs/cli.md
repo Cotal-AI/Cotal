@@ -73,8 +73,10 @@ publication can proceed.
 
 An undeclared flag is a usage error, and so is a flag given more than once unless it is
 repeatable, as `--opt` and `down --session-store` are. So is an unknown command, and a first word
-that is not one of the command's subcommands when it declares them. The command prints the error and
-its help on stderr, writes nothing on stdout, exits 1, and does not run. A usage error is found before any effect, so it never seeds
+that is not one of the command's subcommands when it declares them. So is input a command checks
+before it acts, such as a missing argument, an invalid flag value or two flags that conflict, and
+`cotal help` with a subcommand that does not exist. The command prints the error, then any remedy,
+then its help on stderr, writes nothing on stdout, exits 1, and does not run. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 
 Command output, including error lines on stderr, the guided `setup` and `meshes add` prompts and
@@ -84,11 +86,18 @@ piped, unless it is `0` or `false`, and it takes precedence over `NO_COLOR`. `--
 color off for that run, whatever the environment says. It sets no `NO_COLOR` for the programs the
 run starts, but they are no longer forced into color by `FORCE_COLOR`.
 
+At any question the CLI asks, Ctrl-D on an empty line or an input that closes cancels the question
+as Ctrl-C does, so the command reports its own cancelled outcome.
 `--no-input` means the run never prompts, opens an editor or opens a browser. A command that would
 prompt behaves as it does without a terminal, `web` prints its link without opening it, and
-`personas edit` is refused. `--json` implies `--no-input`. Both flags work before the command word
-on every command, and after it on every command except one that takes its words raw. After `--`
-they are ordinary words. No command may declare a flag with either name. An installed extension
+`personas edit` is refused. `--json` implies `--no-input`. `--no-color` and `--no-input` work before
+the command word on every command, and after it on every command except one that takes its words
+raw. After `--` they are ordinary words. No command may declare a flag with either name. The output
+flags `--json` (`-j`) and `--plain` may also come before the command word, as in
+`cotal --json status`; they are read as the command's own flags, so a command without that output
+refuses them as it does after the command word. A command that takes its words raw, such as the
+hidden completion entry, has no flags to read them as and refuses them before its word with a usage
+error. A `--` before the command word ends these leading flags. An installed extension
 whose command declares one is an internal error, and `cotal` exits 1 before running any command.
 Shell completion treats the current `--` word as a flag prefix until it is committed. After `-- `,
 it completes positional values without offering options. A string option's value is completed
@@ -1448,7 +1457,10 @@ entries in the presence bucket. Both static connections must confirm their own
 identity and the same broker server ID. A failed or incomplete native read refuses
 instead of showing missing resources as absent. The snapshot is non-atomic and presence is not an
 authoritative liveness or membership check. User-auth deletion inventory and apply
-are not supported. The dry-run removes no live or local state.
+are not supported. The dry-run removes no live or local state, and a read that covers its whole scope
+exits 0. A space that is prepared and not running, including one stopped with `cotal down`, has no
+live broker to read or delete from: `space delete` refuses it with `TARGET_UNAVAILABLE`, exit 2,
+naming the root to start it in, and `space forget` removes only its local record.
 
 Bare `space delete <name>` displays that impact on an interactive terminal and requires
 typing the exact space name. A script supplies the exact positional name with `--yes`;

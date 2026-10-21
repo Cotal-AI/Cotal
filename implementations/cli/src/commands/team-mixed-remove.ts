@@ -1,4 +1,4 @@
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import { acquireMaintenanceLock, brokerAddressForDisplay, canonicalRoot, CommandFailure, oneLine, presentationOf, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
 import { listAdditiveTeamAttempts, type AdditiveAgentReceipt } from "../lib/team-additive-attempt.js";

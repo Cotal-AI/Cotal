@@ -319,6 +319,15 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
   if (args.values.file !== undefined && args.values.foreground === true) throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime");
   if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt");
+  // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
+  // its own checks for maintenance re-entries, which do not pass through this validation.
+  parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);
+  parsePositiveIntegerFlag("--max-file-store", args.values["max-file-store"] as string | undefined);
+  const restoreOnly = args.values["restore-only"];
+  if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
+  if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
+  if (args.values.restore && (args.values.file !== undefined || args.values.channels !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --file/-f or --channels");
+  if (args.values.restore && args.values["rotate-sys"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --rotate-sys", { remedy: "restore the space and verify it first, then rotate: cotal down, then cotal up --rotate-sys" });
   if (args.values.root !== undefined) preparedUpRoot(String(args.values.root));
   else {
     const inheritedRoot = inheritedMachineHomeRoot();
