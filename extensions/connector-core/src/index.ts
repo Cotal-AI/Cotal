@@ -12,6 +12,7 @@ export * from "./agui-holder.js";
 export * from "./agui-render.js";
 export * from "./agui-wal-path.js";
 export * from "./framing.js";
+export * from "./feedback.js";
 export * from "./tool-specs.js";
 export * from "./orientation.js";
 export * from "./docs.js";
