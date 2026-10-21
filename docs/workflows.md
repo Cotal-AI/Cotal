@@ -9,8 +9,10 @@ Legacy `run-start` is unchanged. An unsupported keyed command never falls back t
 
 The scheduler must persist the submission ID, semantic fingerprint, caller incarnation,
 contract digests and instance/epoch before dispatch. The client helpers prepare that snapshot
-and send one attempt at a time. They do not schedule retries, replace unknown work or re-pin it
-to another manager. Their prepared handle is process-local and WeakMap-bound: serialized JSON
+and send one attempt at a time. They pass on only `signal` and `deadlineMs`, which a keyed
+request keeps at or below 30000. They refuse a reply that names another submission, instance,
+epoch or fingerprint, and that outcome stays unknown. They do not schedule retries, replace
+unknown work or re-pin it to another manager. Their prepared handle is process-local and WeakMap-bound: serialized JSON
 cannot be rehydrated through these helpers. Persisted scheduler recovery needs separate reviewed
 integration, not a cast or an automatic fresh Describe. Keep the original work reservation
 while reconciling any unknown outcome.
@@ -18,8 +20,10 @@ while reconciling any unknown outcome.
 The binding winner may make at most three admission-create attempts in its original callback
 deadline, with the same admission bytes and authority. Initial authorization precedes binding,
 but fresh authority rechecks before each admission attempt can fail after binding and retain
-binding-only debt. Later duplicates only read. A
-`binding-only` result is a visible reconciliation hold, not a queue or permission to repair.
+binding-only debt. The manager refuses a start while it is stopping or already at its launch
+limit before any binding, so that refusal leaves nothing bound. A launch that fails after
+admission leaves `admitted` with no run, and no later call launches it. Later duplicates only
+read. A `binding-only` result is a visible reconciliation hold, not a queue or permission to repair.
 An absent admission is an observation at read time, not proof that the original callback cannot
 still write. A changed caller generation or manager epoch refuses rather than adopting the run.
 

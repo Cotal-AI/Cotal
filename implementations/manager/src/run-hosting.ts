@@ -57,7 +57,7 @@ import {
   newTakeoverId,
   admissionBucket,
   createRunAdmission,
-  bindAndAdmitRunSubmission, readRunSubmission, submissionFingerprint, newSubmissionRunId,
+  bindAndAdmitRunSubmission, readRunSubmission, submissionFingerprint, newSubmissionRunId, KEYED_SUBMISSION_MAX_DEADLINE_MS,
   canonicalJson,
   type RunSubmissionView, type RemoteRunSubmissionResult,
   readRunAdmission,
@@ -253,6 +253,8 @@ export class RunHosting {
       || bind.epoch !== ctx.identity.epoch || !Number.isSafeInteger(ctx.receivedAt)
       || !Number.isSafeInteger(ctx.request.deadlineMs) || ctx.request.deadlineMs! <= 0)
       throw new EpEnvelopeError("permission-denied", "keyed runs require fresh issued exact-instance/epoch contracts and original receive deadline");
+    if (ctx.request.deadlineMs! > KEYED_SUBMISSION_MAX_DEADLINE_MS)
+      throw new EpEnvelopeError("bad-request", `keyed deadlineMs exceeds the ${KEYED_SUBMISSION_MAX_DEADLINE_MS}ms request budget`);
     return { caller, deadline: ctx.receivedAt! + ctx.request.deadlineMs! };
   }
 
@@ -265,45 +267,58 @@ export class RunHosting {
     if (!verdict.ok) throw new EpEnvelopeError("bad-request", "keyed program does not validate", verdict.errors.map(e => ({ kind: LANG_PROBLEM_DETAIL_KIND, ...withoutFrame(e) })));
     const placements = verdict.placements ?? [];
     if (placements.length > 1) throw new EpEnvelopeError("unimplemented", "keyed run may place spawns on one manager instance only");
-    let result: { winner: boolean; view: RunSubmissionView; admission?: RunAdmission };
-    if (this.remote) {
-      if (!this.ctx.submitRun) throw new EpEnvelopeError("unimplemented", "this issuer does not support keyed submissions");
-      const remote = await this.ctx.submitRun({ subject: this.servedSubject(ctx) });
-      result = remote;
-      if (remote.view.submissionId !== ctx.request.id || remote.view.instanceId !== this.ctx.instanceId
-        || remote.view.processEpoch !== ctx.identity.epoch || remote.view.fingerprint !== submissionFingerprint(ctx.request, ctx.subject).fingerprint)
-        throw new EpEnvelopeError("internal", "issuer keyed response names other submission coordinates");
-    } else {
-      const auth = this.ctx.auth;
-      if (!auth || !isIssuedCaller(caller)) throw new EpEnvelopeError("unimplemented", "keyed runs require issued static or signerless authority");
-      const ref = { space: this.ctx.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
-      const resolved = await withIssuerSession({ servers: this.ctx.servers ?? DEFAULT_SERVER, space: this.ctx.space, auth, tls: false }, s => s.store.resolve(ref, s.sourceIsLive));
-      const subject = this.servedSubject(ctx);
-      if (!importedIssuedPermitsSubject(resolved.evidence.permissions.publish, subject))
-        throw new EpEnvelopeError("permission-denied", "issued ceiling does not permit keyed start");
-      const runId = newSubmissionRunId(), admission: RunAdmission = { version: 1, space: this.ctx.space, endpoint: this.ctx.endpoint,
-        runId, instanceId: this.ctx.instanceId, caller, ceiling: resolved.evidence.permissions,
-        provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now() };
-      result = await this.withAdmitter(runId, (kv, jsm) => bindAndAdmitRunSubmission({ kv, jsm, admission,
-        submissionId: ctx.request.id, fingerprint: submissionFingerprint(ctx.request, ctx.subject).fingerprint,
-        processEpoch: ctx.identity.epoch, callbackDeadline: Math.min(deadline, resolved.evidence.expiresAt === undefined ? Infinity : resolved.evidence.expiresAt * 1000),
-        assertCurrent: async () => {
-          const fresh = await withIssuerSession({ servers: this.ctx.servers ?? DEFAULT_SERVER, space: this.ctx.space, auth, tls: false }, s => s.store.resolve(ref, s.sourceIsLive));
-          if (fresh.revision !== resolved.revision || canonicalJson(fresh.evidence) !== canonicalJson(resolved.evidence))
-            throw new EpEnvelopeError("permission-denied", "original keyed authority changed; retain its binding");
-        } }), { caller, id: ctx.request.id });
+    // A launch refusal after the binding would leave an admission that no duplicate or read ever
+    // launches, so the stopping and capacity refusals, and the slot, are taken before it.
+    const release = this.reserveLaunch();
+    let slot: HostedRun | undefined;
+    try {
+      let result: { winner: boolean; view: RunSubmissionView; admission?: RunAdmission };
+      if (this.remote) {
+        if (!this.ctx.submitRun) throw new EpEnvelopeError("unimplemented", "this issuer does not support keyed submissions");
+        const remote = await this.ctx.submitRun({ subject: this.servedSubject(ctx) });
+        result = remote;
+        if (remote.view.submissionId !== ctx.request.id || remote.view.instanceId !== this.ctx.instanceId
+          || remote.view.processEpoch !== ctx.identity.epoch || remote.view.fingerprint !== submissionFingerprint(ctx.request, ctx.subject).fingerprint)
+          throw new EpEnvelopeError("internal", "issuer keyed response names other submission coordinates");
+      } else {
+        const auth = this.ctx.auth;
+        if (!auth || !isIssuedCaller(caller)) throw new EpEnvelopeError("unimplemented", "keyed runs require issued static or signerless authority");
+        const ref = { space: this.ctx.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
+        const resolved = await withIssuerSession({ servers: this.ctx.servers ?? DEFAULT_SERVER, space: this.ctx.space, auth, tls: false }, s => s.store.resolve(ref, s.sourceIsLive));
+        const subject = this.servedSubject(ctx);
+        if (!importedIssuedPermitsSubject(resolved.evidence.permissions.publish, subject))
+          throw new EpEnvelopeError("permission-denied", "issued ceiling does not permit keyed start");
+        const runId = newSubmissionRunId();
+        slot = this.claim(runId, placements);
+        const admission: RunAdmission = { version: 1, space: this.ctx.space, endpoint: this.ctx.endpoint,
+          runId, instanceId: this.ctx.instanceId, caller, ceiling: resolved.evidence.permissions,
+          provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now() };
+        result = await this.withAdmitter(runId, (kv, jsm) => bindAndAdmitRunSubmission({ kv, jsm, admission,
+          submissionId: ctx.request.id, fingerprint: submissionFingerprint(ctx.request, ctx.subject).fingerprint,
+          processEpoch: ctx.identity.epoch, callbackDeadline: Math.min(deadline, resolved.evidence.expiresAt === undefined ? Infinity : resolved.evidence.expiresAt * 1000),
+          assertCurrent: async () => {
+            const fresh = await withIssuerSession({ servers: this.ctx.servers ?? DEFAULT_SERVER, space: this.ctx.space, auth, tls: false }, s => s.store.resolve(ref, s.sourceIsLive));
+            if (fresh.revision !== resolved.revision || canonicalJson(fresh.evidence) !== canonicalJson(resolved.evidence))
+              throw new EpEnvelopeError("permission-denied", "original keyed authority changed; retain its binding");
+          } }), { caller, id: ctx.request.id });
+      }
+      if (!result.winner || !result.admission) return this.submissionActivation(result.view);
+      const admission = result.admission;
+      if (admission.runId !== result.view.runId || admission.instanceId !== this.ctx.instanceId
+        || admission.caller.owner !== caller.owner || admission.caller.actor !== caller.actor || admission.caller.uid !== caller.uid
+        || !isIssuedCaller(admission.caller) || !isIssuedCaller(caller) || admission.caller.generation !== caller.generation)
+        throw new EpEnvelopeError("internal", "keyed admission names another caller/run/instance");
+      if (Date.now() >= deadline) return { ...result.view, reason: "reconcile-held; original callback deadline elapsed before activation" };
+      // The signerless issuer mints the run id, so that slot is claimed on the winning reply.
+      slot ??= this.claim(admission.runId, placements);
+      await this.launch(host, { mode: "new", runId: admission.runId, source: args.source,
+        ...(args.file !== undefined ? { file: args.file } : {}), epoch: 1, fencingToken: 1,
+        timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT, admission: { admission, revoked: undefined }, placements }, slot, release);
+      return { ...result.view, state: "activated" };
+    } finally {
+      release();
+      if (slot !== undefined && slot.drive === undefined) this.free(slot);
     }
-    if (!result.winner || !result.admission) return this.submissionActivation(result.view);
-    const admission = result.admission;
-    if (admission.runId !== result.view.runId || admission.instanceId !== this.ctx.instanceId
-      || admission.caller.owner !== caller.owner || admission.caller.actor !== caller.actor || admission.caller.uid !== caller.uid
-      || !isIssuedCaller(admission.caller) || !isIssuedCaller(caller) || admission.caller.generation !== caller.generation)
-      throw new EpEnvelopeError("internal", "keyed admission names another caller/run/instance");
-    if (Date.now() >= deadline) return { ...result.view, reason: "reconcile-held; original callback deadline elapsed before activation" };
-    await this.launch(host, { mode: "new", runId: admission.runId, source: args.source,
-      ...(args.file !== undefined ? { file: args.file } : {}), epoch: 1, fencingToken: 1,
-      timeout: args.timeout ?? DEFAULT_CHECKPOINT_TIMEOUT, admission: { admission, revoked: undefined }, placements });
-    return { ...result.view, state: "activated" };
   }
 
   async submissionStatus(ctx: EpServeContext, submissionId: string): Promise<RunSubmissionView> {
@@ -797,24 +812,32 @@ export class RunHosting {
     host: RunHost,
     req: { mode: "new" | "existing"; runId: string; source: string; file?: string; epoch: number; fencingToken: number; timeout: string; admission: RunAdmissionView; placements?: readonly { endpoint: string; instanceId: string }[]; served?: string },
     claimed?: HostedRun,
+    reserved?: () => void,
   ): Promise<void> {
     const slot = claimed ?? this.claim(req.runId, req.placements ?? []);
+    let release = reserved;
     try {
       if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
-      if (this.launching >= MAX_LAUNCHING)
-        throw new EpEnvelopeError("resource-exhausted", `${MAX_LAUNCHING} workflow runs are launching on this manager already; retry once one has activated`);
-      this.launching += 1;
-      try {
-        await this.drive(host, req, slot);
-      } finally {
-        this.launching -= 1;
-      }
+      release ??= this.reserveLaunch();
+      await this.drive(host, req, slot);
     } catch (e) {
       // A slot whose drive never started is freed here; one whose drive exists is freed by that
       // drive's own end, so the run reads as held until its attempt has stopped.
       if (slot.drive === undefined) this.free(slot);
       throw e;
+    } finally {
+      release?.();
     }
+  }
+
+  /** Take one launching unit, or refuse while stopping or at MAX_LAUNCHING. The release is idempotent. */
+  private reserveLaunch(): () => void {
+    if (this.stopping) throw new EpEnvelopeError("unavailable", "the manager is stopping and hosts no new drives");
+    if (this.launching >= MAX_LAUNCHING)
+      throw new EpEnvelopeError("resource-exhausted", `${MAX_LAUNCHING} workflow runs are launching on this manager already; retry once one has activated`);
+    this.launching += 1;
+    let held = true;
+    return () => { if (held) { held = false; this.launching -= 1; } };
   }
 
   private async drive(

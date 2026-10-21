@@ -49,18 +49,33 @@ export async function invokeKeyedRunSubmission(nc: NatsConnection, space: string
   const p = pins.get(submission);
   if (!p || canonicalJson(p.service.caller) !== canonicalJson(submission.caller))
     throw new EpEnvelopeError("failed-precondition", "keyed submission was not prepared from pinned native support");
-  const result = await invokeCommand(nc, space, p.service, "run-start-keyed", p.args, { ...opts, id: submission.submissionId });
+  const result = await invokeCommand(nc, space, p.service, "run-start-keyed", p.args, { ...supported(opts), id: submission.submissionId });
   if (!result.reply.ok) throw new EpEnvelopeError((result.reply.error?.code ?? "internal") as EpErrorCode, result.reply.error?.message ?? "keyed start refused",
     result.reply.error?.details, result.reply.error?.outcome);
-  return result.reply.data as RunSubmissionView;
+  return pinnedView(submission, result.reply.data as RunSubmissionView);
 }
 
 export async function readKeyedRunSubmission(nc: NatsConnection, space: string, submission: KeyedRunSubmission,
   opts: { deadlineMs: number; signal?: AbortSignal }): Promise<RunSubmissionView> {
   const p = pins.get(submission);
   if (!p) throw new EpEnvelopeError("failed-precondition", "keyed read needs its original pinned support");
-  const result = await invokeCommand(nc, space, p.service, "run-submission-status", { submissionId: submission.submissionId }, opts);
+  const result = await invokeCommand(nc, space, p.service, "run-submission-status", { submissionId: submission.submissionId }, supported(opts));
   if (!result.reply.ok) throw new EpEnvelopeError((result.reply.error?.code ?? "internal") as EpErrorCode, result.reply.error?.message ?? "keyed read refused",
     result.reply.error?.details, result.reply.error?.outcome);
-  return result.reply.data as RunSubmissionView;
+  return pinnedView(submission, result.reply.data as RunSubmissionView);
+}
+
+/** Only the declared options reach the call, so no JavaScript caller can override the exact bind. */
+function supported(opts: { deadlineMs: number; signal?: AbortSignal }): { deadlineMs: number; signal?: AbortSignal } {
+  return { deadlineMs: opts.deadlineMs, ...(opts.signal !== undefined ? { signal: opts.signal } : {}) };
+}
+
+/** A reply that names another submission, instance, epoch or fingerprint is not this submission's.
+ * Its outcome stays unknown: keep the original reservation. */
+function pinnedView(submission: KeyedRunSubmission, view: RunSubmissionView): RunSubmissionView {
+  if (view.submissionId !== submission.submissionId || view.instanceId !== submission.instanceId
+    || view.processEpoch !== submission.processEpoch
+    || view.fingerprint !== (view.state === "unbound" ? undefined : submission.fingerprint))
+    throw new EpEnvelopeError("internal", "keyed reply names other submission coordinates");
+  return view;
 }

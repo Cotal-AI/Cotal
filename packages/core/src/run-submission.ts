@@ -31,6 +31,10 @@ export interface RunSubmissionView {
   callbackDeadline?: number;
   reason?: string;
 }
+/** The largest `deadlineMs` a keyed request may carry. A request budget only: it proves nothing
+ * about broker settlement or credential validity, and the callback deadline stays the earlier of
+ * this and the caller's authority expiry. */
+export const KEYED_SUBMISSION_MAX_DEADLINE_MS = 30_000;
 const enc = new TextEncoder(), dec = new TextDecoder("utf-8", { fatal: true });
 const refuse = (message: string): never => { throw new EpEnvelopeError("failed-precondition", message); };
 export function runSubmissionKey(endpoint: string, caller: EpCaller, submissionId: string): string {
@@ -110,6 +114,8 @@ export async function bindAndAdmitRunSubmission(args: {
   /** Fresh checks may refuse/hold, never replace the original frozen admission bytes. */
   assertCurrent?: () => Promise<void>;
 }): Promise<{ winner: boolean; view: RunSubmissionView; admission?: RunAdmission }> {
+  if (args.callbackDeadline - Date.now() > KEYED_SUBMISSION_MAX_DEADLINE_MS)
+    throw new EpEnvelopeError("bad-request", `keyed callback deadline exceeds the ${KEYED_SUBMISSION_MAX_DEADLINE_MS}ms request budget`);
   const a = admissionSnapshot(args.admission), binding = runSubmissionSnapshot({ v: 1, space: a.space, endpoint: a.endpoint,
     caller: a.caller, submissionId: args.submissionId, fingerprint: args.fingerprint, instanceId: a.instanceId,
     processEpoch: args.processEpoch, runId: a.runId, admissionDigest: contractDigest(a), callbackDeadline: args.callbackDeadline });

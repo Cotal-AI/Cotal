@@ -34,7 +34,7 @@ import {
   admissionKey,
   admissionSnapshot,
   createRunAdmission,
-  bindAndAdmitRunSubmission, readRunSubmission, newSubmissionRunId, submissionFingerprint, canonicalJson,
+  bindAndAdmitRunSubmission, readRunSubmission, newSubmissionRunId, submissionFingerprint, canonicalJson, KEYED_SUBMISSION_MAX_DEADLINE_MS,
   revokeRunAdmission,
   isAccountNkey,
   isDerivedOwner,
@@ -573,8 +573,12 @@ export function observedRunRequest(subject: string, data: Uint8Array): ObservedR
   const envelope = { class: env.class, op: env.op, bind: env.bind };
   if (parsed.command === "run-start") return { operation: { command: "run-start" }, envelope };
   if (parsed.command === "run-start-keyed" || parsed.command === "run-submission-status") {
-    if (!Number.isSafeInteger(env.deadlineMs) || env.deadlineMs! <= 0) return undefined;
-    const submission = { id: env.id, fingerprint: submissionFingerprint(env, parsed).fingerprint, deadline: Date.now() + env.deadlineMs! };
+    if (!Number.isSafeInteger(env.deadlineMs) || env.deadlineMs! <= 0 || env.deadlineMs! > KEYED_SUBMISSION_MAX_DEADLINE_MS) return undefined;
+    // This runs in the shared observation callback: carried content that cannot be canonicalized
+    // (a lone surrogate, nesting past the stack) leaves the request unobserved, never a throw.
+    let fingerprint: string;
+    try { fingerprint = submissionFingerprint(env, parsed).fingerprint; } catch { return undefined; }
+    const submission = { id: env.id, fingerprint, deadline: Date.now() + env.deadlineMs! };
     if (parsed.command === "run-start-keyed") return { operation: { command: "run-start-keyed" }, envelope, submission };
     if (typeof env.args?.submissionId !== "string") return undefined;
     return { operation: { command: "run-submission-status", submissionId: env.args.submissionId }, envelope, submission };

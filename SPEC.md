@@ -5069,6 +5069,11 @@ identity. `run-submission-status` accepts only a submission ID and derives its n
 the authenticated caller owner, actor and lifecycle UID. Both require issued reach, pinned
 contracts and an exact-instance/epoch bind. Old credentials gain no reach by reconnecting.
 Legacy `run-start` remains unchanged and is never an automatic fallback.
+A keyed request's `deadlineMs` is at most 30000. A host refuses a larger value as `bad-request`
+before any read or binding. This maximum is a request budget. It does not show that a publish
+has settled or that a credential is still valid. The callback deadline stays the earlier of the
+receive deadline and the caller's authority expiry, and a request that outlives a credential
+still has an unknown outcome.
 
 The admission authority writes one `submission.v1.<endpointToken>.<callerDigest>.<id>` binding
 in the existing write-once admission store. `callerDigest` is the canonical SHA-256 digest of
@@ -5076,6 +5081,9 @@ in the existing write-once admission store. `callerDigest` is the canonical SHA-
 generation, semantic fingerprint, accepting instance/epoch, manager-minted run ID, frozen
 admission digest and original callback deadline. Bindings are permanent, including terminal
 runs. Capacity exhaustion refuses new submissions rather than deleting authority history.
+The manager takes its stopping and launch-capacity refusals, and reserves the launch, before the
+binding, so those refusals leave a submission unbound. A launch that still fails after admission
+leaves `admitted` with no run, and nothing in this prerequisite launches or repairs it.
 
 Initial authorization and evidence validation precedes the binding CAS. Before each admission
 attempt, the original binding winner rechecks that same authority. These fallible freshness
