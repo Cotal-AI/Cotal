@@ -570,7 +570,7 @@ export interface ManagerOptions {
     agentBearerExchangeUrl: string;
     /** The closed host run callbacks. Workflow runs are hosted only when ALL are supplied; a
      * partial set refuses at construction, and absent means run-start/resume stay unavailable. */
-    runHosting?: Pick<import("./run-hosting.js").RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">;
+    runHosting?: Pick<import("./run-hosting.js").RunHostingContext, "admitRun" | "submitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">;
     /** Host-owned execution of one admitted delegated user intent (SPEC 13.16). Absent: a delegated
      * spawn and a delegated retirement are refused before any request. */
     executeDelegatedUserIntent?: (
@@ -2169,6 +2169,7 @@ export class Manager {
         auth: undefined,
         log: (line) => console.error(line),
         admitRun: remoteRuns.admitRun,
+        submitRun: remoteRuns.submitRun,
         revokeRun: remoteRuns.revokeRun,
         issueAttempt: remoteRuns.issueAttempt,
         issueOperator: remoteRuns.issueOperator,
@@ -4087,6 +4088,8 @@ export class Manager {
       // The workflow-run family (SPEC 14.3): the manager hosts the driver. Reach is the broker's
       // (`run` capability / privileged instrument rows); the serve gate is the maintenance fence.
       runStart: (ctx) => this.serveGated(ctx, () => this.runHost().start(ctx, args(ctx) as { source: string; file?: string; timeout?: string })),
+      runStartKeyed: (ctx) => this.serveGated(ctx, () => this.runHost().startKeyed(ctx, args(ctx) as { source: string; file?: string; timeout?: string })),
+      runSubmissionStatus: (ctx) => this.serveGated(ctx, () => this.runHost().submissionStatus(ctx, String(args(ctx).submissionId))),
       runResume: (ctx) => this.serveGated(ctx, () => this.runHost().resume(args(ctx) as { runId: string; timeout?: string }, ctx)),
       runAnswer: (ctx) => this.serveGated(ctx, () => {
         const input = args(ctx) as { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string; amend?: boolean };

@@ -1,0 +1,2 @@
+# Keyed run submission bindings in the immutable admission store on an owned loopback broker.
+smoke:keyed-submission-store
