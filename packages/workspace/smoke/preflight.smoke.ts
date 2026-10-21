@@ -41,6 +41,7 @@ const {
   ConnectRefusal,
   resolveControlTarget,
   setCurrent,
+  clearCurrent,
 } = await import("@cotal-ai/workspace");
 
 // The canonical preflight copy now comes from the renderer (workspace's optional, command-agnostic
@@ -505,10 +506,13 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
     named.space === "alpha" && beta.dials() - before === 0,
     { space: named.space, sweeps: beta.dials() - before },
   );
+  // A selected space stays the target while its broker is down, so the handed-in sweep is read with
+  // nothing selected.
+  clearCurrent();
   before = alpha.dials();
   const handed = await control({ offline: ["alpha"] });
   check(
-    "a control resolve reads the sweep its caller handed in: the current mesh it marks offline is skipped and never dialed",
+    "a control resolve reads the sweep its caller handed in: the mesh it marks offline is skipped and never dialed",
     handed.space === "beta" && alpha.dials() - before === 0,
     { space: handed.space, alphaDials: alpha.dials() - before },
   );
