@@ -5774,7 +5774,8 @@ forwards the request subject it served with the attempt or operator issuance it 
 issuing host re-parses that subject, requires a user caller's owner to be the run's admitted owner
 for a resume and the registered owner for an answer, resolves the caller's own issuance as live, and
 requires its publish ceiling to permit that subject. The issuing host subscribes to the run-start,
-resume and answer request subjects itself and never replies on them. It admits a forwarded run-start,
+resume and answer request subjects itself, and to the keyed `run-start-keyed` and
+`run-submission-status` request subjects (§14), and never replies on any of them. It admits a forwarded run-start,
 and issues for a forwarded resume or answer, only when it observed a caller publish that request and
 has not admitted or issued for it before, so a manager cannot forward a request its caller never
 sent. For a resume or answer it reads what that request's envelope asked for and issues only that: a

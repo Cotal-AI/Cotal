@@ -344,13 +344,18 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.STREAM.MSG.GET.KV_cotal_sessions_d32m",
   ], subscribe: [
     "_INBOX_ibxconn0123456789.>",
-    // Read-only witness of the run-start, resume and answer requests a participant manager forwards (SPEC 14.8).
+    // Read-only witness of the run-start, resume and answer requests a participant manager forwards (SPEC 14.8),
+    // and of the keyed run-start-keyed and run-submission-status requests (SPEC 14).
     "cotal.d32m.ep.v1.inst.manager.*.run-start.>",
     "cotal.d32m.ep.v1.one.manager.run-start.>",
     "cotal.d32m.ep.v1.inst.manager.*.run-resume.>",
     "cotal.d32m.ep.v1.one.manager.run-resume.>",
     "cotal.d32m.ep.v1.inst.manager.*.run-answer.>",
     "cotal.d32m.ep.v1.one.manager.run-answer.>",
+    "cotal.d32m.ep.v1.inst.manager.*.run-start-keyed.>",
+    "cotal.d32m.ep.v1.one.manager.run-start-keyed.>",
+    "cotal.d32m.ep.v1.inst.manager.*.run-submission-status.>",
+    "cotal.d32m.ep.v1.one.manager.run-submission-status.>",
     "cotal.d32m.ep.inst.manager.*.run-answer.>",
     "cotal.d32m.ep.one.manager.run-answer.>",
   ] },
