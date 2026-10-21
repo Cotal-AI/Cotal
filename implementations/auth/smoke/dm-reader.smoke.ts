@@ -24,7 +24,7 @@
  *           refusals on the dm-reader exchange itself, each paired with the valid proof.
  *   U6 (3)  an ordinary token with no view still mints `agent`; the views census round-trips every
  *           USER_TOKEN_VIEWS member; the public face refuses `dm-reader`.
- *   U7 (4)  #4185's seam, the embedder's `mintConnectCredential` hook, delayed: the dm-reader
+ *   U7 (5)  #4185's seam, the embedder's `mintConnectCredential` hook, delayed: the dm-reader
  *           exchange and its renewal re-exchange each as a positive (bearer and NATS JWT expire no
  *           later than the proof) and a refusal (hook returns after the proof expired, nothing signed).
  *
@@ -41,7 +41,7 @@ import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { createUser } from "@nats-io/nkeys";
 import {
   CotalEndpoint, DmBindRefusedError, DmDurableMissingError, chatSubject, dlvDurable, dlvStream, dmDurable, dmStream,
-  isConsumerNotFound, mintCreds, mintLifecycleUid, newIdentity, permissionsFor, presenceBucket, principalKey,
+  idFromCreds, isConsumerNotFound, mintCreds, mintLifecycleUid, newIdentity, permissionsFor, presenceBucket, principalKey,
   setupSpaceStreams, unicastSubject, type CotalMessage, type EndpointOptions, type SignerAnchor,
 } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -160,8 +160,7 @@ try {
     return { pending: i.num_pending, ackPending: i.num_ack_pending };
   };
   async function ownedConn(creds: string): Promise<NatsConnection> {
-    const id = newIdentity();
-    const nc = await connect({ servers: fx.servers, authenticator: credsAuthenticator(enc(creds)), inboxPrefix: `_INBOX_${id.id}`, maxReconnectAttempts: 0 });
+    const nc = await connect({ servers: fx.servers, authenticator: credsAuthenticator(enc(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}`, maxReconnectAttempts: 0 });
     conns.push(nc);
     return nc;
   }
