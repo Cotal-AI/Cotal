@@ -1183,7 +1183,7 @@ function brokerOverview(r: StatusResult): Section {
     });
   }
   for (const unreadable of r.meshes.unreadable) blocks.push({ kind: "lines", lines: [stateCell(`Registration could not be read: ${unreadable.error}`, "failed")] });
-  for (const account of r.meshes.catalogs) if (account.error) blocks.push({ kind: "lines", lines: [stateCell(`Space catalog: ${account.error}`, "failed")] });
+  for (const account of r.meshes.catalogs) if (account.error) blocks.push({ kind: "lines", lines: [stateCell(`Space catalog for ${account.idp}: ${account.error}`, "failed")] });
   if (!r.meshes.currentRecorded) blocks.push({ kind: "lines", lines: [cell(`Selected space '${r.meshes.current}' is ${r.meshes.currentPrepared ? "prepared, not started" : "not recorded"}`, "waiting")] });
   return { title: "Brokers", blocks };
 }

@@ -798,11 +798,17 @@ try {
   catalogCalls.length = 0;
   process.exitCode = undefined;
   await prepareCatalogCommand({ positionals: [], values: {}, raw: [] }, true);
+  // The default report names a failed account under Brokers; `--verbose` lists every account. A
+  // terminal-width wrap or a color code is not a different line.
+  const flat = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+/g, " ");
   const diagnostic = await capture(() => status({ positionals: [], values: {}, raw: [] }));
+  const detailed = await capture(() => status({ positionals: [], values: { verbose: true }, raw: [] }));
   check("status lists every catalog account including a dead sibling and exits zero",
-    catalogCalls.length === 1 && catalogCalls[0] === undefined && diagnostic.out.includes(`${liveIdp}  not-modified`) &&
-      diagnostic.out.includes(`${deadIdp}  failed: ${deadResult.error}`) && (process.exitCode === undefined || process.exitCode === 0),
-    { catalogCalls, out: diagnostic.out, exitCode: process.exitCode });
+    catalogCalls.length === 1 && catalogCalls[0] === undefined &&
+      flat(diagnostic.out).includes(flat(`Space catalog for ${deadIdp}: ${deadResult.error}`)) &&
+      flat(detailed.out).includes(flat(`${liveIdp}  not-modified`)) && flat(detailed.out).includes(flat(`${deadIdp}  failed: ${deadResult.error}`)) &&
+      (process.exitCode === undefined || process.exitCode === 0),
+    { catalogCalls, out: diagnostic.out, verbose: detailed.out, exitCode: process.exitCode });
   // `cotal sync` on the envelope: each account's refresh, a failed account named in a warning with
   // the result partial, and a refusal when no account could be refreshed.
   const { sync } = await import("../src/commands/sync.js");
