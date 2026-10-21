@@ -58,9 +58,9 @@ const COTAL_HOME = join(dir, "cotalhome");
 const CONFIG = join(dir, "config");
 const ROOT = join(dir, "project");
 const DECOY = join(dir, "decoy"); // another project, whose mesh is recorded and down
+mkdirSync(join(ROOT, ".cotal", "agents"), { recursive: true, mode: 0o700 });
+mkdirSync(join(DECOY, ".cotal"), { recursive: true, mode: 0o700 });
 const sandbox = recordSmokeSandbox({ root: ROOT, cotalHome: COTAL_HOME, xdgConfigHome: CONFIG });
-mkdirSync(join(ROOT, ".cotal", "agents"), { recursive: true });
-mkdirSync(join(DECOY, ".cotal"), { recursive: true });
 writeFileSync(
   join(ROOT, ".cotal", "agents", "default.md"),
   "---\nname: default\nrole: default\nsubscribe: [general]\nallowSubscribe: [general]\nallowPublish: [general]\n---\n\nThe smoke's default persona.\n",
@@ -70,7 +70,7 @@ writeFileSync(
 // server below takes its mesh only from the sandbox.
 const env: NodeJS.ProcessEnv = {};
 for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("COTAL_")) env[k] = v;
-Object.assign(env, { COTAL_HOME, XDG_CONFIG_HOME: CONFIG, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_PROMPT: "1" });
+Object.assign(env, { HOME: dir, COTAL_HOME, XDG_CONFIG_HOME: CONFIG, XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_PROMPT: "1" });
 
 const cotal = (cwd: string, ...args: string[]) => {
   const options = { cwd, env, encoding: "utf8" as const };
@@ -244,7 +244,7 @@ try {
   const waitStarted = Date.now();
   const waiting = code.call("cotal_wait", { connection_id: idA, seconds: 40 });
   await sleep(1_000);
-  const sent = cotal(ROOT, "send", "dm", "claude_local", token);
+  const sent = cotal(ROOT, "send", "--to", "claude_local", token);
   check("a peer DMs the Claude Code conversation by name", sent.status === 0, `${sent.stdout}\n${sent.stderr}`);
   const woke = await waiting;
   check("  and its held wait returns that DM before its bound", woke.includes(token) && Date.now() - waitStarted < 40_000, woke);
@@ -257,7 +257,7 @@ try {
   );
 
   // ── the monitor: a message that arrives while the session is idle starts a turn ──────────────
-  const before1 = cotal(ROOT, "send", "dm", "claude_local", "m1");
+  const before1 = cotal(ROOT, "send", "--to", "claude_local", "m1");
   check("a DM lands while no monitor reads the feed", before1.status === 0, before1.stderr);
   await sleep(1_500);
   const mon = monitor(process.pid, {}, true);
@@ -266,17 +266,17 @@ try {
     (await until(() => mon.lines.length > 0)) && mon.lines.length === 1 && mon.lines[0] === wakeFor(idA),
     mon.lines,
   );
-  cotal(ROOT, "send", "dm", "claude_local", "m2");
+  cotal(ROOT, "send", "--to", "claude_local", "m2");
   await sleep(3_000);
   check("a second DM before the first is read adds no second wake", mon.lines.length === 1, mon.lines);
   const read = await code.call("cotal_inbox", { connection_id: idA });
   check("  and cotal_inbox reads both", read.includes("m1") && read.includes("m2"), read);
-  cotal(ROOT, "send", "dm", "claude_local", "m3");
+  cotal(ROOT, "send", "--to", "claude_local", "m3");
   check("after the read, the next DM wakes the session again", await until(() => mon.lines.length === 2), mon.lines);
   await code.call("cotal_inbox", { connection_id: idA });
   const held = code.call("cotal_wait", { connection_id: idA, seconds: 30 });
   await sleep(1_000);
-  cotal(ROOT, "send", "dm", "claude_local", "m4");
+  cotal(ROOT, "send", "--to", "claude_local", "m4");
   const got = await held;
   await sleep(1_500);
   check("a DM that a held cotal_wait returns wakes nothing", got.includes("m4") && mon.lines.length === 2, { got, lines: mon.lines });
@@ -284,8 +284,8 @@ try {
   // a feed of its own, so neither loses the other's wakes.
   const twin = await serve(SERVER, ROOT);
   const t = await twin.call("cotal_connect", { name: "claude_twin" });
-  cotal(ROOT, "send", "dm", "claude_twin", "t1");
-  cotal(ROOT, "send", "dm", "claude_local", "m5");
+  cotal(ROOT, "send", "--to", "claude_twin", "t1");
+  cotal(ROOT, "send", "--to", "claude_local", "m5");
   check(
     "two servers under one Claude Code process each wake the session for their own connection",
     await until(() => mon.lines.includes(wakeFor(connectionId(t))) && mon.lines.filter((l) => l === wakeFor(idA)).length === 3),
@@ -299,7 +299,7 @@ try {
   await code.call("cotal_disconnect", { connection_id: connectionId(e) });
 
   const replay = connectionId(await code.call("cotal_connect", { name: "claude_replay" }));
-  cotal(ROOT, "send", "dm", "claude_replay", "replay-pending");
+  cotal(ROOT, "send", "--to", "claude_replay", "replay-pending");
   check("a native reader gets a wake before it restarts", await until(() => mon.lines.includes(wakeFor(replay))), mon.lines);
   mon.p.kill("SIGTERM");
   await within(mon.exited);
@@ -341,7 +341,7 @@ try {
   // ── which mesh, with no `cotal use` mesh selected ────────────────────────────────────────────
   // `cotal up` selected the sandbox mesh. Without that, the working directory decides for Claude
   // Code, and only the running meshes decide for Desktop.
-  const decoy = cotal(ROOT, "meshes", "add", "decoy", "--server", `nats://127.0.0.1:${DECOY_PORT}`, "--root", DECOY, "--mode", "open", "--force");
+  const decoy = cotal(ROOT, "space", "add", "decoy", "--server", `nats://127.0.0.1:${DECOY_PORT}`, "--root", DECOY, "--mode", "open", "--force");
   check("a second project's mesh is recorded, and down", decoy.status === 0 && !(await portOpen(DECOY_PORT)), `${decoy.stdout}\n${decoy.stderr}`);
   unlinkSync(join(COTAL_HOME, "current-mesh"));
   const inDecoy = await serve(SERVER, DECOY);
@@ -366,9 +366,9 @@ try {
   check("  and retires its conversation's credential directory", heldBy(code.p.pid).length === 0, heldBy(code.p.pid));
 
   const torn = cotal(ROOT, "down");
-  meshUp = false;
   check("`cotal down` stops the sandbox mesh", torn.status === 0, `${torn.stdout}\n${torn.stderr}`);
   check("  and its broker is gone", await until(async () => !(await portOpen(PORT))));
+  meshUp = false;
 
   console.log(`\nCLAUDE LOCAL SERVER SMOKE PASSED ✅  (${pass} checks)`);
 } catch (e) {
@@ -382,6 +382,13 @@ try {
     await s.exited;
     for (const held of heldBy(s.p.pid)) rmSync(join(tmpdir(), held), { recursive: true, force: true });
   }
-  if (meshUp) cotal(ROOT, "down");
-  rmSync(dir, { recursive: true, force: true });
+  if (meshUp) {
+    const cleanup = cotal(ROOT, "down");
+    meshUp = cleanup.status !== 0 || await portOpen(PORT);
+    if (meshUp) {
+      console.error(`Sandbox cleanup refused; ownership records retained at ${dir}: ${cleanup.stderr}`);
+      process.exitCode = 1;
+    }
+  }
+  if (!meshUp) rmSync(dir, { recursive: true, force: true });
 }
