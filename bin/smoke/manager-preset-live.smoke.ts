@@ -5,6 +5,11 @@
  * runs `service start --foreground`, waits for the roster boot, sends SIGINT to the CLI alone and
  * requires exit 130 with the native stop recorded on the instance.
  *
+ * Bare `cotal down` on that legacy root then stops the saved service through the service controller
+ * before the broker: its dry run lists the running manager and changes nothing, an unreadable
+ * service record refuses with the manager and broker still running, a real stop takes the manager
+ * then the broker, and after a second `up` the stopped manager is skipped and its definition kept.
+ *
  * Every directory is a sandbox this suite removes; `cotal down` stops the stack it started.
  *
  * Run: pnpm smoke:manager-preset:live
@@ -26,12 +31,13 @@ for (const dir of [join(root, ".cotal"), xdg]) mkdirSync(dir, { recursive: true,
 const anchor = recordSmokeSandbox({ root, cotalHome: join(home, ".cotal"), xdgConfigHome: xdg });
 process.env.COTAL_HOME = join(home, ".cotal");
 process.env.XDG_CONFIG_HOME = xdg;
-const { parseCommandArgs, registry } = await import("@cotal-ai/core");
+const { isReachable, parseCommandArgs, registry } = await import("@cotal-ai/core");
 type Command = import("@cotal-ai/core").Command;
 type LocalProcess = import("@cotal-ai/workspace").LocalProcess;
-const { isCommandFailure, recordMesh, removeMesh, validateServiceAdapterPaths } = await import("@cotal-ai/workspace");
+const { findMesh, isCommandFailure, recordMesh, removeMesh, spaceKey, validateServiceAdapterPaths } = await import("@cotal-ai/workspace");
 const { managerServiceChild } = await import("../../implementations/manager/src/service-child.js");
-const { serviceInstances } = await import("../../implementations/cli/src/lib/service-instances.js");
+const { serviceInstanceStore, serviceInstances } = await import("../../implementations/cli/src/lib/service-instances.js");
+const { serviceDefinitionStore } = await import("../../implementations/cli/src/lib/service-definitions.js");
 await import("@cotal-ai/manager");
 
 const { check, finish } = createSuite();
@@ -131,7 +137,8 @@ function cotal(args: string[], timeout = 120_000) {
 const out = (r: ReturnType<typeof cotal>) => `${r.stdout ?? ""}${r.stderr ?? ""}`;
 const started: ChildProcess[] = [];
 let stackUp = false;
-let serviceAdded = false;
+/** An unreadable instance record a cell plants; teardown removes it so the final down can run. */
+let planted: string | undefined;
 try {
   if (process.platform !== "linux") skip("the foreground manager cell", "the native manager child is Linux-only");
   else {
@@ -139,8 +146,7 @@ try {
     stackUp = up.status === 0;
     check("a broker-only open stack starts", stackUp, out(up));
     const add = cotal(["service", "add", "mgr", "--preset", "manager", "--space", SPACE, "--root", root, "--runtime", "pty", "--roster", roster]);
-    serviceAdded = add.status === 0;
-    check("service add saves the manager preset with its roster", serviceAdded, out(add));
+    check("service add saves the manager preset with its roster", add.status === 0, out(add));
     const fg = spawnProc(process.execPath, ["--import", TSX_LOADER, BIN, "service", "start", "mgr", "--space", SPACE, "--foreground"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
     started.push(fg);
     const exited = new Promise<number | null>((resolve) => fg.once("exit", (code) => resolve(code)));
@@ -156,18 +162,51 @@ try {
     check("SIGINT to the CLI stops the foreground manager with exit 130", code === 130, { code, tail: text.slice(-1500) });
     const row = serviceInstances(SPACE, "mgr")[0]?.record.value;
     check("the instance records the native stop the manager returned", row?.state === "stopped" && row.nativeStop?.nativeStop === "returned", row);
+
+    // ---- Bare down stops the space's services through the controller, then the stack ----------
+    const start = cotal(["service", "start", "mgr", "--space", SPACE]);
+    const live = serviceInstances(SPACE, "mgr")[0];
+    const liveState = () => live ? serviceInstanceStore(SPACE).read(live.name)?.record.value.state : undefined;
+    check("service start runs the saved manager in the background", start.status === 0 && liveState() === "running", out(start));
+    const preview = cotal(["down", "--dry-run", "--json"]);
+    let stops: { definition?: string; instanceId?: string; action?: string }[] = [];
+    try { stops = (JSON.parse(preview.stdout) as { result?: { serviceStops?: typeof stops } }).result?.serviceStops ?? []; } catch { /* the cell reports the output */ }
+    check("bare down --dry-run lists the running service it would stop and changes nothing",
+      preview.status === 4 && stops.length === 1 && stops[0]?.definition === "mgr" && stops[0].instanceId === live?.name && stops[0].action === "stop"
+        && liveState() === "running" && await isReachable(SERVER), out(preview));
+    planted = join(serviceInstanceStore(SPACE).directory()!, `${spaceKey("planted")}.json`);
+    writeFileSync(planted, "not a record\n", { mode: 0o600 });
+    const blocked = cotal(["down"]);
+    check("bare down refuses an unreadable service record with the service and the broker still running",
+      blocked.status === 1 && out(blocked).includes("SCHEMA_INVALID") && out(blocked).includes(`cotal service list --space ${SPACE}`)
+        && liveState() === "running" && await isReachable(SERVER), out(blocked));
+    rmSync(planted);
+    planted = undefined;
+    const down = cotal(["down"]);
+    const downOut = out(down);
+    stackUp = down.status !== 0;
+    check("bare down stops the running service through the controller, then the broker",
+      down.status === 0 && liveState() === "stopped" && downOut.includes("Service stopped") && downOut.indexOf("Service stopped") < downOut.indexOf("✓ stopped nats-server")
+        && !(await isReachable(SERVER)) && findMesh(SPACE) === undefined, downOut);
+    check("  and keeps the saved definition", serviceDefinitionStore(SPACE).read("mgr") !== undefined);
+    const again = cotal(["up", "--detach", "--open", "--no-manager", "--space", SPACE, "--server", SERVER]);
+    stackUp = again.status === 0;
+    check("the stack starts again with the stopped service saved", stackUp, out(again));
+    const second = cotal(["down"]);
+    stackUp = second.status !== 0;
+    check("bare down skips the stopped service and stops the broker",
+      second.status === 0 && out(second).includes("already stopped, skipped") && !out(second).includes("Service stopped")
+        && !out(second).includes("Service was not running") && liveState() === "stopped"
+        && serviceDefinitionStore(SPACE).read("mgr") !== undefined && !(await isReachable(SERVER)), out(second));
   }
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {
   for (const child of started) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  if (planted) rmSync(planted, { force: true });
   if (stackUp) {
-    // A saved service keeps the legacy bare stop from sweeping this space, so the stopped manager is
-    // removed first. Bare down then stops the stack recorded at this root; it takes no --space.
-    if (serviceAdded) {
-      const removed = cotal(["service", "remove", "mgr", "--space", SPACE, "--yes"]);
-      check("service remove forgets the stopped manager", removed.status === 0, out(removed));
-    }
+    // Bare down stops the saved manager, if it still runs, then the stack recorded at this root; it
+    // takes no --space.
     const down = cotal(["down"]);
     check("cotal down stops the sandboxed stack", down.status === 0, out(down));
   }
