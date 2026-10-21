@@ -1,8 +1,8 @@
 /**
- * `cotal mint --provision`: an out-of-band identity that can CONSUME, not only publish.
+ * `cotal auth mint --provision`: an out-of-band identity that can CONSUME, not only publish.
  *
  * On an authed mesh the DM and TASK consumers are provisioner-pre-created and bind-only (SPEC
- * section 9), so a credential minted with `cotal mint` alone can publish within its post ACL but
+ * section 9), so a credential minted with `cotal auth mint` alone can publish within its post ACL but
  * its first consuming connect dies on the broker's "consumer not found" — measured live before
  * this flag existed. `--provision` performs the same pre-create `cotal spawn` does for its seats,
  * from a provisioner cred that is minted, used and dropped inside the command.
@@ -12,48 +12,59 @@
  *   2. mint WITH --provision --role board, connect          → starts; a DM from another peer arrives;
  *      an anycast to the role arrives on the svc_board queue; the provisioner connection the
  *      command opened is gone before it returns
- *   3. the command prints the principal and the lifecycle uid the credential actually carries
+ *   3. the receipt shows the principal and the lifecycle uid the credential actually carries
  *   4. --provision --allow-subscribe fix.x                  → the read grant is fix.x and NOT general
  *      (the pre-created filter rides the ACL, never widened to the launcher default), and the
  *      identity reads fix.x live but cannot join general
- *   5. --provision / --role / --allow-subscribe / --allow-publish off the agent profile, and the
- *      footprint flags with --signer → exit 1, one sentence, nothing written; and the control that
- *      the same ACL flag on the agent profile still works
- *   6. --provision from a root whose auth is for another space; from a FRESH open root (no auth on
- *      disk, as `cotal up` leaves one); from a root holding its OWN auth for a mesh of the same
- *      name that runs on another trust root → exit 1 each, naming why, nothing minted
+ *   5. --provision / --role / --allow-subscribe / --allow-publish off the agent profile, --signer on
+ *      mint, and the footprint flags on `auth signer` → exit 1, one sentence, nothing written; and
+ *      the control that the same ACL flag on the agent profile still works
+ *   6. --provision naming a mesh on another trust root; from a FRESH open root (no auth on disk, as
+ *      `cotal up` leaves one); from a root holding its OWN auth for a mesh of the same name that runs
+ *      on another trust root → refused (exit 2) each, naming why, nothing minted
  *   7. --expires-in bounds the credential: the JWT's exp is iat + the flag, within a second; a
  *      bare mint carries no exp (the unbounded default, kept)
  *   8. --identity <creds> re-mints for the SAME nkey: the new credential's principal equals the
  *      original's; the seed file is read by core's own loader
  *   9. the refusals: both lifetime flags at once; --expires-in the seam would refuse (0, negative,
- *      fractional); --identity on a file with no seed; --identity with a missing path → exit 1
- *      each, one sentence, nothing written
+ *      fractional) without echoing it; --identity on a file with no seed; --identity with a missing
+ *      path → refused each, one sentence, nothing written
  *
  * Every cell dispatches real argv through `runCli` (the binary's entry: spec parsing, then the
- * registered runner), never a hand-built ParsedArgs.
+ * registered runner), never a hand-built ParsedArgs. It runs in a child, because the kernel writes a
+ * refusal straight to the stderr descriptor and exits.
  * OS-assigned loopback port; needs `nats-server` on PATH.
  * Run: pnpm smoke:mint-provision:auth
  */
 import { strict as assert } from "node:assert";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// The child `runCotal` starts: the composition root as the binary imports it (the CLI and the
+// `auth` command register themselves), one command line through `runCli`, then its exit code.
+if (process.argv[2] === "cotal-child") {
+  await import("../src/index.js");
+  await import("@cotal-ai/auth");
+  const { registry } = await import("@cotal-ai/core");
+  const { runCli } = await import("../src/command.js");
+  await runCli(registry, process.argv.slice(3));
+  process.exit(process.exitCode ?? 0);
+}
+
+for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 const home = mkdtempSync(join(tmpdir(), "cotal-mint-prov-home-"));
 process.env.COTAL_HOME = home;
 process.env.COTAL_NO_PROMPT = "1";
 
-// The composition root, exactly as the binary imports it (registers the command surface).
-await import("../src/index.js");
 const {
   CotalEndpoint, createSpaceAuth, jwtFromCreds, mintCreds, newIdentity, setupSpaceStreams,
-  seedChannelRegistry, provisionAgent, mintLifecycleUid, principalKey, DEV_OWNER, registry,
+  seedChannelRegistry, provisionAgent, mintLifecycleUid, principalKey, DEV_OWNER,
 } = await import("@cotal-ai/core");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 const { authDir, canonicalRoot, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
 const { credsClaims } = await import("@cotal-ai/core");
-const { runCli } = await import("../src/command.js");
 const { bootBroker } = await import("../../manager/smoke/_boot-broker.js");
 
 let pass = 0;
@@ -69,28 +80,22 @@ const until = async (cond: () => boolean, timeoutMs = 8000, stepMs = 50): Promis
   return cond();
 };
 
-/** Run `cotal mint <argv…>` in-process THROUGH THE BINARY'S DISPATCH (`runCli`: the command's declared
- *  flag specs parse the argv, then its registered runner runs): captured output, the exit code the
- *  operator would get. The first `process.exit` wins (the dispatcher re-exits after a refusal). */
-class ExitSignal extends Error {}
-async function runMint(argv: string[]): Promise<{ out: string; code: number }> {
-  const lines: string[] = [];
-  const [log, err, exit] = [console.log, console.error, process.exit];
-  let code: number | undefined;
-  console.log = (...a: unknown[]) => void lines.push(a.join(" "));
-  console.error = (...a: unknown[]) => void lines.push(a.join(" "));
-  process.exit = ((c?: number) => { code ??= c ?? 0; throw new ExitSignal(`exit ${c ?? 0}`); }) as never;
-  try {
-    await runCli(registry, ["mint", ...argv]);
-  } catch (e) {
-    if (!(e instanceof ExitSignal)) throw e;
-  } finally {
-    console.log = log; console.error = err; process.exit = exit;
-  }
-  code ??= 0;
+/** Run `cotal <words…>` THROUGH THE BINARY'S DISPATCH (`runCli`: the command's declared flag specs
+ *  parse the argv, then its registered runner runs) in a child from the current folder: its stdout
+ *  and stderr together, and the exit code the operator would get. */
+async function runCotal(words: string[]): Promise<{ out: string; code: number }> {
+  const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "cotal-child", ...words], { stdio: ["ignore", "pipe", "pipe"] });
+  const chunks: Buffer[] = [];
+  child.stdout.on("data", (chunk: Buffer) => void chunks.push(chunk));
+  child.stderr.on("data", (chunk: Buffer) => void chunks.push(chunk));
+  const code = await new Promise<number>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (status) => resolve(status ?? -1));
+  });
   // Colour codes stripped: the cells below read values off the lines, not decoration.
-  return { out: lines.join("\n").replace(/\x1b\[[0-9;]*m/g, ""), code };
+  return { out: Buffer.concat(chunks).toString("utf8").replace(/\x1b\[[0-9;]*m/g, ""), code };
 }
+const runMint = (argv: string[]) => runCotal(["auth", "mint", ...argv]);
 
 /** What a client recovers from the credential without connecting: the principal tag and the
  *  lifecycle uid its dm/dlv/chathist grants are named for (SPEC 13.1). */
@@ -135,7 +140,7 @@ try {
   await setupSpaceStreams({ servers: broker.servers, space: SPACE, creds: provisioner });
   await seedChannelRegistry({ servers: broker.servers, space: SPACE, creds: provisioner, file: { channels: { general: {}, "fix.x": {} } } });
   recordMesh({ space: SPACE, server: broker.servers, root, mode: "auth", ts: new Date().toISOString(), origin: "manual" });
-  process.chdir(root); // `mint` finds the root's `.cotal/` by walking up from cwd, like the binary
+  process.chdir(root); // `auth mint` finds the root's `.cotal/` by walking up from cwd, like the binary
   cleanup.push(() => process.chdir(cwd0));
 
   // A second, ordinary peer that will DM and anycast the minted identity. Provisioned the launcher
@@ -163,7 +168,7 @@ try {
     const out = join(root, "plain.creds");
     const r = await runMint(["plain", "--profile", "agent", "--out", out]);
     check("mint without --provision succeeds (creds only)", r.code === 0 && existsSync(out), r.out);
-    check("  and says the credential cannot consume until provisioned", /--provision/.test(r.out), r.out);
+    check("  and says its broker footprint was not provisioned", /Broker footprint:\s+not provisioned by this command/.test(r.out), r.out);
     const creds = readFileSync(out, "utf8");
     const { uids } = facts(creds);
     check("  its grants name exactly one lifecycle uid", uids.length === 1, uids);
@@ -189,7 +194,7 @@ try {
     const out = join(root, "board.creds");
     const r = await runMint(["board", "--profile", "agent", "--provision", "--role", "board", "--out", out]);
     check("mint --provision --role board succeeds", r.code === 0 && existsSync(out), r.out);
-    check("  it says so", /provisioned its durables/.test(r.out), r.out);
+    check("  it says so", /Broker footprint:\s+native provisioning acknowledged/.test(r.out), r.out);
     // Positive control for the connz reader first: it must SEE a named open connection (the peer's)
     // before its silence about the provisioner can mean anything — a broken reader returns [] for
     // both and would otherwise green the leak cell.
@@ -206,8 +211,8 @@ try {
     check("  the credential's grants name exactly one lifecycle uid", uids.length === 1 && principal !== undefined, { uids, principal });
 
     // ── 3. what the command printed is what the credential carries ────────────────────────────
-    const printedUid = /lifecycle uid:\s+(\S+)/.exec(r.out)?.[1];
-    const printedPrincipal = /principal:\s+(\S+)/.exec(r.out)?.[1];
+    const printedUid = /^\s*Lifecycle:\s+(\S+)$/m.exec(r.out)?.[1];
+    const printedPrincipal = /^\s*Principal:\s+(\S+)$/m.exec(r.out)?.[1];
     check("  it printed the lifecycle uid the grants are named for", printedUid === uids[0], { printedUid, uids });
     check("  it printed the principal stamped in the JWT", printedPrincipal === principal, { printedPrincipal, principal });
 
@@ -287,16 +292,20 @@ try {
   {
     const out = join(root, "obs.creds");
     const r1 = await runMint(["obs", "--profile", "observer", "--provision", "--out", out]);
-    check("--provision on the observer profile exits 1 with the reason", r1.code === 1 && /agent profile only/.test(r1.out), r1.out);
+    check("--provision on the observer profile exits 1 with the reason", r1.code === 1 && /belong only to the agent profile/.test(r1.out), r1.out);
     check("  and mints nothing", !existsSync(out));
     const r2 = await runMint(["obs2", "--profile", "admin", "--role", "board", "--out", out]);
-    check("--role on the admin profile exits 1 with the reason", r2.code === 1 && /agent profile only/.test(r2.out), r2.out);
+    check("--role on the admin profile exits 1 with the reason", r2.code === 1 && /belong only to the agent profile/.test(r2.out), r2.out);
     check("  and mints nothing", !existsSync(out));
-    // `--signer` returns early with account-signing material; the footprint flags must not slip past
-    // it (an operator who typed --provision asked for an identity, not a signer file).
+    // Account-signing material is exported by `auth signer`, so `--signer` is no mint flag, and the
+    // footprint flags must not slip past the signer export (an operator who typed --provision asked
+    // for an identity, not a signer file).
     const signerOut = join(root, "signer.json");
-    const r3 = await runMint(["--signer", "--provision", "--role", "board", "--out", signerOut]);
-    check("--signer with --provision/--role exits 1 with the reason", r3.code === 1 && /agent profile only.*--signer/.test(r3.out), r3.out);
+    const r3 = await runMint(["obs5", "--signer", "--provision", "--role", "board", "--out", signerOut]);
+    check("--signer on auth mint exits 1 as an unknown flag", r3.code === 1 && /Unknown option '--signer'/.test(r3.out), r3.out);
+    check("  and writes no signer file", !existsSync(signerOut));
+    const r3s = await runCotal(["auth", "signer", "--provision", "--role", "board", "--out", signerOut]);
+    check("auth signer with --provision/--role exits 1 with the reason", r3s.code === 1 && /use auth signer --out <private-file>/.test(r3s.out), r3s.out);
     check("  and writes no signer file", !existsSync(signerOut));
     // THE TWO ACL FLAGS, WHICH USED TO BE IGNORED HERE RATHER THAN REFUSED, AND THAT COST AN
     // OPERATOR A CREDENTIAL. `permissionsFor`'s observer/admin arm emits a FIXED read set over the
@@ -307,10 +316,10 @@ try {
     // it. These cells are the refusal, on the same footing as `--role` and `--provision` above.
     const aclOut = join(root, "acl.creds");
     const r4 = await runMint(["obs3", "--profile", "observer", "--allow-subscribe", "events.local.UVICTIM", "--out", aclOut]);
-    check("--allow-subscribe on the observer profile exits 1 with the reason", r4.code === 1 && /agent profile only/.test(r4.out), r4.out);
+    check("--allow-subscribe on the observer profile exits 1 with the reason", r4.code === 1 && /belong only to the agent profile/.test(r4.out), r4.out);
     check("  and mints nothing, rather than a credential that reads the whole chat plane", !existsSync(aclOut));
     const r5 = await runMint(["obs4", "--profile", "admin", "--allow-publish", "general", "--out", aclOut]);
-    check("--allow-publish on the admin profile exits 1 with the reason", r5.code === 1 && /agent profile only/.test(r5.out), r5.out);
+    check("--allow-publish on the admin profile exits 1 with the reason", r5.code === 1 && /belong only to the agent profile/.test(r5.out), r5.out);
     check("  and mints nothing", !existsSync(aclOut));
     // THE CONTROL. Every cell above is satisfied by a command that refuses these flags outright,
     // which would break the scoped reader the manager's own refusal text tells an operator to mint.
@@ -335,26 +344,26 @@ try {
     const r = await runMint(["x", "--profile", "agent", "--provision", "--space", OPEN, "--out", out]);
     // `--space` moves the persona/ACL/signing/storage root, not just the broker, so this is two
     // roots whose authorities disagree rather than one root holding auth for another space. The
-    // refusal must name BOTH roots and BOTH authorities, or it does not describe the mix it
-    // refuses to make.
-    check("--provision naming a mesh on another trust root exits 1 naming both roots and both authorities",
-      r.code === 1
-        && /authorities disagree/.test(r.out)
+    // refusal must name BOTH roots, or it does not describe the mix it refuses to make.
+    check("--provision naming a mesh on another trust root is refused as a conflict naming both roots",
+      r.code === 2
+        && /^\s*Code:\s+CONFLICT$/m.test(r.out)
+        && /disagree about the signing authority/.test(r.out)
+        && /^\s*Space:\s+sandbox$/m.test(r.out)
         && (r.out.includes(openRoot) || r.out.includes(canonicalRoot(openRoot)))
-        && (r.out.includes(root) || r.out.includes(canonicalRoot(root)))
-        && /sandbox\/no-account/.test(r.out)
-        && /main\//.test(r.out),
+        && (r.out.includes(root) || r.out.includes(canonicalRoot(root))),
       r.out);
     check("  and mints nothing", !existsSync(out));
 
-    // From the fresh open root: the mode itself is the refusal, said as such (not "run cotal up first"
-    // to an operator whose open mesh is up).
+    // From the fresh open root: an open space holds no static signing trust, so mint refuses for that
+    // (not "run cotal up first" to an operator whose open mesh is up).
     process.chdir(openRoot);
     const out2 = join(openRoot, "open.creds");
     const r2 = await runMint(["x", "--profile", "agent", "--provision", "--out", out2]);
     process.chdir(root);
-    check("--provision on a fresh open mesh (no auth on disk) exits 1 naming why (peers self-create there)", r2.code === 1 && /open mesh/.test(r2.out), r2.out);
-    check("  and does not say to run cotal up", !/run `cotal up` first/.test(r2.out), r2.out);
+    check("--provision on a fresh open mesh (no auth on disk) is refused for its missing signing trust",
+      r2.code === 2 && /^\s*Code:\s+AUTH_REQUIRED$/m.test(r2.out) && /no validated static signing trust/.test(r2.out), r2.out);
+    check("  and does not say to run cotal up", !/cotal up/.test(r2.out), r2.out);
     check("  and mints nothing", !existsSync(out2));
 
     // Two roots that each ran `cotal up` for a space called "same": root B's mesh is the registered
@@ -363,10 +372,11 @@ try {
     // folder it runs in.
     //
     // mint resolves like spawn and personas now, so a BARE `--provision` names no other mesh and
-    // stays local to A: it reaches A's own default server and stops there. The operator never named
-    // B, and spawn from A would not reach B either. Naming the two accounts is the job of the case
-    // where the operator DOES name it, which is asserted separately below. Both directions must
-    // mint nothing.
+    // stays local to A: it signs with A's own authority, reaches A's own default server and stops at
+    // its preflight. Resolving B instead would be the cross-root conflict below, naming B. The
+    // operator never named B, and spawn from A would not reach B either. Naming the two roots is the
+    // job of the case where the operator DOES name it, which is asserted separately below. Both
+    // directions must mint nothing.
     const SAME = "same";
     const rootA = mkdtempSync(join(tmpdir(), "cotal-mint-prov-a-"));
     const rootB = mkdtempSync(join(tmpdir(), "cotal-mint-prov-b-"));
@@ -379,20 +389,20 @@ try {
     const out3 = join(rootA, "same.creds");
     const r3 = await runMint(["x", "--profile", "agent", "--provision", "--out", out3]);
     process.chdir(root);
-    check("bare --provision from an unrecorded root stays local and exits 1 without reaching the other mesh",
-      r3.code === 1 && /no mesh running at nats:\/\/127\.0\.0\.1:4222/.test(r3.out) && /mesh "same" is recorded at/.test(r3.out) && (r3.out.includes(rootA) || r3.out.includes(canonicalRoot(rootA))) && /not running/.test(r3.out) && !r3.out.includes(rootB), r3.out);
+    check("bare --provision from an unrecorded root stays local and is refused at its own broker's preflight",
+      r3.code === 2 && /provisioning preflight/.test(r3.out) && /^\s*Space:\s+same$/m.test(r3.out) && !/CONFLICT/.test(r3.out) && !r3.out.includes(rootB), r3.out);
     check("  and mints nothing", !existsSync(out3));
     check("  and does not mint under the other root's authority", !r3.out.includes(rootB), r3.out);
 
     // Naming the other mesh IS the two-account case: the operator asked for B from A's folder, so
-    // the refusal must name both roots and both authorities rather than silently choosing one.
+    // the refusal must name both roots rather than silently choosing one.
     process.chdir(rootA);
     const out4 = join(rootA, "same-named.creds");
     const r4 = await runMint(["x", "--profile", "agent", "--provision", "--space", SAME, "--out", out4]);
     process.chdir(root);
-    check("--provision naming a same-named mesh on another trust root exits 1 naming both roots and both authorities",
-      r4.code === 1
-        && /authorities disagree/.test(r4.out)
+    check("--provision naming a same-named mesh on another trust root is refused as a conflict naming both roots",
+      r4.code === 2
+        && /^\s*Code:\s+CONFLICT$/m.test(r4.out)
         && (r4.out.includes(rootA) || r4.out.includes(canonicalRoot(rootA)))
         && (r4.out.includes(rootB) || r4.out.includes(canonicalRoot(rootB))),
       r4.out);
@@ -428,9 +438,10 @@ try {
     check("  the JWT's exp is iat + the flag, computed within the command's own second",
       gap !== undefined && gap <= 3600 && gap >= 3599 && exp! >= before + 3600 && exp! <= after + 3600,
       { exp, iat, gap, before, after });
-    // --provision rides the same lifetime through the seam (the durable mint is bounded too).
+    // --provision rides the same lifetime through the seam (the durable mint is bounded too). A label
+    // is one owner token, so it carries no '-'.
     const pout = join(root, "bounded-agent.creds");
-    const rp = await runMint(["bounded-agent", "--profile", "agent", "--provision", "--expires-in", "3600", "--out", pout]);
+    const rp = await runMint(["bounded_agent", "--profile", "agent", "--provision", "--expires-in", "3600", "--out", pout]);
     check("mint --provision --expires-in succeeds and bounds the provisioned credential too",
       rp.code === 0 && existsSync(pout) && credsClaims(readFileSync(pout, "utf8")).exp !== undefined, rp.out);
   }
@@ -463,24 +474,28 @@ try {
   {
     const out = join(root, "refused.creds");
     const r1 = await runMint(["x", "--profile", "observer", "--expires-in", "3600", "--expires-at", "2000000000", "--out", out]);
-    check("--expires-in with --expires-at exits 1 with the reason", r1.code === 1 && /mutually exclusive/.test(r1.out), r1.out);
+    check("--expires-in with --expires-at exits 1 with the reason", r1.code === 1 && /choose --expires-in or --expires-at, not both/.test(r1.out), r1.out);
     check("  and mints nothing", !existsSync(out));
     for (const bad of ["0", "-5", "1.5", "abc"]) {
       // A leading-dash value needs the `=` form to get past parseArgs' strict token parser; the
-      // point is that it reaches THE COMMAND's validation and is refused there, naming the value.
+      // point is that it reaches THE COMMAND's validation and is refused there. The refusal does not
+      // echo the value, so a single digit such as 0 is not looked for in the output.
       const r = await runMint(["x", "--profile", "observer", bad.startsWith("-") ? `--expires-in=${bad}` : "--expires-in", ...(bad.startsWith("-") ? [] : [bad]), "--out", out]);
-      check(`--expires-in ${bad} exits 1 naming the value (a TTL the seam would refuse)`,
-        r.code === 1 && new RegExp(`--expires-in must be a positive integer.*${bad === "abc" ? "abc" : bad.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(r.out), r.out);
+      check(`--expires-in ${bad} exits 1 without echoing the value (a TTL the seam would refuse)`,
+        r.code === 1 && /credential expiry needs an integer in native seconds; the supplied value was not echoed/.test(r.out)
+          && (bad.length === 1 || !r.out.includes(bad)), r.out);
       check("  and mints nothing", !existsSync(out));
     }
+    // Private, so the protected-reference check passes and the refusal is about the contents.
     const noSeed = join(root, "no-seed.txt");
-    writeFileSync(noSeed, "just some text, no creds structure at all\n");
+    writeFileSync(noSeed, "just some text, no creds structure at all\n", { mode: 0o600 });
     const r2 = await runMint(["x", "--profile", "observer", "--identity", noSeed, "--out", out]);
-    check("--identity on a file with no seed exits 1 refusing it BY NAME",
-      r2.code === 1 && /no user nkey seed/.test(r2.out) && r2.out.includes(noSeed), r2.out);
+    check("--identity on a file with no seed exits 1 refusing it without printing its contents",
+      r2.code === 1 && /no matching native JWT subject and user nkey seed/.test(r2.out) && !r2.out.includes("just some text"), r2.out);
     check("  and mints nothing", !existsSync(out));
     const r3 = await runMint(["x", "--profile", "observer", "--identity", join(root, "missing.creds"), "--out", out]);
-    check("--identity on a missing path exits 1 naming it", r3.code === 1 && /not found/.test(r3.out) && r3.out.includes("missing.creds"), r3.out);
+    check("--identity on a missing path is refused before anything is read",
+      r3.code === 2 && /credential reference is missing or unreadable/.test(r3.out), r3.out);
     check("  and mints nothing", !existsSync(out));
   }
 
