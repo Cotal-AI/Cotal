@@ -264,8 +264,17 @@ jobs:
       - name: Transport liveness unit baseline
         run: pnpm smoke:transport-liveness
 
+  # The Windows identity binding needs an MSVC Developer Command Prompt, so it is built once here and
+  # downloaded by the Windows platforms leg, as windows.yml does.
+  workspace-native:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
+    uses: ./.github/workflows/workspace-native.yml
+    with:
+      architectures: '["x64"]'
+
   platforms:
     if: ${{ github.event_name != 'workflow_dispatch' }}
+    needs: workspace-native
     name: platforms (${{ matrix.os }})
     timeout-minutes: 25
     runs-on: ${{ matrix.os }}
@@ -280,6 +289,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: actions/download-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: workspace-native-x64
+          path: packages/workspace/build/Release/win32-x64
       - run: pnpm install --frozen-lockfile
       - name: Cache nats-server
         id: nats
