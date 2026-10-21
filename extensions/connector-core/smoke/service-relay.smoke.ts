@@ -4,9 +4,10 @@
  * NOT A NATIVE, HOST OR LIVE PROOF. The fake implements r4 §2 (one offered head, the data and control
  * cursors, re-offer, service-side withdrawal, control acknowledgement) per caller, keyed by the
  * identity a broker subject would fix. It also stands in for the three ports that do not exist yet:
- * the native self-mode request, the authorized endpoint inventory and the host frame verdict. Every
- * count below is this engine's behavior against that fake. The suite is not registered in the CI
- * suite list, and nothing in production imports the module.
+ * the native self-mode request, the authorized endpoint inventory and the host frame verdict, and the
+ * liveness cells model the cadence and the host's wake and level checks. Every count below is this
+ * engine's behavior against that fake. The suite is not registered in the CI suite list, and nothing
+ * in production imports the module.
  *
  * Run: pnpm exec tsx extensions/connector-core/smoke/service-relay.smoke.ts
  */
@@ -253,7 +254,7 @@ const lastArgs = (svc: FakeService) => svc.requests.at(-1)!.args;
   const { svc, h, relay, u } = fresh();
   u.data.push({ id: "d2", kind: "deferred", body: "deferred body", live: true, released: false });
   await relay.poll(1000);
-  c("deferred:an offered deferred item wakes, with nothing to surface before its read", h.wakes === 1 && look(relay) === undefined);
+  c("deferred:an offered deferred item wakes nothing before its read, and is not an empty poll", h.wakes === 0 && relay.counts().emptyPolls === 0 && look(relay) === undefined, relay.counts());
   await relay.prepare(10_000, "hook");
   const read = svc.requests.at(-1)!;
   c("deferred:a hook-path read is clamped to the hook budget", read.command === "relay.read" && read.deadlineMs === RELAY_HOOK_READ_MS && json(read.args) === json({ item: "d2" }), read);
@@ -314,7 +315,7 @@ const lastArgs = (svc: FakeService) => svc.requests.at(-1)!.args;
   u.control.push({ id: "c1", class: "priority", text: "priority while fetched" });
   await relay.poll(1000);
   const p1 = look(relay)!;
-  c("control:a priority item is learned while a data item is held, and wakes", relay.counts().controlWhileHeld === 1 && h.wakes === 2 && p1.text.includes("[priority c1]") && !p1.text.includes("[item d5]"), p1.text);
+  c("control:a priority item is learned while a data item is held, and wakes", relay.counts().controlWhileHeld === 1 && h.wakes === 1 && p1.text.includes("[priority c1]") && !p1.text.includes("[item d5]"), p1.text);
   relay.commit(p1.frame, true);
   await relay.prepare(1000, "wake");
   const p2 = look(relay)!;
@@ -486,6 +487,285 @@ const lastArgs = (svc: FakeService) => svc.requests.at(-1)!.args;
   c("stale:a reply that returns after the pin changed is discarded unread", relay.counts().staleReplies === 1 && h.wakes === 0 && relay.status().held === undefined, relay.counts());
 }
 
+// ── liveness, driven by the cadence and the host's own wakes ──────────────────────────────────
+/**
+ * The integration this follow-up assumes, modeled here and wired nowhere. Each cadence tick polls once
+ * and, while pending() says a read is needed, reads on the wake path. Each host wake asks for one
+ * frame, which the host builds only while pending() has something surfaceable: it reads on the hook
+ * path, surfaces with peek() and judges the frame with the next scripted verdict. At the end of each
+ * frame the host checks the same level once more, as it does for its own inbox. No test forces a frame.
+ */
+class Driven {
+  readonly svc = new FakeService();
+  readonly h = mkHost(this.svc.invoke);
+  readonly relay = new ServiceRelay(this.h);
+  readonly u = this.svc.caller(UID1);
+  readonly frames: string[] = [];
+  readonly verdicts: boolean[] = [];
+  readMs = 1000;
+  hookMs = RELAY_HOOK_READ_MS;
+  private asked = 0;
+
+  constructor() {
+    const counted = this.h.wake;
+    this.h.wake = () => {
+      counted();
+      this.asked += 1;
+    };
+    this.relay.setPin(PIN);
+  }
+
+  async tick(n = 1): Promise<void> {
+    for (let i = 0; i < n; i++) {
+      await this.relay.poll(1000);
+      if (this.relay.pending().needsRead) await this.relay.prepare(this.readMs, "wake");
+      await this.serve();
+    }
+  }
+
+  async serve(): Promise<void> {
+    while (this.asked > 0 && this.frames.length < 20) {
+      this.asked -= 1;
+      if (this.relay.pending().surfaceable === 0) continue;
+      await this.relay.prepare(this.hookMs, "hook");
+      const p = look(this.relay);
+      if (p === undefined) continue;
+      this.frames.push(p.text);
+      this.relay.commit(p.frame, this.verdicts.shift() ?? true);
+      if (this.relay.pending().surfaceable > 0) this.asked += 1;
+    }
+  }
+}
+const reads = (svc: FakeService) => svc.requests.filter((r) => r.command === "relay.read").length;
+const NONE = json({ surfaceable: 0, needsRead: false });
+const UNREAD = json({ surfaceable: 0, needsRead: true });
+{
+  const d = new Driven();
+  await d.tick(10);
+  const k = d.relay.counts();
+  c("liveness:ten empty ticks send ten polls and no read, and wake and frame nothing",
+    k.polls === 10 && k.emptyPolls === 10 && d.h.wakes === 0 && d.frames.length === 0 && reads(d.svc) === 0 && json(d.relay.pending()) === NONE, k);
+}
+{
+  const d = new Driven();
+  d.u.data.push({ id: "w1", kind: "deferred", body: "cadence body", live: true, released: false });
+  d.svc.readDelayMs = 80;
+  d.readMs = 20;
+  await d.tick();
+  await sleep(120);
+  c("liveness:an unread deferred offer whose cadence read times out wakes and frames nothing, and is not an empty poll",
+    d.h.wakes === 0 && d.frames.length === 0 && d.relay.counts().readTimeouts === 1 && d.relay.counts().emptyPolls === 0 && json(d.relay.pending()) === UNREAD, d.relay.counts());
+  d.svc.readDelayMs = 0;
+  await d.tick();
+  c("liveness:the next tick reads again, wakes once, and the host's frame carries the item",
+    d.h.wakes === 1 && d.frames.length === 1 && d.frames[0]!.includes("[item w1] cadence body") && reads(d.svc) === 2, { wakes: d.h.wakes, frames: d.frames });
+  await d.tick(3);
+  c("liveness:the verdict is reported once, and later ticks read and wake nothing",
+    d.u.data[0]!.resolved?.outcome === "delivered" && d.u.data[0]!.resolved.by === "client" && d.h.wakes === 1 && d.frames.length === 1 && reads(d.svc) === 2, d.u.data[0]);
+}
+{
+  const d = new Driven();
+  d.u.data.push({ id: "w2", kind: "deferred", body: "after the hook timeout", live: true, released: false });
+  d.u.control.push({ id: "k1", class: "priority", text: "first" });
+  d.svc.readDelayMs = 80;
+  d.readMs = 20;
+  d.hookMs = 20;
+  await d.tick();
+  await sleep(120);
+  c("liveness:when the cadence and hook-path reads both time out, the control wake's frame carries the control item alone",
+    d.h.wakes === 1 && d.frames.length === 1 && d.frames[0]!.includes("[priority k1]") && !d.frames[0]!.includes("[item w2]") && d.relay.counts().readTimeouts === 2, { k: d.relay.counts(), frames: d.frames });
+  d.svc.readDelayMs = 0;
+  await d.tick();
+  c("liveness:the next tick reads again, wakes once more, and a new frame carries the item",
+    d.h.wakes === 2 && d.frames.length === 2 && d.frames[1]!.includes("[item w2] after the hook timeout") && !d.frames[1]!.includes("[priority k1]"), d.frames);
+}
+{
+  const d = new Driven();
+  d.u.data.push({ id: "w3", kind: "deferred", body: "judged twice", live: true, released: false });
+  d.verdicts.push(false);
+  await d.tick();
+  c("liveness:an undelivered deferred frame needs a read again, and its turn end asks for no frame",
+    d.h.wakes === 1 && d.frames.length === 1 && json(d.relay.pending()) === UNREAD, d.relay.pending());
+  await d.tick();
+  c("liveness:the next tick reads again, wakes once more, and the new frame carries the repeat label",
+    d.h.wakes === 2 && d.frames.length === 2 && d.frames[1]!.includes("[item w3] judged twice") && d.frames[1]!.includes(REPEAT) && reads(d.svc) === 2, d.frames);
+  await d.tick();
+  c("liveness:only the later verdict delivers it", d.u.data[0]!.resolved?.outcome === "delivered" && d.frames.length === 2, d.u.data[0]);
+}
+{
+  const d = new Driven();
+  d.u.data.push({ id: "w4", kind: "notice", text: "judged twice", live: true, released: false });
+  d.verdicts.push(false);
+  await d.tick();
+  c("liveness:an undelivered notice stays surfaceable, so the host's turn-end level check frames it again with no new wake",
+    d.h.wakes === 1 && d.frames.length === 2 && d.frames[1]!.includes(REPEAT) && json(d.relay.pending()) === NONE && reads(d.svc) === 0, { wakes: d.h.wakes, frames: d.frames });
+  await d.tick(3);
+  c("liveness:the notice is delivered once, and later ticks wake nothing", d.u.data[0]!.resolved?.outcome === "delivered" && d.h.wakes === 1 && d.frames.length === 2, d.u.data[0]);
+}
+{
+  const d = new Driven();
+  d.u.data.push({ id: "w5", kind: "notice", text: "late while paused", live: true, released: false });
+  let release!: () => void;
+  d.svc.hold = new Promise<void>((r) => { release = r; });
+  const ticking = d.tick();
+  await sleep(0);
+  d.relay.pause();
+  release();
+  await ticking;
+  c("liveness:a late poll reply applied while paused holds its wake, and nothing is pending or framed",
+    d.h.wakes === 0 && d.relay.counts().heldWakes === 1 && d.frames.length === 0 && json(d.relay.pending()) === NONE && d.relay.status().held === "w5", d.relay.counts());
+  await d.tick(2);
+  c("liveness:ticks while paused send nothing", d.svc.requests.length === 1 && d.h.wakes === 0);
+  d.relay.resume();
+  await d.serve();
+  c("liveness:resume releases one wake, and the host's frame carries the item",
+    d.h.wakes === 1 && d.frames.length === 1 && d.frames[0]!.includes("[item w5] late while paused"), d.frames);
+}
+{
+  const d = new Driven();
+  d.u.data.push({ id: "w6", kind: "deferred", body: "read while paused", live: true, released: false });
+  d.svc.readDelayMs = 30;
+  const ticking = d.tick();
+  await sleep(10);
+  d.relay.pause();
+  await ticking;
+  c("liveness:a wake-path read that lands while paused holds its wake", d.h.wakes === 0 && d.relay.counts().heldWakes === 1 && d.frames.length === 0, d.relay.counts());
+  d.relay.resume();
+  await d.serve();
+  c("liveness:resume releases it once, and the frame carries the item", d.h.wakes === 1 && d.frames.length === 1 && d.frames[0]!.includes("[item w6] read while paused"), d.frames);
+}
+{
+  const d = new Driven();
+  d.u.data.push({ id: "w7", kind: "deferred", body: "read across a refresh", live: true, released: false });
+  await d.relay.poll(1000);
+  d.svc.readDelayMs = 30;
+  const reading = d.relay.prepare(1000, "wake");
+  d.svc.contract = "sha256:contract-2";
+  await d.relay.poll(1000);
+  await reading;
+  c("liveness:a read that lands while discovery is pending holds its wake", d.relay.status().refreshing && d.h.wakes === 0 && d.relay.counts().heldWakes === 1, d.relay.counts());
+  d.svc.contract = PIN.contract;
+  d.relay.setPin({ ...PIN });
+  await d.serve();
+  c("liveness:the identical re-verified pin releases it once, and the frame carries the item",
+    d.h.wakes === 1 && d.frames.length === 1 && d.frames[0]!.includes("[item w7] read across a refresh"), d.frames);
+}
+{
+  const d = new Driven();
+  d.u.data.push({ id: "w8", kind: "notice", text: "withdrawn while paused", live: true, released: false });
+  let release!: () => void;
+  d.svc.hold = new Promise<void>((r) => { release = r; });
+  const ticking = d.tick();
+  await sleep(0);
+  d.relay.pause();
+  release();
+  await ticking;
+  d.relay.setPin({ ...PIN, lifecycleUid: "u2" });
+  d.relay.resume();
+  await d.serve();
+  c("liveness:a held wake is dropped with its generation, and resume wakes nothing", d.relay.counts().heldWakes === 1 && d.h.wakes === 0 && d.frames.length === 0, d.relay.counts());
+}
+{
+  const d = new Driven();
+  d.u.data.push({ id: "w9", kind: "deferred", body: "never read", live: true, released: false });
+  d.svc.readDelayMs = 80;
+  d.readMs = 20;
+  await d.tick();
+  await sleep(120);
+  const sent = d.svc.requests.length;
+  d.relay.pause();
+  await d.tick(3);
+  c("liveness:a paused relay retries nothing", d.svc.requests.length === sent && d.h.wakes === 0);
+  d.relay.resume();
+  d.relay.setPin({ inactive: "host has no relay verdict" });
+  await d.tick(3);
+  c("liveness:an inactive relay retries nothing", d.svc.requests.length === sent && d.h.wakes === 0);
+  d.relay.setPin({ ...PIN, lifecycleUid: "u2" });
+  d.svc.readDelayMs = 0;
+  await d.tick(3);
+  c("liveness:after a new lifecycle UID the old item is never read again",
+    reads(d.svc) === 1 && d.h.wakes === 0 && d.frames.length === 0 && d.svc.requests.length === sent + 3, { reads: reads(d.svc), sent: d.svc.requests.length });
+}
+
+// ── the level predicate and its edges, called directly ────────────────────────────────────────
+{
+  const { svc, h, relay, u } = fresh();
+  u.data.push({ id: "p1", kind: "deferred", body: "p1", live: true, released: false });
+  u.control.push({ id: "q1", class: "priority", text: "p" }, { id: "q2", class: "notice", text: "n" });
+  await relay.poll(1000);
+  c("pending:control and an unread offer count every control item and need a read", h.wakes === 1 && json(relay.pending()) === json({ surfaceable: 2, needsRead: true }), relay.pending());
+  await relay.prepare(1000, "hook");
+  const k = relay.counts();
+  const before = json(relay.status());
+  for (let i = 0; i < 50; i++) relay.pending();
+  c("pending:is pure: fifty calls change no count and no status", json(relay.counts()) === json(k) && json(relay.status()) === before, relay.counts());
+  const f = look(relay)!;
+  c("pending:a hook-path read wakes nothing, and surfaceable equals what the frame carries",
+    h.wakes === 1 && relay.pending().surfaceable === f.frame.refs.length && f.frame.refs.length === 3 && f.text.includes("[item p1] p1") && reads(svc) === 1, f.frame.refs);
+  relay.commit(f.frame, false);
+  c("pending:after an undelivered verdict, control stays surfaceable and the deferred item needs a read", json(relay.pending()) === json({ surfaceable: 2, needsRead: true }), relay.pending());
+  relay.pause();
+  c("pending:a paused relay has nothing pending", json(relay.pending()) === NONE);
+  relay.resume();
+  c("pending:resume shows the same level again, and a resume with no held wake wakes nothing", json(relay.pending()) === json({ surfaceable: 2, needsRead: true }) && h.wakes === 1, relay.pending());
+  svc.contract = "sha256:contract-2";
+  await relay.poll(1000);
+  c("pending:a refreshing relay has nothing pending", relay.status().refreshing && json(relay.pending()) === NONE);
+  relay.setPin({ inactive: "host has no relay verdict" });
+  c("pending:an inactive relay has nothing pending", json(relay.pending()) === NONE);
+}
+{
+  const { svc, h, relay, u } = fresh();
+  u.data.push({ id: "p2", kind: "deferred", body: "p2", live: true, released: false });
+  await relay.poll(1000);
+  svc.readDelayMs = 30;
+  await Promise.all([relay.prepare(1000, "wake"), relay.prepare(1000, "wake")]);
+  c("pending:two concurrent wake-path prepares send one read and wake once", reads(svc) === 1 && h.wakes === 1 && json(relay.pending()) === json({ surfaceable: 1, needsRead: false }), { reads: reads(svc), wakes: h.wakes });
+}
+{
+  const { h, relay, u } = fresh();
+  u.data.push({ id: "p3", kind: "deferred", body: "p3", live: true, released: false });
+  await relay.poll(1000);
+  u.data[0]!.live = false;
+  await relay.prepare(1000, "wake");
+  c("pending:a read answered withdrawn wakes nothing and leaves nothing pending", h.wakes === 0 && json(relay.pending()) === NONE && relay.status().unreported === "p3");
+}
+{
+  const { svc, h, relay, u } = fresh();
+  u.data.push({ id: "p4", kind: "deferred", body: "p4", live: true, released: false });
+  await relay.poll(1000);
+  svc.readDelayMs = 30;
+  const reading = relay.prepare(1000, "wake");
+  await sleep(0);
+  relay.setPin({ ...PIN, grantId: "g2" });
+  await reading;
+  c("pending:a read reply after the pin changed is discarded and wakes nothing", h.wakes === 0 && relay.counts().staleReplies === 1 && json(relay.pending()) === NONE, relay.counts());
+}
+{
+  const d = new Driven();
+  d.u.data.push({ id: "p5", kind: "deferred", body: "released, then withdrawn", live: true, released: false });
+  await d.relay.poll(1000);
+  await d.relay.prepare(1000, "wake");
+  c("pending:the service counts the item released at the read, before any verdict", d.u.data[0]!.released && d.u.data[0]!.resolved === undefined && d.h.wakes === 1);
+  d.u.data[0]!.live = false;
+  await d.relay.poll(1000);
+  await d.serve();
+  c("pending:text in hand is dropped unsurfaced when a later poll finds it withdrawn, and the wake's frame finds nothing",
+    json(d.relay.pending()) === NONE && d.frames.length === 0 && d.relay.status().unreported === "p5", { pending: d.relay.pending(), status: d.relay.status() });
+}
+{
+  const { svc, relay, u } = fresh();
+  u.data.push({ id: "p6", kind: "notice", text: "judged while paused", live: true, released: false });
+  await relay.poll(1000);
+  const f = look(relay)!;
+  relay.pause();
+  relay.commit(f.frame, true);
+  c("pending:a true verdict for a frame issued before the pause is kept", relay.status().unreported === "p6" && relay.counts().staleCommits === 0 && json(relay.pending()) === NONE);
+  relay.resume();
+  await relay.poll(1000);
+  c("pending:after resume it is reported once, from the client", u.data[0]!.resolved?.outcome === "delivered" && u.data[0]!.resolved.by === "client" && svc.requests.length === 2, u.data[0]);
+}
+
 // ── bounds and closed replies ─────────────────────────────────────────────────────────────────
 const scripted = (replies: unknown[]) => {
   const sent: Record<string, unknown>[] = [];
@@ -511,11 +791,13 @@ const sized = (shape: Record<string, unknown>, field: string, size: number) => {
     bytes(reply) <= 98_304 && control.every((x) => bytes(x) === 1024) && bytes(data) === 65_536 && relay.status().controlWaiting === 16 && relay.status().held === "dmax" && relay.counts().malformed === 0 && h.wakes === 1,
     { size: bytes(reply), status: relay.status() });
 }
-const refusedWhole = async (name: string, replies: unknown[], wantPrefix = 0) => {
+/** `prefixHeld` names the deferred offer an accepted first reply leaves held; the refused reply after it
+ *  must change nothing. Neither an unread offer nor a refused reply wakes. */
+const refusedWhole = async (name: string, replies: unknown[], prefixHeld?: string) => {
   const { h, relay } = scripted(replies);
-  for (let i = 0; i <= wantPrefix; i++) await relay.poll(1000);
+  for (let i = 0; i <= (prefixHeld === undefined ? 0 : 1); i++) await relay.poll(1000);
   const k = relay.counts();
-  c(name, k.malformed === 1 && h.wakes === wantPrefix && h.logs.some((l) => l.startsWith("malformed relay.poll reply")), { k, logs: h.logs });
+  c(name, k.malformed === 1 && h.wakes === 0 && relay.status().held === prefixHeld && h.logs.some((l) => l.startsWith("malformed relay.poll reply")), { k, status: relay.status(), logs: h.logs });
 };
 await refusedWhole("closed:seventeen control items are refused whole", [{ control: Array.from({ length: 17 }, (_, i) => ({ id: `x${i}`, class: "notice", text: "t" })) }]);
 await refusedWhole("closed:a control item over 1024 bytes is refused, never cut", [{ control: [sized({ id: "big", class: "notice" }, "text", 1025)] }]);
@@ -527,15 +809,15 @@ await refusedWhole("closed:a deferred item carrying text is refused", [{ control
 await refusedWhole("closed:a data item answering a held request is refused", [
   { control: [], data: { id: "h2", kind: "deferred", repeat: false } },
   { control: [], held: { id: "h2", state: "live" }, data: { id: "h3", kind: "notice", text: "t", repeat: false } },
-], 1);
+], "h2");
 await refusedWhole("closed:a held request answered without its held state is refused", [
   { control: [], data: { id: "h4", kind: "deferred", repeat: false } },
   { control: [] },
-], 1);
+], "h4");
 await refusedWhole("closed:held state naming another item is refused", [
   { control: [], data: { id: "h5", kind: "deferred", repeat: false } },
   { control: [], held: { id: "other", state: "live" } },
-], 1);
+], "h5");
 {
   const { svc, relay, u } = fresh();
   u.data.push({ id: "big1", kind: "deferred", body: "z".repeat(70_000), live: true, released: false });

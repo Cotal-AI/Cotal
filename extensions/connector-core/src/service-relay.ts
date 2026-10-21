@@ -9,7 +9,11 @@
  *   performs: it does not enumerate endpoints, read a relay marker or decide a grant;
  * - the host's own frame verdict ({@link ServiceRelay.commit}), the only thing that makes an item
  *   delivered;
- * - the cadence: the existing turn-poll interval would call {@link ServiceRelay.poll}.
+ * - the cadence: the existing turn-poll interval would call {@link ServiceRelay.poll}, and
+ *   {@link ServiceRelay.prepare} on the wake path while {@link ServiceRelay.pending} says a read is
+ *   needed;
+ * - the host's level wake predicate, which would count only what {@link ServiceRelay.pending} calls
+ *   surfaceable.
  *
  * The service holds the durable state, per caller lifecycle UID. This engine holds only what one
  * process needs between polls: the one data item it holds, one unreported outcome, and which control
@@ -84,7 +88,10 @@ export interface ServiceRelayHost {
   /** One native self-mode request on the pinned endpoint. `pin` and `generation` are the ones the
    *  request started under; a reply that returns after the pin changed is discarded unread. */
   invoke(call: { readonly pin: RelayPin; readonly generation: number; readonly command: string; readonly args: Record<string, unknown>; readonly deadlineMs: number }): Promise<RelayCall>;
-  /** Ask for the host's next injectable frame. Called only when a poll brought something new. */
+  /** Ask for the host's next injectable frame. Called when a poll brought a new control item or
+   *  notice, and when a wake-path read brought a held item's text; never for an offer that is still
+   *  unread. A wake due while paused or refreshing is held, and released once when the relay is live
+   *  again if anything is still surfaceable. */
   wake(): void;
   /** A discovery trigger fired (r4 §3). Nothing is sent until the integration re-pins. */
   refresh(reason: "contract" | "permission"): void;
@@ -96,6 +103,8 @@ export interface ServiceRelayCounts {
   /** Answered polls that brought nothing new, so woke nothing. */
   emptyPolls: number;
   wakes: number;
+  /** Wakes that came due while paused or refreshing, and were held back. */
+  heldWakes: number;
   /** Requests that did not complete and are sent again unchanged. */
   retries: number;
   readTimeouts: number;
@@ -107,6 +116,14 @@ export interface ServiceRelayCounts {
   /** Answered polls that carried control items while a data item was held. */
   controlWhileHeld: number;
   repeatFrames: number;
+}
+
+/** What the next frame would carry, without forming it. */
+export interface ServiceRelayPending {
+  /** Control items no verdict delivered, plus the held item once its text is in hand. */
+  readonly surfaceable: number;
+  /** A held deferred item waits for {@link ServiceRelay.prepare} before it can surface. */
+  readonly needsRead: boolean;
 }
 
 export interface ServiceRelayStatus {
@@ -239,13 +256,14 @@ export class ServiceRelay {
   private head: Head | undefined;
   private resolution: Resolution | undefined;
   private dataAfter: string | null = null;
+  private wakeHeld = false;
   private pollingGeneration: number | undefined;
   private readingGeneration: number | undefined;
   private issued = new WeakSet<RelayFrame>();
   private lastTrouble: string | undefined;
   private readonly tally: ServiceRelayCounts = {
-    polls: 0, emptyPolls: 0, wakes: 0, retries: 0, readTimeouts: 0, resyncs: 0, staleReplies: 0,
-    staleCommits: 0, malformed: 0, refreshes: 0, controlWhileHeld: 0, repeatFrames: 0,
+    polls: 0, emptyPolls: 0, wakes: 0, heldWakes: 0, retries: 0, readTimeouts: 0, resyncs: 0,
+    staleReplies: 0, staleCommits: 0, malformed: 0, refreshes: 0, controlWhileHeld: 0, repeatFrames: 0,
   };
 
   constructor(private readonly host: ServiceRelayHost) {}
@@ -262,7 +280,7 @@ export class ServiceRelay {
       const problem = pinProblem(next);
       if (problem === undefined && this.pin !== undefined && samePin(this.pin, next)) {
         this.refreshing = false;
-        return;
+        return this.release();
       }
       this.reset();
       if (problem !== undefined) return this.deactivate(problem);
@@ -274,13 +292,15 @@ export class ServiceRelay {
     this.deactivate(next === undefined ? "no relay pin" : next.inactive);
   }
 
-  /** Transport lost: nothing is sent, surfaced or claimed, and nothing held is discarded. */
+  /** Transport lost: nothing is sent, surfaced or claimed, and nothing held is discarded. A late reply
+   *  is still applied, and a wake it brings is held until the relay is live again. */
   pause(): void {
     this.paused = true;
   }
 
   resume(): void {
     this.paused = false;
+    this.release();
   }
 
   /**
@@ -318,14 +338,16 @@ export class ServiceRelay {
   /**
    * Read the held deferred item with `relay.read`, bounded. On the hook path the bound is at most
    * {@link RELAY_HOOK_READ_MS}. A read that times out leaves the item held for a later frame, never
-   * skipped, and its late reply is discarded; the next prepare reads again.
+   * skipped, and its late reply is discarded; the next prepare reads again. A wake-path read that
+   * brings the text wakes the host once; a hook-path read brings it into the frame being built, so it
+   * wakes nothing. The service counts the item released at the read, before any frame verdict, and
+   * the text kept here grants nothing: a later poll that finds it withdrawn drops it unsurfaced.
    */
   async prepare(deadlineMs: number, path: "hook" | "wake"): Promise<void> {
     finiteDeadline(deadlineMs);
     const ms = path === "hook" ? Math.min(deadlineMs, RELAY_HOOK_READ_MS) : deadlineMs;
-    const pin = this.pin, head = this.head;
-    if (pin === undefined || this.paused || this.refreshing || this.readingGeneration === this.generation) return;
-    if (head === undefined || this.resolution !== undefined || head.offer.kind !== "deferred" || head.body !== undefined) return;
+    const pin = this.pin, head = this.unread();
+    if (pin === undefined || this.paused || this.refreshing || this.readingGeneration === this.generation || head === undefined) return;
     const generation = this.generation;
     this.readingGeneration = generation;
     try {
@@ -340,11 +362,23 @@ export class ServiceRelay {
         this.tally.malformed += 1;
         return this.trouble(`malformed relay.read reply: ${reply}`);
       }
-      if ("withdrawn" in reply) this.withdraw(reply.withdrawn);
-      else head.body = reply.text;
+      if ("withdrawn" in reply) return this.withdraw(reply.withdrawn);
+      head.body = reply.text;
+      if (path === "wake") this.wake();
     } finally {
       if (this.readingGeneration === generation) this.readingGeneration = undefined;
     }
+  }
+
+  /**
+   * What {@link ServiceRelay.peek} would surface now, as counts, and whether a read is needed
+   * first. It forms no frame and counts nothing, so a host's level wake predicate may call it on
+   * every check. A paused, refreshing or inactive relay has nothing pending.
+   */
+  pending(): ServiceRelayPending {
+    if (this.pin === undefined || this.paused || this.refreshing) return { surfaceable: 0, needsRead: false };
+    const waiting = this.control.filter((e) => !e.delivered).length;
+    return { surfaceable: waiting + (this.head?.body !== undefined ? 1 : 0), needsRead: this.unread() !== undefined };
   }
 
   /**
@@ -421,6 +455,12 @@ export class ServiceRelay {
     return { ...this.tally };
   }
 
+  /** The held deferred item whose text is not in hand; only a read can surface it. */
+  private unread(): Head | undefined {
+    const head = this.head;
+    return head !== undefined && this.resolution === undefined && head.offer.kind === "deferred" && head.body === undefined ? head : undefined;
+  }
+
   private request(pin: RelayPin): PollRequest {
     const control = { after: this.controlAfter() };
     if (this.resolution !== undefined) return { contract: pin.contract, control, data: { resolved: this.resolution } };
@@ -448,6 +488,7 @@ export class ServiceRelay {
     // local list; what this process learned about an item it still lists is kept by id.
     const known = new Map(this.control.map((e) => [e.item.id, e]));
     let fresh = 0;
+    let offered = false;
     this.control = reply.control.map((item) => {
       const kept = known.get(item.id);
       if (kept !== undefined) return kept;
@@ -462,15 +503,30 @@ export class ServiceRelay {
       }
       if (reply.data !== undefined) {
         this.head = { offer: reply.data, unconfirmed: false, ...(reply.data.kind === "notice" ? { body: reply.data.text } : {}) };
-        fresh += 1;
+        offered = true;
+        // A deferred offer has nothing to surface yet; the read that brings its text wakes.
+        if (reply.data.kind === "notice") fresh += 1;
       }
     } else if (reply.held?.state === "withdrawn") this.withdraw(reply.held.reason ?? "withdrawn");
-    if (fresh === 0) {
-      this.tally.emptyPolls += 1;
+    if (fresh > 0) return this.wake();
+    if (!offered) this.tally.emptyPolls += 1;
+  }
+
+  private wake(): void {
+    if (this.paused || this.refreshing) {
+      this.wakeHeld = true;
+      this.tally.heldWakes += 1;
       return;
     }
     this.tally.wakes += 1;
     this.host.wake();
+  }
+
+  /** One held wake, once the relay is live again and only if something is still surfaceable. */
+  private release(): void {
+    if (!this.wakeHeld || this.paused || this.refreshing) return;
+    this.wakeHeld = false;
+    if (this.pending().surfaceable > 0) this.wake();
   }
 
   /** The service ended this item's authority. It is never surfaced again, a verdict for a frame that
@@ -517,6 +573,7 @@ export class ServiceRelay {
     this.generation += 1;
     this.pin = undefined;
     this.refreshing = false;
+    this.wakeHeld = false;
     this.control = [];
     this.controlResync = false;
     this.head = undefined;
