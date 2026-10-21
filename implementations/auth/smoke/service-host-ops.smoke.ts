@@ -1,8 +1,9 @@
 /** Owned-broker suite for the dormant service host operations. Every section runs a real
  * nats-server process through the custody fixture (its genuine plane-claim hold, account, service
- * name and fault hooks), in operator mode: discovery reads over a connection with no publish grant,
- * and each invocation's effect connection may publish exactly its scope's keys, so a write outside
- * an invocation's scope would be refused by the broker as well as by the engine. Records a test writes directly are labelled as simulations; nothing here is
+ * name and fault hooks), in operator mode: discovery reads over the product discovery grant, which
+ * publishes nothing, and each invocation's effect connection is the product effect credential,
+ * which may publish exactly its scope's keys until its original deadline, so a write outside an
+ * invocation's scope would be refused by the broker as well as by the engine. Records a test writes directly are labelled as simulations; nothing here is
  * native, Cloud or production acceptance, and nothing proves a human decision. */
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -44,7 +45,7 @@ const discoveries = new WeakMap<Fixture, ReturnType<Fixture["discovery"]>>();
 async function engine(f: Fixture, dir: string, over: Partial<ServiceHostOperationsOptions> = {}): Promise<ServiceHostOperations> {
   let d = discoveries.get(f);
   if (d === undefined) discoveries.set(f, d = f.discovery());
-  return openServiceHostOperations({ discovery: (await d).registry, openEffect: (scope) => f.effect(scope.keys), hold: f.hold,
+  return openServiceHostOperations({ discovery: (await d).registry, openEffect: (scope) => f.effect(scope.keys, scope.deadlineMs), hold: f.hold,
     accountPublicKey: f.accountPublicKey, ledgerDir: dir, startup: { kind: "normal" }, ...over });
 }
 const parsesClosed = (label: string, r: unknown) => {
@@ -314,8 +315,8 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
     let opened = 0, closed = 0;
     const e = await engine(f, dir, { openEffect: async (scope) => {
       opened++;
-      const effect = await f.effect(scope.keys);
-      return { registry: effect.registry, close: async () => { closed++; await effect.close(); } };
+      const effect = await f.effect(scope.keys, scope.deadlineMs);
+      return { registry: effect.registry, gone: effect.gone, close: async () => { closed++; await effect.close(); } };
     } });
     const p = await registered(f, e);
     const r = await e.handle(decide(p.proposalId, p.revision, f.name.revision, "approve", ownerOf(f)));
@@ -1642,10 +1643,11 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
       } finally { await eff.close(); }
     });
     await cell(f, "S5", async () => {
-      const seen: Array<{ operation: string; records: readonly string[]; auth: readonly string[]; authFamilies: readonly string[]; frozen: boolean }> = [];
+      const seen: Array<{ operation: string; records: readonly string[]; auth: readonly string[]; authFamilies: readonly string[]; frozen: boolean; ahead: number }> = [];
       const x = await engine(f, dir, { openEffect: (scope) => {
-        seen.push({ operation: scope.operation, ...scope.keys, frozen: Object.isFrozen(scope) && Object.isFrozen(scope.keys) && Object.isFrozen(scope.keys.auth) });
-        return f.effect(scope.keys);
+        seen.push({ operation: scope.operation, ...scope.keys, frozen: Object.isFrozen(scope) && Object.isFrozen(scope.keys) && Object.isFrozen(scope.keys.auth),
+          ahead: scope.deadlineMs - Date.now() });
+        return f.effect(scope.keys, scope.deadlineMs);
       } });
       const p = await registered(f, x), rq = approveReq(f, p), a = L(await x.handle(rq)), u = a.approval!.assignment.lifecycleUid;
       const rv = revoke(f.endpoint, p.instanceId, a.approval!.assignment.assignmentDigest, "owner-request", ownerOf(f)), v = L(await x.handle(rv));
@@ -1656,6 +1658,8 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
       const by = (op: string) => seen.filter((s) => s.operation === op);
       const [startup] = by("startup"), regs = by("register"), [dec, refuse] = by("decide"), [rev] = by("revoke");
       c.check("S5 every scope reached the effect frozen", seen.length > 0 && seen.every((s) => s.frozen), seen.length);
+      c.check("S5 every scope carries its invocation's original deadline, at most the invocation limit ahead",
+        seen.every((s) => s.ahead > 0 && s.ahead <= S2A_INVOCATION_MS), seen.map((s) => s.ahead));
       c.check("S5 startup's scope is the admission key alone", startup !== undefined && same(startup.auth, ["svchost.admission"]) && !startup.records.length && !startup.authFamilies.length, startup);
       const r0 = regs[0];
       c.check("S5 a register's scope is its operation, its proposal and the capacity row", regs.length === 2 && r0 !== undefined && r0.auth.length === 3

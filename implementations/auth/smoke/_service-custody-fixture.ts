@@ -8,9 +8,11 @@
  * ambiguous error), a write never sent (ambiguous error), a write held past the request timeout, a
  * deferred original write the fixture issues later, or fixture work run before or after a write.
  *
- * A `limited` fixture runs the broker in operator mode instead. Its own connection is unrestricted,
- * while `effect` and `discovery` open connections whose broker publish grant is exactly the given
- * write keys (none for discovery), so a write outside them is refused by the broker itself. */
+ * A `limited` fixture runs the broker in operator mode instead. Its own connection is unrestricted.
+ * `effect` opens the product's per-invocation effect connection (its credential publishes exactly
+ * the given write keys and expires at the given original deadline) and `discovery` a connection on
+ * the product's discovery grant (no write at all), so a write outside them is refused by the broker
+ * itself. */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,6 +36,8 @@ import {
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import type { ServiceWriteScope } from "../src/service-write.js";
+import { serviceHostDiscoveryGrants } from "../src/authority-client.js";
+import { S2A_INVOCATION_MS, openServiceHostEffect, type ServiceHostEffect } from "../src/service-host-ops.js";
 
 const enc = new TextEncoder(), dec = new TextDecoder();
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -86,7 +90,9 @@ async function operatorStack(dir: string, port: number) {
     const jwt = await encodeUser(name, u, account, p ? { pub: { allow: p.pub }, sub: { allow: p.sub } } : {}, { signer });
     return { id, authenticator: jwtAuthenticator(jwt, u.getSeed()) };
   };
-  return { config, accountPublicKey: account.getPublicKey(), user };
+  // The data account's signing key, as the auth service holds it to mint its own connections.
+  const dataAccount = { pub: account.getPublicKey(), signingSeed: dec.decode(signer.getSeed()) };
+  return { config, accountPublicKey: account.getPublicKey(), dataAccount, user };
 }
 
 export async function openFixture(space: string, opts: { endpoint?: string; owner?: string; limited?: boolean } = {}) {
@@ -96,6 +102,7 @@ export async function openFixture(space: string, opts: { endpoint?: string; owne
   if (port === 4222) throw new Error("fixture refuses the default NATS port");
   const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
   const stack = opts.limited ? await operatorStack(dir, port) : undefined;
+  const server = `nats://127.0.0.1:${port}`;
   const broker = spawn("nats-server", stack ? ["-c", stack.config] : ["-js", "-sd", dir, "-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" });
   const releaseBroker = teardownOnSignal(broker, dir);
   let nc: NatsConnection | undefined;
@@ -262,31 +269,40 @@ export async function openFixture(space: string, opts: { endpoint?: string; owne
   };
   instrument(reg);
 
-  /** Limited fixtures only: a fresh connection whose publish grant is exactly `writes` as `$KV`
-   *  subjects (one token under each auth family), plus the JetStream reads a registry needs. `null`
-   *  grants no KV publish. Every broker permission refusal on it is recorded in `violations`. */
+  /** Limited fixtures only. Every broker permission refusal on an effect or discovery connection
+   *  is recorded in `violations`. */
   const violations: string[] = [];
-  const limitedRegistry = async (label: string, writes: ServiceWriteScope | null): Promise<{ registry: LifecycleRegistry; close(): Promise<void> }> => {
-    if (!stack) throw new Error("this fixture's broker grants nothing per connection; open it limited");
-    const rb = recordsBucket(space), ab = epAuthBucket(space);
-    const u = await stack.user(label, (id) => ({ sub: [`_INBOX_${id}.>`], pub: ["$JS.API.INFO",
-      ...[rb, ab].flatMap((b) => [`$JS.API.STREAM.INFO.KV_${b}`, `$JS.API.STREAM.MSG.GET.KV_${b}`]),
-      ...(writes ? [...writes.records.map((k) => `$KV.${rb}.${k}`), ...writes.auth.map((k) => `$KV.${ab}.${k}`), ...writes.authFamilies.map((f) => `$KV.${ab}.${f}*`)] : [])] }));
-    const lc = await connect({ servers: `nats://127.0.0.1:${port}`, reconnect: false, name: label, inboxPrefix: `_INBOX_${u.id}`, authenticator: u.authenticator });
+  const refusals = (label: string, lc: NatsConnection) => {
     limitedConns.add(lc);
     void (async () => {
       for await (const st of lc.status()) if (st.type === "error" && /permission/i.test(String((st as { error?: unknown }).error))) violations.push(`${label}: ${String((st as { error?: unknown }).error)}`);
     })();
+  };
+  const limitedStack = () => { if (!stack) throw new Error("this fixture's broker grants nothing per connection; open it limited"); return stack; };
+  /** One invocation's product effect connection for `writes`, expiring at `deadlineMs`, with its
+   *  registry instrumented; `via` reaches the broker through another address (a test relay). A
+   *  deferred write still in flight keeps it open until the write lands. */
+  const effect = async (writes: ServiceWriteScope, deadlineMs = Date.now() + S2A_INVOCATION_MS, via = server): Promise<ServiceHostEffect> => {
+    let lc: NatsConnection | undefined;
+    const real = await openServiceHostEffect({ server: via, space, dataAccount: limitedStack().dataAccount, log: () => {},
+      onConnection: (nc) => { lc = nc; refusals("fixture-effect", nc); } }, { keys: writes, deadlineMs });
     let pending = 0, closing = false;
+    const shut = async () => { if (lc) limitedConns.delete(lc); await real.close(); };
+    instrument(real.registry, { add: () => { pending++; }, done: () => { if (--pending === 0 && closing) void shut(); } });
+    return { registry: real.registry, gone: real.gone, close: async () => { if (pending > 0) closing = true; else await shut(); } };
+  };
+  /** A standing connection on the product discovery grant: the registry reads and no write. */
+  const discovery = async (): Promise<{ registry: LifecycleRegistry; close(): Promise<void> }> => {
+    const u = await limitedStack().user("fixture-discovery", (id) => { const g = serviceHostDiscoveryGrants(space, id); return { pub: g.publish, sub: g.subscribe }; });
+    const lc = await connect({ servers: server, reconnect: false, name: "fixture-discovery", inboxPrefix: `_INBOX_${u.id}`, authenticator: u.authenticator });
+    refusals("fixture-discovery", lc);
     const shut = async () => { limitedConns.delete(lc); await lc.close().catch(() => {}); };
     try {
       const registry = await openLifecycleRegistry(lc, space);
-      instrument(registry, { add: () => { pending++; }, done: () => { if (--pending === 0 && closing) void shut(); } });
-      return { registry, close: async () => { if (pending > 0) closing = true; else await shut(); } };
+      instrument(registry);
+      return { registry, close: shut };
     } catch (e) { await shut(); throw e; }
   };
-  const effect = (writes: ServiceWriteScope) => limitedRegistry("fixture-effect", writes);
-  const discovery = () => limitedRegistry("fixture-discovery", null);
   const faults = {
     onWrite(match: (c: WriteCall) => boolean, plan: WritePlan, times = 1) {
       const arm: WriteArm = { match, plan, times, hits: 0 };
@@ -304,7 +320,8 @@ export async function openFixture(space: string, opts: { endpoint?: string; owne
   };
 
   return {
-    conn, reg, records, auth, hold, accountPublicKey, space, endpoint, owner, name, limited: stack !== undefined, effect, discovery, violations,
+    conn, reg, records, auth, hold, accountPublicKey, space, endpoint, owner, name, limited: stack !== undefined, effect, discovery, violations, server,
+    dataAccount: stack?.dataAccount, user: stack?.user,
     reservation, binding, keys, value, revision, freshHost, later, original, cancelOp, bootstrap, cancel,
     pausedBootstrap, pausedCancel, tripOnWrite, watch, movePlane, touch, faults, close,
   };

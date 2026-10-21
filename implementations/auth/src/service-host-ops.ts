@@ -6,18 +6,21 @@
  * Every write is one zero-history create or one exact-revision CAS on one key, issued through the
  * shared custody writer (service-write.ts) under the same plane-claim hold check and fatal latch as
  * native custody, and only inside the invocation's write scope: the keys discovery located before
- * its effect connection opened. A step that needs a key outside it holds before anything is issued. No record carries a TTL and none is ever deleted or purged. There are no
+ * its effect connection opened. That connection's credential publishes only those keys and expires
+ * at the invocation's original deadline. A step that needs a key outside it holds before anything is issued. No record carries a TTL and none is ever deleted or purged. There are no
  * multi-key batches: every window between two writes is either fenced on its key or settled from
  * what a later invocation reads. The invocation limit and the original deadline are limits, never
  * waits, fences or proof that an earlier write cannot still land. */
 import { createHash } from "node:crypto";
+import type { NatsConnection } from "@nats-io/transport-node";
 import {
   EpEnvelopeError, assertDerivedOwnerToken, assertLifecycleToken, canonicalJson, contractDigest, endpointToken,
   isContractDigest, mintLifecycleUid, parseEndpointCapabilities, parseNativeUidCustody, serviceEndpointActor,
   type EpCapability, type EpCommandAuthority, type ServiceUidCustodyV1,
 } from "@cotal-ai/core";
+import { SERVICE_HOST_INVOCATION_MS, openAuthorityClient, serviceHostEffectGrants, serviceHostEffectLabel } from "./authority-client.js";
 import { findInteractiveActor } from "./ledger.js";
-import type { LifecycleRegistry } from "./lifecycle-registry.js";
+import { openLifecycleRegistry, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { approvedServiceGateRow, assertApprovableServiceGate, type ServiceAssignmentBinding, type ServiceGateRows } from "./native-service-gate.js";
 import { readNativeServiceName } from "./native-service-name.js";
 import type { PlaneClaimHold } from "./plane-claim.js";
@@ -41,8 +44,9 @@ import {
 
 /** Original authority limit of one approve, refuse or register, from its admission. */
 export const S2A_OPERATION_TTL_MS = 600_000;
-/** Per-invocation limit for reads, bookkeeping, settlement and native cancellation. */
-export const S2A_INVOCATION_MS = 60_000;
+/** Per-invocation limit for reads, bookkeeping, settlement and native cancellation, and the
+ *  longest window an invocation's effect credential may cover. */
+export const S2A_INVOCATION_MS = SERVICE_HOST_INVOCATION_MS;
 /** A proposal's canonical lifetime (canon:203). */
 export const S2A_PROPOSAL_LIFETIME_MS = 86_400_000;
 export const S2A_MAX_PENDING = 256;
@@ -431,9 +435,11 @@ export interface ServiceHostScopeTarget {
   instanceId: string | null;
   lifecycleUid: string | null;
 }
-/** One invocation's scope: its target and the exact keys it may write. The engine guards every
- *  write with `keys`, so an effect credential granted from the same set cannot differ from it. */
-export interface ServiceHostEffectScope extends ServiceHostScopeTarget { readonly keys: ServiceWriteScope }
+/** One invocation's scope: its target, the exact keys it may write and its original deadline. The
+ *  engine guards every write with `keys` and never starts a request at or past `deadlineMs`, so an
+ *  effect credential granted from the same keys and expiring from the same deadline cannot differ
+ *  from it. */
+export interface ServiceHostEffectScope extends ServiceHostScopeTarget { readonly keys: ServiceWriteScope; readonly deadlineMs: number }
 
 /** The one key source for an invocation's writes: its own S2-A records, plus native custody's keys
  *  for the located reservation. A decide with a reservation can bootstrap it; a revoke only cancels. */
@@ -463,8 +469,25 @@ export function serviceHostScopeKeys(account: { accountPublicKey: string; space:
   return Object.freeze({ records: uniq(records), auth: uniq(auth), authFamilies: uniq(authFamilies) });
 }
 const NO_WRITES: ServiceWriteScope = Object.freeze({ records: Object.freeze([]), auth: Object.freeze([]), authFamilies: Object.freeze([]) });
-/** One per-invocation effect connection's registry. `close` runs only after every awaited call returned. */
-export interface ServiceHostEffect { registry: LifecycleRegistry; close(): Promise<void> }
+/** One per-invocation effect connection's registry. `gone` resolves when the connection is gone for
+ *  good, which fences the invocation. `close` runs only after every awaited call returned. */
+export interface ServiceHostEffect { registry: LifecycleRegistry; gone: Promise<void>; close(): Promise<void> }
+
+/** Open one invocation's effect connection: a fresh identity whose credential publishes exactly
+ *  `scope.keys`, never reconnects or renews, and expires at `scope.deadlineMs` rounded up to the
+ *  whole second. The registry over it is the effect registry. */
+export async function openServiceHostEffect(
+  opts: { server: string; space: string; dataAccount: { pub: string; signingSeed: string }; log: (line: string) => void; onConnection?: (nc: NatsConnection, label: string) => void },
+  scope: Pick<ServiceHostEffectScope, "keys" | "deadlineMs">,
+): Promise<ServiceHostEffect> {
+  const client = await openAuthorityClient({
+    server: opts.server, space: opts.space, dataAccount: opts.dataAccount, log: opts.log, label: serviceHostEffectLabel(opts.space),
+    grants: (connId) => serviceHostEffectGrants(opts.space, connId, scope.keys), noReconnect: true, serviceHostInvocation: { deadlineMs: scope.deadlineMs },
+    ...(opts.onConnection ? { onConnection: opts.onConnection } : {}),
+  });
+  try { return { registry: await openLifecycleRegistry(client.nc, opts.space), gone: client.gone!, close: () => client.close() }; }
+  catch (e) { await client.close().catch(() => {}); throw e; }
+}
 export interface ServiceHostOperationsOptions {
   /** A standing read-only registry used only to locate an invocation's keys. */
   discovery: LifecycleRegistry;
@@ -536,21 +559,26 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
   let tripped: string | undefined;
   const discoveryCtx = (step: string) => { const c = context(HOSTS.get(discovery.host)!, Date.now() + S2A_INVOCATION_MS); c.step = step; return c; };
 
-  /** One invocation: an effect connection for the discovered scope, one custody host over it
-   *  sharing the process hold and writing only the scope's keys, and the engine latch. Every
-   *  awaited call returns before close. */
+  /** One invocation: an effect connection for the discovered scope and its original deadline, one
+   *  custody host over it sharing the process hold and writing only the scope's keys, and the
+   *  engine latch. The connection's loss trips the host. Every awaited call returns before close. */
   async function invoke<T>(target: ServiceHostScopeTarget, run: (inv: Inv) => Promise<T>): Promise<T> {
     if (tripped !== undefined) throw new Held("readiness", "open", `the service host is fenced: ${tripped}`);
     const keys = serviceHostScopeKeys({ accountPublicKey, space }, target);
-    const scope: ServiceHostEffectScope = Object.freeze({ ...target, keys });
-    const effect = await opts.openEffect(scope);
+    const deadlineMs = Date.now() + S2A_INVOCATION_MS;
+    const scope: ServiceHostEffectScope = Object.freeze({ ...target, keys, deadlineMs });
+    let effect: ServiceHostEffect;
+    try { effect = await opts.openEffect(scope); }
+    catch (e) { throw new Held("unavailable", "effect-open", `the invocation's effect connection did not open: ${message(e)}`); }
     try {
       const { host, trip } = openServiceCustodyHost({ registry: effect.registry, hold: opts.hold, accountPublicKey, writes: keys });
       if (host.space !== space) throw new EpEnvelopeError("permission-denied", "the effect registry belongs to another space");
       live.add(trip);
       if (tripped !== undefined) trip(tripped);
+      // Attached before the first request: a write issued after the loss holds, one in flight across it reports held.
+      void effect.gone.then(() => trip("the invocation's effect connection is gone"));
       const h = HOSTS.get(host)!;
-      try { return await run({ host, h, writes: h.writes!, endMs: Date.now() + S2A_INVOCATION_MS, operationId: target.operationId ?? "", bound: true }); }
+      try { return await run({ host, h, writes: h.writes!, endMs: deadlineMs, operationId: target.operationId ?? "", bound: true }); }
       finally { live.delete(trip); }
     } finally { await effect.close(); }
   }
