@@ -28,7 +28,7 @@ import {
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths } from "./agent-secrets.js";
 import { authDir, findCotalRoot, soleSpaceOf } from "./auth-paths.js";
-import { connectOrExit, connectOrThrow, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, userViewAuth, type ConnectFlags } from "./connect.js";
+import { connectOrExit, connectOrThrow, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, preflightOrThrow, userViewAuth, type ConnectFlags } from "./connect.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type MeshTargetErrorCode } from "./mesh-target.js";
 import { findMesh } from "./mesh-registry.js";
 import { pruneStaleMeshes } from "./preflight.js";
@@ -200,10 +200,15 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
     throw new Error(`managed seat credential is missing at ${path}; refusing to act as a different caller`);
   const creds = readFileSync(path, "utf8");
   const tls = mesh.tlsRequired;
+  // As the operator mint does, a broker that is not there is reported in the preflight's classified
+  // words rather than as the raw dial error. The probe uses the seat's own credential and never prunes.
   const nc = await dialerFor(mesh.server)({
     servers: mesh.server,
     ...standaloneConnectOpts({ creds, tls }),
     maxReconnectAttempts: 0,
+  }).catch(async (e: unknown) => {
+    await preflightOrThrow(mesh, creds, true);
+    throw e;
   });
   let epCaller: IssuedCaller;
   try {

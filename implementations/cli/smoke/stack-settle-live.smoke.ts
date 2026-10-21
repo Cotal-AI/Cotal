@@ -9,7 +9,7 @@
  *  3. Busy port on a first `up`. It refuses CONFLICT naming the address and the bind error and
  *     launches nothing; once the port is free the same `up` starts.
  *  4. Orphan manager. With the broker killed under a live manager, `down` refuses before any stop
- *     and names `cotal up --space`; following it, `up` then `down` stop both. The legacy name and
+ *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following it, `up` then `down` stop both. The legacy name and
  *     the broker stop name their stack members. Under umask 0002 the delivery-aware marker is 0600.
  *     After a clean down, a group-writable `.cotal/auth` makes `reset space --dry-run` name it and
  *     its repair. A `down` after every member crashed exits 0, and the reset preview then names
@@ -20,11 +20,12 @@
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
-import { canonicalLocalProcessPath, MANAGER_DELIVERY_AWARE_MARKER } from "@cotal-ai/workspace";
+import { mintLifecycleUid } from "@cotal-ai/core";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, MANAGER_DELIVERY_AWARE_MARKER } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -48,8 +49,8 @@ const owned = new Set<number>();
 
 type Envelope = { outcome: string; result?: Record<string, unknown>; warnings?: { code: string }[]; error?: { code: string; message: string; remedy?: string } };
 type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stderr: string; env?: Envelope };
-const cli = (cwd: string, ...args: string[]): Run => {
-  const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000 };
+const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run => {
+  const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000 };
   assertSmokeSandboxDown(anchors.get(cwd), args, options);
   const began = Date.now();
   const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
@@ -57,6 +58,7 @@ const cli = (cwd: string, ...args: string[]): Run => {
   try { parsed = JSON.parse(run.stdout) as Envelope; } catch { parsed = undefined; }
   return { status: run.status, signal: run.signal, ms: Date.now() - began, stderr: run.stderr, env: parsed };
 };
+const cli = (cwd: string, ...args: string[]): Run => cliAs(env, cwd, ...args);
 const shown = (run: Run) => ({ status: run.status, signal: run.signal, ms: run.ms, outcome: run.env?.outcome, error: run.env?.error, stderr: run.stderr.slice(-1500) });
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -187,6 +189,17 @@ try {
     await until(() => gone(space, "stack-broker"), 10_000);
     const blocked = cli(root, "down", "--yes", "--json");
     check("down with a live manager and a dead broker refuses before any stop and names up", blocked.status === 2 && Boolean(blocked.env?.error?.remedy?.includes(`cotal up --space ${space}`)) && manager !== null && alive(manager), shown(blocked));
+    // A managed seat's shell dials the broker with its own credential first. The seat context is
+    // set by hand: the dial fails before the copied credential is presented.
+    const uid = mintLifecycleUid();
+    const seatCreds = agentLifecycleSecretFilePaths(root, space, "settle-seat", uid).creds;
+    const someCreds = readdirSync(join(root, ".cotal"), { recursive: true, encoding: "utf8" }).find((path) => path.endsWith(".creds"));
+    mkdirSync(dirname(seatCreds), { recursive: true, mode: 0o700 });
+    if (someCreds) copyFileSync(join(root, ".cotal", someCreds), seatCreds);
+    const seat = { ...env, COTAL_NAME: "settle-seat", COTAL_ID: "settle-seat", COTAL_LIFECYCLE_UID: uid, COTAL_SPACE: space, COTAL_ACCEPTED_TOKEN: "settle-token" };
+    const seatBlocked = cliAs(seat, root, "down", "--yes", "--json");
+    check("a managed seat's down with a dead broker refuses the same way, not as a raw dial error", seatBlocked.status === 2 && Boolean(seatBlocked.env?.error?.remedy?.includes(`cotal up --space ${space}`)) && manager !== null && alive(manager), shown(seatBlocked));
+    rmSync(seatCreds, { force: true });
     const repaired = cli(root, "up", "--json");
     track(space);
     check("up restarts the broker while the manager keeps running", repaired.status === 0 && manager !== null && alive(manager), shown(repaired));

@@ -795,7 +795,7 @@ first settle an earlier operation, and names a scope check the real stop would r
 A member whose recorded process is already gone is recorded as stopped without loading its adapter
 or credential, so a second `down --yes` stops nothing and is a no-op. When the manager is
 live but the broker is not, `down` cannot read the manager's agent impact and refuses before any
-stop. Run `cotal up --space <space>` to restart the broker from its recorded inputs while the
+stop, from a managed seat's shell too. Run `cotal up --space <space>` to restart the broker from its recorded inputs while the
 manager keeps running, then run `cotal down`. Controller roots refuse
 preservation and manifest flags rather than switching to the legacy launcher.
 
