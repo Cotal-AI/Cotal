@@ -465,7 +465,7 @@ async function main(): Promise<void> {
     // `observer`, not `agent`: the agent profile's dm/dlv/chathist grants are lifecycle-keyed exact
     // names (SPEC 13.1) and minting one requires a lifecycleUid that only a real spawn supplies.
     // This cell needs A credential the broker accepts, not a particular role.
-    const mint = cotal(["mint", "probe", "--profile", "observer", "--out", credsFile], home, cwd);
+    const mint = cotal(["auth", "mint", "probe", "--profile", "observer", "--out", credsFile], home, cwd);
     assert.equal(mint.status, 0, `minting a probe credential must succeed:\n${mint.out}`);
     const creds = readFileSync(credsFile, "utf8");
 
@@ -969,7 +969,7 @@ async function main(): Promise<void> {
     assert.equal(up.status, 0, `TLS mesh must start:\n${up.out}`);
 
     // Strip CA for the preflighted command (cotal send → connectOrExit → preflightTarget).
-    const send = cotal(["send", "dm", "nobody", "probe"], home, cwd, { NODE_EXTRA_CA_CERTS: "" });
+    const send = cotal(["send", "-t", "nobody", "probe"], home, cwd, { NODE_EXTRA_CA_CERTS: "" });
     assert.match(send.out, /NODE_EXTRA_CA_CERTS|tls-trust|conservatively kept|TLS-required NATS listener/,
       `GATE FAILED (S10): no-CA send must name trust repair / tls-trust, not silent success:\n${send.out}`);
     assert.doesNotMatch(send.out, /stale registry entry - removed/,

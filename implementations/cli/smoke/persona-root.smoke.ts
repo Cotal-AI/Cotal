@@ -325,6 +325,8 @@ try {
     { mesh: meshCard.subscribe, cwd: cwdCard.subscribe });
   // DRIVE THE REAL `mint()`, not a resolver seam. Trust belongs under the selected mesh root. A cwd
   // with different trust must be refused before any credential is written.
+  // Static mint is issued only for a static-auth space, so the selected mesh is recorded in auth mode.
+  recordMesh({ ...entry("meshspace", MESH, "nats://127.0.0.1:4222"), mode: "auth" });
   const meshAuth = await createSpaceAuth("meshspace");
   const cwdAuth = await createSpaceAuth("meshspace");
   saveSpaceAuth(authDir(MESH), meshAuth);
