@@ -1,18 +1,22 @@
 /** Owned-broker suite for the dormant service host operations. Every section runs a real
  * nats-server process through the custody fixture (its genuine plane-claim hold, account, service
- * name and fault hooks). Records a test writes directly are labelled as simulations; nothing here is
+ * name and fault hooks), in operator mode: discovery reads over a connection with no publish grant,
+ * and each invocation's effect connection may publish exactly its scope's keys, so a write outside
+ * an invocation's scope would be refused by the broker as well as by the engine. Records a test writes directly are labelled as simulations; nothing here is
  * native, Cloud or production acceptance, and nothing proves a human decision. */
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { connect } from "@nats-io/transport-node";
 import {
-  canonicalJson, contractDigest, epAuthBucket, epgateKey, lifecycleHeadKey, recordsBucket, uidReservationKey, type ServiceUidCustodyV1,
+  canonicalJson, contractDigest, epAuthBucket, epgateKey, lifecycleHeadKey, recordsBucket, serviceEndpointActor, uidReservationKey, type ServiceUidCustodyV1,
 } from "@cotal-ai/core";
 import { grantActor, revokeActor } from "../src/ledger.js";
-import { openLifecycleRegistry } from "../src/lifecycle-registry.js";
+import { registryStores } from "../src/lifecycle-registry.js";
+import {
+  cancelServiceCustody, openServiceCustodyHost, runServiceBootstrap, sealServiceBootstrapIntent, sealServiceCancelIntent, serviceCustodyKeys,
+} from "../src/service-custody.js";
 import { parseServiceHostResult, type ServiceApprovalResult } from "../src/service-host-contract.js";
 import {
   S2A_INVOCATION_MS, openServiceHostOperations, parseServiceAdmissionRecord, parseServiceAssignmentRecord, parseServiceCapacityRecord,
@@ -33,8 +37,14 @@ const ledger = (...owners: string[]) => {
   return dir;
 };
 
+/** Every fixture of this suite is limited; the last check reads their broker refusals. */
+const fixtures: Fixture[] = [];
+const fixture = async (space: string) => { const f = await openFixture(space, { limited: true }); fixtures.push(f); return f; };
+const discoveries = new WeakMap<Fixture, ReturnType<Fixture["discovery"]>>();
 async function engine(f: Fixture, dir: string, over: Partial<ServiceHostOperationsOptions> = {}): Promise<ServiceHostOperations> {
-  return openServiceHostOperations({ discovery: f.reg, openEffect: async () => ({ registry: f.reg, close: async () => {} }), hold: f.hold,
+  let d = discoveries.get(f);
+  if (d === undefined) discoveries.set(f, d = f.discovery());
+  return openServiceHostOperations({ discovery: (await d).registry, openEffect: (scope) => f.effect(scope.keys), hold: f.hold,
     accountPublicKey: f.accountPublicKey, ledgerDir: dir, startup: { kind: "normal" }, ...over });
 }
 const parsesClosed = (label: string, r: unknown) => {
@@ -70,7 +80,7 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
 
 // ---- A: register -------------------------------------------------------------------------------
 {
-  const f = await openFixture("s2a-register");
+  const f = await fixture("s2a-register");
   try {
     const dir = ledger(f.owner, other), e = await engine(f, dir);
     c.check("A0 normal startup creates admission open at epoch 1", JSON.stringify(await f.value(f.auth, "svchost.admission")) === JSON.stringify({ v: 1, kind: "service-host-admission", state: "open", epoch: 1, restoreId: null }));
@@ -128,7 +138,7 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
 
 // ---- B: approve, replay, reads ------------------------------------------------------------------
 {
-  const f = await openFixture("s2a-approve");
+  const f = await fixture("s2a-approve");
   try {
     const dir = ledger(f.owner, other), e = await engine(f, dir);
     const p = await registered(f, e);
@@ -187,7 +197,7 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
 
 // ---- C: revoke across partial approvals ---------------------------------------------------------
 {
-  const f = await openFixture("s2a-revoke");
+  const f = await fixture("s2a-revoke");
   try {
     const dir = ledger(f.owner);
     // S-22: the approver's latch trips when its assignment row lands (after A2, before B0).
@@ -247,7 +257,7 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
 
 // ---- D: refuse ----------------------------------------------------------------------------------
 {
-  const f = await openFixture("s2a-refuse");
+  const f = await fixture("s2a-refuse");
   try {
     const dir = ledger(f.owner), e = await engine(f, dir), e2 = await engine(f, dir);
     const p = await registered(f, e);
@@ -271,7 +281,7 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
 
 // ---- E: deadline settlement (simulated elapsed time) ------------------------------------------
 {
-  const f = await openFixture("s2a-expiry");
+  const f = await fixture("s2a-expiry");
   try {
     const dir = ledger(f.owner), e1 = await engine(f, dir), e2 = await engine(f, dir);
     const p = await registered(f, e2);
@@ -295,18 +305,17 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
 
 // ---- F: construction and the shared latch -------------------------------------------------------
 {
-  const f = await openFixture("s2a-construct");
+  const f = await fixture("s2a-construct");
   try {
     const dir = ledger(f.owner);
     const refuses = async (over: Partial<ServiceHostOperationsOptions>) => { try { await engine(f, dir, over); return false; } catch { return true; } };
     c.check("F1 (S-34) construction without a startup kind refuses", await refuses({ startup: undefined }));
     c.check("F1 (S-34) restore startup refuses", await refuses({ startup: { kind: "restore", restoreId: "a".repeat(32) } }));
     let opened = 0, closed = 0;
-    const e = await engine(f, dir, { openEffect: async () => {
+    const e = await engine(f, dir, { openEffect: async (scope) => {
       opened++;
-      const nc = await connect({ servers: f.conn.getServer(), reconnect: false, name: "s2a-effect" });
-      const registry = await openLifecycleRegistry(nc, f.space);
-      return { registry, close: async () => { closed++; await nc.close(); } };
+      const effect = await f.effect(scope.keys);
+      return { registry: effect.registry, close: async () => { closed++; await effect.close(); } };
     } });
     const p = await registered(f, e);
     const r = await e.handle(decide(p.proposalId, p.revision, f.name.revision, "approve", ownerOf(f)));
@@ -334,7 +343,7 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
 
 // ---- G: further schedules ----------------------------------------------------------------------
 {
-  const f = await openFixture("s2a-schedules");
+  const f = await fixture("s2a-schedules");
   try {
     const dir = ledger(f.owner);
     const fresh = () => engine(f, dir);
@@ -349,11 +358,17 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
     {
       const p = await registered(f, e), req = decide(p.proposalId, p.revision, f.name.revision, "approve", ownerOf(f));
       const e2 = await fresh();
-      const [x, y] = await Promise.all([e.handle(req), e2.handle(req)]);
+      // This section runs before the module's later helpers exist: cast and shape inline.
+      const [x, y] = (await Promise.all([e.handle(req), e2.handle(req)])) as unknown as Loose[];
+      // An invocation that lost the first use holds before custody outside its scope; its replay reports the one approval.
+      const won = [x, y].find((r) => r.state === "approved"), lost = [x, y].filter((r) => r.state !== "approved");
+      const replay = lost.length ? (await e.handle(req)) as unknown as Loose : undefined;
+      const shape = (r: Loose) => `${r.state}/${r.reason ?? ""}/${r.phase ?? ""}`;
       const gate = await f.value(f.auth, epgateKey(f.endpoint, p.instanceId));
-      c.check("G1 (S-2) concurrent identical approves: one binding, one approval, both report it",
-        x.state === "approved" && y.state === "approved" && x.approval.approvalDigest === y.approval.approvalDigest
-          && (gate?.serviceAuthority as Record<string, unknown>)?.approvalDigest === x.approval.approvalDigest, { x: x.state, y: y.state });
+      c.check("G1 (S-2) concurrent identical approves: one binding, one approval, each reports it or holds scope-mismatch and its replay does",
+        won !== undefined && lost.length <= 1 && lost.every((r) => r.state === "held" && r.reason === "scope-mismatch" && r.phase === "A3-bootstrap")
+          && (replay === undefined || (replay.state === "approved" && replay.approval?.approvalDigest === won.approval?.approvalDigest))
+          && (gate?.serviceAuthority as Record<string, unknown>)?.approvalDigest === won.approval?.approvalDigest, { x: shape(x), y: shape(y), replay: replay && shape(replay) });
     }
     // S-29: an approve that read membership loses its A1 once a refuse closed the proposal first.
     {
@@ -557,7 +572,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
 
 // ---- H: register concurrency, selector collisions and requestId reuse --------------------------
 {
-  const f = await openFixture("s2a-next-register");
+  const f = await fixture("s2a-next-register");
   try {
     const dir = ledger(f.owner), e = await engine(f, dir), e2 = await engine(f, dir);
     await cell(f, "H1", async () => {
@@ -621,7 +636,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
 
 // ---- I: the approve table, the unknown A4 and the landing rule ---------------------------------
 {
-  const f = await openFixture("s2a-next-approve");
+  const f = await fixture("s2a-next-approve");
   try {
     const dir = ledger(f.owner), e = await engine(f, dir), e2 = await engine(f, dir);
     const tomb = (pid: string) => f.value(f.auth, `svcprop.${pid}`);
@@ -821,7 +836,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
 
 // ---- J: revoke: unknown cancel and fence writes, resumption, deny-new order, spent requests ----
 {
-  const f = await openFixture("s2a-next-revoke");
+  const f = await fixture("s2a-next-revoke");
   try {
     const dir = ledger(f.owner), e = await engine(f, dir), e2 = await engine(f, dir);
     const approved = async () => { const p = await registered(f, e), a = L(await e.handle(approveReq(f, p))); return { ...p, digest: a.approval!.assignment.assignmentDigest }; };
@@ -865,9 +880,12 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
       const p = await atA1(), rq = revoke(f.endpoint, p.instanceId, p.digest, "operator-request", operator);
       let ax: Loose | undefined;
       const arm = f.faults.onWrite(which === "fence" ? W.fence(f, p.instanceId) : W.binding(f, rq.requestId), { before: async () => { ax = L(await e2.handle(p.x)); } });
-      const rv = L(await e.handle(rq)), g = await gateOf(f, p.instanceId);
-      c.check(`${label} (S-18) a revoke that read svcasg absent, paused at its ${which} write while the approve completed, re-reads bound and cancels`, arm.hits === 1
-        && ax?.state === "approved" && rv.state === "pending" && rv.phase === "cancelled-nonterminal" && rv.denyNew === "landed", { ax, rv });
+      const rv = L(await e.handle(rq));
+      c.check(`${label} (S-18) a revoke that read svcasg absent, paused at its ${which} write while the approve completed, re-reads bound and holds before cancelling outside its scope`,
+        arm.hits === 1 && ax?.state === "approved" && rv.state === "held" && rv.reason === "scope-mismatch" && rv.phase === "V3-cancel"
+          && (await gateOf(f, p.instanceId))?.state === "approved", { ax, rv });
+      const rv2 = L(await e.handle(rq)), g = await gateOf(f, p.instanceId);
+      c.check(`${label} (S-18) its replay discovers the bound assignment and cancels`, rv2.state === "pending" && rv2.phase === "cancelled-nonterminal" && rv2.denyNew === "landed", rv2);
       c.check(`${label} (S-18) never not-found: the gate is revoked and keeps the approval`, g?.state === "revoked" && g.approvalDigest === ax?.approval?.approvalDigest, g);
     });
     await cell(f, "J6", async () => {
@@ -930,7 +948,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
 
 // ---- K: refuse, stale approving and late writes --------------------------------------------------
 {
-  const f = await openFixture("s2a-next-refuse");
+  const f = await fixture("s2a-next-refuse");
   try {
     const dir = ledger(f.owner), e = await engine(f, dir);
     const tomb = (pid: string) => f.value(f.auth, `svcprop.${pid}`);
@@ -1007,7 +1025,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
 
 // ---- L: S-31, an unknown capacity release in each refusal branch ----------------------------------
 {
-  const f = await openFixture("s2a-next-debt");
+  const f = await fixture("s2a-next-debt");
   try {
     const dir = ledger(f.owner), e = await engine(f, dir);
     const debtAt = async (requestId: string) => ((await opRecord(f, requestId))?.debt ?? null) as Array<{ kind: string }> | null;
@@ -1076,7 +1094,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
 
 // ---- M: S-30, another owner's granter on mutations and replays -------------------------------------
 {
-  const f = await openFixture("s2a-next-owners");
+  const f = await fixture("s2a-next-owners");
   try {
     const third = `u_${"e".repeat(26)}`;                                                      // an owner with no interactive row
     const dir = ledger(f.owner, other), e = await engine(f, dir), them = { kind: "owner", owner: other }, outsider = { kind: "owner", owner: third };
@@ -1145,7 +1163,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
 
 // ---- N: the latch during S2-A steps, timeout versus latch, decision bounds, markers ---------------
 {
-  const f = await openFixture("s2a-next-latch");
+  const f = await fixture("s2a-next-latch");
   try {
     const dir = ledger(f.owner), e = await engine(f, dir);
     await registered(f, e);                                                                   // the capacity row exists
@@ -1256,7 +1274,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
   } finally { await f.close(); }
 }
 {
-  const f = await openFixture("s2a-next-admission");
+  const f = await fixture("s2a-next-admission");
   try {
     const dir = ledger(f.owner);
     await cell(f, "N6", async () => {
@@ -1291,7 +1309,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
         return { ok: r.state === "pending" && r.phase === "cancelled-nonterminal" && r.denyNew === "landed" && r.root === "retained-stamped", got: r }; }; }],
   ];
   for (const [name, setup] of flows) {
-    const f = await openFixture(`s2a-sweep-${name}`);
+    const f = await fixture(`s2a-sweep-${name}`);
     try {
       const dir = ledger(f.owner), e = await engine(f, dir);
       await cell(f, `O ${name}`, async () => {
@@ -1325,7 +1343,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
 
 // ---- P: V-SH, closed shapes over every record these flows store -------------------------------------
 {
-  const f = await openFixture("s2a-next-shapes");
+  const f = await fixture("s2a-next-shapes");
   try {
     const dir = ledger(f.owner), seen = await f.watch("auth", "*.>"), e = await engine(f, dir);
     await cell(f, "P", async () => {
@@ -1400,7 +1418,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
 
 // ---- Q: a tripped engine's entry, failed binding reads, and R-bound against a concurrent A1 ------
 {
-  const f = await openFixture("s2a-next-tripped");
+  const f = await fixture("s2a-next-tripped");
   try {
     const dir = ledger(f.owner), e = await engine(f, dir);
     await registered(f, e);                                                                   // the capacity row exists
@@ -1514,7 +1532,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
 
 // ---- U: a granter without a current interactive row is refused before any request-key read (r3a §E)
 {
-  const f = await openFixture("s2a-next-authorize");
+  const f = await fixture("s2a-next-authorize");
   try {
     const dir = ledger(f.owner), e = await engine(f, dir);
     const p1 = await registered(f, e), p2 = await registered(f, e), p3 = await registered(f, e);
@@ -1559,6 +1577,104 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
   } finally { await f.close(); }
 }
 
+// ---- S: write scope: the broker grant, concurrent first use, a discovery race, a wrong scope ---
+{
+  const f = await fixture("s2a-scope");
+  try {
+    const dir = ledger(f.owner), e = await engine(f, dir);
+    const uidOf = (requestId: string) => async () => ((await opRecord(f, requestId))?.plan as { reservation: ServiceUidCustodyV1 }).reservation.native.lifecycleUid;
+    const custodyWrites = (writes: WriteCall[]) => writes.filter((w) => w.bucket === "records" || /^(gate|cred|epgate)\./.test(w.key));
+    await cell(f, "S1", async () => {
+      const probe = await f.effect({ records: [], auth: ["probe.in"], authFamilies: [] }), kv = registryStores(probe.registry).authKv, before = f.violations.length;
+      let inScope = false, outside = "";
+      try {
+        await kv.put("probe.in", bytesOf({ probe: 1 })); inScope = true;
+        try { await kv.put("probe.out", bytesOf({ probe: 2 })); outside = "landed"; } catch (err) { outside = (err as Error).name; }
+      } finally { await probe.close(); }
+      const refusals = f.violations.splice(before);
+      c.check("S1 (broker grant) an effect connection publishes its scope's key, and the broker refuses one outside it", inScope && outside !== "landed"
+        && (await f.value(f.auth, "probe.in")) !== null && (await f.value(f.auth, "probe.out")) === null && refusals.some((v) => v.includes("probe.out")), { outside, refusals });
+    });
+    await cell(f, "S2", async () => {
+      const p = await registered(f, e), req = approveReq(f, p);
+      let winner: Loose | undefined;
+      // The first use is lost: right before this invocation's binding create, the same request binds under its own fresh reservation and stops.
+      f.faults.onWrite(W.binding(f, req.requestId), { before: async () => { winner = L(await stopAfter(f, dir, W.binding(f, req.requestId), (z) => z.handle(req))); } });
+      const { r, writes } = await writing(f, () => e.handle(req)), lost = L(r), u = await uidOf(req.requestId)();
+      c.check("S2 (I-7 first use) an approve that lost its concurrent first use holds scope-mismatch before custody, after only in-scope writes", winner?.state === "held"
+        && lost.state === "held" && lost.reason === "scope-mismatch" && lost.phase === "A3-bootstrap" && lost.operationId === opIdOf(f, req)
+        && custodyWrites(writes).length === 0 && (await f.value(f.records, uidReservationKey(u))) === null, { winner, lost, custody: custodyWrites(writes).map((w) => w.key) });
+      c.check("S2 the stored operation records no custody step", ((await opRecord(f, req.requestId))?.progress as { state: string }).state === "admitted");
+      const again = L(await e.handle(req)), gate = await gateOf(f, p.instanceId);
+      c.check("S2 (D1) its replay discovers the stored reservation, scopes it and completes the one approval", again.state === "approved" && again.outcome === "applied"
+        && again.approval?.assignment.lifecycleUid === u && gate?.approvalDigest === again.approval?.approvalDigest, { again: shape(again), gate });
+    });
+    await cell(f, "S3", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      await stopAfter(f, dir, W.approving(p.proposalId), (z) => z.handle(x));
+      const digest = await digestAt(f, p.proposalId), rq = revoke(f.endpoint, p.instanceId, digest, "operator-request", operator);
+      let ax: Loose | undefined;
+      // The revoke's discovery finds no assignment; the approve completes right after that discovery's last read. Only the revoke's own writes are recorded.
+      const writes: WriteCall[] = [];
+      let mine = false;
+      const spy = f.faults.onWrite((w) => { if (mine) writes.push(w); return false; }, {}, Number.MAX_SAFE_INTEGER);
+      f.faults.onRead("auth", "svccap.space", async () => { ax = L(await e.handle(x)); mine = true; });
+      const rv = L(await e.handle(rq));
+      spy.disarm();
+      c.check("S3 (I-7 discovery race) a revoke whose assignment landed after its discovery holds scope-mismatch before native cancel", ax?.state === "approved"
+        && rv.state === "held" && rv.reason === "scope-mismatch" && rv.phase === "V3-cancel" && writes.length > 0 && custodyWrites(writes).length === 0
+        && (await gateOf(f, p.instanceId))?.state === "approved", { ax: ax && shape(ax), rv, writes: writes.map((w) => w.key) });
+      const again = L(await e.handle(rq));
+      c.check("S3 (D1) its replay discovers the bound assignment and lands deny-new", again.state === "pending" && again.denyNew === "landed"
+        && (await gateOf(f, p.instanceId))?.state === "revoked", again);
+    });
+    await cell(f, "S4", async () => {
+      // Two reservations of one selector with different UIDs: a host scoped to one cannot bootstrap the other.
+      const r = f.reservation(), other = f.reservation({ instanceId: r.assignment.instanceId });
+      const keys = serviceCustodyKeys({ owner: f.owner, actor: other.assignment.actor, endpoint: other.assignment.endpoint, instanceId: other.assignment.instanceId,
+        lifecycleUid: other.native.lifecycleUid }, "bootstrap");
+      const eff = await f.effect(keys);
+      try {
+        const { host } = openServiceCustodyHost({ registry: eff.registry, hold: f.hold, accountPublicKey: f.accountPublicKey, writes: keys });
+        const { r: boot, writes } = await writing(f, () => runServiceBootstrap(sealServiceBootstrapIntent(host, { reservation: r, notAfterMs: Date.now() + 60_000 })));
+        c.check("S4 (wrong UID) a host scoped to another UID of the same selector holds scope-mismatch with no S1 write", boot.kind === "held"
+          && boot.reason === "scope-mismatch" && writes.length === 0 && (await f.value(f.records, uidReservationKey(r.native.lifecycleUid))) === null, { boot, writes: writes.map((w) => w.key) });
+      } finally { await eff.close(); }
+    });
+    await cell(f, "S5", async () => {
+      const seen: Array<{ operation: string; records: readonly string[]; auth: readonly string[]; authFamilies: readonly string[]; frozen: boolean }> = [];
+      const x = await engine(f, dir, { openEffect: (scope) => {
+        seen.push({ operation: scope.operation, ...scope.keys, frozen: Object.isFrozen(scope) && Object.isFrozen(scope.keys) && Object.isFrozen(scope.keys.auth) });
+        return f.effect(scope.keys);
+      } });
+      const p = await registered(f, x), rq = approveReq(f, p), a = L(await x.handle(rq)), u = a.approval!.assignment.lifecycleUid;
+      const rv = revoke(f.endpoint, p.instanceId, a.approval!.assignment.assignmentDigest, "owner-request", ownerOf(f)), v = L(await x.handle(rv));
+      const q = await registered(f, x), rf = decide(q.proposalId, q.revision, f.name.revision, "refuse", ownerOf(f)), fr = L(await x.handle(rf));
+      const head = lifecycleHeadKey(f.owner, serviceEndpointActor({ accountPublicKey: f.accountPublicKey, space: f.space, owner: f.owner, endpoint: f.endpoint, instanceId: p.instanceId }));
+      const sel = (i: string) => [`svcasg.${f.endpoint.replaceAll(".", "_")}.${i}`, epgateKey(f.endpoint, i)];
+      const same = (a1: readonly string[], b: string[]) => JSON.stringify([...a1].sort()) === JSON.stringify([...b].sort());
+      const by = (op: string) => seen.filter((s) => s.operation === op);
+      const [startup] = by("startup"), regs = by("register"), [dec, refuse] = by("decide"), [rev] = by("revoke");
+      c.check("S5 every scope reached the effect frozen", seen.length > 0 && seen.every((s) => s.frozen), seen.length);
+      c.check("S5 startup's scope is the admission key alone", startup !== undefined && same(startup.auth, ["svchost.admission"]) && !startup.records.length && !startup.authFamilies.length, startup);
+      const r0 = regs[0];
+      c.check("S5 a register's scope is its operation, its proposal and the capacity row", regs.length === 2 && r0 !== undefined && r0.auth.length === 3
+        && r0.auth.some((k) => /^svcop\.[0-9a-f]{32}$/.test(k)) && r0.auth.includes(`svcprop.${p.proposalId}`) && r0.auth.includes("svccap.space")
+        && !r0.records.length && !r0.authFamilies.length, r0);
+      c.check("S5 an approve's scope adds its selector and the bootstrap keys of its reservation", a.state === "approved" && dec !== undefined
+        && same(dec.auth, [`svcop.${opIdOf(f, rq)}`, `svcprop.${p.proposalId}`, "svccap.space", ...sel(p.instanceId), `gate.${u}`])
+        && same(dec.records, [uidReservationKey(u), head]) && same(dec.authFamilies, [`cred.${u}.`]), dec);
+      c.check("S5 a revoke's scope has the cancel keys only: never the UID reservation", v.state === "pending" && rev !== undefined
+        && same(rev.auth, [`svcop.${opIdOf(f, rv)}`, ...sel(p.instanceId), "svccap.space", `svcprop.${p.proposalId}`, `gate.${u}`])
+        && same(rev.records, [head]) && same(rev.authFamilies, [`cred.${u}.`]), rev);
+      c.check("S5 a refuse's scope is its operation, its proposal and the capacity row", fr.state === "refused" && refuse !== undefined
+        && same(refuse.auth, [`svcop.${opIdOf(f, rf)}`, `svcprop.${q.proposalId}`, "svccap.space"]) && !refuse.records.length && !refuse.authFamilies.length, refuse);
+    });
+  } finally { await f.close(); }
+}
+
+c.check("S (broker grants) no effect or discovery connection of this suite was refused a publish", fixtures.every((f) => f.violations.length === 0),
+  fixtures.flatMap((f) => f.violations));
 for (const d of ledgers) rmSync(d, { recursive: true, force: true });
 console.log(`service-host-ops: ${c.passed} passed, ${c.failed} failed (owned-broker fixture evidence only)`);
 if (c.failed) process.exitCode = 1;
