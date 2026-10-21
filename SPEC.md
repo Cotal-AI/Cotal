@@ -1656,7 +1656,8 @@ Register compiles the submitted closures in memory. Each cluster digest names a 
 whose root names a submitted cluster document, each verified against its content digest, and every
 artifact must belong to a declared closure. The proposal's commands are exactly those documents'
 declarations; a journal-class command is refused as `unsupported-runtime`. Only
-`expected:{state:"unregistered"}` is admitted. The engine requestId is the first 32 lowercase hex
+`expected:{state:"unregistered"}` is admitted. A native control endpoint name (`auth`, `delivery`,
+`manager`) is refused as `permission-denied` before any effect and binds nothing. The engine requestId is the first 32 lowercase hex
 characters of SHA-256 over the canonical JSON `["cotal-service-endpoint-authority", 1, account,
 space, owner, endpoint, instanceId, operation, requestId]`, with the derived owner, so the full public
 idempotency key selects the binding. That binding's request digest covers the public request's
