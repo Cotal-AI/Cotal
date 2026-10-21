@@ -1152,6 +1152,7 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
       arm.disarm();
       const quiet = landed !== undefined && (await writesSince(f, landed)) === 0;
       c.check(`N1 (S-21/S-33) a latch trip at the ${label} ends held under its operation, with no later write`, arm.hits === 1 && r.state === "held" && r.operationId === s.op && quiet, { r, quiet });
+      if (label.startsWith("revoke") || label.startsWith("approve") || label.startsWith("refuse")) parsesClosed(`N1 ${label}`, r);
       c.check(`N1 after the trip at the ${label}, a fresh engine completes the request`, await s.done());
     });
     await cell(f, "N2", async () => {
@@ -1209,6 +1210,22 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
       const b1 = await lastSeqs(f), r2 = L(await e.handle(y));
       c.check("N5 (V-UK, sim malformed) a non-JSON proposal under a bound approve holds proposal-malformed under the operation with zero writes", r2.state === "held"
         && r2.reason === "proposal-malformed" && r2.operationId === opIdOf(f, y) && (await writesSince(f, b1)) === 0, r2);
+      const { p: pv, rq } = await approvedRevoke();
+      await stopAfter(f, dir, W.binding(f, rq.requestId), (z) => z.handle(rq));
+      await f.auth.delete(asg(f, pv.instanceId));                                             // simulation: a deletion marker under a bound revoke
+      const b2 = await lastSeqs(f), r3 = L(await e.handle(rq));
+      parsesClosed("N5 revoke discovery", r3);
+      c.check("N5 (V-UK, sim marker) a DEL marker read by a bound revoke's discovery holds assignment-tombstone under the operation with zero writes", r3.state === "held"
+        && r3.reason === "assignment-tombstone" && r3.operationId === opIdOf(f, rq) && (await writesSince(f, b2)) === 0, r3);
+    });
+    await cell(f, "N7", async () => {
+      const p = await registered(f, e), x = approveReq(f, p);
+      await stopAfter(f, dir, W.assign(f, p.instanceId), (z) => z.handle(x));
+      const z = await engine(f, dir);
+      const arm = f.faults.onRead("auth", `svcprop.${p.proposalId}`, async () => z.trip("fixture: latch between discovery and the invocation"));
+      const r = L(await z.handle(x));
+      c.check("N7 (S-33) a latch trip between a bound replay's discovery and its invocation holds under the operation, never a zero-write denial", arm.hits === 1
+        && r.state === "held" && r.operationId === opIdOf(f, x), r);
     });
   } finally { await f.close(); }
 }
