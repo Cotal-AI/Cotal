@@ -1662,14 +1662,16 @@ space, owner, endpoint, instanceId, operation, requestId]`, with the derived own
 idempotency key selects the binding. That binding's request digest covers the public request's
 canonical digest, which excludes the proof: a changed public body under the same key is a
 `conflict`. A first admission answers `approval-required` with the proposal id and digest. A replay
-answers from the proposal as it is now: `approval-required` while it is live, `pending` at phase
-`approved-unregistered` while its approval stands, and `denied` once the proposal is refused or
-expired or its approval revoked. Register runs no registration barrier and never answers
+answers from the proposal as it is now: `approval-required` while it is live and unexpired, `pending`
+at phase `approved-unregistered` while its approval stands, and `denied` once the proposal is refused
+or expired or its approval revoked. An undecided proposal reads as expired once the whole second of
+its expiry has passed, before any tombstone closes it, so the door never offers approval the host
+would refuse. Register runs no registration barrier and never answers
 `registered` or a credential.
 
 Status admits only `target:{kind:"operation", requestId}`, for the caller's own register; another
 owner's request reads `not-found`. It answers `registering` while that register is in flight,
-`proposed` while its proposal is live, `approved-unregistered` with the approval digest from the
+`proposed` while its proposal is live and unexpired, `approved-unregistered` with the approval digest from the
 assignment's endpoint gate, `revoking` once the assignment has a cancel identity, and `refused` for a
 refused register or a closed proposal. Instance status, activation, renewal, readiness, revocation
 and Describe views answer `denied` with `unsupported`. Admitting a proposal issues no service
