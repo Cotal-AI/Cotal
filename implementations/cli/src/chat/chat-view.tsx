@@ -144,7 +144,11 @@ export function ChatView({ session, initialRecipient, notice, shiftEnterDistinct
   }, [session, update]);
 
   useInput((input, inkKey) => {
-    if (picker) {
+    const key = toKey(input, inkKey);
+    // Ctrl-C and Ctrl-D close the picker, then act as they do in the composer: leave, or ask first
+    // when there is a draft.
+    if (picker && (key?.kind === "ctrl-c" || key?.kind === "ctrl-d")) setPicker(undefined);
+    else if (picker) {
       // Picker input: a number picks a listed choice, Enter takes typed text, Esc backs out.
       if (inkKey.escape) return setPicker(undefined);
       if (inkKey.backspace || inkKey.delete) return setPicker({ ...picker, typed: [...picker.typed].slice(0, -1).join("") });
@@ -158,7 +162,6 @@ export function ChatView({ session, initialRecipient, notice, shiftEnterDistinct
       if (inkKey.ctrl || inkKey.meta || !input) return;
       return setPicker({ ...picker, typed: (picker.typed + input).slice(0, 600) });
     }
-    const key = toKey(input, inkKey);
     if (!key) return;
     const { state: next, intent } = applyKey(latest.current, key, shiftEnterDistinct);
     update(next);

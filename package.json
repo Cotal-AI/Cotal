@@ -221,6 +221,7 @@
     "smoke:manager-chat-session": "tsx implementations/manager/smoke/chat-session.smoke.ts",
     "smoke:static-chat-pure": "tsx implementations/cli/smoke/static-chat-pure.smoke.ts",
     "smoke:chat-command": "tsx implementations/cli/smoke/chat-command.smoke.ts",
+    "smoke:chat-leave": "tsx implementations/cli/smoke/chat-leave.smoke.ts",
     "smoke:manager-status-metadata": "tsx implementations/manager/smoke/status-metadata.smoke.ts",
     "smoke:manager-delegated-config": "tsx implementations/manager/smoke/delegated-config.smoke.ts",
     "smoke:goal-submit-order": "tsx packages/core/smoke/goal-submit-order.smoke.ts",

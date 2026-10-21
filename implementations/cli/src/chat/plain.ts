@@ -10,8 +10,9 @@
  *   - any other line becomes the draft and is echoed back for confirmation: `y` sends, anything else
  *     (including empty) keeps it as the draft and sends nothing;
  *   - a multi-line message is entered with `:multi` and ended with a line holding only `.`;
- *   - end of input (Ctrl-D) leaves; an unconfirmed draft is reported (length only) and never sent,
- *     because no further answer can be read after end of input. `/quit` with a draft asks first.
+ *   - end of input (Ctrl-D, or Ctrl-C and the other line-mode signals, which close the input) leaves;
+ *     an unconfirmed draft is reported (length only) and never sent, because no further answer can
+ *     be read after end of input. `/quit` with a draft asks first.
  *
  * Paste: a pasted block arrives as several lines. Outside `:multi` each line is a separate draft that
  * needs its own `y`, so a paste can never become several sends without several confirmations.
@@ -97,6 +98,11 @@ export async function runPlain(opts: {
   });
 
   const rl = createInterface({ input, terminal: false, crlfDelay: Number.POSITIVE_INFINITY });
+  // Without a terminal, readline ends only on the input's `end`. A destroyed input, which is how a
+  // line-mode signal ends input, emits `close` alone, so close readline then. Lines read in full
+  // are still handled; a partial line is dropped, never staged.
+  const endOnClose = (): void => rl.close();
+  input.once("close", endOnClose);
   let leaving = false;
   const leave = async (): Promise<void> => {
     if (leaving) return;
@@ -217,6 +223,7 @@ export async function runPlain(opts: {
     // has ended; the draft is reported, not sent.
     if (!leaving && state.draft) print(`unsent draft discarded at end of input (${[...state.draft].length} characters; content not repeated)`);
   } finally {
+    input.off("close", endOnClose);
     unsubscribe();
     rl.close();
   }
