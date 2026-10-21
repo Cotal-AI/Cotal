@@ -32,8 +32,8 @@
     {
       "name": "the no-op reads only the stack's own space",
       "file": "implementations/cli/src/lib/stack-journal.ts",
-      "find": "    if (!component.pidFile.includes(\"{space}\")) continue;\n",
-      "replace": "    if (component.pidFile) continue;\n",
+      "find": "    for (const match of recordedLocalProcessPaths(component.pidFile, root))\n",
+      "replace": "    for (const match of recordedLocalProcessPaths(component.pidFile, root).slice(0, 0))\n",
       "expectRed": "the text refusal names the other space's manager record and its pid",
       "cell": "the text refusal names the other space's manager record and its pid",
       "afterRestore": "pnpm --filter cotal-ai... build"

@@ -13,9 +13,9 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
 import {
   canonicalLocalProcessPath,
@@ -679,6 +679,55 @@ try {
         (strayDown.error.remedy ?? "").includes(strayPath) && existsSync(strayRecord),
       { ...strayDown, listed: recordsOf(strayDown) });
     rmSync(strayRecord);
+    /** Stop children this suite started, and wait until each is gone. */
+    const stopAll = async (...children: ChildProcess[]) => {
+      for (const child of children) try { process.kill(child.pid!, "SIGTERM"); } catch { /* already gone */ }
+      for (let i = 0; i < 100 && children.some((child) => alive(child.pid!)); i++) await sleep(50);
+    };
+    // A link on a record's path is never followed. `.cotal/daemon` links to a separate root's daemon
+    // directory and `.cotal/worker.record` to a separate root's record, each fronting a live process of
+    // that root. Bare down names each link as this root's, unread, and neither reads nor names the
+    // records behind them; the separate root keeps both, live.
+    const separate = mkdtempSync(join(tmpdir(), "cotal-separate-"));
+    const behindDir = liveAt(canonicalLocalProcessPath(templated.pidFile, { root: separate, space: "other" }));
+    const behindLeaf = liveAt(join(separate, ".cotal", suffixed.pidFile));
+    const linkDir = join(stoppedRoot, ".cotal", "daemon"), linkLeaf = join(stoppedRoot, ".cotal", suffixed.pidFile);
+    rmSync(linkDir, { recursive: true, force: true });
+    symlinkSync(dirname(behindDir.record), linkDir);
+    symlinkSync(behindLeaf.record, linkLeaf);
+    const linked = await bareDownIn(stoppedRoot);
+    const linkedText = JSON.stringify([recordsOf(linked), linked.error?.message, linked.error?.remedy]);
+    check("a link on a record's path is named as this root's, unread, and the separate root's live records behind it are neither read nor named",
+      linked.error?.code === "LIFECYCLE_BLOCKED" &&
+        [...recordsOf(linked)].sort().join("\n") === [`nested-worker at ${relative(stoppedRoot, linkDir)} (link, not followed)`, `record-worker at ${relative(stoppedRoot, linkLeaf)} (link, not followed)`].sort().join("\n") &&
+        [behindDir, behindLeaf].every(({ child, record }) => !linkedText.includes(`pid ${child.pid}`) && alive(child.pid!) && existsSync(record)) &&
+        !linkedText.includes(basename(behindDir.record)) && lstatSync(linkDir).isSymbolicLink() && lstatSync(linkLeaf).isSymbolicLink(),
+      { ...linked, listed: recordsOf(linked) });
+    await stopAll(behindDir.child, behindLeaf.child);
+    unlinkSync(linkDir);
+    unlinkSync(linkLeaf);
+    mkdirSync(linkDir);
+    rmSync(separate, { recursive: true, force: true });
+    // A template whose `{space}` normalizes away names one path for every space, as its writer expands
+    // it, and is read as that path: no-op when the record is empty or dead, named once when it is live.
+    const cancelled: LocalProcess = { kind: "local-process", name: "cancelled-worker", label: "cancelled worker", pidFile: "daemon/{space}/../worker.record" };
+    saveExtensionsManifest({ extensions: [{ pkg: "@example/workers", version: "0.0.0", spec: "@example/workers", commands: [], localProcesses: [cacheLocalProcess(nested), cacheLocalProcess(suffixed), cacheLocalProcess(templated), cacheLocalProcess(cancelled)] }] });
+    const cancelledRecord = canonicalLocalProcessPath(cancelled.pidFile, { root: stoppedRoot, space: "other" });
+    writeFileSync(cancelledRecord, "", { mode: 0o600 });
+    const emptyLeaf = await bareDownIn(stoppedRoot);
+    const dead = liveAt(cancelledRecord);
+    await stopAll(dead.child);
+    const deadLeaf = await bareDownIn(stoppedRoot);
+    check("a template whose {space} normalizes away, with an empty or a dead record, leaves bare down a no-op",
+      [emptyLeaf, deadLeaf].every((run) => run.error === undefined && run.exitCode === 0 && /is not running/.test(run.out)) && !alive(dead.child.pid!),
+      { emptyLeaf, deadLeaf });
+    const live = liveAt(cancelledRecord);
+    const liveLeaf = await bareDownIn(stoppedRoot);
+    check("a template whose {space} normalizes away, with a live record, keeps bare down from a no-op and names that record once",
+      liveLeaf.error?.code === "LIFECYCLE_BLOCKED" && recordsOf(liveLeaf).join("\n") === `cancelled-worker at ${live.path} (pid ${live.child.pid})` && alive(live.child.pid!) && existsSync(cancelledRecord),
+      { ...liveLeaf, listed: recordsOf(liveLeaf) });
+    await stopAll(live.child);
+    rmSync(cancelledRecord, { force: true });
   } finally {
     setInstalledExtensionsEnabled(false);
     if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;

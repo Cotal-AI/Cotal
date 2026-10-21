@@ -753,7 +753,10 @@ reads every record a local-process descriptor names under the root, an installed
 included, at any path and name under `.cotal`. A descriptor whose record name holds a space is read
 for every space its files under the root name, as well as the stack's own. A record whose process
 runs, whose liveness the kernel does not answer, or that cannot be read or attributed refuses
-`LIFECYCLE_BLOCKED`, and so does a file whose space part decodes to no space. The refusal lists each
+`LIFECYCLE_BLOCKED`, and so does a file whose space part decodes to no space. Nothing outside the
+root's `.cotal` is read: a link anywhere on a record's path refuses at the link, unread, as does a
+record that is not a regular file or is larger than a process record. A template whose `{space}`
+normalizes away names one path for every space and is read as that path. The refusal lists each
 record by name, path under the root and pid, and its next step names the pids and paths to check.
 It stops, adopts and removes nothing. `--with-agents` on a stopped stack refuses
 `LIFECYCLE_BLOCKED`, because no running manager can stop the agents; start the stack first. Its
