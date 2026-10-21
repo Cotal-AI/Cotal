@@ -104,7 +104,7 @@ try {
   const noPersona = await run(["provision"], { space: SPACE, name: "claude_app" });
   check(
     "a mesh with no default persona is refused, naming where it looked",
-    noPersona.code === 1 && noPersona.reply?.error?.includes(join(root, ".cotal", "agents")) && /cotal setup/.test(noPersona.reply.error),
+    noPersona.code === 1 && noPersona.reply?.error?.includes(join(root, ".cotal", "agents")) && noPersona.reply.error.includes(`cotal persona create default --space ${SPACE}`),
     noPersona.out,
   );
   check("  and it made no credential directory", credDirs().length === before, credDirs());

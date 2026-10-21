@@ -155,6 +155,7 @@ import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { renderDetachedSummary } from "../lib/up-report.js";
+import { seedDefaultPersona } from "../lib/default-persona.js";
 import { upSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
 import { deliveryStoppedByDown, deliveryUp, ensureControlPlane, ensureDelivery, stopDelivery } from "../lib/delivery-proc.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
@@ -1395,6 +1396,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // `recordOurMesh` carries everything else (`tlsRequired`, the recorded host and session
       // ceiling, the store) from the record as it stands at write time, not from `held`.
       recordOurMesh({ space: held.space, server, root, mode: held.mode, ...(userAuth ? { userAuth } : {}), ...(values.host ? { attachHost: values.host } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ts: new Date().toISOString() }, "refresh");
+      seedPersonaAfterUp(root);
       return;
     }
     const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
@@ -3162,6 +3164,7 @@ async function serveReadyListener(l: {
     resumeCommit: l.resumeCommit,
     wsPort: setup?.wsPort, // P2 item 6: the console session client's broker ws port
   });
+  seedPersonaAfterUp(cotalRoot(), l.quietBoot);
   return { authService: svc.ok, controlPlane };
 }
 
@@ -3539,6 +3542,19 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   }
   if (usableCurrent !== m.space && !quietBoot)
     console.log(c.dim(`"${m.space}" up; current is still "${usableCurrent}" - \`cotal use ${m.space}\` to switch`));
+}
+
+/** Write the default persona into the root this `up` started or refreshed when it has none, and
+ *  say so. The mesh is already up, so a write that fails is reported and the start stands. */
+function seedPersonaAfterUp(root: string, quiet = false): void {
+  let written: { what: string; path: string } | undefined;
+  try {
+    written = seedDefaultPersona(root);
+  } catch (e) {
+    console.error(c.yellow(`! the default persona was not written in ${root}: ${(e as Error).message}`));
+    return;
+  }
+  if (written && !quiet) console.log(c.dim(`  wrote ${written.what}: ${written.path}`));
 }
 
 /** Poll a growing log file and forward newly-appended lines until `stopped()` is true. */

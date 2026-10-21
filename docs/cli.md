@@ -265,7 +265,7 @@ cotal setup --skills
 | Flag | Default | Meaning |
 |---|---|---|
 | `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server. `cloud` is refused as in development, before anything is written or contacted. |
-| `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. |
+| `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. When you have no `harness` preference of your own, it becomes yours too. |
 | `--runtime` | asked; none in a script | A runtime to set up besides the built-in `pty`: `tmux`, `cmux`, `orca`, `herdr` or an installed third-party one. Repeat it for each. |
 | `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. A script's folder must exist; a terminal offers to create it. |
 | `--space` | asked | The space to prepare (local) or the registered space to use (self-hosted). |
@@ -297,7 +297,9 @@ registered with `cotal space add` or a signed-in catalog, whose root must be `--
 `--connection-file` registers. Setup then seeds the `default` persona into
 `<project>/.cotal/agents`, the catalog `cotal spawn` reads for that space, records the application as
 the space's `harness` preference, runs the application's setup actions, and reconciles Cotal's
-skills. The result names the next command: `cotal up` in the project for a local space, or
+skills. When you have no `harness` preference of your own, setup also records the application as
+yours, so a space you prepare later with `space create` uses it. A value you already set stays.
+The result names the next command: `cotal up` in the project for a local space, or
 `cotal spawn --space <name>`. `--json` writes one envelope whose `result.written` lists every file
 setup wrote.
 
@@ -492,6 +494,13 @@ bare `cotal down` (see [`down`](#down)), then the rest of the stack, and reports
 under the same rule: when the manager stop is refused, Ctrl-C prints the refusal with the reap route
 and leaves the stack running. The `-f` form is a
 [manifest deploy](#manifest-deploys).
+
+An `up` that starts or refreshes a space on this machine writes the `default` persona into
+`<root>/.cotal/agents` when the root has none, so a bare `cotal spawn` has a persona to launch. A
+space prepared or started before it had one gets it on its next `up`, and a persona you edited is
+left as it is. A controller stack lists the write under `result.written` and in its report, and the
+retained launcher prints the path it wrote. If the write fails, the stack stays up and the failure
+is a warning. A controller recovery or restore leaves the persona to the next `up`.
 
 The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
 even with a group-writable umask. `up` creates `.cotal` and the broker store owner-private (`0700`)
@@ -1415,7 +1424,9 @@ shape `space show` gives, with `verified` and `replaced`.
 
 `space create <name>` prepares a space to start on this machine. It records the name and the root,
 which is `--root` or this folder, and makes `<root>/.cotal/`; `cotal up` in that root then starts the
-space under that name and drops the prepared record. The project and its ancestors must be physical
+space under that name and drops the prepared record. It also writes the `default` persona into
+`<root>/.cotal/agents` when the root has none, as setup does, and leaves one you edited as it is.
+`--json` lists the files it wrote under `result.written`. The project and its ancestors must be physical
 directories owned by you or root, with no symlinks. World write refuses. Group write is allowed only
 on a directory you own whose group is your user private group, the Debian and Ubuntu default, and
 that has no extended ACL. On Linux, `getent` must show that the group is your primary group, lists
@@ -1939,7 +1950,9 @@ The persona (`--config` > positional > the [`persona` preference](config.md#pref
 `default`) is loaded from the target mesh's `.cotal/agents/` when it is a bare name. A reference that contains a path separator or
 ends in `.md` is loaded from that file. A relative path resolves against the mesh root, except that
 an enrollment or a managed handoff resolves `--config` against the working directory. A missing
-persona is refused with the catalog directory or the file that was checked. The launch flags
+persona is refused with the catalog directory or the file that was checked. A missing `default`
+persona also names the command that writes one: `cotal up` in the root of a space this machine
+started, or `cotal persona create default` for any other space. The launch flags
 override the file. On a user-auth mesh the
 effective name is also the agent's actor token, so it must match the token grammar (no `-`); the
 spawn is refused with that explanation before any request is sent. Foreground runs the agent

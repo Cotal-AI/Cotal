@@ -154,6 +154,8 @@ try {
   }
   ok("delivery-aware marker is bound to the manager pid", pidOf(recordName(MANAGER_DELIVERY_AWARE_MARKER)) === pidOf(recordName(MANAGER_PIDFILE)));
   ok("auth material was provisioned (.cotal/auth)", existsSync(join(root, ".cotal", "auth")));
+  const persona = join(root, ".cotal", "agents", "default.md");
+  ok("up --detach writes the default persona into the root's catalog and says so", existsSync(persona) && /wrote default persona: .*default\.md/.test(plain(up.stdout)), up.stdout);
 
   // 2) the manager ANSWERS a real `cotal ps` — no pre-arranged creds, resolved from the folder's
   //    auth + the sandboxed mesh registry, exactly as an operator would run it. Retried while the
@@ -220,6 +222,8 @@ try {
     managerDead = !alive(preRestartPid);
   }
   ok("the manager is dead before the restore refresh", managerDead, preRestartPid);
+  // The same refresh also writes back a default persona that went missing.
+  rmSync(persona);
   const restored = cli("up", "--server", SERVER);
   const restoredOut = plain(restored.stdout + restored.stderr);
   ok("a refresh that restores a missing manager exits 0", restored.status === 0, restoredOut);
@@ -232,9 +236,12 @@ try {
     pidfile: pidOf(recordName(MANAGER_PIDFILE)),
   });
   pids[pids.indexOf(preRestartPid)] = restoredPid;
+  ok("the refresh writes back the missing default persona and says so", existsSync(persona) && /wrote default persona:/.test(restoredOut), restoredOut);
 
   // 2e) the SAME refresh, run again with nothing to heal, must print only the already-running line
   //     and NOT the restore line - the no-op case this defect used to make indistinguishable from 2d.
+  const editedPersona = `${readFileSync(persona, "utf8")}\nYou review pull requests.\n`;
+  writeFileSync(persona, editedPersona);
   const noop = cli("up", "--server", SERVER);
   const noopOut = plain(noop.stdout + noop.stderr);
   ok("a no-op refresh exits 0", noop.status === 0, noopOut);
@@ -245,6 +252,7 @@ try {
     noopOut,
   );
   ok("the manager pidfile is unchanged by the no-op refresh", pidOf(recordName(MANAGER_PIDFILE)) === restoredPid, managerPidFile);
+  ok("a no-op refresh leaves an edited default persona byte-identical and prints no write", readFileSync(persona, "utf8") === editedPersona && !/wrote default persona/.test(noopOut), noopOut);
 
   // 3) down stops the whole stack, symmetric with up. Poll: the SIGTERM'd manager/daemon shut
   //    down gracefully, which can take a few seconds on slow CI.

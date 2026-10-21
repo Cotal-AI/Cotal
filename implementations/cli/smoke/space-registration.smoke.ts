@@ -6,7 +6,8 @@
  * record it writes and for leaving the selection as it was. On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
- * no installed provider has refused and left the root as it was.
+ * no installed provider has refused and left the root as it was. Create and a later `up` write the
+ * default persona when the root has none, and leave an edited one byte-identical.
  *
  * Needs `nats-server` on PATH.
  *
@@ -323,6 +324,10 @@ setCurrent("keep");
   const r = created.env?.result;
   check("create prepares the space in this folder and makes its .cotal: ok, nothing registered", created.status === 0 && created.env?.outcome === "ok" && r?.kind === "space-created" && r.space === "demo" && r.root === fresh && existsSync(join(fresh, ".cotal")) && findPreparedSpace("demo")?.root === fresh && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(created));
   check("create leaves the selection as it is", getCurrent() === undefined && r?.current === false, getCurrent());
+  const personaFile = join(fresh, ".cotal", "agents", "default.md");
+  check("create writes the default persona into the root's catalog and lists it with the prepared record",
+    existsSync(personaFile) && r?.written?.some((w: { what: string; path: string }) => w.what === "default persona" && w.path.endsWith(join(".cotal", "agents", "default.md"))) &&
+      r.written.some((w: { what: string }) => w.what === "prepared space"), r?.written);
   // Recorded once create has been checked for making its .cotal, so whatever starts in it is stopped
   // with the suite.
   const sandbox = recordSmokeSandbox({ root: fresh, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
@@ -397,6 +402,17 @@ setCurrent("keep");
   check("the selection still names it", getCurrent() === "demo", getCurrent());
   const reads = await json(["space", "show", "demo"]);
   check("space show now reports its broker answering", reads.env?.result.kind === "space" && reads.env.result.check === "reachable", reads.env?.result);
+  // Another up of the running space refreshes it: it writes back a default persona that went
+  // missing, and leaves one you edited byte-identical.
+  rmSync(personaFile);
+  const reseeded = await json(["up", "--detach", "--open", "--no-manager", "--server", server], fresh);
+  check("up of the running space writes back a missing default persona and lists the write",
+    reseeded.status === 0 && reseeded.env?.outcome === "ok" && existsSync(personaFile) && reseeded.env.result.written?.some((w: { what: string }) => w.what === "default persona"), shown(reseeded));
+  const editedPersona = `${readFileSync(personaFile, "utf8")}\nYou review pull requests.\n`;
+  writeFileSync(personaFile, editedPersona);
+  const reup = await json(["up", "--detach", "--open", "--no-manager", "--server", server], fresh);
+  check("another up leaves an edited default persona byte-identical and is a no-op",
+    reup.status === 0 && reup.env?.outcome === "no-op" && readFileSync(personaFile, "utf8") === editedPersona && reup.env.result.written?.length === 0, shown(reup));
   // A prepared root starts as a controller stack, whose whole-stack down takes --yes outside a terminal.
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
   const down = await run(["down", "--yes"], {}, fresh);
@@ -407,6 +423,12 @@ setCurrent("keep");
   await json(["space", "create", "later"], later);
   const forgot = await json(["space", "forget", "later"]);
   check("a prepared space is forgotten; the .cotal create made stays", forgot.status === 0 && forgot.env?.result.origin === "prepared" && forgot.env.result.server === null && findPreparedSpace("later") === undefined && existsSync(join(later, ".cotal")), shown(forgot));
+  const laterPersona = join(later, ".cotal", "agents", "default.md");
+  const kept = `${readFileSync(laterPersona, "utf8")}\nYou triage issues.\n`;
+  writeFileSync(laterPersona, kept);
+  const recreated = await json(["space", "create", "later"], later);
+  check("a second create in the same root leaves an edited default persona byte-identical and lists only the prepared record",
+    recreated.status === 0 && readFileSync(laterPersona, "utf8") === kept && recreated.env?.result.written?.map((w: { what: string }) => w.what).join() === "prepared space", shown(recreated));
 }
 
 finish();

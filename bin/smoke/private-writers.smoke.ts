@@ -25,7 +25,7 @@ import { recordManagerPid } from "../../implementations/manager/src/commands.js"
 import { writeAgentAuthHealth } from "../../implementations/auth/src/commands.js";
 import { markOnboarded } from "../../implementations/cli/src/lib/onboard.js";
 import { openSetupLog } from "../../implementations/cli/src/lib/setup-log.js";
-import { reconcileDefaultAgent } from "../../implementations/cli/src/commands/setup.js";
+import { reconcileDefaultAgent } from "../../implementations/cli/src/lib/default-persona.js";
 import { openDetachedLog, writeWebSession } from "../../implementations/web/src/web.js";
 import { appendRecord } from "../../implementations/delivery/src/feedback-intake.js";
 import { appendPrivate, writePrivate, writeRecord, type SeatRecord } from "../../packages/seat/src/record.js";

@@ -252,6 +252,33 @@
       "expectRed": "up in its root starts it under its name, and the prepared record goes",
       "cell": "up in its root starts it under its name, and the prepared record goes",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "space create prepares the space without its default persona",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  const persona = seedDefaultPersona(root);\n  if (persona) written.push(persona);\n",
+      "replace": "",
+      "expectRed": "create writes the default persona into the root's catalog and lists it with the prepared record",
+      "cell": "create writes the default persona into the root's catalog and lists it with the prepared record",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the controller up leaves a missing default persona missing",
+      "file": "implementations/cli/src/commands/stack-up.ts",
+      "find": "    const persona = seedDefaultPersona(root);\n    if (persona) written.push(persona);\n",
+      "replace": "",
+      "expectRed": "up of the running space writes back a missing default persona and lists the write",
+      "cell": "up of the running space writes back a missing default persona and lists the write",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an up that wrote the persona still reports a no-op",
+      "file": "implementations/cli/src/commands/stack-up.ts",
+      "find": "...(allReused && written.length === 0 ? { noOp: true } : {})",
+      "replace": "...(allReused ? { noOp: true } : {})",
+      "expectRed": "up of the running space writes back a missing default persona and lists the write",
+      "cell": "up of the running space writes back a missing default persona and lists the write",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }
