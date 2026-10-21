@@ -1205,7 +1205,44 @@ sufficient *authority* identity on this surface. Two further identity components
   authorize through this active-only reader. It confers no writer, bootstrap, abort, rotation
   or terminal authority and makes no atomic multi-key snapshot claim. Ordinary readers stay
   closed to every marked service row.
-  Only then does it mint **before the entity is reachable**, persisting a CAS-fenced
+  A package-internal dormant custody writer, with no product caller, may advance one sealed
+  reservation. Bootstrap order is reservation, pending-root endpoint gate, `service-creating`
+  head, native gate created frozen at generation0 under the creation operation and opened at
+  generation1, RootPlan `{credentialId,expMs}` fixed once by head CAS at
+  `now + ROOT_CREDENTIAL_TTL_MS`, planned active root by zero-history create, identical-bytes
+  native gate touch, then the active head stamp. The endpoint gate is re-read at open, before the
+  plan, root and stamp steps and before every write attempt of those steps; a revoked endpoint
+  stops bootstrap. Cancellation is
+  endpoint-first: endpoint deny-new (on a registration freeze it revokes approval and keeps the
+  registration op), `service-cancelling` head (an active head's stamp and its
+  root row's expiry become the preserved plan), native gate frozen under the cancel operation,
+  then root disposition. An unstamped planned root MUST be fenced only by a zero-history create
+  of revoked bytes or a CAS of the exact active row; a stamped root is retained. Every result is
+  nonterminal. An absent reservation leaves endpoint deny residue and reports unconfirmed; a
+  foreign or tombstoned reservation refuses before any write. Each write is a per-key create or
+  revision CAS under a genuine plane-claim hold re-read before and after it plus a fatal latch.
+  This is local readiness control, not broker writer exclusion. Each broker request is bounded
+  by `min(5s, remaining live authority)`, where live authority is the invocation's original
+  deadline. In bootstrap, once the plan step has fixed or read the RootPlan, live authority is
+  also bounded by the plan expiry. Cancellation keeps only its own deadline, so an accepted
+  cancellation can still proceed after the root expires. A request still in flight at the
+  live-authority bound ends held; the writer stops waiting for it but does not cancel it at the
+  broker. CAS re-decisions, native gate re-pins and
+  unknown-outcome rounds are capped at 4, 8 and 3, and an unknown outcome is classified by a
+  leader read before any reissue. Endpoint-gate reads and writes are the writer's own leader
+  reads and conditional writes built from pure package-internal rows, so no endpoint-gate
+  request starts after an invocation returns. Bootstrap's final active-root proof is bounded the
+  same way, but it is a sequence of read-only leader reads behind one wait: when that wait ends
+  at its bound, the abandoned proof can still issue its remaining reads after the invocation
+  returns. Those reads write nothing. An already-active head reaches that proof before any plan
+  clip, so bootstrap MUST hold `plan-expired` rather than report an active root whose expiry a
+  final synchronous check, made after its last read with no await before the return, observes.
+  This does not make the result fresh when the caller receives it. The held check is the closure captured when the hold was
+  acquired, not the hold's mutable guard field. A frozen activation native gate is valid only at
+  generation0; any other frozen activation form holds. The deadline and reservation are
+  caller-supplied original material, not durable host authentication.
+  Only then does the ordinary minting authority mint **before the entity is reachable**,
+  persisting a CAS-fenced
   mapping
   `{ owner, actor, lifecycleUid, managerInstance, processEpoch,
   state: active | retiring | retired, currentCredentialId?, lastTakeoverOpId?, op? }` (closed

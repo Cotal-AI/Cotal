@@ -8,22 +8,19 @@ import {
 import { serviceConnectReaderStores, type ConnectReader } from "./connect-reader.js";
 import { registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
 import type { ServiceAssignmentBinding } from "./native-service-gate.js";
+import { GATE_FIELDS, HEAD_FIELDS, ROOT_FIELDS, assertMirror, closedRecord } from "./service-custody-shapes.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder("utf-8", { fatal: true });
 function deny(detail: string): never {
   throw new EpEnvelopeError("permission-denied", `service native root ${detail}`);
 }
+const invalidClosed = (): never => deny("has an invalid closed record");
 function closed(value: unknown, fields: readonly string[]): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return deny("has an invalid closed record");
-  const proto = Object.getPrototypeOf(value);
-  if ((proto !== Object.prototype && proto !== null) || Reflect.ownKeys(value).length !== fields.length
-    || fields.some(k => !Object.hasOwn(value, k))) return deny("has an invalid closed record");
-  return value as Record<string, unknown>;
+  return closedRecord(value, fields, invalidClosed);
 }
 function mirror(value: unknown, digest: string): void {
-  const o = closed(value, ["v", "uidDigest"]);
-  if (o.v !== 1 || o.uidDigest !== digest) deny("custody mirror is missing or mismatched");
+  assertMirror(value, digest, () => deny("custody mirror is missing or mismatched"), invalidClosed);
 }
 
 interface Proof {
@@ -69,19 +66,19 @@ async function proof(stores: { space: string; jsm: JetStreamManager }, binding: 
     deny("does not bind the immutable account/UID/assignment digest");
   const headEntry = await readRecordLeader(jsm, space, lifecycleHeadKey(binding.owner, actor));
   if (!headEntry) return deny("is not current: head absent");
-  const head = closed(headEntry.value, ["owner", "actor", "lifecycleUid", "managerInstance", "processEpoch", "state", "currentCredentialId", "serviceCustody"]);
+  const head = closed(headEntry.value, HEAD_FIELDS.active);
   mirror(head.serviceCustody, digest);
   if (head.owner !== binding.owner || head.actor !== actor || head.lifecycleUid !== uid
     || head.managerInstance !== assignment.instanceId || head.processEpoch !== 1
     || head.state !== "active" || head.currentCredentialId !== rootId)
     deny("is not current at the exact active service head");
   const gateEntry = await authRecord(jsm, space, `gate.${uid}`);
-  const gate = closed(gateEntry.value, ["lifecycleUid", "state", "generation", "serviceCustody"]);
+  const gate = closed(gateEntry.value, GATE_FIELDS.open);
   mirror(gate.serviceCustody, digest);
   if (gate.lifecycleUid !== uid || gate.state !== "open" || gate.generation !== 1)
     deny("native issuance gate is not open at generation1");
   const rootEntry = await authRecord(jsm, space, `cred.${uid}.${rootId}`);
-  const root = closed(rootEntry.value, ["credentialId", "holderPrincipal", "lifecycleUid", "sourceChain", "state", "exp", "serviceCustody"]);
+  const root = closed(rootEntry.value, ROOT_FIELDS);
   mirror(root.serviceCustody, digest);
   if (root.credentialId !== rootId || root.lifecycleUid !== uid || root.holderPrincipal !== `${binding.owner}.${actor}`
     || !Array.isArray(root.sourceChain) || root.sourceChain.length !== 1 || root.sourceChain[0] !== "root"

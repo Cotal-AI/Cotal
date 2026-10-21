@@ -1227,8 +1227,8 @@ from that tuple, and the creation operation and request digest remain fixed.
 These guards run before ordinary root reuse, activation, gate and head changes, mint finalization,
 and native retirement. Ordinary connect and currency reads also refuse service custody, including
 rows whose head or credential mirror is missing. Existing ordinary reservation bytes are unchanged.
-Closed head, gate and credential parsers continue to reject service markers. This release provides
-no service reservation writer or marked-root minting path. A service access-view contract and
+Closed head, gate and credential parsers continue to reject service markers. No product path writes
+a service reservation or mints a marked root. A service access-view contract and
 optional sealed native access/callout composition are shipped, but production registration and
 lifecycle wiring remain unavailable. Those unwired seams do not authorize service admission.
 
@@ -1246,9 +1246,35 @@ The account is trusted host configuration. Sealed readers do not attest the brok
 detect a cross-account pair of legitimately constructed handles. Future service integration must
 construct the registry, reader and callout from the same authenticated account context.
 
-This is a refusal foundation, not service endpoint admission. Service bootstrap, cancellation,
-terminal retirement, complete observer evidence, writer exclusion and restore readiness remain
-unavailable. Do not seed service reservations in an existing space, adopt old service-shaped rows,
+A package-internal dormant custody writer has no product caller and is not exported. Bootstrap
+writes the reservation, the pending-root endpoint gate, a creating head, a frozen activation native
+gate opened at generation1, a RootPlan fixed once by head CAS, the planned active root, an
+identical-bytes native gate touch and the active head stamp. It rechecks the endpoint gate at open
+and before the plan, root and stamp writes. Cancellation denies the endpoint gate first, then
+writes the cancelling head and freezes the native gate under the cancel operation. An unstamped
+planned root is fenced by a create of revoked bytes or by CAS of the exact active row. A stamped
+root is retained, and every cancellation result is nonterminal. An absent reservation leaves
+endpoint deny residue and reports unconfirmed; a foreign or deleted reservation refuses without a
+write. Each write is a per-key create or revision CAS under a sealed host whose genuine plane-claim
+hold is re-read before and after the write, plus a fatal latch. That is local readiness control,
+not broker writer exclusion, so a paused writer can still land one late conditional write. Each
+request is bounded by the remaining original deadline. In bootstrap, once the plan step has fixed
+or read the RootPlan, requests are also bounded by its expiry. Cancellation keeps only its own
+deadline, so an accepted cancellation can still proceed after the root expires. At its bound the
+writer stops waiting for a request but does not cancel it at the broker. The writer issues every
+endpoint-gate request itself, so no endpoint-gate request starts after an invocation returns, and
+it re-reads the endpoint gate before every plan, root and stamp write attempt. Bootstrap's final
+active-root proof is several read-only reads behind one bounded wait. If that wait ends at its
+bound, the remaining reads can still run after the invocation returns; none of them writes.
+Bootstrap holds instead of reporting an active root whose expiry its final synchronous check
+observes, with no await between that check and the return. The result can still be stale by the
+time the caller acts on it. The caller supplies that deadline and the
+reservation; nothing here authenticates a host, approves serving, retires terminally, releases an
+alias or rotates a root.
+
+This is a refusal foundation, not service endpoint admission. The dormant writer above has no
+product caller, so service bootstrap and cancellation are not available to embedders, and terminal
+retirement, complete observer evidence, writer exclusion and restore readiness remain unavailable. Do not seed service reservations in an existing space, adopt old service-shaped rows,
 or use ordinary retirement to make them terminal. A signing-key or raw-store holder can bypass
 helper guards, so schema rejection alone does not make mixed-version writers safe. Restore must
 quarantine service work until a separately supported reconciliation protocol is available.
