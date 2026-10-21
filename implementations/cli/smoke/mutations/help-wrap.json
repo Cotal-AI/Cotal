@@ -23,7 +23,7 @@
     {
       "name": "help leaves its usage to the report renderer's wrap",
       "file": "implementations/cli/src/help.ts",
-      "find": "usageLines(usage.split(\" \"), width - 2)",
+      "find": "usageLines(usageTokens(usage), width - 2)",
       "replace": "[usage]",
       "expectRed": "on 60 columns its usage wraps only between options",
       "cell": "on 60 columns its usage wraps only between options",
@@ -57,6 +57,16 @@
       "replace": "  return false;\n",
       "expectRed": "on 40 columns cotal help completion script keeps script with its argument",
       "cell": "on 40 columns cotal help completion script keeps script with its argument",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a compact | is not a break point",
+      "file": "implementations/cli/src/help.ts",
+      "find": "word.split(/(?<=\\|)(?=.)/)",
+      "replace": "[word]",
+      "expectRed": "on 40 columns cotal help persona breaks a compact group after its own |",
+      "cell": "on 40 columns cotal help persona breaks a compact group after its own |",
       "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },

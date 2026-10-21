@@ -165,12 +165,15 @@ On a terminal, a long value, line, warning or failure wraps at spaces, and each 
 starts under the text it continues. A word wider than the line, such as a path, keeps a line of its
 own and is never split. Help wraps the same way, including the title of `cotal help --all`.
 
-A usage line breaks only between options, never between an option and its argument, and a ` | `
-stays on the line before it whenever it fits there. A usage too wide for the line breaks after its own ` | ` alternatives first. A group
-too wide for the line, such as `(--to/-t <agent> | --channel/-c <channel> | --role/-r <role>)`,
-takes lines of its own and breaks the same way inside, and so does a group nested in it. Only a
-single option with its argument that is wider than the line breaks at its spaces. Examples are not
-wrapped, so each stays one line to copy.
+A usage line breaks only between options, never between an option and its argument. A ` | ` stays
+on the line before it whenever it fits there. A compact `|`, such as the one in
+`<persona.md>|--prompt`, is a break point too: the line ends right after it, the next line starts
+with the following option, and no space is added or lost. A usage too wide for the line breaks after
+its own ` | ` or compact `|` alternatives first. A group too wide for the line, such as
+`(--to/-t <agent> | --channel/-c <channel> | --role/-r <role>)`, takes lines of its own and breaks
+the same way inside, and so does a group nested in it. A group that fits, such as
+`[--json|--plain]`, stays whole. Only a single option with its argument that is wider than the line
+breaks at its spaces. Examples are not wrapped, so each stays one line to copy.
 
 When the flag names leave their descriptions fewer than 30 columns, each description goes on the
 lines under its flag. A report's list of commands follows the same 30-column rule. Below 48 columns,

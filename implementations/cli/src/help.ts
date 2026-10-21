@@ -34,37 +34,55 @@ function staysWith(word: string, next: string): boolean {
   return word !== "|" && !/[\])>]$/.test(word) && (next.startsWith("<") || (/^[[(]*-/.test(word) && !/^[-[(|]/.test(next)));
 }
 
-/** A usage's words cut where its lines may break: at the gaps outside the groups the words share,
- *  except where {@link staysWith} keeps two words together. The gaps after their own ` | `
- *  alternatives come first. None when no gap may break. */
-function usageUnits(words: readonly string[]): string[][] | undefined {
+/** One piece of a usage, and whether a space joins it to the piece before. A word is cut after each
+ *  compact `|` in it, such as the one in `[--json|--plain]`, and nothing joins the pieces. */
+interface UsageToken {
+  readonly text: string;
+  readonly spaced: boolean;
+}
+
+/** A usage as its tokens. They join back into the same text. */
+function usageTokens(usage: string): UsageToken[] {
+  return usage.split(" ").flatMap((word, i) => word.split(/(?<=\|)(?=.)/).map((text, j) => ({ text, spaced: i > 0 && j === 0 })));
+}
+
+/** `tokens` as the text they came from. */
+const joined = (tokens: readonly UsageToken[]): string => tokens.map((token, i) => (i > 0 && token.spaced ? " " : "") + token.text).join("");
+
+/** A usage's tokens cut where its lines may break: at the gaps outside the groups the tokens share,
+ *  except where {@link staysWith} keeps two words together. The gaps after their own ` | ` or
+ *  compact `|` alternatives come first. None when no gap may break. */
+function usageUnits(tokens: readonly UsageToken[]): UsageToken[][] | undefined {
   const gaps: { at: number; depth: number; alternative: boolean }[] = [];
   let depth = 0;
-  for (let i = 0; i < words.length - 1; i++) {
-    depth = Math.max(0, depth + nesting(words[i]!));
-    if (!staysWith(words[i]!, words[i + 1]!)) gaps.push({ at: i + 1, depth, alternative: words[i] === "|" });
+  for (let i = 0; i < tokens.length - 1; i++) {
+    depth = Math.max(0, depth + nesting(tokens[i]!.text));
+    const next = tokens[i + 1]!;
+    if (!next.spaced) gaps.push({ at: i + 1, depth, alternative: true });
+    else if (!staysWith(tokens[i]!.text, next.text)) gaps.push({ at: i + 1, depth, alternative: tokens[i]!.text === "|" });
   }
   if (!gaps.length) return undefined;
   const top = Math.min(...gaps.map((gap) => gap.depth));
   const level = gaps.filter((gap) => gap.depth === top);
   const cuts = level.some((gap) => gap.alternative) ? level.filter((gap) => gap.alternative) : level;
-  const bounds = [0, ...cuts.map((gap) => gap.at), words.length];
-  return bounds.slice(1).map((end, i) => words.slice(bounds[i], end));
+  const bounds = [0, ...cuts.map((gap) => gap.at), tokens.length];
+  return bounds.slice(1).map((end, i) => tokens.slice(bounds[i], end));
 }
 
 /** A usage in lines of at most `width` columns, broken only where {@link usageUnits} allows. A group
  *  too wide for a line takes lines of its own and breaks the same way one level in. Only a single
- *  option with its argument wider than the line is broken at its spaces. Every line fits or is one
- *  word, so the report renderer draws each line as it is. */
-function usageLines(words: readonly string[], width: number): string[] {
-  const text = words.join(" ");
+ *  option with its argument wider than the line is broken at its spaces. From 20 columns every line
+ *  fits or is one word; below 20 the usage is one line, as {@link wrapWords} leaves it. Either way
+ *  the report renderer draws each line as it is. */
+function usageLines(tokens: readonly UsageToken[], width: number): string[] {
+  const text = joined(tokens);
   if (!(width >= 20) || displayWidth(text) <= width) return [text];
-  const units = usageUnits(words);
+  const units = usageUnits(tokens);
   if (!units) {
-    // No gap may break, so these words are one option and its argument, broken at their spaces. A
-    // ` | ` after them stays on the line before it when it fits there.
+    // No gap may break, so these tokens are one option and its argument, joined by spaces, and
+    // broken at them. A ` | ` after them stays on the line before it when it fits there.
     const kept: string[] = [];
-    for (const word of words) {
+    for (const { text: word } of tokens) {
       if (word === "|" && kept.length && displayWidth(`${kept[kept.length - 1]} |`) <= width) kept[kept.length - 1] += " |";
       else kept.push(word);
     }
@@ -73,15 +91,16 @@ function usageLines(words: readonly string[], width: number): string[] {
   const lines: string[] = [];
   let line = "";
   for (const unit of units) {
-    const piece = unit.join(" ");
+    const piece = joined(unit);
+    const longer = `${line}${unit[0]!.spaced ? " " : ""}${piece}`;
     if (displayWidth(piece) > width) {
       if (line) lines.push(line);
       lines.push(...usageLines(unit, width));
       line = "";
-    } else if (line && displayWidth(`${line} ${piece}`) > width) {
+    } else if (line && displayWidth(longer) > width) {
       lines.push(line);
       line = piece;
-    } else line = line ? `${line} ${piece}` : piece;
+    } else line = line ? longer : piece;
   }
   if (line) lines.push(line);
   return lines;
@@ -188,7 +207,7 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   const sections: Section[] = [
     { title: `cotal ${path}`, blocks: [{ kind: "lines", lines: [selected.summary] }] },
     // A titled section indents its lines two columns, so the usage is fitted to what is left.
-    { title: "Usage", blocks: [{ kind: "lines", lines: usageLines(usage.split(" "), width - 2).map((text) => ({ text, tone: "command" as const })) }] },
+    { title: "Usage", blocks: [{ kind: "lines", lines: usageLines(usageTokens(usage), width - 2).map((text) => ({ text, tone: "command" as const })) }] },
   ];
   if (selected.aliases?.length) sections.push({ title: "Shorthands", blocks: [{ kind: "lines", lines: [{ text: selected.aliases.map((alias) => `cotal ${sub ? `${cmd.name} ${sub.name.split(" ").slice(0, -1).map((word) => word + " ").join("")}` : ""}${alias}`).join(" · "), tone: "command" }] }] });
   const subs = (sub ? sub.subcommands ?? [] : cmd.subcommands ?? []).filter((item) => !item.hidden);

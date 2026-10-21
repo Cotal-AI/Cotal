@@ -191,6 +191,26 @@ try {
     script.exitCode === 0 && fit(script.shown, 40).length === 0 && usageOf(script.all).join("\n") === ["  cotal completion", "  script <bash|zsh|fish|powershell>"].join("\n"),
     script.all,
   );
+  // A compact `|`, as in `<persona.md>|--prompt`, is a break point too: the line ends right after it
+  // and the next starts with the following option, with no space added or lost.
+  const persona = await helpAt(["help", "persona"], 40);
+  check("cotal help persona on a 40-column terminal fits every line", persona.exitCode === 0 && fit(persona.all.join("\n"), 40).length === 0 && persona.all.length > 10, fit(persona.all.join("\n"), 40));
+  check(
+    "on 40 columns cotal help persona breaks a compact group after its own |",
+    usageOf(persona.all).join("\n") === [
+      "  cotal persona [--json|--plain] |", "  persona show <name> |", "  persona create <name>",
+      "  (--file <persona.md>|--prompt <text>|", "  --from <path>) |", "  persona edit <name> |", "  persona remove <name>",
+      "  [--yes]; list/show/create support", "  --on <manager-instance>",
+    ].join("\n"),
+    usageOf(persona.all),
+  );
+  const serviceAdd = await helpAt(["help", "service", "add"], 60);
+  check("cotal help service add on a 60-column terminal fits every line", serviceAdd.exitCode === 0 && fit(serviceAdd.all.join("\n"), 60).length === 0, fit(serviceAdd.all.join("\n"), 60));
+  check(
+    "on 60 columns cotal help service add breaks a compact group after its own |",
+    usageOf(serviceAdd.all).join("\n") === ["  cotal service add [name]", "  [--file <definition.json>|", "  --preset <name> <declared-options>]"].join("\n"),
+    usageOf(serviceAdd.all),
+  );
   const listing = await helpAt(["help", "--all"], 40);
   check("cotal help --all on a 40-column terminal fits every line", listing.exitCode === 0 && fit(listing.shown, 40).length === 0 && listing.all.length > 10, fit(listing.shown, 40));
   check("on 40 columns cotal help --all wraps its title", listing.all[0] === "cotal - lateral agent coordination over" && listing.all[1] === "NATS", listing.all.slice(0, 2));
