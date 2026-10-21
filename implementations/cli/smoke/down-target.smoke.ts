@@ -260,15 +260,13 @@ try {
   meshB = meshWithDashboard("meshB");
   check("scratch has no .cotal ancestor", findCotalRoot(neutral) === neutral, findCotalRoot(neutral));
 
-  // The real web descriptor must declare target rooting, and down must see it on the surface.
-  check('web descriptor declares rootedAt: "target"', webProcess.rootedAt === "target");
   // The installed path never imports package code: the descriptor rides the extensions manifest as
-  // JSON. The cache must carry rootedAt through a full serialize/parse round trip.
+  // JSON. The cache must carry the web descriptor through a full serialize/parse round trip.
   const cached = extensionLocalProcesses({
     pkg: "@cotal-ai/web", version: "0.0.0", spec: "@cotal-ai/web", commands: [],
     ...JSON.parse(JSON.stringify({ localProcesses: [cacheLocalProcess(webProcess)] })),
   });
-  check("manifest cache round-trips rootedAt", cached.length === 1 && cached[0].rootedAt === "target");
+  check("manifest cache round-trips the web descriptor", cached.length === 1 && cached[0].name === webProcess.name && cached[0].pidFile === webProcess.pidFile);
   registry.register(webProcess);
   const managerProcess: LocalProcess = { kind: "local-process", name: "manager", label: "manager", pidFile: MANAGER_PIDFILE, order: 10 };
   registry.register(managerProcess);
@@ -279,10 +277,13 @@ try {
 
   process.chdir(neutral);
 
-  // No meshes recorded anywhere and nothing saved → `down web` refuses as not found.
+  // No meshes recorded anywhere → `down web` has no space to look in. The target resolves before
+  // any saved-definition lookup, so it refuses as not found and says how to name a space.
   const noMesh = await rejection(run(["web"]));
-  check("no meshes: `down web` refuses TARGET_NOT_FOUND, naming no saved definition",
-    noMesh?.code === "TARGET_NOT_FOUND" && /no saved service definition resolves this name/.test(noMesh.message ?? ""), noMesh?.message);
+  check("no meshes: `down web` refuses TARGET_NOT_FOUND, naming no mesh to look in",
+    noMesh?.code === "TARGET_NOT_FOUND" && /no mesh running/.test(noMesh.message ?? "") && !/no saved service definition/.test(noMesh.message ?? "") &&
+      /name a prepared or registered space with `--space <name>`/.test(noMesh.remedy ?? ""),
+    noMesh && { code: noMesh.code, message: noMesh.message, remedy: noMesh.remedy });
 
   // Current mesh set → `down web` from an unrelated directory looks in THAT mesh's saved services.
   // The legacy dashboard in its root is not one, so nothing is signalled and its record stays.
@@ -307,8 +308,12 @@ try {
   const component = await rejection(run(["fixtured"], { space: "teamA" }));
   check("a local-process component name with --space refuses TARGET_NOT_FOUND",
     component?.code === "TARGET_NOT_FOUND" && /no saved service definition resolves this name/.test(component.message ?? ""), component?.message);
-  await assert.rejects(run([], { space: "teamA" }), /bare `cotal down` always stops this folder's stack/);
-  check("--space without components is refused", true);
+  const bareSpace = await rejection(run([], { space: "teamA" }));
+  check("--space without components is refused USAGE_INVALID and names the bare and service stops",
+    bareSpace?.code === "USAGE_INVALID" && /a bare stop takes no --space/.test(bareSpace.message ?? "") &&
+      /run `cotal down` without --space from the stack's root/.test(bareSpace.remedy ?? "") &&
+      /`cotal service stop <service-name> --space <space>`/.test(bareSpace.remedy ?? ""),
+    bareSpace?.message);
   const unknown = await rejection(run(["web"], { space: "nosuch" }));
   check("--space with an unknown space refuses TARGET_NOT_FOUND",
     unknown?.code === "TARGET_NOT_FOUND" && /no space named "nosuch" is registered here/.test(unknown.message ?? ""), unknown?.message);

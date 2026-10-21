@@ -154,7 +154,7 @@ try {
   for (const n of ["claude", "opencode", "codex", "hermes", "jcode", "pi"]) {
     check(`seeded connector:${n} from the tarball binary`, out.includes(`connector:${n}`), list.stderr);
   }
-  check("seeded command:web (the dashboard) from the bundled payload", out.includes("command:web"), list.stderr);
+  check("seeded service-preset:web (the dashboard) from the bundled payload", out.includes("service-preset:web"), list.stderr);
 
   const manifest = JSON.parse(readFileSync(join(cfg, "cotal", "extensions", "extensions.json"), "utf8")) as {
     extensions: { pkg: string; spec: string; source?: string }[];

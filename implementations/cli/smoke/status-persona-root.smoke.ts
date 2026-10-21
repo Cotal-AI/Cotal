@@ -70,8 +70,9 @@ function project(label: string, personas: string[]): string {
   return root;
 }
 
-/** Run `status` from `cwd` and capture its stdout. Only the "This Folder" section is asserted on;
- *  the later sections probe the network for reachability and are not this smoke's subject. */
+/** Run `status --verbose` from `cwd` and capture its stdout. "This Folder" is a verbose section,
+ *  and only it and the Next hints are asserted on; the other sections probe the network for
+ *  reachability and are not this smoke's subject. */
 async function runStatus(cwd: string): Promise<string> {
   const prev = process.cwd();
   const lines: string[] = [];
@@ -79,7 +80,7 @@ async function runStatus(cwd: string): Promise<string> {
   console.log = (...a: unknown[]) => { lines.push(a.map(String).join(" ")); };
   process.chdir(cwd);
   try {
-    await status({ values: {}, positionals: [] } as unknown as Parameters<typeof status>[0]);
+    await status({ values: { verbose: true }, positionals: [] } as unknown as Parameters<typeof status>[0]);
   } finally {
     process.chdir(prev);
     console.log = realLog;
@@ -130,7 +131,7 @@ try {
   );
   // …and the truth about what WOULD launch: the mesh root has no default.md.
   check("divergent: reports what the spawn root actually offers", /→ launches[\s\S]*no default/.test(plain), plain);
-  const hints = strip(divergentOut).split("\nHints\n")[1] ?? "";
+  const hints = strip(divergentOut).split("\nNext\n")[1] ?? "";
   check("divergent: the hints point at the real repair", /will not launch/.test(hints), strip(divergentOut));
 
   // ── AGREEING ─────────────────────────────────────────────────────────────────────────────────

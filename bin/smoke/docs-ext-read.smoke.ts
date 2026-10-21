@@ -125,7 +125,7 @@ for (const [args, why] of [
   const er = empty.envelope?.result as { kind: string; root: string; items: unknown[] } | undefined;
   check("bare ext --json is one envelope naming the root, empty on a fresh machine", empty.status === 0 && empty.envelope?.command === "ext" && empty.envelope.target === null && er?.kind === "extensions" && er.root === root && er.items.length === 0, shown(empty));
   const emptyPlain = run(["ext", "--plain"]);
-  check("an empty plain listing says how to add one", emptyPlain.status === 0 && /^Extension root: /m.test(emptyPlain.stdout) && /no extensions installed/.test(emptyPlain.stdout), shown(emptyPlain));
+  check("an empty plain listing says how to add one", emptyPlain.status === 0 && /^\s*No extensions installed\.$/m.test(emptyPlain.stdout) && /^\s*cotal x add <package>\s+Install an extension$/m.test(emptyPlain.stdout), shown(emptyPlain));
 
   mkdirSync(root, { recursive: true });
   const added = { pkg: "@acme/fake-runtime", version: "1.2.3", spec: "@acme/fake-runtime@1.2.3", provides: [{ kind: "runtime", name: "fakert" }], commands: [] };
@@ -144,7 +144,7 @@ for (const [args, why] of [
     items,
   );
   const plain = run(["ext", "--plain"]);
-  check("the plain listing is a table with the source of each", plain.status === 0 && /^PACKAGE\s+VERSION\s+SOURCE\s+PROVIDES$/m.test(plain.stdout) && /@acme\/fake-runtime\s+1\.2\.3\s+added\s+runtime:fakert/.test(plain.stdout) && /@cotal-ai\/connector-pi\s+\S+\s+built in\s+connector:pi/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
+  check("the plain listing is a table with the source of each", plain.status === 0 && /^\s*Package\s+Version\s+Source\s+Provides$/m.test(plain.stdout) && /@acme\/fake-runtime\s+1\.2\.3\s+added\s+runtime:fakert/.test(plain.stdout) && /@cotal-ai\/connector-pi\s+\S+\s+included\s+connector:pi/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
 }
 
 // ── ext: root stays raw; the other subcommands refuse the listing's flags ────────────────────────
@@ -165,7 +165,7 @@ for (const [args, why] of [
   }
   const listHelp = run(["ext", "list", "--help"]);
   const addHelp = run(["ext", "add", "--help"]);
-  check("help names the listing's structured output and no other mode's", /structured output: json, plain/.test(listHelp.stdout) && !/structured output: /.test(addHelp.stdout), { list: listHelp.stdout.slice(-200), add: addHelp.stdout.slice(-200) });
+  check("help names the listing's structured output and no other mode's", /Structured output: json, plain/.test(listHelp.stdout) && !/Structured output: /i.test(addHelp.stdout), { list: listHelp.stdout.slice(-200), add: addHelp.stdout.slice(-200) });
 }
 
 finish();

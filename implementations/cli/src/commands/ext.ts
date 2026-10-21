@@ -345,6 +345,8 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   }
   provenance.wrote(`extensions manifest (+${pkg}@${version})`, extensionsManifestPath());
   announce(c.green(`✓ added ${pkg}@${version}`) + c.dim(` - provides: ${contributed.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`));
+  if (!entry.serviceMetadata && (servicePresets.length || localProcesses.some((component) => component.service !== undefined)))
+    announce(c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`));
   }
 
   function fail(p: string, why: string): never {
@@ -474,7 +476,13 @@ function describeProcess({ provider, context, pidPath }: ExtensionProcess): stri
     : liveness === "alive" ? `pid ${pid}`
     : liveness === "unknown" ? `pid ${pid}, liveness INDETERMINATE - the kernel answered neither running nor gone (seccomp/LSM policy does this); verify before cleaning`
     : "stale pidfile";
-  return `${provider.name} (${state}) in ${context.root} - run there: cotal down ${provider.name}`;
+  // A named `cotal down` is a service stop, and no command stops one extension's legacy process,
+  // so the advice names the process or its record.
+  const next =
+    liveness === "alive" ? `stop pid ${pid}, then retry`
+    : liveness === "dead" ? `delete ${pidPath}, then retry`
+    : "resolve it, then retry";
+  return `${provider.name} (${state}) in ${context.root} - ${next}`;
 }
 
 /** One installed extension as the listing reports it. */

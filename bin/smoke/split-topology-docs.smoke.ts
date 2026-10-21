@@ -72,10 +72,13 @@ check(
 
 // ── 2. up starts a manager by default; --no-manager is the explicit broker-only mode ──
 check(
-  "claim 2: operator guide names the split (--no-manager boot, supervise --server)",
+  "claim 2: operator guide names the split (--no-manager boot, supervise --server) and each stack's manager stop",
   runAMesh.includes("A broker-only host is a first-class `up` mode") &&
     runAMesh.includes("cotal up --no-manager") &&
-    runAMesh.includes("cotal down manager") &&
+    runAMesh.includes("`cotal service stop stack-manager --space <s> --yes`") &&
+    runAMesh.includes("A legacy stack has no command that stops only") &&
+    ![runAMesh, control].some((page) => page.includes("cotal down manager")) &&
+    !cli.includes("`cotal down manager` first") &&
     runAMesh.includes("cotal supervise --space main --server") &&
     cli.includes("`--no-manager` is the broker-only mode") &&
     control.includes("Only one manager per space") &&
@@ -84,8 +87,8 @@ check(
 check(
   "claim 2: the broker-only refusal and the flag's wiring are pinned",
   /`cotal up --no-manager` will not keep or stop one/.test(up.replace(/\\`/g, "`")) &&
-    /noManager && values\.runtime/.test(up) &&
-    /noManager && values\["max-sessions"\]/.test(up) &&
+    /args\.values\["no-manager"\] === true && args\.values\.runtime !== undefined\)\s*throw new CommandFailure\("refused", "USAGE_INVALID", "--no-manager cannot be combined with --runtime because no manager starts"/.test(up) &&
+    /args\.values\["no-manager"\] === true && args\.values\["max-sessions"\] !== undefined\)\s*throw new CommandFailure\("refused", "USAGE_INVALID", "--no-manager cannot be combined with --max-sessions because no manager starts"/.test(up) &&
     up.includes("broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager") &&
     /if \(o\.noManager\) return \{\s*running: false\b[^}]*responderBound: delivery\.responderBound[^}]*\}/.test(deliveryProc) &&
     !cli.includes("There is no broker-only mode") &&
@@ -106,7 +109,9 @@ check(
 );
 check(
   "claim 2: detach summary is pidfile-live, ensureManager returns a started manager once it is up; supervise prints manager up after start",
-  upReport.includes("return `✓ running in the background: ${components.join(\", \")} - stop with: cotal down`;") &&
+  upReport.includes('if (status.manager) components.push("manager");') &&
+    upReport.includes("return `✓ running in the background: ${components.join(\", \")} - ") &&
+    upReport.includes("stop with: cotal down") &&
     /if \(state === "alive"\) return \{\s*running: true,\s*started: false\b[^}]*\}/.test(managerProc) &&
     /const pid = startManagerDetached\(o\);\s*await awaitManagerUp\(space, identityRecord\(pid\)\);\s*return \{\s*running: true,\s*started: true,\s*pid\b[^}]*\}/.test(managerProc) &&
     supervise.includes('await mgr.start();') &&
@@ -159,9 +164,14 @@ check(
   systemd.includes('export const DETACHED_SUPERVISION_DOC_SECTION = "Supervising the detached stack"'),
 );
 check(
-  "claim 6: docs state the manager service installer and the example-unit cgroup tradeoff",
-  runAMesh.includes("`cotal service install` is the supported way to run the manager as a user service") &&
-    runAMesh.includes("It installs only") &&
+  "claim 6: docs state what `service install` covers and the example-unit cgroup tradeoff",
+  runAMesh.includes("`cotal service install <name>` writes an owned systemd user unit for a saved direct-process") &&
+    /a preset such as the\s+manager is not installed as a unit in this release/.test(runAMesh) &&
+    !runAMesh.includes("is the supported way to run the manager as a user service") &&
+    /writes a Linux unit only for a saved direct-process service definition, so the manager\s+preset, the broker and its siblings get no unit from it/.test(runAMesh) &&
+    // No sentence on the page may say service install covers, installs or handles only the manager.
+    !runAMesh.includes("covers only the manager") &&
+    !/(service\s+install`?|\binstalls?\b|\binstaller\b)[^.]{0,80}\bonly\s+the\s+manager\b|\bonly\s+the\s+manager\b[^.]{0,80}\b(install|unit)/i.test(runAMesh) &&
     runAMesh.includes("examples of process models") &&
     runAMesh.includes("Type=simple") &&
     runAMesh.includes("nats in the unit's cgroup") &&

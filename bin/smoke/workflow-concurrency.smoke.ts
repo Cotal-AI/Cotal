@@ -69,11 +69,18 @@ function check(name: string, cond: boolean, extra?: unknown): void {
  *
  *  Bumped for `attribution.yml` (the 8th): it runs on pull_request only, so it is not push-to-main
  *  startable and neither of the other two counts moves. Its group keys on the PR ref and cancels
- *  in progress, which is the only policy a PR-only workflow needs. */
-const EXPECTED_WORKFLOWS = 8;
-const EXPECTED_PUSH_TO_MAIN = 6;
+ *  in progress, which is the only policy a PR-only workflow needs.
+ *
+ *  Bumped for four more (the 9th to 12th). `cold-setup.yml` starts on a pull request, a dispatch or
+ *  a call from `changesets.yml`, and `workspace-native.yml` only on a call, so neither is
+ *  push-to-main startable and neither declares a group of its own. `custody-lifetime.yml` starts on a
+ *  schedule or a dispatch, and its group already queues. `windows-identity.yml` IS push-to-main
+ *  startable, so the push-to-main count moves by one, and it declares no group, so it cannot evict
+ *  and EXPECTED_GROUPED is unchanged. */
+const EXPECTED_WORKFLOWS = 12;
+const EXPECTED_PUSH_TO_MAIN = 7;
 /** Of those, the ones that declare a concurrency group and therefore CAN evict. Every push-to-main
- *  workflow carries one now: `docs.yml` and `mutation-reproof.yml` were groupless until 2026-09-10,
+ *  workflow but `windows-identity.yml` carries one: `docs.yml` and `mutation-reproof.yml` were groupless until 2026-09-10,
  *  when every pushed pull-request head kept its own 12-shard reproof matrix and its own docs build
  *  queued against the org's 20 concurrent-job cap. Both now use the CI policy: a pull-request push
  *  supersedes the run already going for that ref, a merge to main queues (`queue: max`) instead of

@@ -273,7 +273,7 @@ try {
 
   const remove = cli(["ext", "remove", "@cotal-ai/orca"]);
   ok("Orca extension removes after its runtime is no longer in use", remove.status === 0, remove.stdout + remove.stderr);
-  ok("extension manifest returns to empty", /no extensions installed/.test(cli(["ext", "list"]).stdout));
+  ok("extension manifest returns to empty", /No extensions installed\./.test(cli(["ext", "list"]).stdout));
 
   console.log(`\nORCA EXTENSION USER-JOURNEY E2E OK (${pass} checks)`);
 } finally {

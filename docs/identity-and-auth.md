@@ -294,7 +294,9 @@ and fork proxy-based deployments.
 The loopback face also serves four host-only doors, all capability-gated and never on the public
 face. Two retire a lifecycle: `/interactive-lifecycle/retire` (used by `cotal actor grant/revoke`)
 and `/managed-lifecycle/retire`, which finishes a managed agent's terminal retirement after its
-remote manager is gone. The third decides one:
+remote manager is gone. The interactive door answers every refusal it makes before the retirement
+barrier with `outcome: "not-executed"`. An error without that outcome may follow a barrier that had
+begun, so `cotal actor grant` and `cotal actor revoke` report it as unknown. The third decides one:
 `POST /manager-service-authority/verify-enrollment` answers whether a remote manager may have a
 managed agent enrolled or released under its authenticated owner. The body is
 `{ owner, request }` and nothing else. The caller's capability scope is read from this machine's
@@ -423,9 +425,9 @@ could still hold them). If the claim's connections die mid-run, the service down
 loudly instead of serving from a half-dead plane.
 
 Ctrl-C on a foreground `up`, and a broker that exits under it, stop the service with the same stop
-`cotal down auth` uses. It holds the reservation `down` takes, so a concurrent `cotal down auth` is
-refused while it runs, and it sends SIGKILL to a service that has not exited 15 seconds after
-SIGTERM.
+bare `cotal down` uses for it. It holds the reservation `down` takes, so the auth stop of a
+concurrent `cotal down` is refused while it runs, and it sends SIGKILL to a service that has not
+exited 15 seconds after SIGTERM. A legacy stack has no command that stops only the auth service.
 
 **Your agents are yours.** `cotal spawn` on a user mesh grants a managed actor under the
 *spawning operator's* owner and launches the agent with a bearer command instead of a
@@ -702,7 +704,10 @@ still sets `COTAL_CREDS` itself.
   every agent cred and the store untouched but does invalidate earlier full backups (they bind to
   the operator JWT and system account they were taken under, so re-run `cotal backup` after). Past that horizon the mesh keeps delivering, but the
   membership feed and live eviction stop; `cotal doctor auth` and the manager warn from the 75%
-  point onward.
+  point onward. A host that keeps a registered system signer can re-mint the observer into the
+  delivery daemon's secret store instead: the feed reads it again at 75% of its lifetime, proves it
+  on a throwaway connection, and adopts it only when its issuer and permission scope match the
+  cred it started with.
 - **A copied static agent cred outlives its session.** One-shot command creds expire in
   minutes and the standing daemon creds in 24h with the manager renewing them (`cotal doctor
   auth` is the one diagnosis and repair surface). A manager-spawned agent cred also expires

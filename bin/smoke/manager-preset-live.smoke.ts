@@ -131,6 +131,7 @@ function cotal(args: string[], timeout = 120_000) {
 const out = (r: ReturnType<typeof cotal>) => `${r.stdout ?? ""}${r.stderr ?? ""}`;
 const started: ChildProcess[] = [];
 let stackUp = false;
+let serviceAdded = false;
 try {
   if (process.platform !== "linux") skip("the foreground manager cell", "the native manager child is Linux-only");
   else {
@@ -138,7 +139,8 @@ try {
     stackUp = up.status === 0;
     check("a broker-only open stack starts", stackUp, out(up));
     const add = cotal(["service", "add", "mgr", "--preset", "manager", "--space", SPACE, "--root", root, "--runtime", "pty", "--roster", roster]);
-    check("service add saves the manager preset with its roster", add.status === 0, out(add));
+    serviceAdded = add.status === 0;
+    check("service add saves the manager preset with its roster", serviceAdded, out(add));
     const fg = spawnProc(process.execPath, ["--import", TSX_LOADER, BIN, "service", "start", "mgr", "--space", SPACE, "--foreground"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
     started.push(fg);
     const exited = new Promise<number | null>((resolve) => fg.once("exit", (code) => resolve(code)));
@@ -160,7 +162,13 @@ try {
 } finally {
   for (const child of started) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   if (stackUp) {
-    const down = cotal(["down", "--space", SPACE]);
+    // A saved service keeps the legacy bare stop from sweeping this space, so the stopped manager is
+    // removed first. Bare down then stops the stack recorded at this root; it takes no --space.
+    if (serviceAdded) {
+      const removed = cotal(["service", "remove", "mgr", "--space", SPACE, "--yes"]);
+      check("service remove forgets the stopped manager", removed.status === 0, out(removed));
+    }
+    const down = cotal(["down"]);
     check("cotal down stops the sandboxed stack", down.status === 0, out(down));
   }
   for (const dir of [home, root]) rmSync(dir, { recursive: true, force: true });

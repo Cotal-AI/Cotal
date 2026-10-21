@@ -1,0 +1,3 @@
+# --json, -j and --plain before the command word are the command's own flags, and a leading --
+# ends the leading flags.
+smoke:leading-output-flags

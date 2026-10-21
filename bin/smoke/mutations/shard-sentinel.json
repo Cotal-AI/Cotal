@@ -32,8 +32,8 @@
     {
       "name": "the green banner reports suites only",
       "file": "bin/smoke/shard.mjs",
-      "find": "  console.log(`\\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes, ${totalCells} cells)`);",
-      "replace": "  console.log(`\\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes)`);",
+      "find": "  console.log(`\\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes, ${totalCells} cells${skips})`);",
+      "replace": "  console.log(`\\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes${skips})`);",
       "expectRed": "a sentinel-emitting suite greens the shard with the cell count",
       "cell": "a sentinel-emitting suite greens the shard with the cell count"
     },

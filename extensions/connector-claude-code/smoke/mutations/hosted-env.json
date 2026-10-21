@@ -19,8 +19,8 @@
     {
       "name": "hosted agent omits its explicit bearer environment",
       "file": "extensions/connector-claude-code/src/mcp.ts",
-      "find": "  const agent = new MeshAgent(config, env);",
-      "replace": "  const agent = new MeshAgent(config);",
+      "find": "  const agent = new MeshAgent(config, env, { withholdProcessCwd: true });",
+      "replace": "  const agent = new MeshAgent(config, undefined, { withholdProcessCwd: true });",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_bearer_a",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
@@ -91,8 +91,8 @@
     {
       "name": "manager-caller bearer bypasses the scoped executor",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        const bearer = (signal?: AbortSignal) => this.execBearerCmd([\n          ...this.config.userAuth!.bearerCmd,\n          \"--manager-call\",\n          ...(managerInstanceId ? [\"--manager-instance\", managerInstanceId] : []),\n        ], signal);",
-      "replace": "        const bearer = (signal?: AbortSignal) => runAgentBearer([\n          ...this.config.userAuth!.bearerCmd,\n          \"--manager-call\",\n          ...(managerInstanceId ? [\"--manager-instance\", managerInstanceId] : []),\n        ], { signal });",
+      "find": "        const bearer = (signal?: AbortSignal) => this.execBearerCmd([\n          ...bearerCmd,\n          \"--manager-call\",\n          ...(managerInstanceId ? [\"--manager-instance\", managerInstanceId] : []),\n        ], signal)",
+      "replace": "        const bearer = (signal?: AbortSignal) => runAgentBearer([\n          ...bearerCmd,\n          \"--manager-call\",\n          ...(managerInstanceId ? [\"--manager-instance\", managerInstanceId] : []),\n        ], { signal })",
       "command": "pnpm smoke:user-manager-transport",
       "expectRed": "✗ actual MeshAgent.spawn over real wire to real Manager succeeded"
     },

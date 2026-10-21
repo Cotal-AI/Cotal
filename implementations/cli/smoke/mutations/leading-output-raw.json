@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "implementations/cli/smoke/leading-output-flags.smoke.ts"
+  ],
+  "guard": "a leading --json, -j or --plain before a command that takes its words raw is a usage error, never one of its words",
+  "command": "pnpm smoke:leading-output-flags",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/leading-output-raw.json",
+  "why": [
+    "The leading output flags move after the command word to be read as the command's own flags. A command that takes its words raw parses none, so the move handed them to it as words: cotal --json __complete status completed a line whose command word was --json.",
+    "The suite runs the built binary, so the mutation rebuilds in afterRestore."
+  ],
+  "mutations": [
+    {
+      "name": "leading output flags move after a raw-word command",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  if (output.length && takesWordsRaw(findCommand(registry.all<Command>(\"command\"), argv[lead])))\n    usageExit(`${output[0]} before ${argv[lead]} is not read - ${argv[lead]} takes its words raw, with no output flags`);\n",
+      "replace": "",
+      "expectRed": "a leading output flag before a command that takes its words raw is a usage error, exit 1",
+      "cell": "a leading output flag before a command that takes its words raw is a usage error, exit 1",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "The first B46 behavior: the move ran before the command was resolved."
+    }
+  ]
+}

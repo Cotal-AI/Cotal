@@ -1,4 +1,4 @@
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import { contractDigest, mintCreds, newIdentity, type ChannelConfig, type ChannelDefaults } from "@cotal-ai/core";
 import { brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, oneLine, presentationOf, readMaintenanceJournal, acquireMaintenanceLock, releaseMaintenanceLock, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";

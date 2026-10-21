@@ -43,8 +43,8 @@
     {
       "name": "S4 allow --skills with --full",
       "file": "implementations/cli/src/commands/setup.ts",
-      "find": "    if (values.full || values.demo) throw new Error(\"--skills cannot be combined with --full or --demo\");",
-      "replace": "    if (false && (values.full || values.demo)) throw new Error(\"--skills cannot be combined with --full or --demo\");",
+      "find": "    if (values.full || values.demo) throw usage(\"--skills cannot be combined with --full or --demo\");",
+      "replace": "    if (false && (values.full || values.demo)) throw usage(\"--skills cannot be combined with --full or --demo\");",
       "expectRed": "setup --skills --full is refused",
       "cell": "setup --skills --full is refused",
       "note": "Compile-clean no-op of the combination fence. First-run --full then writes personas.",

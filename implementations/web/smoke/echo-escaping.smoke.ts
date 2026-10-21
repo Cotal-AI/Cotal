@@ -344,10 +344,12 @@ try {
   let log = "";
   let launchUrl: string | undefined;
   const WEB_PORT = await onFreePort(async (port) => {
+    // Color decides the framing that cell 1.4 checks, and a piped child gets it only from
+    // FORCE_COLOR, which outranks NO_COLOR and a saved preference.
     webChild = spawn(process.execPath, [
       "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
       "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
+    ], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, FORCE_COLOR: "1" } });
     webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
     webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
     const taken = `Port ${port} is in use`;

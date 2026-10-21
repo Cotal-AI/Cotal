@@ -45,8 +45,8 @@
     {
       "name": "I3 a full bucket refuses before the body is read, valid credentials included (the shape before #802)",
       "file": "implementations/auth/src/service.ts",
-      "find": "  const peerThrottled = policy.throttled(ctx, peer);\n  const body = await readJsonBody(req);",
-      "replace": "  const peerThrottled = policy.throttled(ctx, peer);\n  if (peerThrottled) return send(res, 429, { error: \"too many refused exchanges - wait a minute and retry\" });\n  const body = await readJsonBody(req);",
+      "find": "  const peerThrottled = policy.throttled(ctx, peer);\n  const body = await readJsonBody(req);\n  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter } = body as {",
+      "replace": "  const peerThrottled = policy.throttled(ctx, peer);\n  if (peerThrottled) return send(res, 429, { error: \"too many refused exchanges - wait a minute and retry\" });\n  const body = await readJsonBody(req);\n  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter } = body as {",
       "expectRed": "A VALID TOKEN STILL MINTS (200) FROM A THROTTLED PEER KEY",
       "cell": "A VALID TOKEN STILL MINTS (200) FROM A THROTTLED PEER KEY - a full bucket must not deny a request that would succeed",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"

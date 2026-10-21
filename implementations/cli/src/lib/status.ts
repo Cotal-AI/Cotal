@@ -1,16 +1,37 @@
 import { registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef } from "@cotal-ai/core";
-import { extensionConnectors, installedExtensionVersion, loadExtensionsManifest, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveOnPath, WEB_PIDFILE, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
+import { assertRecordIdentity, extensionConnectors, installedExtensionVersion, loadExtensionsManifest, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveOnPath, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { resolveNatsServer } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";
+import { serviceInstanceStore, serviceInstances } from "./service-instances.js";
 import { cliVersion } from "./version.js";
 
 // Moved into `@cotal-ai/workspace` (stage 4); re-exported for the CLI's many importers.
 export { resolveRuntimeSpace, resolveSpace } from "@cotal-ai/workspace";
 
-/** The address the dashboard recorded in `web.session` once `listen()` succeeded, with the readiness
- * nonce recorded beside it, or `undefined` while there is no whole record. A record that exists and
- * cannot be read throws. */
+/** Where the dashboard that holds the live `pid` in `web.pid` recorded its session. A dashboard started
+ * as an owned service writes its own record beside its startup receipt and never writes `web.session`,
+ * so the web service instance whose recorded process is that live pid names the file. Any other holder
+ * is a dashboard that wrote `web.session`. The holder picks the record, and neither is read in place of
+ * the other. Instance records that cannot be read throw. */
+export function webSessionSource(context: LocalProcessContext, pid: number): { path: string; label: string; instance?: string } {
+  const held = serviceInstances(context.space).map((row) => row.record.value).filter((value) =>
+    value.adapter?.name === WEB_SERVICE_ADAPTER && value.process !== undefined && value.process.pid === pid && assertRecordIdentity(value.process).kind === "match");
+  if (held.length > 1) throw new Error(`${held.length} web service instances record the live pid ${pid}`);
+  const instance = held[0];
+  if (!instance) return { path: localProcessPath(WEB_SESSION_FILE, context), label: WEB_SESSION_FILE };
+  const stateDirectory = serviceInstanceStore(context.space).directory();
+  if (!stateDirectory) throw new Error("the service state directory is missing");
+  return {
+    path: serviceWebSessionPath({ space: context.space, instanceId: instance.instanceId, launchRequestId: instance.launchRequestId, stateDirectory }),
+    label: "service session record",
+    instance: instance.instanceId,
+  };
+}
+
+/** The address the dashboard recorded in its session record once `listen()` succeeded, with the
+ * readiness nonce recorded beside it, or `undefined` while there is no whole record. A record that
+ * exists and cannot be read throws. */
 export function webBoundAddress(path: string): { host: string; port: number; url: string; readiness: string } | undefined {
   const session = readWebSession(path);
   if (!session) return undefined;
@@ -20,8 +41,8 @@ export function webBoundAddress(path: string): { host: string; port: number; url
 
 /** The address a mesh's dashboard recorded once it was listening, while the pid it recorded is alive.
  * Only its own records place it: `--port` moves it off its default port, and any other program can
- * own that port. A record that exists and cannot be read throws an error that names it, because a
- * read error such as EISDIR carries no path. */
+ * own that port. {@link webSessionSource} picks the record. A record that exists and cannot be read
+ * throws an error that names it, because a read error such as EISDIR carries no path. */
 export function recordedWebUrl(context: LocalProcessContext): string | undefined {
   let raw: string | undefined;
   try {
@@ -31,18 +52,24 @@ export function recordedWebUrl(context: LocalProcessContext): string | undefined
   }
   const pid = raw === undefined ? undefined : parsePid(raw);
   if (pid === undefined || probeLiveness(pid) !== "alive") return undefined;
+  let source: ReturnType<typeof webSessionSource>;
   try {
-    return webBoundAddress(localProcessPath(WEB_SESSION_FILE, context))?.url;
+    source = webSessionSource(context, pid);
   } catch (e) {
-    throw new Error(`${WEB_SESSION_FILE} unreadable · ${(e as Error).message}`);
+    throw new Error(`service instance records unreadable · ${(e as Error).message}`);
+  }
+  try {
+    return webBoundAddress(source.path)?.url;
+  } catch (e) {
+    throw new Error(`${source.label} unreadable · ${(e as Error).message}`);
   }
 }
 
-/** True when an installed extension contributes the `web` command and its package is on disk, so
- * the separately configured dashboard service can start it. A manifest or package record that cannot be read throws, like every
- * other reader. */
+/** True when an installed extension contributes the `web` service preset and its package is on disk,
+ * so `cotal service add --preset web` can configure the dashboard. A manifest or package record that
+ * cannot be read throws, like every other reader. */
 export function webInstalled(): boolean {
-  return loadExtensionsManifest().extensions.some((e) => e.commands.some((cmd) => cmd.name === "web") && installedExtensionVersion(e.pkg) !== undefined);
+  return loadExtensionsManifest().extensions.some((e) => e.servicePresets?.some((preset) => preset.name === "web") === true && installedExtensionVersion(e.pkg) !== undefined);
 }
 
 export interface MachineStatus {

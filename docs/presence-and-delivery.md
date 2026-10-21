@@ -209,9 +209,13 @@ inbound buffer, and late-join history. DMs and anycast are always at-least-once 
 ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)).
 
 A send result proves only that the broker accepted and stored the message at a sequence
-(`stored seq N`), not that any recipient read it: `cotal send dm` and the `cotal_dm` tool
-report that sequence together with the recipient's roster status at the moment of send
-(`idle`, `working`, or `offline`), and neither ever claims `delivered`. A `cotal_dm` reply to a
+(`stored seq N`), not that any recipient read it, and no send claims `delivered`. The `cotal_dm`
+tool reports that sequence together with the recipient's roster status at the moment of send
+(`idle`, `working`, or `offline`). When that status is `offline`, `cotal_dm`, `cotal send -t`,
+`cotal chat`, `cotal join` and the console also say the agent is offline and that the message is
+delivered when it reconnects. The DM durable belongs to the recipient's lifecycle, so the same
+session receives the message when it comes back, and a new agent spawned under that name does not.
+A `cotal_dm` reply to a
 sender that has no roster row, such as a one-shot `cotal send`, reads
 `recipient had no roster row at send` instead: the DM stream keeps it under the sender's id, and
 it may never reach an inbox. The stored sequence

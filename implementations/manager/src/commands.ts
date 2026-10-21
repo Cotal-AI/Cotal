@@ -27,7 +27,7 @@ import {
 } from "@cotal-ai/core";
 import {
   authDir, canonicalLocalProcessPath, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
-  c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
+  c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
   brokerAddressForDisplay, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   deprecatedDaemonEntry, type MeshEntry,
@@ -712,7 +712,7 @@ async function confirmMaintenance(args: ParsedArgs, target: unknown, review: Rep
   const presentation = presentationOf(args.values);
   if (presentation === "json" || !process.stdin.isTTY || !process.stdout.isTTY || inputDisabledByFlag() || process.env.COTAL_NO_PROMPT === "1") throw new CommandFailure("refused", "USAGE_INVALID", "manager maintenance requires --yes outside an interactive terminal", { target, remedy: "inspect the same operation with --dry-run before confirming its scope" });
   console.log(renderReport(review, presentation, terminalWidth(process.stdout)));
-  const answer = await prompts.confirm({ message: question, initialValue: false });
+  const answer = await untilInputEnds((signal) => prompts.confirm({ message: question, initialValue: false, signal }));
   if (!prompts.isCancel(answer) && answer) return true;
   writeResult(presentation, { command: "manager", target, result: { kind: "manager-maintenance-cancelled", changed: false }, noOp: true }, (): Report => ({ sections: [{ title: "Manager maintenance cancelled", blocks: [{ kind: "lines", lines: ["The maintenance action was not submitted. No repair or seat drain was performed."] }] }] }));
   return false;
@@ -770,7 +770,8 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
   } catch (error) {
     if (isCommandFailure(error)) throw error;
     const beforeEffects = error instanceof GateReconcileRefused && ["no-gate", "not-frozen", "wrong-op-kind", "holder-alive", "holder-unknown", "liveness-unestablishable"].includes(error.condition);
-    if (beforeEffects) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the native gate-repair guard refused (${error.condition}); the repair did not pass its pre-effect guard`, { target: { ...target, condition: error.condition }, remedy: "inspect the selected gate and the delivery liveness oracle; a timeout is not proof that its holder is gone" });
+    // The guard's own sentence names the freeze-holder and the next step for this condition.
+    if (beforeEffects) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the native gate-repair guard refused (${error.condition}); the repair did not pass its pre-effect guard`, { target: { ...target, condition: error.condition }, native: { code: error.condition, detail: error.message }, remedy: "inspect the selected gate and the delivery liveness oracle; a timeout is not proof that its holder is gone" });
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native gate repair did not confirm completion; revocation, eviction or reopen work may have occurred. No mutation was retried", { target: { ...target, ...(error instanceof GateReconcileRefused ? { condition: error.condition } : {}) }, remedy: "re-observe this gate and its operation-bound native repair cursor before another explicit repair" });
   } finally { await nc.drain().catch(() => nc.close()); }
 }

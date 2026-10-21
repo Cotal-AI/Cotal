@@ -17,8 +17,8 @@
       "cell": "A",
       "name": "askManagerEp uses raw TCP connect for a websocket URL",
       "file": "implementations/cli/src/lib/control.ts",
-      "find": "  const caller = auth.epCaller!;\n  const nc = await dialerFor(server)({\n    servers: server,",
-      "replace": "  const caller = auth.epCaller!;\n  const nc = await (await import(\"@nats-io/transport-node\")).connect({\n    servers: server,",
+      "find": "  const nc = await dialerFor(server)({ servers: server, ...connectOpts, maxReconnectAttempts: 0 });",
+      "replace": "  const nc = await (await import(\"@nats-io/transport-node\")).connect({ servers: server, ...connectOpts, maxReconnectAttempts: 0 });",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
       "expectRed": "FAIL: A: models reaches the manager over ws:// through askManagerEp"
     },

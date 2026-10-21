@@ -8,10 +8,10 @@
  *     EVERY writer (manager AND `doctor auth --fix`) is covered even when the in-memory result
  *     carries a fingerprint. We assert the raw JSON has no `fingerprint` key and no 64-hex digest.
  *
- *  2. A broker-REFUSED renewal is a first-class doctor problem: `cotal doctor auth` must exit 1 and
- *     say so, never let cred-file health alone stand as `auth: healthy` / exit 0. The mirror case —
- *     a broker-ACCEPTED renewal with no cred problems — must still exit healthy, proving the exit-1
- *     is the refusal itself, not merely the presence of a renewal record.
+ *  2. A broker-REFUSED renewal is a first-class doctor problem: `cotal doctor auth` must fail (exit 5)
+ *     and say so, never let cred-file health alone stand as a healthy exit 0. The mirror case — a
+ *     broker-ACCEPTED renewal with no cred problems — must still exit healthy, proving the failure is
+ *     the refusal itself, not merely the presence of a renewal record.
  *
  * Run: pnpm smoke:renewal-record-honesty
  */
@@ -54,6 +54,8 @@ const spaceDir = spaceMaterialDir(root, auth.space);
 mkdirSync(spaceDir, { recursive: true, mode: 0o700 });
 const staged = (kind: string) => join(spaceDir, kind);
 
+// The redesigned report's healthy title, and its exit codes: 0 ok, 4 partial, 5 failed.
+const HEALTHY = "No local credential findings";
 const origCwd = process.cwd();
 const origLog = console.log;
 const origErr = console.error;
@@ -92,13 +94,13 @@ try {
   check("readback drops fingerprint but keeps the real result fields", back?.results[0]?.fingerprint === undefined && back?.results[0]?.file === "delivery.creds" && back?.results[0]?.ok === true, back?.results[0]);
 
   // ── 2. doctor exit status reflects the broker's verdict ─────────────────────────────────────────
-  // 2a. broker-ACCEPTED, no cred problems → still healthy (exit 0). Proves the exit-1 below is the
+  // 2a. broker-ACCEPTED, no cred problems → still healthy (exit 0). Proves the failure below is the
   //     refusal itself, not merely the presence of a renewal record.
   const accepted = await runDoctor();
-  check("broker-accepted renewal + no cred problems exits healthy (0)", accepted.code === undefined && accepted.out.includes("auth: healthy"), `${accepted.code} ${accepted.out.slice(-300)}`);
-  check("the accepted record renders as broker-accepted", accepted.out.replace(/\[[0-9;]*m/g, "").includes("broker-accepted"), accepted.out);
+  check("broker-accepted renewal + no cred problems exits healthy (0)", accepted.code === 0 && accepted.out.includes(HEALTHY), `${accepted.code} ${accepted.out.slice(-300)}`);
+  check("the accepted record renders as a recorded acceptance", /Broker acceptance at that pass:\s+recorded-acceptance/.test(accepted.out), accepted.out);
 
-  // 2b. broker-REFUSED renewal (same cred files, only the record flips) → exit 1 + a loud line.
+  // 2b. broker-REFUSED renewal (same cred files, only the record flips) → exit 5 + a loud line.
   writeRenewalRecord(root, auth.space, {
     ts: "2026-01-01T00:00:00.000Z",
     owner: "manager",
@@ -106,9 +108,9 @@ try {
     adoption: { ok: false, error: "the broker did not accept the re-signed credential (Authorization Violation); nothing adopted", detail: { delivery: { ok: false } } },
   });
   const refused = await runDoctor();
-  check("broker-refused renewal exits non-zero (1)", refused.code === 1, refused.code);
-  check("the verdict names the refusal, not `auth: healthy`", !refused.out.includes("auth: healthy") && /not broker-accepted|refused by the broker/i.test(refused.out), refused.out);
-  check("the refusal line names the next action (repair the manager)", /manager/i.test(refused.out) && refused.out.includes("next:"), refused.out);
+  check("broker-refused renewal fails (5)", refused.code === 5, refused.code);
+  check("the verdict names the refusal, not a healthy report", !refused.out.includes(HEALTHY) && /not broker-accepted|refused by the broker/i.test(refused.out), refused.out);
+  check("the refusal line names the next action (repair the manager)", /↳ start or repair this space's manager/.test(refused.out), refused.out);
 
   // ── 3. `doctor --fix` must not ERASE a broker refusal to green ───────────────────────────────────
   // A local re-sign is not a broker proof. If the last renewal was broker-REFUSED and the operator runs
@@ -129,17 +131,17 @@ try {
   });
   const afterFix = await runDoctor({ fix: true });
   check("`--fix` re-signed the expired delivery cred (the fix branch ran)", inspectCredHealth(readFileSync(staged("delivery.creds"), "utf8")).state === "healthy");
-  check("`--fix` did NOT erase the broker refusal to green (exit 1)", afterFix.code === 1, `${afterFix.code} ${afterFix.out.slice(-300)}`);
-  check("`--fix` verdict still names the unproven/refused state, not `auth: healthy`", !afterFix.out.includes("auth: healthy") && /not broker-accepted|refused by the broker/i.test(afterFix.out), afterFix.out);
+  check("`--fix` did NOT erase the broker refusal to green (exit 4, partial)", afterFix.code === 4, `${afterFix.code} ${afterFix.out.slice(-300)}`);
+  check("`--fix` verdict still names the unproven/refused state, not a healthy report", !afterFix.out.includes(HEALTHY) && /not broker-accepted|refused by the broker/i.test(afterFix.out), afterFix.out);
   const afterRec = readRenewalRecord(root, auth.space);
-  check("the persisted record carries the refusal forward as an explicit unproven state", afterRec?.adoption?.ok === false && /not yet broker-proven/i.test(afterRec?.adoption?.error ?? ""), afterRec?.adoption);
+  check("the persisted record carries the refusal forward as an explicit unproven state", afterRec?.adoption?.ok === false && /broker refusal remains unproven/i.test(afterRec?.adoption?.error ?? ""), afterRec?.adoption);
 
   // negative control: with NO prior refusal, `--fix` on a fresh expired cred still reaches healthy/0
   // (it only preserves REFUSALS, it does not block every fix).
   writeFileSync(staged("delivery.creds"), await mintCreds(auth, dlvId, "delivery", { expiresAt: now - 10 }), { mode: 0o600 });
   writeRenewalRecord(root, auth.space, { ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [{ file: "delivery.creds", ok: true }], adoption: { ok: true, detail: { delivery: { ok: true, brokerAccepted: { identity: "x" } } } } });
   const cleanFix = await runDoctor({ fix: true });
-  check("`--fix` with no prior refusal still reaches healthy (exit 0)", cleanFix.code === undefined && cleanFix.out.includes("auth: healthy"), `${cleanFix.code} ${cleanFix.out.slice(-300)}`);
+  check("`--fix` with no prior refusal still reaches healthy (exit 0)", cleanFix.code === 0 && cleanFix.out.includes(HEALTHY), `${cleanFix.code} ${cleanFix.out.slice(-300)}`);
 
   // ── 4. the record is PER-SPACE: a co-resident space's verdict is not this space's (#1850) ──────
   // A second space at the SAME root runs a refused renewal pass. Doctor for THIS space (the sole
@@ -154,10 +156,10 @@ try {
     adoption: { ok: false, error: "the broker did not accept the re-signed credential (Authorization Violation); nothing adopted" },
   });
   const otherSpace = await runDoctor();
-  check("a refused record written for ANOTHER space at this root does not red this space's doctor", otherSpace.code === undefined && otherSpace.out.includes("auth: healthy"), `${otherSpace.code} ${otherSpace.out.slice(-300)}`);
+  check("a refused record written for ANOTHER space at this root does not red this space's doctor", otherSpace.code === 0 && otherSpace.out.includes(HEALTHY), `${otherSpace.code} ${otherSpace.out.slice(-300)}`);
   check("the two spaces' records are distinct files", renewalRecordPath(root, auth.space) !== renewalRecordPath(root, secondSpace) && renewalRecordPath(root, secondSpace).endsWith(`renewal.${spaceKey(secondSpace)}.json`), renewalRecordPath(root, secondSpace));
   check("this space's accepted record is untouched by the other space's pass", readRenewalRecord(root, auth.space)?.adoption?.ok === true, readRenewalRecord(root, auth.space)?.adoption);
-  // The mirror: THIS space refused, the other accepted — doctor for THIS space must exit 1.
+  // The mirror: THIS space refused, the other accepted — doctor for THIS space must fail (5).
   writeRenewalRecord(root, auth.space, {
     ts: "2026-01-01T00:00:00.000Z",
     owner: "manager",
@@ -171,13 +173,13 @@ try {
     adoption: { ok: true, detail: { delivery: { ok: true, brokerAccepted: { identity: "x" } } } },
   });
   const thisSpace = await runDoctor();
-  check("this space's own refused record still exits 1 beside another space's accepted pass", thisSpace.code === 1 && !thisSpace.out.includes("auth: healthy"), `${thisSpace.code} ${thisSpace.out.slice(-300)}`);
+  check("this space's own refused record still fails (5) beside another space's accepted pass", thisSpace.code === 5 && !thisSpace.out.includes(HEALTHY), `${thisSpace.code} ${thisSpace.out.slice(-300)}`);
   // A root-only legacy `renewal.json` is never read as any space's verdict — it is named, not adopted.
   rmSync(renewalRecordPath(root, auth.space));
   rmSync(renewalRecordPath(root, secondSpace));
   writeFileSync(join(root, ".cotal", "renewal.json"), JSON.stringify({ ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [], adoption: { ok: false, error: "legacy root-scoped refusal" } }), { mode: 0o600 });
   const legacy = await runDoctor();
-  check("a root-only legacy renewal record is NOT read as this space's refusal (still healthy)", legacy.code === undefined && legacy.out.includes("auth: healthy"), `${legacy.code} ${legacy.out.slice(-300)}`);
+  check("a root-only legacy renewal record is NOT read as this space's refusal (still healthy)", legacy.code === 0 && legacy.out.includes(HEALTHY), `${legacy.code} ${legacy.out.slice(-300)}`);
   check("the legacy record is named as a leftover, never rendered as a verdict", legacy.out.includes("pre-per-space renewal record"), legacy.out);
 
   console.log(fail === 0 ? `\nRENEWAL-RECORD HONESTY OK ✅  (${pass} passed, ${fail} failed)` : `\nRENEWAL-RECORD HONESTY FAILED ❌  (${pass} passed, ${fail} failed)`);

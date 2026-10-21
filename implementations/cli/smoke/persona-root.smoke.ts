@@ -63,6 +63,9 @@ let createSpaceAuth!: typeof import("@cotal-ai/core").createSpaceAuth;
 let saveSpaceAuth!: typeof import("@cotal-ai/workspace").saveSpaceAuth;
 let authDir!: typeof import("@cotal-ai/workspace").authDir;
 let agentSecretFilePaths!: typeof import("@cotal-ai/workspace").agentSecretFilePaths;
+let isCommandFailure!: typeof import("@cotal-ai/workspace").isCommandFailure;
+let commandFailureReport!: typeof import("@cotal-ai/workspace").commandFailureReport;
+let renderReport!: typeof import("@cotal-ai/workspace").renderReport;
 try {
   ({ recordMesh, setCurrent, resolveMeshTarget } = await import("@cotal-ai/workspace"));
   ({ agentFilePath, loadAgentFile } = await import("@cotal-ai/core"));
@@ -72,7 +75,7 @@ try {
   ({ sendComplete } = await import("../src/commands/send.js"));
   ({ mint } = await import("../src/commands/mint.js"));
   ({ createSpaceAuth } = await import("@cotal-ai/core"));
-  ({ saveSpaceAuth, authDir, agentSecretFilePaths } = await import("@cotal-ai/workspace"));
+  ({ saveSpaceAuth, authDir, agentSecretFilePaths, isCommandFailure, commandFailureReport, renderReport } = await import("@cotal-ai/workspace"));
 } catch (e) { cleanScratch(e); }
 
 let pass = 0;
@@ -117,7 +120,9 @@ async function captureList(values: { space?: string; server?: string }): Promise
   return lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-/** Run `cotal mint` for real and return everything it wrote. Same disposition as captureCmd. */
+/** Run `cotal auth mint` for real and return everything it wrote. Same disposition as captureCmd. A
+ *  classified refusal is thrown for the CLI kernel to print, so it is captured as the kernel's plain
+ *  report under a `FAILURE <outcome> <code>` line. */
 async function captureMint(positionals: string[], values: Record<string, unknown>): Promise<string> {
   const lines: string[] = [];
   const realLog = console.log, realErr = console.error, realExit = process.exit;
@@ -127,7 +132,8 @@ async function captureMint(positionals: string[], values: Record<string, unknown
   try {
     await mint({ values: values as never, positionals, raw: [] });
   } catch (e) {
-    if (!/^__exit__/.test((e as Error).message)) lines.push(`THREW: ${(e as Error).message}`);
+    if (isCommandFailure(e)) lines.push(`FAILURE ${e.outcome} ${e.code}`, renderReport(commandFailureReport(e), "plain"));
+    else if (!/^__exit__/.test((e as Error).message)) lines.push(`THREW: ${(e as Error).message}`);
   } finally {
     console.log = realLog; console.error = realErr; process.exit = realExit;
   }
@@ -239,8 +245,9 @@ try {
   // `spawnComplete([""])`); the trailing "" is the word being completed.
   check("completion: spawn --role offers the MESH's declared roles", sorted(spawnComplete(["--role", ""])).join(",") === "mesh-builder,mesh-reviewer", sorted(spawnComplete(["--role", ""])));
   check("completion: spawn --subscribe offers the MESH's declared channels", sorted(spawnComplete(["--subscribe", ""])).join(",") === "mesh-alpha,mesh-beta", sorted(spawnComplete(["--subscribe", ""])));
-  check("completion: send ask <role> offers the MESH's declared roles", sorted(sendComplete(["ask", ""])).join(",") === "mesh-builder,mesh-reviewer", sorted(sendComplete(["ask", ""])));
-  check("completion: send msg <channel> offers the MESH's declared channels", sorted(sendComplete(["msg", ""])).join(",") === "mesh-alpha,mesh-beta", sorted(sendComplete(["msg", ""])));
+  // `send ask <role>` and `send msg <channel>` became the `--role` and `--channel` destination flags.
+  check("completion: send --role offers the MESH's declared roles", sorted(sendComplete(["--role", ""])).join(",") === "mesh-builder,mesh-reviewer", sorted(sendComplete(["--role", ""])));
+  check("completion: send --channel offers the MESH's declared channels", sorted(sendComplete(["--channel", ""])).join(",") === "mesh-alpha,mesh-beta", sorted(sendComplete(["--channel", ""])));
   check("completion: personas show offers the MESH's persona names", sorted(personasComplete(["show", ""])).join(",") === "mesh-default,mesh-lead", sorted(personasComplete(["show", ""])));
   check("completion: personas show --space alpha offers ALPHA's names", sorted(personasComplete(["--space", "alpha", "show", ""])).join(",") === "alpha-only", sorted(personasComplete(["--space", "alpha", "show", ""])));
 
@@ -318,13 +325,16 @@ try {
     { mesh: meshCard.subscribe, cwd: cwdCard.subscribe });
   // DRIVE THE REAL `mint()`, not a resolver seam. Trust belongs under the selected mesh root. A cwd
   // with different trust must be refused before any credential is written.
+  // Static mint is issued only for a static-auth space, so the selected mesh is recorded in auth mode.
+  recordMesh({ ...entry("meshspace", MESH, "nats://127.0.0.1:4222"), mode: "auth" });
   const meshAuth = await createSpaceAuth("meshspace");
   const cwdAuth = await createSpaceAuth("meshspace");
   saveSpaceAuth(authDir(MESH), meshAuth);
   saveSpaceAuth(authDir(CWD), cwdAuth);
   const credsPath = join(scratch, "minted.creds");
   const mixed = await captureMint(["minted"], { profile: "agent", out: credsPath });
-  check("mint: a cwd trust root that differs from the selected mesh authority is REFUSED", /authorities disagree/.test(mixed), mixed);
+  check("mint: a cwd trust root that differs from the selected mesh authority is REFUSED",
+    /^FAILURE refused CONFLICT$/m.test(mixed) && /disagree about the signing authority/.test(mixed), mixed);
   check("mint: the refusal names BOTH roots", mixed.includes(MESH) && mixed.includes(CWD), mixed);
   check("mint: the mixed-root refusal writes no credential", !existsSync(credsPath));
 
@@ -333,7 +343,8 @@ try {
   // the operator to stand there.
   rmSync(join(CWD, ".cotal", "auth"), { recursive: true, force: true });
   const mintedOut = await captureMint(["minted"], { profile: "agent", out: credsPath });
-  check("mint: without conflicting cwd trust, the target root supplies the coherent authority", /minted agent creds/.test(mintedOut), mintedOut);
+  check("mint: without conflicting cwd trust, the target root supplies the coherent authority",
+    /Private credential written/.test(mintedOut) && !/^FAILURE /m.test(mintedOut) && existsSync(credsPath), mintedOut);
   // The ACLs are not echoed on stdout - they are baked into the minted credential, which is the
   // artifact that actually carries them to the broker. Read the file mint wrote.
   const credsText = existsSync(credsPath) ? readFileSync(credsPath, "utf8") : "";
@@ -347,10 +358,11 @@ try {
     claims.includes("mesh-alpha") && !claims.includes("cwd-one"), claims.slice(0, 400));
 
   // Default storage is authority too. Run without --out from the divergent cwd and require the
-  // canonical target-root file, with no same-named credential materialized under cwd.
-  const stored = await captureMint(["minted-stored"], { profile: "agent", "allow-subscribe": "mesh-alpha" });
-  const meshStored = agentSecretFilePaths(MESH, meshAuth.space, "minted-stored").creds;
-  const cwdStored = agentSecretFilePaths(CWD, meshAuth.space, "minted-stored").creds;
+  // canonical target-root file, with no same-named credential materialized under cwd. A label is one
+  // owner token, so it carries no '-'.
+  const stored = await captureMint(["minted_stored"], { profile: "agent", "allow-subscribe": "mesh-alpha" });
+  const meshStored = agentSecretFilePaths(MESH, meshAuth.space, "minted_stored").creds;
+  const cwdStored = agentSecretFilePaths(CWD, meshAuth.space, "minted_stored").creds;
   check("mint: default credential storage uses the selected mesh root", existsSync(meshStored), { stored, meshStored });
   check("mint: default credential storage does NOT use the cwd root", !existsSync(cwdStored), cwdStored);
 

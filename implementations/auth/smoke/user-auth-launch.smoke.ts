@@ -196,6 +196,19 @@ try {
     body: JSON.stringify(retirementProbe),
   });
   check("interactive lifecycle retirement refuses an actor absent from the current ledger", retireMissingRow.status === 404);
+  const retireBadOwner = await fetch(`${info.url}${INTERACTIVE_RETIRE_PATH}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
+    body: JSON.stringify({ ...retirementProbe, owner: "not_derived" }),
+  });
+  const badOwnerBody = await retireBadOwner.json().catch(() => undefined) as { outcome?: unknown } | undefined;
+  check("an owner that is not a derived token is refused before the barrier and states nothing was retired",
+    retireBadOwner.status === 400 && badOwnerBody?.outcome === "not-executed", { status: retireBadOwner.status, body: badOwnerBody });
+  // Every refusal above came before the barrier, so each states that it retired nothing (SPEC 13.3).
+  const guardRefusals = await Promise.all([retireGet, retireBrowser, retireWrongType, retireWithoutCap, retireExtraField, retireMissingRow]
+    .map(async (res) => ({ status: res.status, body: await res.json().catch(() => undefined) as { outcome?: unknown } | undefined })));
+  check("each guard refusal of interactive lifecycle retirement states nothing was retired",
+    guardRefusals.every((r) => r.body?.outcome === "not-executed"), guardRefusals);
   const jwks = await fetch(`${info.url}/jwks`);
   check("JWKS serves with the explicit cache contract", jwks.ok && /max-age=300/.test(jwks.headers.get("cache-control") ?? ""), jwks.headers.get("cache-control"));
   check("JWKS publishes the Ed25519 key set", Array.isArray(((await jwks.json()) as { keys: unknown[] }).keys));
@@ -224,7 +237,9 @@ try {
     headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
     body: JSON.stringify({ owner: cliRow?.owner, actor: "cli", lifecycleUid: wrongLifecycleUid }),
   });
-  check("interactive lifecycle retirement refuses a UID other than the current actor row", retireWrongUid.status === 409, await retireWrongUid.text());
+  const wrongUidBody = await retireWrongUid.json().catch(() => undefined) as { outcome?: unknown } | undefined;
+  check("interactive lifecycle retirement refuses a UID other than the current actor row",
+    retireWrongUid.status === 409 && wrongUidBody?.outcome === "not-executed", wrongUidBody);
   // The --full grant is the whole envelope: all channels + spawn + the stock role (the golden path —
   // login, grant --full, spawn just works; narrowing is the operator's explicit act).
   check("--full grant takes the full envelope, scope spawn and role:default",
@@ -408,7 +423,9 @@ try {
   check("up --open on the running user mesh is refused (names cotal down)", openUp.status !== 0 && openUp.out.includes("cotal down"), openUp.out);
   // THE FLIP: user-facing static creds are retired on user-auth spaces — `cotal auth mint` must
   // refuse with the login/enrollment recourse, never write a working `local.<nkey>` identity file.
-  const staticMint = await cotal(["auth", "mint", "flip-probe", "--profile", "agent"]);
+  // A label is one owner token ([A-Za-z0-9_]); a `-` would be refused USAGE_INVALID before the
+  // user-mesh check, so these labels use `_`.
+  const staticMint = await cotal(["auth", "mint", "flip_probe", "--profile", "agent"]);
   check(
     "the flip: `cotal auth mint` on a user mesh is refused UNSUPPORTED, naming the login/enrollment recourse",
     staticMint.status === 2 && staticMint.out.includes("UNSUPPORTED") && staticMint.out.includes("static credentials are not issued for open or per-user-auth spaces") && staticMint.out.includes("login/enrollment path"),
@@ -417,9 +434,9 @@ try {
   // Asserted at the segment `mint` would actually have written to (P1). The flat level is where a
   // pre-segment mint wrote, so checking it now would read absent whatever the refused mint did.
   check("the flip: no creds file was written by the refused mint",
-    !existsSync(join(root, ".cotal", "auth", "creds", spaceSegment(SPACE), "flip-probe.creds")));
+    !existsSync(join(root, ".cotal", "auth", "creds", spaceSegment(SPACE), "flip_probe.creds")));
   // observer/admin are retired too: the refusal covers every fixed profile, not only the agent one.
-  const observerMint = await cotal(["auth", "mint", "flip-observer", "--profile", "observer"]);
+  const observerMint = await cotal(["auth", "mint", "flip_observer", "--profile", "observer"]);
   check(
     "the flip: `auth mint --profile observer` is refused the same way",
     observerMint.status === 2 && observerMint.out.includes("UNSUPPORTED") && observerMint.out.includes("static credentials are not issued for open or per-user-auth spaces"),
@@ -452,6 +469,22 @@ try {
   check("the flip: `join --creds` with an old static cred is refused on a known user mesh", joinOldStatic.status !== 0 && joinOldStatic.out.includes("per-user-auth") && joinOldStatic.out.includes("cotal spawn"), joinOldStatic.out);
   const sendOldStatic = await cotal(["send", "-c", "general", "old static", "--creds", oldStaticCreds, "--server", SERVER, "--space", SPACE], { timeoutMs: 15_000 });
   check("the flip: raw `--creds` send is refused on a known user mesh", sendOldStatic.status !== 0 && sendOldStatic.out.includes("per-user-auth"), sendOldStatic.out);
+  // A live service that refuses the retirement before its barrier says so, so the re-grant is a
+  // classified refusal (exit 2) naming the unchanged row. A stale capability in the discovery file
+  // is that refusal; the file is put back at once.
+  const serviceFile = join(stateDir, "auth-service.json");
+  const serviceInfo = readFileSync(serviceFile, "utf8");
+  const rowBeforeRefusedRegrant = loadActorLedger(stateDir).find((row) => row.kind === "interactive" && row.actor === "cli");
+  writeFileSync(serviceFile, JSON.stringify({ ...JSON.parse(serviceInfo), cap: "stale-capability" }));
+  const refusedRegrant = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "must not land"])
+    .finally(() => writeFileSync(serviceFile, serviceInfo));
+  const rowAfterRefusedRegrant = loadActorLedger(stateDir).find((row) => row.kind === "interactive" && row.actor === "cli");
+  check(
+    "re-grant the live auth service refuses before retiring is a classified refusal with the row unchanged",
+    refusedRegrant.status === 2 && refusedRegrant.out.includes("PERMISSION_DENIED") && refusedRegrant.out.includes("the actor row was not changed")
+      && JSON.stringify(rowAfterRefusedRegrant) === JSON.stringify(rowBeforeRefusedRegrant),
+    { out: refusedRegrant.out, before: rowBeforeRefusedRegrant, after: rowAfterRefusedRegrant },
+  );
   // Crash the daemon (SIGKILL — no clean exit, so its stale discovery file survives too).
   const svcPidPath = join(root, ".cotal", `auth-service.${spaceKey(SPACE)}.pid`);
   const svcPid = Number(readFileSync(svcPidPath, "utf8").trim());
@@ -459,9 +492,12 @@ try {
   await until(() => { try { process.kill(svcPid, 0); return false; } catch { return true; } });
   const rowBeforeFailedRegrant = loadActorLedger(stateDir).find((row) => row.kind === "interactive" && row.actor === "cli");
   const failedDeadServiceRegrant = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "must not land"]);
+  // The dead daemon refuses the connection, so no retirement request was sent: a classified refusal
+  // (exit 2) naming the unchanged row and the recovery, never an unknown outcome (exit 3).
   check(
     "re-grant with a dead auth service is refused before changing the row",
-    failedDeadServiceRegrant.status !== 0 && failedDeadServiceRegrant.out.includes("row was not changed"),
+    failedDeadServiceRegrant.status === 2 && failedDeadServiceRegrant.out.includes("DEPENDENCY_UNAVAILABLE")
+      && failedDeadServiceRegrant.out.includes("the actor row was not changed") && failedDeadServiceRegrant.out.includes("`cotal up`"),
     failedDeadServiceRegrant.out,
   );
   const rowAfterFailedRegrant = loadActorLedger(stateDir).find((row) => row.kind === "interactive" && row.actor === "cli");

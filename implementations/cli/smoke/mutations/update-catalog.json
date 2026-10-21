@@ -12,8 +12,8 @@
     {
       "name": "restore account catalogue preparation before update",
       "file": "implementations/cli/src/index.ts",
-      "find": "    flags: updateFlags,\n    prepareMeshTarget: false,\n    run: update,",
-      "replace": "    flags: updateFlags,\n    run: update,",
+      "find": "    flags: updateFlags,\n    prepareMeshTarget: false,\n",
+      "replace": "    flags: updateFlags,\n",
       "expectRed": "update dispatch reaches its own continuity checks without catalogue authentication",
       "cell": "update dispatch reaches its own continuity checks without catalogue authentication"
     }

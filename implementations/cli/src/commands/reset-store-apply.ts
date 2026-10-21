@@ -1,4 +1,4 @@
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { isReachable, realDirNoSymlink, type ParsedArgs } from "@cotal-ai/core";

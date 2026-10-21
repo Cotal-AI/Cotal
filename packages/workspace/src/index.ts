@@ -24,6 +24,7 @@ export { oneLine } from "@cotal-ai/core";
 export * from "./output.js";
 export * from "./preferences.js";
 export * from "./present.js";
+export * from "./prompt-input.js";
 export * from "./provenance.js";
 export * from "./mesh-registry.js";
 export * from "./prepared-spaces.js";

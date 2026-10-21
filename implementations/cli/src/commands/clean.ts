@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmSync } 
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type AuthProvider, type CompletionResult, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import {
+  CommandFailure,
   DELIVERY_CREDS_KIND,
   MEMBERSHIP_CONFIG_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
@@ -56,12 +57,9 @@ export async function clean(args: ParsedArgs): Promise<void> {
   const values = args.values as {
     server?: string; space?: string; creds?: string; dms?: boolean; force?: boolean; "store-dir"?: string; attempt?: string;
   };
-  if (!target || !TARGETS.includes(target)) return usage();
-  if (!values.force) {
-    console.error(c.red(`refusing to clean ${target} without --force`));
-    console.error(c.dim(`usage: ${USAGE}`));
-    process.exit(1);
-  }
+  if (!target || !TARGETS.includes(target))
+    throw new CommandFailure("refused", "USAGE_INVALID", target ? `clean has no target "${target}"; it takes ${TARGETS.join(", ")}` : `clean needs a target: ${TARGETS.join(", ")}`);
+  if (!values.force) throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target} --force` });
   if (target === "history") return purgeHistory(values);
 
   // Everything below acts on the SHARED broker, never one space: `store`/`all` delete the single
@@ -460,17 +458,6 @@ function removePinnedStoreDirectory(path: string, identity: { dev: bigint; ino: 
     throw new Error(`store cleanup target changed before deletion: ${path}`);
   }
   rmSync(tomb, { recursive: true });
-}
-
-const USAGE =
-  "cotal clean <history|store|all> --force [--dms] [--space <s>] [--server <url>] [--creds <path>] [--store-dir <dir>] | cotal clean <restore-attempt|restore-fallback> --attempt <id> --force";
-
-function usage(): void {
-  console.error(c.red(`usage: ${USAGE}`));
-  console.error(c.dim("  history  purge the message backlog on the running broker (--dms to include DMs)"));
-  console.error(c.dim("  store    delete the stopped mesh's JetStream store (.cotal/nats)"));
-  console.error(c.dim("  all      store + the space identity (.cotal/auth) - full local reset"));
-  process.exit(1);
 }
 
 export function cleanComplete(argv: string[]): CompletionResult {

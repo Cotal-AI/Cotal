@@ -18,8 +18,8 @@
     {
       "name": "a durable an interrupted replay left behind is inherited instead of remade",
       "file": "packages/core/src/run-journal.ts",
-      "find": "    if (!replayConsumerIsFresh(created)) {",
-      "replace": "    if (!replayConsumerIsFresh(created) && false) {",
+      "find": "    if (created === undefined || !replayConsumerIsFresh(created)) {",
+      "replace": "    if (created === undefined || !replayConsumerIsFresh(created) && false) {",
       "expectRed": "and the next replay on that same takeover id reads the whole run rather than reporting a rival",
       "cell": "and the next replay on that same takeover id reads the whole run rather than reporting a rival"
     },

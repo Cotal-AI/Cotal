@@ -63,8 +63,9 @@ const ansi = /\x1b\[/;
   check("every key is listed, in order", JSON.stringify(res?.settings.map((s) => s.key)) === JSON.stringify(["harness", "persona", "detach-key", "color", "editor"]), res?.settings.map((s) => s.key));
   check("each key with a product default resolves to it, and the editor to nothing", settingOf(r, "harness")?.winner?.source === "default" && settingOf(r, "persona")?.value === "default" && settingOf(r, "detach-key")?.value === "ctrl-]" && settingOf(r, "color")?.value === "auto" && settingOf(r, "editor")?.value === null && settingOf(r, "editor")?.winner === null, res?.settings);
   check("reading writes nothing", !existsSync(file));
-  const plain = run(["config", "--plain"]);
-  check("the plain view names the file, the scope and each key's source", plain.status === 0 && !ansi.test(plain.stdout) && plain.stdout.includes(file) && /KEY\s+VALUE\s+FROM\s+ALSO SET/.test(plain.stdout) && /harness\s+claude\s+the default/.test(plain.stdout), shown(plain));
+  // The file is in the Storage section, which only --verbose prints.
+  const plain = run(["config", "--plain", "--verbose"]);
+  check("the plain view names the file, the scope and each key's source", plain.status === 0 && !ansi.test(plain.stdout) && plain.stdout.includes(file) && /^ {2}your defaults$/m.test(plain.stdout) && /Setting\s+Value\s+Source/.test(plain.stdout) && /harness\s+claude\s+the default/.test(plain.stdout), shown(plain));
 }
 
 // ── set, get, a repeated set, unset ──────────────────────────────────────────────────────────────
@@ -161,7 +162,7 @@ const ansi = /\x1b\[/;
   const res = selected.envelope?.result as { scope?: { space: string; from: string } } | null;
   check("bare config reads through the selected space", res?.scope?.space === "demo" && res.scope.from === "selected" && settingOf(selected, "persona")?.value === "demo-lead" && JSON.stringify(selected.envelope?.target) === JSON.stringify({ space: "demo" }), selected.envelope);
   const plain = run(["config", "--plain"]);
-  check("the plain view says the scope is the selected space", /Scope:\s+space demo \(selected\)/.test(plain.stdout), shown(plain));
+  check("the plain view says the scope is the selected space", /^Preferences\n {2}space demo \(selected\)$/m.test(plain.stdout), shown(plain));
   check("--user ignores the selection", settingOf(run(["config", "--user", "--json"]), "persona")?.value === "default");
   const write = run(["config", "set", "persona", "mine", "--json"]);
   check("a write without --space goes to your defaults, and reports the selected space's value still winning here", saved().defaults.persona === "mine" && (write.envelope?.result as { effective?: Setting } | null)?.effective?.value === "demo-lead" && write.envelope?.warnings.some((w) => w.code === "PREFERENCE_SHADOWED" && /your preference for space demo \(demo-lead\)/.test(w.message)) === true, shown(write));
@@ -193,7 +194,7 @@ const ansi = /\x1b\[/;
   check("EDITOR beats the saved editor", envEditor.status === 0 && readFileSync(mark, "utf8") === "env", shown(envEditor));
   run(["config", "unset", "editor"]);
   const none = run(["personas", "edit", "x"], {}, project);
-  check("with no editor anywhere, personas edit names both ways to set one", none.status === 1 && /export EDITOR .*cotal config set editor/.test(none.stderr), shown(none));
+  check("with no editor anywhere, personas edit names both ways to set one", none.status === 2 && none.stderr.includes("set VISUAL or EDITOR, or run `cotal config set editor vim`"), shown(none));
 
   // The detach key is read by the attach client before it connects; drive that function in-process.
   process.env.XDG_CONFIG_HOME = xdg;

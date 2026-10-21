@@ -65,10 +65,16 @@ function stripGlobalFlags(words: readonly string[]): string[] {
   return end === -1 ? head : [...head, ...words.slice(end)];
 }
 
+/** Whether `cmd` takes its words raw: it declares so, or it is an internal command, whose words are
+ *  another command line. Such a command parses no flags of its own. */
+function takesWordsRaw(cmd: Command | undefined): boolean {
+  return Boolean(cmd && (cmd.rawArgs || cmd.name.startsWith("__")));
+}
+
 /** The words `cmd` parses: the global flags are the kernel's, except for a command that takes its
- *  words raw or an internal one, whose words are another command line. */
+ *  words raw. */
 function ownWords(cmd: Command | undefined, words: readonly string[]): string[] {
-  return cmd && (cmd.rawArgs || cmd.name.startsWith("__")) ? [...words] : stripGlobalFlags(words);
+  return takesWordsRaw(cmd) ? [...words] : stripGlobalFlags(words);
 }
 
 /** Whether the invoked mode declares a structured output, so it reports every outcome by the 0 to 5
@@ -94,6 +100,13 @@ function asksForJson(cmd: Command, args: readonly string[]): boolean {
  *  for, and the exit code its outcome sets. The envelope is written synchronously, because stdout
  *  to a pipe is asynchronous on some platforms and `exit` would cut it short. */
 function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false): never {
+  // A command's own usage refusal reads as the parser's: the error, its remedy, then the help.
+  if (failure.code === "USAGE_INVALID" && !json) {
+    stderrLine("✗ ", failure.message, c.red);
+    if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
+    printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
+    process.exit(1);
+  }
   writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}
 `);
   if (json) writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure)));
@@ -301,10 +314,22 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
  * come from importing a package the seed keeps current.
  */
 export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
-  // Global flags before the command word apply whatever the command is.
+  // Global flags before the command word apply whatever the command is. The output flags are the
+  // command's own, so one written before the command word moves after it, and a `--` there ends
+  // the leading flags. A command that takes its words raw has no flags to read them as, so it
+  // refuses them there. The built-in surface decides that before any extension overlay is read.
+  const output: string[] = [];
   let lead = 0;
-  while (lead < argv.length && takeGlobalFlag(argv[lead]!)) lead++;
-  argv = argv.slice(lead);
+  for (; lead < argv.length; lead++) {
+    const word = argv[lead]!;
+    if (word === "--json" || word === "-j" || word === "--plain") output.push(word);
+    else if (!takeGlobalFlag(word)) break;
+  }
+  if (argv[lead] === "--") lead++;
+  if (output.length && lead >= argv.length) usageExit(`${output[0]} needs a command after it - run \`cotal help\` to list commands`);
+  if (output.length && takesWordsRaw(findCommand(registry.all<Command>("command"), argv[lead])))
+    usageExit(`${output[0]} before ${argv[lead]} is not read - ${argv[lead]} takes its words raw, with no output flags`);
+  argv = [...argv.slice(lead, lead + 1), ...output, ...argv.slice(lead + 1)];
   // A recorded unit boots from built-in code only. Even reading the extension overlay can
   // prevent recovery from an unrelated broken manifest. Validate before any handoff custody,
   // installation repair, package materialization or target preparation. This is one exact

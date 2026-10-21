@@ -7,7 +7,7 @@
  *   - COLORTERM truecolor/24bit            → 24-bit ANSI (exact brand color)
  *   - otherwise                            → 16-color fallback
  */
-import * as p from "@clack/prompts";
+import * as p from "./prompts.js";
 import { colorEnabled } from "@cotal-ai/workspace";
 
 // Read on each call, so `--no-color` applied after this module loads still turns color off.

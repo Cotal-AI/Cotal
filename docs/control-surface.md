@@ -352,12 +352,13 @@ by the same request promise, including when the transport is closing or draining
 cancellation does not revoke or resubmit the accepted operation.
 
 "Only one manager per space" is not the current invariant. A split topology that keeps the
-broker host manager-free is still a topology choice: `cotal up` on that host starts a
-manager you then stop with `cotal down manager` after `✓ manager up` in
+broker host manager-free is still a topology choice: `cotal up --no-manager` on that host starts no
+manager, and `cotal supervise --server` runs the manager elsewhere ([Run a mesh](run-a-mesh.md)).
+A broker host that already runs a manager stops it only after `✓ manager up` in
 `.cotal/manager.<spaceKey>.log` (detach stdout listing `manager` is pidfile liveness, not a
-teardown boundary), and `cotal supervise
---server` runs the manager elsewhere ([Run a mesh](run-a-mesh.md)). Extra live managers
-are addressable, not an error.
+teardown boundary). A controller stack stops it with
+`cotal service stop stack-manager --space <s> --yes`; a legacy stack has no command that stops only
+its manager. Extra live managers are addressable, not an error.
 
 The reserved `describe` bootstrap is the one request the resolver may repeat while waiting: it is
 read-only, it is re-published under the same request binding, and every attempt stays inside the

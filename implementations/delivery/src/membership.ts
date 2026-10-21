@@ -121,13 +121,23 @@ export async function startMembership(
     return { down };
   }
 
+  let obsFirstRead = false;
   const intervalMs = Number(process.env.COTAL_MEMBERSHIP_INTERVAL_MS) || undefined; // test/ops override
   const handle = await startMembershipFeed({
     servers: opts.server,
     space: opts.space,
     accountId: opts.accountId,
-    // Observer is rotation-renewed ($SYS): a static read — its renewal is a system rotation + restart.
-    observerCreds: obsCreds,
+    // Read through the store on each renewal: a host that keeps a registered system signer re-mints
+    // the observer there and the feed proves and adopts it. A workstation store never changes it, so
+    // its renewal stays a rotation + restart. The first read is the cred checked above, so the feed
+    // pins the issuer and scope that passed tenancy. A cred with no `exp` has nothing to renew.
+    observerCreds: typeof obs.exp !== "number" ? obsCreds : async () => {
+      if (!obsFirstRead) { obsFirstRead = true; return obsCreds; }
+      const cur = (await loadSysPair(source, "observer")).observer;
+      if (cur === undefined)
+        throw new Error(`membership: the $SYS observer cred is gone (kind "${MEMBERSHIP_OBSERVER_CREDS_KIND}") - ${repairAdvice(source, [MEMBERSHIP_OBSERVER_CREDS_KIND])}`);
+      return cur;
+    },
     // rw is class-2 standing-renewable: read through the store seam and renewed on a 75% timer that
     // preflight-proves each candidate the manager re-signs into the store (D5 slice 5). The daemon
     // never sees the signer; the manager owns the re-sign.

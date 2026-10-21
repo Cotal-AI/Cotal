@@ -10,6 +10,7 @@ import { displayWidth, wrapWords } from "@cotal-ai/workspace";
 import { oneLine } from "@cotal-ai/core";
 import type { AttentionMode, ChannelMode } from "@cotal-ai/core";
 import type { CloseReport, ConnectionState, PublishResult, Result, SessionEvent, SessionIdentity, SessionMessage } from "./session.js";
+import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 
 /** Bounded transcript retention. A dropped entry leaves a visible gap marker. Provisional. */
 export const MAX_TRANSCRIPT = 500;
@@ -213,7 +214,10 @@ export function applyPublishResult(state: ChatState, result: PublishResult): Cha
     const recipient = unchanged && to.kind === "dm" && to.replyTo ? { kind: "dm" as const, to: to.to } : state.recipient;
     // Only clear the draft if it is still exactly what was submitted; a user may have typed on.
     const draft = state.draft === submitted ? "" : state.draft;
-    return { ...s, draft, recipient };
+    const next = { ...s, draft, recipient };
+    return result.recipientStatusAtSend === "offline" && result.recipient
+      ? notice(next, "waiting", offlineRecipientNotice(result.recipient.name))
+      : next;
   }
   if (result.outcome === "unknown") return notice(s, "waiting", "outcome unknown: not resent; check before sending again");
   return s;

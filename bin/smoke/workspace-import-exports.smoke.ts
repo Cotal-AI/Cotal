@@ -39,44 +39,55 @@ const parsedConfig = ts.parseJsonConfigFileContent(rawConfig.config, ts.sys, ROO
 });
 assert.equal(parsedConfig.errors.length, 0, "tsconfig.base.json options resolve");
 
-const program = ts.createProgram(sourceFiles, parsedConfig.options);
-const checker = program.getTypeChecker();
+// One program per package. A single program over every tree held all of their syntax trees at once
+// and outgrew a 1 GB heap as the trees grew. A workspace import resolves to the package's published
+// types whichever files share its program, so each import gets the same verdict.
+const packages = new Map<string, string[]>();
+for (const filePath of sourceFiles) {
+  const parts = relative(ROOT, filePath).split(/[\\/]/);
+  const key = parts.length >= 3 ? `${parts[0]}/${parts[1]}` : parts[0]!;
+  packages.set(key, [...(packages.get(key) ?? []), filePath]);
+}
 const failures: string[] = [];
 let importCount = 0;
 let nameCount = 0;
 
-for (const filePath of sourceFiles) {
-  const source = program.getSourceFile(filePath);
-  assert.ok(source, `compiler loaded ${relative(ROOT, filePath)}`);
+for (const files of packages.values()) {
+  const program = ts.createProgram(files, parsedConfig.options);
+  const checker = program.getTypeChecker();
+  for (const filePath of files) {
+    const source = program.getSourceFile(filePath);
+    assert.ok(source, `compiler loaded ${relative(ROOT, filePath)}`);
 
-  for (const statement of source.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    const packageName = statement.moduleSpecifier.text;
-    const clause = statement.importClause;
-    if (!packageName.startsWith("@cotal-ai/") || clause === undefined) continue;
+    for (const statement of source.statements) {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+      const packageName = statement.moduleSpecifier.text;
+      const clause = statement.importClause;
+      if (!packageName.startsWith("@cotal-ai/") || clause === undefined) continue;
 
-    importCount++;
-    const moduleSymbol = checker.getSymbolAtLocation(statement.moduleSpecifier);
-    const line = source.getLineAndCharacterOfPosition(statement.moduleSpecifier.getStart()).line + 1;
-    if (moduleSymbol === undefined) {
-      failures.push(`${relative(ROOT, filePath)}:${line}: package does not resolve: ${packageName}`);
-      continue;
-    }
+      importCount++;
+      const moduleSymbol = checker.getSymbolAtLocation(statement.moduleSpecifier);
+      const line = source.getLineAndCharacterOfPosition(statement.moduleSpecifier.getStart()).line + 1;
+      if (moduleSymbol === undefined) {
+        failures.push(`${relative(ROOT, filePath)}:${line}: package does not resolve: ${packageName}`);
+        continue;
+      }
 
-    const exportedNames = new Set(checker.getExportsOfModule(moduleSymbol).map((symbol) => symbol.name));
-    const checkName = (importedName: string, position: number): void => {
-      nameCount++;
-      if (exportedNames.has(importedName)) return;
-      const importLine = source.getLineAndCharacterOfPosition(position).line + 1;
-      failures.push(
-        `${relative(ROOT, filePath)}:${importLine}: ${packageName} does not export ${importedName}`,
-      );
-    };
+      const exportedNames = new Set(checker.getExportsOfModule(moduleSymbol).map((symbol) => symbol.name));
+      const checkName = (importedName: string, position: number): void => {
+        nameCount++;
+        if (exportedNames.has(importedName)) return;
+        const importLine = source.getLineAndCharacterOfPosition(position).line + 1;
+        failures.push(
+          `${relative(ROOT, filePath)}:${importLine}: ${packageName} does not export ${importedName}`,
+        );
+      };
 
-    if (clause.name !== undefined) checkName("default", clause.name.getStart());
-    if (clause.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings)) {
-      for (const element of clause.namedBindings.elements) {
-        checkName((element.propertyName ?? element.name).text, element.name.getStart());
+      if (clause.name !== undefined) checkName("default", clause.name.getStart());
+      if (clause.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings)) {
+        for (const element of clause.namedBindings.elements) {
+          checkName((element.propertyName ?? element.name).text, element.name.getStart());
+        }
       }
     }
   }

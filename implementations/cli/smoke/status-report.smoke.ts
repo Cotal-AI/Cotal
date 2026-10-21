@@ -70,6 +70,13 @@ function sandbox() {
 const shown = (r: { status: number | null; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 600) });
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-z ]+$/.test(line));
+/** The punctuation `--plain` writes in ASCII, as the workspace renderer maps it. */
+const PLAIN_PUNCTUATION: Record<string, string> = { "·": "-", "…": "...", "→": "->", "↳": "->", "—": "-", "–": "-" };
+const ascii = (s: string) => s.replace(/[·…→↳—–]/g, (glyph) => PLAIN_PUNCTUATION[glyph]!).replace(/§ ?/g, "section ");
+/** A rich report as plain would word it: no ANSI, no state marks, ASCII punctuation. */
+const asPlain = (rich: string) => ascii(strip(rich).replace(/[●○] /g, ""));
+/** The words of a report, so a column padded around a mark does not count as a different word. */
+const words = (text: string) => text.split(/\s+/).filter(Boolean).join(" ");
 
 const brokerDisplayOnly = process.argv.includes("--broker-display-only");
 let brokerDisplayCases = 0;
@@ -89,17 +96,24 @@ if (!brokerDisplayOnly) {
 
   const rich = run(["status", ...unknown], { FORCE_COLOR: "1" });
   const plain = run(["status", ...unknown, "--plain"], { FORCE_COLOR: "1" });
+  const verbose = run(["status", ...unknown, "--plain", "--verbose"]);
   check("status draws a colored report", rich.status === 0 && /\x1b\[/.test(rich.stdout), shown(rich));
-  check("--plain writes the same words with no ANSI and ASCII punctuation", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout === strip(rich.stdout).replace(/·/g, "-"), shown(plain));
+  check("--plain writes the same words with no ANSI and ASCII punctuation", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && !/[●○·…→↳—–]/.test(plain.stdout) && words(plain.stdout) === words(asPlain(rich.stdout)), shown(plain));
   check(
     "the sections keep the infrastructure order and end with the hints",
-    JSON.stringify(titles(plain.stdout)) === JSON.stringify(["Machine", "Extensions", "This Folder", "Recorded Meshes", "Selected Mesh", "Hints"]),
+    JSON.stringify(titles(plain.stdout)) === JSON.stringify(["This machine", "Brokers", "Selected space", "Next"]),
     titles(plain.stdout),
   );
-  check("the report names no roster", !/roster/i.test(plain.stdout), plain.stdout);
-  check("the NATS row says where nats-server comes from in words", /^ {2}NATS: +(nats-server on PATH|bundled nats-server|missing)$/m.test(plain.stdout) && ["path", "bundled", "missing"].includes(env?.result?.machine?.nats ?? ""), { nats: env?.result?.machine?.nats, out: plain.stdout.slice(0, 400) });
-  check("each hint in the result is printed under Hints", (env?.result?.hints ?? []).every((hint) => plain.stdout.split("\nHints\n")[1]?.includes(hint)), { hints: env?.result?.hints, out: plain.stdout });
-  check("no report line ends in padding", plain.stdout.split("\n").every((line) => !line.endsWith(" ")), plain.stdout);
+  check(
+    "--verbose adds the detail sections before Next",
+    verbose.status === 0 && JSON.stringify(titles(verbose.stdout)) === JSON.stringify(["This machine", "Brokers", "Selected space", "Machine", "Extensions", "This Folder", "Recorded Meshes", "Selected Mesh", "Next"]),
+    titles(verbose.stdout),
+  );
+  check("the report names no roster", !/roster/i.test(plain.stdout) && !/roster/i.test(verbose.stdout), plain.stdout);
+  // The NATS row is in the verbose Machine section; the default view says Broker executable.
+  check("the NATS row says where nats-server comes from in words", /^ {2}NATS: +(nats-server on PATH|bundled nats-server|missing)$/m.test(verbose.stdout) && ["path", "bundled", "missing"].includes(env?.result?.machine?.nats ?? ""), { nats: env?.result?.machine?.nats, out: verbose.stdout.slice(0, 400) });
+  check("each hint in the result is printed under Next", (env?.result?.hints ?? []).every((hint) => plain.stdout.split("\nNext\n")[1]?.includes(ascii(hint))), { hints: env?.result?.hints, out: plain.stdout });
+  check("no report line ends in padding", [plain.stdout, verbose.stdout].every((out) => out.split("\n").every((line) => !line.endsWith(" "))), plain.stdout);
 }
 
 // ── only the selected registration is checked unless --all asks for every one ────────────────────
@@ -116,8 +130,9 @@ if (!brokerDisplayOnly) {
   check("the other registration is not checked", byName(selected.envelope).beta === "not-checked", byName(selected.envelope));
   check("an unreachable selected mesh is a fact, not a partial read", selected.status === 0 && selected.envelope?.completeness === "complete" && selected.envelope.result?.selected.connection === "unreachable", shown(selected));
   // The membership feed's time is shown as an age; the document keeps the ISO time it was read at.
+  // The row is in the verbose Selected Mesh section.
   const fed = { ...selected.envelope!.result!, selected: { ...selected.envelope!.result!.selected, membershipFeed: { entries: 2, asOf: new Date(Date.now() - 90_000).toISOString() } } };
-  const fedReport = renderReport(statusView(fed as unknown as Parameters<typeof statusView>[0]), "plain");
+  const fedReport = renderReport(statusView(fed as unknown as Parameters<typeof statusView>[0], true), "plain");
   check("the membership feed row says how long ago it was updated", /^ {2}membership feed: +2 entries - updated 1m ago$/m.test(fedReport), fedReport.split("\n").filter((l) => /membership/.test(l)));
   const plain = run(["status", "--space", "alpha", "--plain"]);
   check("the report says not checked for the other registration", /beta\s+not checked/.test(plain.stdout), plain.stdout);
@@ -138,7 +153,7 @@ if (!brokerDisplayOnly) {
   check("an unreadable pidfile makes status partial with exit 4", json.status === 4 && env?.outcome === "partial" && env.completeness === "partial" && env.error?.code === "OPERATION_PARTIAL", shown(json));
   check("the warning names the unreadable pidfile", env?.warnings.some((w) => w.code === "PIDFILE_UNREADABLE" && w.message.includes("nats")) === true, env?.warnings);
   check("its row is reported unreadable and the other rows still are", nats?.state === "unreadable" && (env?.result?.folder.processes ?? []).some((p) => p.name === "manager" && p.state === "stopped"), env?.result?.folder.processes);
-  const plain = run(["status", ...server, "--plain"]);
+  const plain = run(["status", ...server, "--plain", "--verbose"]);
   check("the report still prints, with the row named", plain.status === 4 && /nats:\s+pidfile unreadable/.test(plain.stdout) && /^Selected Mesh$/m.test(plain.stdout), shown(plain));
   check("stderr names the partial read", /PIDFILE|pidfile could not be read/.test(plain.stderr) && /status could not read one part/.test(plain.stderr), plain.stderr);
 }
@@ -161,7 +176,7 @@ if (!brokerDisplayOnly) {
   const env = json.envelope;
   check("an unreadable persona catalog is partial with exit 4", json.status === 4 && env?.outcome === "partial" && env.completeness === "partial", shown(json));
   check("the catalog is unreadable, not missing, and its warning names it", env?.result?.folder.personas.default === "unreadable" && env.warnings.some((w) => w.code === "PERSONAS_UNREADABLE" && w.message.includes(env.result!.folder.personas.root)), { personas: env?.result?.folder.personas, warnings: env?.warnings });
-  const plain = run(["status", "--space", "nosuch", "--plain"]);
+  const plain = run(["status", "--space", "nosuch", "--plain", "--verbose"]);
   check("the report names the catalog unreadable, not no default", /personas:\s+unreadable: /.test(plain.stdout) && !/no default/.test(plain.stdout), plain.stdout);
 }
 {
@@ -207,7 +222,7 @@ if (!brokerDisplayOnly) {
   check("a registry record that will not parse is partial with exit 4, not unknown", json.status === 4 && env?.outcome === "partial" && env.result !== null, shown(json));
   check("the record is named and the readable records are still listed", env?.result?.meshes.unreadable.some((u) => u.file === record) === true && env.result.meshes.items.some((m) => m.space === "alpha") && env.warnings.some((w) => w.code === "MESH_REGISTRY_UNREADABLE" && w.message.includes(record)), { meshes: env?.result?.meshes, warnings: env?.warnings });
   check("the selection is unresolved by the unreadable record", env?.result?.selected.resolved === false && env.result.selected.code === "registry-unreadable", env?.result?.selected);
-  const plain = run(["status", "--space", "alpha", "--plain"]);
+  const plain = run(["status", "--space", "alpha", "--plain", "--verbose"]);
   check("the report names the record under the recorded meshes", plain.status === 4 && /unreadable: .*space\.dead\.json does not parse/.test(plain.stdout.split("\nRecorded Meshes\n")[1]?.split("\nSelected Mesh\n")[0] ?? ""), shown(plain));
 }
 

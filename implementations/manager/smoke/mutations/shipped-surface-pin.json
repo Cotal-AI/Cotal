@@ -34,12 +34,12 @@
       "cell": "the resolved surface matches the shipped cluster document"
     },
     {
-      "name": "M2 keep revision 24 after execution status changes",
+      "name": "M2 keep revision 33 after the chat-session pair lands",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "    revision: 25,",
-      "replace": "    revision: 24,",
-      "expectRed": "execution status advances the manager cluster revision and retains cancel, transcript-receive, goal-result and resolve-cwd",
-      "cell": "execution status advances the manager cluster revision and retains cancel, transcript-receive, goal-result and resolve-cwd"
+      "find": "    revision: 34,",
+      "replace": "    revision: 33,",
+      "expectRed": "the chat-session pair advances the manager cluster revision and retains cancel, transcript-receive, goal-result and resolve-cwd",
+      "cell": "the chat-session pair advances the manager cluster revision and retains cancel, transcript-receive, goal-result and resolve-cwd"
     },
     {
       "name": "M3 compile every contract pair at module scope again",

@@ -295,9 +295,9 @@ async function loadDeliveryCreds(src: CredsSource, v: Values, root: string, spac
  * (`startDeliveryDetached`), so every other route to a live daemon — a container entrypoint,
  * systemd, an operator typing `cotal deliver --space …`, a hosted composition calling
  * {@link runDelivery} — left whatever was on disk untouched and readers believed it. A record naming
- * a pid that died days ago does not merely under-report: `down`'s `mayBeRunning` guard exists to
- * fail CLOSED so `cotal down nats` cannot pull the broker out from under a live dependant, and a
- * stale record supplies exactly the proof-of-death that guard requires.
+ * a pid that died days ago does not merely under-report: `down`'s `mayBeRunning` check exists to
+ * fail CLOSED, so a `down --preserve-state` cut neither skips fencing a live daemon nor calls the
+ * stack down around it, and a stale record supplies the proof-of-death that check requires.
  *
  * The launcher's shape is followed rather than re-invented: the CANONICAL path (never a pre-upgrade
  * name), a provably dead pre-upgrade record reclaimed first so an upgraded root never holds both

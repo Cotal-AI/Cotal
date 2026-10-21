@@ -283,8 +283,8 @@ const baseCommands: Command[] = [
     summary:
       "configurable cleanup - history/store/all, plus explicit committed-restore fallback cleanup",
     usage:
-      "clean <history|store|all> --force [--dms] [--space <s>] [--server <url>] [--creds <path>] [--store-dir <dir>] | clean restore-fallback --attempt <id> --force",
-    positionals: "<history|store|all|restore-fallback>",
+      "cotal clean <history|store|all> --force [--dms] [--space <s>] [--server <url>] [--creds <path>] [--store-dir <dir>] | cotal clean <restore-attempt|restore-fallback> --attempt <id> --force",
+    positionals: "<history|store|all|restore-attempt|restore-fallback>",
     flags: [
       ...targetFlags,
       { name: "dms", type: "boolean", description: "history: also clear DM history" },

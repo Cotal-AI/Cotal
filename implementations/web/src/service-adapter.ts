@@ -1,10 +1,10 @@
 import { rmSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import { registry, writeSecretFileCreateOnly, type Command, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, WEB_PIDFILE, claimServicePid, colorEnabled, identityRecord, observeServiceStartup,
+  CommandFailure, WEB_PIDFILE, WEB_SERVICE_ADAPTER, claimServicePid, colorEnabled, identityRecord, observeServiceStartup,
   oneLine, publishServiceStartup, readLocalRecordSource, readPinnedStaticCredential,
-  resolveNativeServiceTarget, serviceOperationId, serviceStartupPath, validateServiceStartupPath,
+  resolveNativeServiceTarget, serviceOperationId, serviceStartupPath, serviceWebSessionPath, validateServiceStartupPath,
   type LocalProcess, type ServicePreset, type WebSession,
 } from "@cotal-ai/workspace";
 import { normalizeWebHost, web, WEB_HOST, WEB_PORT } from "./web.js";
@@ -27,7 +27,7 @@ export const webServicePreset: ServicePreset = {
 };
 
 export const webService: LocalProcess = {
-  kind: "local-process", name: "web-service", label: "web dashboard service", order: 40,
+  kind: "local-process", name: WEB_SERVICE_ADAPTER, label: "web dashboard service", order: 40,
   controllerOnly: true, pidFile: WEB_PIDFILE,
   service: {
     abiVersion: 1, requiresCli: true, readiness: "process",
@@ -76,7 +76,7 @@ export const nativeWebServiceCommand: Command = {
     validateServiceStartupPath(readyPath, instanceId, launchRequestId);
     const { creds } = await readPinnedStaticCredential(selected, credsPath);
     const releasePid = claimServicePid({ root: selected.root, space: selected.space }, WEB_PIDFILE);
-    const sessionPath = readyPath.replace(/\.ready\.json$/, ".web-session.json");
+    const sessionPath = serviceWebSessionPath({ space: selected.space, instanceId, launchRequestId, stateDirectory: dirname(readyPath) });
     let sessionBytes: string | undefined;
     try {
       await web({ positionals: [], raw: [], values: { space: selected.space, server: selected.server, host: args.values.host, port: args.values.port, "no-open": true } }, {

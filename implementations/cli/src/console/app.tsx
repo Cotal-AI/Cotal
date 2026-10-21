@@ -22,6 +22,7 @@ import { Prompt } from "./ui/Prompt.js";
 import { Detail, type DetailTarget } from "./ui/Detail.js";
 import { runCommand, type CommandCtx } from "./commands.js";
 import { mentionsIn } from "../lib/mentions.js";
+import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 import type { FeedEntry, FocusId } from "./mesh.js";
 
 /** An in-progress compose: post to a channel, DM a peer, or reply to a feed message. */
@@ -419,18 +420,21 @@ export function App({
     if (!text) return;
     const ok = (label: string) => () => setNotice(label);
     const fail = (e: unknown) => setNotice("send: " + (e as Error).message);
+    // A DM to a peer the roster shows offline at send also says what happens to it.
+    const dmLabel = (lead: string, id: string, name: string) =>
+      ep.getRoster().find((p) => p.card.id === id)?.status === "offline" ? `${lead}${name}  ${offlineRecipientNotice(name)}` : lead + name;
     void ensureParticipant().then((ready) => {
       if (!ready) return;
       if (c.kind === "channel")
         void ep.multicast(text, { channel: c.channel, mentions: mentionsIn(text) }).then(ok("→ #" + c.channel)).catch(fail);
-      else if (c.kind === "dm") void ep.unicast(c.toId, text).then(ok("→ " + c.toName)).catch(fail);
+      else if (c.kind === "dm") void ep.unicast(c.toId, text).then(ok(dmLabel("→ ", c.toId, c.toName))).catch(fail);
       else {
         const e = c.entry;
-        const send =
-          e.delivery === "multicast" && e.channel
-            ? ep.multicast(text, { channel: e.channel, replyTo: e.id, mentions: mentionsIn(text) })
-            : ep.unicast(e.from.id, text, { replyTo: e.id });
-        void send.then(ok("↩ " + e.from.name)).catch(fail);
+        const channel = e.delivery === "multicast" && e.channel;
+        const send = channel
+          ? ep.multicast(text, { channel, replyTo: e.id, mentions: mentionsIn(text) })
+          : ep.unicast(e.from.id, text, { replyTo: e.id });
+        void send.then(ok(channel ? "↩ " + e.from.name : dmLabel("↩ ", e.from.id, e.from.name))).catch(fail);
       }
     }, fail); // a participant start that throws before its own catch must not drop the message silently
   };

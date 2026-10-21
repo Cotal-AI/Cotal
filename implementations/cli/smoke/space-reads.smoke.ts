@@ -87,7 +87,7 @@ for (let i = 0; i < 50; i++) {
   const empty = json(["space"]);
   check("space --json on an empty registry is one ok envelope with no items", empty.status === 0 && empty.env?.outcome === "ok" && empty.env.target === null && empty.env.result.items.length === 0 && empty.env.result.current === null, shown(empty));
   const human = run(["space"]);
-  check("the empty report says how to start or register a space", human.status === 0 && /no spaces registered/.test(human.stdout), shown(human));
+  check("the empty report says how to start or register a space", human.status === 0 && /No spaces registered\./.test(human.stdout) && /^ {2}cotal setup\s/m.test(human.stdout) && /^ {2}cotal space add <name> --server <url>\s/m.test(human.stdout), shown(human));
   const none = json(["use"]);
   check("bare use with nothing selected reports no selection", none.status === 0 && none.env?.result.current === null && none.env.target === null, shown(none));
 }
@@ -112,7 +112,8 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("the listing never dials a discovered space's broker", catalogDials === 0, { catalogDials });
   check("the listing writes nothing to the registry", JSON.stringify(registryFiles()) === JSON.stringify(before));
   const human = run(["space"], { FORCE_COLOR: "1" });
-  const text = human.stdout.replace(/\x1b\[[0-9;]*m/g, "");
+  // The rich report draws a state mark before each connection state.
+  const text = human.stdout.replace(/\x1b\[[0-9;]*m/g, "").replace(/[●○] /g, "");
   check("the report names each space, its broker state and its origin", human.status === 0 && /alpha\s+reachable/.test(text) && /beta\s+unreachable/.test(text) && /not checked/.test(text) && /discovered as Research Lab/.test(text) && /registered/.test(text), shown(human));
   const plain = run(["space", "--plain"], { FORCE_COLOR: "1" });
   check("--plain writes the report with no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout.includes("unreachable"), shown(plain));
@@ -160,7 +161,7 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   const extra = run(["space", "show", "alpha", "beta"]);
   check("show with two names is a usage error with nothing on stdout", extra.status === 1 && extra.stdout === "" && /usage: cotal space show/.test(extra.stderr), shown(extra));
   const bogus = run(["space", "bogus"]);
-  check("an unknown subcommand is a usage error with the help on stderr", bogus.status === 1 && bogus.stdout === "" && /no subcommand "bogus"/.test(bogus.stderr) && /usage: /.test(bogus.stderr), shown(bogus));
+  check("an unknown subcommand is a usage error with the help on stderr", bogus.status === 1 && bogus.stdout === "" && /no subcommand "bogus"/.test(bogus.stderr) && /^Usage$/m.test(bogus.stderr), shown(bogus));
 }
 
 // ── A selected space that is not up ──────────────────────────────────────────────────────────────────
@@ -193,7 +194,7 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
 // ── help and completion ──────────────────────────────────────────────────────────────────────────────
 {
   const help = run(["help", "space"]);
-  check("help space lists show and its structured output", help.status === 0 && /^\s+show\s/m.test(help.stdout) && /structured output: json, plain/.test(help.stdout), shown(help));
+  check("help space lists show and its structured output", help.status === 0 && /^\s+show\s/m.test(help.stdout) && /Structured output: json, plain/.test(help.stdout), shown(help));
   const useHelp = run(["help", "use"]);
   check("help use gives the optional space", useHelp.status === 0 && /cotal use \[<space>\]/.test(useHelp.stdout), shown(useHelp));
   const subs = run(["__complete", "space", ""]);

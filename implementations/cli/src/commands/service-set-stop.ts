@@ -1,4 +1,4 @@
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import type { ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, recordOperationSpace, isCommandFailure, oneLine, presentationOf, renderReport, terminalWidth, writeResult, type Report, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
@@ -7,7 +7,6 @@ import { instanceProjection, observeServiceProcess, serviceInstances, type Servi
 import { preflightProcessServiceStop, prepareNativeServiceStop, selectServiceInstance, stopProcessService } from "../lib/service-process.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { nativeImpactView } from "./service-actions.js";
-import { untilInputEnds } from "../lib/prompt-input.js";
 
 type Hold = ReturnType<ReturnType<typeof serviceDefinitionStore>["pin"]>;
 interface Member { definition: ServiceDefinitionSnapshot; instance: ServiceInstanceSnapshot; impact?: ServiceAdapterStopPlan }
@@ -78,7 +77,7 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
     const instances = serviceInstances(space, name);
     let selected: ServiceInstanceSnapshot | undefined;
     if (instances.length > 1 && interactive) {
-      const id = await untilInputEnds((signal) => prompts.select({ message: `Choose the full owned instance of ${oneLine(name)}`, options: instances.map((row) => ({ value: row.name, label: row.name, hint: `${oneLine(row.record.value.host.name)} · ${observeServiceProcess(row.record.value)}` })), signal }));
+      const id = await prompts.select({ message: `Choose the full owned instance of ${oneLine(name)}`, options: instances.map((row) => ({ value: row.name, label: row.name, hint: `${oneLine(row.record.value.host.name)} · ${observeServiceProcess(row.record.value)}` })) });
       if (prompts.isCancel(id)) { writeResult(presentation, { command: "down", target: { space, names: args.positionals }, result: { kind: "service-set-stop-cancelled", stopped: false }, noOp: true }, () => ({ sections: [{ title: "Services kept", blocks: [{ kind: "lines", lines: ["No stop was submitted."] }] }] })); return; }
       selected = selectServiceInstance(instances, id);
     } else selected = selectServiceInstance(instances, undefined);
@@ -100,7 +99,7 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
   distinctNativeTargets(members);
   if (presentation !== "json") console.log(renderReport({ space, sections: [...setView(rows, "Named service stop review").sections, ...members.flatMap((member) => member.impact ? nativeImpactView(member.impact).sections : [])] }, presentation, terminalWidth(process.stdout)));
   if (!args.values.yes) {
-    const answer = await untilInputEnds((signal) => prompts.confirm({ message: "Stop all displayed owned service incarnations with only the displayed native impact?", initialValue: false, signal }));
+    const answer = await prompts.confirm({ message: "Stop all displayed owned service incarnations with only the displayed native impact?", initialValue: false });
     if (prompts.isCancel(answer) || !answer) {
       const kept = rows.map((row): MemberResult => ({ ...row, state: "cancelled" }));
       writeResult(presentation, { command: "down", target, result: { kind: "service-set-stop", rows: kept, cancelled: true, atomic: false, cleanup: "not-checked" }, noOp: true }, (result) => setView(result.rows, "Services kept"));

@@ -319,6 +319,15 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
   if (args.values.file !== undefined && args.values.foreground === true) throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime");
   if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt");
+  // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
+  // its own checks for maintenance re-entries, which do not pass through this validation.
+  parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);
+  parsePositiveIntegerFlag("--max-file-store", args.values["max-file-store"] as string | undefined);
+  const restoreOnly = args.values["restore-only"];
+  if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
+  if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
+  if (args.values.restore && (args.values.file !== undefined || args.values.channels !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --file/-f or --channels");
+  if (args.values.restore && args.values["rotate-sys"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --rotate-sys", { remedy: "restore the space and verify it first, then rotate: cotal down, then cotal up --rotate-sys" });
   if (args.values.root !== undefined) preparedUpRoot(String(args.values.root));
   else {
     const inheritedRoot = inheritedMachineHomeRoot();
@@ -1229,14 +1238,16 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // `--no-manager` on a refresh whose manager is LIVE is the same class of refusal: this branch
       // starts nothing, so the flag cannot apply, and silently keeping the manager would answer a
       // broker-only ask with a full stack while silently stopping it would kill agents this command
-      // was never asked to touch. Same shape as `--runtime`/`--max-sessions` above: refuse, name the
-      // exact remedy. A refresh of a mesh whose manager is NOT live simply proceeds broker-only.
+      // was never asked to touch. Same shape as `--runtime`/`--max-sessions` above: refuse and name the
+      // remedy. This launcher's stack has no manager-only stop, so the remedy is the whole-stack stop
+      // and a broker-only start. A refresh of a mesh whose manager is NOT live simply proceeds
+      // broker-only.
       if (noManager) {
         const live = managerRecordState(undefined, undefined, held.space);
         if (live.state === "alive") {
           console.error(
             c.red(
-              `✗ mesh "${held.space}" is already running at ${server} with a live manager - \`cotal up --no-manager\` will not keep or stop one; \`cotal down manager\` first, then \`cotal up --no-manager\``,
+              `✗ mesh "${held.space}" is already running at ${server} with a live manager - \`cotal up --no-manager\` will not keep or stop one, and this stack has no command that stops only its manager; \`cotal down\` stops the whole stack, then \`cotal up --no-manager --space ${held.space}\` starts it broker-only`,
             ),
           );
           process.exit(1);
@@ -1541,8 +1552,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // the refusal is printed with the reap route and the latch is released, so the stack keeps running
   // in the foreground; the operator ends it with `cotal down --with-agents` from another terminal,
   // and the broker-exit handler below already ends `up` when the broker goes.
-  // stopDelivery and stopAuthService are the stops `cotal down delivery` and `cotal down auth`
-  // perform (reservation, SIGKILL escalation); the rest of the teardown must run even if one fails —
+  // stopDelivery and stopAuthService are the stops bare `cotal down` performs for those daemons
+  // (reservation, SIGKILL escalation); the rest of the teardown must run even if one fails —
   // the failure is logged, never swallowed silently. Teardown is AWAITED before the broker is
   // signalled, so it never races a broker that is already going away.
   let stopping = false;
@@ -1623,7 +1634,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // it cannot reach the broker, and a starved host makes a running broker look unreachable, so it can
     // end while this broker serves on. Nothing else brings it back, and every static retirement then
     // fails on the ctl.delivery-admin rail and holds its name until an operator re-runs `cotal up`. A
-    // clean exit or SIGTERM/SIGINT is a deliberate stop (`cotal down delivery`) and stays stopped, and so
+    // clean exit or SIGTERM/SIGINT is a deliberate stop (`cotal down`) and stays stopped, and so
     // is the SIGKILL `down` escalates to when a starved daemon outlives its grace, also when either ends a
     // replacement this loop is still waiting on: that attempt then fails, and retrying it would undo the
     // stop. A failed attempt waits out the lease TTL, the longest a dead holder's lease blocks its
@@ -2725,8 +2736,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // CLI and resolves the same installed package when `supervise --runtime <name>` starts.
   try { await preflightRuntime(runtime); }
   catch (error) {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the requested runtime did not pass preflight; no fresh boot intent or broker was started", { target: { space: m.space, runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" });
-    throw error;
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the requested runtime did not pass preflight; ${opts.freshTeamBoot ? "no fresh boot intent or broker was started" : "no broker was started"}`, { target: { space: m.space, runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" });
   }
 
   // up -f never adopts a running broker. The old spawn -f route is no longer a manifest deploy.

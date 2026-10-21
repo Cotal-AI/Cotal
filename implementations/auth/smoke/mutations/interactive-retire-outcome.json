@@ -1,0 +1,48 @@
+{
+  "suite": [
+    "implementations/auth/smoke/managed-retire-door.smoke.ts"
+  ],
+  "guard": "the interactive retirement plane states `not-executed` on every refusal it raises before the retirement barrier, and states no outcome for a failure inside the barrier",
+  "command": "pnpm smoke:managed-retire-door:auth",
+  "completionMarker": "MANAGED-RETIRE-DOOR SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/interactive-retire-outcome.json",
+  "why": [
+    "`cotal actor grant` and `cotal actor revoke` refuse a failed retirement only when the auth service states that it did not run (SPEC 13.3). The service answered every exception on its retirement door with 400, so a token check or a deleted head that failed before the barrier read the same as a barrier that failed partway.",
+    "Section E of the suite drives the real plane over a real broker. A bad token, a head at another uid and a deleted head must each refuse with `not-executed`, and a barrier whose eviction never verifies must refuse with no outcome after its head reached `retiring`. P1 to P3 drop the statement from each pre-barrier refusal; P4 claims it for the barrier too.",
+    "The suite imports the auth package from source, so a mutation needs no rebuild."
+  ],
+  "mutations": [
+    {
+      "name": "P1 a token check before the barrier refuses without stating that nothing was retired",
+      "file": "implementations/auth/src/service.ts",
+      "find": "        throw notExecuted(e, \"bad-request\");\n",
+      "replace": "        throw e;\n",
+      "expectRed": "an owner that is not a derived token refuses bad-request, not-executed",
+      "cell": "an owner that is not a derived token refuses bad-request, not-executed"
+    },
+    {
+      "name": "P2 a head at another uid refuses without stating that nothing was retired",
+      "file": "implementations/auth/src/service.ts",
+      "find": "but the authority head is ${head.mapping.state} at ${head.mapping.lifecycleUid}`, undefined, \"not-executed\");",
+      "replace": "but the authority head is ${head.mapping.state} at ${head.mapping.lifecycleUid}`);",
+      "expectRed": "a head active at ANOTHER uid refuses conflict, not-executed, and stays untouched",
+      "cell": "a head active at ANOTHER uid refuses conflict, not-executed, and stays untouched"
+    },
+    {
+      "name": "P3 a head read that fails before the barrier refuses without stating that nothing was retired",
+      "file": "implementations/auth/src/service.ts",
+      "find": ".catch((e: unknown) => { throw notExecuted(e, \"unavailable\"); })",
+      "replace": "",
+      "expectRed": "a deleted head refuses failed-precondition, not-executed",
+      "cell": "a deleted head refuses failed-precondition, not-executed"
+    },
+    {
+      "name": "P4 a failure inside the barrier is stated as not executed",
+      "file": "implementations/auth/src/service.ts",
+      "find": "      await runAgentRetirementBarrier(barrierReg, {\n        owner,\n        actor,\n        lifecycleUid,\n        opId,\n        frontierStreams: retirementFrontierStreams(space),\n      }, retirement);\n",
+      "replace": "      await runAgentRetirementBarrier(barrierReg, {\n        owner,\n        actor,\n        lifecycleUid,\n        opId,\n        frontierStreams: retirementFrontierStreams(space),\n      }, retirement).catch((e: unknown) => { throw notExecuted(e, \"unavailable\"); });\n",
+      "expectRed": "CONTROL: a barrier that fails after it began states no outcome, so the caller reads unknown",
+      "cell": "CONTROL: a barrier that fails after it began states no outcome, so the caller reads unknown"
+    }
+  ]
+}

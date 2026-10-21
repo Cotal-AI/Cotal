@@ -26,7 +26,7 @@ import {
   type Tone,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { c, presenceFacts } from "../ui.js";
