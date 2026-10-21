@@ -243,6 +243,27 @@ holder of the role. A stored sequence proves the broker accepted the request, no
 completed it alone. Work with side effects that must not repeat needs its own ownership or an
 idempotency key.
 
+### Reading only your own DMs
+
+A reader whose credential grants nothing but its own DM durable can still receive DMs. Construct
+`CotalEndpoint` with `dmOnly: { handler }`. The endpoint binds the existing
+`dm_<owner>-<actor>-<uid>` durable and reads nothing else: no presence, channel registry, channel
+subscription, delivery durable, history or JetStream account lookup. On the wire it sends only
+CONSUMER.INFO and MSG.NEXT for that durable and acks under its `$JS.ACK` subtree.
+
+It never creates the durable. A missing durable fails start with `dm-durable-missing`, and a
+refused bind fails with `dm-bind-refused`. No other credential is tried. Each DM passes the same
+sender check as every other durable read before the handler sees it, and the handler runs one DM at
+a time. A handler acks explicitly; a rejection leaves the copy for redelivery. `stop()` resolves
+after the running handler settles and the connection closes. When either cannot be proven, it
+throws and the caller keeps custody. After `stop()` begins, or after a reconnect replaces the
+connection, a copy the client already received never reaches the handler; it stays unacked and the
+broker redelivers it after the durable's ack wait. An ack, nak or in-progress signal from a handler
+whose connection has closed throws instead of being lost. The mode registers no presence, so the
+reader is not on the roster. Credential renewal and reconnects use the endpoint's normal paths.
+On a user-auth mesh, the `dm-reader` exchange view mints this credential
+([identity-and-auth.md](identity-and-auth.md)).
+
 ## Channel delivery
 
 Channel delivery has two wire-observable classes, fixed per channel

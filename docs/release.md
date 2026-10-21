@@ -6,6 +6,14 @@ Cotal uses [Changesets](https://github.com/changesets/changesets) to version and
 workspace packages under `packages/*`, `extensions/*`, and `implementations/*` to npm.
 `examples/**` is ignored, since it is not published.
 
+## CI policy
+
+Automatic smoke shards exclude mutation infrastructure suites and print each exclusion. The frozen
+inventory and ordinary suite assignments stay unchanged. Build, typecheck, protocol smokes and native
+cold-setup checks still run. The Mutation reproof and Windows creation identity workflows are disabled
+because they execute mutation proofs; do not re-enable them without an explicit operator request.
+Linux CI and Windows CI use the same filtered runner. Both were paused until this policy was merged.
+
 ## 0.11 runtime migration
 
 The published binary no longer bundles the optional tmux and cmux runtimes. Existing operators

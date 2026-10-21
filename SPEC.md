@@ -643,6 +643,13 @@ AFTER any inactive alias gap), and terminal retirement records the
 retirement frontier before the alias is freed, so a successor lifecycle never receives the
 predecessor's pending backlog nor messages published while no lifecycle was active (§13.1).
 
+A client MAY read its DM inbox with nothing but its own `dm_<owner>-<actor>-<uid>` durable. Such a
+reader MUST bind only an existing durable and MUST NOT create one; a missing durable is a refusal,
+not a fallback to any other credential or read path. It MUST apply the §5 sender check before any
+handler sees a message. Its native requests are CONSUMER.INFO and MSG.NEXT on that durable plus
+acks under `$JS.ACK.<DM>.<durable>.>`; it needs no presence, registry, channel, delivery, history
+or account-level JetStream row. The credential profile for such a reader is not defined here.
+
 Per-instance durable names use the principal's dash-form `<owner>-<actor>` (both tokens
 fail-loud-validated, not lossily sanitized), so a durable name-scopes to exactly one principal (§2).
 The authenticated wire identity is the principal, not the connection nkey. From v0.4, in auth mode,
@@ -761,6 +768,7 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
 | `transfer-writer` | one carried transcript's chunk and meta subjects in one manager instance's transfer bucket (§8) | a last-message Direct Get on those two subjects | one-shot per CLI call, minted after the transcript is hashed; no consumer and no other object |
+| `dm-reader` | `CONSUMER.INFO` and `CONSUMER.MSG.NEXT` on its own lifecycle-scoped `dm_…`, and its `$JS.ACK` subtree | own `_INBOX_<connId>.>` | no message publish, presence, channel, CHAT, `dlv_`, `$JS.API.INFO` or stream INFO row; bound to the bearer's expiry |
 | `transfer-reader` | the stock delete marker on its own transfer bucket's meta subjects | its own `OBJ_cotal_xfer_<space>_<instanceId>` stream: info, message get, its push consumer, purge | one-shot per `transcript-receive` or sweep; no other instance's bucket |
 | scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Appendix B summarizes them; the concrete grant lists are **generated from the §13.9 ownership matrix** into `provision.ts` (the matrix is the single oracle; `provision.ts` is its artifact, Appendix B its summary). |
 
@@ -950,6 +958,16 @@ On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`,
 managed-agent secret exchange MUST refuse every view other than `manager-caller`.
 The service-only `service-endpoint` view (§13.1) is not selectable on either ordinary exchange
 face. Its dedicated authority path checks native service custody rather than an enrolled actor row.
+The `dm-reader` view needs no ledger scope and MUST remain loopback-only. It rides only a
+purpose-bound IdP proof. The proof carries the bridge's dedicated `dmReaderAudience`, which is
+explicit configuration and MUST differ from the ordinary audience. It also carries
+`purpose: "dm-reader"` and the `actor`, `lifecycle` and `space` claims. The exchange MUST refuse
+unless the request names `view: "dm-reader"`, `actor` equals the requested actor, `lifecycle`
+equals the current ledger row's lifecycle UID, and `space` equals the bridge's space. Every other
+door that takes a human IdP proof MUST refuse any token carrying a `purpose` claim. At this release
+those are the other `/exchange` forms, `/manager-instances`, `/manager-service-authority`, the three
+chat-session routes, `/tool-result-human-proof/verify` and `/tool-result-consent/issue`. The
+bearer's expiry, and with it the connection's, is bounded by the proof's.
 
 **User-mode chat sessions.** The auth service is a minting authority for chat sessions only
 (§13.1). A signed-in human opens one with a fresh IdP proof and the SHA-256 of a holder secret the
@@ -6057,6 +6075,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-21 | **Own-DM-only reader (§8), additive.** A client may read its DM inbox holding only its own `dm_` durable: it binds an existing durable, never creates one, refuses when it is missing, keeps the §5 sender check, and issues only CONSUMER.INFO, MSG.NEXT and ack requests on that durable. No credential profile is added. |
 | 2026-10-21 | **Handler refusals before any effect (§13.3), additive.** A handler that refuses before its command's first effect has started SHOULD carry `not-executed`, and one that refuses after an effect may have started MUST NOT carry it. |
 | 2026-10-21 | **User-mode chat sessions (§10, §13.1, §13.9), additive.** The auth service becomes a minting authority for chat sessions only. It admits one session per holder hash under the human's own `cli` grant, pins that grant, issues bearers of at most 900 s that it re-checks before and after signing, and mints the plain `agent` leaf with the session's lists. Three auth-bucket writer families (`chatholder`, `chatowner`, `chatsweep.cursor`) join the trusted auth path. |
 | 2026-10-21 | **Retirement-only manager composition (§13.1), additive.** An optional composition takes its own per-instance liveness lease before reading any lifecycle, slot or gate row. It records each slot as retired, already-retired, skipped-not-owned or held, never counts the latter two as retired, and introduces no new principal, credential profile or grant. |
