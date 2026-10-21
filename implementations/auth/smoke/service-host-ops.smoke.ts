@@ -755,7 +755,10 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
       const row = await f.value(f.auth, asg(f, p.instanceId));
       c.check("I12 (S-26 T4 a) the late A2 leaves svcasg bound to the settled approve with a null cancel", row?.state === "bound" && row.cancel === null
         && (row.creation as { operationId: string }).operationId === opIdOf(f, x), row);
-      const ry = L(await e.handle(approveReq(f, p2))), t2 = await tomb(p2.proposalId);
+      const y2 = await writing(f, () => e.handle(approveReq(f, p2))), ry = L(y2.r), t2 = await tomb(p2.proposalId);
+      const closedAt = y2.writes.findIndex(W.closing(p2.proposalId)), releasedAt = y2.writes.findIndex((w) => w.key === "svccap.space");
+      c.check("I12 (S-26 T4 a, r3a §D) R-bound closes the proposal before it releases and issues no authority-increasing write", closedAt >= 0 && releasedAt > closedAt
+        && !y2.writes.some(authorityWrite(f, p.instanceId)), y2.writes.map((w) => w.key));
       c.check("I12 (S-26 T4 a) a later approve of the same selector ends R-bound: op refused{conflict}", ry.state === "refused" && ry.reason === "conflict", ry);
       c.check("I12 (S-26 T4 a, r3 §5.1 R-bound) its target proposal is closed refused{selector-bound} and released", t2?.kind === "service-proposal-terminal"
         && t2?.reason === "selector-bound" && !(await capHas(f, p2.proposalId)), t2);
