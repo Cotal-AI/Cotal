@@ -5405,8 +5405,10 @@ provenance remain fixed. A failed create is classified by a leader read of that 
 key. Matching bytes recover success, authoritative absence permits another same-callback
 attempt, and unreadable or conflicting state holds. The timer bounds waiting and starting
 further attempts, not broker acceptance of an already-issued publish. Such a publish may land
-later with the original frozen bytes. No new attempt or activation starts after the deadline,
-and earlier admission absence never proves that this pending effect cannot land.
+later with the original frozen bytes. No new admission attempt starts after the request budget
+or authority window ends. After admission, the activation check uses only the manager's remaining
+monotonic request budget, without rechecking the caller's wall-clock expiry. Earlier admission
+absence never proves that this pending effect cannot land.
 No later callback, duplicate, restart,
 operator or read repairs a binding-only submission.
 

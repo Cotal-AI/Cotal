@@ -37,8 +37,10 @@ host enforces.
 
 The original callback timer bounds waiting and starting more attempts. It does not cancel an
 already-issued broker publish, which may land later with the same frozen admission bytes.
-No new attempt or activation starts after the deadline. Keep the reservation even if an
-earlier read observed no admission.
+No new admission attempt starts after the request budget or authority window ends. Once an
+admission exists, the activation check uses only the manager's remaining monotonic request budget;
+it does not recheck the caller's wall-clock expiry. Keep the reservation even if an earlier read
+observed no admission.
 
 Submission state `activated` reports evidence of activation, including completed and failed
 runs. It is not a running-state or active-lane signal. Use native `run-status` for lifecycle

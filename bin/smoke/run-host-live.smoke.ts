@@ -396,7 +396,7 @@ try {
         recordedBy = (await readCheckpointAnswer(await openRecordsBucket(readNc, spaceA), "manager", renderedForm.token, renderedForm.answerId))?.by;
       } finally { await readNc.drain().catch(() => readNc.close()); }
     }
-    c("the addressed baseline seat's exact rendered command is accepted through the shipped CLI path as asked", renderedForm.ok && recordedBy === "asked", { renderedForm, recordedBy });
+    c("the addressed baseline seat's rendered command with --json is accepted through the shipped CLI path as asked", renderedForm.ok && recordedBy === "asked", { renderedForm, recordedBy });
     const answered = await until(async () => {
       const v = await status(runId);
       return v?.journal.some((row) => row.kind === "step" && row.step === "/ask:size#0" && row.state === "settled") ? v : undefined;
