@@ -453,7 +453,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing. A preview from an unprepared folder under the machine home reads that folder's empty policy rather than inheriting the home store; applying there requires `space create` first. |
 | `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. Without `-f`, that refusal is `DEPENDENCY_UNAVAILABLE` (exit 2) before anything is written, and for a known runtime the remedy names the `cotal ext add <pkg>` to run. With `-f`, overrides the manifest's runtime |
 | `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh and reused by every later manager launch, so a repair or resume does not silently drop back to 64. A running manager cannot change it: `cotal down` first, then `cotal up --max-sessions <n>` |
-| `--no-manager` | off | Broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager. A refresh under the flag of a mesh whose manager is live refuses rather than keeping or stopping it. For a controller stack, use `cotal service stop stack-manager --space <s> --yes` first; legacy meshes use `cotal down manager`. Cannot be combined with `--runtime`, `--max-sessions`, or an agent-declaring manifest |
+| `--no-manager` | off | Broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager. A refresh under the flag of a mesh whose manager is live refuses rather than keeping or stopping it. For a controller stack, use `cotal service stop stack-manager --space <s> --yes` first. A legacy stack has no command that stops only its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it broker-only. Cannot be combined with `--runtime`, `--max-sessions`, or an agent-declaring manifest |
 | `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open` |
 
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
@@ -471,7 +471,10 @@ stays fail-loud on collision. A background boot also brings up the control plane
 mode, then the manager). `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
 pidfile to leave stale. A refresh under the flag of a mesh whose manager is live refuses rather
-than keeping or stopping it: `cotal down manager` first. For a split topology with a manager, wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`, then `cotal down manager` on that
+than keeping or stopping it. Stop a controller stack's manager first with
+`cotal service stop stack-manager --space <s> --yes`. A legacy stack has no command that stops only
+its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it
+broker-only. For a split topology with a manager, wait for `.cotal/manager.<spaceKey>.log` to contain `✓ manager up`, then stop that manager the same way on that
 host and run [`supervise`](#supervise) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
@@ -833,12 +836,10 @@ a pidfile with no pin. Teardown, and a daemon removing its own record on exit, t
 remove the record only while the pidfile still names the pid they stopped, so a stop that races a
 publish leaves the new record whole.
 
-The web dashboard claims `web.pid` with an exclusive create, so a second dashboard for the same mesh
-is refused, and writes its pin right after the claim. A stop that runs between the two reads a
-legacy record. A refused claim calls the record stale, and points at `cotal down web`, only when the
-file is empty or its pid is proven gone. Content that is not a pid, or a pid whose liveness the
-kernel will not report, is refused as possibly fronting a running process, as `cotal down web`
-refuses it.
+The web dashboard service claims `web.pid` with an exclusive create, so a second dashboard for the
+same mesh is refused, and writes its pin right after the claim. A stop that runs between the two
+reads a legacy record. Any existing `web.pid` refuses the start, whether or not its process still
+runs, and the start neither adopts nor reclaims it.
 
 The pidfile pid and the pin pid are two coordinates. Automatic cleanup follows **proven death of
 the pidfile target** (ESRCH on that pid): a torn sibling pin does not wedge a dead pidfile pid.

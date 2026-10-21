@@ -423,9 +423,9 @@ could still hold them). If the claim's connections die mid-run, the service down
 loudly instead of serving from a half-dead plane.
 
 Ctrl-C on a foreground `up`, and a broker that exits under it, stop the service with the same stop
-`cotal down auth` uses. It holds the reservation `down` takes, so a concurrent `cotal down auth` is
-refused while it runs, and it sends SIGKILL to a service that has not exited 15 seconds after
-SIGTERM.
+bare `cotal down` uses for it. It holds the reservation `down` takes, so the auth stop of a
+concurrent `cotal down` is refused while it runs, and it sends SIGKILL to a service that has not
+exited 15 seconds after SIGTERM. A legacy stack has no command that stops only the auth service.
 
 **Your agents are yours.** `cotal spawn` on a user mesh grants a managed actor under the
 *spawning operator's* owner and launches the agent with a bearer command instead of a

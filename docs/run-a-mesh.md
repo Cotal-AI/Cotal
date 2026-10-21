@@ -77,7 +77,10 @@ its config.
 A broker-only host is a first-class `up` mode. `cotal up --no-manager` boots the broker and, in
 auth mode, the delivery daemon, and no local manager, so the broker host never has a manager to
 stop and never leaves a manager slot stale. A refresh under the flag of a mesh whose manager is
-live refuses rather than keeping or stopping it: `cotal down manager` first. Without the flag,
+live refuses rather than keeping or stopping it. Stop a controller stack's manager first with
+`cotal service stop stack-manager --space <s> --yes`. A legacy stack has no command that stops only
+its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it
+broker-only. Without the flag,
 auth-mode `up` still starts nats, the delivery daemon, and a
 local manager. A space may run more than one manager, addressed by instance id
 ([control surface](control-surface.md#instance-routing)); putting no manager on the broker host
@@ -105,7 +108,7 @@ the background:` with `manager` listed once the manager pidfile is live; stop th
 only after the `✓ manager up` line. A host started WITH `--no-manager` never runs one, so neither
 the wait nor the stop applies there. That detach stdout is not a safe teardown boundary: it is
 pidfile liveness, not `✓ manager up`. `✓ manager up` is supervise's post-start line after
-`await mgr.start()`. `cotal down manager` after only the detach line can still default-terminate
+`await mgr.start()`. Stopping the manager after only the detach line can still default-terminate
 the child during registration after it has taken the governance slot. Stopping before that
 post-start log line can leave the endpoint governance slot held until the holder's gate
 reopens past the stamp (the successor's boot heal, or
@@ -314,9 +317,9 @@ also probe the broker URL from the manager host and monitor the manager's own se
 manager cannot observe the broker host's delivery PID, and an `active` unit on either host says
 nothing about the other host.
 
-Stop one part without tearing down the mesh by naming its registered component: `cotal down
-manager`, `cotal down delivery`, or `cotal down web`. Component names from installed extensions
-join the same surface; `cotal down` with no names retains whole-stack behavior and
+A legacy stack has no command that stops one of its parts without tearing down the mesh. A named
+`cotal down <name>` stops a saved service definition, such as a controller stack's `stack-manager`
+or a `web` service, and never one legacy component. Bare `cotal down` stops the whole stack and
 leaves managed agents running as unmanaged OS processes, except pty seats, which stop with the
 manager. `cotal down --with-agents` is the previous reap. If a pinned manager has no
 spare-capability record, stop its managed agents explicitly before running that whole-stack

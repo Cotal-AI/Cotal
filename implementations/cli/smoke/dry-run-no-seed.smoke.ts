@@ -11,8 +11,9 @@
  * XDG_CONFIG_HOME, so nothing here touches the developer's real store:
  *   1. the exact incident invocation — an invalid `--dry-run` combination — refuses AND leaves the
  *      config dir untouched (no seed store, no manifest, no npm prefix);
- *   2. a VALID dry run (`down --dry-run`) plans, prints and exits 0 while writing nothing, so the
- *      guard is about dry runs rather than about this one usage error.
+ *   2. a VALID dry run (`down --dry-run`) reaches the command body, whose preview refuses this
+ *      empty sandbox, while writing nothing, so the guard is about dry runs rather than about this
+ *      one usage error.
  * The same gate must not capture `agent-bearer` either: it is the machine-facing helper a spawned
  * seat execs on EVERY bearer refresh (read one 0600 token file, exchange, print, exit), so a
  * newer-generation stamp must not refuse it (#1857) and a matching one must not make a credential
@@ -104,16 +105,16 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
 }
 
 // ── 2. a VALID dry run reaches the command body while writing nothing ─────────────────────────────
-// In an isolated sandbox there is no stack to stop, so `down --dry-run` reports exactly that. That
-// is still the cell that matters here: reaching the command body at all proves the boot gate was
-// skipped for a well-formed dry run too, not merely for the one that fails validation. The writes
-// are asserted by the shared `cotal()` helper above.
+// In an isolated sandbox there is no stack record, so the bare preview refuses CONFLICT, exit 2.
+// That is still the cell that matters here: the refusal comes from the command body, so reaching it
+// proves the boot gate was skipped for a well-formed dry run too, not merely for the one that fails
+// validation. The writes are asserted by the shared `cotal()` helper above.
 {
   const r = cotal(["down", "--dry-run"]);
   const out = `${r.stdout}${r.stderr}`;
   check(
     "a valid dry run reaches the command body",
-    /Nothing running for the local stack|Dry run - nothing was changed/.test(out),
+    r.status === 2 && /could not be inspected consistently; no stop target was inferred/.test(out),
     { status: r.status, out: out.slice(0, 400) },
   );
   check(

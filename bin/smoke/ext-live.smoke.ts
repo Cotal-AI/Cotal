@@ -14,7 +14,7 @@
  *     regular dependency, missing core peerDep, an @cotal-ai/* peer the binary doesn't carry,
  *     zero registrations. A multi-peer extension gets BOTH core and workspace linked (E2).
  *  F. non-command providers: runtime-only install + lazy supervise resolution; a contributed
- *     local process participates in selective down, while core components stay independent.
+ *     local process is not a named `down` target, and only bare `down` stops it, with the stack.
  *  E3. aliases: an extension's alias runs its command; an alias or name a built-in or another
  *     installed extension already claims fails the add.
  *  G. remove: commands leave the surface; the manifest empties.
@@ -24,13 +24,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import {
-  canonicalLocalProcessPath,
-  defaultStartToken,
-  MANAGER_DELIVERY_AWARE_MARKER,
-  MANAGER_PIDFILE,
-  MANAGER_SPARE_CAPABILITY,
-} from "@cotal-ai/workspace";
+import { recordMesh } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // macOS commonly exposes tmpdir() through /var -> /private/var (and this harness may add another
@@ -41,6 +35,8 @@ const configDir = join(sandbox, "xdg");
 const home = join(sandbox, "home");
 mkdirSync(configDir, { recursive: true });
 mkdirSync(home, { recursive: true });
+// The in-process registry write in F goes to the same sandboxed home as the CLI's; it is read per call.
+process.env.COTAL_HOME = home;
 // COTAL_HOME isolates only the registry; CLI project-root resolution still walks for `.cotal`.
 mkdirSync(join(sandbox, ".cotal"), { recursive: true });
 const sandboxAnchor = recordSmokeSandbox({ root: sandbox, cotalHome: home, xdgConfigHome: configDir });
@@ -425,7 +421,7 @@ registry.register({
   ok("failed add rollback preserves older private peer links", afterRollback.status === 0 && afterRollback.stdout.includes("WS-OK"), afterRollback.stdout + afterRollback.stderr);
 }
 
-// -- F: non-command providers + selective process shutdown -----------------------------------------
+// -- F: non-command providers + whole-stack process shutdown ---------------------------------------
 {
   const loaded = join(sandbox, "runtime-loaded");
   const PROVIDERS = `import { writeFileSync } from "node:fs";
@@ -466,7 +462,7 @@ registry.register(
   ok("local-process metadata is cached declaratively", providerEntry.localProcesses[0].pidFile === "fixture.pid" && providerEntry.localProcesses[0].artifacts[0] === "fixture.secret", providerEntry);
   rmSync(loaded, { force: true });
   const downCompletion = cotal(["__complete", "down", ""]);
-  ok("selective down completes installed process providers without importing", downCompletion.status === 0 && /fixture-worker/.test(downCompletion.stdout) && !existsSync(loaded), downCompletion.stdout + downCompletion.stderr);
+  ok("down completion offers saved services, never installed process providers, and imports nothing", downCompletion.status === 0 && !/fixture-worker/.test(downCompletion.stdout) && !existsSync(loaded), downCompletion.stdout + downCompletion.stderr);
   const supervise = cotal(["supervise", "--runtime", "fixture-runtime", "--server", "nats://127.0.0.1:1"]);
   ok("supervise lazy-loads an installed runtime provider", supervise.status === 1 && existsSync(loaded) && /Can't reach NATS/.test(supervise.stderr) && !/unknown runtime/.test(supervise.stderr), supervise.stderr.slice(-400));
 
@@ -483,81 +479,37 @@ registry.register(
   const alive = (pid: number): boolean => {
     try { process.kill(pid, 0); return true; } catch { return false; }
   };
-  const managerContext = { root: sandbox, space: "main" };
-  const managerPidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, managerContext);
-  const managerDeliveryAwarePath = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, managerContext);
-  const managerSpareCapabilityPath = canonicalLocalProcessPath(MANAGER_SPARE_CAPABILITY, managerContext);
-  const recordManager = (pid: number): void => {
-    const token = defaultStartToken(pid);
-    if (!token) throw new Error(`fixture could not read the process start token for manager pid ${pid}`);
-    writeFileSync(managerPidPath, String(pid));
-    writeFileSync(`${managerPidPath}.identity`, `${pid} ${token}`);
-    writeFileSync(managerSpareCapabilityPath, JSON.stringify({ version: 1, process: { pid, token } }));
-  };
-  writeFileSync(managerPidPath, "");
-  const invalidPid = cotal(["down", "manager"]);
-  ok("empty pidfiles are cleaned without signalling PID 0", invalidPid.status === 0 && /empty pidfile/.test(invalidPid.stdout) && !existsSync(managerPidPath), invalidPid.stdout + invalidPid.stderr);
+  // A named `down` is a service stop. An installed provider's process, a core component and a typo
+  // are all unknown saved services here, so each refuses before any process is signalled or any
+  // artifact deleted.
+  const fixturePid = daemon();
+  writeFileSync(join(sandbox, ".cotal", "fixture.pid"), String(fixturePid));
+  writeFileSync(join(sandbox, ".cotal", "fixture.secret"), "keep");
+  for (const name of ["fixture-worker", "manager", "nats", "managre"]) {
+    const named = cotal(["down", name]);
+    ok(`named down ${name} refuses as an unknown saved service and signals nothing`,
+      named.status === 2 && /no saved service definition resolves this name/.test(named.stderr) && alive(fixturePid) && existsSync(join(sandbox, ".cotal", "fixture.secret")),
+      named.stdout + named.stderr);
+  }
 
+  // Only bare `down` reaches an extension's process, together with the stack, and it needs the
+  // stack's own `up` registration. `meshes add` above recorded a manual one, so this replaces it.
+  recordMesh({ space: "main", server: "nats://127.0.0.1:1", root: sandbox, mode: "open", origin: "up", ts: "2026-07-27T00:00:00.000Z" });
+
+  // A refused component stops the sweep before the broker, and keeps its artifacts and the registration.
   const reservationOwner = daemon();
   writeFileSync(join(sandbox, ".cotal", "fixture.pid"), `removing:${reservationOwner}`);
-  writeFileSync(join(sandbox, ".cotal", "fixture.secret"), "keep");
-  const reservedDown = cotal(["down", "fixture-worker"]);
-  ok("down never signals a removal reservation or deletes its artifacts", reservedDown.status === 1 && /removal is in progress/.test(reservedDown.stderr) && alive(reservationOwner) && existsSync(join(sandbox, ".cotal", "fixture.secret")), reservedDown.stdout + reservedDown.stderr);
-  rmSync(join(sandbox, ".cotal", "fixture.pid"), { force: true });
+  const reservedDown = cotal(["down"]);
+  ok("bare down never signals a removal reservation or deletes its artifacts",
+    reservedDown.status === 1 && /removal is in progress/.test(reservedDown.stderr) && alive(reservationOwner) && existsSync(join(sandbox, ".cotal", "fixture.secret")),
+    reservedDown.stdout + reservedDown.stderr);
   try { process.kill(reservationOwner, "SIGTERM"); } catch { /* gone */ }
 
-  const fixturePid = daemon();
-  let managerPid = daemon();
-  const natsPid = daemon();
   writeFileSync(join(sandbox, ".cotal", "fixture.pid"), String(fixturePid));
-  recordManager(managerPid);
-  writeFileSync(managerDeliveryAwarePath, String(managerPid));
-  writeFileSync(join(sandbox, ".cotal", "nats.pid"), String(natsPid));
-
-  const dry = cotal(["down", "manager", "--dry-run"]);
-  ok("selective down dry-run is non-destructive", dry.status === 0 && alive(managerPid) && existsSync(managerPidPath) && /nothing was changed/i.test(dry.stdout), dry.stdout + dry.stderr);
-  const brokerOnly = cotal(["down", "nats"]);
-  ok("down nats refuses to orphan live dependants", brokerOnly.status === 1 && /cannot stop nats/.test(brokerOnly.stderr) && alive(natsPid) && alive(managerPid), brokerOnly.stdout + brokerOnly.stderr);
-  const typo = cotal(["down", "managre"]);
-  ok("unknown down component names list known components", typo.status === 1 && /unknown component/.test(typo.stderr) && /manager/.test(typo.stderr), typo.stderr);
-
-  writeFileSync(`${managerPidPath}.stopping`, "0");
-  const staleStopping = cotal(["down", "manager"]);
-  ok("stale shutdown ownership is reclaimed", staleStopping.status === 0 && !alive(managerPid) && !existsSync(`${managerPidPath}.stopping`), staleStopping.stdout + staleStopping.stderr);
-
-  managerPid = daemon();
-  recordManager(managerPid);
-  writeFileSync(managerDeliveryAwarePath, String(managerPid));
-
-  const one = cotal(["down", "manager"]);
-  ok("down manager stops only the manager", one.status === 0 && !alive(managerPid) && alive(natsPid) && alive(fixturePid), one.stdout + one.stderr);
-  ok("selective down removes only manager-owned files", !existsSync(managerPidPath) && !existsSync(managerDeliveryAwarePath) && existsSync(join(sandbox, ".cotal", "nats.pid")), one.stdout);
-
-  const slowReady = join(sandbox, "slow-manager-ready");
-  const slowManagerPid = daemon(`const fs = require("node:fs"); process.on("SIGTERM", () => setTimeout(() => process.exit(0), 5000)); fs.writeFileSync(${JSON.stringify(slowReady)}, "ready"); setInterval(() => {}, 1000);`);
-  for (let i = 0; i < 50 && !existsSync(slowReady); i++) await sleep(20);
-  recordManager(slowManagerPid);
-  writeFileSync(managerDeliveryAwarePath, String(slowManagerPid));
-  const concurrentOptions = { env, cwd: sandbox };
-  assertSmokeSandboxDown(sandboxAnchor, ["down", "manager"], concurrentOptions);
-  const concurrentDown = spawn(realNode, [tsxCli, binCotal, "down", "manager"], concurrentOptions);
-  let concurrentOut = "";
-  let concurrentErr = "";
-  concurrentDown.stdout?.on("data", (data: Buffer) => (concurrentOut += data.toString()));
-  concurrentDown.stderr?.on("data", (data: Buffer) => (concurrentErr += data.toString()));
-  const concurrentExit = new Promise<number | null>((resolve) => concurrentDown.once("exit", resolve));
-  const stopping = `${managerPidPath}.stopping`;
-  for (let i = 0; i < 100 && !existsSync(stopping); i++) await sleep(20);
-  const duplicateDown = cotal(["down", "manager"]);
-  ok("concurrent down preserves live-process artifacts", duplicateDown.status === 1 && /already being stopped/.test(duplicateDown.stderr) && existsSync(managerDeliveryAwarePath), duplicateDown.stdout + duplicateDown.stderr);
-  const race = cotal(["down", "nats"]);
-  const concurrentStatus = await concurrentExit;
-  ok("down nats stays blocked while a dependant is concurrently stopping", existsSync(stopping) === false && race.status === 1 && /cannot stop nats/.test(race.stderr) && concurrentStatus === 0 && alive(natsPid), race.stdout + race.stderr + concurrentOut + concurrentErr);
-
-  const extensionPart = cotal(["down", "fixture-worker"]);
-  ok("an installed extension contributes a down component", extensionPart.status === 0 && !alive(fixturePid) && alive(natsPid) && !existsSync(join(sandbox, ".cotal", "fixture.secret")), extensionPart.stdout + extensionPart.stderr);
   const whole = cotal(["down"]);
-  ok("bare down keeps whole-stack behavior", whole.status === 0 && !alive(natsPid) && !existsSync(join(sandbox, ".cotal", "nats.pid")), whole.stdout + whole.stderr);
+  ok("bare down stops an installed extension's process with the stack and clears its artifacts",
+    whole.status === 0 && !alive(fixturePid) && !existsSync(join(sandbox, ".cotal", "fixture.pid")) && !existsSync(join(sandbox, ".cotal", "fixture.secret")),
+    whole.stdout + whole.stderr);
   ok("provider extension removes cleanly", cotal(["ext", "remove", "cotal-ext-providers"]).status === 0);
 }
 

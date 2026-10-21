@@ -1229,14 +1229,16 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // `--no-manager` on a refresh whose manager is LIVE is the same class of refusal: this branch
       // starts nothing, so the flag cannot apply, and silently keeping the manager would answer a
       // broker-only ask with a full stack while silently stopping it would kill agents this command
-      // was never asked to touch. Same shape as `--runtime`/`--max-sessions` above: refuse, name the
-      // exact remedy. A refresh of a mesh whose manager is NOT live simply proceeds broker-only.
+      // was never asked to touch. Same shape as `--runtime`/`--max-sessions` above: refuse and name the
+      // remedy. This launcher's stack has no manager-only stop, so the remedy is the whole-stack stop
+      // and a broker-only start. A refresh of a mesh whose manager is NOT live simply proceeds
+      // broker-only.
       if (noManager) {
         const live = managerRecordState(undefined, undefined, held.space);
         if (live.state === "alive") {
           console.error(
             c.red(
-              `✗ mesh "${held.space}" is already running at ${server} with a live manager - \`cotal up --no-manager\` will not keep or stop one; \`cotal down manager\` first, then \`cotal up --no-manager\``,
+              `✗ mesh "${held.space}" is already running at ${server} with a live manager - \`cotal up --no-manager\` will not keep or stop one, and this stack has no command that stops only its manager; \`cotal down\` stops the whole stack, then \`cotal up --no-manager --space ${held.space}\` starts it broker-only`,
             ),
           );
           process.exit(1);

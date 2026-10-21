@@ -182,8 +182,9 @@ initialization phase does not prove a new authenticated health response; user-au
 and OS installation remain unsupported. See [dashboard setup](watch-a-mesh.md#web-dashboard).
 
 All recorded local processes self-register `local-process` descriptors. Bare `cotal down` resolves
-the full set and stops it in dependency order; `cotal down manager` (or another component name)
-selects only that descriptor. Installed extensions cache their contributed registry keys, so the
+the full set and stops it in dependency order. No command selects one descriptor: a named
+`cotal down <name>` stops a saved service definition. Installed extensions cache their contributed
+registry keys, so the
 base CLI does not hardcode optional package pidfiles.
 
 Each recorded pidfile also carries a sibling `<pidfile>.identity` pin (pid plus the process's
