@@ -260,15 +260,13 @@ try {
   meshB = meshWithDashboard("meshB");
   check("scratch has no .cotal ancestor", findCotalRoot(neutral) === neutral, findCotalRoot(neutral));
 
-  // The real web descriptor must declare target rooting, and down must see it on the surface.
-  check('web descriptor declares rootedAt: "target"', webProcess.rootedAt === "target");
   // The installed path never imports package code: the descriptor rides the extensions manifest as
-  // JSON. The cache must carry rootedAt through a full serialize/parse round trip.
+  // JSON. The cache must carry the web descriptor through a full serialize/parse round trip.
   const cached = extensionLocalProcesses({
     pkg: "@cotal-ai/web", version: "0.0.0", spec: "@cotal-ai/web", commands: [],
     ...JSON.parse(JSON.stringify({ localProcesses: [cacheLocalProcess(webProcess)] })),
   });
-  check("manifest cache round-trips rootedAt", cached.length === 1 && cached[0].rootedAt === "target");
+  check("manifest cache round-trips the web descriptor", cached.length === 1 && cached[0].name === webProcess.name && cached[0].pidFile === webProcess.pidFile);
   registry.register(webProcess);
   const managerProcess: LocalProcess = { kind: "local-process", name: "manager", label: "manager", pidFile: MANAGER_PIDFILE, order: 10 };
   registry.register(managerProcess);

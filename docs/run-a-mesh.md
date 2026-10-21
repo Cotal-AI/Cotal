@@ -317,7 +317,10 @@ also probe the broker URL from the manager host and monitor the manager's own se
 manager cannot observe the broker host's delivery PID, and an `active` unit on either host says
 nothing about the other host.
 
-A legacy stack has no command that stops one of its parts without tearing down the mesh. A named
+A legacy stack has no command that stops one of its parts without tearing down the mesh. To stop
+parts on their own, use a controller stack: a space prepared by this release with `cotal setup` or
+`cotal space create` starts as one, and `cotal service stop <name> --space <s> --yes` stops one of
+its services. An existing legacy root keeps its own launcher, and nothing moves it in place. A named
 `cotal down <name>` stops a saved service definition, such as a controller stack's `stack-manager`
 or a `web` service, and never one legacy component. Bare `cotal down` stops the whole stack and
 leaves managed agents running as unmanaged OS processes, except pty seats, which stop with the
