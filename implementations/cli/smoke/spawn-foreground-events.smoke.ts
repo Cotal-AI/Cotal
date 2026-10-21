@@ -178,8 +178,9 @@ async function run(argv: string[]): Promise<{ opts?: LaunchOpts; exited?: number
 }
 
 /** The open-mesh runs of this suite's original cells: one target, one persona, extra flags. */
+// Public --config is now reserved and a bare spawn is a managed attach, so the foreground path is --foreground --file.
 const openRun = (extra: string[]): Promise<{ opts?: LaunchOpts; exited?: number; stderr: string }> =>
-  run(["spawn", "--config", persona, "--server", server, "--space", "fgevents", ...extra]);
+  run(["spawn", "--foreground", "--file", persona, "--server", server, "--space", "fgevents", ...extra]);
 
 console.log("cotal spawn (foreground): the launch bag an armed session needs");
 
@@ -269,7 +270,8 @@ try {
   registry.unregister("auth-provider", cotalAuthProvider.name);
   registry.register(provisioningDouble);
   {
-    const r = await run(["spawn", "--config", persona, "--server", server, "--space", "fgremote", "--agent", "fg-probe-live"]);
+    // The same foreground spelling as openRun: --config is reserved for internal launch callers.
+    const r = await run(["spawn", "--foreground", "--file", persona, "--server", server, "--space", "fgremote", "--agent", "fg-probe-live"]);
     // CONTROL for this arm: the run must have completed a real launch (the live probe ran, the
     // child was spawned and reaped), or the sentence cells below would pass on a refusal that
     // never printed anything.

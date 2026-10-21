@@ -19,8 +19,13 @@ export function localRecordName(name: string): string {
   return name;
 }
 
-function supported(): void {
-  if (process.platform === "win32" || process.getuid === undefined || constants.O_NOFOLLOW === undefined || constants.O_NONBLOCK === undefined)
+/** Whether this platform has the owner, no-follow and nonblocking file access protected records need. */
+export function protectedFileAccessAvailable(): boolean {
+  return process.platform !== "win32" && process.getuid !== undefined && constants.O_NOFOLLOW !== undefined && constants.O_NONBLOCK !== undefined;
+}
+
+export function assertProtectedFileAccess(): void {
+  if (!protectedFileAccessAvailable())
     throw new CommandFailure("refused", "UNSUPPORTED", "protected workstation file access is not available on this platform in this author preview; no weaker file access was substituted");
 }
 
@@ -32,7 +37,7 @@ function privateDirectory(path: string): void {
 
 /** Open nonblocking/no-follow, establish a regular descriptor, then read only bounded bytes. */
 export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, privateFile = false): Buffer | undefined {
-  supported();
+  assertProtectedFileAccess();
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) {
@@ -246,7 +251,7 @@ export function assertProtectedEntry(what: string, path: string, stat: EntryStat
 /** Verify an existing physical directory chain before using a protected private output path.
  *  `what` names the path for the refusal, such as "the project root". */
 export function protectedLocalDirectory(path: string, what = "the path", policy?: ProtectedPathPolicy): void {
-  supported();
+  assertProtectedFileAccess();
   let parent = path;
   for (;;) {
     const directory = lstatSync(parent);
@@ -259,7 +264,7 @@ export function protectedLocalDirectory(path: string, what = "the path", policy?
 }
 
 export function protectedCredentialReference(path: string): void {
-  supported();
+  assertProtectedFileAccess();
   try {
     const stat = lstatSync(path);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the referenced credential must be an owned private regular file; its bytes were not read");
@@ -295,7 +300,7 @@ export class ProtectedRecordStore<T> {
   ) {}
 
   directory(create = false): string | undefined {
-    supported();
+    assertProtectedFileAccess();
     const home = homeCotalDir();
     try { privateDirectory(home); }
     catch (error) {

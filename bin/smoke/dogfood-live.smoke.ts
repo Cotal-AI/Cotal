@@ -141,7 +141,7 @@ try {
     const foregroundPid = Number(readFileSync(join(root, ".cotal", "web.pid"), "utf8").trim());
     ok("live /api/meta answers with the mesh's space and serving pid", meta.space === SPACE && meta.pid === foregroundPid && alive(foregroundPid), meta);
     const removeLive = cotal(["ext", "remove", "@cotal-ai/web"]);
-    ok("ext remove refuses to orphan a running web process", removeLive.status === 1 && /cotal down web/.test(removeLive.stderr), removeLive.stderr.slice(-400));
+    ok("ext remove refuses to orphan a running web process and names its pid", removeLive.status === 1 && /web \(pid \d+\) in .+ - stop pid \d+, then retry/.test(removeLive.stderr), removeLive.stderr.slice(-400));
     const webDown = cotal(["down", "web", "--space", SPACE]);
     if (webChild.exitCode === null)
       await Promise.race([new Promise<void>((resolve) => webChild!.once("exit", () => resolve())), sleep(2_000)]);

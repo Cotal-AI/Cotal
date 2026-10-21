@@ -2,12 +2,12 @@
  * `down -f` USER-MODE teardown live smoke — the crashed-manager residual (found in review of the
  * per-agent seam migration, and hit for real when a mesh supervisor died mid-flight):
  *
- *   user-mode manifest deploy (`spawn -f`) → the manager is SIGKILLed before any deprovision runs
- *   (its lease key lingers to the bucket TTL) → a FRESH supervisor answers control with an empty
- *   roster → `down -f`. The dead agent resolves as "not running", and before the fix the local
- *   cred loop knew only the static `<name>.creds`, so it read the user-mode agent as "proven
- *   absent": the ledger was deleted while the actor token, sentinel cred, and provider grant row
- *   (the standing MINT authority) survived, with no scoped retry record left.
+ *   user-mode deploy recorded in a `spawn -f` ownership ledger → the manager is SIGKILLed before any
+ *   deprovision runs (its lease key lingers to the bucket TTL) → a FRESH supervisor answers control
+ *   with an empty roster → `down -f`. The dead agent resolves as "not running", and before the fix
+ *   the local cred loop knew only the static `<name>.creds`, so it read the user-mode agent as
+ *   "proven absent": the ledger was deleted while the actor token, sentinel cred, and provider grant
+ *   row (the standing MINT authority) survived, with no scoped retry record left.
  *
  * Asserts the FIXED behavior: teardown recognizes the ledgered principal id as user-mode, revokes
  * the grant row (owner+actor-keyed), deletes the token + sentinel through the secret-store seam,
@@ -16,6 +16,12 @@
  * place while STILL revoking the grant row, so completion never deletes the ledger over standing
  * authority.
  *
+ * `spawn -f <manifest>` no longer deploys (it takes a persona file) and `team deploy` refuses a user
+ * mesh, so nothing current writes that ledger. `down -f` stays the retained route for a ledger an
+ * earlier release wrote (docs/UPGRADING.md, "Team commands in 0.91.0"), and this suite now guards
+ * that upgrade path: each agent launches through `spawn --detach` from a persona, and the suite writes
+ * the cotal-ledger/v1 file a pre-redesign `spawn -f` of the manifest would have left for it.
+ *
  * Real binary, real broker, real Better Auth IdP, real device login; the worker boots a real
  * `claude` connector child (killed immediately), so the claude CLI must be on PATH. Kills only
  * what it starts. Needs nats-server on PATH; `pnpm build` first (subprocesses run built dist).
@@ -23,9 +29,10 @@
  */
 import { spawn } from "node:child_process";
 import { execSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalLocalProcessPath, MANAGER_PIDFILE } from "@cotal-ai/workspace";
@@ -49,6 +56,7 @@ const childEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir,
 
 const { establishIdpSession } = await import("../src/index.js");
 const { agentCredsDir } = await import("@cotal-ai/workspace");
+const { buildLedger, buildLedgerAgentRow, hashManifestSource, writeLedger } = await import("../../cli/src/lib/manifest/ledger.js");
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
 
 let pass = 0, fail = 0;
@@ -65,17 +73,44 @@ const CLIENT_ID = "cotal-cli";
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
 const CLAUDE = join(import.meta.dirname, "..", "..", "..", "extensions", "connector-claude-code");
 
-function cotal(args: string[], opts: { timeoutMs?: number } = {}): Promise<{ status: number | null; out: string }> {
+function cotal(args: string[], opts: { timeoutMs?: number } = {}): Promise<{ status: number | null; out: string; stdout: string }> {
   return new Promise((resolvePromise) => {
     const options = { cwd: root, env: childEnv };
     assertSmokeSandboxDown(sandbox, args, options);
     const child = spawn(TSX, [BIN, ...args], options);
-    let out = "";
-    child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+    let out = "", stdout = "";
+    child.stdout.on("data", (d: Buffer) => { out += d.toString(); stdout += d.toString(); });
     child.stderr.on("data", (d: Buffer) => { out += d.toString(); });
     const t = setTimeout(() => child.kill("SIGKILL"), opts.timeoutMs ?? 120_000);
-    child.on("close", (status) => { clearTimeout(t); resolvePromise({ status, out }); });
+    child.on("close", (status) => { clearTimeout(t); resolvePromise({ status, out, stdout }); });
   });
+}
+
+/** Launch `name` with `spawn --detach` from a persona that pins the claude connector, then write the
+ *  cotal-ledger/v1 file a pre-redesign `spawn -f <manifest>` would have left for it: one agent row
+ *  carrying the joined name, principal id and lifecycle uid from the launch receipt, indexed by the
+ *  manifest's content hash so `down -f <manifest>` finds it. Nothing is written when the launch did
+ *  not return a joined identity, so the cells below report that instead. */
+async function launchWithPreRedesignLedger(name: string, manifest: string, timeoutMs: number) {
+  const persona = `---\nname: ${name}\nagent: claude\n---\nIdle ${name} for the teardown repro.\n`;
+  mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(root, ".cotal", "agents", `${name}.md`), persona);
+  const run = await cotal(["spawn", name, "--detach", "--space", SPACE, "--json"], { timeoutMs });
+  let joined: { name: string; id: string; lifecycleUid: string } | undefined;
+  try {
+    type Receipt = { outcome?: string; result?: { name?: unknown; id?: unknown; lifecycleUid?: unknown } | null };
+    const envelope = JSON.parse(run.stdout.trim().split("\n").pop() ?? "") as Receipt;
+    const r = envelope.result;
+    if (envelope.outcome === "ok" && r && typeof r.name === "string" && typeof r.id === "string" && typeof r.lifecycleUid === "string")
+      joined = { name: r.name, id: r.id, lifecycleUid: r.lifecycleUid };
+  } catch { /* not one receipt; the launch cell prints the output */ }
+  if (run.status === 0 && joined)
+    writeLedger(root, buildLedger({
+      runId: randomBytes(8).toString("hex"), space: SPACE, server: SERVER,
+      manifestHash: hashManifestSource(readFileSync(manifest, "utf8")), manifestPath: manifest, channels: [],
+      agents: [buildLedgerAgentRow({ requested: name, hash: hashManifestSource(persona) }, joined)],
+    }));
+  return { ...run, joined };
 }
 
 // ---------- real Better Auth IdP ----------
@@ -124,13 +159,15 @@ try {
   });
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "repro human"]);
   check("actor grant cli succeeds", grant.status === 0 && grant.out.includes("Actor grant stored"), grant.out.slice(-400));
-  // Isolated XDG + skip-seed: this suite is not a first-run seeder. `spawn -f`
+  // Isolated XDG + skip-seed: this suite is not a first-run seeder. The worker
   // still boots a `claude` child, so install THIS WORKTREE's connector into the
   // sandbox prefix, never the operator store.
   const extAdd = await cotal(["ext", "add", CLAUDE]);
   check("sandbox ext add of the worktree claude connector succeeds", extAdd.status === 0, extAdd.out);
 
-  console.log("3) user-mode manifest deploy (spawn -f)");
+  console.log("3) user-mode launch (spawn --detach) + the ledger a pre-redesign `spawn -f` left");
+  // The manifest an earlier release deployed with `spawn -f`; `down -f` finds its ledger by this
+  // file's content hash.
   const manifest = join(root, "mesh.yaml");
   writeFileSync(manifest, `apiVersion: cotal/v1
 kind: Mesh
@@ -142,8 +179,8 @@ agents:
   worker:
     instructions: "Idle worker for the teardown repro."
 `);
-  const deploy = await cotal(["spawn", "-f", manifest], { timeoutMs: 180_000 });
-  check("spawn -f exits 0 and launched worker", deploy.status === 0 && /launched worker/.test(deploy.out), deploy.out.slice(-1200));
+  const deploy = await launchWithPreRedesignLedger("worker", manifest, 180_000);
+  check("spawn --detach exits 0 and its receipt names the joined worker", deploy.status === 0 && deploy.joined?.name === "worker", deploy.out.slice(-1200));
 
   // This mesh's own segment (P1), not the bare creds dir: the manager files its incarnations under
   // the space it supervises, so a scan of the flat level finds nothing and every "gone" check below
@@ -163,7 +200,7 @@ agents:
   check("no static creds file was written (user mode)", !existsSync(incFile("worker", "creds")) && !existsSync(join(credsDir, "worker.creds")));
   const manifestsDir = join(root, ".cotal", "manifests");
   const ledgers = readdirSync(manifestsDir).filter((f) => f.endsWith(".json"));
-  check("exactly one ownership ledger exists", ledgers.length === 1, ledgers);
+  check("exactly one ownership ledger exists (the stand-in for a pre-redesign `spawn -f` ledger)", ledgers.length === 1, ledgers);
   const ledger = JSON.parse(readFileSync(join(manifestsDir, ledgers[0]), "utf8")) as { created: { agents: Array<{ name: string; id: string }> } };
   const entry = ledger.created.agents.find((a) => a.name === "worker");
   check("ledger id is the user-mode principal (u_….worker)", /^u_[a-z2-7]{26}\.worker$/.test(entry?.id ?? ""), entry);
@@ -214,7 +251,7 @@ agents:
   // ---- scenario B: a SUSPECT materialization must never shield the grant row ----
   // (round-2 panel gate: symlink/irregular token or sentinel → files left in place, but the row
   // is STILL revoked and completion may proceed, because nothing standing survives.)
-  console.log("7) second deploy, crash, TAMPERED token (symlink): row revoked, ledger completes, files left");
+  console.log("7) second launch + ledger, crash, TAMPERED token (symlink): row revoked, ledger completes, files left");
   const manifest2 = join(root, "mesh2.yaml");
   writeFileSync(manifest2, `apiVersion: cotal/v1
 kind: Mesh
@@ -226,8 +263,9 @@ agents:
   worker2:
     instructions: "Second worker for the suspect-materialization boundary."
 `);
-  const deploy2 = await cotal(["spawn", "-f", manifest2], { timeoutMs: 180_000 });
-  check("second spawn -f exits 0", deploy2.status === 0 && /launched worker2/.test(deploy2.out), deploy2.out.slice(-800));
+  const deploy2 = await launchWithPreRedesignLedger("worker2", manifest2, 180_000);
+  check("second spawn --detach exits 0 and joined worker2 (its ledger stands in for a pre-redesign `spawn -f`)",
+    deploy2.status === 0 && deploy2.joined?.name === "worker2", deploy2.out.slice(-800));
   check("worker2 secrets exist", existsSync(incFile("worker2", "actor-token")) && existsSync(incFile("worker2", "sentinel.creds")));
   // Crash the replacement supervisor + its child, again before any deprovision. The supervise
   // cmdline carries this run's unique random SPACE token, so the sweep is surgically scoped.

@@ -1,5 +1,5 @@
 /**
- * Cotal #391 — `cotal reconcile-gate` END-TO-END, through the PUBLIC PATH.
+ * Cotal #391 — `cotal manager reconcile` END-TO-END, through the PUBLIC PATH.
  *
  * WHY THIS EXISTS, SEPARATELY FROM `gate-reconcile-auth.smoke.ts`. That suite enters through
  * `reconcileEndpointGate()` directly, so its mutation kills prove the suite DEPENDS on the guard —
@@ -21,7 +21,9 @@
  * `liveness-unestablishable` — which it can only do if the probe seam is genuinely connected to the
  * rail. A stubbed or unwired probe would sail past that cell.
  *
- * COTAL_HOME-free; kills only the processes it starts, by exact PID (never pkill).
+ * The command resolves its space from the mesh registry, so the CLI runs with a COTAL_HOME of its
+ * own that registers only this root; the daemons keep the environment they had. Kills only the
+ * processes it starts, by exact PID (never pkill).
  * Run: npx tsx implementations/manager/smoke/gate-reconcile-cli-e2e.smoke.ts   (needs nats-server on PATH)
  */
 import { randomUUID } from "node:crypto";
@@ -38,7 +40,7 @@ import {
   provisionEndpointGateOpen, serveIssuanceGateKv, endpointRegistrationBarrier,
   epgateKey, parseEndpointGate, mintLifecycleUid, mkSecretDir, writeSecretFile,
 } from "@cotal-ai/core";
-import { putSpaceAuth, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
+import { putSpaceAuth, recordMesh, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { executePrincipalLiveness } from "../../delivery/src/evict-exec.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -128,15 +130,33 @@ const childEnv = {
   COTAL_SKIP_CONNECTOR_SEED: "1",
 };
 
+// The registry the command resolves its space from. Only the CLI reads this home: a daemon that saw
+// this root's record would refuse the foreign root the poisoned-lease cell starts it from.
+const CLI_HOME = join(dir, "cli-home");
+
+/** The command's JSON envelope, as far as these cells read it. */
+interface Envelope {
+  outcome?: string;
+  target?: { condition?: string };
+  error?: { code?: string; cause?: { code?: string; detail?: unknown } };
+  result?: { kind?: string; holderPrincipal?: string; holdersVerifiedThisAttempt?: string[]; familyRows?: number; reopenedAtGeneration?: number };
+}
+
 /** Drive the REAL command, from the seeded root, and hand back what an operator would see. */
-const runCli = (args: string[]): { code: number | null; out: string; err: string } => {
+const runCli = (args: string[]): { code: number | null; out: string; err: string; envelope?: Envelope } => {
   const r = spawnSync(TSX, [join(REPO, "bin", "cotal.ts"), ...args], {
     cwd: ROOT, encoding: "utf8", timeout: 120_000,
     // Scrubbed: a live ambient broker/creds must never reach a command this smoke drives.
-    env: childEnv,
+    env: { ...childEnv, COTAL_HOME: CLI_HOME },
   });
-  return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
+  let envelope: Envelope | undefined;
+  try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
+  return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "", ...(envelope ? { envelope } : {}) };
 };
+/** The documented repair, confirmed for a script, with its finite receipt on stdout. */
+const reconcile = () => runCli(["manager", "reconcile", "--space", space, "--server", SERVERS, "--yes", "--json"]);
+/** The native guard's own sentence, which the refusal keeps as its cause. */
+const guard = (r: ReturnType<typeof runCli>): string => typeof r.envelope?.error?.cause?.detail === "string" ? r.envelope.error.cause.detail : "";
 
 try {
   let up = false;
@@ -152,6 +172,11 @@ try {
   writeFileSync(join(ROOT, ".cotal", "membership-observer.creds"), observerCreds);
   writeFileSync(join(ROOT, ".cotal", "connection-evictor.creds"), evictorCreds);
   writeFileSync(join(ROOT, ".cotal", "membership.json"), JSON.stringify({ accountId: auth.account.pub }));
+  // The registry entry the command resolves, written into the CLI's home and nowhere else.
+  const ambientHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = CLI_HOME;
+  try { recordMesh({ space, server: SERVERS, root: ROOT, mode: "auth", ts: new Date().toISOString() }); }
+  finally { if (ambientHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = ambientHome; }
 
   const execFor = async (instanceId: string): Promise<KV> => {
     const creds = await mintCreds(auth, newIdentity(), "endpoint-serve-executor", {
@@ -208,11 +233,11 @@ try {
   // the rail rather than answering from nothing.
   {
     const { instanceId } = await buildResidue({ holderLive: true });
-    const r = runCli(["reconcile-gate", "--space", space, "--server", SERVERS]);
+    const r = reconcile();
     check("CLI (no daemon): refuses `liveness-unestablishable` — the probe genuinely crosses the delivery-admin rail",
-      r.code === 2 && /refused \(liveness-unestablishable\)/.test(r.err), { code: r.code, err: r.err.slice(-600) });
+      r.code === 2 && r.envelope?.error?.code === "LIFECYCLE_BLOCKED" && r.envelope.target?.condition === "liveness-unestablishable", { code: r.code, out: r.out.slice(-600), err: r.err.slice(-600) });
     check("CLI (no daemon): the refusal tells the operator to start the daemon, and disclaims inferring death from silence",
-      /cotal up/.test(r.err) && /never infers death from silence/i.test(r.err), r.err.slice(-400));
+      /cotal up/.test(guard(r)) && /never infers death from silence/i.test(guard(r)), r.out.slice(-600));
     const still = parseEndpointGate((await (await execFor(instanceId)).get(epgateKey(ENDPOINT, instanceId)))!.value, epgateKey(ENDPOINT, instanceId));
     check("CLI (no daemon): the gate is untouched — still frozen", still.state === "frozen", still);
   }
@@ -273,9 +298,9 @@ try {
     const { conn } = await buildResidue({ holderLive: true });
     await conn!.close();
     await wait(500);
-    const repaired = runCli(["reconcile-gate", "--space", space, "--server", SERVERS]);
+    const repaired = reconcile();
     check("POISONED LEASE: public reconcile-gate completes through the healthy replacement",
-      repaired.code === 0 && /gate reopened at generation/.test(repaired.out), { code: repaired.code, out: repaired.out.slice(-500), err: repaired.err.slice(-1200) });
+      repaired.code === 0 && repaired.envelope?.outcome === "ok" && repaired.envelope.result?.kind === "manager-gate-repair", { code: repaired.code, out: repaired.out.slice(-500), err: repaired.err.slice(-1200) });
   }
 
   // ---- CELL 2: the holder is ALIVE and the oracle CAN be reached -------------------------------
@@ -283,11 +308,11 @@ try {
   // may be mutated. This is the outcome that protects a running manager.
   {
     const { instanceId, principal } = await buildResidue({ holderLive: true });
-    const r = runCli(["reconcile-gate", "--space", space, "--server", SERVERS]);
-    check("CLI (live holder): refuses `holder-alive` through the real rail", r.code === 2 && /refused \(holder-alive\)/.test(r.err),
-      { code: r.code, err: r.err.slice(-600) });
+    const r = reconcile();
+    check("CLI (live holder): refuses `holder-alive` through the real rail", r.code === 2 && r.envelope?.target?.condition === "holder-alive",
+      { code: r.code, out: r.out.slice(-600), err: r.err.slice(-600) });
     check("CLI (live holder): the refusal names the live principal and says what to do",
-      r.err.includes(principal) && /Stop that process first/i.test(r.err), r.err.slice(-400));
+      guard(r).includes(principal) && /Stop that process first/i.test(guard(r)), r.out.slice(-600));
     const kv2 = await execFor(instanceId);
     const still = parseEndpointGate((await kv2.get(epgateKey(ENDPOINT, instanceId)))!.value, epgateKey(ENDPOINT, instanceId));
     check("CLI (live holder): the gate is untouched — a running manager was not evicted", still.state === "frozen", still);
@@ -302,11 +327,11 @@ try {
     await wait(500);
     const kv3 = await execFor(instanceId);
     const before = parseEndpointGate((await kv3.get(epgateKey(ENDPOINT, instanceId)))!.value, epgateKey(ENDPOINT, instanceId));
-    const r = runCli(["reconcile-gate", "--space", space, "--server", SERVERS]);
+    const r = reconcile();
     check("CLI (dead holder): SUCCEEDS — exit 0 and the reopen reported on stdout",
-      r.code === 0 && /gate reopened at generation/.test(r.out), { code: r.code, out: r.out.slice(-500), err: r.err.slice(-800) });
+      r.code === 0 && r.envelope?.outcome === "ok" && r.envelope.result?.reopenedAtGeneration === before.generation + 1, { code: r.code, out: r.out.slice(-500), err: r.err.slice(-800) });
     check("CLI (dead holder): the operator is told what happened — the holder it verified and the family it acted on",
-      r.err.includes(principal) && /verified evicted/.test(r.err), r.err.slice(-800));
+      r.envelope?.result?.holderPrincipal === principal && r.envelope.result.holdersVerifiedThisAttempt?.includes(principal) === true && r.envelope.result.familyRows === 1, r.out.slice(-800));
     const after = parseEndpointGate((await kv3.get(epgateKey(ENDPOINT, instanceId)))!.value, epgateKey(ENDPOINT, instanceId));
     check("CLI (dead holder): the KV proves it — gate OPEN at generation+1, coordinate otherwise UNCHANGED",
       after.state === "open" && after.op === undefined && after.generation === before.generation + 1 &&
@@ -320,9 +345,9 @@ try {
   // ---- CELL 4: the command is idempotent-safe — a reopened gate refuses `not-frozen` -----------
   // An operator who re-runs it (a natural thing to do) must not be able to re-drive the repair.
   {
-    const r = runCli(["reconcile-gate", "--space", space, "--server", SERVERS]);
-    check("CLI (re-run): refuses `not-frozen` on the gate it just reopened — no second repair", r.code === 2 && /refused \(not-frozen\)/.test(r.err),
-      { code: r.code, err: r.err.slice(-500) });
+    const r = reconcile();
+    check("CLI (re-run): refuses `not-frozen` on the gate it just reopened — no second repair", r.code === 2 && r.envelope?.target?.condition === "not-frozen",
+      { code: r.code, out: r.out.slice(-500), err: r.err.slice(-500) });
   }
 
   // ---- CELL 5: THE ORACLE MUST BE LOOKING AT THE RIGHT ACCOUNT --------------------------------

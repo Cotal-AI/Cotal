@@ -210,8 +210,12 @@ try {
   console.log(`   stops succeeded: ${results.length - failed.length}/${results.length}`);
   check(`ALL ${SEATS.length} stops exit 0 WITHOUT --on (seat-locality found the hosting manager every time)`,
     failed.length === 0, failed.map((f) => ({ seat: f.seat, out: f.out.slice(-220) })));
-  check("...and each says so", results.every((r) => r.out.includes(`stopped ${r.seat}`)),
-    results.filter((r) => !r.out.includes(`stopped ${r.seat}`)).map((r) => r.seat));
+  // The redesigned stop prints an "Agent stop acknowledged" receipt whose `Agent:` row names the seat.
+  const saysStopped = (r: { seat: string; out: string }): boolean => {
+    const out = r.out.replace(/\x1b\[[0-9;]*m/g, "");
+    return out.includes("Agent stop acknowledged") && new RegExp(`Agent:\\s+${r.seat}\\s`).test(out);
+  };
+  check("...and each says so", results.every(saysStopped), results.filter((r) => !saysStopped(r)).map((r) => r.seat));
 
   await wait(2000);
   const psAfter = await cotal(["ps", "--space", space, "--server", SERVERS], root1);

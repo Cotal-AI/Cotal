@@ -195,7 +195,7 @@ try {
         { root, space: "main" },
       );
     } catch (e) { refused = (e as Error).message; }
-    check("B5 a reused pid is REFUSED on the BROKER's stop path (cotal down nats)", refused !== undefined && foreign.child.exitCode === null, { head: refused?.split("\n")[0] });
+    check("B5 a reused pid is REFUSED on the BROKER's stop path (bare cotal down)", refused !== undefined && foreign.child.exitCode === null, { head: refused?.split("\n")[0] });
     check("B6 the broker record and pin are preserved", existsSync(pidPath) && existsSync(identityPinPath(pidPath)));
     reap(foreign.child);
   }

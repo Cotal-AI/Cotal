@@ -222,8 +222,8 @@ export const webProcess: LocalProcess = {
   // The exit handler removes it, but an exit handler does not run on SIGKILL — so without this the
   // credential outlives the process it authenticates.
   artifacts: [WEB_SESSION_FILE],
-  // The dashboard starts target-resolved from any directory and claims its pidfile under the
-  // TARGET mesh's root (`conn.root` below); `cotal down web` must resolve the same mesh.
+  // The dashboard records its pidfile under its mesh's root. No stop reads `rootedAt` now: a named
+  // `down` is a service stop, and bare `down` sweeps the folder it runs in.
   rootedAt: "target",
 };
 
@@ -250,8 +250,8 @@ function claimPid(path: string): void {
           ? `web extension removal is in progress (pid ${pid})`
           : `web dashboard is already running for this mesh (pid ${pid})`,
       );
-    // Stale is advice to clean the record, so it is given only for a pid proven gone or an empty husk
-    // (which `cotal down web` clears). Anything else may still front a live process.
+    // Stale is advice to clean the record, so it is given only for a pid proven gone or an empty
+    // husk, which has no process behind it. Anything else may still front a live process.
     if (liveness === "dead" || raw === "")
       throw new Error(
         removal

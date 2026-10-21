@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { cacheLocalProcess, extensionPackageDir, type InstalledExtension } from "./extensions.js";
 import type { LocalProcess } from "./local-process.js";
 import { CommandFailure } from "./output.js";
-import { decodeLocalJson, protectedLocalDirectory, readLocalRecordSource } from "./protected-records.js";
+import { assertProtectedFileAccess, decodeLocalJson, protectedFileAccessAvailable, protectedLocalDirectory, readLocalRecordSource } from "./protected-records.js";
 import { cacheServicePreset, type ServicePreset } from "./service-preset.js";
 import { serviceAdapterDeclaration, serviceMetadataDigest } from "./service-adapter.js";
 
@@ -33,11 +33,15 @@ export function cacheExtensionServiceMetadata(pkg: string, version: string, proc
   if (!processes.some((component) => component.service !== undefined) && !presets.length) return undefined;
   for (const component of processes) if (component.service !== undefined && (typeof component.buildServiceLaunch !== "function" || typeof component.checkServiceReadiness !== "function")) throw new CommandFailure("refused", "SCHEMA_INVALID", "a service adapter must provide both declared launch and readiness hooks");
   for (const component of processes) if (component.service?.stop === "native" && (typeof component.prepareServiceStop !== "function" || typeof component.stopService !== "function")) throw new CommandFailure("refused", "SCHEMA_INVALID", "a native stop adapter must provide both impact and terminal hooks; no generic signal fallback was cached");
+  // Without protected file access no service adapter can be verified or run here, so the extension
+  // installs with no receipt and every service use refuses UNSUPPORTED before reading one.
+  if (!protectedFileAccessAvailable()) return undefined;
   return { schemaVersion: 1, packageJsonSha256: packageMetadata(pkg, version), declarationsSha256: serviceMetadataDigest(declarations(processes.map(cacheLocalProcess), presets)) };
 }
 
 /** Metadata-only validation. Never imports executable provider code or fetches a schema. */
 export function verifiedExtensionServiceProcesses(extension: InstalledExtension): readonly LocalProcess[] {
+  assertProtectedFileAccess();
   const receipt = extension.serviceMetadata;
   if (!receipt || receipt.schemaVersion !== 1 || Object.keys(receipt).some((key) => !["schemaVersion", "packageJsonSha256", "declarationsSha256"].includes(key)) || !/^[0-9a-f]{64}$/.test(receipt.packageJsonSha256) || !/^[0-9a-f]{64}$/.test(receipt.declarationsSha256)) throw new CommandFailure("refused", "CONFLICT", "the installed service adapter has no supported declaration-integrity receipt; update or re-add the extension before saving a definition");
   const processes = extension.localProcesses ?? [];

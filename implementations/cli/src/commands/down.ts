@@ -1,4 +1,4 @@
-import { readFileSync, rmSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
@@ -32,7 +32,6 @@ import {
   recordPreservationManagerCommit,
   releaseMaintenanceLock,
   removeMeshesByRoot,
-  resolveMeshTarget,
   sameStoreIdentity,
   writePreservationCommitIntent,
   writePreservationPrepareIntent,
@@ -138,7 +137,8 @@ export function validateDownArguments(args: ParsedArgs): void {
   if (controllerStackRecorded(cotalRoot())) return validateStackDownArguments(cotalRoot(), args.values);
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
   if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.file === undefined && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined) return;
-  if (args.values.json !== undefined || args.values.plain !== undefined || args.values.yes !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this author has structured output for bare-stack inspection, but not guarded whole-stack apply; no stack was stopped under unsupported receipt or acknowledgement flags");
+  if (args.values.yes !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--yes applies only to a controller stack, and this root has none; a bare stop here needs no --yes, and nothing was stopped", { remedy: "run `cotal down` from this root without --yes" });
+  if (args.values.json !== undefined || args.values.plain !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack or a --dry-run preview; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
 }
 
 /** A bare stack preview is a local record census, never an effect plan or stop authority. */
@@ -154,9 +154,15 @@ function previewWholeStack(args: ParsedArgs): void {
   let additiveRecords: ReturnType<typeof listLedgerFiles>, additiveAttempts: ReturnType<typeof listAdditiveTeamAttempts>;
   let bootAttempts: ReturnType<typeof listFreshTeamAttempts>, bootSummaries: ReturnType<typeof listFreshTeamSummaries>;
   let otherBrokerRegistrations: Array<{ space: string; root: string; origin: string }>;
+  // A root with no control directory, or with no stack registered at it, holds no stack. That is a
+  // plain miss, not records that could not be read.
+  const noStack = () => new CommandFailure("refused", "TARGET_NOT_FOUND", "there is no stack at this folder's root, so there is nothing to preview", { target, remedy: "run `cotal down --dry-run` from the folder where `cotal up` started the stack" });
   try {
+    try { lstatSync(join(root, ".cotal")); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") throw noStack(); throw error; }
     if (!realDirNoSymlink(root, ".cotal")) throw new Error("missing project control directory");
     const local = localMeshesForRoot(root), sole = local[0];
+    if (!local.length) throw noStack();
     if (local.length !== 1 || sole?.origin !== "up") throw new Error("no unique locally started stack at this root");
     const candidate = selectedSpace ? findMesh(selectedSpace) : sole;
     if (!candidate || candidate.origin !== "up" || candidate.space !== sole.space || canonicalRoot(candidate.root) !== root) throw new Error("space does not belong to the selected root");
@@ -265,107 +271,55 @@ export async function down(args: ParsedArgs): Promise<void> {
   if (controllerStackRecorded(cotalRoot())) return stackDown(cotalRoot(), args.values);
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
   if (values["dry-run"] && !values.file && !values.run && !values["preserve-state"] && !values["store-dir"] && !values["session-store"]?.length) return previewWholeStack(args);
-  const requested = [...new Set(args.positionals)];
   if (values["preserve-state"] && values["with-agents"])
-    throw new Error("--preserve-state cannot be combined with --with-agents");
-  if (values["with-agents"] && (requested.length || values.file || values.run || values.space))
-    throw new Error("--with-agents is bare-whole-stack only and cannot be combined with components, --space, --file, or --run");
+    throw new CommandFailure("refused", "USAGE_INVALID", "--preserve-state cannot be combined with --with-agents");
+  if (values["with-agents"] && (values.file || values.run || values.space))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--with-agents is bare-whole-stack only and cannot be combined with components, --space, --file, or --run");
   if (values["preserve-state"]) {
-    if (requested.length || values.file || values.run || values["dry-run"] || values.space)
-      throw new Error("--preserve-state is bare-whole-stack only and cannot be combined with components, --space, --file, --run, or --dry-run");
+    if (values.file || values.run || values["dry-run"] || values.space)
+      throw new CommandFailure("refused", "USAGE_INVALID", "--preserve-state is bare-whole-stack only and cannot be combined with components, --space, --file, --run, or --dry-run");
     assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
     await preserveStateDown(values["store-dir"], assertSessionStores(values["session-store"] ?? []));
     return;
   }
-  if (values["store-dir"]) throw new Error("--store-dir is only valid with down --preserve-state");
-  if (values["session-store"]?.length) throw new Error("--session-store is only valid with down --preserve-state");
-  if ((values.file || values.run) && (requested.length || values.space)) {
-    throw new Error("component names and --space cannot be combined with --file or --run");
+  if (values["store-dir"]) throw new CommandFailure("refused", "USAGE_INVALID", "--store-dir is only valid with down --preserve-state");
+  if (values["session-store"]?.length) throw new CommandFailure("refused", "USAGE_INVALID", "--session-store is only valid with down --preserve-state");
+  if ((values.file || values.run) && values.space) {
+    throw new CommandFailure("refused", "USAGE_INVALID", "component names and --space cannot be combined with --file or --run");
   }
   if (values.file || values.run) {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
     return;
   }
-  if (values.space && !requested.length)
-    throw new Error("--space only selects the mesh for target-addressed components - name them (e.g. `cotal down web --space <name>`); bare `cotal down` always stops this folder's stack");
-  if (!requested.length) guardLegacyBareDown();
-  const all = localProcessSurface();
-  const known = all.map((component) => component.name).sort();
-  const unknown = requested.filter((name) => !known.includes(name));
-  if (unknown.length)
-    throw new Error(`unknown component${unknown.length > 1 ? "s" : ""} ${unknown.map((name) => JSON.stringify(name)).join(", ")} - known: ${known.join(", ")}`);
-  const selected = (requested.length ? requested.map((name) => all.find((part) => part.name === name)!) : all)
+  if (values.space)
+    throw new CommandFailure("refused", "USAGE_INVALID", "a bare stop takes no --space: `cotal down` stops the stack recorded at this folder's root", {
+      target: { root: cotalRoot(), space: values.space },
+      remedy: "run `cotal down` without --space from the stack's root; to stop one saved service, run `cotal service stop <service-name> --space <space>`",
+    });
+  guardLegacyBareDown();
+  // Every dry run returned or was refused above, so from here on this is the whole-stack stop of
+  // this folder's root.
+  const selected = localProcessSurface()
     .sort((a, b) => Number(Boolean(a.stopLast)) - Number(Boolean(b.stopLast)) || (a.order ?? 50) - (b.order ?? 50));
-  // A component whose START is target-resolved (`rootedAt: "target"` — the web dashboard) records
-  // its pidfile under the TARGET mesh's root, so a selective stop resolves the SAME mesh the start
-  // side did (registry current mesh first, `--space` to name one) instead of assuming this folder.
-  // Bare `cotal down` stays a sweep of this folder's stack: its pidfiles live here, and reaching
-  // into another mesh's root mid-sweep would stop a process the folder's broker does not own.
-  const targetAddressed = (component: LocalProcess): boolean => requested.length > 0 && component.rootedAt === "target";
-  if (values.space) {
-    const folderRooted = selected.filter((component) => !targetAddressed(component));
-    if (folderRooted.length)
-      throw new Error(`--space only applies to target-addressed components - ${folderRooted.map((component) => component.name).join(", ")} always stop${folderRooted.length === 1 ? "s" : ""} under this folder's root`);
-  }
   // A `down` that touches this folder's stack stops the shared broker and its per-space daemons;
   // none of them can address one space, so a multi-space root is refused up front rather than at
-  // the space-blind pidfile lookup below. A purely target-addressed stop never reads this folder's
-  // pidfiles, so it is exempt (its space comes from the resolved mesh target).
-  if (selected.some((component) => !targetAddressed(component))) assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
-  // Both contexts resolve lazily: a purely target-addressed stop must not require a mesh root at
-  // the cwd, and a folder sweep must not require a resolvable mesh target.
+  // the space-blind pidfile lookup below.
+  assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
   let folderContext: LocalProcessContext | undefined;
   const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveRuntimeSpace(process.cwd()) });
-  let targetContext: LocalProcessContext | undefined;
-  const contextFor = (component: LocalProcess): LocalProcessContext => {
-    if (!targetAddressed(component)) return folderCtx();
-    if (!targetContext) {
-      const target = resolveMeshTarget(process.cwd(), values.space ? { space: values.space } : {});
-      targetContext = { root: target.root, space: target.space };
-    }
-    return targetContext;
-  };
-
-  if (selected.some((component) => component.stopLast)) {
-    const selectedNames = new Set(selected.map((component) => component.name));
-    // Fail CLOSED: an unselected dependant that MIGHT be running (including one behind an
-    // unattributable/unknown pidfile) blocks a stop-last shutdown - stopping the broker out from
-    // under a live dependant we could not confirm gone is exactly the signer-orphan the contract
-    // forbids. `mayBeRunning`, not `processAlive` (which reads uncertainty as "not running").
-    // Folder context: the question is what depends on THIS folder's broker, so a dependant is
-    // judged by the record under this root regardless of how it would be addressed selectively.
-    const dependants = all.filter((component) => !selectedNames.has(component.name) && mayBeRunning(component, folderCtx()));
-    if (dependants.length) {
-      throw new Error(
-        `cannot stop ${selected.filter((component) => component.stopLast).map((component) => component.name).join(", ")} while ${dependants.map((component) => component.name).join(", ")} ${dependants.length === 1 ? "is" : "are"} still running (or its liveness cannot be confirmed) - name them too, or run bare \`cotal down\``,
-      );
-    }
-  }
-
-  if (values["dry-run"]) {
-    const recorded = selected.filter((component) => processRecorded(component, contextFor(component)));
-    for (const component of recorded) console.log(c.dim(`would stop ${component.label}`));
-    if (!recorded.length) {
-      const target = requested.length ? requested.join(", ") : "the local stack";
-      console.error(c.red(`Nothing running for ${target} (no recorded pidfiles).`));
-      process.exit(1);
-    }
-    console.log(c.dim("Dry run - nothing was changed. Re-run without --dry-run to stop these components."));
-    return;
-  }
 
   let any = false;
   let allStopped = true;
   for (const component of selected) {
-    any = processRecorded(component, contextFor(component)) || any;
+    any = processRecorded(component, folderCtx()) || any;
     if (component.stopLast && !allStopped) {
       console.error(c.red(`✗ not stopping ${component.label} because an earlier component did not stop`));
       continue;
     }
     try {
-      const context = contextFor(component);
+      const context = folderCtx();
       if (component.name === "manager") await stopManager(context.space, { withAgents: values["with-agents"] });
-      else if (component.name === "delivery") await stopDelivery(context.space, { preserveCredentials: !requested.length });
+      else if (component.name === "delivery") await stopDelivery(context.space, { preserveCredentials: true });
       else await stopLocalProcess(component, context);
     } catch (e) {
       allStopped = false;
@@ -378,11 +332,11 @@ export async function down(args: ParsedArgs): Promise<void> {
     return;
   }
 
-  if (!requested.length && selected.some((component) => component.name === "delivery"))
+  if (selected.some((component) => component.name === "delivery"))
     await removeDeliveryCredentials(folderCtx().space);
 
   for (const component of selected) {
-    for (const artifact of component.artifacts ?? []) rmSync(localProcessPath(artifact, contextFor(component)), { force: true });
+    for (const artifact of component.artifacts ?? []) rmSync(localProcessPath(artifact, folderCtx()), { force: true });
   }
 
   // Pidfiles are the only thing this stack owns. A registered broker that answers with no pidfile
@@ -392,30 +346,27 @@ export async function down(args: ParsedArgs): Promise<void> {
   // Owned components (a detached web, a manager) do not change the question: stopping them is not
   // the same as this stack owning the broker. The probe runs on every bare down that holds no
   // nats pidfile, AFTER their owned artifacts cleared, so those components stop exactly as they
-  // do with no broker present. Targeted stops and --dry-run stay pidfile-only.
-  if (!requested.length && !values["dry-run"]) {
-    const unowned = await liveUnownedBrokers(folderCtx());
-    if (unowned.length) {
-      for (const broker of unowned) {
-        console.error(c.red(
-          `Broker for "${broker.space}" is running at ${broker.server}, but no pidfile records it. ` +
-          `cotal down will not stop a process it did not start. ` +
-          `Stop that broker with the supervisor that started it, or remove the registration with \`cotal meshes rm ${broker.space}\`.`,
-        ));
-      }
-      process.exit(1);
+  // do with no broker present.
+  const unowned = await liveUnownedBrokers(folderCtx());
+  if (unowned.length) {
+    for (const broker of unowned) {
+      console.error(c.red(
+        `Broker for "${broker.space}" is running at ${broker.server}, but no pidfile records it. ` +
+        `cotal down will not stop a process it did not start. ` +
+        `Stop that broker with the supervisor that started it, or remove the registration with \`cotal meshes rm ${broker.space}\`.`,
+      ));
     }
+    process.exit(1);
   }
 
-  // The broker owns the mesh registry entry and transient whole-mesh launch material. Selective
-  // control-plane shutdown leaves both intact so `cotal up` can heal only what was stopped.
+  // The broker owns the mesh registry entry and transient whole-mesh launch material, so they go
+  // with it.
   if (selected.some((component) => component.clearsMesh)) {
     rmSync(join(folderCtx().root, ".cotal", "run"), { recursive: true, force: true });
     removeMeshesByRoot(folderCtx().root);
   }
   if (!any) {
-    const target = requested.length ? requested.join(", ") : "the local stack";
-    console.error(c.red(`Nothing running for ${target} (no recorded pidfiles).`));
+    console.error(c.red("Nothing running for the local stack (no recorded pidfiles)."));
     process.exit(1);
   }
 }
@@ -447,14 +398,14 @@ export function processAlive(component: LocalProcess, context: LocalProcessConte
   return pid !== undefined && isAlive(pid);
 }
 
-/** Whether a component MIGHT still be running - the question the pre-stop `stopLast` guard must ask,
- *  and it fails CLOSED on uncertainty. A component with NO pidfile, an EMPTY husk, or a valid pid
- *  PROVEN dead (ESRCH) is not running. ANY other state - an unparsable/unattributable record, or a
- *  valid pid that is alive or whose liveness cannot be confirmed (`unknown`) - MIGHT be running, so
- *  it must BLOCK a stop-last (broker) shutdown. `processAlive` collapses unparsable and `unknown` to
- *  "not alive", which is fine for "is it worth stopping" but WRONG for "is it safe to stop the broker
- *  out from under this": that read would let `cotal down nats` orphan a live auth signer behind a
- *  torn pidfile. Only an ESRCH-confirmed death (or no record) clears a dependant. */
+/** Whether a component MIGHT still be running. It fails CLOSED on uncertainty. A component with NO
+ *  pidfile, an EMPTY husk, or a valid pid PROVEN dead (ESRCH) is not running. ANY other state - an
+ *  unparsable/unattributable record, or a valid pid that is alive or whose liveness cannot be
+ *  confirmed (`unknown`) - MIGHT be running. `down --preserve-state` asks it to fence an uncertain
+ *  delivery daemon, to treat an uncertain manager as alive, and to refuse to call a cut complete.
+ *  `processAlive` collapses unparsable and `unknown` to "not alive", which is fine for "is it worth
+ *  stopping" but WRONG for those questions: it would count a live auth signer behind a torn pidfile
+ *  as stopped. Only an ESRCH-confirmed death (or no record) clears a component. */
 export function mayBeRunning(component: LocalProcess, context: LocalProcessContext): boolean {
   const raw = readPidfile(localProcessPath(component.pidFile, context));
   if (!raw) return false; // no record, or an empty pre-protocol husk: no process behind it
@@ -493,10 +444,10 @@ function assertSessionStores(paths: readonly string[]): string[] {
     try {
       stat = statSync(resolved);
     } catch (error) {
-      throw new Error(`--session-store ${resolved} cannot be read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}); name the harness transcript store directory for this host`);
+      throw new CommandFailure("refused", "USAGE_INVALID", `--session-store ${resolved} cannot be read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}); name the harness transcript store directory for this host`);
     }
     if (!stat.isDirectory())
-      throw new Error(`--session-store ${resolved} is not a directory; name the harness transcript store directory for this host`);
+      throw new CommandFailure("refused", "USAGE_INVALID", `--session-store ${resolved} is not a directory; name the harness transcript store directory for this host`);
     return resolved;
   });
 }
@@ -505,7 +456,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
   const root = cotalRoot();
   const matching = loadMeshes().filter((mesh) => mesh.root === root);
   if (matching.length !== 1)
-    throw new Error(`down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}`);
+    throw new CommandFailure("refused", matching.length ? "TARGET_AMBIGUOUS" : "TARGET_NOT_FOUND", `down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}, and nothing was stopped`, { target: { root, spaces: matching.map((mesh) => mesh.space) } });
   const mesh = matching[0];
   const storeDir = storeOverride ? resolveStore(storeOverride) : join(root, ".cotal", "nats");
   // The store cap the broker was started with travels with the store, so the resume re-renders it.

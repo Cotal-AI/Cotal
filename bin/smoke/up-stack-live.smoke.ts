@@ -200,12 +200,13 @@ try {
   await secrets.put(credsKey, liveDeliveryCreds);
 
   // 2c) #1417: a refresh under --no-manager of a space whose manager is LIVE refuses rather than
-  //     silently keeping or stopping it, naming the exact `cotal down manager` remedy the same way
-  //     --runtime and --max-sessions refuse on a live manager.
+  //     silently keeping or stopping it, the same way --runtime and --max-sessions refuse on a live
+  //     manager. This stack has no manager-only stop, so the remedy is the whole-stack route.
   const refused = cli("up", "--server", SERVER, "--no-manager");
   const refusedOut = plain(refused.stdout + refused.stderr);
   ok("a --no-manager refresh against a live manager exits non-zero", refused.status !== 0, refusedOut);
-  ok("the refusal names the `cotal down manager` remedy", /`cotal down manager` first, then `cotal up --no-manager`/.test(refusedOut), refusedOut);
+  ok("the refusal says no command stops only the manager and names the whole-stack route",
+    /no command that stops only its manager; `cotal down` stops the whole stack, then `cotal up --no-manager --space [^`]+` starts it broker-only/.test(refusedOut), refusedOut);
   ok("the manager the refresh refused to touch is left running", alive(pidOf(recordName(MANAGER_PIDFILE))), recordName(MANAGER_PIDFILE));
 
   // 2d) #883: a refresh that RESTORES a missing manager must say so, distinctly from a refresh that

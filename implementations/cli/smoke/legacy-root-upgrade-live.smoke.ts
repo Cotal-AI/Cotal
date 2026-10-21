@@ -24,6 +24,9 @@ const CLI = join(WT, "bin", "cotal.ts");
 const TSX_IMPORT = import.meta.resolve("tsx");
 const home = mkdtempSync(join(tmpdir(), "cotal-legacy-root-"));
 const configDir = join(home, "xdg");
+// The CLI children must not inherit a managed session's mesh identity from whatever runs this
+// suite; they get only the private home and the values set below.
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 // Set before the stores are imported; they read COTAL_HOME on each call.
 process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };

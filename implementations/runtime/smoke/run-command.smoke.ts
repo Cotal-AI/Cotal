@@ -26,8 +26,9 @@ import { Kvm } from "@nats-io/kv";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, standaloneConnectOpts,
   replayRunJournal, openRecordsBucket, readRunRecord, admissionBucket, revocationKey, recordsBucket, listRunMigrations,
+  revokeRunAdmission,
 } from "@cotal-ai/core";
-import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { runWorkflow, journalOutcomeOf, journalStepRow } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -114,14 +115,33 @@ const withStderr = async <T>(run: () => Promise<T>): Promise<T> => {
 const reset = () => { LOGS.length = 0; ERRS.length = 0; process.exitCode = undefined; };
 /** The minted id, read from the `starting run <id>` line exactly as an operator would. */
 const startedId = () => /starting run (run-[0-9a-f]+) on endpoint/.exec(captured())?.[1];
-/** One run's `ps` row, and its STATE column read the way `awk '{print $3}'` reads it. */
-const psRow = (runId: string) => captured().split("\n").find((l) => l.startsWith(runId)) ?? "";
-const stateOf = (row: string) => row.split(/\s+/)[2];
+/** One run's row in the `run ps` table, and its "Recorded state" column. The table indents its rows
+ *  and separates columns by at least two spaces, while a state such as `admission revoked` holds one. */
+const lines = () => captured().replace(/\x1b\[[0-9;]*m/g, "").split("\n");
+const psRow = (runId: string) => lines().find((l) => l.includes(runId))?.trim() ?? "";
+const stateOf = (row: string) => row.split(/\s{2,}/)[2];
+/** Whether a rendered table row ends with these cells, each matched whole. */
+const rendered = (...cells: string[]) => lines().some((l) => {
+  const row = l.trim().split(/\s{2,}/);
+  return row.length >= cells.length && row.slice(-cells.length).every((cell, i) => cell === cells[i]);
+});
 
 /** One command invocation, as the dispatcher would hand it over. A local start is admitted under
- *  the ceiling the operator names (SPEC 14.8); these programs touch no channel, so it is `none`. */
+ *  the ceiling the operator names (SPEC 14.8); these programs touch no channel, so it is `none`.
+ *  The ceilings are `start` flags, and the run grammar refuses them on any other verb. */
 const wf = (positionals: string[], values: Record<string, string | boolean | undefined> = {}) =>
-  runWorkflow({ values: { server: servers, space: SPACE, local: true, "admit-read": "none", "admit-publish": "none", ...values }, positionals, raw: [] });
+  runWorkflow({ values: { server: servers, space: SPACE, local: true, ...(positionals[0] === "start" ? { "admit-read": "none", "admit-publish": "none" } : {}), ...values }, positionals, raw: [] });
+/** The same invocation with `--json`: the envelope it writes straight to stdout, parsed. The full
+ *  journal and each listed run's revocation are in the JSON result, not the rendered tables. */
+const envelopeOf = async (positionals: string[]): Promise<{ result?: unknown; warnings?: Array<{ code?: string; target?: { run?: string } }> } | undefined> => {
+  const chunks: string[] = [];
+  const write = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => { chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); return true; }) as typeof process.stdout.write;
+  try { await wf(positionals, { json: true }); } finally { process.stdout.write = write; }
+  try { return JSON.parse(chunks.join("")); } catch { return undefined; }
+};
+type JournalRowJson = { step?: string; answer?: { value?: unknown; by?: unknown; artifact?: unknown; answerId?: unknown; at?: unknown } };
+type RunRowJson = { runId?: string; state?: string; revoked?: { by?: string; reason?: string }; revocationUnreadable?: string };
 
 const PURE = join(sd, "pure.cotal.js");
 writeFileSync(PURE, 'const xs = [1, 2, 3];\nlog("doubled", xs.map((x) => x * 2));\n');
@@ -272,8 +292,8 @@ let P = "";
   // the source. Read while the pause is OPEN, because that is when the question is a worklist.
   await wf(["journal", cid]);
   c("the journal render shows an open pause's question under the step an answer is addressed by",
-    captured().includes("/checkpoint:approve#0  pending") && captured().includes("asks        Ship it?"),
-    captured().split("\n").filter((l) => l.includes("checkpoint") || l.includes("asks")).join(" | "));
+    rendered("/checkpoint:approve#0", "pending") && captured().includes("Needs an answer") && rendered("/checkpoint:approve#0", "Ship it?"),
+    lines().filter((l) => l.includes("checkpoint") || l.includes("Ship it")).join(" | "));
   // A THROW here must fail the cell rather than kill the suite: the holder-bound presenter is the
   // load-bearing part of `answer`, and a suite that dies names no claim.
   const answered = await wf(["answer", cid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"', artifact: "artifact://run-command" })
@@ -290,12 +310,16 @@ let P = "";
   // journal read taken straight off the answer command can still show the pause pending.
   await wf(["journal", cid]);
   c("the answered checkpoint renders resolved, not the settled status ok",
-    captured().includes("/checkpoint:approve#0  resolved"),
-    captured().split("\n").filter((l) => l.includes("checkpoint")).join(" | "));
-  c("the journal render shows the accepted value, answerer, artifact, answer id and time under the settled pause",
-    captured().includes('answered    value="yes"') && captured().includes('by="smoke"')
-      && captured().includes('artifact="artifact://run-command"') && captured().includes('answerId=') && captured().includes('at='),
-    captured().split("\n").filter((l) => l.includes("checkpoint") || l.includes("answered")).join(" | "));
+    rendered("/checkpoint:approve#0", "resolved"),
+    lines().filter((l) => l.includes("checkpoint")).join(" | "));
+  // The rendered journal is a summary table; the accepted answer's facts are in its JSON result.
+  const shown = await envelopeOf(["journal", cid]);
+  const settled = (shown?.result as { view?: { journal?: JournalRowJson[] } } | undefined)?.view?.journal
+    ?.find((r) => r.step === "/checkpoint:approve#0" && r.answer !== undefined);
+  c("show --json carries the accepted value, answerer, artifact, answer id and time on the settled pause",
+    settled?.answer?.value === "yes" && settled.answer.by === "smoke" && settled.answer.artifact === "artifact://run-command"
+      && typeof settled.answer.answerId === "string" && typeof settled.answer.at === "number",
+    settled ?? shown);
 }
 
 // ── 6b) an ask addressed outside the run's roster is refused, with the reason, through the command
@@ -418,8 +442,8 @@ let P = "";
   // table, one read before the marker exists.
   reset();
   await wf(["ps"]);
-  const before = captured().split("\n").find((l) => l.startsWith(rid)) ?? "";
-  c("ps prints running for the run before it is revoked", before.includes("running"), before);
+  const before = psRow(rid);
+  c("ps prints running for the run before it is revoked", stateOf(before) === "running", before);
 
   reset();
   await wf(["revoke", rid], { by: "smoke-operator", reason: "broker outage" });
@@ -430,14 +454,16 @@ let P = "";
 
   reset();
   await wf(["ps"]);
-  const after = captured().split("\n").find((l) => l.startsWith(rid)) ?? "";
+  const after = psRow(rid);
   c("ps prints revoked for it afterwards, whatever the record says",
-    after.includes("revoked") && !after.includes("running"), after);
-  c("...with the revoker and the reason under the table, since the columns carry neither",
-    captured().includes(`${EP}/${rid}: revoked by smoke-operator (broker outage)`), captured());
+    stateOf(after) === "admission revoked" && !after.includes("running"), after);
   // THE CONTROL for block 10's exit status: every marker on this table was read, so the listing is
-  // complete and the command leaves the exit code alone.
-  c("a listing whose every marker was read leaves the exit code alone", process.exitCode === undefined, process.exitCode);
+  // complete and the command exits 0.
+  c("a listing whose every marker was read exits 0", process.exitCode === 0, process.exitCode);
+  const listedRows = (await envelopeOf(["ps"]))?.result as { items?: RunRowJson[] } | undefined;
+  const revokedRow = listedRows?.items?.find((r) => r.runId === rid);
+  c("...with the revoker and the reason in the listing's JSON result, since the table's columns carry neither",
+    revokedRow?.revoked?.by === "smoke-operator" && revokedRow.revoked.reason === "broker outage", revokedRow ?? listedRows);
 
   // NO TERMINAL FACT. A revoke must not make a run `failed` or `released`: no host drove it there,
   // the journal owns the facts, and the change above is display.
@@ -451,12 +477,12 @@ let P = "";
   await Promise.race([driven, wait(15_000)]);
 }
 
-// ── 10) a marker ps could not read: the STATE column says so, and so does the exit status ─────
+// ── 10) a marker ps could not read: the state column says so, and so does the exit status ─────
 //
 // A marker this command cannot read says nothing about whether the run was revoked. A row that
-// keeps the record's own word and exits 0 hands `awk '{print $3}'` the `running` #1621 was filed
-// about for a held run, and `grep running` counts that run as live, with the caveat on a line
-// neither reader looks at.
+// keeps the record's own word and exits 0 shows the `running` #1621 was filed about for a held
+// run, and `grep running` counts that run as live, with the caveat on a line neither reader looks
+// at. The listing is partial instead, which exits 4.
 //
 // The marker is written raw once and kept by the store: a version this reader does not know,
 // which is what a newer revoker leaves, on a run held open so its record reads `running`.
@@ -471,16 +497,25 @@ let P = "";
 
   reset();
   const listed = await withStderr(() => wf(["ps"])).then(() => undefined, (e: Error) => e);
+  const listedExit = process.exitCode;
   const row = psRow(uid);
+  // The name is kept for the mutation fixtures that cite it; the column reads `revocation not checked`.
   c("ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
-    stateOf(row) === "unchecked" && !row.includes("running"), row);
+    stateOf(row) === "revocation not checked" && !row.includes("running"), row);
   c("...and no stdout line names that run beside running, so `grep running` does not count it as live",
-    !captured().split("\n").some((l) => l.includes(uid) && l.includes("running")), captured());
-  c("...gives the failed read and the record's own state on stderr",
-    ERRS.includes(`${EP}/${uid}: revocation marker could not be read (run revocation is malformed); its record reads running`), ERRS);
+    !lines().some((l) => l.includes(uid) && l.includes("running")), captured());
+  // The rendered warning is one sentence for the listing; which run it is, the failed read and the
+  // record's own state are in the JSON result and its warning target.
+  const unread = await envelopeOf(["ps"]);
+  const unreadRow = (unread?.result as { items?: RunRowJson[] } | undefined)?.items?.find((r) => r.runId === uid);
+  c("...warns on stderr, and the JSON names that run, the failed read and the record's own state",
+    ERRS.some((l) => l.includes("The revocation marker could not be read"))
+      && unreadRow?.state === "running" && (unreadRow.revocationUnreadable ?? "").includes("run revocation is malformed")
+      && (unread?.warnings ?? []).some((w) => w.code === "REVOCATION_NOT_CHECKED" && w.target?.run === uid),
+    { stderr: ERRS, row: unreadRow, warnings: unread?.warnings });
   c("...still lists every other run, so one unreadable marker hides nothing",
     listed === undefined && stateOf(psRow(P)) === "completed", listed ?? psRow(P));
-  c("...and exits 1, because the listing is incomplete", process.exitCode === 1, process.exitCode);
+  c("...and exits 4, because the listing is partial", listedExit === 4, listedExit);
 
   // Settle the held driver, bounded, as block 9 does; its outcome is not this block's claim.
   await wf(["answer", uid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).catch(() => undefined);
@@ -490,20 +525,29 @@ let P = "";
 // ── 11) a revoke that names nobody and no reason is refused before it writes ─────────────────
 //
 // The argument parser hands `--by ""` and `--reason ""` through as empty strings, and a marker
-// written from them renders as `revoked by  ()`. The marker is permanent, so the refusal belongs
-// at the writer, before the create.
+// written from them would carry no revoker and no reason. The marker is permanent, so the run
+// grammar refuses them as usage and the writer refuses them again before the create.
 {
   reset();
   await wf(["start"], { file: PURE });
   const eid = startedId() ?? "";
   const refused = await wf(["revoke", eid], { by: "", reason: "" }).then(() => undefined, (e: Error) => e);
+  // The run grammar refuses the empty fields before any connection, so the command never reaches
+  // the writer. The writer's own refusal is graded on the same fields, against a store that records
+  // whether anything was created.
+  let created = false;
+  const store = { create: async () => { created = true; return 0; } } as unknown as Parameters<typeof revokeRunAdmission>[0];
+  const writer = await revokeRunAdmission(store, EP, { version: 1, runId: eid, by: "", reason: "", revokedAt: Date.now() })
+    .then(() => undefined, (e: Error) => e);
   c("revoke refuses an empty --by and --reason",
-    eid !== "" && refused !== undefined && refused.message.includes("by and reason must be non-empty"), refused?.message ?? captured());
+    eid !== "" && isCommandFailure(refused) && refused.code === "USAGE_INVALID" && refused.message.includes("run revoke requires --local --by <actor> --reason <text>")
+      && writer !== undefined && writer.message.includes("by and reason must be non-empty") && !created,
+    { command: refused?.message ?? captured(), writer: writer?.message, created });
 
   reset();
   await withStderr(() => wf(["ps"])).catch(() => undefined);
-  c("...and writes no marker, so ps lists that run by its record and never as `revoked by  ()`",
-    stateOf(psRow(eid)) === "completed" && !captured().includes(`${EP}/${eid}: revoked by`), captured());
+  c("...and writes no marker, so ps lists that run by its record and never as revoked",
+    stateOf(psRow(eid)) === "completed", psRow(eid));
 }
 
 // ── 12) migrate: the check over an edited program, read-only, through the command ────────────

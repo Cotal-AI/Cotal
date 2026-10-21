@@ -425,8 +425,10 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   const root = cotalRoot();
   // The artifact snapshots the whole store but commits to ONE space's trust chain
   // (`cotal-space-auth-root/v1`), so on a multi-space broker it would silently restore as a
-  // single-tenant root. Refuse rather than emit an artifact that cannot describe what it holds.
-  assertSingleSpaceBroker(authDir(root), "cotal backup");
+  // single-tenant root. Refuse rather than emit an artifact that cannot describe what it holds,
+  // naming the tenants: as a plain error the catch in `backup` would report it as an ineligible cut.
+  try { assertSingleSpaceBroker(authDir(root), "cotal backup"); }
+  catch (error) { throw new CommandFailure("refused", "CONFLICT", (error as Error).message, { target: { root } }); }
   const live = liveMeshProcesses(root);
   if (live.length) throw new Error(`backup is offline-only; still running: ${live.join(", ")}. Run \`cotal down --preserve-state\` first`);
   const storeDir = resolve(values["store-dir"] ?? resolve(root, ".cotal", "nats"));
