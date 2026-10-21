@@ -7,7 +7,9 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { assertRecordIdentity, canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
+import { checkInheritedPipeCleanup } from "./_foreground-pipe-fixture.js";
 import { emitSentinel, freePort } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
@@ -40,11 +42,6 @@ function token(path: string): ProcessIdentityRecord | undefined {
   const pin = verifyIdentityPin(path);
   return pin.kind === "match" ? pin.record : undefined;
 }
-function live(row: ProcessIdentityRecord): boolean {
-  const verdict = assertRecordIdentity(row);
-  if (verdict.kind === "unpinned") throw new Error(`owned birth cannot be verified: ${row.pid}`);
-  return verdict.kind === "match";
-}
 
 async function cell(name: string, options: { auth?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean }): Promise<void> {
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
@@ -57,12 +54,7 @@ async function cell(name: string, options: { auth?: boolean; signal?: "SIGINT" |
   let out = "", err = "";
   child.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
   child.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
-  let exited = false, code: number | null = null, signal: NodeJS.Signals | null = null;
-  const ended = new Promise<void>((r, reject) => {
-    child.once("error", reject);
-    child.once("exit", (c, s) => { exited = true; code = c; signal = s; });
-    child.once("close", () => r());
-  });
+  const state = observeOwnedChild(child);
   const owned = new Map<string, ProcessIdentityRecord>();
   const brokerPath = join(mesh, ".cotal/nats.pid");
   const managerPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: mesh, space });
@@ -76,7 +68,8 @@ async function cell(name: string, options: { auth?: boolean; signal?: "SIGINT" |
   try {
     await until(async () => {
       ownRecords();
-      if (exited) throw new Error(`CLI exited before readiness: ${err}`);
+      if (state.error) throw state.error;
+      if (state.exited) throw new Error(`CLI exited before readiness: ${err}`);
       // Normal signal cells wait for postStart's durable registration, not merely a bound socket.
       // The auth cell deliberately interrupts earlier at the natural manager birth record.
       return options.auth ? token(managerPath) !== undefined : token(brokerPath) !== undefined && existsSync(join(home, "machine", "meshes", `space.${spaceKey(space)}.json`)) && await portOpen(port);
@@ -90,19 +83,20 @@ async function cell(name: string, options: { auth?: boolean; signal?: "SIGINT" |
       else process.kill(-child.pid, "SIGINT");
       if (options.twice) {
         await sleep(5);
-        assert.equal(exited, false, "second interrupt exercises an in-flight owner");
+        assert.equal(state.exited, false, "second interrupt exercises an in-flight owner");
         process.kill(-child.pid, "SIGINT");
         passed++;
       }
     }
-    await until(() => { ownRecords(); return exited; }, 60_000, () => err.slice(-3000));
-    await ended;
+    await until(() => { ownRecords(); if (state.error) throw state.error; return state.exited; }, 60_000, () => err.slice(-3000));
+    // Close can depend on a retained broker's pipes. Never wait unboundedly before cleanup.
+    await waitForOwnedChild(() => state.closed, 3_000, `${root}: successful owner streams drained`);
     assert.equal(await portOpen(port), false, "the owned broker listener closed"); passed++;
     if (options.crash) {
-      assert.notEqual(code, 0, "unexpected broker loss remains a nonzero CLI exit"); passed++;
+      assert.notEqual(state.code, 0, "unexpected broker loss remains a nonzero CLI exit"); passed++;
       assert.match(err, /exited unexpectedly/); passed++;
     } else {
-      assert.equal(code, 0, `guarded shutdown completed (${signal ?? "no signal"}): ${err}`); passed++;
+      assert.equal(state.code, 0, `guarded shutdown completed (${state.signal ?? "no signal"}): ${err}`); passed++;
       assert.match(err, /Trapped "terminated" signal/, "the CLI owner, not terminal SIGINT, stops the broker"); passed++;
       assert.doesNotMatch(err, /Trapped "interrupt" signal|could not list managed agents|control plane degraded|exited unexpectedly|spare.*unavailable/i); passed++;
       if (options.auth) {
@@ -116,20 +110,18 @@ async function cell(name: string, options: { auth?: boolean; signal?: "SIGINT" |
   } finally {
     // The CLI remains the launch owner until it exits. Ask it to stop first, then signal only
     // recorded exact starts born in this private root. Never choose cleanup targets from argv.
-    if (!exited) child.kill("SIGTERM");
-    const end = Date.now() + 8_000;
-    while (!exited && Date.now() < end) { ownRecords(); await sleep(30); }
-    if (!exited) child.kill("SIGKILL");
-    await ended;
-    ownRecords();
-    for (const row of owned.values()) if (live(row)) process.kill(row.pid, "SIGTERM");
-    await until(() => [...owned.values()].every((row) => !live(row)), 10_000, () => `retained ${root}; owned process exit not confirmed`);
-    writeFileSync(join(root, "stdout.log"), out, { mode: 0o600 });
-    writeFileSync(join(root, "stderr.log"), err, { mode: 0o600 });
-    writeFileSync(join(root, "exit.json"), JSON.stringify({ code, signal, port, owned: [...owned.values()], storesDeleted: false }), { mode: 0o600 });
+    try {
+      await finishOwnedChild(child, state, ownRecords, () => owned.values(), root);
+    } finally {
+      writeFileSync(join(root, "stdout.log"), out, { mode: 0o600 });
+      writeFileSync(join(root, "stderr.log"), err, { mode: 0o600 });
+      writeFileSync(join(root, "exit.json"), JSON.stringify({ code: state.code, signal: state.signal, closed: state.closed, port, owned: [...owned.values()], storesDeleted: false }), { mode: 0o600 });
+    }
   }
 }
 console.log(`foreground-up-signals retained evidence: ${base}`);
+await checkInheritedPipeCleanup();
+passed += 10;
 await cell("group", {});
 await cell("term", { signal: "SIGTERM" });
 await cell("double", { twice: true });
