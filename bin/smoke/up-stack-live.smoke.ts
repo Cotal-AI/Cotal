@@ -168,7 +168,7 @@ try {
   for (let i = 0; i < 15 && !answered; i++) {
     const r = cli("ps");
     last = { stdout: r.stdout, stderr: r.stderr };
-    answered = r.status === 0 && /no managed agents/.test(r.stdout);
+    answered = r.status === 0 && /^\s*No managed agents\.$/m.test(r.stdout);
     if (!answered) await sleep(2000);
   }
   ok("cotal ps is answered by the detached manager", answered, last);
@@ -359,7 +359,7 @@ try {
     // config (the documented checkout opt-in), or boot reports "no connector available" and the
     // detached spawn finds no responder on the class rail.
     cliInEnv(fgRoot, { ...fgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
-    fgUp = spawnProc(TSX, [CLI, "up", "--server", fgServer], { cwd: fgRoot, env: fgEnv, stdio: ["ignore", "pipe", "pipe"] });
+    fgUp = spawnProc(TSX, [CLI, "up", "--foreground", "--server", fgServer], { cwd: fgRoot, env: fgEnv, stdio: ["ignore", "pipe", "pipe"] });
     let fgOutText = "";
     fgUp.stdout?.on("data", (b: Buffer) => void (fgOutText += b.toString()));
     fgUp.stderr?.on("data", (b: Buffer) => void (fgOutText += b.toString()));
@@ -373,7 +373,7 @@ try {
     fgManagerPid = Number(readFileSync(fgRecord(MANAGER_PIDFILE), "utf8").trim());
     ok("foreground manager is a live process", Number.isFinite(fgManagerPid) && alive(fgManagerPid), fgManagerPid);
     const spawnSeat = cliInEnv(fgRoot, fgEnv, "spawn", "seat", "--detach", "--no-events", "--name", "bard");
-    ok("detached spawn of the shim seat succeeds", spawnSeat.status === 0 && /spawned .*bard/.test(plain(spawnSeat.stdout)), spawnSeat.stdout + spawnSeat.stderr);
+    ok("detached spawn of the shim seat succeeds", spawnSeat.status === 0 && plain(spawnSeat.stdout).includes("Agent joined") && /^\s*Agent:\s+bard$/m.test(plain(spawnSeat.stdout)), spawnSeat.stdout + spawnSeat.stderr);
     for (let i = 0; i < 50 && fgSeatPid === undefined; i++) {
       try { fgSeatPid = Number(readFileSync(fgSeatPidFile, "utf8").trim()) || undefined; } catch { /* not yet */ }
       if (fgSeatPid === undefined) await sleep(200);
@@ -424,7 +424,7 @@ try {
   let rgUp: ChildProcess | undefined;
   try {
     cliInEnv(rgRoot, { ...rgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
-    rgUp = spawnProc(TSX, [CLI, "up", "--server", `nats://127.0.0.1:${rgPort}`], { cwd: rgRoot, env: rgEnv, stdio: ["ignore", "pipe", "pipe"] });
+    rgUp = spawnProc(TSX, [CLI, "up", "--foreground", "--server", `nats://127.0.0.1:${rgPort}`], { cwd: rgRoot, env: rgEnv, stdio: ["ignore", "pipe", "pipe"] });
     let rgOutText = "";
     rgUp.stdout?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
     rgUp.stderr?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
