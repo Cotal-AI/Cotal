@@ -352,6 +352,18 @@ export interface EndpointOptions {
    *  and the channel cache hold the state at start and never update, and no sweep runs. A bucket of
    *  more than 1024 keys refuses the read. Requires `consume` and `registerPresence` false. */
   readOnce?: boolean;
+  /** Consume ONLY this endpoint's own existing DM durable, for a credential that can read nothing
+   *  else. The endpoint binds `dm_<owner>-<actor>-<uid>` and opens no channel registry, presence,
+   *  KV, channel subscription, `dlv_` durable, history reader or JetStream manager. It never creates
+   *  the durable: a missing one fails start with {@link DmDurableMissingError}, a refused bind with
+   *  {@link DmBindRefusedError}. Each authenticated DM goes to `handler`, one at a time; the next is
+   *  not read until the previous handler settles. The `message` event does not fire in this mode.
+   *  {@link CotalEndpoint.stop} resolves only after the connection is closed and the running handler
+   *  has settled; a rejecting handler still lets the connection close, and stop throws, keeping
+   *  custody, when closure or settlement within `settleTimeoutMs` (default 30000) is unproved.
+   *  Requires static or sourced creds or a bearer, `consume` true, `registerPresence`,
+   *  `watchPresence` and `watchChannels` false, and no channels, role, `readOnce` or `acceptedToken`. */
+  dmOnly?: DmOnlyOptions;
   /** Create inbound stream consumers (DM / chat / anycast). Default true; a pure observer sets false. */
   consume?: boolean;
   /** Initial per-channel attention overrides to publish in presence from the first heartbeat (the
@@ -380,6 +392,34 @@ export type PresenceView =
   | { state: "current"; fresh: true }
   | { state: "unpopulated"; fresh: false }
   | { state: "stale"; fresh: false; staleSince: number };
+
+/** See {@link EndpointOptions.dmOnly}. */
+export interface DmOnlyOptions {
+  /** Receives each authenticated DM. A resolved promise does not ack: call `delivery.ack()`. A
+   *  rejection is emitted as `error` and leaves the copy unacked, so the broker redelivers it. */
+  handler: (msg: CotalMessage, delivery: Delivery, meta: MessageMeta) => void | Promise<void>;
+  /** How long {@link CotalEndpoint.stop} waits for a running handler, in milliseconds. */
+  settleTimeoutMs?: number;
+}
+
+/** A DM-only endpoint's own `dm_` durable does not exist. The endpoint never creates it. */
+export class DmDurableMissingError extends Error {
+  readonly code = "dm-durable-missing" as const;
+  constructor(readonly stream: string, readonly durable: string) {
+    super(`dm-durable-missing: durable "${durable}" on stream "${stream}" does not exist; a DM-only endpoint binds an existing durable and never creates one`);
+    this.name = "DmDurableMissingError";
+  }
+}
+
+/** The broker refused a DM-only endpoint's bind of its own `dm_` durable. No other credential or
+ *  read path is tried. */
+export class DmBindRefusedError extends Error {
+  readonly code = "dm-bind-refused" as const;
+  constructor(readonly stream: string, readonly durable: string, cause: unknown) {
+    super(`dm-bind-refused: binding durable "${durable}" on stream "${stream}" was refused (${cause instanceof Error ? cause.message : String(cause)})`, { cause });
+    this.name = "DmBindRefusedError";
+  }
+}
 
 /** A presence bucket that has refused consecutive writes for at least one full presence TTL.
  * The condition is non-transient: ordinary heartbeat retry has already failed for the whole
@@ -528,6 +568,9 @@ export class CotalEndpoint extends EventEmitter {
   private readonly doWatchChannels: boolean;
   private readonly readOnce: boolean;
   private readonly doConsume: boolean;
+  private readonly dmOnly?: DmOnlyOptions;
+  /** The DM-only handler now running, if any; stop awaits it. */
+  private dmOnlyInFlight?: Promise<void>;
   private readonly ackWaitMs: number;
   private readonly inactiveThresholdMs: number;
 
@@ -956,6 +999,21 @@ export class CotalEndpoint extends EventEmitter {
     this.readOnce = opts.readOnce ?? false;
     if (this.readOnce && (this.doConsume || this.doRegister))
       throw new Error("EndpointOptions.readOnce requires consume and registerPresence false: a one-time read cannot keep a consumer's channel cache or its own presence current");
+    if (opts.dmOnly !== undefined) {
+      if (typeof opts.dmOnly.handler !== "function")
+        throw new Error("EndpointOptions.dmOnly.handler must be a function");
+      const settle = opts.dmOnly.settleTimeoutMs;
+      if (settle !== undefined && (!Number.isSafeInteger(settle) || settle <= 0))
+        throw new Error("EndpointOptions.dmOnly.settleTimeoutMs must be a positive safe integer");
+      if (!this.authed)
+        throw new Error("EndpointOptions.dmOnly requires creds or a bearer: it binds a provisioned durable and never creates one");
+      if (!this.doConsume || this.doRegister || this.doWatch || this.doWatchChannels || this.readOnce)
+        throw new Error("EndpointOptions.dmOnly requires consume true and registerPresence, watchPresence, watchChannels and readOnce false");
+      if (this.channels.length || opts.card.role || opts.acceptedToken !== undefined)
+        throw new Error("EndpointOptions.dmOnly takes no channels, role or acceptedToken: the endpoint reads only its own DM durable");
+      this.requireLifecycleUid("EndpointOptions.dmOnly");
+      this.dmOnly = opts.dmOnly;
+    }
     // Seed the presence mirror so file-default channel modes are visible from the first publish
     // (not only after the first runtime toggle). Mirror only — delivery reads the connector's state.
     this.channelModes = opts.channelModes && Object.keys(opts.channelModes).length ? opts.channelModes : undefined;
@@ -1484,6 +1542,16 @@ export class CotalEndpoint extends EventEmitter {
     this.armAuthExpiryReconnectFence(this.nc);
     this.watchStatus();
     this.js = jetstream(this.nc);
+
+    // DM-only (EndpointOptions.dmOnly): the own DM durable is the whole binding. Nothing below runs:
+    // no accepted-row read, presence, channel registry, JetStream manager, lease, membership,
+    // Plane-3 or liveness responder, so the credential needs no row for any of them.
+    if (this.dmOnly) {
+      await this.bindDmOnly(this.dmOnly);
+      if (this.stopped) return;
+      this.emit("connection", { connected: true });
+      return;
+    }
 
     // Discovery of the issued generation (SPEC 13.15): the ISSUER wrote the accepted reference
     // under the token this launch was handed; the broker admits the read only under this
@@ -2046,6 +2114,14 @@ export class CotalEndpoint extends EventEmitter {
       /* best-effort graceful leave */
     }
     await this.settleDeliveryLeaseWatches();
+    // DM-only: the pull above is stopped, so no new copy reaches the handler. Let a running handler
+    // settle while the connection is still open, so its ack can reach the broker; close either way.
+    let dmOnlyUnsettled = false;
+    if (this.dmOnly && this.dmOnlyInFlight) {
+      const settleMs = this.dmOnly.settleTimeoutMs ?? 30_000;
+      dmOnlyUnsettled = await withDeadline(this.dmOnlyInFlight.then(() => false), settleMs, () => new Error("unsettled"))
+        .catch(() => true);
+    }
     await this.closeWithoutLibraryReconnect(this.nc);
     // #1356: stop() does its own teardown and never runs clearConnectionScoped, so clear here too —
     // AFTER the best-effort offline publish above, which would otherwise re-record a refusal on its
@@ -2059,6 +2135,8 @@ export class CotalEndpoint extends EventEmitter {
     await this.startPromise;
     if ([...this.ownedConnections].some((nc) => !nc.isClosed()))
       throw new Error("endpoint stop could not prove its connection closed; local consumer custody must be retained");
+    if (dmOnlyUnsettled)
+      throw new Error(`endpoint stop closed the connection but the DM-only handler did not settle within ${this.dmOnly?.settleTimeoutMs ?? 30_000}ms; its copy stays unacked and handler custody must be retained`);
   }
 
   // ---- messaging -----------------------------------------------------------
@@ -6045,35 +6123,9 @@ export class CotalEndpoint extends EventEmitter {
     this.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
-        let msg: CotalMessage;
-        try {
-          msg = m.json<CotalMessage>();
-        } catch (e) {
-          m.term(); // undecodable — never redeliver
-          this.emit("error", e as Error);
-          continue;
-        }
-        // Authenticity guard (fail closed): the sender is encoded in the subject, which the
-        // server policed who could publish. The payload `from` is advisory — it must match,
-        // and a missing `from` or an unparseable subject on a delivery is itself an anomaly.
-        // Reject (term — a spoof is permanently invalid, never redeliver) BEFORE any handler.
-        if (!isRecord(msg) || !isUsableMessageId(msg.id)) {
-          m.term(); // malformed envelope (SPEC sec 5): absent/non-string id — permanently invalid
-          this.emit("error", new Error(`dropped message on ${m.subject}: absent or non-string id`));
-          continue;
-        }
-        const parsed = parseSubject(m.subject);
-        if (!parsed || !msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
-          m.term();
-          this.emit(
-            "error",
-            new Error(
-              `dropped message on ${m.subject}: payload from ${msg.from?.id ?? "(none)"} ` +
-                `does not match subject sender ${parsed?.sender ?? "(unparseable)"}`,
-            ),
-          );
-          continue;
-        }
+        const authed = this.authenticateStreamMsg(m);
+        if (!authed) continue;
+        const { msg, parsed } = authed;
         // No-replay + dedup (chat only): drop a message at/below this channel's join watermark
         // — pre-join history the New tail still carries for a *lagging* joiner (cursor behind the
         // frontier), and the overlap a replay backfill already delivered. Must ack, or JetStream
@@ -6095,6 +6147,91 @@ export class CotalEndpoint extends EventEmitter {
           historical: false,
           kind: kindFromParsed(parsed.kind),
         } satisfies MessageMeta);
+      }
+    })().catch((e) => {
+      if (!this.stopped) this.emit("error", e as Error);
+    });
+  }
+
+  /** Decode one stream copy and apply the authenticity guard (fail closed): the sender is encoded in
+   *  the subject, which the server policed who could publish. The payload `from` is advisory — it
+   *  must match, and a missing `from` or an unparseable subject on a delivery is itself an anomaly.
+   *  A rejected copy is `term()`ed (permanently invalid, never redelivered) and reported, and
+   *  `undefined` returns, so no handler ever sees it. */
+  private authenticateStreamMsg(m: JsMsg): { msg: CotalMessage; parsed: ParsedSubject } | undefined {
+    let msg: CotalMessage;
+    try {
+      msg = m.json<CotalMessage>();
+    } catch (e) {
+      m.term(); // undecodable — never redeliver
+      this.emit("error", e as Error);
+      return undefined;
+    }
+    if (!isRecord(msg) || !isUsableMessageId(msg.id)) {
+      m.term(); // malformed envelope (SPEC sec 5): absent/non-string id — permanently invalid
+      this.emit("error", new Error(`dropped message on ${m.subject}: absent or non-string id`));
+      return undefined;
+    }
+    const parsed = parseSubject(m.subject);
+    if (!parsed || !msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
+      m.term();
+      this.emit(
+        "error",
+        new Error(
+          `dropped message on ${m.subject}: payload from ${msg.from?.id ?? "(none)"} ` +
+            `does not match subject sender ${parsed?.sender ?? "(unparseable)"}`,
+        ),
+      );
+      return undefined;
+    }
+    return { msg, parsed };
+  }
+
+  /** Bind this endpoint's own existing DM durable and drive it serially (EndpointOptions.dmOnly).
+   *  The bind is one CONSUMER.INFO on `dm_<owner>-<actor>-<uid>`; reading is MSG.NEXT with a batch
+   *  of one, and the next copy reaches the handler only after the previous handler settles. */
+  private async bindDmOnly(mode: DmOnlyOptions): Promise<void> {
+    if (!this.js) throw new Error("endpoint not started");
+    const stream = dmStream(this.space);
+    const durable = dmDurable(this.owner, this.actor, this.requireLifecycleUid("consuming the DM inbox"));
+    let consumer: Consumer;
+    try {
+      consumer = await this.js.consumers.get(stream, durable);
+    } catch (e) {
+      if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) throw new DmDurableMissingError(stream, durable);
+      throw new DmBindRefusedError(stream, durable, e);
+    }
+    const ackWaitMs = await ackWaitOf(consumer); // cached by the bind's own CONSUMER.INFO, no request
+    // A rebind after reconnect must not overlap the previous epoch's running handler. A handler that
+    // does not settle within the stop bound fails this bind; the retry loop tries again.
+    if (this.dmOnlyInFlight) {
+      const settleMs = mode.settleTimeoutMs ?? 30_000;
+      await withDeadline(this.dmOnlyInFlight, settleMs, () =>
+        new Error(`DM-only rebind waited ${settleMs}ms for the previous handler to settle; not reading the next DM yet`));
+    }
+    const msgs = await consumer.consume({ max_messages: 1 });
+    this.streamMsgs.push(msgs);
+    void (async () => {
+      for await (const m of msgs) {
+        const authed = this.authenticateStreamMsg(m);
+        if (!authed) continue;
+        if (authed.parsed.kind !== "inst") {
+          m.term(); // the DM stream filter admits only inst.* subjects; anything else is not a DM
+          continue;
+        }
+        const run = Promise.resolve().then(() => mode.handler(authenticatedMessage(authed.msg, authed.parsed), durableDelivery(m, ackWaitMs), {
+          historical: false,
+          kind: "dm",
+        } satisfies MessageMeta));
+        const flight = run.then(() => {}, () => {});
+        this.dmOnlyInFlight = flight;
+        try {
+          await run;
+        } catch (e) {
+          this.emit("error", e instanceof Error ? e : new Error(String(e)));
+        } finally {
+          if (this.dmOnlyInFlight === flight) this.dmOnlyInFlight = undefined;
+        }
       }
     })().catch((e) => {
       if (!this.stopped) this.emit("error", e as Error);

@@ -643,6 +643,13 @@ AFTER any inactive alias gap), and terminal retirement records the
 retirement frontier before the alias is freed, so a successor lifecycle never receives the
 predecessor's pending backlog nor messages published while no lifecycle was active (§13.1).
 
+A client MAY read its DM inbox with nothing but its own `dm_<owner>-<actor>-<uid>` durable. Such a
+reader MUST bind only an existing durable and MUST NOT create one; a missing durable is a refusal,
+not a fallback to any other credential or read path. It MUST apply the §5 sender check before any
+handler sees a message. Its native requests are CONSUMER.INFO and MSG.NEXT on that durable plus
+acks under `$JS.ACK.<DM>.<durable>.>`; it needs no presence, registry, channel, delivery, history
+or account-level JetStream row. The credential profile for such a reader is not defined here.
+
 Per-instance durable names use the principal's dash-form `<owner>-<actor>` (both tokens
 fail-loud-validated, not lossily sanitized), so a durable name-scopes to exactly one principal (§2).
 The authenticated wire identity is the principal, not the connection nkey. From v0.4, in auth mode,
@@ -5998,6 +6005,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-21 | **Own-DM-only reader (§8), additive.** A client may read its DM inbox holding only its own `dm_` durable: it binds an existing durable, never creates one, refuses when it is missing, keeps the §5 sender check, and issues only CONSUMER.INFO, MSG.NEXT and ack requests on that durable. No credential profile is added. |
 | 2026-10-19 | **A spawn-scoped `manager-caller` view reads its launch options (§9, §10), additive.** A person who may spawn on their own Manager could not read what a launch there needs: `status`, `models` and `resolve-cwd` were not in the view unless the actor held `admin`, and `resolve-cwd` was in no view at all. A view whose actor holds `spawn` now carries those three on its one pinned instance. A `run`-only or no-scope view gains nothing, `ps` and `slots` stay with `admin`, and no class, scatter or other-instance row is added. The standing `spawn` set is unchanged. |
 | 2026-10-19 | **Observer and admin history readers are deletable (Appendix B), breaking.** Each history read on these profiles left its consumers to the broker's five-minute inactive threshold, because the profiles held no `CONSUMER.DELETE` (#691). A dashboard polling history filled the stream's consumer limit, and every later read was refused with "maximum consumers limit reached". The observer now holds `CONSUMER.DELETE` on `CHAT` for `hist_<readerId>_<n>`, `n` in `0..7`, and admin holds the same names on `DM`. These are the connection's own history-reader names and no other consumer's: `readerId` is a static credential's nkey, or under the auth callout the server's id and the client id it assigned the connection, never the inbox nonce a client chooses. A history read uses them, deletes each reader when its step ends, and never deletes a consumer it finds under one of them. A credential minted without these rows cannot clean up, so a current client fails its history read and says to remint the credential. |
 | 2026-10-19 | **Private tool results (§13.19), additive; accepted, not implemented or enabled.** Defines the consent anchor role, managed-child serving request, consent and revocation record families, canonical START frontier, fixed audiences, exact-instance binding and bounded inert result journal. Revocation depends on a separately reviewed complete leader snapshot and an established enforced clock-skew bound; absent prerequisites answer `unavailable`. Activation requires every owner's qualified part and a stock release. Public tool arguments and results remain withheld. `protocolVersion` is unchanged. |
