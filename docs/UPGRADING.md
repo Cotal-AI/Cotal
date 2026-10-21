@@ -2189,3 +2189,11 @@ lacks a supported native retirement instrument carrying its own current serve id
 It refuses without publishing a request. It does not borrow the manager's identity, treat --yes as
 a grant, or call the host's interactive/managed loopback doors as a substitute. This remains an
 explicit authority gate, not a completed retirement operation.
+
+## Local-process `rootedAt` removal in 0.91.0
+
+A local-process extension descriptor no longer has a `rootedAt` field. No stop has read it since
+the dashboard became a service. Operators have nothing to migrate, snapshot or order, and there is
+no outage: a manifest that an older install cached with the field still loads, and the next
+manifest rewrite drops it. An extension author removes the field from each `LocalProcess`
+declaration, where TypeScript now reports it as an unknown property.

@@ -222,9 +222,6 @@ export const webProcess: LocalProcess = {
   // The exit handler removes it, but an exit handler does not run on SIGKILL — so without this the
   // credential outlives the process it authenticates.
   artifacts: [WEB_SESSION_FILE],
-  // The dashboard records its pidfile under its mesh's root. No stop reads `rootedAt` now: a named
-  // `down` is a service stop, and bare `down` sweeps the folder it runs in.
-  rootedAt: "target",
 };
 
 /** Atomically claim this mesh's web pidfile so concurrent custom-port launches cannot overwrite it,
