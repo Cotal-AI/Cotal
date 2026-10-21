@@ -4,7 +4,8 @@
  * StrictModes, the account list comes only from local name services, and the entry has no
  * extended ACL. World write, a foreign owner and a symlink always refuse, a root-owned sticky
  * ancestor is accepted, and a credential file keeps its owner-only rule. The account database and
- * the ACL read are injected, so no case reads this machine's accounts or ACLs. Broker-free.
+ * the ACL read are injected, so no case reads this machine's accounts or ACLs. Only `win32`
+ * selects the Windows record model; the platform is passed in, so that runs here. Broker-free.
  *
  * Run: pnpm smoke:protected-paths
  */
@@ -15,8 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommandFailure } from "../src/output.js";
 import {
-  assertProtectedEntry, privateGroupGap, protectedCredentialReference, protectedLocalDirectory, protectedPathPolicy,
-  type AccountDatabase, type ProtectedPathPolicy,
+  assertProtectedEntry, localRecordAccess, privateGroupGap, protectedCredentialReference, protectedFileAccessAvailable,
+  protectedLocalDirectory, protectedPathPolicy, type AccountDatabase, type ProtectedPathPolicy,
 } from "../src/protected-records.js";
 
 if (process.platform === "win32") skipSuite("protected paths are POSIX-only");
@@ -208,5 +209,13 @@ try {
   rmSync(dir, { recursive: true, force: true });
 }
 
-console.log("protected-paths smoke: OK - a proven user private group without an extended ACL is accepted, other members, other primary accounts, non-local name services, extended ACLs and unavailable proofs refuse, only a proven group is cached, world write, foreign owners and symlinks always refuse, a root sticky ancestor is accepted, and a credential keeps its owner-only rule");
+// 6. One place picks the record model from the platform. Only win32 takes the Windows access-list
+//    model; every other platform keeps the owner, mode and link checks, and this host has them.
+assert.equal(localRecordAccess("win32"), "windows-acl", "win32 selects the Windows access-list model");
+for (const platform of ["linux", "darwin", "freebsd"] as const)
+  assert.equal(localRecordAccess(platform), "posix", `${platform} keeps the POSIX owner, mode and link checks`);
+assert.equal(localRecordAccess(), "posix", "this host selects the POSIX model");
+assert.equal(protectedFileAccessAvailable(), true, "this host has protected local-record access");
+
+console.log("protected-paths smoke: OK - a proven user private group without an extended ACL is accepted, other members, other primary accounts, non-local name services, extended ACLs and unavailable proofs refuse, only a proven group is cached, world write, foreign owners and symlinks always refuse, a root sticky ancestor is accepted, a credential keeps its owner-only rule, and only win32 selects the Windows record model");
 emitSentinel({ passed: cells(), failed: 0 });
