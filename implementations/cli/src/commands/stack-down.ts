@@ -9,7 +9,7 @@
 import * as prompts from "../lib/prompts.js";
 import type { ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, canonicalRoot, deliveryCredsKey, isCommandFailure, oneLine, presentationOf,
+  CommandFailure, canonicalRoot, deliveryCredsKey, isCommandFailure, isConnectRefusal, oneLine, presentationOf,
   releaseMaintenanceLock, removeMeshesByRoot, recordPreparedSpace, renderReport, terminalWidth, workspaceSecretStore, writeResult,
   type MaintenanceLock, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan,
   recordOperationSpace,
@@ -65,8 +65,10 @@ function readMembers(journal: StackJournal): Member[] {
  *  the broker back while keeping the live manager. */
 async function managerImpact(journal: StackJournal, members: readonly Member[], manager: Member, withAgents: boolean): Promise<ServiceAdapterStopPlan | undefined> {
   try { return await prepareNativeServiceStop(manager.definition, manager.instance, withAgents); }
-  catch (error) {
-    if (members.some((member) => member.role === "broker" && member.live) || !isCommandFailure(error)) throw error;
+  catch (caught) {
+    // The read connects through the broker, so a gone broker surfaces as the connect refusal.
+    const error = isConnectRefusal(caught) ? caught.failure() : caught;
+    if (members.some((member) => member.role === "broker" && member.live) || !isCommandFailure(error)) throw caught;
     throw new CommandFailure("refused", error.code, "the stack's broker is not running, so the live manager's agent impact cannot be read; no member was stopped", { target: { root: journal.root, space: journal.space, manager: manager.instance.name }, native: { code: error.code, outcome: error.outcome, detail: error.message }, remedy: `run cotal up --space ${journal.space} to restart the broker from its recorded inputs while the manager keeps running, then run cotal down` });
   }
 }
