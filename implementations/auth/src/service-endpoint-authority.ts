@@ -112,7 +112,11 @@ export async function answerServiceAuthority(door: ServiceAuthorityDoor, request
     const p = await host("proposal-read", { proposalId });
     if (p.state !== "present") return { kind: "reply", reply: p.state === "absent" ? unknown("the completed register's proposal is not readable") : readRefusal(p) };
     const v = p.record.value as ServiceProposalView | ServiceProposalTombstoneView;
-    if (!("register" in v)) return { kind: "proposed", proposalDigest: v.proposalDigest };
+    // An undecided proposal past its expiry can no longer be approved: it reads as expired once its
+    // whole expiry second has passed, so this never reports expired before the engine would refuse.
+    // An approving proposal keeps its answer here; its decision settles it.
+    if (!("register" in v)) return v.state === "proposed" && Date.now() >= (v.expiresAt + 1) * 1000
+      ? { kind: "closed", state: "expired", reason: "expired" } : { kind: "proposed", proposalDigest: v.proposalDigest };
     if (v.state !== "approved") return { kind: "closed", state: v.state, reason: v.reason ?? v.state };
     const s = await door.engine.serviceState(owner, request.endpoint, request.instanceId);
     if (s.state === "approved" && s.proposalId === proposalId && s.approvalDigest === v.approvalDigest) return { kind: "approved", approvalDigest: s.approvalDigest };
