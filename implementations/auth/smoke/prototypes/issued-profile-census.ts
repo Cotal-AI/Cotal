@@ -76,6 +76,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     },
     "goal-writer": () => one("goal-writer", { goalWriter: { endpoint: "manager" } }),
     "session-caller": () => one("session-caller", { sessionCaller: { endpoint: "manager", sessionId: session, epoch: 1 } }),
+    "dm-reader": () => one("dm-reader"),
     "session-serving": () => one("session-serving", { sessionServing: { endpoint: "manager", sessionId: session, epoch: 1 } }),
     "session-ledger": () => one("session-ledger"),
     "run-driver": () => one("run-driver", { runDriver: run }),
@@ -241,7 +242,7 @@ function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
  * pairing is expected in the trusted infrastructure profiles (they ARE the trusted plane), and is the
  * condition the issued rail's origin assumption cannot survive in a peer-held credential.
  */
-export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller"]);
+export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller", "dm-reader"]);
 
 /**
  * The rest, classified as trusted infrastructure or operator credentials. Peer-heldness is a

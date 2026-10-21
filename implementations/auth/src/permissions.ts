@@ -145,6 +145,10 @@ export function calloutPermissions(
       }
       if (t.act.view === "transfer-writer")
         return permissionsFor("transfer-writer", t.space, principal, { transferWriter: t.act.transferWriter! });
+      // #4189: the own-DM reader. Its rows name the lifecycle-keyed `dm_` durable of the CURRENT
+      // row, which the equality check above already proved is the bearer's lifecycle.
+      if (t.act.view === "dm-reader")
+        return permissionsFor("dm-reader", t.space, { ...principal, lifecycleUid: t.act.lifecycleUid }, {});
       if (t.act.view === "manager-caller") {
         const instanceId = t.act.managerInstanceId!;
         if (!authorizeManagerCaller)
