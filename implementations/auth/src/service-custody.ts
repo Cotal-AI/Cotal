@@ -8,7 +8,7 @@
  * still land a write after its last check; safety comes from per-key zero-history create and
  * revision CAS, which make every late write either a loss or unreleased residue. */
 import {
-  EpEnvelopeError, assertLifecycleToken, canonicalJson, isContractDigest,
+  EpEnvelopeError, assertLifecycleToken, canonicalJson, epgateKey, isContractDigest,
   lifecycleHeadKey, mintLifecycleUid, parseNativeUidCustody, uidReservationKey, type ServiceUidCustodyV1,
 } from "@cotal-ai/core";
 import { serviceGateRows, type ServiceAssignmentBinding, type ServiceGateRows } from "./native-service-gate.js";
@@ -21,7 +21,7 @@ import {
 import { readRegistryServiceRoot } from "./service-root-reader.js";
 import {
   HOSTS, Held, bounded, context, denied, endpoint, held, leader, message, readyBefore, write,
-  type Ctx, type HostInternals, type ServiceCustodyHost,
+  type Ctx, type HostInternals, type ServiceCustodyHost, type ServiceWriteScope,
 } from "./service-write.js";
 
 export { S1_MAX_UNKNOWN_ROUNDS, S1_REQUEST_TIMEOUT_MS, openServiceCustodyHost, type ServiceCustodyHost } from "./service-write.js";
@@ -67,6 +67,24 @@ function material(host: ServiceCustodyHost, reservation: ServiceUidCustodyV1): M
   const binding: ServiceAssignmentBinding = { accountPublicKey: h.accountPublicKey, space: h.space, owner: id.owner, endpoint: id.endpoint,
     instanceId: id.instanceId, lifecycleUid, assignmentDigest: id.digest };
   return { host: h, id, uidBytes, binding, epgate: serviceGateRows(h.registry, binding) };
+}
+
+/** Package-internal: every key one custody run for this identity can write. Only bootstrap creates
+ *  the UID reservation, and its root credential id is minted during the run, so roots are a family. */
+export function serviceCustodyKeys(id: { owner: string; actor: string; endpoint: string; instanceId: string; lifecycleUid: string },
+  run: "bootstrap" | "cancel"): ServiceWriteScope {
+  const lifecycleUid = assertLifecycleToken(id.lifecycleUid, "lifecycleUid");
+  return {
+    records: [...(run === "bootstrap" ? [uidReservationKey(lifecycleUid)] : []), lifecycleHeadKey(id.owner, id.actor)],
+    auth: [epgateKey(id.endpoint, id.instanceId), nativeGateKey(lifecycleUid)],
+    authFamilies: [rootFamily(lifecycleUid)],
+  };
+}
+
+/** Package-internal: the custody keys of one exact reservation, through the same validation every
+ *  custody intent uses. */
+export function serviceReservationKeys(host: ServiceCustodyHost, reservation: ServiceUidCustodyV1, run: "bootstrap" | "cancel"): ServiceWriteScope {
+  return serviceCustodyKeys(material(host, reservation).id, run);
 }
 
 /** Package-internal: the binding and endpoint-gate rows of one exact reservation, through the
@@ -130,8 +148,10 @@ async function parsed<T>(ctx: Ctx, bucket: "records" | "auth", key: string, pars
 }
 
 const headKey = (m: Material) => lifecycleHeadKey(m.id.owner, m.id.actor);
-const gateKey = (m: Material) => `gate.${m.id.lifecycleUid}`;
-const rootKey = (m: Material, credentialId: string) => `cred.${m.id.lifecycleUid}.${credentialId}`;
+const nativeGateKey = (lifecycleUid: string) => `gate.${lifecycleUid}`;
+const rootFamily = (lifecycleUid: string) => `cred.${lifecycleUid}.`;
+const gateKey = (m: Material) => nativeGateKey(m.id.lifecycleUid);
+const rootKey = (m: Material, credentialId: string) => `${rootFamily(m.id.lifecycleUid)}${credentialId}`;
 const head = (ctx: Ctx, m: Material) => parsed(ctx, "records", headKey(m), (v) => parseServiceHead(v, m.id));
 const gate = (ctx: Ctx, m: Material) => parsed(ctx, "auth", gateKey(m), (v) => parseServiceNativeGate(v, m.id));
 const root = (ctx: Ctx, m: Material, credentialId: string) => parsed(ctx, "auth", rootKey(m, credentialId), (v) => parseServiceNativeRoot(v, m.id, credentialId));

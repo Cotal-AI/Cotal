@@ -1,6 +1,6 @@
-/** Package-internal shared writer for native service custody: the sealed host, its fatal latch,
- * the bounded broker access and the one conditional write every custody and host-operation step
- * issues. Moved from service-custody.ts unchanged; nothing here decides custody. */
+/** Package-internal shared writer for native service custody: the sealed host, its fatal latch and
+ * write scope, the bounded broker access and the one conditional write every custody and
+ * host-operation step issues. Nothing here decides custody. */
 import type { JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError, epAuthBucket, isAccountNkey, isCasLoss, recordsBucket } from "@cotal-ai/core";
@@ -16,7 +16,23 @@ export const S1_MAX_UNKNOWN_ROUNDS = 3;
 
 export interface ServiceCustodyHost { readonly space: string; readonly accountPublicKey: string }
 
-interface HostInternals { registry: LifecycleRegistry; assertHeld: ScanGuard["assertHeld"]; space: string; accountPublicKey: string; tripped?: string }
+/** The exact keys a host may write: whole keys per bucket, plus auth families whose one remaining
+ *  token is minted during the write (a root credential id). */
+export interface ServiceWriteScope { readonly records: readonly string[]; readonly auth: readonly string[]; readonly authFamilies: readonly string[] }
+
+/** Whether `scope` covers one write: an exact key, or exactly one more token under an auth family. */
+export function scopeCovers(scope: ServiceWriteScope, bucket: "records" | "auth", key: string): boolean {
+  if (scope[bucket].includes(key)) return true;
+  return bucket === "auth" && scope.authFamilies.some((f) => key.length > f.length && key.startsWith(f) && !key.slice(f.length).includes("."));
+}
+const frozenScope = (s: ServiceWriteScope): ServiceWriteScope =>
+  Object.freeze({ records: Object.freeze([...s.records]), auth: Object.freeze([...s.auth]), authFamilies: Object.freeze([...s.authFamilies]) });
+
+interface HostInternals {
+  registry: LifecycleRegistry; assertHeld: ScanGuard["assertHeld"]; space: string; accountPublicKey: string; tripped?: string;
+  /** Absent: the host writes wherever its custody step goes. Present: nothing outside it is issued. */
+  writes?: ServiceWriteScope;
+}
 const HOSTS = new WeakMap<ServiceCustodyHost, HostInternals>();
 const dec = new TextDecoder("utf-8", { fatal: true });
 
@@ -27,13 +43,14 @@ function denied(detail: string): never {
 /** The one trusted composition: a genuine registry, a genuine hold for the same space, the
  *  configured account, and a fatal latch only the returned `trip` sets. The held check is the
  *  closure captured when the hold was acquired, never the hold's mutable `guard` field. */
-export function openServiceCustodyHost(opts: { registry: LifecycleRegistry; hold: PlaneClaimHold; accountPublicKey: string }): { host: ServiceCustodyHost; trip(reason: string): void } {
+export function openServiceCustodyHost(opts: { registry: LifecycleRegistry; hold: PlaneClaimHold; accountPublicKey: string; writes?: ServiceWriteScope }): { host: ServiceCustodyHost; trip(reason: string): void } {
   const { space } = registryStores(opts.registry);
   const genuine = genuinePlaneHold(opts.hold);
   if (genuine === undefined) return denied("requires a plane claim hold this process acquired");
   if (genuine.space !== space) denied(`hold belongs to another space than the registry's "${space}"`);
   if (typeof opts.accountPublicKey !== "string" || !isAccountNkey(opts.accountPublicKey)) denied("requires the configured account public key");
-  const internals: HostInternals = { registry: opts.registry, assertHeld: genuine.assertHeld, space, accountPublicKey: opts.accountPublicKey };
+  const internals: HostInternals = { registry: opts.registry, assertHeld: genuine.assertHeld, space, accountPublicKey: opts.accountPublicKey,
+    ...(opts.writes ? { writes: frozenScope(opts.writes) } : {}) };
   const host: ServiceCustodyHost = Object.freeze({ space, accountPublicKey: opts.accountPublicKey });
   HOSTS.set(host, internals);
   return { host, trip: (reason: string) => { if (internals.tripped === undefined) internals.tripped = reason; } };
@@ -127,9 +144,12 @@ type Expect = { create: true } | { revision: number; preimage: Uint8Array };
  *  longer matches this step's decision (the caller re-reads and re-decides). An unknown outcome
  *  is classified by an immediate leader read before anything is reissued; only exact absence for
  *  a create, or the exact preimage at the pinned revision for a CAS, permits the same write again.
- *  `precheck` runs before every attempt, including each reissue. */
+ *  `precheck` runs before every attempt, including each reissue. A key outside the host's write
+ *  scope holds `scope-mismatch` before anything is issued. */
 async function write(ctx: Ctx, bucket: "records" | "auth", key: string, bytes: Uint8Array, expect: Expect,
   precheck?: () => Promise<void>): Promise<number | "moved"> {
+  if (ctx.h.writes !== undefined && !scopeCovers(ctx.h.writes, bucket, key))
+    return held("scope-mismatch", ctx.step, `the ${bucket} key ${key} is outside this host's write scope`);
   for (let round = 0; round < S1_MAX_UNKNOWN_ROUNDS; round++) {
     if (precheck) await precheck();
     await readyBefore(ctx);

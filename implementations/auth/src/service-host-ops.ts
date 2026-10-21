@@ -5,7 +5,8 @@
  *
  * Every write is one zero-history create or one exact-revision CAS on one key, issued through the
  * shared custody writer (service-write.ts) under the same plane-claim hold check and fatal latch as
- * native custody. No record carries a TTL and none is ever deleted or purged. There are no
+ * native custody, and only inside the invocation's write scope: the keys discovery located before
+ * its effect connection opened. A step that needs a key outside it holds before anything is issued. No record carries a TTL and none is ever deleted or purged. There are no
  * multi-key batches: every window between two writes is either fenced on its key or settled from
  * what a later invocation reads. The invocation limit and the original deadline are limits, never
  * waits, fences or proof that an earlier write cannot still land. */
@@ -23,7 +24,7 @@ import type { PlaneClaimHold } from "./plane-claim.js";
 import { encodeRoundTrip } from "./service-custody-shapes.js";
 import {
   cancelServiceCustody, runServiceBootstrap, sealServiceBootstrapIntent, sealServiceCancelIntent, serviceAssignmentGate,
-  type ServiceCancelResult,
+  serviceCustodyKeys, serviceReservationKeys, type ServiceCancelResult,
 } from "./service-custody.js";
 import {
   parseServiceHostRequest, parseServiceProposalClusters, parseServiceProposalCommands,
@@ -34,8 +35,8 @@ import {
 } from "./service-host-contract.js";
 import { readRegistryServiceRoot } from "./service-root-reader.js";
 import {
-  HOSTS, Held, bounded, context, endpoint, held, leader, message, openServiceCustodyHost, write,
-  type Ctx, type EndpointClass, type HostInternals, type ServiceCustodyHost,
+  HOSTS, Held, bounded, context, endpoint, held, leader, message, openServiceCustodyHost, scopeCovers, write,
+  type Ctx, type EndpointClass, type HostInternals, type ServiceCustodyHost, type ServiceWriteScope,
 } from "./service-write.js";
 
 /** Original authority limit of one approve, refuse or register, from its admission. */
@@ -420,15 +421,48 @@ async function retryDebt(ctx: Ctx, op: Op, registerRequestIdOf: (proposalId: str
 
 // ---- engine -------------------------------------------------------------------------------------
 
-/** The keys one invocation may touch, discovered before its effect connection opens. */
-export interface ServiceHostEffectScope {
+/** What discovery located for one invocation before its effect connection opens. */
+export interface ServiceHostScopeTarget {
   operation: "startup" | "register" | "decide" | "revoke";
   operationId: string | null;
   proposalId: string | null;
+  owner: string | null;
   endpoint: string | null;
   instanceId: string | null;
   lifecycleUid: string | null;
 }
+/** One invocation's scope: its target and the exact keys it may write. The engine guards every
+ *  write with `keys`, so an effect credential granted from the same set cannot differ from it. */
+export interface ServiceHostEffectScope extends ServiceHostScopeTarget { readonly keys: ServiceWriteScope }
+
+/** The one key source for an invocation's writes: its own S2-A records, plus native custody's keys
+ *  for the located reservation. A decide with a reservation can bootstrap it; a revoke only cancels. */
+export function serviceHostScopeKeys(account: { accountPublicKey: string; space: string }, t: ServiceHostScopeTarget): ServiceWriteScope {
+  const auth: string[] = [], records: string[] = [], authFamilies: string[] = [];
+  const opKeyOf = () => opKey(hexN(t.operationId, 32));
+  const custody = (run: "bootstrap" | "cancel") => {
+    if (t.owner === null || t.endpoint === null || t.instanceId === null || t.lifecycleUid === null) return;
+    const actor = serviceEndpointActor({ ...account, owner: t.owner, endpoint: t.endpoint, instanceId: t.instanceId });
+    const k = serviceCustodyKeys({ owner: t.owner, actor, endpoint: t.endpoint, instanceId: t.instanceId, lifecycleUid: t.lifecycleUid }, run);
+    records.push(...k.records); auth.push(...k.auth); authFamilies.push(...k.authFamilies);
+  };
+  switch (t.operation) {
+    case "startup": auth.push(ADMISSION_KEY); break;
+    case "register": auth.push(opKeyOf(), proposalKey(hexN(t.proposalId, 64)), CAPACITY_KEY); break;
+    case "decide":
+      auth.push(opKeyOf(), proposalKey(hexN(t.proposalId, 64)), CAPACITY_KEY);
+      if (t.lifecycleUid !== null && t.endpoint !== null && t.instanceId !== null) { auth.push(assignmentKey(t.endpoint, t.instanceId)); custody("bootstrap"); }
+      break;
+    case "revoke":
+      if (t.endpoint === null || t.instanceId === null) bad("a revoke scope names its selector");
+      auth.push(opKeyOf(), assignmentKey(t.endpoint, t.instanceId), CAPACITY_KEY, ...(t.proposalId === null ? [] : [proposalKey(hexN(t.proposalId, 64))]));
+      custody("cancel");
+      break;
+  }
+  const uniq = (a: string[]) => Object.freeze([...new Set(a)]);
+  return Object.freeze({ records: uniq(records), auth: uniq(auth), authFamilies: uniq(authFamilies) });
+}
+const NO_WRITES: ServiceWriteScope = Object.freeze({ records: Object.freeze([]), auth: Object.freeze([]), authFamilies: Object.freeze([]) });
 /** One per-invocation effect connection's registry. `close` runs only after every awaited call returned. */
 export interface ServiceHostEffect { registry: LifecycleRegistry; close(): Promise<void> }
 export interface ServiceHostOperationsOptions {
@@ -467,7 +501,7 @@ export interface ServiceHostOperations {
   trip(reason: string): void;
 }
 
-interface Inv { host: ServiceCustodyHost; h: HostInternals; endMs: number; operationId: string; bound: boolean; assignmentDigest?: string }
+interface Inv { host: ServiceCustodyHost; h: HostInternals; writes: ServiceWriteScope; endMs: number; operationId: string; bound: boolean; assignmentDigest?: string }
 const denied = (reason: ServiceHostReason, boundOperationId?: string): Arms => ({ state: "denied", reason, ...(boundOperationId ? { boundOperationId } : {}) });
 const refusedArm = (operationId: string, reason: ServiceOperationRefusal, debts: ServiceHostDebt[], boundOperationId?: string): Arms =>
   ({ state: "refused", operationId, reason, ...(boundOperationId ? { boundOperationId } : {}), ...(debts.length ? { debt: debts } : {}) });
@@ -495,27 +529,40 @@ export function parseServiceRegisterRequest(raw: unknown): ServiceRegisterReques
 export async function openServiceHostOperations(opts: ServiceHostOperationsOptions): Promise<ServiceHostOperations> {
   if (opts.startup === undefined) throw new EpEnvelopeError("failed-precondition", "service host operations require an explicit startup kind");
   if (opts.startup.kind !== "normal") throw new EpEnvelopeError("unimplemented", "restore startup is not supported; a restored store stays closed");
-  const discovery = openServiceCustodyHost({ registry: opts.discovery, hold: opts.hold, accountPublicKey: opts.accountPublicKey });
+  // Discovery only reads: its host writes nothing at all.
+  const discovery = openServiceCustodyHost({ registry: opts.discovery, hold: opts.hold, accountPublicKey: opts.accountPublicKey, writes: NO_WRITES });
   const space = discovery.host.space, accountPublicKey = opts.accountPublicKey;
   const live = new Set<(reason: string) => void>();
   let tripped: string | undefined;
   const discoveryCtx = (step: string) => { const c = context(HOSTS.get(discovery.host)!, Date.now() + S2A_INVOCATION_MS); c.step = step; return c; };
 
   /** One invocation: an effect connection for the discovered scope, one custody host over it
-   *  sharing the process hold, and the engine latch. Every awaited call returns before close. */
-  async function invoke<T>(scope: ServiceHostEffectScope, run: (inv: Inv) => Promise<T>): Promise<T> {
+   *  sharing the process hold and writing only the scope's keys, and the engine latch. Every
+   *  awaited call returns before close. */
+  async function invoke<T>(target: ServiceHostScopeTarget, run: (inv: Inv) => Promise<T>): Promise<T> {
     if (tripped !== undefined) throw new Held("readiness", "open", `the service host is fenced: ${tripped}`);
+    const keys = serviceHostScopeKeys({ accountPublicKey, space }, target);
+    const scope: ServiceHostEffectScope = Object.freeze({ ...target, keys });
     const effect = await opts.openEffect(scope);
     try {
-      const { host, trip } = openServiceCustodyHost({ registry: effect.registry, hold: opts.hold, accountPublicKey });
+      const { host, trip } = openServiceCustodyHost({ registry: effect.registry, hold: opts.hold, accountPublicKey, writes: keys });
       if (host.space !== space) throw new EpEnvelopeError("permission-denied", "the effect registry belongs to another space");
       live.add(trip);
       if (tripped !== undefined) trip(tripped);
-      try { return await run({ host, h: HOSTS.get(host)!, endMs: Date.now() + S2A_INVOCATION_MS, operationId: scope.operationId ?? "", bound: true }); }
+      const h = HOSTS.get(host)!;
+      try { return await run({ host, h, writes: h.writes!, endMs: Date.now() + S2A_INVOCATION_MS, operationId: target.operationId ?? "", bound: true }); }
       finally { live.delete(trip); }
     } finally { await effect.close(); }
   }
   const readCtx = (inv: Inv, step: string) => { const c = context(inv.h, inv.endMs); c.step = step; return c; };
+  /** Hold before a native custody run whose keys this invocation's scope does not cover. A replay
+   *  of the same request discovers the stored reservation and scopes it. */
+  const coverCustody = (inv: Inv, ctx: Ctx, reservation: ServiceUidCustodyV1, run: "bootstrap" | "cancel") => {
+    const need = serviceReservationKeys(inv.host, reservation, run);
+    const gap = [...need.records.filter((k) => !scopeCovers(inv.writes, "records", k)), ...need.auth.filter((k) => !scopeCovers(inv.writes, "auth", k)),
+      ...need.authFamilies.filter((f) => !inv.writes.authFamilies.includes(f))];
+    if (gap.length) held("scope-mismatch", ctx.step, `native custody needs ${gap.join(", ")} outside this invocation's write scope`);
+  };
   /** Normal advancement only, and only before the original deadline. */
   const authorityCtx = (inv: Inv, notAfterMs: number, step: string) => { const c = context(inv.h, Math.min(inv.endMs, notAfterMs)); c.step = step; return c; };
   /** A held step names its operation whenever the request may be bound: until this invocation's own
@@ -544,7 +591,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
 
   // Normal-startup admission: absent creates `open` epoch 1; `open` is used; `quarantined` stays.
   // An unknown or unavailable create fails construction closed.
-  await invoke({ operation: "startup", operationId: null, proposalId: null, endpoint: null, instanceId: null, lifecycleUid: null }, async (inv) => {
+  await invoke({ operation: "startup", operationId: null, proposalId: null, owner: null, endpoint: null, instanceId: null, lifecycleUid: null }, async (inv) => {
     const ctx = readCtx(inv, "admission");
     for (let i = 0; i < S2A_MAX_REDECIDE; i++) {
       const a = await readAdmission(ctx);
@@ -591,7 +638,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       return out(denied("bad-request"));
     const sel = { owner: o, endpoint: e, instanceId: i };
     try {
-      return out(await invoke({ operation: "register", operationId, proposalId, endpoint: e, instanceId: i, lifecycleUid: null }, async (inv) => {
+      return out(await invoke({ operation: "register", operationId, proposalId, owner: o, endpoint: e, instanceId: i, lifecycleUid: null }, async (inv) => {
         try {
           const ctx = readCtx(inv, "R2-binding");
           for (let n = 0; ; n++) {
@@ -727,6 +774,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
   /** V3: native cancellation of a bound assignment with the material recorded in `svcasg`, then
    *  the endpoint gate read that decides whether deny-new landed. S1 is awaited, never raced. */
   async function nativeCancel(inv: Inv, ctx: Ctx, asg: Extract<Assignment, { state: "bound" }>, cancel: Cancel): Promise<CancelRun> {
+    coverCustody(inv, ctx, asg.reservation, "cancel");
     let s1: CancelRun["s1"];
     try {
       const intent = sealServiceCancelIntent(inv.host, { reservation: asg.reservation, opId: cancel.operationId, requestDigest: cancel.requestDigest });
@@ -760,14 +808,19 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     type Admitted = { kind: "out"; out: DecideOut } | { kind: "bind"; binding: OpLive };
     const out = (o: DecideOut): Admitted => ({ kind: "out", out: o });
     const granterOwner = req.granter.kind === "owner" ? req.granter.owner : null;
-    const scope: ServiceHostEffectScope = { operation: "decide", operationId, proposalId, endpoint: null, instanceId: null, lifecycleUid: null };
+    const scope: ServiceHostScopeTarget = { operation: "decide", operationId, proposalId, owner: null, endpoint: null, instanceId: null, lifecycleUid: null };
     let found: Read<Op> | undefined;
     try {
       const dctx = discoveryCtx("discover");
       const op = found = await readOp(dctx, operationId), prop = await readProposal(dctx, proposalId);
-      if (op.state === "value" && op.row.kind === "service-host-operation" && op.row.plan.kind === "approve") scope.lifecycleUid = op.row.plan.reservation.native.lifecycleUid;
-      if (prop.state === "value") { scope.endpoint = prop.row.endpoint; scope.instanceId = prop.row.instanceId; }
-      if (op.state === "absent" && approve) scope.lifecycleUid = mintLifecycleUid();
+      // A stored approve scopes its own reservation; a first use scopes the one it is about to admit.
+      if (op.state === "value" && op.row.kind === "service-host-operation" && op.row.plan.kind === "approve") {
+        const a = op.row.plan.reservation.assignment;
+        Object.assign(scope, { owner: a.owner, endpoint: a.endpoint, instanceId: a.instanceId, lifecycleUid: op.row.plan.reservation.native.lifecycleUid });
+      } else if (op.state === "absent" && approve) {
+        scope.lifecycleUid = mintLifecycleUid();
+        if (prop.state === "value") Object.assign(scope, { owner: prop.row.owner, endpoint: prop.row.endpoint, instanceId: prop.row.instanceId });
+      }
     } catch (e) { if (e instanceof Held) return discoveryHeld(operationId, requestDigest, found, e); throw e; }
     try {
       return await invoke(scope, async (inv) => {
@@ -908,6 +961,8 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
           continue;
         }
         if (bound.cancel !== null) return { state: "held", operationId, reason: "revoke-in-progress", phase: "A3-bootstrap", assignmentDigest };
+        ctx.step = "A3-bootstrap";
+        coverCustody(inv, ctx, res, "bootstrap");
         if (op.progress.state === "admitted") await updateOp(ctx, operationId, (cur) => (cur.progress.state === "admitted" ? { ...cur, progress: { state: "custody", step: "A3-bootstrap" } } : undefined));
         ctx.step = "A3-bootstrap";
         const boot = await runServiceBootstrap(sealServiceBootstrapIntent(inv.host, { reservation: res, notAfterMs: op.notAfterMs }));
@@ -1057,14 +1112,19 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     if ((req.granter.kind === "owner") !== ownerCause) return denied("permission-denied");                 // never binds
     // Authorization precedes every request-key read, and its refusal is one answer whether or not the request is bound.
     if (!authorized) return unread(req.requestId, "permission-denied", "authorize", expectedAssignmentDigest);
-    const scope: ServiceHostEffectScope = { operation: "revoke", operationId, proposalId: null, endpoint: e, instanceId: i, lifecycleUid: null };
+    const scope: ServiceHostScopeTarget = { operation: "revoke", operationId, proposalId: null, owner: null, endpoint: e, instanceId: i, lifecycleUid: null };
     let found: Read<Op> | undefined;
     try {
       const dctx = discoveryCtx("discover");
       found = await readOp(dctx, operationId);
       const asg = await readAssignment(dctx, e, i);
-      if (asg.state === "value") { scope.proposalId = asg.row.proposalId; if (asg.row.state === "bound") scope.lifecycleUid = asg.row.reservation.native.lifecycleUid; }
-      else scope.proposalId = eligible(await readCapacity(dctx), Date.now()).find((x) => x.endpoint === e && x.instanceId === i)?.proposalId ?? null;
+      if (asg.state === "value") {
+        Object.assign(scope, { proposalId: asg.row.proposalId, owner: asg.row.owner });
+        if (asg.row.state === "bound") scope.lifecycleUid = asg.row.reservation.native.lifecycleUid;
+      } else {
+        const entry = eligible(await readCapacity(dctx), Date.now()).find((x) => x.endpoint === e && x.instanceId === i);
+        if (entry !== undefined) Object.assign(scope, { proposalId: entry.proposalId, owner: entry.owner });
+      }
     } catch (err) { if (err instanceof Held) return discoveryHeld(operationId, requestDigest, found, err, expectedAssignmentDigest); throw err; }
     try {
       return await invoke(scope, async (inv) => {
