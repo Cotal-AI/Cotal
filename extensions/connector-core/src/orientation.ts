@@ -179,7 +179,7 @@ export function buildOrientation(
       principal: principal ?? { owner: "unknown", actor: "unknown" },
       lifecycleUid: config.lifecycleUid ?? "unknown",
       replacement: {
-        state: config.backfillFloor !== undefined ? "replacement" : "unknown",
+        state: "unknown",
         predecessorLifecycleUid: "unknown",
       },
       name: config.name,

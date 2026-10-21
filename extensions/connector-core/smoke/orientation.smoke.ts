@@ -203,8 +203,8 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
 }
 
 // 2b — AGENT-32: the public orientation path separates the display label from the wire principal
-// and the current lifecycle incarnation. A preserved resume proves this incarnation is a replacement,
-// but the launcher does not expose its predecessor's UID, so that value stays explicitly unknown.
+// and the current lifecycle incarnation. A preserved resume carries a backfill floor, but that is not
+// proof of replacement, so both replacement state and predecessor UID stay explicitly unknown.
 // The second cell drives the real cotal_orientation tool while the endpoint is not mesh-bound: the
 // structured card and its rendering must both say unbound rather than leaving callers to parse prose.
 {
@@ -236,7 +236,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
     assert.deepEqual(identity.display, { name: "display-name", role: "worker" }, "display identity is explicitly labelled");
     assert.deepEqual(identity.principal, { owner: "u_abcdefghijklmnopqrstuvwxyz", actor: "actor_name" }, "wire principal is explicitly labelled");
     assert.equal(identity.lifecycleUid, "abcdefghijklmnopqrstuvwx12", "the current lifecycle UID is explicitly labelled");
-    assert.deepEqual(identity.replacement, { state: "replacement", predecessorLifecycleUid: "unknown" }, "a known replacement never presents its unknown predecessor as current");
+    assert.deepEqual(identity.replacement, { state: "unknown", predecessorLifecycleUid: "unknown" }, "a resume floor is not replacement evidence and never presents a predecessor as current");
   });
 
   await cell("structured unbound tool result", async () => {
