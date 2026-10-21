@@ -1,5 +1,19 @@
 # @cotal-ai/manager
 
+## 0.90.0
+
+### Minor Changes
+
+- 88ab21e: Refuse ordinary lifecycle mutation and connect paths for immutable service UID custody, including stamped-root retries and activation recovery. Preserve ordinary reservation records and keep service issuance, cancellation and retirement unavailable until their separate authority prerequisites are implemented.
+
+### Patch Changes
+
+- Updated dependencies [88ab21e]
+- Updated dependencies [b928aaa]
+  - @cotal-ai/core@0.90.0
+  - @cotal-ai/workspace@0.90.0
+  - @cotal-ai/seat@0.90.0
+
 ## 0.89.0
 
 ### Minor Changes

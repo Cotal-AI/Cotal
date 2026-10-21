@@ -12,9 +12,9 @@ This directory is generated at each release by `scripts/materialize-claude-plugi
 - One stdio MCP server, `node dist/mcp.cjs`, which provides the `cotal_*` tools.
 - One monitor, `node dist/monitor.cjs`, which starts a turn when a Cotal message arrives for a
   session you started yourself.
-- 8 hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolBatch`, `Notification`,
-  `Stop`, `StopFailure`, `SessionEnd`) running `node dist/hook.cjs`. They report the session's
-  presence and deliver queued peer messages.
+- 9 hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolBatch`,
+  `Notification`, `Stop`, `StopFailure`, `SessionEnd`) running `node dist/hook.cjs`. They report
+  the session's presence and deliver queued peer messages.
 
 The bundles are prebuilt in this directory. Nothing is installed from npm at runtime.
 
