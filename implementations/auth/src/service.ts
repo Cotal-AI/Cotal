@@ -1962,6 +1962,8 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       // act), then the barrier that wrote it. An unreachable release keeps the barrier alive
       // for a later close retry; successful scanner teardown is not run a second time.
       closing = true;
+      // Before the first await: no service host call enters once close has begun.
+      serviceHost?.refuse();
       await stopPrune();
       await stopChatSweep();
       // Every service host call that entered returns, discovery and effects included, then every

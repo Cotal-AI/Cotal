@@ -522,6 +522,8 @@ export interface ServiceHostOperations {
   handle(raw: unknown): Promise<ServiceHostResult>;
   /** The engine-level fatal latch: refuses new invocations and trips every live invocation host. */
   trip(reason: string): void;
+  /** From the moment it is called, refuses every later call with the latch's answers. */
+  refuse(): void;
   /** Refuses every later call with the latch's answers, then resolves once every register or handle
    *  call that entered before it has returned, from entry: through discovery, effect open and its
    *  writes. It trips nothing; each call already in flight ends under its own discovery and
@@ -1349,6 +1351,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     space, accountPublicKey,
     register: (raw: unknown) => tracked(register(raw)),
     handle: (raw: unknown) => tracked(handle(raw)),
+    refuse() { closed = true; },
     async close() {
       closed = true;
       while (entered.size > 0) await Promise.allSettled([...entered]);
