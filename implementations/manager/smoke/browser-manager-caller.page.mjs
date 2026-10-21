@@ -70,8 +70,9 @@ if (phase === "first") {
   await step("openB", async () => described(b = await open(cfg.instances.b)));
   await step("readA", async () => replyOf(await a.invoke("list-personas")));
   await step("readB", async () => replyOf(await b.invoke("list-personas")));
-  // `status` is an operator read; the person's own view does not carry it.
-  await step("notGranted", async () => replyOf(await a.invoke("status")));
+  // `ps` is an operator read that stays with `admin`. The person's spawn-scoped view carries only the
+  // launch reads (`status`, `models`, `resolve-cwd`).
+  await step("notGranted", async () => replyOf(await a.invoke("ps")));
   const goalId = newGoalId();
   // A host persists the goal id BEFORE it submits, so a reload can read the goal back.
   sessionStorage.setItem("goal", goalId);
