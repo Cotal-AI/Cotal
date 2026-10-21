@@ -2,13 +2,14 @@
   "suite": [
     "implementations/cli/smoke/space-registration.smoke.ts"
   ],
-  "guard": "a second bare down of a controller stack its own down stopped is a no-op without --yes that writes nothing, in every presentation, unless a process recorded under its root for another space may still run, which it refuses naming the record, its path and pid in the text and the next step; and a running stack's missing --yes refusal is one line and its remedy",
+  "guard": "a second bare down of a controller stack its own down stopped is a no-op without --yes that writes nothing, in every presentation, unless a process recorded under its root for another space may still run, which it refuses naming the record, its path and pid in the text and the next step; a selected-space record path that is a link refuses at the link before the stack is called stopped, with nothing behind it read; and a running stack's missing --yes refusal is one line and its remedy",
   "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/space-registration.smoke.ts",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-stopped-controller.json",
   "why": [
     "A second bare down of a stopped controller stack used to refuse for --yes and print the whole usage text, although nothing would stop. The suite drives the built binary through a prepared root's up, down and second down, so each mutation rebuilds it and the restore rebuilds it back.",
-    "The no-op reads every record a local-process descriptor names under the root, for any space a record name holds, so a live manager another space recorded there refuses it. The suite plants that record over a process of its own, checks the text refusal names it, and follows the printed next step to the record and its live pid."
+    "The no-op reads every record a local-process descriptor names under the root, for any space a record name holds, so a live manager another space recorded there refuses it. The suite plants that record over a process of its own, checks the text refusal names it, and follows the printed next step to the record and its live pid.",
+    "Whether the stack is stopped is decided from its service records, and the root's process records are read only by the census, which follows no link. The suite links this root's .cotal/daemon, then its .cotal/worker.record, to a separate root's records of a live process under an installed extension's descriptors, and each down must refuse at the link without naming that pid."
   ],
   "mutations": [
     {
@@ -54,6 +55,24 @@
       "replace": "    const checks = remaining.map((row) => row.path);\n",
       "expectRed": "following the remedy reaches the recorded path, which holds the live pid it names",
       "cell": "following the remedy reaches the recorded path, which holds the live pid it names",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the stopped check reads the space's records through links first",
+      "file": "implementations/cli/src/commands/stack-down.ts",
+      "find": "function alreadyStopped(journal: StackJournal, members: readonly Member[]): boolean {\n",
+      "replace": "import { foreignLocalProcesses as readThroughLinks } from \"../lib/stack-journal.js\";\nfunction alreadyStopped(journal: StackJournal, members: readonly Member[]): boolean {\n  if (readThroughLinks(journal.root, journal.space).length) return false;\n",
+      "expectRed": "a stopped stack whose .cotal/daemon links to another root's live record refuses at the link, names it, and reads nothing behind it",
+      "cell": "a stopped stack whose .cotal/daemon links to another root's live record refuses at the link, names it, and reads nothing behind it",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a candidate already read hides its own unread record",
+      "file": "implementations/cli/src/lib/stack-journal.ts",
+      "find": "    if (reported.has(at)) return;\n",
+      "replace": "    if (attempted.has(at) || reported.has(at)) return;\n",
+      "expectRed": "a stopped stack whose .cotal/worker.record links to another root's live record refuses at the link, names it, and reads nothing behind it",
+      "cell": "a stopped stack whose .cotal/worker.record links to another root's live record refuses at the link, names it, and reads nothing behind it",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]

@@ -229,8 +229,9 @@ export type ContainedRecord =
  * A record under `<root>/.cotal`, read without leaving it. Every part of the path, `.cotal` included,
  * is checked with `lstat`: a link anywhere on the way is returned unread at the link, and nothing
  * behind it is read. A part that is missing, or a directory part that is not a directory, means no
- * record. The record must be a regular file of at most {@link RECORD_BYTES}, and the file opened must
- * be the one checked. Read only. Throws for a path outside `<root>/.cotal`.
+ * record. The record must be a regular file of at most {@link RECORD_BYTES}, read to its end. The file
+ * opened must be the one checked, and its size and modification time must not change while it is read.
+ * Read only. Throws for a path outside `<root>/.cotal`.
  */
 export function readContainedRecord(root: string, path: string): ContainedRecord {
   const parts = relative(root, path).split(sep);
@@ -256,8 +257,14 @@ export function readContainedRecord(root: string, path: string): ContainedRecord
     const opened = fstatSync(fd);
     if (opened.dev !== leaf.dev || opened.ino !== leaf.ino) return { state: "unread", at: path, why: "changed while it was read" };
     const buffer = Buffer.alloc(RECORD_BYTES + 1);
-    const length = readSync(fd, buffer, 0, buffer.length, 0);
+    let length = 0, chunk: number;
+    do {
+      chunk = readSync(fd, buffer, length, buffer.length - length, length);
+      length += chunk;
+    } while (chunk > 0 && length < buffer.length);
     if (length > RECORD_BYTES) return { state: "unread", at: path, why: "larger than a process record" };
+    const after = fstatSync(fd);
+    if (length !== opened.size || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs) return { state: "unread", at: path, why: "changed while it was read" };
     return { state: "content", raw: buffer.toString("utf8", 0, length).trim() };
   } catch {
     return { state: "unread", at: path, why: "unreadable record" };

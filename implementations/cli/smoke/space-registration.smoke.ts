@@ -15,7 +15,7 @@
  */
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -30,7 +30,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { MANAGER_PIDFILE, canonicalLocalProcessPath, clearCurrent, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, removeMesh, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { stackJournalPath, writeStackJournal } = await import("../src/lib/stack-journal.js");
@@ -485,6 +485,45 @@ setCurrent("keep");
       otherManager.exitCode === null && otherManager.signalCode === null && existsSync(otherRecord) && journalBytes() === stoppedJournal, shown(otherSpace));
   if (otherManager.exitCode === null && otherManager.signalCode === null) await new Promise((done) => { otherManager.once("exit", done); otherManager.kill("SIGKILL"); });
   rmSync(otherRecord);
+  // An installed extension records its processes at `.cotal/daemon/worker.pid` and
+  // `.cotal/worker.record`. A separate root holds both for a live process of this suite, and this
+  // root links to them, first through `.cotal/daemon`, then at `.cotal/worker.record`. The stopped
+  // stack's records are read without following a link before it is called stopped, so each down
+  // refuses at the link and reads nothing behind it; the process, its records and the journal stay.
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = runEnv.XDG_CONFIG_HOME;
+  saveExtensionsManifest({ extensions: [{ pkg: "@example/workers", version: "0.0.0", spec: "@example/workers", commands: [], localProcesses: [
+    cacheLocalProcess({ kind: "local-process", name: "nested-worker", label: "nested worker", pidFile: "daemon/worker.pid" }),
+    cacheLocalProcess({ kind: "local-process", name: "record-worker", label: "record worker", pidFile: "worker.record" }),
+  ] }] });
+  const workersManifest = extensionsManifestPath();
+  if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = priorXdg;
+  const separate = join(home, "separate");
+  mkdirSync(join(separate, ".cotal", "daemon"), { recursive: true });
+  const outsideWorker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  standIns.push(outsideWorker);
+  for (const record of [join("daemon", "worker.pid"), "worker.record"]) writeFileSync(join(separate, ".cotal", record), String(outsideWorker.pid), { mode: 0o600 });
+  /** Bare `down --json` with this root's `.cotal/<at>` linked to the separate root's, and whether it
+   *  refused naming only that link, with no pid read behind it and nothing changed. */
+  const downThroughLink = async (at: string, name: string) => {
+    const link = join(fresh, ".cotal", at), path = join(".cotal", at);
+    symlinkSync(join(separate, ".cotal", at), link);
+    assertSmokeSandboxDown(sandbox, ["down", "--json"], { cwd: fresh, env: runEnv });
+    const linked = await json(["down"], fresh);
+    const refusedAtLink = refused(linked, 2, "LIFECYCLE_BLOCKED") && (linked.env?.target?.processes ?? []).join("\n") === `${name} at ${path} (link, not followed)` &&
+      (linked.env?.error?.remedy ?? "").includes(path) && !`${linked.stdout}${linked.stderr}`.includes(`pid ${outsideWorker.pid}`) &&
+      outsideWorker.exitCode === null && outsideWorker.signalCode === null && lstatSync(link).isSymbolicLink() && journalBytes() === stoppedJournal;
+    unlinkSync(link);
+    return { refusedAtLink, shown: shown(linked) };
+  };
+  const throughDir = await downThroughLink("daemon", "nested-worker");
+  check("a stopped stack whose .cotal/daemon links to another root's live record refuses at the link, names it, and reads nothing behind it", throughDir.refusedAtLink, throughDir.shown);
+  const throughLeaf = await downThroughLink("worker.record", "record-worker");
+  check("a stopped stack whose .cotal/worker.record links to another root's live record refuses at the link, names it, and reads nothing behind it", throughLeaf.refusedAtLink, throughLeaf.shown);
+  if (outsideWorker.exitCode === null && outsideWorker.signalCode === null) await new Promise((done) => { outsideWorker.once("exit", done); outsideWorker.kill("SIGKILL"); });
+  rmSync(workersManifest);
+  rmSync(separate, { recursive: true });
 
   const later = join(home, "later");
   mkdirSync(later);

@@ -18,7 +18,7 @@ import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, stopProcessService } from "../lib/service-process.js";
-import { foreignLocalProcesses, newStackOperation, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, stackMaintenanceFence, stackScopeRefusals, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole } from "../lib/stack-journal.js";
+import { newStackOperation, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, stackMaintenanceFence, stackScopeRefusals, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -64,14 +64,15 @@ function scopeRefusals(journal: StackJournal): string | undefined {
   return maintenance.admittedRestore;
 }
 
-/** A stack its own down stopped completely, with no recorded member, no other service instance of
- *  its space and no legacy process of its space running since. Stopping it again would stop
- *  nothing. A stack that stopped any other way still takes the full stop, which also finishes its
- *  registration and credential cleanup. {@link nothingRunning} reads the rest of the root. */
+/** A stack its own down stopped completely, with no recorded member and no other service instance of
+ *  its space running since. Stopping it again would stop nothing. A stack that stopped any other way
+ *  still takes the full stop, which also finishes its registration and credential cleanup. It reads
+ *  service records under the Cotal home and no process record under the root: {@link nothingRunning}
+ *  reads those, following no link, before it calls the stack stopped. */
 function alreadyStopped(journal: StackJournal, members: readonly Member[]): boolean {
   if (journal.operation.kind !== "down" || journal.operation.phase !== "completed" || members.some((member) => member.live)) return false;
   const running = serviceInstances(journal.space).some((row) => !processGone(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state));
-  return !running && foreignLocalProcesses(journal.root, journal.space).length === 0;
+  return !running;
 }
 
 /** A bare down of a stack that is not running stops nothing. It answers with a no-op and writes

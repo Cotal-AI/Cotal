@@ -3,13 +3,14 @@
   "suite": [
     "implementations/cli/smoke/down-target.smoke.ts"
   ],
-  "guard": "a bare down of a legacy root whose stack is already stopped is a no-op in every presentation, and a root with no such evidence, a leftover process record, a live process an installed extension records anywhere in .cotal or for any space, a record whose space segment decodes to no space, a link on a record's path, or two registrations still refuses with one next step; a template whose {space} normalizes away is read as its one path",
+  "guard": "a bare down of a legacy root whose stack is already stopped is a no-op in every presentation, and a root with no such evidence, a leftover process record, a live process an installed extension records anywhere in .cotal or for any space, a record whose space segment decodes to no space, a link on a record's path, or a record that is a directory, too large or unreadable, or two registrations still refuses with one next step, naming each unread record where reading stopped; a template whose {space} normalizes away is read as its one path",
   "command": "pnpm --filter @cotal-ai/cli... build > /dev/null && pnpm smoke:down-target",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-stopped-legacy.json",
   "why": [
     "A legacy root's own down removes its registration, so a second bare down used to refuse CONFLICT with no next step. The evidence that it is stopped is the broker configuration a start rendered there, or a space prepared there, with no registration and no process record left. Each mutation drops one part of that evidence or one answer, and the suite drives the in-process down from a planted root.",
     "Every build is scoped to the @cotal-ai/cli dependency closure, as in down-unowned-broker.json.",
-    "The no-op reads every record a local-process descriptor names under the root: each descriptor's candidates for the root's space, and a {space} descriptor's records for any space, found by listing what its template names. Nothing outside the root's .cotal is read: a link on a record's path refuses at the link, unread. A record at a nested path, under another suffix, for a space nothing else names, or whose space segment decodes to no space refuses it, and the refusal names each record and pid. A template is classified after normalization, as its writer expands it."
+    "The no-op reads every record a local-process descriptor names under the root: each descriptor's candidates for the root's space, and a {space} descriptor's records for any space, found by listing what its template names. Nothing outside the root's .cotal is read: a link on a record's path refuses at the link, unread. A record at a nested path, under another suffix, for a space nothing else names, or whose space segment decodes to no space refuses it, and the refusal names each record and pid. A template is classified after normalization, as its writer expands it.",
+    "A record that is not read is named where reading stopped, once, even when the path read was a candidate already seen: a link, a directory, a file over the record limit, or one the user cannot read each stand alone as the root's only record, so no other refusal can stand in for them. The unreadable cell needs a non-root POSIX runner and is skipped elsewhere."
   ],
   "mutations": [
     {
@@ -97,7 +98,7 @@
       "name": "a record path's parts are read through links",
       "file": "packages/workspace/src/local-process.ts",
       "find": "    const stat = lstatSync(at);\n",
-      "replace": "    const stat = fstatSync(openSync(at, \"r\"));\n",
+      "replace": "    const stat = ((fd) => { try { return fstatSync(fd); } finally { closeSync(fd); } })(openSync(at, \"r\"));\n",
       "expectRed": "a link on a record's path is named as this root's, unread, and the separate root's live records behind it are neither read nor named",
       "cell": "a link on a record's path is named as this root's, unread, and the separate root's live records behind it are neither read nor named",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
@@ -109,6 +110,42 @@
       "replace": "  if (!template.includes(\"{space}\")) return [];\n",
       "expectRed": "a template whose {space} normalizes away, with an empty or a dead record, leaves bare down a no-op",
       "cell": "a template whose {space} normalizes away, with an empty or a dead record, leaves bare down a no-op",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "a candidate already read hides its own unread record",
+      "file": "implementations/cli/src/lib/stack-journal.ts",
+      "find": "    if (reported.has(at)) return;\n",
+      "replace": "    if (attempted.has(at) || reported.has(at)) return;\n",
+      "expectRed": "a link on a record's path is named as this root's, unread, and the separate root's live records behind it are neither read nor named",
+      "cell": "a link on a record's path is named as this root's, unread, and the separate root's live records behind it are neither read nor named",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "a directory at a record's path reads as no record",
+      "file": "packages/workspace/src/local-process.ts",
+      "find": "  if (!leaf.isFile()) return { state: \"unread\", at: path, why: \"not a regular file, not read\" };\n",
+      "replace": "  if (!leaf.isFile()) return { state: \"absent\" };\n",
+      "expectRed": "a directory at a record's path keeps bare down from a no-op, named once as not a regular file",
+      "cell": "a directory at a record's path keeps bare down from a no-op, named once as not a regular file",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "an oversized record is read by its first bytes",
+      "file": "packages/workspace/src/local-process.ts",
+      "find": "    if (length > RECORD_BYTES) return { state: \"unread\", at: path, why: \"larger than a process record\" };\n",
+      "replace": "    if (length > RECORD_BYTES) return { state: \"content\", raw: buffer.toString(\"utf8\", 0, RECORD_BYTES).trim() };\n",
+      "expectRed": "a record larger than a process record keeps bare down from a no-op, named once and unread, though a live pid leads it",
+      "cell": "a record larger than a process record keeps bare down from a no-op, named once and unread, though a live pid leads it",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "a record that cannot be opened reads as no record",
+      "file": "packages/workspace/src/local-process.ts",
+      "find": "    return (e as NodeJS.ErrnoException).code === \"ENOENT\" ? { state: \"absent\" } : { state: \"unread\", at: path, why: \"unreadable record\" };\n",
+      "replace": "    return { state: \"absent\" };\n",
+      "expectRed": "a record this user cannot read keeps bare down from a no-op, named once as unreadable",
+      "cell": "a record this user cannot read keeps bare down from a no-op, named once as unreadable",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
     }
   ]

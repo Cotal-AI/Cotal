@@ -741,9 +741,10 @@ line and its remedy without the command help.
 A bare `down` in a folder whose stack is already stopped stops nothing. It reports that the stack
 in that folder is not running and names `cotal up`, outcome `no-op`, exit 0, and writes nothing,
 so it needs no `--yes`. `--dry-run`, `--json` and `--plain` show the same. A controller stack
-counts as stopped when its last whole-stack operation was a completed `down` and no member, no
-other service instance of its space and no legacy process of its space runs. A stack that
-stopped any other way takes the full stop, which also finishes its cleanup. A legacy root counts as
+counts as stopped when its last whole-stack operation was a completed `down` and no member and no
+other service instance of its space runs. That check reads no process record under the root; those
+are read only as described below. A stack that stopped any other way takes the full stop, which
+also finishes its cleanup. A legacy root counts as
 stopped when no registration names it and no `*.pid` record remains at the top of its `.cotal`,
 and the root still holds the broker configuration a start rendered there or a space prepared there.
 Without that evidence a legacy root still refuses, with one next step: `TARGET_NOT_FOUND` when
@@ -755,7 +756,10 @@ for every space its files under the root name, as well as the stack's own. A rec
 runs, whose liveness the kernel does not answer, or that cannot be read or attributed refuses
 `LIFECYCLE_BLOCKED`, and so does a file whose space part decodes to no space. Nothing outside the
 root's `.cotal` is read: a link anywhere on a record's path refuses at the link, unread, as does a
-record that is not a regular file or is larger than a process record. A template whose `{space}`
+record that is not a regular file, is larger than a process record, cannot be opened, or changes
+while it is read. Each is named once, at the path where reading stopped. A `.cotal` that is itself
+a link never gives the no-op: on a stopped controller stack `down` refuses at `.cotal`, and on a
+legacy root it refuses `CONFLICT` before any record is read. A template whose `{space}`
 normalizes away names one path for every space and is read as that path. The refusal lists each
 record by name, path under the root and pid, and its next step names the pids and paths to check.
 It stops, adopts and removes nothing. `--with-agents` on a stopped stack refuses

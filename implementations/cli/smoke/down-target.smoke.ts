@@ -13,7 +13,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
@@ -708,6 +708,47 @@ try {
     unlinkSync(linkLeaf);
     mkdirSync(linkDir);
     rmSync(separate, { recursive: true, force: true });
+    // A record that is not read is still named where reading stopped, whatever stopped it: a link, a
+    // directory, a file larger than a record, or one this user cannot read. Each stands alone at
+    // `.cotal/worker.record`, so no other record's refusal can stand in for its own.
+    const leaf = join(stoppedRoot, ".cotal", suffixed.pidFile), leafPath = relative(stoppedRoot, leaf);
+    /** Bare down with only `leaf` in place, and whether it refused naming `leaf` once as `why`, with no pid. */
+    const unreadLeaf = async (why: string, pid?: number) => {
+      const attempt = await bareDownIn(stoppedRoot);
+      const text = JSON.stringify([recordsOf(attempt), attempt.error?.message, attempt.error?.remedy]);
+      return { attempt, listed: recordsOf(attempt), named: attempt.error?.code === "LIFECYCLE_BLOCKED" && recordsOf(attempt).join("\n") === `record-worker at ${leafPath} (${why})` && (attempt.error.remedy ?? "").includes(leafPath) && (pid === undefined || !text.includes(`pid ${pid}`)) };
+    };
+    const outside = mkdtempSync(join(tmpdir(), "cotal-separate-"));
+    const behind = liveAt(join(outside, ".cotal", suffixed.pidFile));
+    symlinkSync(behind.record, leaf);
+    const leafLink = await unreadLeaf("link, not followed", behind.child.pid);
+    check("a link that is the root's only record keeps bare down from a no-op, named once at the link, and the live record behind it is neither read nor named",
+      leafLink.named && alive(behind.child.pid!) && existsSync(behind.record) && lstatSync(leaf).isSymbolicLink(), leafLink);
+    await stopAll(behind.child);
+    unlinkSync(leaf);
+    rmSync(outside, { recursive: true, force: true });
+    mkdirSync(leaf);
+    const leafDir = await unreadLeaf("not a regular file, not read");
+    check("a directory at a record's path keeps bare down from a no-op, named once as not a regular file", leafDir.named && lstatSync(leaf).isDirectory(), leafDir);
+    rmSync(leaf, { recursive: true });
+    const large = liveAt(leaf);
+    writeFileSync(leaf, `${large.child.pid}\n${" ".repeat(5000)}`);
+    const leafLarge = await unreadLeaf("larger than a process record", large.child.pid);
+    check("a record larger than a process record keeps bare down from a no-op, named once and unread, though a live pid leads it",
+      leafLarge.named && alive(large.child.pid!) && existsSync(leaf), leafLarge);
+    await stopAll(large.child);
+    rmSync(leaf);
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      const locked = liveAt(leaf);
+      chmodSync(leaf, 0o000);
+      const leafLocked = await unreadLeaf("unreadable record", locked.child.pid);
+      chmodSync(leaf, 0o600);
+      check("a record this user cannot read keeps bare down from a no-op, named once as unreadable", leafLocked.named && alive(locked.child.pid!) && existsSync(leaf), leafLocked);
+      await stopAll(locked.child);
+      rmSync(leaf);
+    } else {
+      console.log("  (skipped: an unreadable record needs a non-root POSIX runner)");
+    }
     // A template whose `{space}` normalizes away names one path for every space, as its writer expands
     // it, and is read as that path: no-op when the record is empty or dead, named once when it is live.
     const cancelled: LocalProcess = { kind: "local-process", name: "cancelled-worker", label: "cancelled worker", pidFile: "daemon/{space}/../worker.record" };

@@ -203,19 +203,21 @@ export const recordedProcessLine = (row: RecordedProcess): string => `${row.name
  *  candidates are read for `spaces`, and a `{space}` template's records for any other space are
  *  found by listing what it names under `.cotal`. Nothing is read outside `<root>/.cotal`: a link on
  *  a record's path is listed at the link, unread. A live or unanswered pid, an unattributable,
- *  unreadable or oversized record, one that is not a regular file, a record whose space segment
- *  decodes to no space and a directory that cannot be listed all count; only an empty or ESRCH-proven
- *  dead record of a known space does not. Read only: nothing is stopped, adopted or removed. */
+ *  unreadable or oversized record, one that is not a regular file or changed while it was read, a
+ *  record whose space segment decodes to no space and a directory that cannot be listed all count;
+ *  only an empty or ESRCH-proven dead record of a known space does not. Each path is read once and
+ *  each unread one listed once, where reading stopped, whichever descriptor reached it first. Read
+ *  only: nothing is stopped, adopted or removed. */
 export function recordedProcessesUnder(root: string, spaces: readonly string[]): RecordedProcess[] {
-  const found: RecordedProcess[] = [], seen = new Set<string>();
+  const found: RecordedProcess[] = [], attempted = new Set<string>(), reported = new Set<string>();
   const unread = (name: string, at: string, why: string): void => {
-    if (seen.has(at)) return;
-    seen.add(at);
+    if (reported.has(at)) return;
+    reported.add(at);
     found.push({ name, path: relative(root, at), note: why });
   };
   const read = (name: string, path: string, attributed: boolean): void => {
-    if (seen.has(path)) return;
-    seen.add(path);
+    if (attempted.has(path)) return;
+    attempted.add(path);
     const record = readContainedRecord(root, path);
     if (record.state === "absent") return;
     if (record.state === "unread") return unread(name, record.at, record.why);
