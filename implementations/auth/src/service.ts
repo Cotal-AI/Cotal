@@ -773,6 +773,16 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // closes it for good, after which decide and revoke answer unavailable until the plane is opened
   // again. The engine shares this plane's hold; both fatal sites above trip it.
   let discoveryClient: AuthorityClient | undefined;
+  // Every effect connection the host opened whose close has not succeeded, kept past its call's
+  // settlement: plane close and a failed construction close it again and fail while any remains.
+  const openEffects = new Set<ServiceHostEffect>();
+  const closeEffects = async (): Promise<void> => {
+    const failed: unknown[] = [];
+    for (const e of [...openEffects]) {
+      try { await e.close(); } catch (err) { failed.push(err); }
+    }
+    if (failed.length > 0) throw new AggregateError(failed, `${failed.length} service host effect connection(s) did not close`);
+  };
   if (opts.serviceEndpoints !== undefined) {
     const label = `cotal:service-host-discovery:${space}`;
     const d = discoveryClient = await openAuthorityClient({ onConnection, server, space, dataAccount, label, grants: (id) => serviceHostDiscoveryGrants(space, id), log,
@@ -781,13 +791,16 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         void discoveryClient?.close().catch(() => {});
       } });
     unwind.push(() => d.close());
+    unwind.push(() => closeEffects());
     const discovery = await openLifecycleRegistry(d.nc, space);
     await opts.probeServiceHost?.discovery?.({ registry: discovery, kill: () => d.close() });
     const probeEffect = opts.probeServiceHost?.effect;
     const engine = await openServiceHostOperations({
       discovery, hold: hold!, accountPublicKey: dataAccount.pub, ledgerDir: opts.dir, startup: opts.serviceEndpoints.startup,
       openEffect: async (scope) => {
-        const effect = await openServiceHostEffect({ onConnection, server, space, dataAccount, log }, scope);
+        const opened = await openServiceHostEffect({ onConnection, server, space, dataAccount, log }, scope);
+        const effect: ServiceHostEffect = { ...opened, close: async () => { await opened.close(); openEffects.delete(effect); } };
+        openEffects.add(effect);
         if (probeEffect !== undefined) {
           try { await probeEffect(effect, scope); } catch (e) { await effect.close().catch(() => {}); throw e; }
         }
@@ -1951,9 +1964,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       closing = true;
       await stopPrune();
       await stopChatSweep();
-      // Every service host call that entered returns, discovery and effects included, before
-      // discovery closes and before the claim is released.
+      // Every service host call that entered returns, discovery and effects included, then every
+      // effect connection that did not close is closed again, before discovery closes and before
+      // the claim is released. A failure here rejects with the claim still held; close retries it.
       await serviceHost?.close();
+      await closeEffects();
       await discoveryClient?.close();
       const scannerFlight = closeScanners ??= (async () => {
         await authAdmin?.close();
