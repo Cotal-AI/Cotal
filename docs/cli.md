@@ -3648,7 +3648,8 @@ This inspects the current root's local credential claims and recorded renewal st
 prove current broker authorization, daemon adoption, connected agents or task progress. The shared
 report keeps full credential paths and public issue/expiry metadata; JSON retains all diagnostic
 rows without JWTs, seeds, fingerprints or raw parser/renewal error bodies. On a root that holds several
-spaces, `--space` names one; it defaults to the sole space.
+spaces, `--space` names one; it defaults to the sole space. Without `--space`, a root with several
+spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them.
 
 Plain diagnosis starts no repair or connection. A required legacy credential or user-auth directory
 migration refuses instead of silently moving files or reading canonical absence as an empty scope.

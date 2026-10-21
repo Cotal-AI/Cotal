@@ -15,7 +15,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, canonicalRoot, isCommandFailure, jsonFlag, plainFlag, presentationOf, readLocalRecordSource, renewalRecordPath, writeResult,
+  CommandFailure, accountInventory, canonicalRoot, isCommandFailure, jsonFlag, plainFlag, presentationOf, readLocalRecordSource, renewalRecordPath, writeResult,
   agentCredsDir,
   authDir,
   CONNECTION_EVICTOR_CREDS_KIND,
@@ -90,6 +90,13 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   const values = args.values as FlagValues<typeof doctorFlags>;
   const root = findCotalRoot(process.cwd());
   const repair: RepairObservation = { requested: values.fix === true, attempted: false, authority: null, results: [], migrationAttempted: false, migrations: [], coordinationCleanup: "not-opened" };
+  if (!values.space) {
+    // Several valid accounts are a target the caller picks with --space, not an inventory that failed
+    // validation. An unreadable or corrupt inventory still refuses as SCHEMA_INVALID below.
+    let spaces: string[] = [];
+    try { const inventory = accountInventory(authDir(root)); if (!inventory.corrupt.length) spaces = inventory.spaces; } catch { /* refused by the read below */ }
+    if (spaces.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", `this root holds accounts for ${spaces.length} spaces (${spaces.join(", ")}); doctor auth diagnoses one space`, { target: { root, space: null, candidates: spaces }, remedy: `pass --space with one of ${spaces.join(", ")}` });
+  }
   let auth: Awaited<ReturnType<typeof getSpaceAuth>>;
   try { auth = values.space ? await getSpaceAuth(workspaceSecretStore(root), values.space) : await getSoleSpaceAuth(workspaceSecretStore(root), authDir(root)); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the local authority inventory could not be validated; no repair was attempted", { target: { root, space: values.space ?? null } }); }

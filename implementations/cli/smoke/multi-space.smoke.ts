@@ -760,30 +760,50 @@ try {
 
   console.log("\n27) `doctor auth` on a multi-space root: loud refusal bare, actionable with --space, no false-healthy on a typo");
   const { doctor: doctorCmd } = await import("../src/commands/doctor.js");
+  const { exitCode: outcomeExit, isCommandFailure } = await import("@cotal-ai/workspace");
   const docRoot = await makeRoot("doctor", ["doca", "docb"]);
   roots.push(docRoot);
-  const runDoc = async (values: Record<string, unknown>): Promise<{ out: string; code: number | undefined }> => {
+  type DoctorEnvelope = { target: { space?: string | null }; result: { space?: string; mode?: string } };
+  type DoctorRefusal = { outcome: string; code: string; message: string; remedy?: string; target: unknown };
+  // doctor writes one envelope with --json, and refuses by throwing the failure the command kernel
+  // exits with, so a run records the envelope or the refusal, and the exit code either way.
+  const runDoc = async (values: Record<string, unknown>): Promise<{ out: string; envelope?: DoctorEnvelope; failure?: DoctorRefusal; code: number | undefined }> => {
+    const written: string[] = [];
     const lines: string[] = [];
-    const oL = console.log, oE = console.error;
+    const oW = process.stdout.write, oL = console.log, oE = console.error;
+    process.stdout.write = ((chunk: string | Uint8Array) => (written.push(String(chunk)), true)) as typeof process.stdout.write;
     console.log = (...a: unknown[]) => { lines.push(a.join(" ")); };
     console.error = (...a: unknown[]) => { lines.push(a.join(" ")); };
     const oX = process.exitCode;
     process.exitCode = undefined;
     try {
       await doctorCmd({ positionals: ["auth"], values, raw: [] } as never);
-      return { out: lines.join("\n"), code: process.exitCode as number | undefined };
-    } finally { console.log = oL; console.error = oE; process.exitCode = oX; }
+      return { out: [...written, ...lines].join("\n"), ...(values.json ? { envelope: JSON.parse(written.join("")) as DoctorEnvelope } : {}), code: process.exitCode as number | undefined };
+    } catch (e) {
+      if (!isCommandFailure(e)) throw e;
+      return { out: [...written, ...lines].join("\n"), failure: e, code: outcomeExit(e.outcome, e.code) };
+    } finally { process.stdout.write = oW; console.log = oL; console.error = oE; process.exitCode = oX; }
   };
   const prevCwd27 = process.cwd();
   process.chdir(docRoot);
   try {
-    const bare = await refusal(() => doctorCmd({ positionals: ["auth"], values: {}, raw: [] } as never));
-    check("bare doctor on 2 tenants refuses naming both (and --space makes the advice actionable)", bare.includes("2 spaces"), bare);
-    const explicit = await runDoc({ space: "doca" });
-    check("doctor --space <tenant> diagnoses that tenant", explicit.out.includes("space doca"), explicit);
-    check("…and the signer line names the tenant's split account file", explicit.out.includes(spaceAccountPath(authDir(docRoot), "doca")), explicit.out);
+    const bare = await runDoc({});
+    const bareRefusal = bare.failure;
+    check("bare doctor on 2 tenants refuses naming both (and --space makes the advice actionable)",
+      bareRefusal?.outcome === "refused" && bareRefusal.code === "TARGET_AMBIGUOUS" && bare.code === 2 && bareRefusal.message.includes("2 spaces") &&
+        ["doca", "docb"].every((space) => bareRefusal.message.includes(space)) && bareRefusal.remedy?.includes("--space") === true,
+      { failure: bareRefusal && { code: bareRefusal.code, message: bareRefusal.message, remedy: bareRefusal.remedy }, out: bare.out });
+    const explicit = await runDoc({ space: "doca", json: true });
+    check("doctor --space <tenant> diagnoses that tenant", explicit.failure === undefined && explicit.envelope?.target.space === "doca" && explicit.envelope.result.space === "doca", { failure: explicit.failure?.message, out: explicit.out });
+    // The report no longer prints a signer path; the split record is the only trust doca has here,
+    // so a static diagnosis of doca read it.
+    check("…and its signing trust is the tenant's split account file",
+      explicit.envelope?.result.mode === "static" && existsSync(spaceAccountPath(authDir(docRoot), "doca")) && !existsSync(join(authDir(docRoot), "auth.json")), { out: explicit.out });
     const typo = await runDoc({ space: "nope" });
-    check("doctor --space <unknown> fails loud, never a false-healthy", typo.code === 1 && !typo.out.includes("healthy") && typo.out.includes("no account record"), typo);
+    check("doctor --space <unknown> fails loud, never a false-healthy",
+      typo.failure?.outcome === "refused" && typo.failure.code === "AUTH_REQUIRED" && typo.code === 2 && (typo.failure.target as { space?: unknown } | null)?.space === "nope" &&
+        !/healthy|No local credential findings/.test(typo.out),
+      { failure: typo.failure && { code: typo.failure.code, message: typo.failure.message, target: typo.failure.target }, out: typo.out });
   } finally {
     process.chdir(prevCwd27);
   }
