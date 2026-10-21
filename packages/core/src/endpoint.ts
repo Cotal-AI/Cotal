@@ -361,6 +361,9 @@ export interface EndpointOptions {
    *  {@link CotalEndpoint.stop} resolves only after the connection is closed and the running handler
    *  has settled; a rejecting handler still lets the connection close, and stop throws, keeping
    *  custody, when closure or settlement within `settleTimeoutMs` (default 30000) is unproved.
+   *  A copy received after stop begins or after a reconnect replaces the connection is never
+   *  handed to the handler and stays unacked for broker redelivery; an ack, nak or in-progress
+   *  signal on a closed connection throws.
    *  Requires static or sourced creds or a bearer, `consume` true, `registerPresence`,
    *  `watchPresence` and `watchChannels` false, and no channels, role, `readOnce` or `acceptedToken`. */
   dmOnly?: DmOnlyOptions;
@@ -6211,15 +6214,23 @@ export class CotalEndpoint extends EventEmitter {
     }
     const msgs = await consumer.consume({ max_messages: 1 });
     this.streamMsgs.push(msgs);
+    // The epoch this loop belongs to. nats.js can yield copies it already received after stop() began
+    // or after a rebuild replaced the connection (a stacked pull after a missed-heartbeat reset hands
+    // over several at once). Such a copy never reaches the handler and is neither acked nor nak'd:
+    // the connection is closing or closed, so any reply could be lost, and the broker redelivers an
+    // unacked copy after the durable's ack_wait to whichever epoch binds next.
+    const boundNc = this.nc;
+    const retired = (): boolean => this.stopped || this.nc !== boundNc || !boundNc || boundNc.isClosed();
     void (async () => {
       for await (const m of msgs) {
+        if (retired()) break;
         const authed = this.authenticateStreamMsg(m);
         if (!authed) continue;
         if (authed.parsed.kind !== "inst") {
           m.term(); // the DM stream filter admits only inst.* subjects; anything else is not a DM
           continue;
         }
-        const run = Promise.resolve().then(() => mode.handler(authenticatedMessage(authed.msg, authed.parsed), durableDelivery(m, ackWaitMs), {
+        const run = Promise.resolve().then(() => mode.handler(authenticatedMessage(authed.msg, authed.parsed), dmOnlyDelivery(m, ackWaitMs, boundNc), {
           historical: false,
           kind: "dm",
         } satisfies MessageMeta));
@@ -7194,6 +7205,20 @@ function durableDelivery(m: JsMsg, ackWaitMs: number): Delivery {
     nak: () => m.nak(),
     durable: true,
     redelivery: { deliveryCount: m.info.deliveryCount, ackWaitMs, working: () => m.working() },
+  };
+}
+
+/** A DM-only copy's delivery. An ack, nak or in-progress signal on a closed connection is refused
+ *  with a throw instead of being dropped silently: the copy stays unacked and the broker redelivers it. */
+function dmOnlyDelivery(m: JsMsg, ackWaitMs: number, nc: NatsConnection | undefined): Delivery {
+  const open = (what: string): void => {
+    if (!nc || nc.isClosed()) throw new Error(`DM-only ${what} refused: the connection that delivered this copy is closed; the broker will redeliver it`);
+  };
+  return {
+    ack: () => { open("ack"); m.ack(); },
+    nak: () => { open("nak"); m.nak(); },
+    durable: true,
+    redelivery: { deliveryCount: m.info.deliveryCount, ackWaitMs, working: () => { open("in-progress signal"); m.working(); } },
   };
 }
 

@@ -252,8 +252,11 @@ refused bind fails with `dm-bind-refused`. No other credential is tried. Each DM
 sender check as every other durable read before the handler sees it, and the handler runs one DM at
 a time. A handler acks explicitly; a rejection leaves the copy for redelivery. `stop()` resolves
 after the running handler settles and the connection closes. When either cannot be proven, it
-throws and the caller keeps custody. The mode registers no presence, so the reader is not on the
-roster. Credential renewal and reconnects use the endpoint's normal paths.
+throws and the caller keeps custody. After `stop()` begins, or after a reconnect replaces the
+connection, a copy the client already received never reaches the handler; it stays unacked and the
+broker redelivers it after the durable's ack wait. An ack, nak or in-progress signal from a handler
+whose connection has closed throws instead of being lost. The mode registers no presence, so the
+reader is not on the roster. Credential renewal and reconnects use the endpoint's normal paths.
 
 ## Channel delivery
 
