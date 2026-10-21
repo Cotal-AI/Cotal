@@ -221,8 +221,9 @@ export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "turn"] as const);
  *  today; minting them with `spawn` keeps that tier's surface 1:1. */
 export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect", "list-personas", "show-persona", "goal-result"] as const);
 /** The `run` capability's commands (SPEC 14.3): the manager-hosted workflow-run surface. The
- *  three writes start a run, take one over and answer its open pause; the two reads list runs
- *  and render one run's record and journal. All UNTARGETED: a run is not an agent, so no target
+ *  writes start a run, take one over and answer its open pause, and the keyed pair starts a run
+ *  under a submission ID and reads that submission's binding; the two reads list runs and render
+ *  one run's record and journal. All UNTARGETED: a run is not an agent, so no target
  *  block names it, and the manager scopes what a caller may see by the run's own record.
  *  A program can `spawn`, so the `run` capability implies the spawn set as well
  *  ({@link runCallerCapabilities}): a caller that may start a program that spawns may spawn. */
@@ -357,7 +358,7 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
   ];
 }
 
-/** The `run` capability's addition (SPEC 14.3): the five untargeted `run-*` commands PLUS the
+/** The `run` capability's addition (SPEC 14.3): the seven `run-*` commands PLUS the
  *  whole spawn set. The implication is deliberate and one-way: a program is free to `spawn`, so a
  *  caller that may start one must hold what the program's spawns need, and the manager checks
  *  nothing weaker at `run-start`; a `spawn`-only caller gains no run row from this. */
