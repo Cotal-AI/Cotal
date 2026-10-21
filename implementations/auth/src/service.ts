@@ -449,8 +449,23 @@ async function supervisorGeneration(session: IssuerSession, space: string, owner
   return accepted.ref;
 }
 
+/** Trusted composition policy for unpinned interactive manager-caller requests. No request or CLI
+ *  flag sets it. The local-primary policy refuses an unavailable local Manager without substitution. */
+export interface AuthServiceRuntimeOptions {
+  interactiveManagerSelection?: "local-primary";
+}
+
+function runtimeSelection(options: AuthServiceRuntimeOptions): AuthServiceRuntimeOptions["interactiveManagerSelection"] {
+  if (!options || typeof options !== "object" || Array.isArray(options))
+    throw new Error("auth-service runtime options must be an object");
+  const selection = options.interactiveManagerSelection;
+  if (selection !== undefined && selection !== "local-primary")
+    throw new Error('interactiveManagerSelection must be "local-primary" when present');
+  return selection;
+}
+
 /** Inputs to the sealed authority-plane composition. */
-export interface OpenAuthAuthorityPlaneOptions {
+export interface OpenAuthAuthorityPlaneOptions extends AuthServiceRuntimeOptions {
   server: string;
   space: string;
   /** The provider state dir — the file-ledger connect arm reads it fresh per connect. */
@@ -517,6 +532,7 @@ async function openAuthAuthorityPlaneWithCustody(opts: OpenAuthAuthorityPlaneOpt
 
 /** The body of the plane opener, which owns the unwind of a failed construction. */
 async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwind: (() => Promise<unknown>)[], onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"]): Promise<AuthAuthorityPlane> {
+  const interactiveManagerSelection = runtimeSelection(opts);
   const { server, space, dataAccount, log } = opts;
   const standingTtl = opts.standingRenewableTtlSeconds ?? STANDING_RENEWABLE_TTL_SEC;
   if (!Number.isSafeInteger(standingTtl) || standingTtl < 5 || standingTtl > STANDING_RENEWABLE_TTL_SEC) {
@@ -811,6 +827,18 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       const instanceId = assertLifecycleToken(requested, "managerInstanceId");
       const verdict = await managerGate(owner, instanceId);
       if (verdict !== "candidate") throw new Error(`manager instance ${instanceId} is ${verdict}`);
+      return instanceId;
+    }
+    // A trusted host may choose the local Manager up front for human defaults. Explicit pins
+    // above and managed-agent calls keep their existing selection; no remote is a substitute.
+    if (caller === "human" && interactiveManagerSelection === "local-primary") {
+      let local: ManagerInstanceIdentity | undefined;
+      try { local = loadLocalManager(); }
+      catch { throw new Error("interactive local-primary manager identity could not be read"); }
+      if (!local) throw new Error("interactive local-primary manager identity is absent");
+      const instanceId = assertLifecycleToken(local.instanceId, "managerInstanceId");
+      const verdict = await managerGate(owner, instanceId);
+      if (verdict !== "candidate") throw new Error(`interactive local-primary manager instance ${instanceId} is ${verdict}`);
       return instanceId;
     }
     const { instances } = await listManagerInstances(owner);
@@ -2024,7 +2052,7 @@ export function authServiceConfiguration(args: ParsedArgs) {
 }
 
 /** Trusted local embedding hooks. They carry no prepared key material or loopback capability. */
-export interface AuthDaemonLifecycle {
+export interface AuthDaemonLifecycle extends AuthServiceRuntimeOptions {
   readonly root: string;
   readonly onReady: () => void | Promise<void>;
   readonly onClosed: () => void | Promise<void>;
@@ -2043,7 +2071,9 @@ export interface AuthDaemonLifecycle {
  *  the hard error below). Absent, the daemon composes the local workspace store over `.cotal/`.
  *  NON-SEAM state (the actor ledger, the IdP pin, the discovery file) still lives in the local
  *  state dir either way — hosting those is a later, separate seam. */
-export async function runAuthService(args: ParsedArgs, store?: SecretStore, lifecycle?: AuthDaemonLifecycle): Promise<void> {
+export async function runAuthService(args: ParsedArgs, store?: SecretStore, options: AuthServiceRuntimeOptions | AuthDaemonLifecycle = {}): Promise<void> {
+  const interactiveManagerSelection = runtimeSelection(options);
+  const lifecycle = "root" in options ? options : undefined;
   const { space, server, port, publicFace } = authServiceConfiguration(args);
   // The provider's space-scoped state dir for NON-SEAM material (ledger, IdP pin, discovery). The
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
@@ -2079,6 +2109,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, life
     // The CLI composition's local manager is this workspace root's persisted instance, re-read per
     // selection exactly as before. A hosted context passes no local manager at all.
     localManager: () => loadManagerInstanceIdentity(root, space),
+    ...(interactiveManagerSelection !== undefined ? { interactiveManagerSelection } : {}),
   });
 
   // All planes bound — NOW write the discovery file (its existence is the readiness signal).
@@ -2291,7 +2322,7 @@ type AuthContextEnd = { kind: "fenced"; cause: string } | { kind: "broker"; caus
  *  to report it under, so the CLI composition never carries one. */
 type AuthContextStatus = { state: "ready" | "draining" } | { state: "unavailable"; cause: string };
 
-interface AuthContextOptions {
+interface AuthContextOptions extends AuthServiceRuntimeOptions {
   toolResultConsents?: ToolResultConsentSignerOptions;
   space: string;
   server: string;
@@ -2350,6 +2381,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
     log: (l) => console.error(l),
     localManager: o.localManager,
+    ...(o.interactiveManagerSelection !== undefined ? { interactiveManagerSelection: o.interactiveManagerSelection } : {}),
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
   }, onConnection);
   let nc: NatsConnection | undefined;

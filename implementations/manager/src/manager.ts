@@ -413,10 +413,11 @@ function ownLists<T extends { subscribe?: readonly string[]; allowSubscribe?: re
 export interface ManagerOptions {
   space: string;
   /** Hosted pooled control requires signerless authority and either an explicit non-custodial
-   * runtime or explicit execution: none. Stock CLI is unchanged. */
+   * runtime or explicit execution: none. It never borrows local signing authority. */
   pooled?: boolean;
   /** Explicit seat/workflow execution capability. Omitted preserves runtime execution.
-   * `none` requires pooled remote authority and refuses any supplied runtime. */
+   * `none` accepts genuine hosting user-auth authority or pooled remote authority, never both,
+   * and refuses any runtime. Local NONE requires a fresh or previously classified instance. */
   execution?: "runtime" | "none";
   servers?: string;
   name?: string;
@@ -1584,9 +1585,12 @@ export class Manager {
     if (opts.onServiceIdentity !== undefined && typeof opts.onServiceIdentity !== "function") throw new Error("manager onServiceIdentity must be a trusted embedding callback");
     if (opts.execution !== undefined && opts.execution !== "runtime" && opts.execution !== "none")
       throw new Error(`unknown manager execution capability ${JSON.stringify(opts.execution)}`);
-    if (opts.execution === "none" && (!opts.pooled || !opts.remoteAuthority || opts.runtime !== undefined))
-      throw new Error("execution: none requires pooled signerless remote authority and no runtime option");
-    if (opts.execution === "none" && ["renewExecutor", "renewStandingBundle", "mintSessionServing", "mintRetirementRequester", "prepareAgentRetirement", "validateRetainedAgent", "scanGoalIndex", "authorizeAdmin"].some((key) =>
+    if (opts.execution === "none" && ((opts.pooled !== undefined && typeof opts.pooled !== "boolean") ||
+        (opts.remoteAuthority !== undefined && (!opts.remoteAuthority || typeof opts.remoteAuthority !== "object" || Array.isArray(opts.remoteAuthority)))))
+      throw new Error("execution: none requires boolean pooled and a non-null remote authority object when supplied");
+    if (opts.execution === "none" && (opts.runtime !== undefined || (!!opts.pooled !== !!opts.remoteAuthority)))
+      throw new Error("execution: none requires pooled signerless remote authority for remote composition, or genuine local authority, and no runtime option");
+    if (opts.execution === "none" && opts.remoteAuthority && ["renewExecutor", "renewStandingBundle", "mintSessionServing", "mintRetirementRequester", "prepareAgentRetirement", "validateRetainedAgent", "scanGoalIndex", "authorizeAdmin"].some((key) =>
       typeof opts.remoteAuthority?.[key as keyof NonNullable<ManagerOptions["remoteAuthority"]>] !== "function"))
       throw new Error("execution: none requires complete closed remote authority callbacks before construction");
     if (opts.pooled && (!opts.remoteAuthority || (opts.execution !== "none" && (opts.runtime === undefined || opts.runtime === "auto" || opts.runtime === "pty"))))
@@ -1611,6 +1615,10 @@ export class Manager {
     if (opts.secretStore) this.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
     this.installedExtensions = opts.installedExtensions ?? false;
     this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
+    if (!this.remoteAuthority) {
+      const local = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
+      if (local && existsSync(this.executionRecordPath(local.instanceId))) this.claimExecutionRecord(local.instanceId);
+    }
     if (this.executionState.kind === "runtime") this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
     if (opts.pooled && this.executionState.kind === "runtime" && isCustodialRuntime(this.requiredRuntime))
       throw new Error(`pooled control refuses custodial runtime "${this.requiredRuntime.kind}" before starting agents`);
@@ -1653,7 +1661,7 @@ export class Manager {
   }
 
   private executionRefusal(): string {
-    return "execution: none forbids seat launch and workflow hosting on this control instance; select the participant Manager with an instance-pinned manager-caller view";
+    return "execution: none forbids seat launch, workflow hosting, model inspection and caller-driven writes on this control instance; select the participant Manager with an instance-pinned manager-caller view";
   }
 
   /** A defensive last barrier, not a substitute Runtime. Entry admission runs before effects. */
@@ -1817,12 +1825,61 @@ export class Manager {
     return wrapped;
   }
 
+  private executionRecordPath(instanceId: string): string {
+    return join(this.workspaceRoot, ".cotal", `manager-execution.${spaceKey(this.space)}.${instanceId}.json`);
+  }
+
+  private claimExecutionRecord(instanceId: string): void {
+    const record = claimIdentityRecord(this.executionRecordPath(instanceId), "manager execution capability", (raw) => {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+      const r = raw as Record<string, unknown>;
+      return Object.keys(r).sort().join(",") === "execution,instanceId,space,v" && r.v === 1 && r.space === this.space &&
+        r.instanceId === instanceId && (r.execution === "none" || r.execution === "runtime") ? r : undefined;
+    }, () => ({ v: 1, space: this.space, instanceId, execution: this.execution }));
+    if (record.execution !== this.execution)
+      throw new Error("manager execution capability differs from its retained instance record; execution cannot change across restart");
+  }
+
   private async admitExecutionState(): Promise<void> {
+    if (!this.remoteAuthority) {
+      let local = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
+      if (this.execution === "none") {
+        const recorded = loadMeshes().find((m) => m.space === this.space);
+        const auth = hasUserAuthState(this.workspaceRoot, this.space) && recorded?.mode === "user"
+          ? await getSpaceAuth(this.secrets, this.space) : undefined;
+        if (!auth)
+          throw new Error("execution: none requires a genuine hosting user-auth root and its user-mode mesh record");
+        if (local && !existsSync(this.executionRecordPath(local.instanceId)))
+          throw new Error("execution: none refuses an existing unclassified manager instance; keep its runtime and retained state, or register a fresh control instance");
+        if (!local) {
+          const proposed = { instanceId: mintLifecycleUid(), serveIdentity: newIdentity() };
+          local = createManagerInstanceIdentity(this.workspaceRoot, this.space, proposed);
+          if (local.instanceId !== proposed.instanceId)
+            throw new Error("execution: none refuses a concurrently claimed unclassified manager identity");
+        }
+        const localInstanceId = local.instanceId;
+        this.claimExecutionRecord(localInstanceId);
+        const nc = await this.dial({ ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "provisioner"), tls: false }), maxReconnectAttempts: 0 });
+        try {
+          const kvm = new Kvm(nc);
+          await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
+          const entries = await listGoalIndex(await kvm.open(recordsBucket(this.space)), MANAGER_ENDPOINT);
+          if (entries.some((entry) => entry.iid === localInstanceId && (entry.allocated !== undefined || entry.note !== undefined)))
+            throw new Error("execution: none refuses retained seat or turn inventory before recovery; keep the execution-owning Manager");
+        } finally { await nc.drain().catch(() => nc.close()); }
+      } else {
+        local ??= createManagerInstanceIdentity(this.workspaceRoot, this.space, { instanceId: mintLifecycleUid(), serveIdentity: newIdentity() });
+        this.claimExecutionRecord(local.instanceId);
+      }
+      return;
+    }
     if (this.remoteAuthority) {
+      if (this.execution === "none" && (await localTrustOfSpace(this.secrets, this.space)).present)
+        throw new Error("remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback");
       // Execution is fixed for a registered instance. An older instance with no capability
       // record might own retained seats/runs, so it cannot be converted to none by omission.
       const remote = this.remoteAuthority;
-      const path = join(this.workspaceRoot, ".cotal", `manager-execution.${spaceKey(this.space)}.${remote.instanceId}.json`);
+      const path = this.executionRecordPath(remote.instanceId);
       if (this.execution === "none" && !existsSync(path) && remote.serveGrant.epoch !== 0)
         throw new Error("execution: none refuses an existing unclassified manager instance; keep its runtime and retained state, or register a fresh control instance");
       if (this.execution === "none") {
@@ -1830,16 +1887,7 @@ export class Manager {
         if (entries.some((entry) => entry.iid === remote.instanceId && (entry.allocated !== undefined || entry.note !== undefined)))
           throw new Error("execution: none refuses retained seat or turn inventory before recovery; keep the execution-owning Manager");
       }
-      if (this.execution === "none" || existsSync(path)) {
-        const record = claimIdentityRecord(path, "manager execution capability", (raw) => {
-          if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-          const r = raw as Record<string, unknown>;
-          return Object.keys(r).sort().join(",") === "execution,instanceId,space,v" && r.v === 1 && r.space === this.space &&
-            r.instanceId === remote.instanceId && (r.execution === "none" || r.execution === "runtime") ? r : undefined;
-        }, () => ({ v: 1, space: this.space, instanceId: remote.instanceId, execution: this.execution }));
-        if (record.execution !== this.execution)
-          throw new Error("manager execution capability differs from its retained instance record; execution cannot change across restart");
-      }
+      if (this.execution === "none" || existsSync(path)) this.claimExecutionRecord(remote.instanceId);
     }
   }
 
@@ -2142,7 +2190,7 @@ export class Manager {
     }
     // A carried resume (#1499) needs this instance's transfer reader: minted from the space's signing
     // seed, issued by the host to a remote manager, or none on an open mesh.
-    if (!this.remoteAuthority || this.remoteAuthority.mintTransferReader) {
+    if (this.execution !== "none" && (!this.remoteAuthority || this.remoteAuthority.mintTransferReader)) {
       this.transcripts = new TranscriptReceiver({
         space: this.space,
         instanceId: this.managerInstanceId,
@@ -2715,6 +2763,7 @@ export class Manager {
   /** Fence and build the inventory without stopping a child. The coordinator must durably persist
    * this exact plan before calling commitPreservation with the same attempt id. */
   preparePreservation(attemptId: string): Promise<ManagerPreservationPlan> {
+    if (this.execution === "none") return Promise.reject(new EpEnvelopeError("unimplemented", this.executionRefusal()));
     if (!attemptId.trim()) return Promise.reject(new Error("preservation attemptId is required"));
     if (this.preservationAttemptId && this.preservationAttemptId !== attemptId)
       return Promise.reject(new Error(`manager is fenced for preservation attempt ${this.preservationAttemptId}; refusing different attempt ${attemptId}`));
@@ -2813,6 +2862,7 @@ export class Manager {
   /** Stop children only after the coordinator has persisted the prepared inventory. Same-attempt
    * retries are idempotent; a different attempt is refused. */
   commitPreservation(attemptId: string): Promise<ManagerPreserveResult> {
+    if (this.execution === "none") return Promise.reject(new EpEnvelopeError("unimplemented", this.executionRefusal()));
     if (!this.preservationAttemptId || this.preservationAttemptId !== attemptId)
       return Promise.reject(new Error(`preservation attempt ${attemptId} was not prepared by this manager`));
     if (!this.preservationInventory)
@@ -2838,6 +2888,7 @@ export class Manager {
   /** Recover an abandoned prepare before any child stop. Once commit begins, preservation is
    * irreversible and remains fenced until the coordinator records failure/recourse. */
   abortPreservation(attemptId: string): void {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     if (this.preservationAttemptId !== attemptId)
       throw new Error(`preservation attempt ${attemptId} is not the active manager attempt`);
     if (this.preparationTask || this.lifecycleInFlight > 0)
@@ -3498,6 +3549,7 @@ export class Manager {
   }
 
   private async opFinalizeResume(rawArgs: unknown): Promise<ControlReply> {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     {
       let args: { attemptId: string; durableCommitToken: string };
       try {
@@ -3545,6 +3597,7 @@ export class Manager {
   }
 
   private async opCommitResume(rawArgs: unknown): Promise<ControlReply> {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     {
       let attemptId: string;
       try {
@@ -3575,11 +3628,10 @@ export class Manager {
   }
 
   private async opResumePreserved(rawArgs: unknown): Promise<ControlReply> {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     {
       try {
         const args = parseResumeControlArgs(rawArgs);
-        if (this.execution === "none" && args.inventory.agents.length !== 0)
-          return { ok: false, error: this.executionRefusal() };
         const inventoryDigest = createHash("sha256").update(JSON.stringify(args.inventory)).digest("hex");
         if (!this.resumeAttemptId)
           return { ok: false, error: "resumePreserved requires a manager started with --resume-attempt" };
@@ -3611,6 +3663,7 @@ export class Manager {
   }
 
   private async opPreservationCtl(op: string, rawArgs: unknown): Promise<ControlReply> {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     if (this.resumeRequired) return { ok: false, error: this.maintenanceError() };
     const attemptId = String((rawArgs as Record<string, unknown> | undefined)?.attemptId ?? "").trim();
     if (!attemptId) return { ok: false, error: `${op} requires attemptId` };
@@ -3856,6 +3909,7 @@ export class Manager {
       return fn();
     };
     const targetAgent = (ctx: EpServeContext): ManagedAgent => {
+      if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
       const t = ctx.request.target!; // targeted commands only: the serve boundary enforced body-target presence + fresh currency
       const a = this.findManagedByTarget(t);
       if (!a) throw new EpEnvelopeError("expired", `target ${t.owner}.${t.actor} (lifecycle ${t.lifecycleUid}) is not a live managed agent of this manager`, undefined, "not-executed");
@@ -3949,6 +4003,7 @@ export class Manager {
       }),
       resolveCwd: (ctx) => this.serveGated(ctx, () => this.resolveSpawnCwd(args(ctx).cwd)),
       resolveAgent: (ctx) => this.serveGated(ctx, async () => {
+        if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
         const persona = await this.spawnPersona(args(ctx) as Pick<StartAgentOpts, "name" | "config" | "agent" | "defaultAgent">, callerOf(ctx), ctx.subject.caller);
         if ("error" in persona) throw new EpEnvelopeError(persona.code ?? (persona.error.startsWith("no persona") ? "not-found" : "failed-precondition"), persona.error);
         return { agent: persona.agent };
@@ -4048,6 +4103,7 @@ export class Manager {
       commitPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("commitPreservation", args(ctx)))),
       abortPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("abortPreservation", args(ctx)))),
       transcriptReceive: (ctx) => this.serveGated(ctx, () => adminGated(ctx, () => {
+        if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
         if (!this.transcripts)
           throw new EpEnvelopeError("failed-precondition", "transcript-receive: this manager does not receive carried transcripts (its remote authority issues no transfer reader)");
         return this.transcripts.receive(args(ctx) as unknown as TranscriptReceiveInput);
@@ -4187,6 +4243,7 @@ export class Manager {
    *  hitting another agent. Non-managed callers (human CLI, the manager itself, observers) find
    *  no match and get a loud error, not a silent no-op. */
   private opStopSelf(callerId: string, args: Record<string, unknown>): ControlReply {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const target = [...this.agents.values()].find((a) => this.managedPrincipal(a) === callerId);
     if (!target) return { ok: false, error: `self-stop: caller ${callerId} is not a managed agent` };
     const graceful = args.graceful !== false;
@@ -5550,6 +5607,7 @@ export class Manager {
   /** Resolve a placed spawn directory on this manager's host. Delegated execution refuses before
    * filesystem lookup, since its seats cannot use host cwd. Creates nothing and never substitutes the workspace root. */
   private resolveSpawnCwd(value: unknown): { cwd: string; host: string } {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     if (this.execution === "runtime" && this.requiredRuntime.spawnDelegated)
       throw new EpEnvelopeError("failed-precondition", `runtime "${this.requiredRuntime.kind}" starts seats outside this host, so it cannot resolve a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory`);
     const asked = typeof value === "string" ? value : String(value ?? "");
@@ -5707,6 +5765,7 @@ export class Manager {
    *  local model-list API reports `supported:false` rather than blocking the manager. A connector that
    *  fails to import shows an `error:` row (from manifest enumeration) and never blocks the others. */
   private async opModels(args: Record<string, unknown>): Promise<ControlReply> {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const requested = String(args.agent ?? "").trim();
     const refresh = args.refresh === true;
     const one = async (connector: Connector): Promise<ConnectorModelCatalog> => {
@@ -6726,7 +6785,7 @@ export class Manager {
   async resumePreserved(
     inventory: ManagerResumeInventory,
   ): Promise<ManagerResumeResult> {
-    if (this.execution === "none" && (!Array.isArray(inventory.agents) || inventory.agents.length !== 0))
+    if (this.execution === "none")
       return { ok: false, agents: [], error: this.executionRefusal() };
     const release = this.beginLifecycle(true);
     if (!release) return { ok: false, agents: [], error: this.maintenanceError() };
@@ -9287,6 +9346,7 @@ export class Manager {
    *  `succeeded` carrying the TurnResult. A yield AFTER the deadline drives the deadline terminal
    *  instead and refuses — the expiry outcome stands, never a late success over it. */
   private async serveTurnYield(c: { owner: string; actor: string; uid: string }, raw: Record<string, unknown>): Promise<{ goalId: string; state: string }> {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     // Same boot window as the pull, and checked first because it is the earlier boot phase: before
     // the index is rebuilt a predecessor's accepted turn is not in `pendingTurns`, and `not-found`
     // would tell the seat to drop work it is holding.
@@ -9371,6 +9431,7 @@ export class Manager {
    *  whose outcome cannot be read back stays out and converges through the goal index at the
    *  next boot, as a failed deadline commit does. */
   private async serveTurnCancel(ctx: EpServeContext): Promise<{ goalId: string; state: string }> {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     if (!this.goalReconcileDone)
       throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; the pending-turn index is not rebuilt yet, retry (SPEC 13.6)");
     const gw = this.goalWriter;
@@ -10743,6 +10804,7 @@ export class Manager {
    *  supervisor); regular agents are denied STREAM.PURGE under auth. Cleanup only: leaves live agents and
    *  the TASK queue alone. */
   private async opPurge(args: Record<string, unknown>, _caller: string): Promise<ControlReply> {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const includeDms = args.includeDms === true;
     try {
       const creds = this.auth ? await mintCreds(this.auth, newIdentity(), "purger") : undefined;
@@ -10770,6 +10832,7 @@ export class Manager {
    *  only if `file.owner == caller`, else admin is required. Fail-closed: an ownerless file
    *  (legacy / operator-written) is admin-only. */
   private opDefinePersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const name = String(args.name ?? "").trim();
     if (!name) return { ok: false, error: "name required" };
     const nameErr = this.nameError(name);

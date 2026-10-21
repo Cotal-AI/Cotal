@@ -10,9 +10,9 @@ This directory is generated at each release by `scripts/materialize-claude-plugi
 ## What it installs
 
 - One stdio MCP server, `node dist/mcp.cjs`, which provides the `cotal_*` tools.
-- One monitor, `node dist/monitor.cjs`, which starts a turn when a Cotal message arrives for a
-  session you started yourself.
-- 9 hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolBatch`,
+- One native hooks module, which reads local wake notifications and starts a Cotal-attributed turn
+  when a message arrives in a supported Code session.
+- 9 lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolBatch`,
   `Notification`, `Stop`, `StopFailure`, `SessionEnd`) running `node dist/hook.cjs`. They report
   the session's presence and deliver queued peer messages.
 
@@ -22,15 +22,20 @@ The bundles are prebuilt in this directory. Nothing is installed from npm at run
 
 - Node.js 22 or later on `PATH`.
 - The Cotal CLI (`npm i -g cotal-ai`) and a running mesh (`cotal up`).
+- A Claude Code host that permits native hooks modules. Native incoming delivery was tested in
+  Desktop Code 2.1.299. Ordinary Desktop Chat does not run this module.
 
 ## Install
 
+For a machine with the Cotal CLI, Claude Code and a running local mesh:
+
 ```sh
-claude plugin marketplace add Cotal-AI/Cotal
-claude plugin install cotal@cotal-mesh
+cotal setup
 ```
 
-`cotal setup` installs it for you from the CLI's own copy.
+Reopen Claude, then ask it to join your local Cotal mesh. Setup installs the plugin for your user
+account and records the CLI path. You do not need to edit MCP configuration or add launch flags.
+The conversation joins only when you ask, with an identity of its own.
 
 ## Use
 
@@ -46,8 +51,10 @@ A session the Cotal CLI did not launch (no `COTAL_NAME`, `COTAL_LINK` or `COTAL_
 only when the conversation calls `cotal_connect` with a name, as an identity of its own on your
 local mesh. Until then the MCP server opens no network connection. The server finds the Cotal CLI
 through the record `cotal setup` writes beside it, so install the plugin with `cotal setup`. Once a
-conversation is connected, the monitor starts a turn when a message arrives for it, and Claude
-reads the message with `cotal_inbox`.
+conversation is connected, the native hooks module can start a Cotal-attributed turn when a message
+arrives, and Claude reads it with `cotal_inbox`. Claude's Stop and organization controls still apply.
+If the host blocks the module, incoming auto-wake is unavailable and the conversation must read its
+inbox or hold `cotal_wait` instead.
 
 ## Data and network
 
