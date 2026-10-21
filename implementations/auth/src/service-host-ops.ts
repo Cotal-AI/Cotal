@@ -846,10 +846,12 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
         if (kept?.state !== "complete") return finalArm(operationId, kept as Exclude<Final, { state: "complete" }>, debtOf(a5a.op));
         return finishApproved(inv, ctx, kept.result as ServiceApprovalResult, a5a.wrote ? "applied" : "recorded");
       };
-      /** Proposal-first refusal: close my approving proposal, release, then record. */
-      const refuseWith = async (close: ServiceProposalCloseReason, reason: ServiceOperationRefusal) => {
+      /** Proposal-first refusal: close my approving proposal, release, then record. R-bound also
+       *  closes a still-proposed target, by a CAS pinned to the revision this approval admitted. */
+      const refuseWith = async (close: ServiceProposalCloseReason, reason: ServiceOperationRefusal, target = false) => {
         ctx.step = `R-${reason}`;
-        const prop = await closeProposal(ctx, proposalId, (p) => p.state.state === "approving" && p.state.operationId === operationId ? tombstone(p, "refused", operationId, null, close) : undefined);
+        const prop = await closeProposal(ctx, proposalId, (p, revision) => (p.state.state === "approving" && p.state.operationId === operationId)
+          || (target && p.state.state === "proposed" && revision === plan.proposalRevision) ? tombstone(p, "refused", operationId, null, close) : undefined);
         const debts = prop.row.kind === "service-proposal-terminal" ? await releaseFor(ctx, prop.row) : [];
         const s = await settle(ctx, operationId, { state: "refused", reason }, debts);
         return finalArm(operationId, outcomeOf(s.op) as Exclude<Final, { state: "complete" }>, debtOf(s.op));
@@ -874,7 +876,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
           return finalArm(operationId, outcomeOf(s.op) as Exclude<Final, { state: "complete" }>, debtOf(s.op));
         }
         const asg = await readAssignment(ctx, res.assignment.endpoint, res.assignment.instanceId);
-        if (asg.state === "value" && asg.row.assignmentDigest !== assignmentDigest) return refuseWith("selector-bound", "conflict"); // R-bound
+        if (asg.state === "value" && asg.row.assignmentDigest !== assignmentDigest) return refuseWith("selector-bound", "conflict", true); // R-bound
         if (asg.state === "value" && asg.row.state === "fenced") return refuseWith(causeReason(asg.row.cancel), causeReason(asg.row.cancel)); // row 11, R-fence
         const bound = asg.state === "value" ? asg.row as Extract<Assignment, { state: "bound" }> : undefined;
         if (bound && gate.kind === "revoked") return refuseWith(causeReason(bound.cancel), causeReason(bound.cancel));   // R-revoked: deny-new landed without my digest
