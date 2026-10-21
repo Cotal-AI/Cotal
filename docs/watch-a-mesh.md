@@ -9,7 +9,7 @@ re-implements the wire. Pick by where you are:
 
 | Surface | Command | Use it to |
 |---|---|---|
-| **web dashboard** | `cotal web` | a god-view browser dashboard: see at a glance what needs a human |
+| **web dashboard** | `cotal service start web` after explicit configuration | a god-view browser dashboard: see at a glance what needs a human |
 | **console (TUI)** | `cotal console` | drive it interactively in the terminal: drill into agents, channels, DMs |
 | **stream** | `cotal console --plain`, or any pipe | tail a passive line log: grep it, pipe it, watch it in CI |
 
@@ -107,63 +107,44 @@ presence changes and messages, ready for `grep`.
 
 ## Web dashboard
 
-The dashboard ships inside `cotal-ai` as the `@cotal-ai/web` extension and is seeded automatically on
-first run (like the built-in connectors), so `cotal web` is there out of the box and tracks your CLI
-version on upgrade. If a seeded copy is damaged, `cotal ext seed --repair` restores it. A page file
-the dashboard cannot read is answered with a `500` that names the failed read.
+The dashboard ships as the `@cotal-ai/web` service preset. It is not part of stack startup. The
+service requires a registered static-auth root, an existing protected credential file
+and explicit read-only intent. It never substitutes a cached operator login, an account signer or
+an open connection. User-auth targets require a supported caller handoff and remain unavailable in
+this route. See the [CLI service instructions](cli.md#web-dashboard) for the complete limits. A page file the
+dashboard cannot read is answered with a `500` that names the failed read.
 
 ![The web dashboard: roster, all-activity feed, golden-signal tiles, and the NEEDS-YOU lane](../assets/dashboard.png)
 
 ```bash
-cotal web --space main                       # opens http://cotal.localhost:7799/
-cotal web --space main --detach              # background; stop with cotal down web
-cotal web --space main --port 8080 --no-open
-cotal web --space main --host 192.0.2.10      # explicit remote bind and browser address
-cotal web --space main --creds ./admin.creds # use a cred you minted yourself
+cotal service add web --preset web --space main --root /absolute/registered/root --creds /absolute/private/dashboard.creds --read-only
+cotal service start web --space main
+cotal service logs web --space main
+cotal service stop web --space main --yes
 ```
 
-Flags: `--space` (default `main`), `--server` (the mesh's broker, resolved from the registry),
-`--host` (HTTP bind and browser host, default `127.0.0.1`), `--port` (1 to 65535, default `7799`), `--detach`
-(run in the background), `--no-open` (skip auto-launching the browser), `--creds` (override the
-self-minted cred). Remote exposure requires an explicit concrete `--host`; wildcard addresses
-`0.0.0.0` and `::` are refused because neither is a browser destination. Detached mode waits for
-the real HTTP server at the bound host and port before returning, logs to `<mesh-root>/.cotal/web.log`, and is stopped by
-`cotal down web` or bare `cotal down`. If the server is not ready before the deadline, the timeout error ends with `; last probe <url>: <outcome>`, where `<url>` is the bound probe address (`http://127.0.0.1:<port>/api/meta` on the default host), not the browser launch URL, and the outcome is a transport error such as `ECONNREFUSED`, an HTTP status outside 2xx such as `HTTP 401` (the probe follows no redirect, so a 3xx is reported the same way), or `answered space <space>, pid <pid>` when another process on the port answered with a different space or pid. A mismatched space is cut to 40 characters and a pid to 20 (a number or boolean too long for that is named by its type, and a value that is neither text nor a number is named by its type), and the `<url>: <outcome>` text is capped at 300 bytes, counting the `...` that marks a cut. On the default host it probes `127.0.0.1`, because a system
-resolver such as WSL2's may not answer the branded `cotal.localhost`. It requires a recorded mesh root; after `cotal up` records the
-mesh, it can be launched from any directory. The branded URL `http://cotal.localhost:7799/` resolves
-to loopback with no DNS setup in Chrome, Firefox, and Edge. Safari and a system resolver such as
-WSL2's may not resolve `*.localhost`, so on this default the launch link is printed again at
-`http://127.0.0.1:7799/` with the same single-use token. A custom `--port` uses the plain loopback address. An explicit
-`--host` is also the advertised address and the only allowed browser Origin for that process.
+The native child checks the file's signature, matching user key and current validity against the
+registered root's full validated static trust chain and current signing key before claiming PID
+custody. No alternate signer or cached credential replaces a mismatch; a user-auth or stripped-
+signer-only root is unsupported. Native broker admission remains a separate requirement.
+The child retains the broker's registered TLS requirement. Its browser listener remains HTTP; broker TLS does not encrypt remote browser traffic. Its process-initialization phase
+follows the HTTP listener and signal handlers, not a new authenticated endpoint reply. `host` and
+`port` are definition options: the defaults are `127.0.0.1` and 7799; wildcard hosts and port 0
+refuse. It starts no dependency and opens no browser automatically.
 
-**The link is single-use, and the surface authenticates the caller.** Starting the dashboard prints a
-URL carrying a one-time token; opening it exchanges the token for a session cookie and the token is
-then spent. Binding loopback keeps other *hosts* out, but it never kept out other *processes* on your
-machine, nor a page in your own browser posting to `http://127.0.0.1:7799`, so the token is what
-makes the session yours. Requests without it are refused with the reason named (`unauthenticated`,
-`launch-token-already-used`, or `cross-origin`) rather than silently returning nothing.
+The bootstrap URL and readiness credential stay in an owner-private create-only session record
+bound to the full instance and launch request. Logs contain its reference path only. Read that
+private file locally and open its single-use link in the browser/profile you intend to use.
+Opening it exchanges the token for an HttpOnly, same-site session cookie. Another browser cannot
+reuse a spent token. The session belongs to its origin; localhost names and literal loopback
+addresses do not share it. Confirmed native close removes only the unchanged original private
+record. Do not upload it or paste its contents into logs.
 
-Practical consequences: open the printed link in the browser you want to use it in, because the
-token is spent on first use. Re-opening it **in another browser or profile** is refused with
-`launch-token-already-used`. (In the browser that already holds the session, re-opening the link
-still works: the session is checked before the spent token, so the page loads on the session you
-already have.) If you lose the line, the link is also written to `<mesh-root>/.cotal/web.session`,
-mode `0600` on every write. The session is bound to the origin you opened, so one started on
-`http://cotal.localhost` does not carry over to `http://127.0.0.1`. Restarting `cotal web` mints a
-fresh link and invalidates every earlier session.
-
-**A god-view, minimal privilege.** The dashboard is always the full god-view; there is no
-read-only viewer mode. In auth mode it self-mints its own **admin** read cred (the scope that lets
-it tap DMs and anycast), then *drops the space signing seed* so a dashboard compromise can't mint
-identities; it keeps only one narrow cred for its single write path. In open mode it connects bare.
-Pass `--creds` to use a cred you minted yourself instead. On a per-user-auth mesh there is nothing
-to mint: the dashboard rides the read-only admin view over your login, and the channel-delete
-write path asks for its own channel-purger view per click (both need ledger scope `admin`;
-[identity & auth](identity-and-auth.md)).
-
-The dashboard is read-only except that one write path: **deleting a channel and its content**
-(a filtered history purge plus the channel-registry key), which is POST-gated and confirm-guarded
-in the UI.
+This service is explicitly read-only. The page says so and hides delete; the server independently
+refuses channel-delete requests before acquiring mutation authority or using another transport.
+The broker enforces what the selected file may observe, so a restricted read is not an empty mesh
+or proof that a hidden DM does not exist. `channel remove` remains a separate authorized CLI action.
+An old cached web command requires the matching extension update, not an implicit reinstall.
 
 **The views.** Every view keeps the same skeleton: navigation on the left (roster, channels,
 DMs), the selected content in the centre, the NEEDS-YOU lane always on the right.

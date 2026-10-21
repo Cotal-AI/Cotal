@@ -137,6 +137,115 @@ export interface MaintenanceCutContext {
   readonly launch: { readonly server: string; readonly [key: string]: JsonValue };
 }
 
+export type ControllerRole = "broker" | "auth" | "delivery" | "manager";
+
+/** A creation-pinned process. The token is opaque (pid.ts); only its frame is validated. */
+export type PinnedProcess = {
+  readonly pid: number;
+  readonly token: string;
+};
+
+/** The original member incarnations a controller cut stopped. Immutable for the life of the cut,
+ *  except that a restore rollback rebinds `brokerDefinitionRevision`. Type aliases keep these
+ *  shapes assignable to the journal's JSON launch object. */
+export type ControllerCutBinding = {
+  readonly stackOperationId: string;
+  readonly brokerDefinitionRevision: string;
+  readonly members: readonly ControllerMember[];
+  readonly manager: { readonly instanceId: string; readonly epoch: number; readonly lifecycleUid: string };
+};
+
+export type ControllerMember = {
+  readonly role: ControllerRole;
+  readonly definition: string;
+  readonly definitionRevision: string;
+  readonly instanceId: string;
+  readonly launchRequestId: string;
+  readonly process: PinnedProcess;
+};
+
+/** Each member's own terminal receipt, copied from its instance record at the cut. A later launch
+ *  rewrites the instance record, so this row is the durable stop evidence. */
+export type ControllerStop =
+  | { readonly role: "manager"; readonly instanceId: string; readonly launchRequestId: string;
+      readonly receipt: { readonly kind: "preserved-exit"; readonly requestId: string; readonly scopeSha256: string; readonly observedAt: string } }
+  | { readonly role: "broker"; readonly instanceId: string; readonly launchRequestId: string;
+      readonly receipt: { readonly kind: "kernel-exit"; readonly requestId: string; readonly scopeSha256: string; readonly observedAt: string } }
+  | { readonly role: "auth" | "delivery"; readonly instanceId: string; readonly launchRequestId: string;
+      readonly receipt: { readonly kind: "process-exit"; readonly requestId: string; readonly observedAt: string } };
+
+/** One preserved-exit stop attempt, journaled before it publishes. It carries every field the
+ *  closed stop-request reader needs, so the attempt's own request can be rebuilt with its own
+ *  original stopper. `published` is set only after the request file was written. */
+export interface PreservedStopAttempt {
+  readonly requestId: string;
+  readonly target: PinnedProcess;
+  readonly stopper: PinnedProcess;
+  readonly withAgents: false;
+  readonly scopeSha256: string;
+  readonly preserved: { readonly attemptId: string; readonly inventorySha256: string };
+  readonly recordedAt: string;
+  readonly published?: true;
+}
+
+export interface PreservedStop {
+  readonly instanceId: string;
+  readonly launchRequestId: string;
+  readonly attempts: readonly PreservedStopAttempt[];
+}
+
+/** One member start in a controller resume. `requested` is journaled before the start call; the
+ *  outcome and launch request follow after it returns or throws. */
+export type ControllerStartedMember = {
+  readonly role: ControllerRole;
+  readonly instanceId: string;
+  readonly priorLaunchRequestId: string;
+  readonly state: "requested";
+  readonly launchRequestId?: string;
+  readonly outcome?: "running" | "refused-before-spawn" | "unknown";
+};
+
+export type ControllerResumeBinding = {
+  readonly stackOperationId: string;
+  readonly started: readonly ControllerStartedMember[];
+  /** After a restore rollback rebound the broker revision, the cut's broker record is retired and
+   *  this attempt starts a new broker instance with these IDs, journaled before its start. */
+  readonly broker?: AttemptBrokerInstance;
+};
+
+/** A new broker instance an attempt starts in place of the retired cut member. Both IDs are
+ *  chosen and journaled before the start. */
+export type AttemptBrokerInstance = {
+  readonly instanceId: string;
+  readonly launchRequestId: string;
+};
+
+/** The private commit-token handoff file: its path, then its exact inode and an integrity digest
+ *  of the random value once written. Never the token bytes. */
+export interface TokenHandoff {
+  readonly path: string;
+  readonly state: "intended" | "written" | "consumed" | "swept";
+  readonly dev?: string;
+  readonly ino?: string;
+  readonly sha256?: string;
+}
+
+/** An alternate-target restore's recorded broker definition rewrite (`options.config` only). Each
+ *  phase is journaled before the definition write it names: `rendered` before the forward write,
+ *  `rolling-back` before the rollback write. */
+export interface ControllerReconfiguration {
+  readonly fromRevision: string;
+  readonly fromOptionsSha256: string;
+  readonly fromConfigPath: string;
+  readonly fromConfigSha256: string;
+  readonly toConfigPath: string;
+  readonly toConfigSha256: string;
+  readonly toStoreIdentity: StoreIdentity;
+  readonly toRevision?: string;
+  readonly phase: "rendered" | "definition-committed" | "rolling-back" | "rolled-back";
+  readonly rollbackRevision?: string;
+}
+
 export interface MaintenanceCutCompletionEvidence {
   readonly attemptId: string;
   readonly observedAt: string;
@@ -154,6 +263,8 @@ export interface MaintenanceCutCompletionEvidence {
     readonly endpoint: string;
     readonly unreachable: true;
   };
+  /** Required iff the cut has controller custody: one row per cut member. */
+  readonly controllerStops?: readonly ControllerStop[];
 }
 
 export interface MaintenanceCutIntentRecord extends JournalBase {
@@ -166,6 +277,8 @@ export interface MaintenanceCutCommittedRecord extends JournalBase {
   readonly state: "cut-committed";
   readonly managerCommittedAt: string;
   readonly managerCommit: MaintenanceCutCompletionEvidence["managerCommit"];
+  /** Controller custody only: every preserved-exit stop attempt for the cut's manager member. */
+  readonly preservedStop?: PreservedStop;
 }
 
 export interface MaintenanceReadyRecord extends CompletedJournalBase {
@@ -237,6 +350,10 @@ export interface RestoreContext {
   /** Attempt-owned working trees (staging, quarantine, sanitized) journaled before use so crash
    *  recovery deletes exactly these inodes and nothing else. */
   readonly ownedPaths?: readonly AttemptOwnedPath[];
+  /** Controller custody and `method: "alternate"` only. */
+  readonly controllerReconfiguration?: ControllerReconfiguration;
+  /** The new broker instance of `toRevision`; requires `phase: "definition-committed"`. */
+  readonly reconfiguredBroker?: { readonly instanceId: string; readonly launchRequestId: string };
 }
 
 export interface RestoreReadyRecord extends CompletedJournalBase {
@@ -267,14 +384,25 @@ export interface MaintenanceResumeDescriptor {
   readonly sha256: string;
 }
 
-/** Bounded, non-secret identity of the normal listener spawned for one restore attempt. */
+/** Bounded, non-secret identity of the normal listener spawned for one restore attempt. The
+ *  controller variant (`kind: "controller"`) additionally binds the exact service-controller broker
+ *  instance, launch request and creation-pinned process; its `processOwner` is still required. A
+ *  legacy proof has no `kind`, and the two variants never compare equal. */
 export interface RestoreListenerProof {
+  readonly kind?: "controller";
   readonly attemptId: string;
   readonly serverName: string;
   readonly serverNonce: string;
   readonly processOwner: ProcessOwner;
   readonly serverEndpoint: string;
   readonly target: StoreIdentity;
+  readonly instance?: ControllerListenerInstance;
+}
+
+export interface ControllerListenerInstance {
+  readonly instanceId: string;
+  readonly launchRequestId: string;
+  readonly process: { readonly pid: number; readonly token: string };
 }
 
 /** Durable invalidation of one dead listener identity for this unchanged restore attempt. */
@@ -314,6 +442,8 @@ export interface CommitIntentRecord extends CompletedJournalBase {
   readonly launch: { readonly [key: string]: JsonValue };
   readonly listenerProof?: RestoreListenerProof;
   readonly listenerReplacements?: readonly RestoreListenerReplacement[];
+  /** Set only after manager commitment; carried unchanged here. */
+  readonly tokenHandoff?: TokenHandoff;
 }
 
 export interface RestoreManagerCommittedRecord extends CompletedJournalBase {
@@ -322,6 +452,7 @@ export interface RestoreManagerCommittedRecord extends CompletedJournalBase {
   readonly launch: { readonly [key: string]: JsonValue };
   readonly listenerProof: RestoreListenerProof;
   readonly listenerReplacements?: readonly RestoreListenerReplacement[];
+  readonly tokenHandoff?: TokenHandoff;
   readonly managerCommittedAt: string;
   readonly managerCommit: ManagerCommitEvidence;
 }
@@ -332,6 +463,7 @@ export interface RestoreActiveRecord extends CompletedJournalBase {
   readonly launch: { readonly [key: string]: JsonValue };
   readonly listenerProof?: RestoreListenerProof;
   readonly listenerReplacements?: readonly RestoreListenerReplacement[];
+  readonly tokenHandoff?: TokenHandoff;
   readonly managerCommittedAt: string;
   readonly managerCommit: ManagerCommitEvidence;
   readonly activeAt: string;
@@ -344,6 +476,7 @@ export interface RestoreDegradedRecord extends CompletedJournalBase {
   readonly launch: { readonly [key: string]: JsonValue };
   readonly listenerProof?: RestoreListenerProof;
   readonly listenerReplacements?: readonly RestoreListenerReplacement[];
+  readonly tokenHandoff?: TokenHandoff;
   /** Present when degradation followed manager commitment, including after finalization. */
   readonly managerCommittedAt?: string;
   readonly managerCommit?: ManagerCommitEvidence;
@@ -355,7 +488,9 @@ export interface RestoreDegradedRecord extends CompletedJournalBase {
   readonly recourse: readonly MaintenanceRecourse[];
 }
 
-/** Fsynced launch inputs for resuming the unchanged ready source through the normal listener. */
+/** Fsynced launch inputs for resuming the unchanged ready source through the normal listener. A
+ *  controller resume's launch carries `custody: "controller"` and a `controller` binding, read
+ *  through {@link ordinaryResumeController}. */
 export interface OrdinaryResumeContext {
   readonly attemptId: string;
   readonly intentAt: string;
@@ -374,6 +509,8 @@ export interface OrdinaryResumeActivationEvidence {
 interface OrdinaryResumeListenerState {
   readonly listenerProof?: RestoreListenerProof;
   readonly listenerReplacements?: readonly RestoreListenerReplacement[];
+  /** The commit-token handoff file for a manager-committed attempt, in any custody. */
+  readonly tokenHandoff?: TokenHandoff;
 }
 
 export interface OrdinaryResumeIntentRecord extends CompletedJournalBase, OrdinaryResumeListenerState {
@@ -452,6 +589,8 @@ export interface MaintenancePaths {
   readonly commitIntent: string;
   readonly lock: string;
   readonly reaper: string;
+  /** The commit-token handoff directory (0700, never adopted or chmodded). */
+  readonly handoff: string;
 }
 
 export interface MaintenanceLock {
@@ -517,6 +656,7 @@ export function maintenancePaths(root: string): MaintenancePaths {
     commitIntent: join(versionDir, "commit-intent.json"),
     lock: join(maintenanceDir, "lock.json"),
     reaper: join(maintenanceDir, "lock-reaper.json"),
+    handoff: join(versionDir, "handoff"),
   };
 }
 
@@ -962,15 +1102,39 @@ function validProofIdentity(value: unknown): value is StoreIdentity {
     exactObjectKeys(value, ["path", "dev", "ino", "generation"]) && validIdentity(value));
 }
 
+const LISTENER_PROOF_KEYS = ["attemptId", "serverName", "serverNonce", "processOwner", "serverEndpoint", "target"] as const;
+/** The service layer's full assigned id (`serviceOperationId`), repeated here because this module
+ *  reports through its own maintenance error and must not import the adapter layer. */
+const SERVICE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function validControllerListenerInstance(value: unknown, owner: ProcessOwner): value is ControllerListenerInstance {
+  const instance = value as ControllerListenerInstance;
+  const pinned = instance?.process as { pid?: unknown; token?: unknown } | undefined;
+  // The creation token is opaque (pid.ts): a macOS token carries spaces, so only its frame is checked.
+  return Boolean(instance && typeof instance === "object" &&
+    exactObjectKeys(instance, ["instanceId", "launchRequestId", "process"]) &&
+    typeof instance.instanceId === "string" && SERVICE_ID.test(instance.instanceId) &&
+    typeof instance.launchRequestId === "string" && SERVICE_ID.test(instance.launchRequestId) &&
+    pinned && typeof pinned === "object" && exactObjectKeys(pinned, ["pid", "token"]) &&
+    Number.isInteger(pinned.pid) && Number(pinned.pid) > 0 &&
+    typeof pinned.token === "string" && pinned.token !== "" && pinned.token.trim() === pinned.token &&
+    pinned.token.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(pinned.token) &&
+    owner.pid === pinned.pid && owner.id === `controller-broker-${instance.launchRequestId}`);
+}
+
 function validListenerProof(value: unknown): value is RestoreListenerProof {
   const proof = value as RestoreListenerProof;
+  const controller = Boolean(proof && typeof proof === "object" && (proof as { kind?: unknown }).kind !== undefined);
   return Boolean(proof && typeof proof === "object" &&
-    exactObjectKeys(proof, ["attemptId", "serverName", "serverNonce", "processOwner", "serverEndpoint", "target"]) &&
+    (controller
+      ? exactObjectKeys(proof, ["kind", ...LISTENER_PROOF_KEYS, "instance"]) && proof.kind === "controller"
+      : exactObjectKeys(proof, LISTENER_PROOF_KEYS)) &&
     typeof proof.attemptId === "string" && ATTEMPT_ID.test(proof.attemptId) &&
     typeof proof.serverName === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(proof.serverName) &&
     typeof proof.serverNonce === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(proof.serverNonce) &&
     validProofOwner(proof.processOwner) && typeof proof.serverEndpoint === "string" &&
     canonicalListenerEndpoint(proof.serverEndpoint) === proof.serverEndpoint && validProofIdentity(proof.target) &&
+    (!controller || validControllerListenerInstance(proof.instance, proof.processOwner)) &&
     Buffer.byteLength(JSON.stringify(proof)) <= 16 * 1024);
 }
 
@@ -1059,7 +1223,245 @@ function validCutContext(value: unknown): value is MaintenanceCutContext {
   return Boolean(cut && typeof cut === "object" && exactObjectKeys(cut, ["attemptId", "intentAt", "launch"]) &&
     typeof cut.attemptId === "string" && ATTEMPT_ID.test(cut.attemptId) && validTimestamp(cut.intentAt) &&
     validJsonObject(cut.launch) && typeof cut.launch.server === "string" &&
-    canonicalListenerEndpoint(cut.launch.server) === cut.launch.server);
+    canonicalListenerEndpoint(cut.launch.server) === cut.launch.server &&
+    (cut.launch.custody === undefined ? cut.launch.controller === undefined
+      : cut.launch.custody === "legacy" ? cut.launch.controller === undefined
+        : cut.launch.custody === "controller" && validControllerCutBinding(cut.launch.controller)));
+}
+
+const CONTROLLER_ROLES: readonly ControllerRole[] = ["broker", "auth", "delivery", "manager"];
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+/** A protected local record revision (protected-records.ts mints a UUID; older records are text). */
+const DEFINITION_REVISION = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+const DEFINITION_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+function validPinnedProcess(value: unknown): value is PinnedProcess {
+  const pinned = value as { pid?: unknown; token?: unknown } | undefined;
+  return Boolean(pinned && typeof pinned === "object" && exactObjectKeys(pinned, ["pid", "token"]) &&
+    Number.isInteger(pinned.pid) && Number(pinned.pid) > 0 &&
+    typeof pinned.token === "string" && pinned.token !== "" && pinned.token.trim() === pinned.token &&
+    pinned.token.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(pinned.token));
+}
+
+function validControllerMember(value: unknown): value is ControllerMember {
+  const member = value as ControllerMember;
+  return Boolean(member && typeof member === "object" &&
+    exactObjectKeys(member, ["role", "definition", "definitionRevision", "instanceId", "launchRequestId", "process"]) &&
+    CONTROLLER_ROLES.includes(member.role) &&
+    typeof member.definition === "string" && DEFINITION_NAME.test(member.definition) &&
+    typeof member.definitionRevision === "string" && DEFINITION_REVISION.test(member.definitionRevision) &&
+    typeof member.instanceId === "string" && SERVICE_ID.test(member.instanceId) &&
+    typeof member.launchRequestId === "string" && SERVICE_ID.test(member.launchRequestId) &&
+    validPinnedProcess(member.process));
+}
+
+/** Members are unique by role and instance, and always include the broker and the manager. The
+ *  broker member keeps its cut-time revision; only `brokerDefinitionRevision` is rebound by a
+ *  restore rollback, so the two are not compared here. */
+function validControllerCutBinding(value: unknown): value is ControllerCutBinding {
+  const binding = value as ControllerCutBinding;
+  const manager = binding?.manager as { instanceId?: unknown; epoch?: unknown; lifecycleUid?: unknown } | undefined;
+  if (!binding || typeof binding !== "object" ||
+      !exactObjectKeys(binding, ["stackOperationId", "brokerDefinitionRevision", "members", "manager"]) ||
+      typeof binding.stackOperationId !== "string" || !SERVICE_ID.test(binding.stackOperationId) ||
+      typeof binding.brokerDefinitionRevision !== "string" || !DEFINITION_REVISION.test(binding.brokerDefinitionRevision) ||
+      !Array.isArray(binding.members) || binding.members.length < 2 || binding.members.length > CONTROLLER_ROLES.length ||
+      !binding.members.every(validControllerMember) ||
+      !manager || typeof manager !== "object" || !exactObjectKeys(manager, ["instanceId", "epoch", "lifecycleUid"]) ||
+      typeof manager.instanceId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(manager.instanceId) ||
+      !Number.isSafeInteger(manager.epoch) || Number(manager.epoch) < 0 ||
+      typeof manager.lifecycleUid !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(manager.lifecycleUid))
+    return false;
+  const roles = binding.members.map((member) => member.role);
+  const broker = binding.members.find((member) => member.role === "broker");
+  return new Set(roles).size === roles.length && roles.includes("manager") && Boolean(broker) &&
+    new Set(binding.members.map((member) => member.instanceId)).size === binding.members.length;
+}
+
+/** The cut's controller binding, or undefined for a legacy cut. The journal reader has validated it. */
+export function cutController(cut: MaintenanceCutContext): ControllerCutBinding | undefined {
+  return cut.launch.custody === "controller" ? cut.launch.controller as unknown as ControllerCutBinding : undefined;
+}
+
+function validControllerStop(value: unknown, members: readonly ControllerMember[]): value is ControllerStop {
+  const stop = value as ControllerStop;
+  if (!stop || typeof stop !== "object" || !exactObjectKeys(stop, ["role", "instanceId", "launchRequestId", "receipt"]))
+    return false;
+  const member = members.find((row) => row.role === stop.role);
+  if (!member || member.instanceId !== stop.instanceId || member.launchRequestId !== stop.launchRequestId) return false;
+  const receipt = stop.receipt as { kind?: unknown; requestId?: unknown; scopeSha256?: unknown; observedAt?: unknown };
+  const kind = stop.role === "manager" ? "preserved-exit" : stop.role === "broker" ? "kernel-exit" : "process-exit";
+  const scoped = kind !== "process-exit";
+  return Boolean(receipt && typeof receipt === "object" &&
+    exactObjectKeys(receipt, scoped ? ["kind", "requestId", "scopeSha256", "observedAt"] : ["kind", "requestId", "observedAt"]) &&
+    receipt.kind === kind && typeof receipt.requestId === "string" && SERVICE_ID.test(receipt.requestId) &&
+    (!scoped || typeof receipt.scopeSha256 === "string" && SHA256_HEX.test(receipt.scopeSha256)) &&
+    validTimestamp(receipt.observedAt));
+}
+
+/** One row per cut member, in any order, with the receipt kind its role requires. */
+function validControllerStops(value: unknown, binding: ControllerCutBinding): value is readonly ControllerStop[] {
+  return Array.isArray(value) && value.length === binding.members.length &&
+    value.every((stop) => validControllerStop(stop, binding.members)) &&
+    new Set(value.map((stop: ControllerStop) => stop.role)).size === value.length;
+}
+
+function validPreservedStop(value: unknown, cut: MaintenanceCutContext, binding: ControllerCutBinding): value is PreservedStop {
+  const stop = value as PreservedStop;
+  const manager = binding.members.find((member) => member.role === "manager")!;
+  if (!stop || typeof stop !== "object" || !exactObjectKeys(stop, ["instanceId", "launchRequestId", "attempts"]) ||
+      stop.instanceId !== manager.instanceId || stop.launchRequestId !== manager.launchRequestId ||
+      !Array.isArray(stop.attempts) || stop.attempts.length < 1 || stop.attempts.length > 16)
+    return false;
+  // An unpublished attempt at any position is prepublication history.
+  return stop.attempts.every((attempt) => {
+    const row = attempt as PreservedStopAttempt & { preserved?: { attemptId?: unknown; inventorySha256?: unknown } };
+    const published = exactObjectKeys(row, ["requestId", "target", "stopper", "withAgents", "scopeSha256", "preserved", "recordedAt", "published"]);
+    return Boolean((published || exactObjectKeys(row, ["requestId", "target", "stopper", "withAgents", "scopeSha256", "preserved", "recordedAt"])) &&
+      (!published || row.published === true) &&
+      typeof row.requestId === "string" && SERVICE_ID.test(row.requestId) &&
+      validPinnedProcess(row.target) && row.target.pid === manager.process.pid && row.target.token === manager.process.token &&
+      validPinnedProcess(row.stopper) && row.withAgents === false &&
+      typeof row.scopeSha256 === "string" && SHA256_HEX.test(row.scopeSha256) &&
+      row.preserved && typeof row.preserved === "object" && exactObjectKeys(row.preserved, ["attemptId", "inventorySha256"]) &&
+      row.preserved.attemptId === cut.attemptId &&
+      typeof row.preserved.inventorySha256 === "string" && SHA256_HEX.test(row.preserved.inventorySha256) &&
+      validTimestamp(row.recordedAt));
+  }) && new Set(stop.attempts.map((attempt) => attempt.requestId)).size === stop.attempts.length;
+}
+
+/** A rollback rebound the broker revision away from the one the cut's broker record runs at, so that
+ *  record can never start again (`startProcessService` refuses a revision mismatch). */
+function cutBrokerRetired(cut: ControllerCutBinding): boolean {
+  return cut.members.find((member) => member.role === "broker")!.definitionRevision !== cut.brokerDefinitionRevision;
+}
+
+function validAttemptBroker(value: unknown, cut: ControllerCutBinding): value is AttemptBrokerInstance {
+  const broker = value as AttemptBrokerInstance;
+  return Boolean(broker && typeof broker === "object" && exactObjectKeys(broker, ["instanceId", "launchRequestId"]) &&
+    typeof broker.instanceId === "string" && SERVICE_ID.test(broker.instanceId) &&
+    typeof broker.launchRequestId === "string" && SERVICE_ID.test(broker.launchRequestId) &&
+    broker.instanceId !== cut.members.find((member) => member.role === "broker")!.instanceId);
+}
+
+function validControllerResumeBinding(value: unknown, cut: ControllerCutBinding): value is ControllerResumeBinding {
+  const binding = value as ControllerResumeBinding;
+  if (!binding || typeof binding !== "object" ||
+      !exactObjectKeys(binding, binding.broker === undefined ? ["stackOperationId", "started"] : ["stackOperationId", "started", "broker"]) ||
+      binding.broker !== undefined && (!cutBrokerRetired(cut) || !validAttemptBroker(binding.broker, cut)) ||
+      typeof binding.stackOperationId !== "string" || !SERVICE_ID.test(binding.stackOperationId) ||
+      binding.stackOperationId === cut.stackOperationId ||
+      !Array.isArray(binding.started) || binding.started.length > 64)
+    return false;
+  return binding.started.every((value) => {
+    const row = value as ControllerStartedMember;
+    const keys = ["role", "instanceId", "priorLaunchRequestId", "state"];
+    const settled = row?.launchRequestId !== undefined || row?.outcome !== undefined;
+    return Boolean(row && typeof row === "object" &&
+      exactObjectKeys(row, settled ? [...keys, "launchRequestId", "outcome"] : keys) &&
+      CONTROLLER_ROLES.includes(row.role) && row.state === "requested" &&
+      typeof row.instanceId === "string" && SERVICE_ID.test(row.instanceId) &&
+      typeof row.priorLaunchRequestId === "string" && SERVICE_ID.test(row.priorLaunchRequestId) &&
+      (!settled || typeof row.launchRequestId === "string" && SERVICE_ID.test(row.launchRequestId) &&
+        row.launchRequestId !== row.priorLaunchRequestId &&
+        ["running", "refused-before-spawn", "unknown"].includes(String(row.outcome))));
+  });
+}
+
+/** The resume's controller binding, or undefined for a legacy resume. The journal reader has validated it. */
+export function ordinaryResumeController(context: OrdinaryResumeContext): ControllerResumeBinding | undefined {
+  return context.launch.custody === "controller" ? context.launch.controller as unknown as ControllerResumeBinding : undefined;
+}
+
+function validTokenHandoff(value: unknown, handoffDir: string, attemptId: string): value is TokenHandoff {
+  const handoff = value as TokenHandoff;
+  if (!handoff || typeof handoff !== "object") return false;
+  const pinned = handoff.dev !== undefined || handoff.ino !== undefined || handoff.sha256 !== undefined;
+  if (!exactObjectKeys(handoff, pinned ? ["path", "state", "dev", "ino", "sha256"] : ["path", "state"])) return false;
+  if (typeof handoff.path !== "string" || dirname(handoff.path) !== handoffDir ||
+      !new RegExp(`^resume-commit\\.${attemptId}\\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).test(basename(handoff.path)))
+    return false;
+  // `intended` never has an inode; `written` always has one; consumed or swept keep it when it was written.
+  if (handoff.state === "intended") return !pinned;
+  if (!["written", "consumed", "swept"].includes(handoff.state)) return false;
+  if (handoff.state === "written" && !pinned) return false;
+  return !pinned || (typeof handoff.dev === "string" && /^\d+$/.test(handoff.dev) &&
+    typeof handoff.ino === "string" && /^\d+$/.test(handoff.ino) &&
+    typeof handoff.sha256 === "string" && SHA256_HEX.test(handoff.sha256));
+}
+
+function validControllerReconfiguration(value: unknown, restore: RestoreContext, binding: ControllerCutBinding): value is ControllerReconfiguration {
+  const reconfiguration = value as ControllerReconfiguration;
+  if (!reconfiguration || typeof reconfiguration !== "object") return false;
+  const keys = ["fromRevision", "fromOptionsSha256", "fromConfigPath", "fromConfigSha256", "toConfigPath", "toConfigSha256", "toStoreIdentity", "phase"];
+  const phase = reconfiguration.phase;
+  const expected = phase === "rendered" ? keys
+    : phase === "definition-committed" || phase === "rolling-back" ? [...keys, "toRevision"]
+      : phase === "rolled-back" ? [...keys, "toRevision", "rollbackRevision"] : undefined;
+  return Boolean(expected && exactObjectKeys(reconfiguration, expected) &&
+    typeof reconfiguration.fromRevision === "string" && DEFINITION_REVISION.test(reconfiguration.fromRevision) &&
+    typeof reconfiguration.fromOptionsSha256 === "string" && SHA256_HEX.test(reconfiguration.fromOptionsSha256) &&
+    typeof reconfiguration.fromConfigPath === "string" && isAbsolute(reconfiguration.fromConfigPath) &&
+    reconfiguration.fromConfigPath !== reconfiguration.toConfigPath &&
+    typeof reconfiguration.fromConfigSha256 === "string" && SHA256_HEX.test(reconfiguration.fromConfigSha256) &&
+    typeof reconfiguration.toConfigPath === "string" && isAbsolute(reconfiguration.toConfigPath) &&
+    restore.ownedPaths?.some((owned) => owned.label === "config" && owned.path === reconfiguration.toConfigPath) &&
+    typeof reconfiguration.toConfigSha256 === "string" && SHA256_HEX.test(reconfiguration.toConfigSha256) &&
+    validIdentity(reconfiguration.toStoreIdentity) && reconfiguration.toStoreIdentity.path === restore.targetPath &&
+    (restore.target === undefined || sameStoreIdentity(reconfiguration.toStoreIdentity, restore.target)) &&
+    (reconfiguration.toRevision === undefined ||
+      typeof reconfiguration.toRevision === "string" && DEFINITION_REVISION.test(reconfiguration.toRevision) &&
+      reconfiguration.toRevision !== reconfiguration.fromRevision) &&
+    (reconfiguration.rollbackRevision === undefined ||
+      typeof reconfiguration.rollbackRevision === "string" && DEFINITION_REVISION.test(reconfiguration.rollbackRevision) &&
+      reconfiguration.rollbackRevision !== reconfiguration.fromRevision && reconfiguration.rollbackRevision !== reconfiguration.toRevision &&
+      reconfiguration.rollbackRevision === binding.brokerDefinitionRevision) &&
+    // Before a rollback the cut still expects the revision the rewrite started from.
+    (phase === "rolled-back" || reconfiguration.fromRevision === binding.brokerDefinitionRevision));
+}
+
+type ControllerProofScope =
+  | { readonly resume: ControllerResumeBinding }
+  | { readonly restore: RestoreContext; readonly broker?: AttemptBrokerInstance };
+
+/** A restore's proof scope: its context and the attempt broker its launch binding names. */
+function restoreProofScope(record: { readonly restore: RestoreContext; readonly launch: { readonly [key: string]: JsonValue } }): ControllerProofScope {
+  const broker = (record.launch.controller as ControllerResumeBinding | undefined)?.broker;
+  return { restore: record.restore, ...(broker ? { broker } : {}) };
+}
+
+/** A controller listener proof fits the journal's own record of which broker it may name. A
+ *  resume names a settled `started` broker row. A restore names `reconfiguredBroker` or its
+ *  binding's attempt broker when present, otherwise the cut's broker instance at a new launch
+ *  request. An attempt broker of a resume must be that exact pair too. The caller still checks
+ *  that the instance record is running at that launch request with that process. */
+function controllerProofFits(
+  proof: RestoreListenerProof,
+  cut: ControllerCutBinding,
+  scope: ControllerProofScope,
+): boolean {
+  const instance = proof.instance;
+  if (proof.kind !== "controller" || !instance) return false;
+  const exact = (pair: AttemptBrokerInstance) => pair.instanceId === instance.instanceId && pair.launchRequestId === instance.launchRequestId;
+  if ("resume" in scope)
+    return (!scope.resume.broker || exact(scope.resume.broker)) &&
+      scope.resume.started.some((row) => row.role === "broker" && row.instanceId === instance.instanceId &&
+        row.launchRequestId === instance.launchRequestId);
+  const attempt = scope.restore.reconfiguredBroker ?? scope.broker;
+  if (attempt) return exact(attempt);
+  const broker = cut.members.find((member) => member.role === "broker")!;
+  return broker.instanceId === instance.instanceId && broker.launchRequestId !== instance.launchRequestId;
+}
+
+/** The proof variant follows the cut's custody, and a controller proof fits its scope. */
+function listenerProofFitsCustody(
+  proof: RestoreListenerProof,
+  cut: MaintenanceCutContext,
+  scope: ControllerProofScope | undefined,
+): boolean {
+  const controller = cutController(cut);
+  if (!controller) return proof.kind === undefined;
+  return scope !== undefined && controllerProofFits(proof, controller, scope);
 }
 
 function validCutCompletionEvidence(
@@ -1067,8 +1469,12 @@ function validCutCompletionEvidence(
   cut: MaintenanceCutContext,
 ): value is MaintenanceCutCompletionEvidence {
   const evidence = value as MaintenanceCutCompletionEvidence;
+  const controller = cutController(cut);
   return Boolean(evidence && typeof evidence === "object" &&
-    exactObjectKeys(evidence, ["attemptId", "observedAt", "managerCommit", "stopped", "listener"]) &&
+    exactObjectKeys(evidence, controller
+      ? ["attemptId", "observedAt", "managerCommit", "stopped", "listener", "controllerStops"]
+      : ["attemptId", "observedAt", "managerCommit", "stopped", "listener"]) &&
+    (!controller || validControllerStops(evidence.controllerStops, controller)) &&
     evidence.attemptId === cut.attemptId && validTimestamp(evidence.observedAt) &&
     evidence.managerCommit && typeof evidence.managerCommit === "object" &&
     exactObjectKeys(evidence.managerCommit, ["operation", "attemptId", "state"]) &&
@@ -1102,6 +1508,14 @@ function normalizedListenerProof(value: RestoreListenerProof): RestoreListenerPr
       ino: value.target.ino,
       generation: value.target.generation,
     },
+    ...(value.kind === "controller" && value.instance ? {
+      kind: "controller" as const,
+      instance: {
+        instanceId: value.instance.instanceId,
+        launchRequestId: value.instance.launchRequestId,
+        process: { pid: value.instance.process.pid, token: value.instance.process.token },
+      },
+    } : {}),
   };
 }
 
@@ -1109,15 +1523,39 @@ function sameProcessOwner(a: ProcessOwner, b: ProcessOwner): boolean {
   return a.pid === b.pid && a.host === b.host && a.startedAt === b.startedAt && a.id === b.id;
 }
 
+/** The proof variant must match the cut's custody, and a controller proof must fit the journal's
+ *  recorded broker. The workspace cannot read service instance records, so the caller passes the
+ *  live check that the named instance is running at that launch request with that process. A
+ *  controller proof without that check refuses. */
+function requireCustodyProof(
+  proof: RestoreListenerProof,
+  cut: MaintenanceCutContext,
+  scope: ControllerProofScope | undefined,
+  running: ((instance: ControllerListenerInstance) => boolean) | undefined,
+  root: string,
+  attemptId: string,
+): void {
+  if (!listenerProofFitsCustody(proof, cut, scope))
+    maintenanceError("listener-proof-mismatch", proof.kind === "controller"
+      ? "the controller listener proof does not name this attempt's recorded broker instance"
+      : "a legacy listener proof cannot bind a controller-custody attempt", { root, attemptId });
+  if (proof.kind === "controller" && (!running || !running(proof.instance!)))
+    maintenanceError("listener-proof-mismatch", "the controller listener's broker instance is not proven running at that launch request and process", { root, attemptId });
+}
+
 function sameListenerProof(a: RestoreListenerProof, b: RestoreListenerProof): boolean {
-  return a.attemptId === b.attemptId && a.serverName === b.serverName &&
+  return a.kind === b.kind && a.attemptId === b.attemptId && a.serverName === b.serverName &&
     a.serverNonce === b.serverNonce && sameProcessOwner(a.processOwner, b.processOwner) &&
-    a.serverEndpoint === b.serverEndpoint && sameStoreIdentity(a.target, b.target);
+    a.serverEndpoint === b.serverEndpoint && sameStoreIdentity(a.target, b.target) &&
+    (a.kind !== "controller" || Boolean(a.instance && b.instance &&
+      a.instance.instanceId === b.instance.instanceId && a.instance.launchRequestId === b.instance.launchRequestId &&
+      a.instance.process.pid === b.instance.process.pid && a.instance.process.token === b.instance.process.token));
 }
 
 function reusesListenerIdentity(a: RestoreListenerProof, b: RestoreListenerProof): boolean {
   return a.serverName === b.serverName || a.serverNonce === b.serverNonce ||
-    sameProcessOwner(a.processOwner, b.processOwner);
+    sameProcessOwner(a.processOwner, b.processOwner) ||
+    Boolean(a.instance && b.instance && a.instance.launchRequestId === b.instance.launchRequestId);
 }
 
 function validListenerReplacements(value: unknown): value is readonly RestoreListenerReplacement[] {
@@ -1437,6 +1875,27 @@ function validateRestoreContext(
   if (restore.ownedPaths !== undefined && !validOwnedPaths(restore.ownedPaths))
     maintenanceError("journal-corrupt", "restore attempt-owned paths are invalid", { paths: [path] });
 
+  const controller = cutController(record.cut);
+  if (restore.controllerReconfiguration !== undefined &&
+      (!controller || restore.method !== "alternate" ||
+       !validControllerReconfiguration(restore.controllerReconfiguration, restore, controller)))
+    maintenanceError("journal-corrupt", "restore broker reconfiguration is invalid or outside a controller alternate restore", { paths: [path] });
+  const reconfiguredBroker = restore.reconfiguredBroker;
+  if (reconfiguredBroker !== undefined) {
+    const broker = controller?.members.find((member) => member.role === "broker");
+    if (!broker || restore.controllerReconfiguration?.phase !== "definition-committed" ||
+        !reconfiguredBroker || typeof reconfiguredBroker !== "object" ||
+        !exactObjectKeys(reconfiguredBroker, ["instanceId", "launchRequestId"]) ||
+        typeof reconfiguredBroker.instanceId !== "string" || !SERVICE_ID.test(reconfiguredBroker.instanceId) ||
+        typeof reconfiguredBroker.launchRequestId !== "string" || !SERVICE_ID.test(reconfiguredBroker.launchRequestId) ||
+        reconfiguredBroker.instanceId === broker.instanceId)
+      maintenanceError("journal-corrupt", "reconfigured broker instance is invalid", { paths: [path] });
+  }
+  const handoff = (record as { tokenHandoff?: unknown }).tokenHandoff;
+  if (handoff !== undefined &&
+      !validTokenHandoff(handoff, join(dirname(path), "handoff"), restore.attemptId))
+    maintenanceError("journal-corrupt", "restore commit-token handoff record is invalid", { paths: [path] });
+
   if (restore.cleanup) {
     const cleanup = restore.cleanup;
     if (!["attempt-target", "previous-source"].includes(cleanup.kind) ||
@@ -1455,8 +1914,18 @@ function validateOrdinaryResume(record: OrdinaryResumeRecord, path: string): voi
       !ATTEMPT_ID.test(context.attemptId) || typeof context.intentAt !== "string" ||
       !Number.isFinite(Date.parse(context.intentAt)) || !validJsonObject(context.launch))
     maintenanceError("journal-corrupt", "ordinary resume intent is invalid", { paths: [path] });
+  const cut = cutController(record.cut);
+  const custody = context.launch.custody;
+  if (cut ? custody !== "controller" || !validControllerResumeBinding(context.launch.controller, cut)
+    : custody !== undefined || context.launch.controller !== undefined)
+    maintenanceError("journal-corrupt", "ordinary resume custody does not match the cut", { paths: [path] });
+  const resumeScope = cut ? { resume: ordinaryResumeController(context)! } : undefined;
+  if (record.tokenHandoff !== undefined &&
+      !validTokenHandoff(record.tokenHandoff, join(dirname(path), "handoff"), context.attemptId))
+    maintenanceError("journal-corrupt", "resume commit-token handoff record is invalid", { paths: [path] });
   if (record.listenerProof !== undefined &&
       (!validListenerProof(record.listenerProof) ||
+       !listenerProofFitsCustody(record.listenerProof, record.cut, resumeScope) ||
        record.listenerProof.attemptId !== context.attemptId ||
        !sameStoreIdentity(record.listenerProof.target, record.source) ||
        typeof context.launch.server !== "string" ||
@@ -1465,6 +1934,7 @@ function validateOrdinaryResume(record: OrdinaryResumeRecord, path: string): voi
   if (record.listenerReplacements !== undefined &&
       (!validListenerReplacements(record.listenerReplacements) ||
        record.listenerReplacements.some((replacement) =>
+         !listenerProofFitsCustody(replacement.proof, record.cut, resumeScope) ||
          replacement.proof.attemptId !== context.attemptId ||
          !sameStoreIdentity(replacement.proof.target, record.source) ||
          typeof context.launch.server !== "string" ||
@@ -1559,7 +2029,16 @@ function validateJournal(value: unknown, path: string): MaintenanceJournal {
         committed.managerCommit.attemptId !== record.cut.attemptId ||
         committed.managerCommit.state !== "preserved")
       maintenanceError("journal-corrupt", "cut-committed manager evidence is invalid", { paths: [path] });
+    const controller = cutController(record.cut);
+    if (committed.preservedStop !== undefined &&
+        (!controller || !validPreservedStop(committed.preservedStop, record.cut, controller)))
+      maintenanceError("journal-corrupt", "cut-committed preserved stop attempts are invalid", { paths: [path] });
+  } else if ((record as { preservedStop?: unknown }).preservedStop !== undefined) {
+    maintenanceError("journal-corrupt", "only a cut-committed journal can record preserved stop attempts", { paths: [path] });
   }
+  if ((record as { tokenHandoff?: unknown }).tokenHandoff !== undefined &&
+      !["manager-committed", "active", "degraded", "resume-committed", "resume-degraded", "resume-retired"].includes(record.state))
+    maintenanceError("journal-corrupt", "this maintenance state cannot record a commit-token handoff", { paths: [path] });
   if (record.state === "claimed") {
     const claim = record.claim;
     if (!claim || typeof claim.attemptId !== "string" || !ATTEMPT_ID.test(claim.attemptId) ||
@@ -1583,8 +2062,19 @@ function validateJournal(value: unknown, path: string): MaintenanceJournal {
     if (restoreRecord.state !== "restore-ready" &&
         !validJsonObject(restoreRecord.launch))
       maintenanceError("journal-corrupt", "restore launch metadata is invalid", { paths: [path] });
+    // A controller restore journals its member starts in the launch, as a controller resume does.
+    if (restoreRecord.state !== "restore-ready") {
+      const launch = restoreRecord.launch;
+      const controller = cutController(record.cut);
+      if (controller ? launch.custody !== "controller" || !validControllerResumeBinding(launch.controller, controller) ||
+          // A rewritten broker definition names its new broker in reconfiguredBroker, never here.
+          (launch.controller as ControllerResumeBinding).broker !== undefined && restoreRecord.restore.controllerReconfiguration !== undefined
+        : launch.custody !== undefined || launch.controller !== undefined)
+        maintenanceError("journal-corrupt", "restore launch custody does not match the cut", { paths: [path] });
+    }
     if (restoreRecord.state !== "restore-ready" && restoreRecord.listenerProof !== undefined &&
         (!validListenerProof(restoreRecord.listenerProof) ||
+         !listenerProofFitsCustody(restoreRecord.listenerProof, record.cut, restoreProofScope(restoreRecord as CommitIntentRecord)) ||
          restoreRecord.listenerProof.attemptId !== restoreRecord.restore.attemptId ||
          !sameStoreIdentity(restoreRecord.listenerProof.target, restoreRecord.restore.target) ||
          typeof restoreRecord.launch.server !== "string" ||
@@ -1595,6 +2085,7 @@ function validateJournal(value: unknown, path: string): MaintenanceJournal {
       if (committed.listenerReplacements !== undefined &&
           (!validListenerReplacements(committed.listenerReplacements) ||
            committed.listenerReplacements.some((replacement) =>
+             !listenerProofFitsCustody(replacement.proof, record.cut, restoreProofScope(committed)) ||
              replacement.proof.attemptId !== committed.restore.attemptId ||
              !sameStoreIdentity(replacement.proof.target, committed.restore.target) ||
              typeof committed.launch.server !== "string" ||
@@ -1706,12 +2197,41 @@ export interface PreservationPrepareIntent {
   readonly mode: MaintenanceAuthMode;
   readonly server: string;
   readonly storeDir: string;
+  /** Controller custody only, together with `capability`: the exact manager incarnation proved to
+   *  serve the preserved-exit stop before the first preservation effect. */
+  readonly custody?: "controller";
+  readonly capability?: PreservedExitCapability;
+}
+
+/** The pre-effect proof binding. It is rechecked after prepare, at the cut and before the stop. */
+export interface PreservedExitCapability {
+  readonly instanceId: string;
+  readonly epoch: number;
+  readonly owner: string;
+  readonly uid: string;
+  readonly clusterDigest: string;
+  readonly statusOutputDigest: string;
+}
+
+function validCapability(value: unknown): value is PreservedExitCapability {
+  const capability = value as PreservedExitCapability;
+  const text = (field: unknown): boolean => typeof field === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(field);
+  return Boolean(capability && typeof capability === "object" &&
+    exactObjectKeys(capability, ["instanceId", "epoch", "owner", "uid", "clusterDigest", "statusOutputDigest"]) &&
+    text(capability.instanceId) && Number.isSafeInteger(capability.epoch) && capability.epoch >= 0 &&
+    text(capability.owner) && text(capability.uid) &&
+    typeof capability.clusterDigest === "string" && /^sha256:[0-9a-f]{64}$/.test(capability.clusterDigest) &&
+    typeof capability.statusOutputDigest === "string" && /^sha256:[0-9a-f]{64}$/.test(capability.statusOutputDigest));
 }
 
 function validPrepareIntent(value: unknown): value is PreservationPrepareIntent {
   const intent = value as PreservationPrepareIntent;
+  const controller = Boolean(intent && typeof intent === "object" && (intent.custody !== undefined || intent.capability !== undefined));
   return Boolean(intent && typeof intent === "object" &&
-    exactObjectKeys(intent, ["attemptId", "space", "mode", "server", "storeDir"]) &&
+    exactObjectKeys(intent, controller
+      ? ["attemptId", "space", "mode", "server", "storeDir", "custody", "capability"]
+      : ["attemptId", "space", "mode", "server", "storeDir"]) &&
+    (!controller || intent.custody === "controller" && validCapability(intent.capability)) &&
     typeof intent.attemptId === "string" && ATTEMPT_ID.test(intent.attemptId) &&
     typeof intent.space === "string" && intent.space &&
     ["auth", "open", "user"].includes(intent.mode) &&
@@ -1922,6 +2442,53 @@ export function recordPreservationManagerCommit(
     state: "cut-committed", space: record.space, mode: record.mode, source: record.source,
     resume: record.resume, cut: record.cut,
     managerCommittedAt: new Date().toISOString(), managerCommit,
+  }) as MaintenanceCutCommittedRecord;
+}
+
+function controllerCutCommitted(lock: MaintenanceLock): { record: MaintenanceCutCommittedRecord; controller: ControllerCutBinding } {
+  const record = currentJournal(lock);
+  const controller = cutController(record.cut);
+  if (record.state !== "cut-committed" || !controller)
+    maintenanceError("invalid-transition", "a preserved-exit stop attempt needs a controller cut-committed journal", { root: lock.root });
+  assertStoreIdentity(record.source);
+  return { record: record as MaintenanceCutCommittedRecord, controller: controller! };
+}
+
+/** Journal one preserved-exit stop attempt BEFORE its request can be published. The caller has
+ *  already proved the handoff empty under this lock. An attempt is never
+ *  rewritten or removed; at most 16 are kept. */
+export function appendPreservedStopAttempt(lock: MaintenanceLock, attempt: Omit<PreservedStopAttempt, "published" | "recordedAt">): MaintenanceCutCommittedRecord {
+  const { record, controller } = controllerCutCommitted(lock);
+  const manager = controller.members.find((member) => member.role === "manager")!;
+  const previous = record.preservedStop?.attempts ?? [];
+  if (previous.some((row) => row.requestId === attempt.requestId))
+    maintenanceError("invalid-transition", "this preserved-exit stop attempt is already journaled", { root: lock.root, attemptId: record.cut.attemptId });
+  const row: PreservedStopAttempt = {
+    requestId: attempt.requestId, target: { pid: attempt.target.pid, token: attempt.target.token },
+    stopper: { pid: attempt.stopper.pid, token: attempt.stopper.token }, withAgents: false,
+    scopeSha256: attempt.scopeSha256,
+    preserved: { attemptId: attempt.preserved.attemptId, inventorySha256: attempt.preserved.inventorySha256 },
+    recordedAt: new Date().toISOString(),
+  };
+  return writeJournal(lock, record, {
+    state: "cut-committed", space: record.space, mode: record.mode, source: record.source,
+    resume: record.resume, cut: record.cut, managerCommittedAt: record.managerCommittedAt, managerCommit: record.managerCommit,
+    preservedStop: { instanceId: manager.instanceId, launchRequestId: manager.launchRequestId, attempts: [...previous, row] },
+  }) as MaintenanceCutCommittedRecord;
+}
+
+/** Mark the attempt published only after its request file was written. */
+export function markPreservedStopPublished(lock: MaintenanceLock, requestId: string): MaintenanceCutCommittedRecord {
+  const { record } = controllerCutCommitted(lock);
+  const stop = record.preservedStop;
+  const index = stop?.attempts.findIndex((row) => row.requestId === requestId) ?? -1;
+  if (!stop || index < 0)
+    maintenanceError("invalid-transition", "the published preserved-exit stop attempt is not journaled", { root: lock.root, attemptId: record.cut.attemptId });
+  if (stop!.attempts[index]!.published) return record;
+  return writeJournal(lock, record, {
+    state: "cut-committed", space: record.space, mode: record.mode, source: record.source,
+    resume: record.resume, cut: record.cut, managerCommittedAt: record.managerCommittedAt, managerCommit: record.managerCommit,
+    preservedStop: { ...stop!, attempts: stop!.attempts.map((row, at) => at === index ? { ...row, published: true as const } : row) },
   }) as MaintenanceCutCommittedRecord;
 }
 
@@ -2142,11 +2709,268 @@ export function beginOrdinaryResume(
 function ordinaryListenerState(record: OrdinaryResumeRecord): {
   listenerProof?: RestoreListenerProof;
   listenerReplacements?: readonly RestoreListenerReplacement[];
+  tokenHandoff?: TokenHandoff;
 } {
   return {
     ...(record.listenerProof ? { listenerProof: record.listenerProof } : {}),
     ...(record.listenerReplacements ? { listenerReplacements: record.listenerReplacements } : {}),
+    ...carriedTokenHandoff(record),
   };
+}
+
+/** Every transition that rebuilds a resume or committed-restore record keeps its handoff record,
+ *  so a later run can still sweep or settle the exact recorded file. */
+function carriedTokenHandoff(record: { readonly tokenHandoff?: TokenHandoff }): { tokenHandoff?: TokenHandoff } {
+  return record.tokenHandoff ? { tokenHandoff: record.tokenHandoff } : {};
+}
+
+type ControllerAttemptRecord = OrdinaryResumeIntentRecord | OrdinaryResumeCommittedRecord | CommitIntentRecord | RestoreManagerCommittedRecord;
+
+/** The start rows of a controller resume or a controller restore, or undefined for any other record. */
+export function controllerAttemptBinding(record: MaintenanceJournal): ControllerResumeBinding | undefined {
+  if (!cutController(record.cut)) return undefined;
+  if ("ordinaryResume" in record) return ordinaryResumeController(record.ordinaryResume);
+  if ("restore" in record && "launch" in record && record.launch.custody === "controller")
+    return record.launch.controller as unknown as ControllerResumeBinding;
+  return undefined;
+}
+
+/** The stack facts a controller restore admission compares, read from the CLI's stack journal. */
+export interface ControllerStackView {
+  readonly space: string;
+  readonly server: string;
+  readonly storeDir?: string;
+  readonly operation: { readonly id: string; readonly phase: string };
+}
+
+/** Mirroring legacy bare down, a validated `active` controller restore of
+ *  this space no longer fences the controller stack it restored. That stack's journal must name the
+ *  restore's address and restored store, and must have settled the restore's own operation. Every
+ *  other state and journal kind still fences. This only reads: the journal is never consumed,
+ *  rewritten or deleted. */
+export function admittedControllerRestore(root: string, stack: ControllerStackView): RestoreActiveRecord | undefined {
+  const record = readMaintenanceJournal(root);
+  const binding = record ? controllerAttemptBinding(record) : undefined;
+  if (!record || record.state !== "active" || !binding || record.space !== stack.space || record.launch.server !== stack.server ||
+      record.restore.target.path !== stack.storeDir || stack.operation.id === binding.stackOperationId && stack.operation.phase !== "completed")
+    return undefined;
+  return record;
+}
+
+/** Whether stack work that carries no maintenance attempt may go ahead at this root: the root holds
+ *  no maintenance journal, or its journal is a settled active controller restore of the stack these
+ *  facts describe, at this space and address. The broker and manager adapters and a service restart
+ *  all decide through it. This only reads. */
+export function maintenanceAdmitsStackWork(root: string, space: string, server: string, stack: ControllerStackView | undefined): boolean {
+  if (!readMaintenanceJournal(root)) return true;
+  return Boolean(stack && stack.space === space && stack.server === server && admittedControllerRestore(root, stack));
+}
+
+/** The record a controller start may change. Before manager commitment any member may start. After
+ *  it, only the manager may be relaunched. The
+ *  custody and attempt are read from the journal, never from a caller. */
+function controllerAttemptRecord(lock: MaintenanceLock, role: ControllerRole): { record: ControllerAttemptRecord; binding: ControllerResumeBinding; committed: boolean } {
+  const record = currentJournal(lock);
+  const binding = controllerAttemptBinding(record);
+  const committed = record.state === "resume-committed" || record.state === "manager-committed";
+  if (!binding || !committed && record.state !== "resume-intent" && record.state !== "commit-intent")
+    return maintenanceError("invalid-transition", `controller member starts are recorded only in a controller resume or restore before activation, not from ${record.state}`, { root: lock.root });
+  if (committed && role !== "manager")
+    maintenanceError("invalid-transition", "after manager commitment only the manager may be relaunched", { root: lock.root });
+  return { record: record as ControllerAttemptRecord, binding, committed };
+}
+
+type HandoffRecord = OrdinaryResumeCommittedRecord | OrdinaryResumeDegradedRecord | RestoreManagerCommittedRecord | RestoreDegradedRecord;
+
+/** A commit token exists only after manager commitment, so a handoff belongs to a committed resume
+ *  or restore, in any custody (every new launcher passes it as a file). */
+function handoffRecord(lock: MaintenanceLock): { record: HandoffRecord; attemptId: string } {
+  const record = currentJournal(lock);
+  if ((record.state === "resume-committed" || record.state === "resume-degraded") && record.managerCommit)
+    return { record, attemptId: record.ordinaryResume.attemptId };
+  if ((record.state === "manager-committed" || record.state === "degraded") && record.managerCommit)
+    return { record, attemptId: record.restore.attemptId };
+  return maintenanceError("invalid-transition", `a commit-token handoff needs a manager-committed resume or restore, not ${record.state}`, { root: lock.root });
+}
+
+/** Rewrite only the handoff record; every other field is carried unchanged and revalidated. */
+function rewriteHandoff(lock: MaintenanceLock, record: MaintenanceJournal, tokenHandoff: TokenHandoff): MaintenanceJournal {
+  return writeJournal(lock, record, { ...record, tokenHandoff } as unknown as Omit<MaintenanceJournal, "version" | "revision" | "updatedAt">);
+}
+
+/** Rewrite only the attempt binding; every other field is carried unchanged and revalidated. */
+function rewriteControllerAttempt(lock: MaintenanceLock, record: ControllerAttemptRecord, binding: ControllerResumeBinding, started: readonly ControllerStartedMember[]): ControllerAttemptRecord {
+  const controller = { stackOperationId: binding.stackOperationId, started: started.map((row) => ({ ...row })), ...(binding.broker ? { broker: { ...binding.broker } } : {}) };
+  const next = "ordinaryResume" in record
+    ? { ...record, ordinaryResume: { ...record.ordinaryResume, launch: { ...record.ordinaryResume.launch, controller } } }
+    : { ...record, launch: { ...record.launch, controller } };
+  return writeJournal(lock, record, next as unknown as Omit<MaintenanceJournal, "version" | "revision" | "updatedAt">) as ControllerAttemptRecord;
+}
+
+/** Journal one member start as `requested` BEFORE `startProcessService` is called. A later run
+ *  reads this row with the instance record to decide retry, adopt or hold.
+ *  After manager commitment the row may name only the manager, its newest row must have run, and
+ *  the caller must prove that exact recorded process gone. */
+export function requestControllerMemberStart(
+  lock: MaintenanceLock,
+  row: { readonly role: ControllerRole; readonly instanceId: string; readonly priorLaunchRequestId: string },
+  options: { readonly priorManagerGone?: (prior: ControllerStartedMember) => boolean } = {},
+): ControllerAttemptRecord {
+  const { record, binding, committed } = controllerAttemptRecord(lock, row.role);
+  if (committed) {
+    const prior = [...binding.started].reverse().find((entry) => entry.role === "manager");
+    if (!prior || prior.outcome !== "running" || !options.priorManagerGone?.(prior))
+      maintenanceError("invalid-transition", "a committed attempt relaunches its manager only after its last recorded start ran and that exact process is proven gone", { root: lock.root });
+  }
+  return rewriteControllerAttempt(lock, record, binding, [...binding.started, { role: row.role, instanceId: row.instanceId, priorLaunchRequestId: row.priorLaunchRequestId, state: "requested" }]);
+}
+
+/** Settle the newest `requested` row for this role with the launch request and its outcome. */
+export function settleControllerMemberStart(lock: MaintenanceLock, role: ControllerRole, launchRequestId: string, outcome: NonNullable<ControllerStartedMember["outcome"]>): ControllerAttemptRecord {
+  const { record, binding } = controllerAttemptRecord(lock, role);
+  let index = -1;
+  binding.started.forEach((row, at) => { if (row.role === role) index = at; });
+  if (index < 0 || binding.started[index]!.outcome !== undefined)
+    maintenanceError("invalid-transition", "no unsettled member start row matches this role", { root: lock.root });
+  return rewriteControllerAttempt(lock, record, binding, binding.started.map((row, at) => at === index ? { ...row, launchRequestId, outcome } : row));
+}
+
+/** The new broker instance this attempt must start, when the cut's broker record is retired for it:
+ *  an alternate restore whose broker definition was rewritten (`reconfiguredBroker`), or any attempt
+ *  after a rollback rebound the broker revision (the binding's `broker`). */
+export function controllerAttemptBroker(record: MaintenanceJournal): { readonly required: boolean; readonly instance?: AttemptBrokerInstance } {
+  const cut = cutController(record.cut);
+  if (!cut) return { required: false };
+  if ("restore" in record && record.restore.controllerReconfiguration?.phase === "definition-committed")
+    return { required: true, ...(record.restore.reconfiguredBroker ? { instance: record.restore.reconfiguredBroker } : {}) };
+  if (!cutBrokerRetired(cut)) return { required: false };
+  const broker = controllerAttemptBinding(record)?.broker;
+  return { required: true, ...(broker ? { instance: broker } : {}) };
+}
+
+/** Journal the attempt's new broker instance before its start. Only an
+ *  uncommitted controller resume, or a restore at commit intent, records one, and only once. */
+export function recordControllerAttemptBroker(lock: MaintenanceLock, instance: AttemptBrokerInstance): MaintenanceJournal {
+  const record = currentJournal(lock);
+  const cut = cutController(record.cut);
+  const needed = controllerAttemptBroker(record);
+  if (!cut || !needed.required || record.state !== "resume-intent" && record.state !== "commit-intent")
+    return maintenanceError("invalid-transition", "only a controller attempt whose cut broker is retired records a new broker instance, before manager commitment", { root: lock.root });
+  if (needed.instance) {
+    if (needed.instance.instanceId !== instance.instanceId || needed.instance.launchRequestId !== instance.launchRequestId)
+      maintenanceError("invalid-transition", "this attempt already records another broker instance; it was not replaced", { root: lock.root });
+    return record;
+  }
+  if (!validAttemptBroker(instance, cut)) maintenanceError("invalid-transition", "the new broker instance IDs are invalid", { root: lock.root });
+  if (record.state === "commit-intent" && record.restore.controllerReconfiguration?.phase === "definition-committed")
+    return writeJournal(lock, record, { ...record, restore: { ...record.restore, reconfiguredBroker: { instanceId: instance.instanceId, launchRequestId: instance.launchRequestId } } } as unknown as Omit<MaintenanceJournal, "version" | "revision" | "updatedAt">);
+  const binding = controllerAttemptBinding(record)!;
+  return rewriteControllerAttempt(lock, record as ControllerAttemptRecord, { ...binding, broker: { instanceId: instance.instanceId, launchRequestId: instance.launchRequestId } }, binding.started);
+}
+
+const RECONFIGURATION_FIXED = ["fromRevision", "fromOptionsSha256", "fromConfigPath", "fromConfigSha256", "toConfigPath", "toConfigSha256"] as const;
+
+/** Journal one step of an alternate restore's broker definition rewrite, each before the definition
+ *  write it names: `rendered` with its attempt-owned
+ *  config file, then `definition-committed`, `rolling-back`, and `rolled-back`, which rebinds the
+ *  cut's broker revision in the same write. Pre-commit controller alternate restores only. */
+export function recordRestoreReconfiguration(lock: MaintenanceLock, next: ControllerReconfiguration, owned?: AttemptOwnedPath): RestoreReadyRecord {
+  const record = requireRestoreReady(lock);
+  const cut = cutController(record.cut);
+  const prior = record.restore.controllerReconfiguration;
+  const allowed = prior === undefined
+    ? next.phase === "rendered" && owned?.label === "config" && owned.path === next.toConfigPath && owned.dev !== undefined
+    : prior.phase === "rendered" ? next.phase === "definition-committed"
+      : prior.phase === "definition-committed" ? next.phase === "rolling-back" && next.toRevision === prior.toRevision
+        : prior.phase === "rolling-back" && next.phase === "rolled-back" && next.toRevision === prior.toRevision;
+  const same = prior === undefined || RECONFIGURATION_FIXED.every((key) => prior[key] === next[key]) && sameStoreIdentity(prior.toStoreIdentity, next.toStoreIdentity);
+  if (!cut || record.restore.method !== "alternate" || !allowed || !same || (prior === undefined) !== (owned !== undefined))
+    maintenanceError("invalid-transition", `a controller broker reconfiguration cannot move from ${prior?.phase ?? "none"} to ${next.phase}`, { root: lock.root, attemptId: record.restore.attemptId });
+  const ownedPaths = owned ? [...(record.restore.ownedPaths ?? []).filter((entry) => entry.path !== owned.path), owned] : record.restore.ownedPaths;
+  const restore = { ...record.restore, ...(ownedPaths ? { ownedPaths } : {}), controllerReconfiguration: next };
+  const rebound = next.phase === "rolled-back"
+    ? { ...record.cut, launch: { ...record.cut.launch, controller: { ...cut!, brokerDefinitionRevision: next.rollbackRevision! } as unknown as JsonValue } }
+    : record.cut;
+  return writeJournal(lock, record, { ...readyFrom(record), cut: rebound, state: "restore-ready", phase: record.phase, restore, claim: record.claim }) as RestoreReadyRecord;
+}
+
+const HANDOFF_ENTRY = /^resume-commit\./u;
+
+/** Create or check the 0700 handoff directory. An existing directory is never chmodded or adopted:
+ *  it must be ours, not a link, and closed to group and other. */
+function handoffDirectory(root: string): string {
+  const paths = maintenancePaths(root);
+  ensureLayout(paths);
+  try { mkdirSync(paths.handoff, { mode: 0o700 }); fsyncDirectory(paths.versionDir); }
+  catch (error) { if (errno(error) !== "EEXIST") throw error; }
+  const stat = lstatSync(paths.handoff);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0)
+    maintenanceError("ambiguous-filesystem-state", "the commit-token handoff directory is not an owned private directory; it was not adopted", { root, paths: [paths.handoff] });
+  return paths.handoff;
+}
+
+/** Settle an earlier handoff of this attempt before a new one, and hold on
+ *  any entry the journal does not record: an inode with no recorded identity is never deleted. */
+export function sweepTokenHandoff(lock: MaintenanceLock): MaintenanceJournal {
+  const { record } = handoffRecord(lock);
+  const directory = handoffDirectory(lock.root);
+  const recorded = record.tokenHandoff;
+  const unknown = readdirSync(directory).filter((name) => HANDOFF_ENTRY.test(name) && join(directory, name) !== recorded?.path);
+  if (unknown.length)
+    maintenanceError("ambiguous-filesystem-state", "the handoff directory holds a commit-token file this attempt did not record; it was not removed", { root: lock.root, paths: unknown.map((name) => join(directory, name)) });
+  if (!recorded || recorded.state === "consumed" || recorded.state === "swept") return record;
+  const stat = lstatSync(recorded.path, { throwIfNoEntry: false });
+  if (!stat) return rewriteHandoff(lock, record, { ...recorded, state: "swept" });
+  if (recorded.state === "intended" || !stat.isFile() || stat.isSymbolicLink() || String(stat.dev) !== recorded.dev || String(stat.ino) !== recorded.ino || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0 || stat.nlink !== 1)
+    maintenanceError("ambiguous-filesystem-state", "a recorded commit-token handoff path holds an unrecorded or changed file; it was not removed", { root: lock.root, paths: [recorded.path] });
+  unlinkSync(recorded.path);
+  fsyncDirectory(directory);
+  return rewriteHandoff(lock, record, { ...recorded, state: "swept" });
+}
+
+/** Steps 2 and 3: journal the path, write the journal's own token create-only at 0600, then journal
+ *  its exact inode and digest, all before the child starts. The token is read from the durable
+ *  manager commit evidence, never from a caller. Returns only the path and digest for argv. */
+export function writeTokenHandoff(lock: MaintenanceLock): { path: string; sha256: string } {
+  const { record, attemptId } = handoffRecord(lock);
+  const token = record.managerCommit!.durableCommitToken;
+  if (record.tokenHandoff && record.tokenHandoff.state !== "consumed" && record.tokenHandoff.state !== "swept")
+    maintenanceError("invalid-transition", "an earlier commit-token handoff is not settled; sweep it first", { root: lock.root, attemptId });
+  const directory = handoffDirectory(lock.root);
+  const path = join(directory, `resume-commit.${attemptId}.${randomUUID()}`);
+  const intended = rewriteHandoff(lock, record, { path, state: "intended" });
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try { writeFileSync(fd, token); fsyncSync(fd); } finally { closeSync(fd); }
+  fsyncDirectory(directory);
+  const stat = lstatSync(path);
+  const sha256 = createHash("sha256").update(token).digest("hex");
+  rewriteHandoff(lock, intended, { path, state: "written", dev: String(stat.dev), ino: String(stat.ino), sha256 });
+  return { path, sha256 };
+}
+
+/** Step 6, after manager readiness: an absent file was consumed by the child; the same inode is
+ *  removed here; any other file at the path holds. */
+export function settleTokenHandoff(lock: MaintenanceLock): void {
+  const record = currentJournal(lock) as MaintenanceJournal & { tokenHandoff?: TokenHandoff };
+  const recorded = record.tokenHandoff;
+  if (!recorded || recorded.state === "consumed" || recorded.state === "swept") return;
+  if (recorded.state !== "written")
+    maintenanceError("ambiguous-filesystem-state", "the commit-token handoff never recorded its written file; it was not settled", { root: lock.root, paths: [recorded.path] });
+  const stat = lstatSync(recorded.path, { throwIfNoEntry: false });
+  let next: TokenHandoff;
+  if (!stat) next = { ...recorded, state: "consumed" };
+  else if (stat.isFile() && !stat.isSymbolicLink() && String(stat.dev) === recorded.dev && String(stat.ino) === recorded.ino) {
+    unlinkSync(recorded.path);
+    fsyncDirectory(dirname(recorded.path));
+    next = { ...recorded, state: "swept" };
+  } else return maintenanceError("ambiguous-filesystem-state", "the commit-token handoff path holds another file; it was not removed", { root: lock.root, paths: [recorded.path] });
+  rewriteHandoff(lock, record, next);
+}
+
+/** Step 7: retirement or restore activation requires a settled handoff when one was made. */
+function requireSettledTokenHandoff(record: { readonly tokenHandoff?: TokenHandoff }, root: string): void {
+  if (record.tokenHandoff && record.tokenHandoff.state !== "consumed" && record.tokenHandoff.state !== "swept")
+    maintenanceError("invalid-transition", "the commit-token handoff is not settled; activation cannot retire it", { root, paths: [record.tokenHandoff.path] });
 }
 
 /** Fsync the exact ordinary-resume listener identity after spawn and before activation. The
@@ -2154,6 +2978,7 @@ function ordinaryListenerState(record: OrdinaryResumeRecord): {
 export function bindOrdinaryResumeListener(
   lock: MaintenanceLock,
   proof: RestoreListenerProof,
+  options: { readonly controllerInstanceRunning?: (instance: ControllerListenerInstance) => boolean } = {},
 ): OrdinaryResumeIntentRecord | OrdinaryResumeDegradedRecord {
   const record = currentJournal(lock);
   if (record.state !== "resume-intent" &&
@@ -2162,6 +2987,9 @@ export function bindOrdinaryResumeListener(
       root: lock.root,
     });
   const normalized = normalizedListenerProof(proof);
+  const resumeController = ordinaryResumeController(record.ordinaryResume);
+  requireCustodyProof(normalized, record.cut, resumeController ? { resume: resumeController } : undefined,
+    options.controllerInstanceRunning, lock.root, record.ordinaryResume.attemptId);
   if (normalized.attemptId !== record.ordinaryResume.attemptId ||
       !sameStoreIdentity(normalized.target, record.source))
     maintenanceError("listener-proof-mismatch", "resume listener proof does not match the attempt and preserved source", {
@@ -2191,6 +3019,7 @@ export function bindOrdinaryResumeListener(
       ...readyFrom(record), state: "resume-intent", ordinaryResume: record.ordinaryResume,
       listenerProof: normalized,
       ...(record.listenerReplacements ? { listenerReplacements: record.listenerReplacements } : {}),
+      ...carriedTokenHandoff(record),
     }) as OrdinaryResumeIntentRecord;
   return writeJournal(lock, record, {
     ...readyFrom(record), state: "resume-degraded", ordinaryResume: record.ordinaryResume,
@@ -2198,6 +3027,7 @@ export function bindOrdinaryResumeListener(
     degradedAt: record.degradedAt, reason: record.reason, recourse: record.recourse,
     listenerProof: normalized,
     ...(record.listenerReplacements ? { listenerReplacements: record.listenerReplacements } : {}),
+    ...carriedTokenHandoff(record),
   }) as OrdinaryResumeDegradedRecord;
 }
 
@@ -2244,6 +3074,7 @@ export function replaceDeadOrdinaryResumeListener(
   const base = {
     ...readyFrom(record), ordinaryResume: record.ordinaryResume,
     listenerReplacements: [...history, replacement],
+    ...carriedTokenHandoff(record),
   };
   if (record.state === "resume-intent")
     return writeJournal(lock, record, { ...base, state: "resume-intent" }) as OrdinaryResumeIntentRecord;
@@ -2365,6 +3196,7 @@ export function retireOrdinaryResume(
       paths: [record.source.path],
     });
   assertStoreIdentity(record.source);
+  requireSettledTokenHandoff(record, lock.root);
   if (!validManagerFinalizeEvidence(
         retirement,
         record.ordinaryResume.attemptId,
@@ -2678,6 +3510,7 @@ export function writeRestoreCommitIntent(
 export function bindRestoreListener(
   lock: MaintenanceLock,
   proof: RestoreListenerProof,
+  options: { readonly controllerInstanceRunning?: (instance: ControllerListenerInstance) => boolean } = {},
 ): CommitIntentRecord {
   const record = currentJournal(lock);
   if (record.state !== "commit-intent")
@@ -2685,6 +3518,8 @@ export function bindRestoreListener(
       root: lock.root,
     });
   const normalized = normalizedListenerProof(proof);
+  requireCustodyProof(normalized, record.cut, restoreProofScope(record), options.controllerInstanceRunning,
+    lock.root, record.restore.attemptId);
   if (normalized.attemptId !== record.restore.attemptId ||
       !sameStoreIdentity(normalized.target, record.restore.target))
     maintenanceError("listener-proof-mismatch", "restore listener proof does not match the committed attempt and target", {
@@ -2713,6 +3548,7 @@ export function bindRestoreListener(
     ...readyFrom(record), state: "commit-intent", restore: record.restore,
     launch: record.launch, listenerProof: normalized,
     ...(record.listenerReplacements ? { listenerReplacements: record.listenerReplacements } : {}),
+    ...carriedTokenHandoff(record),
   }) as CommitIntentRecord;
 }
 
@@ -2766,6 +3602,7 @@ export function replaceDeadRestoreListener(
   return writeJournal(lock, record, {
     ...readyFrom(record), state: "commit-intent", restore: record.restore, launch: record.launch,
     listenerReplacements: [...history, replacement],
+    ...carriedTokenHandoff(record),
   }) as CommitIntentRecord;
 }
 
@@ -2818,6 +3655,7 @@ export function recordRestoreManagerCommit(
     ...readyFrom(record), state: "manager-committed", restore: record.restore,
     launch: record.launch, listenerProof: record.listenerProof,
     ...(record.listenerReplacements ? { listenerReplacements: record.listenerReplacements } : {}),
+    ...carriedTokenHandoff(record),
     managerCommittedAt: new Date().toISOString(), managerCommit: evidence,
   }) as RestoreManagerCommittedRecord;
 }
@@ -2857,6 +3695,7 @@ export function markRestoreActive(
     });
   assertStoreIdentity(record.restore.target);
   assertListenerOwnerAlive(record.listenerProof);
+  requireSettledTokenHandoff(record, lock.root);
   const details: RestoreActivationEvidence = {
     attemptId: record.restore.attemptId,
     listenerReady: true,
@@ -2868,6 +3707,7 @@ export function markRestoreActive(
     ...readyFrom(record), state: "active", restore: record.restore,
     launch: record.launch, listenerProof: record.listenerProof,
     ...(record.listenerReplacements ? { listenerReplacements: record.listenerReplacements } : {}),
+    ...carriedTokenHandoff(record),
     managerCommittedAt: record.managerCommittedAt, managerCommit: record.managerCommit,
     activeAt: new Date().toISOString(), details,
   }) as RestoreActiveRecord;
@@ -2887,6 +3727,7 @@ export function markRestoreDegraded(
     ...readyFrom(record), state: "degraded", restore: record.restore,
     launch: record.launch, ...(record.listenerProof ? { listenerProof: record.listenerProof } : {}),
     ...(record.listenerReplacements ? { listenerReplacements: record.listenerReplacements } : {}),
+    ...carriedTokenHandoff(record),
     ...(record.state === "manager-committed"
       ? { managerCommittedAt: record.managerCommittedAt, managerCommit: record.managerCommit }
       : {}),
@@ -2927,6 +3768,7 @@ export function repairRestoreDegradedToActive(
     });
   assertStoreIdentity(record.restore.target);
   assertListenerOwnerAlive(record.listenerProof);
+  requireSettledTokenHandoff(record, lock.root);
   if (!record.managerCommit || !record.managerCommittedAt)
     maintenanceError("invalid-transition", "uncommitted degraded restore must record manager commitment before finalization", {
       root: lock.root, attemptId: record.restore.attemptId, paths: [record.restore.target.path],
@@ -2948,6 +3790,7 @@ export function repairRestoreDegradedToActive(
     managerCommittedAt: record.managerCommittedAt, managerCommit: record.managerCommit,
     activeAt: new Date().toISOString(), details,
     ...(record.listenerReplacements ? { listenerReplacements: record.listenerReplacements } : {}),
+    ...carriedTokenHandoff(record),
   }) as RestoreActiveRecord;
 }
 
@@ -2972,6 +3815,7 @@ function startCleanup(
     ...readyFrom(record), state: "active", restore: restore as RestoreContext & { target: StoreIdentity },
     launch: record.launch, ...(record.listenerProof ? { listenerProof: record.listenerProof } : {}),
     ...(record.listenerReplacements ? { listenerReplacements: record.listenerReplacements } : {}),
+    ...carriedTokenHandoff(record),
     managerCommittedAt: record.managerCommittedAt, managerCommit: record.managerCommit,
     activeAt: record.activeAt, details: record.details,
   }) as RestoreActiveRecord;
@@ -3028,6 +3872,7 @@ function continueCleanup(
     ...readyFrom(record), state: "active", restore: restore as RestoreContext & { target: StoreIdentity },
     launch: record.launch, ...(record.listenerProof ? { listenerProof: record.listenerProof } : {}),
     ...(record.listenerReplacements ? { listenerReplacements: record.listenerReplacements } : {}),
+    ...carriedTokenHandoff(record),
     managerCommittedAt: record.managerCommittedAt, managerCommit: record.managerCommit,
     activeAt: record.activeAt, details: record.details,
   }) as RestoreActiveRecord;
@@ -3051,11 +3896,15 @@ export interface RollbackRestoreOptions {
   readonly asCoordinator?: ProcessOwner;
   readonly now?: Date;
   readonly ownerStatus?: (owner: ProcessOwner) => OwnerStatus;
+  /** A controller alternate restore with a recorded broker reconfiguration: the live broker
+   *  definition revision the caller read under the definition writer lock. Rollback proceeds only
+   *  while it is the revision the reconfiguration says the cut runs at again. */
+  readonly controllerDefinition?: { readonly liveRevision: string };
 }
 
 /** Refuse to touch a LIVE restore attempt: only the exact recorded coordinator, or a caller that
  *  proves the attempt stale (deadline elapsed + every owner dead), may roll it back. */
-function assertRestoreClaimRollbackable(lock: MaintenanceLock, record: RestoreReadyRecord, options: RollbackRestoreOptions): void {
+export function assertRestoreClaimRollbackable(lock: MaintenanceLock, record: RestoreReadyRecord, options: RollbackRestoreOptions): void {
   if (options.asCoordinator) {
     if (!sameProcessOwner(options.asCoordinator, record.claim.coordinator))
       maintenanceError("claim-live", "rollback caller is not the recorded restore coordinator", {
@@ -3093,6 +3942,16 @@ export function rollbackRestore(lock: MaintenanceLock, options: RollbackRestoreO
   if (initial.state !== "restore-ready")
     maintenanceError("invalid-transition", "no pre-commit restore is available to roll back", { root: lock.root });
   assertRestoreClaimRollbackable(lock, initial, options);
+  // The attempt-owned config is deleted below only once no live broker definition names it: either
+  // the forward rewrite never landed, or the definition rollback already recorded its revision.
+  const reconfiguration = initial.restore.controllerReconfiguration;
+  const live = options.controllerDefinition?.liveRevision;
+  if (reconfiguration && !(reconfiguration.phase === "rendered" && live === reconfiguration.fromRevision) &&
+      !(reconfiguration.phase === "rolled-back" && live === reconfiguration.rollbackRevision))
+    maintenanceError("rollback-forbidden", "the controller broker definition is not back at the cut's revision; its definition rollback must run first", {
+      root: lock.root, attemptId: initial.restore.attemptId,
+      recourse: [{ action: "inspect", description: "Run the controller restore recovery, which rolls the broker definition back before the store." }],
+    });
 
   if (!initial.restore.target && pathExistsStrict(initial.restore.targetPath) &&
       !(initial.restore.method === "same-path" && initial.phase === "move-pending" &&

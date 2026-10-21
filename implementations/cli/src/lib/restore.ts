@@ -44,12 +44,15 @@ import {
   hardenedAuthorityStreamNames,
 } from "@cotal-ai/core";
 import {
+  CommandFailure,
   acquireMaintenanceLock,
   assessRestoreClaim,
   bindRestoreListener,
   bindRestoreTarget,
+  cutController,
   getSpaceAuth,
   markRestoreActive,
+  settleTokenHandoff,
   markRestoreDegraded,
   moveSamePathRestoreSource,
   prepareAlternateRestore,
@@ -62,7 +65,6 @@ import {
   replaceDeadRestoreListener,
   repairRestoreDegradedToActive,
   releaseMaintenanceLock,
-  rollbackRestore,
   workspaceSecretStore,
   writeRestoreCommitIntent,
   type AttemptOwnedPath,
@@ -82,6 +84,8 @@ import { readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedA
 import { authorityFingerprint } from "./maintenance-files.js";
 import { connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
+import { assertControllerRestorable, reconfigureControllerBroker, rollbackRestoreWithBroker } from "./controller-restore.js";
+import { assertControllerCoupling, newControllerAttemptLaunch } from "./controller-resume.js";
 
 const RESTORE_TIMEOUT_MS = 30 * 60 * 1000;
 const CHUNK_BYTES = 1024 * 1024;
@@ -622,7 +626,9 @@ function removeOwnedDirectory(path: string, identity: { dev: bigint; ino: bigint
   } catch { /* absent or identity cannot be proven */ }
 }
 
-export async function prepareRestore(root: string, flags: RestoreFlags): Promise<PreparedRestore> {
+/** `progress` receives the seat admission lines. `up --restore` leaves them on stdout; `backup restore`
+ *  routes them to stderr so its receipt stays the only stdout document. */
+export async function prepareRestore(root: string, flags: RestoreFlags, progress?: (line: string) => void): Promise<PreparedRestore> {
   const attemptId = `restore-${randomUUID()}`;
   const serverNonce = randomUUID().replaceAll("-", "");
   const serverName = `${attemptId}-${serverNonce}`;
@@ -639,6 +645,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags): Promise
   let sanitized: { path: string; identity: { dev: bigint; ino: bigint } } | undefined;
   let broker: IsolatedBroker | undefined;
   let quarantineBroker: IsolatedBroker | undefined;
+  let targetPath: string | undefined;
   const recordResources = (input: { owners?: readonly ProcessOwner[]; ownedPaths?: readonly AttemptOwnedPath[] }) => {
     const resourceLock = acquireMaintenanceLock(root);
     try {
@@ -657,9 +664,20 @@ export async function prepareRestore(root: string, flags: RestoreFlags): Promise
         throw new Error(`restore attempt ${journal.restore.attemptId} is in progress (claim live until ${journal.claim.deadline}); retry after it completes or becomes provably stale`);
       if (assessment === "ambiguous")
         throw new Error(`restore attempt ${journal.restore.attemptId} owners cannot be proven dead; inspect the recorded coordinator, watchdog, and broker processes before recovery`);
-      journal = rollbackRestore(lock);
+      journal = rollbackRestoreWithBroker(lock);
     }
     if (!journal || journal.state !== "ready") throw new Error(`restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`);
+    // A controller cut restores only through its recorded members,
+    // checked here before staging, a claim or any store move. Its broker address is the cut's.
+    const controller = cutController(journal.cut);
+    if (controller) {
+      const cutServer = journal.cut.launch.server;
+      if (flags.server !== undefined && canonicalServerEndpoint(flags.server) !== canonicalServerEndpoint(cutServer))
+        throw new CommandFailure("refused", "USAGE_INVALID", "a controller restore takes its broker address from the cut; --server is refused", { target: { root, space: journal.space } });
+      if (flags.host !== undefined && flags.host !== new URL(cutServer).hostname)
+        throw new CommandFailure("refused", "USAGE_INVALID", "a controller restore takes its broker address from the cut; --host is refused", { target: { root, space: journal.space } });
+      assertControllerRestorable(root, journal, controller, flags["store-dir"]);
+    }
     const auth = journal.mode === "open" ? undefined : await getSpaceAuth(workspaceSecretStore(root), journal.space);
     if (journal.mode !== "open") validateSpaceAuth(auth, journal.space);
     // Compute user-provider continuity before staging too. The later manifest comparison reuses this
@@ -671,7 +689,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags): Promise
       throw new Error("restore artifact must not overlap the preserved source store");
     if (contains(stageParent, artifactPath) || contains(artifactPath, stageParent))
       throw new Error("restore artifact must not overlap the maintenance attempt directory");
-    const targetPath = resolve(flags["store-dir"] ?? join(root, ".cotal", "nats"));
+    targetPath = resolve(flags["store-dir"] ?? (controller ? journal.source.path : join(root, ".cotal", "nats")));
     assertRestoreTargetPath(journal.source.path, artifactPath, stageParent, targetPath);
     // The journal is ready with no live claim, and the artifact/target are proven disjoint from
     // the attempts directory: any attempts-dir content is dead-attempt residue.
@@ -836,14 +854,19 @@ export async function prepareRestore(root: string, flags: RestoreFlags): Promise
     // the manager), so there is nothing to admit and nothing to restore.
     const staleConsent = onlyRegistry
       ? []
-      : admitAndRestoreSeatCheckpoints(root, journal.space, journal.cut.attemptId, flags, resume.inventory);
+      : admitAndRestoreSeatCheckpoints(root, journal.space, journal.cut.attemptId, flags, resume.inventory, progress);
 
     lock = acquireMaintenanceLock(root);
+    // A controller alternate restore rewrites the broker definition to the target before commit
+    // intent, so a failure up to here still rolls the definition back first.
+    if (controller && sourceExists && targetPath !== journal.source.path) reconfigureControllerBroker(lock);
     const resumeLaunch = (resume.launch ?? {}) as { server?: unknown };
-    const effectiveServer = canonicalServerEndpoint(flags.server ?? (typeof resumeLaunch.server === "string" ? resumeLaunch.server : "nats://127.0.0.1:4222"));
-    const effectiveHost = flags.host ?? (() => {
+    const effectiveServer = canonicalServerEndpoint(controller ? journal.cut.launch.server : flags.server ?? (typeof resumeLaunch.server === "string" ? resumeLaunch.server : "nats://127.0.0.1:4222"));
+    const effectiveHost = controller ? new URL(effectiveServer).hostname : flags.host ?? (() => {
       try { return new URL(effectiveServer).hostname; } catch { return "127.0.0.1"; }
     })();
+    // The controller binding journals each member start before it.
+    const controllerLaunch = controller ? newControllerAttemptLaunch() : undefined;
     writeRestoreCommitIntent(lock, {
       attemptId,
       targetPath,
@@ -863,7 +886,10 @@ export async function prepareRestore(root: string, flags: RestoreFlags): Promise
       ...(staleConsent.length
         ? { acceptedStaleCheckpoints: staleConsent.map((seat) => ({ ...seat })) as unknown as JsonValue }
         : {}),
+      ...(controllerLaunch ? controllerLaunch as unknown as { [key: string]: JsonValue } : {}),
     } as { [key: string]: JsonValue });
+    // The stack journal follows the maintenance journal's attempt.
+    if (controller) assertControllerCoupling(root, controller, journal.cut.launch.server, journal.source.path, { stackOperationId: controllerLaunch!.controller.stackOperationId, attemptId });
     releaseMaintenanceLock(lock);
     lock = undefined as never;
     return {
@@ -901,14 +927,14 @@ export async function prepareRestore(root: string, flags: RestoreFlags): Promise
     if (sanitized) removeOwnedDirectory(sanitized.path, sanitized.identity);
     if (!lock) lock = acquireMaintenanceLock(root);
     if (transitioned && !targetBound && targetIdentity) {
-      removeOwnedDirectory(resolve(flags["store-dir"] ?? join(root, ".cotal", "nats")), targetIdentity);
+      removeOwnedDirectory(targetPath!, targetIdentity);
       targetIdentity = undefined;
     }
     let rollbackFailure: Error | undefined;
-    if (transitioned) try { rollbackRestore(lock, { asCoordinator: coordinator }); } catch (cause) {
+    if (transitioned) try { rollbackRestoreWithBroker(lock, { asCoordinator: coordinator }); } catch (cause) {
       rollbackFailure = cause instanceof Error ? cause : new Error(String(cause));
     }
-    if (!rollbackFailure && targetIdentity) removeOwnedDirectory(resolve(flags["store-dir"] ?? join(root, ".cotal", "nats")), targetIdentity);
+    if (!rollbackFailure && targetIdentity) removeOwnedDirectory(targetPath!, targetIdentity);
     staged?.cleanup();
     if (rollbackFailure)
       throw new Error(`${error instanceof Error ? error.message : String(error)}; pre-commit rollback also failed: ${rollbackFailure.message}`);
@@ -942,6 +968,8 @@ export function markPreparedRestoreActive(
     }
     if (!prepared.listenerProof)
       throw new Error(`restore attempt ${prepared.attemptId} has no bound listener proof at activation`);
+    // The finalized manager has read or abandoned its handoff file; settle it before activation.
+    settleTokenHandoff(lock);
     if (restoreJournal.state === "manager-committed")
       markRestoreActive(lock, prepared.listenerProof, managerResult);
     else if (restoreJournal.managerCommit)

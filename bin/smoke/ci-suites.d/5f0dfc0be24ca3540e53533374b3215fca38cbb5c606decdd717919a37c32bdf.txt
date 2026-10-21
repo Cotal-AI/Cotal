@@ -1,0 +1,3 @@
+# Ctrl-D on an empty line and a closed input settle a confirmation prompt as the cancel Ctrl-C
+# gives, so a prompt never leaves the process to exit 13 on an unsettled await.
+smoke:prompt-input-end

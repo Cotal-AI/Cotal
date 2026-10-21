@@ -2,10 +2,28 @@ import { writeSync } from "node:fs";
 import { userInfo } from "node:os";
 import { createElement } from "react";
 import { chatWildcard, type ParsedArgs } from "@cotal-ai/core";
+import { colorEnabled } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { runLog } from "../render.js";
 import type { ObserverAuth } from "../console/root.js";
 import type { ControlCtx } from "../console/control.js";
+
+/** The TUI and Ink. Ink colors through chalk, which settles its color level once, when it is first
+ *  imported, from `FORCE_COLOR` before anything else, and does not read `NO_COLOR`. So they load
+ *  here, after the kernel has read `--no-color`, and when color is off they load under
+ *  `FORCE_COLOR=0`. The variable is put back at once, so the programs the console starts see the
+ *  environment they would have. */
+async function loadTui() {
+  const forced = process.env.FORCE_COLOR;
+  if (!colorEnabled()) process.env.FORCE_COLOR = "0";
+  try {
+    const [{ render }, { Root, makeObserver }] = await Promise.all([import("ink"), import("../console/root.js")]);
+    return { render, Root, makeObserver };
+  } finally {
+    if (forced === undefined) delete process.env.FORCE_COLOR;
+    else process.env.FORCE_COLOR = forced;
+  }
+}
 
 /**
  * `cotal console` — the live protocol view. A real terminal gets the lazygit-style Ink TUI; a pipe
@@ -20,13 +38,8 @@ export async function console_(args: ParsedArgs): Promise<void> {
   // `observer` profile denies → NATS Authorization Violation); an authed server hosts exactly one
   // space, so we enter it directly. Open mode connects bare; with no --space, the TTY shows the
   // space overview. An explicit --creds wins. USER MODE rides an exchange-gated "admin" VIEW
-  // bearer (ledger scope "admin") with a bearer source, same standing shape as `cotal web`.
+  // bearer (ledger scope "admin") with a bearer source, same standing shape as the separately configured dashboard service.
   const conn = await connectOrExit(values, "admin");
-  // Loaded here, never at module top: index.ts imports this file for every command, and Ink pulls
-  // yoga-layout, whose wasm init is a top-level await. Measured on macOS, that await never settles
-  // once the process starts with a few hundred KB of argv or environment, so a static import made
-  // every command (`cotal send dm <name> <large text>`) exit 13 before it ran (#4088).
-  const { Root, makeObserver } = await import("../console/root.js");
   const user = conn.bearer ? await userViewAuthOrExit(conn, "admin") : undefined;
   const { server, space: resolvedSpace, creds, auth } = conn;
   // Auth/user mode pins its one space; open mode keeps --space (undefined → the overview picker).
@@ -54,6 +67,9 @@ export async function console_(args: ParsedArgs): Promise<void> {
   // broker and the manager, and a refusal lands on the status line.
   const canControl = values.creds === undefined;
   const controlCtx: Omit<ControlCtx, "space"> = { server: values.server };
+  // Never at module top: Ink's yoga-layout wasm initialization can fail on macOS with large
+  // argv/environment (#4088). The shared loader also applies the requested color mode first.
+  const { render, Root, makeObserver } = await loadTui();
 
   // No TTY (piped/headless) or --plain → the passive line stream; Ink needs a real terminal, and a
   // stream can't host the picker, so it falls back to the RESOLVED mesh's space (not the cwd's).
@@ -91,7 +107,6 @@ export async function console_(args: ParsedArgs): Promise<void> {
     process.exit(0);
   });
 
-  const { render } = await import("ink");
   const { waitUntilExit } = render(createElement(Root, { server, auth: observerAuth, space, canWrite, canControl, controlCtx, name: operator }), {
     exitOnCtrlC: true,
     maxFps: 30,

@@ -23,6 +23,7 @@ import {
 import {
   c,
   connectOrExit,
+  inputDisabledByFlag,
   localProcessPath,
   parsePid,
   probeLiveness,
@@ -785,11 +786,20 @@ async function connectWithoutSeed(
   return { conn, user, pidPath, purgeCreds };
 }
 
+/** Trusted native service embedding. The supplied connection is explicitly scoped by its
+ *  credential file; no account signer, cached operator login or purger mint is substituted. */
+export interface WebServiceLifecycle {
+  readonly connection: Omit<Connection, "auth">;
+  readonly onSession: (session: WebSession) => void | Promise<void>;
+  readonly onReady: () => void | Promise<void>;
+  readonly onClosed: () => void | Promise<void>;
+}
+
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
  *  observer endpoint (invisible to peers) feeds the page presence, channel history,
  *  and a live message stream — no manager required. Bound to loopback unless the operator opts in
  *  to a different host explicitly. */
-export async function web(args: ParsedArgs): Promise<void> {
+export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Promise<void> {
   const values = args.values as { space?: string; server?: string; host?: string; port?: string; "no-open"?: boolean; detach?: boolean; creds?: string };
   // Validate the exposure coordinates before connecting to the broker or claiming local artifacts.
   // An invalid exposure request must have no dashboard side effects.
@@ -803,11 +813,12 @@ export async function web(args: ParsedArgs): Promise<void> {
   // "channel-purger" view per action, so each destructive click is a fresh ledger check, and
   // `cotal actor revoke` kills the dashboard live (eviction) while a scope edit bites at the next
   // refresh.
-  const started = await connectWithoutSeed(args.raw, values, host, port);
+  const started = lifecycle ? { conn: lifecycle.connection, user: undefined, pidPath: undefined, purgeCreds: undefined }
+    : await connectWithoutSeed(args.raw, values, host, port);
   if (!started) return;
   const { conn, user, pidPath, purgeCreds } = started;
   const { server, space } = conn;
-  const sessionPath = conn.root ? localProcessPath(WEB_SESSION_FILE, { root: conn.root, space }) : undefined;
+  const sessionPath = !lifecycle && conn.root ? localProcessPath(WEB_SESSION_FILE, { root: conn.root, space }) : undefined;
 
   // Observer: never registers presence, never consumes an inbox — invisible to peers.
   const ep = new CotalEndpoint({
@@ -827,9 +838,9 @@ export async function web(args: ParsedArgs): Promise<void> {
     registerPresence: false,
     watchPresence: true,
   });
-  const reportEndpoint = (e: Error) => console.error(c.red("! " + e.message));
+  const reportEndpoint = (e: Error) => console.error(c.red(lifecycle ? "! native dashboard endpoint reported an error; diagnostic body omitted" : "! " + e.message));
   ep.on("error", reportEndpoint);
-  ep.on("warning", (e: Error) => console.error(c.yellow("! " + e.message)));
+  ep.on("warning", (e: Error) => console.error(c.yellow(lifecycle ? "! native dashboard endpoint reported a warning; diagnostic body omitted" : "! " + e.message)));
   await ep.start();
 
   // The dashboard does not yet have a manager/session-store observer. Carry the absence as data so
@@ -957,7 +968,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       req.on("close", () => clients.delete(res));
       return;
     }
-    if (path === WEB_READINESS_PATH) return json(res, { space, pid: process.pid });
+    if (path === WEB_READINESS_PATH) return json(res, { space, pid: process.pid, channelDeleteSupported: lifecycle === undefined });
     if (path === "/api/roster") return json(res, rosterSnapshot());
     if (path === "/api/membership") {
       // Authoritative who-is-subscribed (broker-sourced); {asOf, members:[{id,live,durable,observedAt}]}.
@@ -1072,6 +1083,7 @@ export async function web(args: ParsedArgs): Promise<void> {
     // per-delete channel-purger view (user mode), never the account seed. A wildcard / missing
     // channel is a 400.
     if (path === "/api/channel/delete" && req.method === "POST") {
+      if (lifecycle) return json(res, { error: "this service was explicitly configured read-only; no channel-purger authority or alternate transport was acquired", code: "PERMISSION_DENIED" }, 403);
       const body = await readBody(req).catch((e: unknown) => {
         // A body this server DECLINED TO READ is not a body with no channel in it. Flattening the
         // refusal into `{}` here would answer "channel required", which tells the caller to add a
@@ -1134,7 +1146,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       // this split, a malformed query read in the log exactly like the dashboard breaking.
       const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : 500;
       const caller = status < 500;
-      console.error(c[caller ? "yellow" : "red"](`${caller ? "~" : "!"} ${req.method ?? "GET"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? "refused" : "failed"}: ${why}`));
+      console.error(c[caller ? "yellow" : "red"](lifecycle ? `native dashboard request ${caller ? "refused" : "failed"}; diagnostic body omitted` : `${caller ? "~" : "!"} ${req.method ?? "GET"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? "refused" : "failed"}: ${why}`));
       if (res.headersSent) return void res.end();
       // END THE CONNECTION A REFUSED BODY WAS RIDING ON, or the cap bounds only what the caller
       // volunteers. On a keep-alive connection Node wants the socket back, so rather than closing
@@ -1182,8 +1194,8 @@ export async function web(args: ParsedArgs): Promise<void> {
   }, 20_000);
 
   httpServer.on("error", (e: NodeJS.ErrnoException) => {
-    if (e.code === "EADDRINUSE") console.error(c.red(`Port ${port} is in use. Pass --port <n>.`));
-    else console.error(c.red("! " + e.message));
+    if (e.code === "EADDRINUSE") console.error(c.red(lifecycle ? "native dashboard port is in use; no alternate port was selected" : `Port ${port} is in use. Pass --port <n>.`));
+    else console.error(c.red(lifecycle ? "! native dashboard HTTP listener failed; diagnostic body omitted" : "! " + e.message));
     process.exit(1);
   });
 
@@ -1195,6 +1207,8 @@ export async function web(args: ParsedArgs): Promise<void> {
   // that cannot be launched (headless box, wrong default) must still have a way in — and because a
   // token the operator cannot see is a token they cannot revoke by restarting.
   const launchUrl = `${url}?k=${gate.launchToken}`;
+  const boundAddress = httpServer.address() as AddressInfo;
+  const browserSession: WebSession = { launchUrl, readiness: gate.readinessNonce, host: boundAddress.address, port: boundAddress.port };
   // Written AFTER listen() succeeded, so its existence means the port is ours. A detached parent
   // reads it for the readiness nonce and the link; an operator who lost the printed line reads it
   // for the link; `cotal status` reads it for the address to probe and the nonce to present. 0600 —
@@ -1213,31 +1227,46 @@ export async function web(args: ParsedArgs): Promise<void> {
     } finally { closeSync(sfd); }
     process.once("exit", () => rmSync(sessionPath, { force: true }));
   }
-  console.log(`${c.bold("Cotal web")} - observing space ${c.bold(space)}`);
-  console.log(c.dim("  god-view - DMs + anycast visible"));
-  // A detached child's stdout and stderr are the persistent web.log. The parent reads the private
-  // session file and prints the link to the operator's terminal, so repeating the live credential in
-  // the log adds secret-at-rest exposure and no recovery value. An attached process still prints it.
-  if (!process.env[DETACHED_LOG_ENV]) {
-    printLaunchLink(launchUrl, host, port, "(Ctrl-C to stop)");
-    console.log(c.dim("  the link is single-use; it opens one session in one browser"));
+  if (!lifecycle) {
+    console.log(`${c.bold("Cotal web")} - observing space ${c.bold(space)}`);
+    console.log(c.dim("  god-view - DMs + anycast visible"));
+    // A detached child's stdout and stderr are the persistent web.log. The parent reads the private
+    // session file and prints the link to the operator's terminal, so repeating the live credential in
+    // the log adds secret-at-rest exposure and no recovery value. An attached process still prints it.
+    if (!process.env[DETACHED_LOG_ENV]) {
+      printLaunchLink(launchUrl, host, port, "(Ctrl-C to stop)");
+      console.log(c.dim("  the link is single-use; it opens one session in one browser"));
+    }
+    if (!values["no-open"]) openBrowser(launchUrl);
   }
-  if (!values["no-open"]) openBrowser(launchUrl);
 
   let shuttingDown = false;
-  const shutdown = async () => {
+  const shutdown = async (code = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
     clearInterval(ping);
     await membershipWatch?.stop();
     for (const res of clients) res.end();
-    httpServer.close();
+    if (lifecycle) await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
+    else httpServer.close();
     await ep.stop();
     if (pidPath) releasePid(pidPath);
-    process.exit(0);
+    await lifecycle?.onClosed();
+    process.exit(code);
   };
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  const stop = () => void shutdown().catch(() => {
+    console.error("! native dashboard shutdown did not confirm completion; original custody was retained");
+    process.exit(1);
+  });
+  process.on("SIGINT", lifecycle ? stop : () => void shutdown());
+  process.on("SIGTERM", lifecycle ? stop : () => void shutdown());
+  if (lifecycle) {
+    try { await lifecycle.onSession(browserSession); await lifecycle.onReady(); }
+    catch {
+      try { await shutdown(1); } catch { /* Unknown close retains original process/session custody. */ }
+      throw new Error("native dashboard private startup was not confirmed; no replacement was launched");
+    }
+  }
   await new Promise<void>(() => {});
 }
 
@@ -1554,8 +1583,9 @@ function noBody(path: string, declared: number): PayloadTooLarge {
 }
 
 /** Best-effort open of the dashboard in the default browser. The URL is already
- *  printed, so a failure here is harmless — never block startup on it. */
-function openBrowser(url: string): void {
+ *  printed, so a failure here is harmless — never block startup on it. `--no-input` opens nothing. */
+export function openBrowser(url: string): void {
+  if (inputDisabledByFlag()) return;
   const [cmd, args] =
     process.platform === "darwin"
       ? ["open", [url]]

@@ -1,0 +1,107 @@
+/**
+ * The mesh-manifest schema (`cotal.yaml`, `kind: Mesh`) — the strict Zod shape the parser
+ * validates before any normalization. Strict objects reject unknown keys (no silent ignore —
+ * matches the fail-loud policy). Resolution and channel inversion belong to the CLI pipeline.
+ *
+ * This is shape-only: cross-field rules (names resolve to an agent, `allowSubscribe ⊇ subscribe`,
+ * concrete channel tokens) are pure semantic checks in the CLI resolver, where they can report
+ * the offending file + line.
+ */
+import { z } from "zod";
+
+const DeliveryClass = z.enum(["live", "durable"]);
+const PersonaPermissions = z.enum(["reject", "include"]);
+
+/** An `agents:` value is a string (a bare persona path) OR an object — either an override on a
+ *  persona file (`persona:` present) or a fully inline agent (no `persona:`). One object schema
+ *  covers both; the CLI resolver splits them on the presence of `persona`. */
+const AgentEntryObject = z
+  .strictObject({
+    persona: z.string().min(1).optional(),
+    /** Connector type to spawn this agent with (claude / opencode / hermes / …). Overrides the
+     *  top-level `agent:` default; one of the two must be set (no silent default — matches roster). */
+    agent: z.string().min(1).optional(),
+    /** Working directory on the manager host; relative to its workspace, never this manifest. */
+    cwd: z.string().min(1).refine((s) => !s.includes("\0"), "cwd must not contain a NUL byte").optional(),
+    /** `exact` reopens the host session the manager last bound to this agent name; `none` (the
+     *  default) starts a new one. The manager owns the session id; a manifest never names one. */
+    continuity: z.enum(["none", "exact"]).optional(),
+    model: z.string().refine((s) => s.trim() !== "", "must not be empty").optional(),
+    variant: z.string().refine((s) => s.trim() !== "", "must not be empty").optional(),
+    /** Opaque connector-specific launch options, merged per key over the persona's `launchOptions:`. */
+    launchOptions: z.record(z.string(), z.unknown()).optional(),
+    role: z.string().min(1).optional(),
+    description: z.string().optional(),
+    instructions: z.string().optional(),
+    /** Kickoff prompt auto-submitted once the session is up (the declarative `--prompt`). */
+    prompt: z.string().min(1).optional(),
+    /** Event planes are on by default for supporting connectors. `false` is `--no-events`. */
+    events: z.boolean().optional(),
+    capabilities: z.array(z.string().min(1)).optional(),
+    /** Per-agent override of the top-level `personaPermissions` policy. */
+    personaPermissions: PersonaPermissions.optional(),
+  })
+  .refine((v) => v.persona !== undefined || v.model !== undefined || v.variant !== undefined || v.instructions !== undefined, {
+    message:
+      "inline agent (no `persona:`) needs at least `model`, `variant`, or `instructions` - otherwise reference a persona file",
+  });
+
+/** An `agents:` value is a string (bare persona path) OR the object above. A plain `z.union`
+ *  collapses an object with a bad key to a useless "Invalid input", so normalize the string form to
+ *  `{ persona }` first and validate the one strict object — its real errors (unrecognized key, …)
+ *  then surface with their path. */
+const AgentEntry = z.preprocess((v) => (typeof v === "string" ? { persona: v } : v), AgentEntryObject);
+
+/** A channel carries its registry card (description/instructions + replay knobs — the existing
+ *  ChannelConfig fields) plus the three native access verbs listed per-channel (agents under it). */
+const ChannelEntry = z.strictObject({
+  description: z.string().optional(),
+  instructions: z.string().optional(),
+  subscribe: z.array(z.string().min(1)).optional(),
+  allowSubscribe: z.array(z.string().min(1)).optional(),
+  allowPublish: z.array(z.string().min(1)).optional(),
+  replay: z.boolean().optional(),
+  replayWindow: z.string().optional(),
+  deliveryClass: DeliveryClass.optional(),
+});
+
+const Defaults = z.strictObject({
+  replay: z.boolean().optional(),
+  replayWindow: z.string().optional(),
+  deliveryClass: DeliveryClass.optional(),
+});
+
+const Broker = z.strictObject({
+  servers: z.string().min(1).optional(),
+  host: z.string().min(1).optional(),
+  /** Auth mode. Unset/`true`/`"static"` = per-agent JWT creds (the default, named "static" so the
+   *  third state has a name to contrast with); `false` = open dev mesh; `"user"` = per-USER auth
+   *  (login + bearer through the space's auth service; pair with `idp`). */
+  auth: z.union([z.boolean(), z.literal("static"), z.literal("user")]).optional(),
+  /** With `auth: "user"`: the IdP auth base URL to pin on first enable (Better Auth:
+   *  `<origin>/api/auth`). Meaningless — and rejected — for other auth modes. */
+  idp: z.string().min(1).optional(),
+});
+
+/** The whole manifest. `apiVersion`/`kind` are literals so a foreign YAML doc is rejected up front;
+ *  `agents` and `channels` are required maps. */
+export const MeshManifestSchema = z.strictObject({
+  apiVersion: z.literal("cotal/v1"),
+  kind: z.literal("Mesh"),
+  space: z.string().min(1),
+  broker: Broker.optional(),
+  /** `pty` is built in; any other name is resolved through an installed runtime provider. */
+  runtime: z.string().min(1).optional(),
+  /** Default connector for agents that don't set their own `agent:`. */
+  agent: z.string().min(1).optional(),
+  personaPermissions: PersonaPermissions.optional(),
+  // `agents` is optional — a channels-first manifest can seed the rooms now and add agents later.
+  // A channel that references an undeclared name is still a hard error (in resolve.ts).
+  agents: z.record(z.string().min(1), AgentEntry).optional(),
+  defaults: Defaults.optional(),
+  channels: z.record(z.string().min(1), ChannelEntry),
+});
+
+export type RawManifest = z.infer<typeof MeshManifestSchema>;
+export type RawAgentEntry = z.infer<typeof AgentEntry>;
+export type RawChannelEntry = z.infer<typeof ChannelEntry>;

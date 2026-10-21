@@ -130,6 +130,9 @@ importers:
       '@cotal-ai/connector-opencode':
         specifier: workspace:*
         version: link:../extensions/connector-opencode
+      '@cotal-ai/linear':
+        specifier: workspace:*
+        version: link:../implementations/linear
       '@cotal-ai/pi':
         specifier: workspace:*
         version: link:../extensions/pi
@@ -467,6 +470,9 @@ importers:
 
   implementations/auth:
     dependencies:
+      '@clack/prompts':
+        specifier: ^1.0.0
+        version: 1.5.1
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -616,6 +622,9 @@ importers:
 
   implementations/manager:
     dependencies:
+      '@clack/prompts':
+        specifier: ^1.0.0
+        version: 1.5.1
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -821,6 +830,18 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../core
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
+      string-width:
+        specifier: ^8.2.1
+        version: 8.2.1
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*

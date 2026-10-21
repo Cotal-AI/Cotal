@@ -1,13 +1,12 @@
 {
   "suite": [
-    "implementations/cli/smoke/meshes-registry.smoke.ts",
-    "implementations/cli/smoke/setup-destination.smoke.ts"
+    "implementations/cli/smoke/meshes-registry.smoke.ts"
   ],
-  "guard": "catalog refresh is lazy for every target, operational catalog targets are account-scoped, sibling failures warn instead of refusing, and setup describes the selected remote mesh",
-  "command": "pnpm -s typecheck && pnpm -s smoke:meshes-registry && pnpm -s smoke:setup-destination",
+  "guard": "catalog refresh is lazy for every target, operational catalog targets are account-scoped, sibling failures warn instead of refusing",
+  "command": "pnpm -s typecheck && pnpm -s smoke:meshes-registry",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/lazy-catalog-sync.json",
   "why": [
-    "The regressions are independent: restoring a non-catalog early return prevents lazy refresh, dropping account scope lets a dead sibling refuse a catalog operation, throwing on every result restores the global refusal, and using the cwd default restores the misleading ready card.",
+    "The regressions are independent: restoring a non-catalog early return prevents lazy refresh, dropping account scope lets a dead sibling refuse a catalog operation, and throwing on every result restores the global refusal.",
     "Each mutation is compile-clean and must redden the named existing-suite cell."
   ],
   "mutations": [
@@ -30,18 +29,10 @@
     {
       "name": "make every sibling account failure fatal again",
       "file": "implementations/cli/src/commands/sync.ts",
-      "find": "  if (targetCatalog && failures.length)\n    throw new Error(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join(\"; \"));",
-      "replace": "  if (failures.length)\n    throw new Error(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join(\"; \"));",
+      "find": "  if (targetCatalog && failures.length)\n    throw new CatalogPreparationError(",
+      "replace": "  if (failures.length)\n    throw new CatalogPreparationError(",
       "expectRed": "non-catalog selection refreshes every account and keeps the selection",
       "cell": "non-catalog selection refreshes every account and keeps the selection"
-    },
-    {
-      "name": "restore the cwd default on the setup ready card",
-      "file": "implementations/cli/src/lib/status.ts",
-      "find": "  try {\n    const target = resolveMeshTarget(cwd, {});",
-      "replace": "  try {\n    if (cwd) throw new Error(\"ignore selected mesh\");\n    const target = resolveMeshTarget(cwd, {});",
-      "expectRed": "the ready card names the selected remote mesh and does not recommend starting a local one",
-      "cell": "the ready card names the selected remote mesh and does not recommend starting a local one"
     },
     {
       "name": "drop the manual-remedy locality branch",

@@ -25,6 +25,7 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
+    "@clack/prompts": "^1.0.0",
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/seat": "workspace:*",
     "@cotal-ai/workspace": "workspace:*",

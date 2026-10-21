@@ -147,6 +147,8 @@ try {
   if (process.platform !== "win32") {
     check("npm installed cotal through a bin symlink", existsSync(npmBin) && lstatSync(npmBin).isSymbolicLink());
   }
+  // A read no longer seeds, so seed explicitly; the listing after it is a read.
+  spawnSync("node", [invokedBin, "ext", "seed"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
   const list = spawnSync("node", [invokedBin, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
   const out = list.stdout ?? "";
   for (const n of ["claude", "opencode", "codex", "hermes", "jcode", "pi"]) {

@@ -49,7 +49,7 @@ function notFoundDurable(durable: string, space: string): never {
  *  (also `-`-free), so splitting the part after the well-known `dm_` prefix on `-` is unambiguous
  *  exactly when it yields three parts each matching its own token grammar; anything else (a name
  *  typed by hand, a different durable kind) is reported as unparseable rather than guessed at. */
-function parseDmDurable(durable: string): { owner: string; actor: string } | null {
+export function parseDmDurable(durable: string): { owner: string; actor: string } | null {
   if (!durable.startsWith("dm_")) return null;
   const parts = durable.slice(3).split("-");
   if (parts.length !== 3) return null;

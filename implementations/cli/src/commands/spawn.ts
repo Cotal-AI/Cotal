@@ -4,6 +4,7 @@ import { readFileSync, rmSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import {
+  assertValidRole,
   agentFilePath,
   AgentGrantConflictError,
   connectorServers,
@@ -12,7 +13,6 @@ import {
   discardLaunchArtifacts,
   firstFreeName,
   isReachable,
-  loadAgentFile,
   reclaimWithChild,
   loadCotalConfig,
   modelPolicyRefusal,
@@ -53,15 +53,14 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import {
+  CommandFailure, loadLaunchPersonaFile, personaFileReference, PersonaSourceError, inputDisabledByFlag, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, type OutputWarning, type RefusalCode, type Report,
   agentActorTokenKey,
   agentCredsKey,
   agentSecretFilePaths,
   agentSentinelCredsKey,
   authDir,
+  cachedPreferences,
   credsFlag,
-  defaultAgentOverride,
-  defaultPersonaOverride,
-  defaultPersonaRef,
   launchFlags,
   loadMeshes,
   findMesh,
@@ -73,6 +72,7 @@ import {
   provenance,
   resolveAgentType,
   resolveMeshTarget,
+  resolvePreference,
   resolveTargetOrThrow,
   serverFlag,
   spaceAccountPath,
@@ -93,11 +93,15 @@ import {
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { liveMeshNames } from "../lib/live-names.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
-import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS, withControlConnection } from "../lib/control.js";
+import { askManager, failIfNotOk, onInstance, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
-import { spawnManifest } from "./spawn-manifest.js";
+import { callerHarness, spawnPersona } from "../lib/spawn-defaults.js";
+import { spawnLaunchPreview } from "./spawn-preview.js";
+import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
+import { attachSeat } from "./agents.js";
 import { extensionNames, materializeExtension } from "../ext-loader.js";
 import { claimManagedHandoff } from "../managed-handoff.js";
 import {
@@ -270,7 +274,7 @@ export function spawnComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, spawnFlags);
   if (flag?.name === "space")
     return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
-  if (flag?.name === "agent")
+  if (flag?.name === "agent" || flag?.name === "harness")
     return { items: registry.all<Connector>("connector").map((c) => ({ value: c.name })), directive: "nofiles" };
   if (flag?.name === "role")
     return { items: declaredFrom(argv, listDeclaredRoles).map((value) => ({ value, description: "declared role" })), directive: "nofiles" };
@@ -285,13 +289,13 @@ export function spawnComplete(argv: string[]): CompletionResult {
   }
   if (flag && ["subscribe", "allow-subscribe", "allow-publish"].includes(flag.name))
     return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value, description: "declared channel" })), directive: "nofiles" };
-  if (flag && ["cwd", "file", "creds"].includes(flag.name)) return { items: [], directive: "default" };
+  if (flag && ["cwd", "file", "creds", "enrollment-file"].includes(flag.name)) return { items: [], directive: "default" };
   if (flag?.name === "runtime")
     return { items: ["pty", ...extensionNames("runtime")].filter((value, i, all) => all.indexOf(value) === i).map((value) => ({ value })), directive: "nofiles" };
 
   const positionals = positionalsForCompletion(argv, spawnFlags);
   // Only the first word after `spawn` is the persona positional; once it's typed, defer to the shell.
-  if (positionals.length <= 1 && !hasCompletedFlagValue(argv, spawnFlags, "config")) {
+  if (positionals.length <= 1 && !hasCompletedFlagValue(argv, spawnFlags, "config") && !hasCompletedFlagValue(argv, spawnFlags, "file")) {
     try {
       return { items: personaItems(argv), directive: "nofiles" };
     } catch {
@@ -329,10 +333,7 @@ function declaredFrom(argv: string[], list: (root: string) => string[]): string[
   }
 }
 
-/** Persona selection precedence shared by foreground and detached spawn. */
-export function spawnPersonaRef(configFlag: string | undefined, positionals: readonly string[], env: NodeJS.ProcessEnv = process.env): string {
-  return configFlag ?? positionals[0] ?? defaultPersonaRef("default", env);
-}
+export { spawnPersona } from "../lib/spawn-defaults.js";
 
 /**
  * Auto-number `requested` past any peer already present on the mesh (foo → foo_2 → foo_3) — the same
@@ -371,8 +372,9 @@ async function provisionFreshForeground<T>(
   }
 }
 
-/** `cotal spawn`'s full grammar: target + the shared launch bundle + the two spawn-only modes
- *  (`--detach` = manager-run; `-f` = manifest deploy). Declared `as const` so the values cast
+
+/** `cotal spawn`'s grammar: managed launch/attach by default, explicit native foreground,
+ *  and one positional persona or explicit persona file. Declared `as const` so the values cast
  *  below is compile-checked against exactly these specs. Foreground and detached parse the SAME
  *  flags — the old `spawn` vs `start` ability drift is structurally gone. */
 export const spawnFlags = [
@@ -380,16 +382,60 @@ export const spawnFlags = [
   serverFlag,
   { ...credsFlag, description: "control-caller creds for an off-registry manager (--detach only)" },
   ...launchFlags,
-  { name: "detach", type: "boolean", short: "d", description: "launch via the manager into a detached PTY (reattach with `cotal attach`)" },
+  { name: "harness", short: "H", type: "string", value: "<connector>", description: "application connector; an explicit flag wins over persona and saved defaults" },
+  { name: "foreground", type: "boolean", description: "run the native application directly; terminal exit may end it" },
+  { name: "restarts", type: "string", value: "<n>", description: "maximum manager-supervised restarts in the selected restart window" },
+  { name: "restart-window", type: "string", value: "<ms>", description: "time window for --restarts; both flags are required together" },
+  jsonFlag, plainFlag,
+  { name: "detach", type: "boolean", short: "d", description: "launch through the manager, await readiness and return without attaching" },
   { name: "live-only", type: "boolean", description: "foreground only: skip the durable backstop (no read-ACL row; messages missed while disconnected are not replayed)" },
-  { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "deploy a manifest onto the running mesh" },
-  { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
+  { name: "file", type: "string", short: "f", value: "<persona-file>", description: "persona file on the execution host; never a manifest deploy or implicit upload" },
+  { name: "dry-run", type: "boolean", description: "preview the launch without allocation, provisioning or starting an application" },
+  { name: "enrollment-file", type: "string", value: "<private-file>", description: "with --foreground: protected file holding this one seat's enrollment URL; never print or forward it" },
   { name: "allow-stale", type: "string", value: "<a,b>", description: "with -f: waive named stale agents (apply-only)" },
   { name: "runtime", type: "string", value: "<name>", description: "with -f: override the manifest's runtime" },
-  { name: "on", type: "string", value: "<instance>", description: "with --detach: target a specific manager instance id (multi-manager space); default = class anycast; `ps`'s instance id, not roster's `local.…` principal id" },
+  { name: "on", type: "string", value: "<instance>", description: "with --detach: launch through one manager instance, by the id `ps` prints, in a space with several managers; by default any one takes it" },
   { name: "expect-owner", type: "string", value: "<u_…>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the owner the managed handoff must carry` },
   { name: "expect-lifecycle-uid", type: "string", value: "<uid>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the lifecycle UID the managed handoff must carry` },
 ] as const satisfies readonly FlagSpec[];
+
+/** Check the public mode and spelling before catalog preparation or identity allocation. */
+export function validateSpawnArguments(args: ParsedArgs): void {
+  const values = args.values as FlagValues<typeof spawnFlags>;
+  presentationOf(values);
+  const internal = Boolean(process.env[MANAGED_HANDOFF_FILE_ENV] || process.env[ENROLLMENT_URL_ENV] || process.env[ENROLLMENT_FILE_ENV]);
+  const direct = values.foreground === true || internal;
+  if (values.file !== undefined && (args.positionals.length || values.config !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "choose one positional persona or --file/-f, not multiple explicit persona sources");
+  if (!internal && values.config !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--config is reserved for persisted internal launch callers; use cotal spawn --file <persona-file>");
+  if (values.file !== undefined) { try { personaFileReference(values.file); } catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", (error as Error).message); } }
+  if (values.runtime !== undefined || values["allow-stale"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "manifest deployment options belong to cotal team deploy <file>, not spawn");
+  if (values["enrollment-file"] !== undefined && !values.space) throw new CommandFailure("refused", "USAGE_INVALID", "--enrollment-file requires an explicit --space");
+  if (values["enrollment-file"] !== undefined && !values.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "this native enrollment path runs one foreground seat; use --foreground explicitly. It does not substitute for managed enrollment authority");
+  if (values["enrollment-file"] !== undefined && (internal || values.detach || values.creds !== undefined || values.on !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "choose one foreground enrollment source without a manager pin, credential override or internal handoff");
+  if (values.harness !== undefined && values.agent !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "choose --harness/-H or the legacy --agent spelling, not both");
+  if (values.detach && direct) throw new CommandFailure("refused", "USAGE_INVALID", "--detach and direct foreground execution are different launch modes");
+  if (values.foreground && ((!values["dry-run"] && (values.json || values.plain)) || values.creds !== undefined || values.on !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "direct --foreground execution takes no structured receipt, manager credential or manager pin");
+  if ((values.restarts === undefined) !== (values["restart-window"] === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restarts and --restart-window must be supplied together");
+  if (values.restarts !== undefined) {
+    if (direct) throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not direct foreground execution");
+    for (const field of ["restarts", "restart-window"] as const) if (!/^[1-9][0-9]*$/.test(values[field]!) || !Number.isSafeInteger(Number(values[field])))
+      throw new CommandFailure("refused", "USAGE_INVALID", `--${field} must be a positive safe integer`);
+  }
+  if (values["live-only"] && !direct) throw new CommandFailure("refused", "USAGE_INVALID", "--live-only belongs to direct foreground execution");
+  if (!values["dry-run"] && !direct && !values.detach && (values.json || values.plain || inputDisabledByFlag() || !process.stdin.isTTY || !process.stdout.isTTY))
+    throw new CommandFailure("refused", "USAGE_INVALID", "managed attachment needs usable input and output terminals before an identity is allocated", { remedy: "use cotal spawn -d to wait for readiness without attaching, or --foreground for direct execution" });
+  for (const field of ["harness", "agent", "model", "variant", "name"] as const) if (values[field] !== undefined && !values[field]!.trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", `--${field} cannot be empty`);
+  if (values.events && values["no-events"]) throw new CommandFailure("refused", "USAGE_INVALID", "choose --events or --no-events, not both");
+  if (values.on !== undefined) onInstance(values.on, "cotal spawn");
+  try {
+    parseLaunchOptions(values.opt);
+    if (values.role !== undefined) assertValidRole(values.role);
+    parseShareSelection(values["share-tools"]);
+  } catch { throw new CommandFailure("refused", "USAGE_INVALID", "invalid launch options, native role or tool-sharing selection; use declared keys and unique key=value option pairs"); }
+  if (!internal && args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "spawn takes one persona; pass the kickoff request with --prompt/-p");
+  if (!internal && values.config !== undefined && args.positionals.length) throw new CommandFailure("refused", "USAGE_INVALID", "choose one persona input, not both a positional name and --config");
+}
 
 /** Foreground `cotal spawn` resolves its `--agent` connector from the registry (spawn.ts below); on
  *  the published binary nothing static-imports connectors, so the resolved one is materialized as a
@@ -428,35 +474,75 @@ function refuseUnmintableNameOrExit(name: string, userMode: boolean): void {
   }
 }
 
-/** The `--detach` mode: hand the launch to the running manager over the control plane. One grammar
- *  with the foreground path; the persona file is resolved (and is the access default) manager-side,
- *  overridden by the same flags, which ride the `start` op. Replaces the removed `cotal start`. */
-async function spawnDetached(
+export interface ManagedLaunchResult {
+  kind: "managed-launch";
+  name: string;
+  id: string;
+  lifecycleUid: string;
+  space: string;
+  managerInstanceId: string;
+  harness: string;
+  runtime: string;
+  role: string | null;
+  request: ManagerRequestReceipt | null;
+  intent: ManagerRequestIntent | null;
+  readiness: "joined";
+  requestedModel: string | null;
+  detached: boolean;
+}
+
+export interface ManagedLaunchObserver {
+  /** A native joined receipt, not task completion. A composite command owns its one envelope. */
+  ready(result: ManagedLaunchResult, warnings: readonly OutputWarning[]): void;
+}
+
+function managedLaunchView(r: ManagedLaunchResult): Report {
+  const concrete = [r.name, r.space, r.managerInstanceId].every((value) => /^[A-Za-z0-9_-]+$/.test(value));
+  const target = concrete ? `${r.name} --space ${r.space} --on ${r.managerInstanceId}` : "<name> --space <space> --on <manager-instance>";
+  return { sections: [
+    { title: "Agent joined", blocks: [
+      { kind: "fields", rows: [["Agent", r.name], ["Identity", r.id], ["Lifecycle", r.lifecycleUid], ["Space", r.space], ["Manager receipt", r.managerInstanceId], ["Original request", r.intent?.requestId ?? r.request?.requestId ?? "not recorded"], ["Accepted goal", r.request?.goalId ?? "not reported"], ["Application", r.harness], ["Runtime", r.runtime], ["Role", r.role ?? "not recorded"], ["Model request", r.requestedModel ?? "persona/manager precedence; not inspected"], ["View", r.detached ? "not attached" : "attaching to the allocated incarnation"]] },
+      { kind: "lines", lines: [{ text: "The manager confirmed presence readiness. This is not proof that the kickoff task completed.", tone: "hint" }] },
+    ] },
+    ...(r.detached ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [
+      { command: `${displayCmd()} attach ${target}`, description: concrete ? "Return to this allocated incarnation's manager" : "Use the full identities recorded above" },
+      { command: `${displayCmd()} status ${target}`, description: "Read the agent's reported state" },
+    ] }] }] : []),
+  ] };
+}
+
+/** Shared managed launch. The manager resolves its persona and returns real readiness before
+ *  any view opens. Detach changes terminal attachment, not the launch or caller authority. */
+export async function launchManagedPersona(
   values: FlagValues<typeof spawnFlags>,
   positionals: string[],
   events: boolean | undefined,
   launchOptions: Record<string, string> | undefined,
+  observer?: ManagedLaunchObserver,
 ): Promise<void> {
   // WHICH file the manager loads — the exact foreground precedence (`--config` > positional >
   // `COTAL_DEFAULT_PERSONA` > `default`). Identity is separate:
   // when `--name` is given it OVERRIDES the file's `name:` (foreground's `requested`), threaded
   // as the op's `identity` so it is never silently dropped in detached mode.
-  const defaultPersona = defaultPersonaOverride();
-  const ref = spawnPersonaRef(values.config, positionals);
-  const managerConfigRef = values.config ?? (!positionals[0] && defaultPersona ? ref : undefined);
-  const on = onInstanceOrExit(values.on, "cotal spawn <persona> --detach");
+  const on = onInstance(values.on, "cotal spawn <persona>");
   // From a managed seat's own shell the launch is the SEAT's, as its `cotal_spawn` tool is: the
   // manager records the seat as the spawner, so the seat can stop the child it asked for (#718).
   // `--on` keeps the pin on that path too.
   const flags = { space: values.space, server: values.server, creds: values.creds };
-  const t = (values.creds === undefined ? await resolveSeatControlTarget(flags, on) : undefined)
-    ?? await resolveControlTarget(flags, "control-caller-privileged", on);
+  const seatIntent = Boolean(process.env.COTAL_NAME || process.env.COTAL_ID || process.env.COTAL_LIFECYCLE_UID || process.env.COTAL_ACCEPTED_TOKEN);
+  if (seatIntent && values.creds !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a managed seat's child launch uses that seat's own caller, not a --creds override");
+  let seat: Awaited<ReturnType<typeof resolveSeatControlTarget>>;
+  if (seatIntent) {
+    try { seat = await resolveSeatControlTarget({ ...flags, space: flags.space ?? process.env.COTAL_SPACE }, on); }
+    catch { throw new CommandFailure("refused", "AUTH_REQUIRED", "the launching seat's own credential could not be verified; no operator identity was substituted"); }
+    if (!seat) throw new CommandFailure("refused", "UNSUPPORTED", "the managed seat cannot act as itself through this CLI; missing/mismatched caller context and user-auth self impersonation do not fall back to the operator");
+  }
+  const t = seat ?? await resolveControlTarget(flags, "control-caller-privileged", on, { onRefusal: "throw" });
   let policy: typeof t.policy;
   try {
     policy = await refreshRegistrationPolicy(t);
-  } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
-    process.exit(1);
+  } catch {
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected registration policy could not be observed; no manager launch was submitted");
   }
   // #867: refuse an unmintable identity BEFORE the round trip. On this path the persona is
   //  resolved manager-side, so the effective identity is `--name` alone — when it is absent the
@@ -464,32 +550,37 @@ async function spawnDetached(
   if (values.name !== undefined) refuseUnmintableNameOrExit(values.name, t.mode === "user");
   const eventsRequired = policy?.events === "required";
   if (eventsRequired && events === false) {
-    console.error(c.red(`✗ space "${t.space}" requires the event plane by registration policy; --no-events is not allowed`));
-    process.exit(1);
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `space "${t.space}" requires the event plane by registration policy; no launch was submitted`);
   }
   provenance.read("mesh", `${t.space} (${t.server})`);
+  const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space: t.space, preferences: cachedPreferences() });
+  const managerConfigRef = values.config ?? (personaFrom !== undefined ? ref : undefined);
+  const defaultAgent = callerHarness(t.space);
   let resumeAgent: string | undefined;
   let resumeClaim: string | undefined;
   if (values.resume !== undefined) {
     // Without a flag the harness is the persona pin or a default, which only the target manager
     // can read: ask it, so the carry looks with the connector the launch runs (#2899).
-    resumeAgent = values.agent ?? await launchAgentOrExit(t, on, { name: ref, config: managerConfigRef, defaultAgent: defaultAgentOverride() });
+    resumeAgent = values.agent ?? await launchAgentOrExit(t, on, { name: ref, config: managerConfigRef, defaultAgent });
     resumeClaim = await carryTranscriptOrExit(flags, on, values.resume, resumeAgent);
   }
+  console.error(renderReport({ space: t.space, sections: [{ title: "Managed launch", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Manager selector", on ?? t.auth.managerInstanceId ?? "native class selection"], ["Persona", ref], ["File source", managerConfigRef ? `${managerConfigRef} · manager execution host` : "selected manager's persona catalog"], ["File transfer", "none"]] }, { kind: "lines", lines: [{ text: "The accepting manager validates its own visible file before allocation. No local file is uploaded, and a pin never selects a replacement manager.", tone: "hint" }] }] }] }, presentationOf(values) === "plain" ? "plain" : "rich", terminalWidth(process.stderr)));
   console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
   const reply = await askManager(t.space, t.server, "start", {
     name: ref,
     identity: values.name,
     role: values.role,
-    // #869: keep an explicit `--agent` and the invoking operator's COTAL_DEFAULT_AGENT in separate
-    // fields. Collapsing them made the env default indistinguishable from a flag, so it beat the
-    // persona pin; dropping the env instead changed detached semantics whenever the manager's own
-    // environment differed. The manager applies flag > file > caller default > manager default.
+    // #869: keep an explicit `--agent` and the invoking operator's default (COTAL_DEFAULT_AGENT or a
+    // saved harness preference) in separate fields. Collapsing them made the default
+    // indistinguishable from a flag, so it beat the persona pin; dropping it instead changed detached
+    // semantics whenever the manager's own environment differed. The manager applies flag > file >
+    // caller default > manager default.
     agent: values.agent,
-    defaultAgent: defaultAgentOverride(),
+    defaultAgent,
     config: managerConfigRef,
     model: values.model,
     variant: values.variant,
+    ...(values.restarts !== undefined ? { supervise: { restarts: Number(values.restarts), windowMs: Number(values["restart-window"]) } } : {}),
     launchOptions,
     cwd: values.cwd,
     resume: values.resume, // host-local session id; the manager preflights connector resume support
@@ -507,13 +598,35 @@ async function spawnDetached(
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
     // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
   }, t.auth, "owner", START_TIMEOUT_MS, { instanceId: on });
-  failIfNotOk(reply);
-  const d = reply.data as { name: string; role?: string; agent: string; mode: string; eventsNotice?: string };
-  if (d.eventsNotice) console.log(c.yellow(`! ${d.eventsNotice}`));
-  console.log(
-    c.green(`✓ spawned ${c.bold(d.name)} (detached)`) +
-      c.dim(` (${d.role ?? "no role"} · ${d.agent} · ${d.mode}) - attach with: cotal attach --name ${d.name}`),
-  );
+  const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, managerEpoch: reply.managerEpoch ?? null, ...(reply.intent ? { requestId: reply.intent.requestId, requestedGoalId: reply.intent.requestedGoalId ?? null } : {}), ...(reply.request ? { acceptedGoalId: reply.request.goalId ?? null } : {}) };
+  if (!reply.ok) {
+    const refusal: Record<string, RefusalCode> = { "permission-denied": "PERMISSION_DENIED", "unauthenticated": "AUTH_REQUIRED", "not-found": "TARGET_NOT_FOUND", "unavailable": "TARGET_UNAVAILABLE", "bad-request": "SCHEMA_INVALID", "failed-precondition": "LIFECYCLE_BLOCKED", "already-exists": "CONFLICT", "unimplemented": "UNSUPPORTED" };
+    const code = reply.code === undefined ? undefined : refusal[reply.code];
+    const native = { code: reply.code, outcome: reply.nativeOutcome, ...(reply.request || reply.intent ? { detail: { request: reply.request ?? null, intent: reply.intent ?? null, observation: reply.observationCause ?? null } } : {}) };
+    if (reply.nativeOutcome === "not-executed" && code) throw new CommandFailure("refused", code, reply.error ?? "the manager refused the launch before execution", { target, native });
+    const unknown = reply.nativeOutcome !== "executed" || reply.unanswered;
+    throw new CommandFailure(unknown ? "unknown" : "failed", unknown ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", reply.error ?? "the manager did not confirm launch readiness", { target, native, remedy: "inspect cotal ps and the selected manager before retrying; this launch was not submitted again" });
+  }
+  const d = reply.data as { name?: unknown; id?: unknown; lifecycleUid?: unknown; role?: string; agent?: unknown; mode?: unknown; eventsNotice?: string };
+  if (!d || typeof d.name !== "string" || typeof d.id !== "string" || typeof d.lifecycleUid !== "string" || typeof d.agent !== "string" || typeof d.mode !== "string" || !reply.managerInstanceId)
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", "the manager reported a successful launch but did not supply the identity and manager needed for a safe handoff", { target, changed: [{ kind: "managed-launch", readinessReported: true }], remedy: "inspect cotal ps before doing anything else; do not relaunch" });
+  const result: ManagedLaunchResult = { kind: "managed-launch", name: d.name, id: d.id, lifecycleUid: d.lifecycleUid, space: t.space, managerInstanceId: reply.managerInstanceId, harness: d.agent, runtime: d.mode, role: d.role ?? null, request: reply.request ?? null, intent: reply.intent ?? null, readiness: "joined", requestedModel: values.model ?? null, detached: values.detach === true };
+  const presentation = presentationOf(values);
+  const warnings: OutputWarning[] = d.eventsNotice ? [{ code: "EVENT_PLANE_NOTICE", target, message: d.eventsNotice }] : [];
+  if (observer) {
+    try { observer.ready(result, warnings); }
+    catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but the composite command could not record its native readiness; no replacement was launched", { target, changed: [result], remedy: "inspect the original agent and manager before another launch" }); }
+  } else writeResult(presentation, { command: "spawn", target, result, warnings }, managedLaunchView);
+  if (values.detach) return;
+  let verdict: Awaited<ReturnType<typeof attachSeat>>;
+  try {
+    verdict = await attachSeat({ space: t.space, server: t.server, creds: values.creds, name: d.name, expectedTarget: { id: d.id, lifecycleUid: d.lifecycleUid }, asSeat: seat !== undefined }, { on: reply.managerInstanceId, reconnect: true, onRefusal: "throw" });
+  } catch {
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its terminal could not be attached; it was not relaunched", { target, changed: [result], remedy: "use cotal ps and attach to the recorded agent and manager" });
+  }
+  if (verdict.kind === "failed") throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but attachment did not complete; no replacement was launched", { target, changed: [result], native: { detail: { message: verdict.message } }, remedy: "inspect the original agent and reattach; do not relaunch" });
+  if (verdict.kind === "gone" && observer) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but its exact native terminal was unavailable before setup could open the view; no replacement was launched", { target, changed: [result], remedy: "inspect the original lifecycle and manager before another startup" });
+  console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target unavailable" : verdict.reason === "detached" ? "Detached" : "Attach session ended", blocks: [{ kind: "fields", rows: [["Agent", d.name], ["Identity", d.id], ["Manager", reply.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Leaving the view sent no stop request. The original lifecycle was not replaced.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
 }
 
 /** The harness the manager's `spawn` resolves for this persona, read with the same fields `start` sends. */
@@ -591,13 +704,9 @@ async function transferWriterOrExit(flags: ConnectFlags, t: ControlTarget, insta
 }
 
 /**
- * `cotal spawn <name-or-path>` — launch an agent in the FOREGROUND of this
- * terminal from a local agent file, joined to the mesh with its persona.
- *
- * With `--detach` the manager spawns it into a detached PTY you `cotal attach` to;
- * otherwise `cotal spawn` hands THIS terminal straight to the agent: run it in your
- * shell, or inside a cmux/tmux pane, and the real Claude TUI takes over. One grammar,
- * two run modes.
+ * `cotal spawn [<persona>] [--file <persona-file>]` launches through the manager and attaches
+ * to its allocated incarnation. `--detach` returns after readiness; `--foreground` explicitly
+ * runs the native application in this terminal. File validation belongs to that execution host.
  *
  * The launch recipe is the connector's `buildLaunch` (the single source of truth,
  * shared with the manager); only *how the spec runs* differs — foreground exec
@@ -610,16 +719,27 @@ async function transferWriterOrExit(flags: ConnectFlags, t: ControlTarget, insta
  */
 export async function spawn(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
-  const values = args.values as FlagValues<typeof spawnFlags>;
+  validateSpawnArguments(args);
+  const values = { ...args.values, ...(typeof args.values.harness === "string" ? { agent: args.values.harness } : {}), ...(typeof args.values.file === "string" ? { config: personaFileReference(args.values.file) } : {}) } as FlagValues<typeof spawnFlags>;
+  if (values["dry-run"]) return spawnLaunchPreview({ ...args, values });
   // Claimed first: custody already removed the file and its variable, so the text lives only here
   // and no refusal below can leave it anywhere.
   const handoffText = claimManagedHandoff();
   let enrollmentUrl: string | undefined;
   try {
-    enrollmentUrl = enrollmentInput();
+    if (values["enrollment-file"] !== undefined) {
+      const path = resolvePath(values["enrollment-file"]);
+      protectedCredentialReference(path);
+      const bytes = readLocalRecordSource(path, 256 * 1024, true);
+      if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the enrollment input file was not found; no enrollment was redeemed");
+      let source: string;
+      try { source = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the private enrollment file is not valid UTF-8; its contents were not echoed"); }
+      enrollmentUrl = stripTrailingNewline(source);
+      if (!enrollmentUrl) throw new CommandFailure("refused", "SCHEMA_INVALID", "the private enrollment file is empty");
+    } else enrollmentUrl = enrollmentInput();
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
-    process.exit(1);
+    if (e instanceof CommandFailure) throw e;
+    throw new CommandFailure("refused", "SCHEMA_INVALID", "the one-seat enrollment source could not be read; its contents were not echoed and no enrollment was redeemed");
   } finally {
     // The URL is the credential. Keep the local value, but remove both input forms before this
     // command can start extension, bearer-preflight, or harness children.
@@ -643,7 +763,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       process.exit(1);
     }
     try {
-      loadAgentFile(resolvePath(values.config!));
+      loadLaunchPersonaFile(resolvePath(values.config!));
     } catch (e) {
       console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
       process.exit(1);
@@ -671,7 +791,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       process.exit(1);
     }
   }
-  if (enrollmentUrl && (values.detach || values.file)) {
+  if (enrollmentUrl && values.detach) {
     console.error(c.red(`✗ ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} apply only to a foreground persona spawn`));
     process.exit(1);
   }
@@ -679,6 +799,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.red(`✗ ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV} require --space <s>`));
     process.exit(1);
   }
+  const direct = values.foreground === true || handoffText !== undefined || enrollmentUrl !== undefined;
   const enrollmentBootstrap = Boolean(enrollmentUrl && values.space && !findMesh(values.space));
   if (enrollmentBootstrap) {
     if (!values.config || (!values.config.includes("/") && !values.config.includes("\\") && !values.config.endsWith(".md"))) {
@@ -686,32 +807,18 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       process.exit(1);
     }
     try {
-      loadAgentFile(resolvePath(values.config));
+      loadLaunchPersonaFile(resolvePath(values.config));
     } catch (e) {
       console.error(c.red(`✗ cannot load the enrollment bootstrap persona: ${(e as Error).message}`));
       process.exit(1);
     }
   }
 
-  // `spawn -f cotal.yaml` is a distinct path: deploy a manifest onto a RUNNING mesh (additive,
-  // ownership-scoped). The broker must already be reachable; bringing up a fresh mesh is `up -f`.
-  // `--on` is read only by the detached imperative launch. A foreground spawn runs the connector in
-  // this process (no manager to pin), and a manifest deploy launches every agent through the
-  // manager class queue (`spawnManifest` takes no instance). Both would have to ignore the flag;
-  // an ignored pin is a silent fallback, so refuse it where it cannot apply, as `--dry-run` is.
-  if (values.on !== undefined && (!values.detach || values.file)) {
-    console.error(c.red("✗ --on only applies to a detached imperative spawn (`cotal spawn <persona> --detach --on <instance>`); a foreground spawn has no manager to pin and a manifest deploy (-f) launches through the manager class queue"));
+  // Explicit files retain the execution host's path semantics. A manager pin is meaningful for
+  // either managed persona spelling; direct execution has no manager placement to select.
+  if (values.on !== undefined && direct) {
+    console.error(c.red("✗ --on pins a managed imperative launch; direct --foreground does not take that manager selector"));
     process.exit(1);
-  }
-  if (values.file) {
-    await spawnManifest(values.file, {
-      dryRun: Boolean(values["dry-run"]),
-      server: values.server,
-      space: values.space,
-      runtime: values.runtime,
-      allowStale: splitFlag(values["allow-stale"]),
-    });
-    return;
   }
   // `--resume ""` / `--resume=` means the operator asked to resume but named no session — fail loud
   // rather than silently spawn a fresh one (no fallbacks). An absent flag (undefined) is fine.
@@ -725,12 +832,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   }
   if (values.variant !== undefined && !values.variant.trim()) {
     console.error("--variant needs a variant name (got an empty value)");
-    process.exit(1);
-  }
-  // `--dry-run` is a manifest-only flag (`-f`): on an imperative spawn it would have to be ignored
-  // (and once WAS, silently spawning a real agent) — refuse instead.
-  if (values["dry-run"]) {
-    console.error(c.red("✗ --dry-run only applies to a manifest deploy (`cotal spawn -f <manifest> --dry-run`)"));
     process.exit(1);
   }
   // Parse `--opt k=v` pairs once, up front — a malformed pair fails loud before either launch path
@@ -756,12 +857,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // with a notice, so an unconditional default-true would be refused for an ordinary actor.
   const events = values.events ? true : values["no-events"] ? false : undefined;
 
-  // `--detach`: the SAME grammar, launched by the manager into a detached PTY. The persona is
-  // resolved manager-side (its workspace root owns `.cotal/agents`); flags ride the control
-  // request and override the file exactly as the foreground path does.
-  if (values.detach) {
-    return spawnDetached(values, positionals, events, cliLaunchOptions);
-  }
+  // Managed by default; the persona remains on the manager's execution host. Direct foreground
+  // execution keeps its separate native custody path below.
+  if (!direct) return launchManagedPersona(values, positionals, events, cliLaunchOptions);
+  console.error(renderReport({ sections: [{ title: "Direct application", blocks: [{ kind: "lines", lines: ["This is native foreground execution, not a detachable Cotal view.", { text: "Native exit, Ctrl-C or terminal loss may end this process. No crash or reboot survival is promised.", tone: "hint" }] }] }] }, "rich", terminalWidth(process.stderr)));
   // `--creds` names a CONTROL-CALLER credential (reach an off-registry manager) — meaningless for
   // a foreground launch, which provisions the agent's own creds. Fail loud, never ignore.
   if (values.creds) {
@@ -828,18 +927,18 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const { space, server, auth } = target;
   const composition = { injected: false as const, root: target.root };
 
-  const defaultPersona = defaultPersonaOverride();
-  // Where the config lives: --config, else the positional <persona>, else COTAL_DEFAULT_PERSONA
+  // Where the config lives: --config, else the positional <persona>, else the persona preference
   // (.cotal/agents/<name>.md under the TARGET mesh's root). With none, fall back to its `default`
   // persona — `cotal spawn` with no args launches `<root>/.cotal/agents/default.md`.
-  const ref = spawnPersonaRef(values.config, positionals);
+  const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space, preferences: cachedPreferences() });
   const path = redeemedEnrollment && values.config ? resolvePath(values.config) : agentFilePath(target.root, ref);
   let def: AgentDef;
   try {
-    def = loadAgentFile(path);
+    def = loadLaunchPersonaFile(path);
   } catch (e) {
+    if (e instanceof PersonaSourceError) throw new CommandFailure("refused", "SCHEMA_INVALID", e.message, { target: { space, path }, remedy: "use cotal team deploy <file> for a Mesh manifest; use a native persona file for spawn" });
     const code = (e as NodeJS.ErrnoException).code;
-    const fromEnv = !values.config && !positionals[0] && defaultPersona ? " from COTAL_DEFAULT_PERSONA" : "";
+    const fromEnv = personaFrom === undefined ? "" : ` from ${personaFrom}`;
     // The not-found text names the mesh's space and server, which for a handoff are its values.
     if (handoffText !== undefined) {
       console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
@@ -856,7 +955,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       const where = `${target.personaRoot} (mesh "${target.space}" at ${target.server}${target.source === "current" ? ", your current mesh" : target.source === "registry" ? ", the only mesh running" : ""})`;
       console.error(
         c.red(
-          ref === "default" && !defaultPersona
+          ref === "default" && personaFrom === undefined
             ? `✗ no default persona in ${where} - run \`cotal setup\` here to seed one into that directory, or name a persona: \`cotal spawn <name>\``
             : `✗ no persona "${ref}"${fromEnv} in ${where} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
         ),
@@ -867,7 +966,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
-  // Provenance: say which persona file WON resolution (--config > positional > COTAL_DEFAULT_PERSONA > default)
+  // Provenance: say which persona file WON resolution (--config > positional > preference > default)
   // — the user must never wonder which directory their agent's definition came from.
   provenance.read("persona", path);
 
@@ -922,7 +1021,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // Static/open mode keeps its advisory roster check. Every launch field uses the allocated name.
   let name = target.mode === "user" ? requested : await uniqueMeshName(requested, { space, server, auth });
 
-  const agentType = resolveAgentType({ flag: values.agent, pin: def.agent });
+  const agentType = resolveAgentType({ flag: values.agent, pin: def.agent, callerDefault: callerHarness(space) });
   // Materialize the connector HERE, after the authoritative persona load (#869): the harness choice
   // (flag > persona pin > env > default) is only final once the target root has supplied the file.
   // On the published binary nothing static-imports connectors, so this import-from-manifest is what
@@ -1608,6 +1707,8 @@ async function provisionUserForeground(
       label: ref,
       lifecycleUid: opts.lifecycleUid,
       fresh: true,
+      // A foreground launch has no manager; its row says so.
+      custody: { kind: "foreground" },
     });
     ownedToken = grant.actorToken;
     const prov = new CotalEndpoint({

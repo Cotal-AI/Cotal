@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/web",
-  "description": "Cotal browser observability dashboard: adds the `web` command to the cotal CLI.",
+  "description": "Cotal browser observability dashboard as an owned service preset.",
   "version": "0.90.0",
   "license": "Apache-2.0",
   "repository": {

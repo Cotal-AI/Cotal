@@ -20,12 +20,15 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/backup-continuity.smoke.ts && tsx smoke/retained-manager-validation.smoke.ts && tsx smoke/manager-admin-authorization.smoke.ts && tsx smoke/views.smoke.ts",
+    "test": "tsx smoke/backup-continuity.smoke.ts && tsx smoke/retained-manager-validation.smoke.ts && tsx smoke/manager-admin-authorization.smoke.ts && tsx smoke/views.smoke.ts && tsx smoke/chat-session-row.smoke.ts && tsx smoke/managed-grant-transaction.smoke.ts && tsx smoke/chat-session-authority.smoke.ts",
+    "smoke:chat-session-authority": "tsx smoke/chat-session-authority.smoke.ts",
+    "smoke:chat-session-row": "tsx smoke/chat-session-row.smoke.ts",
     "prepublishOnly": "pnpm run build",
     "smoke:service-custody": "tsx smoke/service-custody.smoke.ts",
     "smoke:service-custody-writer": "tsx smoke/service-custody-writer.smoke.ts",
     "smoke:service-custody-recovery": "tsx smoke/service-custody-recovery.smoke.ts",
-    "smoke:public-surfaces": "tsx smoke/auth-public-closure.smoke.ts && tsx smoke/plane-claim-public.smoke.ts && tsx smoke/account-liveness-public.smoke.ts"
+    "smoke:public-surfaces": "tsx smoke/auth-public-closure.smoke.ts && tsx smoke/plane-claim-public.smoke.ts && tsx smoke/account-liveness-public.smoke.ts",
+    "smoke:managed-grant-transaction": "tsx smoke/managed-grant-transaction.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
@@ -36,7 +39,8 @@
     "@nats-io/transport-node": "^3.4.0",
     "jose": "^6.2.3",
     "@nats-io/jetstream": "^3.4.0",
-    "@nats-io/kv": "^3.4.0"
+    "@nats-io/kv": "^3.4.0",
+    "@clack/prompts": "^1.0.0"
   },
   "devDependencies": {
     "@cotal-ai/smoke-kit": "workspace:*",

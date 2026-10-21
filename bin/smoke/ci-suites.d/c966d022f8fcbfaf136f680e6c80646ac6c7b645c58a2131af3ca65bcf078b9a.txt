@@ -1,0 +1,3 @@
+# Bare cotal status on the structured output contract: one envelope and report, the section order,
+# the selected registration checked unless --all, partial reads named on their rows, and refusals.
+smoke:status-report

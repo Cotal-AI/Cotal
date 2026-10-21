@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, openSync, closeSync, chmodSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, closeSync, readFileSync, rmSync } from "node:fs";
 import { relative } from "node:path";
-import { DEFAULT_SERVER } from "@cotal-ai/core";
+import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { selfArgv } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
@@ -150,10 +150,11 @@ export function managerHasDeliveryMarker(pid: number, space: string = folderSpac
 }
 
 /** Start the control-plane manager detached (pid in `.cotal/manager.<spaceKey>.pid`, output to
- *  `.cotal/manager.<spaceKey>.log`), stopped by `cotal down`. Re-execs this same CLI's `supervise` — the
- *  composed `cotal` binary registers it; `process.execArgv` carries the tsx loader in dev and is
- *  empty in prod. `supervise`'s auto runtime resolves to pty when detached, which answers the
- *  control plane (`cotal_spawn`/`despawn`/`purge`/`persona`) with no tmux/cmux needed. */
+ *  `.cotal/manager.<spaceKey>.log`), stopped by `cotal down`. Re-execs this same CLI's hidden
+ *  `__daemon-manager`, the `supervise` entry without its deprecation warning — the composed `cotal`
+ *  binary registers it; `process.execArgv` carries the tsx loader in dev and is empty in prod. Its
+ *  auto runtime resolves to pty when detached, which answers the control plane
+ *  (`cotal_spawn`/`despawn`/`purge`/`persona`) with no tmux/cmux needed. */
 export type ManagerStartOpts = {
   space?: string;
   server?: string;
@@ -162,7 +163,9 @@ export type ManagerStartOpts = {
   runtime?: string;
   attachHost?: string;
   resumeAttempt?: string;
-  resumeCommitToken?: string;
+  /** The protected commit-token handoff file: path and digest only. A new launch
+   *  never passes the token itself on argv. */
+  resumeCommit?: { path: string; sha256: string };
   wsPort?: number;
   /** Live-session ceiling forwarded as `supervise --max-sessions`. */
   maxSessions?: number;
@@ -174,8 +177,8 @@ export function startManagerDetached(
   const space = o.space ?? folderSpace();
   // BEFORE ANY RECORD OR LOG IS TOUCHED. `selfArgv` refuses when this process was not started from
   // the `cotal` entry (#1629), and a refusal must leave the root exactly as it found it. Computed after
-  // the reclaim below, a refused start deleted dead pre-upgrade records; computed after `openSync`, it
-  // created a manager log and leaked its descriptor.
+  // the reclaim below, a refused start deleted dead pre-upgrade records; computed after the log open,
+  // it created a manager log and leaked its descriptor.
   //
   // Then clear a provably dead PRE-UPGRADE record before claiming the canonical slot, so an upgraded
   // root does not end up holding both names and failing every later read as ambiguous. It refuses
@@ -187,16 +190,13 @@ export function startManagerDetached(
   // 0600: the manager prints its console URL here, and that URL carries the console token — a
   // standing credential for every agent's terminal on this mesh, at rest for the life of the file.
   // `.cotal` is already 0700, so this is defence in depth rather than the boundary, but a log the
-  // group/world can read is a needless second copy of that credential.
-  const fd = openSync(logPath, "a", 0o600);
-  // The mode above only applies when the file is CREATED, so every log that already exists from an
-  // earlier version would keep its 0644. Narrow those too. Best-effort: a filesystem that cannot
-  // represent the mode (or a Windows volume, where `.cotal`'s ACL is the real control) is not a
-  // reason to refuse to start the manager.
-  try { chmodSync(logPath, 0o600); } catch { /* mode is defence in depth, not the boundary */ }
+  // group/world can read is a needless second copy of that credential. The open never follows a
+  // symlink, so a planted link cannot receive the URL or have its target re-moded, and an earlier
+  // version's 0644 log is set to 0600 through the descriptor.
+  const fd = openPrivateAppend(logPath);
   const args = [
     ...self,
-    "supervise",
+    "__daemon-manager",
     "--space",
     space,
     "--server",
@@ -210,7 +210,7 @@ export function startManagerDetached(
     // A resolved mesh-manifest launch spec (cotal up -f): the manager materializes + boots each agent.
     ...(o.launch ? ["--launch", o.launch] : []),
     ...(o.resumeAttempt ? ["--resume-attempt", o.resumeAttempt] : []),
-    ...(o.resumeCommitToken ? ["--resume-commit-token", o.resumeCommitToken] : []),
+    ...(o.resumeCommit ? ["--resume-commit-file", o.resumeCommit.path, "--resume-commit-sha256", o.resumeCommit.sha256] : []),
     // P2 item 6: the broker ws listener port (loopback) for the console session client's wsUrl.
     ...(o.wsPort !== undefined ? ["--ws-port", String(o.wsPort)] : []),
     ...(o.maxSessions !== undefined ? ["--max-sessions", String(o.maxSessions)] : []),
@@ -229,7 +229,8 @@ export function startManagerDetached(
   writePidPair(pidPath, child.pid);
   // Mark this manager as delivery-aware (non-hosting) so the delivery preflight can tell it apart from
   // an old Plane-3-hosting manager. Written next to the pid, removed by `down` or clearManagerArtifacts.
-  writeFileSync(canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx(space)), String(child.pid));
+  // Owner-private, and never through a symlink at the marker name.
+  writePrivateRecord(canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx(space)), String(child.pid));
   return child.pid ?? 0;
 }
 

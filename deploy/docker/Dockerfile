@@ -2,7 +2,7 @@
 #
 # One image; the container's command picks the shape:
 #   supervise --roster roster.yaml   -> a manager + N agents (pty runtime)
-#   spawn <name>                      -> one foreground agent
+#   spawn <name> --foreground         -> one foreground agent
 # It connects OUT to an external NATS/Cotal broker (COTAL_SERVERS); only NATS traffic
 # leaves the container. Build from the repo root:
 #
@@ -44,10 +44,13 @@ USER 10001
 RUN pnpm install --frozen-lockfile \
   && pnpm build
 # Install the cotal plugin so the wake channel binds (it must be *installed*, not --plugin-dir).
-# `cotal setup` = claude plugin marketplace add <repo> + plugin install cotal@cotal-mesh --scope
-# user. Runs as uid 10001 so the plugin cache and its enablement (both under ~/.claude) are owned
-# by the user that runs at runtime.
-RUN pnpm cotal setup
+# `cotal setup` with Claude as the application = claude plugin marketplace add <repo> + plugin
+# install cotal@cotal-mesh --scope user. Runs as uid 10001 so the plugin cache and enablement
+# under ~/.claude are owned by the user that runs at runtime.
+# Its space is a throwaway one in /tmp/cotal-image, so nothing is prepared at /workspace, where the
+# runtime joins the external broker.
+RUN mkdir -p /tmp/cotal-image \
+  && pnpm cotal setup --destination local --harness claude --project /tmp/cotal-image --space image --no-input
 
 # Pre-complete claude's first-run onboarding for the runtime user. A fresh container has no
 # ~/.claude.json, so claude 2.1.179 would block a managed (non-interactive) session on the

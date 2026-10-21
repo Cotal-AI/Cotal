@@ -42,6 +42,8 @@ export interface ResolvedCommand {
   targeted: boolean;
   modes: readonly string[];
   capability: string;
+  /** The action marker from the digest-verified cluster declaration, when present. */
+  action?: true;
 }
 
 /** An endpoint's resolved invocation surface: every command the caller may see, with recompiled

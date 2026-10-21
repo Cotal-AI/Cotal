@@ -52,7 +52,7 @@ after the upgrade.
 
 ### Before the upgrade
 
-- Remint every observer or admin credential a process reads from a file: `cotal mint <name> --profile
+- Remint every observer or admin credential a process reads from a file: `cotal auth mint <name> --profile
   observer` or `--profile admin`, and any `--creds` file given to a dashboard.
 - On a user-auth mesh, the auth service mints these views per connection. Upgrade it before, or with,
   the hosts that read history, so no current client connects through an older auth service.
@@ -128,6 +128,696 @@ An implicit foreground spawn now chooses a numbered actor when the requested act
 Existing grants, launch material and sessions stay in place. An explicit name remains pinned
 and refuses an occupied actor rather than renaming it. Signed enrollments and managed handoffs
 keep their existing identity semantics.
+
+## Background startup in 0.91.0
+
+`cotal up` now returns after background startup by default. `cotal up --detach` retains that
+meaning. Use `cotal up --foreground` when terminal lifetime should own the native stack.
+
+A systemd unit, launchd KeepAlive job, container entrypoint or script that supervises the `up`
+process must add `--foreground` before upgrading.
+[Persisted callers](#persisted-callers-in-0910) gives the literal
+replacement for each.
+
+A project folder an earlier release started keeps its own launcher after the upgrade. Stop it with
+`cotal down` as usual, upgrade, then run plain `cotal up` in that folder: it starts on the retained
+launcher with the same identity, store and history. It does not need `space create` or `space add`.
+
+Recorded recovery requests retain their original foreground/background intent. They do not
+reinterpret a prior request using the new default. This change does not migrate a whole stack to
+owned services.
+
+Prepared plain-loopback user-auth roots can use the controller's broker, auth service, delivery and
+manager members. First enable may return a known partial result after the first three start: the
+manager needs an existing signed-in, granted CLI login. Sign in and obtain that grant, then run
+bare `cotal up`; no static caller or new grant is substituted. Auth endpoints come from the
+creation-pinned child's native provider readiness, not a guessed URL. The controller keeps unknown
+operations blocked. Existing three-member auth/open journals are read with an unattempted auth row
+and written with all four roles; old clients do not understand that new record shape. Upgrade the
+composed CLI together before using it. TLS-required, remote and public-exchange user-auth paths
+retain their native route.
+
+## Persisted callers in 0.91.0
+
+Some command lines outlive the install that wrote them: OS units, scripts and container commands.
+After `npm i -g cotal-ai@<new>` they reach the new binary before any `cotal` command has run. This
+section says what each one does after the upgrade and what to change before it.
+
+### Command mapping
+
+| Earlier command | Command in 0.91.0 |
+|---|---|
+| `meshes`, `meshes add` | `space`, `space add <name>` |
+| `clean store`, `clean all` | `reset store <space>`, `reset space <space>` |
+| `mint <name>` | `auth mint <name>` |
+| `mint --signer` | `auth signer --out <private-file>` |
+| `actor list`, `actor grant <actor>`, `actor revoke <actor>` | `auth grants`, `auth grant <actor>`, `auth revoke <actor>` |
+| `join [channel]` | `chat [channel]` |
+| `console` | `watch` |
+| `channels` | `channel` |
+| `send dm <agent>`, `send msg <channel>`, `send ask <role>` | `send -t <agent>`, `send -c <channel>`, `send -r <role>` |
+| `personas` | `persona` |
+| `endpoints`, `describe`, `invoke` | `endpoint`, `endpoint describe <target>`, `endpoint invoke <target> <command>` |
+| `deregister-instance` | `endpoint deregister <class> <instance-id>` |
+| `reconcile-gate`, `seats` | `manager reconcile`, `manager seats` |
+| `topology view` | `team check <file> --graph` |
+| `down -f <manifest>` | `team remove <deployment-id>` |
+| `status --components` | `service` |
+| `run journal`, `run migrate`, `run ps` | `run show`, `run check`, `run` |
+| `deliver pending <name>` | `pending <agent>` |
+| `web` | `service add <name> --preset web`, then `service start <name>` |
+| The four daemon entries | Their service presets, under [deprecated daemon entries](#deprecated-daemon-entries) |
+
+The sections on this page for each command family give the details of its change.
+
+### What stops working
+
+`cotal up` returns after background startup by default. An earlier line such as
+`cotal up --space <space> --server <url>` that a supervisor runs as its main process now exits
+once the stack is started. systemd then treats a `Type=simple` unit as finished and can stop the
+processes that unit started, and a restart policy starts another attempt. A launchd `KeepAlive`
+job relaunches it the same way. Add `--foreground` before upgrading. For a systemd unit, replace
+`ExecStart=/usr/bin/cotal up --space <space> --server <url>` with:
+
+```ini
+[Service]
+Type=simple
+ExecStart=/usr/bin/cotal up --foreground --space <space> --server <url>
+```
+
+For a launchd job, add `--foreground` after `up` in `ProgramArguments`:
+
+```xml
+<key>ProgramArguments</key>
+<array>
+  <string>/usr/local/bin/cotal</string>
+  <string>up</string>
+  <string>--foreground</string>
+  <string>--space</string>
+  <string>main</string>
+  <string>--server</string>
+  <string>nats://127.0.0.1:4222</string>
+</array>
+```
+
+A container command or script makes the same change to its `up` line. When background `up` is the
+main process of a systemd unit, it prints a warning naming the unit and the `--foreground` remedy
+after it starts or refreshes the stack. `up -f`, which has no foreground form, and a dry run print
+nothing. A launchd job gets no warning. `cotal up --detach` keeps its meaning. The warning changes
+no mode and no unit, and no unit or script is rewritten or restarted.
+
+`cotal spawn <name>` now launches through a manager and attaches. A container or script that ran
+an agent directly with `spawn <name>` adds `--foreground`.
+
+### Deprecated daemon entries
+
+`supervise`, `deliver`, `auth-service` and `feedback-intake` stay accepted with their existing
+flags for every caller: units Cotal installed, units and scripts you wrote, and container commands.
+They are deprecated and are removed in `1.0.0`, one release for all four. Help and completion no
+longer list them. Each run prints one line on stderr naming its replacement and that release.
+Stdout, behavior and exit codes are unchanged, so no unit restarts in a loop because of the
+upgrade. `deliver pending` warns the same way and names `cotal pending <agent>`.
+
+| Entry | Replacement |
+|---|---|
+| `supervise` | `cotal service add <name> --preset manager` |
+| `deliver` | `cotal service add <name> --preset delivery` |
+| `auth-service` | `cotal service add <name> --preset auth-service` |
+| `feedback-intake` | `cotal service add <name> --preset feedback-intake` |
+
+`cotal service add <name> --preset <preset> --help` lists the options a preset takes, and
+`cotal service start <name>` starts it. A `supervise --roster <file>` line maps to the manager
+preset's `--roster <file>`, with an absolute path, and `cotal service start <name> --foreground`
+keeps the manager in the foreground as `supervise` did. The manager, delivery daemon and auth service that `up`
+starts itself do not warn, so the line in a log always comes from a unit, script or container you
+can change.
+
+### Owned units
+
+A manager unit that an earlier `cotal service install` wrote keeps calling `supervise`. After the
+upgrade it starts the new binary and prints the deprecation warning on each start. This release
+does not rewrite that unit.
+
+A unit that this release's `cotal service install <name>` writes runs the hidden `__service-unit`
+entry, which an earlier binary does not have. Before you downgrade, stop it with
+`cotal service stop <name>` and remove it with `cotal service uninstall <name>`. After the
+downgrade, install the unit again with the earlier binary's `service install`.
+
+### Containers
+
+The `solo` service in `deploy/docker/compose.yaml` runs `spawn scout --foreground`. The team
+service and the image's default command still run `supervise` with `--roster`, so their logs show
+the deprecation warning. An image you already built carries its own CLI and is unaffected until
+you rebuild it.
+
+### Before the upgrade
+
+- Add `--foreground` to every unit, launchd job, container command or script that supervises
+  `cotal up`.
+- Add `--foreground` to every container command or script that runs `cotal spawn <name>` directly.
+- Move units and scripts that call `supervise`, `deliver`, `auth-service` or `feedback-intake` to
+  their service presets before `1.0.0`.
+- Before a downgrade, stop and uninstall every unit this release's `service install` wrote.
+
+## Team commands in 0.91.0
+
+The new grammar names fresh intent `team boot <file>` and additive intent
+`team deploy <file>`. `team check <file> --graph` resolves declared access
+without a broker. `team` and `team show <id>` read local fresh summaries, additive ledgers and
+agent/channel returned receipts; `team remove <full-id>` is the ID-only additive
+teardown name. An edited manifest is not authority to remove an old deployment.
+
+Boot's `--dry-run` is a declaration view.
+Deploy's `--dry-run` reads native presence and channel registry for advisory
+classification against a prior ledger. Remove's preview compares a legacy
+ledger with native manager PS and display-only membership observations, or a
+returned channel-only receipt with current KV revisions. No preview authorizes
+a launch or stop. Bare `team boot <file>` enters guarded native fresh
+startup only for a prepared, stopped local root; it refuses a leftover manager
+record and offers rich, JSON and plain receipts. User-auth boot records an intent before
+owner/trust preparation and retains uncertainty without retry. Windows boot
+apply refuses, because protected service-record inventory is not supported there.
+Bare `team deploy` applies all-new channel-only manifests with explicit live
+delivery, or one to 100 all-new agents on a static/open mesh, optionally with
+up to 100 new live channel cards. A mixed deployment records one intent before
+creating channels and launching agents through one pinned manager/runtime.
+Each channel revision and original launch request, allocation and matched join
+is recorded before continuing. A full receipt requires both sequences to match.
+Unknown effects are retained, not replayed; completed effects are not rolled back.
+Both routes offer rich, JSON and plain output. Identical settled deployments can return a verified
+no-op without new effects. Named stale-agent waivers retain the old policy without restarting.
+User-auth agent apply and existing-card mutation still refuse effects.
+
+`team remove <id>` can retire a returned static agent deployment through its original manager.
+Review `--dry-run` first; scripts require `--yes`. This needs the native slot query, original UIDs
+and native retired slot/head plus cleanup evidence, not just stop acknowledgements. A returned
+channel-only deployment instead uses deletes conditioned on its original card revisions. A static
+mixed deployment retires agents first and needs a complete retirement receipt before checking and
+deleting cards, under one confirmation and maintenance lock. Both receipts must exist before its
+blocker is released. Partial and unknown effects retain their journals without replay. History,
+grants and readers are unchanged. Open/user-auth agent retirement and legacy removal still refuse.
+The old `spawn -f` manifest spelling no longer deploys. Native `up -f` still
+starts a fresh mesh; `down -f <file> --run <id>` remains the retained route
+only for an older additive ledger. Move an automated agent deploy or teardown
+to the new spelling only when its auth mode and manifest are ones these routes accept.
+
+## Credential commands in 0.91.0
+
+Credential minting is `cotal auth mint <name>`. The old `cotal mint` spelling refuses before
+issuance and names its replacement. A stripped account signer is exported with the explicit
+`cotal auth signer --out <private-file>`, not `mint --signer`.
+
+The default standing credential label is create-only. Repeated minting does not silently replace
+it. Choose a new label or a separate private output. An explicit existing output is replaced only
+when it is an owned private native credential matching the supplied `--identity`. Explicit
+exports cannot overwrite managed `.cotal` or workstation state.
+
+The new receipt reports the actual principal, resulting lifecycle, private destination and
+native expiry without credentials. Reusing an nkey does not promise reuse of its old lifecycle
+or bind-only inboxes. An agent-profile re-mint reports its newly allocated UID and warns about
+that distinction; consuming clients must use the returned UID. Provisioning is explicit and is
+not evidence that a client joined. Scripts should parse the finite `--json` document rather than
+scraping the former text lines. Secret and signer files must stay out of support bundles.
+
+`auth mint <name> --endpoint <class> --out <private-file>` is a separate caller mode. It uses the
+same native static authority and a live digest-verified untargeted synchronous ephemeral surface.
+Targeted, journaled or action commands refuse the whole issuance; no unsupported row is dropped.
+The native agent footprint and exact additional endpoint rows are provisioned with required TLS,
+without adding spawn/run/admin scope or starting a seat. `--channels` enters both explicit channel
+ACLs and defaults empty; `--expires-in` remains native seconds.
+
+The create-only private `<out>.issuance.json` intent is retained before footprint work and contains
+public identity/lifecycle/scope metadata only. It is not a native grant or completion receipt. An
+existing output or intent blocks replay, including when an interrupted operation left no output.
+Keep that intent with any original file while diagnosing an unknown result. Provisioner close is
+reported separately. No raw-file caller identity, managed launch, user-auth issuer or environment-
+export onboarding is added by writing this credential.
+
+## Endpoint deregistration in 0.91.0
+
+Replace `deregister-instance --endpoint <class> --instance <id>` with
+`endpoint deregister <class> <full-instance-id>`. Both positional values are required.
+The old spelling refuses before effects and has no implicit instance selection. Review the
+new `--dry-run` output, then use `--yes` in scripts. JSON retains native revision receipts;
+unknown or superseded deletions are not retried. User-auth and open targets do not receive
+a static-signing fallback.
+
+## DM pending inspection in 0.91.0
+
+Use `cotal pending <agent>` for a one-document JSON/plain read of native DM
+durable counts and bounded candidate IDs. `--durable <exact-dm-durable>` targets
+an older lifecycle directly. The retained `deliver pending` spelling still
+uses its earlier output shape; scripts must migrate to `result` fields rather
+than assuming the old per-line format. Candidate IDs are not proof of
+recipient delivery or complete message history. This route has only the
+static/open admin read authority; user-auth has no corresponding view yet.
+
+## Live space deletion in 0.91.0
+
+`space forget <name>` changes only the local registration. It does not delete
+live broker state. `space delete <name> --dry-run` now reads known first-party
+native streams, bucket backing streams and presence entries on the registered
+broker in open or static-auth mode. Static transfer-stream names are read under
+an additional exact-name grant on a second confirmed connection. This non-atomic
+read is not an apply plan or evidence that presence records are live. User-auth
+inspection and deletion remain unavailable. Bare deletion now requires a typed
+exact-name confirmation on a terminal or the exact positional name with `--yes`
+in a script. It rereads the native impact and checks the current target before
+submitting exact stream deletes, stopping on the first refused or unconfirmed
+reply with acknowledged and remaining names. A native post-read reports any
+survivor or newly observed transfer target without retrying. No process, registration or local
+file is removed.
+
+## Stopped reset in 0.91.0
+
+`reset store <space>` and `reset space <space>` are the named replacements for
+`clean store` and `clean all`. `reset store --dry-run` provides a partial
+local-impact preview of the store path, recorded processes, maintenance journal
+and broker credless reachability. `reset store` requires confirmation,
+acquires the maintenance lock, rechecks its exact store identity, legacy
+processes and all recorded service instances for that space, and calls the
+existing store-only cleanup. Any recorded supervisor blocks reset. It keeps trust and the
+registration. TLS-required or TLS-first store targets refuse, because no trusted
+stopped-broker check covers them. `reset space` now routes a
+reviewed local identity reset through native clean-all. It requires Linux, an
+isolated locally started registration and plain-NATS loopback nonresponse.
+Its preview inventories provider-declared keys and native filesystem targets;
+apply rechecks the scope under the maintenance lock and constrains each delete
+to that reviewed inventory. Trust is removed last, followed by the unchanged
+eligible registration. Unknown effects are not replayed. Service definitions,
+personas, packages, IdP logins and remote data stay. Unsupported providers,
+foreign material, TLS-first and non-Linux targets refuse.
+
+## Backup maintenance in 0.91.0
+
+`backup create` supports one-document `--json` and plain reports. The completion receipt follows
+native attempt cleanup. A published artifact with unconfirmed cleanup is partial; retain its
+path and original attempt instead of repeating creation. `backup inspect` reads metadata and
+`backup verify` checks declared file sizes and hashes. Neither proves restoration or authority
+continuity, starts a broker or writes a staging tree.
+
+The canonical stale pre-commit recovery is `backup recover <full-attempt-id>`. Healthy retained
+old-source cleanup is `backup cleanup-fallback <full-attempt-id>`. Review `--dry-run`, then use
+`--yes` in scripts. Neither flag bypasses owner, deadline, root, journal revision or store-identity
+checks. Restore startup stays on its guarded existing route.
+
+## Feedback input in 0.91.0
+
+Use a protected `feedback --key-file <path>` rather than placing an intake key on argv.
+The old `--key` spelling refuses without sending or echoing its value. Public feedback still
+works with a contact email and requires no environment setup. JSON/plain output is one public
+receipt, not a copy of the submitted body. Unknown submission outcomes are not retried, and no
+redirect or alternate credential/intake is substituted.
+
+## Credential diagnosis in 0.91.0
+
+`doctor auth` uses JSON/plain reports and distinguishes local claims from live authorization.
+A plain diagnostic that encounters material requiring migration refuses without moving it.
+Explicit `--fix` retains the native static daemon repair, with separate migration/re-sign receipts
+and no user-auth signer fallback. A local re-sign is not daemon adoption or broker acceptance.
+Unhealthy, partial and unknown results retain their classified outcomes; scripts must read the
+new result and error fields instead of scraping the old `auth: healthy` line. Never respawn from
+a locally ordered older credential file alone.
+
+## Service adapter declarations in 0.91.0
+
+A local-process provider can expose the version-1 workstation service ABI alongside its existing
+process metadata. It declares a closed option schema, explicit foreground/multi-instance/log
+capabilities and launch/readiness hooks. Re-add an extension after adding this ABI so its cached
+service metadata and package fingerprints are recorded. An older descriptor is not imported to
+guess its schema. Plain process definitions keep their existing meaning.
+
+Presets are declarative registry contributions. Their option flags, help, completion and guided
+questions derive from the adapter schema. Re-add a preset provider to populate its new cache;
+missing or changed metadata refuses without importing code to guess the definition.
+
+The top-level `feedback-intake` launcher is a [deprecated entry](#deprecated-daemon-entries). For a
+new intake, save a definition with
+`service add <name> --preset feedback-intake --space <s> --root <absolute-root> --keys <private-keys.json> --creds <private-creds>`, then use `service start <name>` in that space. An explicit
+`--store` must be an existing private file. The default is private and instance-keyed. No broker
+or other service is started, no signer is minted and required TLS is preserved. Native startup
+receipts are private, request-specific observations rather than native endpoint serving claims.
+
+A service instance pins its adapter name, package version and declaration fingerprint. A later
+package update does not silently adopt a running or retained instance under a different adapter.
+Stop the exact owned process and explicitly remove its stopped records before choosing changed
+adapter metadata. Logs remain private local files. Extension removal refuses live, foreign or
+unresolved service instances, including records outside the current mesh selection. None of
+these declarations migrate legacy PID records or supply OS-unit ownership. Native manager
+impact comes from its explicit adapter's attributed current read, not cached metadata.
+
+The delivery implementation now registers its service adapter and legacy custody descriptor.
+Custom composition roots that want those inventory/control rows import `@cotal-ai/delivery`.
+The full binary already composes it. CLI stop helpers share the workspace descriptor without an
+implementation-to-implementation import. The `delivery` preset requires the recorded root and
+existing scoped credential, keeps the native store/account/lease guards and does not adopt an
+existing legacy daemon. Its hidden child entry is recognized by the same process-role predicate.
+The old `deliver` machine-facing route remains for the stack callers that still use it.
+
+Fresh static-auth and open `team boot` now use controller-owned stack members and accept
+`--foreground`. Their manager receives a digest-pinned manifest launch spec, with no additive
+ownership ledger. A recorded stack can resume only after a completed whole-stack stop with its
+manager never attempted, recorded broker inputs and each member's settled native evidence. Legacy
+custody, prior team boots, supervisors and unresolved attempts still refuse. User-auth preparation
+uses ordinary `up --user-auth`, login and an explicit grant, then `down` before `team boot`. No
+caller or owner grant is substituted.
+
+New controller journals record the broker store path, storage cap request and bind host. A later
+preparation keeps those inputs and refuses differing explicit values. Older journals remain
+readable. If their broker is stopped, restart requires the original store named with `--store-dir`
+and the original `--max-file-store` and `--host` values, if set. The store must already be a real
+directory. Do not omit the cap or host unless the original start set neither. That restart records
+the inputs; run `down` before the stopped-stack team route. No store path is inferred from an
+absent field, and bare restart never silently opens a default empty store.
+
+The native manager status contract adds optional caller-scoped stop-impact metadata and advances
+the cluster revision. Upgrade the composed manager and its compatible registration host together;
+a host that does not accept the current contract must refuse registration. Older managers can
+omit the observation. Component status then says impact was not reported, rather than inferring
+that seats survive. An observed policy does not migrate PID records, reserve a stop or confirm
+cleanup. The manager package adds a separate controller-only `manager-service` adapter and
+`manager` preset. Existing legacy manager records are not migrated or adopted. Update the
+composed packages and extension metadata together; an old cached declaration is not rewritten
+behind a retained instance. Native stops require a fresh full-scope read and unchanged request-bound
+policy, with native returned evidence plus original process exit. Missing terminal evidence retains
+its reservation and blocks replacement, without force kill. Cleanup remains not checked.
+The direct service route currently refuses foreground mode. On an open mesh there is no
+authenticated caller, so readiness and stop impact come from the pinned child's own request-bound
+local receipt. Its registration must equal the launch identity bound to that PID. Status shows it
+as a child-reported local receipt, not an attributed endpoint response. OS installation and
+non-Linux protected process support are not available.
+Recorded systemd user units with an original invocation ID use that invocation's native journal
+for finite/follow logs. Missing invocation evidence refuses instead of reading a stale direct-child
+file. Native cursors and timestamps are retained; journal retention/access is not proof of complete
+output or completed service work. No unit install/control support is implied by this read route.
+
+Auth providers may implement the optional read-only `preflightServer` hook. It checks public
+server inputs without creating a directory, pin, key, grant or daemon. The controller's user-auth
+route requires it before preparation; providers without it refuse rather than skipping validation.
+`prepareServer` remains authoritative and checks again before provisioning.
+
+The auth package also declares an `auth-service` preset over its prepared native key projection.
+It does not migrate or reclaim existing PID records. Its real child claims custody before opening
+planes and publishes a private startup phase only after native initialization and signal handlers.
+This route declares shared foreground control and still refuses remote broker and TLS-required
+targets. The transport refusal is
+intentional, because not every native authority connection carries the registered transport
+requirement. No plaintext substitution or new issuer is used.
+
+Manager maintenance now supports finite JSON/plain reports. Gate repair and seat drain default
+to cancellation in a terminal and require `--yes` in scripts. Use `manager reconcile --dry-run`
+or `manager seats --drain --dry-run` first. Gate repair requires one registered root/space/broker
+and carries its TLS requirement through native liveness/eviction. It does not dial a default broker
+when that target is missing. An interrupted submitted repair or unresolved drain can return exit 3;
+confirmed native results remain distinct from unconfirmed effects. No process is started.
+
+## Linear reports in 0.91.0
+
+Update the installed Linear extension with the matching CLI/workspace generation. Account add/show,
+inventory and direct call/resource/prompt JSON now use version-1 envelopes: read the native
+inventory from `result.inventory` and a native request reply from `result.reply`. Rich/plain reports
+bound displayed rows and lines without truncating JSON. MCP tool `isError` remains a result with
+exit 0 and a warning, not a work-success claim. Native not-executed refusals stay distinct from
+unknown submissions, and neither is replayed automatically.
+
+The `linear` service preset runs the same native endpoint implementation from an explicit static-auth
+root and existing account. It retains native registration, renewal and bounded deregistration; no
+new generic caller is issued. Its private phase proves handler initialization only, not a current
+endpoint reply or completed deregistration. Foreground service start uses the shared terminal
+lifetime and native signal handlers, not the old serve parser. User-auth/open targets and
+OS-supervised service operation refuse. The older `linear serve` route remains available for
+installed callers.
+
+A bare Linear/account group opens no account. Wrong-mode flags or extra operands refuse before
+account access. Interactive OAuth remains a human flow without JSON. Foreground serve stays on its native human-output path.
+Static caller issuance keeps its native authority and now returns shared JSON/plain private-file
+receipts. Use an existing protected physical parent outside managed state; an existing output
+refuses before provisioning. Uncertain provisioning/publication is not replayed and no environment-
+export launch recipe is printed. The supported `auth mint --endpoint` form resolves its scope live;
+targeted/journaled/action issuance and consuming launch adapters are not supported. These changes do
+not replace ownership, start a service or print secrets.
+
+## Setup inputs in 0.91.0
+
+`cotal setup` takes four inputs: destination, application, project folder and space. Nothing on a
+running mesh changes, and there is no outage window.
+
+### What stops working
+
+- A `cotal setup --yes` or a setup with no terminal exits 1 with `USAGE_INVALID` unless it names
+  every input as a flag. It no longer sets up every detected connector and seeds the folder it
+  runs in.
+- Setup sets up one application, the one `--harness` names, and records it as the space's
+  `harness` preference. An application whose executable is not on PATH exits 4 with the rest
+  saved; it used to be skipped with a warning.
+- The default persona lands in `<project>/.cotal/agents`. Setup no longer looks for a running mesh
+  to seed into.
+- A repeat `cotal setup` no longer prints a status card. `cotal status` reports the same state.
+
+### Before the upgrade
+
+A script or image that ran `cotal setup --yes` names the four inputs:
+
+```bash
+cotal setup --destination local --harness claude --project <dir> --space <name> --no-input
+```
+
+For a space that runs elsewhere, register it first with `cotal space add`, or pass the bundle its
+operator exported with `--connection-file`, and use `--destination self-hosted` with the
+registration's root as `--project`.
+
+Startup remains opt-in. `--start` conflicts with `--configure-only`; a script, JSON or plain
+invocation must add `--detach`. `--yes` by itself still saves configuration only. Startup failure
+leaves completed preparation in the result. Do not treat an unknown startup result as permission
+to submit another launch; inspect the selected space and recorded original request first.
+
+## Reads that install nothing in 0.91.0
+
+A read no longer installs or refreshes the built-in connectors and the web dashboard before it
+runs. Nothing on a running mesh changes, and there is no outage window.
+
+### What stops working
+
+- On a fresh machine, `cotal status`, `cotal ext list`, `cotal ps`, `cotal runtimes`, `cotal docs`
+  and the other reads leave the extension root empty. `cotal setup`, or any command that is not a
+  read, installs the built-ins as before.
+- After an upgrade, a read does not refresh the built-ins. Where it would load one still at the
+  older version, such as a connector's setup row in `cotal status`, it names the package and its
+  version with `cotal ext seed` instead of loading it.
+
+### Before the upgrade
+
+A script that ran a read to install the built-ins, such as `cotal ext list` right after
+`npm i -g cotal-ai`, runs `cotal ext seed` instead.
+
+## Space selection in 0.91.0
+
+`cotal use` and the target a command picks without `--space` change. Nothing on a running mesh
+changes, and there is no outage window. Upgrading the `cotal` binary is the whole operation.
+
+### What stops working
+
+- `cotal use <space>` no longer checks the broker. It selects any registered space, including a
+  stopped one, and the command that targets it reports the space not up. A name that is not
+  registered exits 2 with `TARGET_NOT_FOUND` instead of 1. Bare `cotal use` reports the selection
+  instead of exiting 1 with its usage, and `--json` writes one envelope.
+- A command run without `--space` stays on the selected space when its broker is down and refuses
+  with `TARGET_UNAVAILABLE`, exit 2. It used to fall back to the one other running mesh and print
+  a note that the default mesh was down. A selection that names a space no longer registered now
+  refuses with `TARGET_NOT_FOUND` instead of falling back to the local project or the one running
+  mesh.
+- `cotal space` lists the registered spaces. `cotal meshes` still lists them, and its `--json`
+  lines keep their shape.
+
+### Before the upgrade
+
+A script that relied on the fallback names the space it means with `--space`, or selects it with
+`cotal use <space>`. A script that read `cotal use` exiting 1 for a stopped space checks the
+broker with `cotal space show <space> --json` and reads `result.check`.
+
+## Extension listing output in 0.91.0
+
+`cotal ext --json` and `cotal ext list --json` now write one JSON document instead of one JSON line
+per extension. Nothing on a running mesh changes, and there is no outage window. Upgrading the
+`cotal` binary is the whole operation.
+
+### What stops working
+
+- A script that reads `cotal ext list --json` line by line reads one envelope instead. The rows it
+  read are now `result.items`, each with the same fields, and `result.root` is the install prefix.
+  With `jq`, `cotal ext list --json | jq -c '.result.items[]'` prints the rows as before. An empty
+  prefix writes an envelope with no items instead of nothing.
+- A usage error from `cotal ext` exits 1 as one `refused` envelope under `--json`, and `--plain` or
+  `--json` on `ext add`, `ext remove`, `ext root` or `ext seed` is refused. `cotal ext root` still
+  prints the path alone.
+- The human listing is a table now. Human output is not a parsing target; use `--json`.
+
+### Before the upgrade
+
+Search scripts for `cotal ext list --json` and `cotal ext --json`, and change line-by-line reads to
+read `result.items` from the one document.
+
+## History reads in 0.91.0
+
+`cotal history [channel]` reads retained messages. Clearing is now `cotal history clear`, which asks
+in a terminal and takes `--yes` in a script.
+This changes the CLI grammar only. Stored messages, credentials, agents and running services do not
+migrate or restart, and there is no outage window. Upgrade the CLI and its first-party components
+together through the normal update path; a separate broker or manager can stay running.
+
+### What stops working
+
+- Replace a script's `cotal history --force` with `cotal history clear --yes`. `--force` is refused
+  on every `history` form, `history clear` included, rather than clearing anything. Add `--dms` to
+  the explicit clear command only when the purge should include direct messages and the identity
+  holds that authority.
+- `history clear` accepts no channel argument, read filters or `--follow`. It purges every channel
+  in the selected space; these inputs are refused rather than treated as a selective purge.
+- Bare `history` reads channels within the caller's read grant. It never clears stored messages.
+  Use `--json` and `result.items` for scripts; the human report is not a parsing target.
+- A user-auth history read uses the connection's channel grant. DM audit history and stream-sequence
+  cursors are not available through that ordinary human credential. Use a time with `--since`.
+
+### Before the upgrade
+
+Find scripts that pass `--force` to `history` and change their explicit purge invocation. No stored
+state or credential backup is needed for this CLI-only transition. Keep the deployment's usual
+backup procedure before an intentional history purge; reads do not make a backup or restore data
+that retention has already removed.
+
+## Status output in 0.91.0
+
+`cotal status` writes one structured document with `--json`, takes `--plain` and `--all`, and exits by
+the structured outcome table. Nothing on a running mesh changes, and there is no outage window.
+Upgrading the `cotal` binary is the whole operation.
+
+### What stops working
+
+- `cotal status` exits 4 when it could not read part of what it reports, such as a PID record, the
+  folder's trust material, a persona catalog, the mesh registry or one of its records, or a user-auth login. It exited
+  0. An unreachable broker, a stopped process
+  or an unbound responder still exits 0.
+- The recorded meshes list checks only the selected mesh and reads `not checked` for the others. Pass
+  `--all` to check every one.
+- The report no longer lists the roster or prints a `cotal status` title line, and its standalone
+  hints moved to a `Hints` section at the end. Rows are labeled `name: value`. Human output is not a
+  parsing target; use `--json`.
+- `--components` is refused with `--json`, `--plain` or `--all`. Its exit, `0` to `3` by component
+  health, replaces the report's, so it does not exit 4 for a partial report.
+
+### Before the upgrade
+
+Search scripts and monitors for `cotal status`. A check that treats any nonzero exit of bare
+`status` as an outage should treat 4 as a report with unreadable parts. A script that read the
+roster from `status` should use `cotal ps` for managed seats.
+
+## Read command output in 0.91.0
+
+`cotal ps --json` now writes one JSON document instead of one JSON line per seat, and `ps`, `models`
+and `runtimes` exit by the structured outcome table. Nothing on a running mesh changes, and there is
+no outage window. Upgrading the `cotal` binary is the whole operation.
+
+### What stops working
+
+- A script that reads `cotal ps --json` line by line reads one envelope instead. The rows it read
+  are now `result.items`, each still the manager's row unchanged, and `result.managers` names each
+  manager instance and whether it answered. With `jq`, `cotal ps --json | jq -c '.result.items[]'`
+  prints the rows as before. Instance headers no longer go to stderr under `--json`.
+- An incomplete manager census, where a registered manager did not answer, refused or serves a
+  different contract, exits 4 instead of 1.
+- A mesh that `ps` or `models` cannot resolve or reach exits 2 instead of 1, and a space catalog
+  refresh that `ps` or `models` needed and could not get exits 2 instead of 1. Under `--json` each is
+  one `refused` envelope whose `error.code` names the reason.
+- `cotal models` exits 4 when a connector's catalog could not be read, and `cotal runtimes` exits 4
+  when an installed runtime provider fails to load. Both exited 0. `cotal models --agent <name>`
+  exits 5 when that one catalog could not be read. OpenCode 2.x, which has no catalog the CLI can
+  list, is reported `supported: false` with the reason in `unavailable` and does not fail the read.
+- The human reports of `ps`, `models` and `runtimes` are tables now, and `ps --wide` prints one
+  labeled record per seat instead of a facts line under each row. Human output is not a parsing
+  target; use `--json`.
+
+### Before the upgrade
+
+Search scripts for `cotal ps --json`, and for checks of the exit status of `ps`, `models` or
+`runtimes`. Change line-by-line reads of `ps --json` to read `result.items` from the one document.
+
+## Shell completion script in 0.91.0
+
+`cotal completion <shell>` is now `cotal completion script <shell>`, and bare `cotal completion`
+reports which shells have the stub instead of printing usage. Nothing on a running mesh changes, and
+there is no outage window. Upgrading the `cotal` binary is the whole operation.
+
+### What stops working
+
+A startup line written by hand that runs the old form, such as `source <(cotal completion bash)` or
+the PowerShell profile line `cotal completion powershell | Out-String | Invoke-Expression`, now
+loads no completion. The command exits 1, prints nothing on stdout, so the shell sources nothing,
+and names the replacement on stderr. Replace the line with its new form:
+
+```bash
+source <(cotal completion script bash)                               # bash
+source <(cotal completion script zsh)                                # zsh
+cotal completion script fish | source                                # fish
+cotal completion script powershell | Out-String | Invoke-Expression  # PowerShell $PROFILE
+```
+
+A cached stub from an earlier release keeps calling the hidden `__complete` entry. The new ownership-aware
+installer does not adopt it just because its text matches a generated script. Review unrecorded
+stubs and custom startup wiring manually before replacing them. Nothing automatically rewrites
+a hand-edited startup file. On Linux and macOS, `completion install powershell` asks the
+installed shell for its current-user all-hosts profile before adding an owned block;
+it does not adopt an existing manual line. Windows profile editing still requires a
+manual review and the printed script.
+
+New installs record their stub hash and startup block. Reinstall and update refresh unchanged
+recorded stubs at the same path. Update adds no startup block and does not restore a stub the user
+removed. Uninstall removes only unchanged recorded material. Modified or unowned material is
+preserved with a diagnosis. Reopening the shell is necessary to stop using functions already
+loaded in its parent process.
+
+## CLI command resolution in 0.91.0
+
+The CLI now resolves and validates a command before it seeds connectors or writes configuration.
+Nothing on a running mesh changes. Brokers, managers, seats, credentials and mesh records need no
+migration and no restart, and there is no outage window. Upgrading the `cotal` binary is the whole
+operation. What changes is what two kinds of command line do.
+
+### What stops working
+
+- `cotal -v` no longer prints the version. It exits 1 and names `cotal version` and `cotal -V`. A
+  script that reads the version this way must use `cotal version`, `cotal --version` or `cotal -V`.
+- The words `sp`, `a`, `s`, `r`, `x` and `h` are now aliases of built-in commands (`spawn`,
+  `attach`, `status`, `run`, `ext` and `history`). An installed extension that provides a command
+  under one of those words still loads, but the built-in wins and every run prints a warning naming
+  the extension. Remove or update that extension to clear it. `cotal ext add` refuses a new
+  extension whose name or alias is already claimed.
+
+### Before the upgrade
+
+Search scripts and shell aliases for `cotal -v`, and run `cotal ext list` to see whether an
+installed extension provides one of the words above. There is nothing to snapshot. The extension
+manifest an older binary wrote is read as before.
+
+## Messaging commands in 0.91.0
+
+`cotal channels` is now `cotal channel`, and `cotal send` names its destination with a flag instead
+of a `dm`, `msg` or `ask` word. Nothing on a running mesh changes, and there is no outage window.
+Upgrading the `cotal` binary is the whole operation.
+
+### What stops working
+
+- `cotal channels`, with or without `list`, `set` or `default`, exits 1 as an unknown command. Bare
+  `cotal channel` lists the channels, `cotal channel set <name>` saves one channel's settings, and
+  `cotal channel defaults` reads or updates the space-wide defaults.
+- `cotal send dm <agent> "<text>"`, `cotal send msg <channel> "<text>"` and
+  `cotal send ask <role> "<text>"` exit 1 with `USAGE_INVALID`, because they name no destination
+  flag. Use `cotal send -t <agent> "<text>"`, `cotal send -c <channel> "<text>"` and
+  `cotal send -r <role> "<text>"`.
+
+### Before the upgrade
+
+Search scripts and shell aliases for `cotal channels` and `cotal send`, and change each line to the
+new form above.
 
 ## Managed Claude workspace trust in 0.80.0
 
@@ -1457,3 +2147,39 @@ A section is written for the operator, not for the reviewer. It answers, in this
 **Where an answer was not measured, say so in the document rather than guessing.** An operator who
 knows which half of a recommendation is reasoned and which is measured can plan around it; one who
 finds out afterwards cannot.
+
+## Handle redemption in 0.91.0
+
+`auth redeem <private-handle-file>` selects the native auth target, then refuses unsupported
+conferring-handle redemption without reading the file or issuing credentials. It does not redirect
+the artifact into agent enrollment or interactive-session redemption. Offline handle inspection
+still labels signatures, revocation and holder currency not checked. An explicit `--space`
+requests static-registry signature inspection with a native ephemeral operator reader. It checks
+signatures, issuer scope, presented links and required revocation records without establishing
+presenter identity, live epochs or use authority. It confers no holder credential, persists no
+reader credential, and never turns missing or stale native records into verified offline success.
+Open/user-auth inspection and conferring redemption remain unsupported.
+
+## Dashboard service transition in 0.91.0
+
+The matching dashboard package now registers a service preset and hidden native child, not a
+public web command. An older cached command descriptor is hidden and refuses with the matching
+extension-update remedy before importing provider code or repairing the install. `update` remains
+explicit; `service start web` never installs a deliberately absent extension.
+
+Configure the saved web definition with its existing registered static-auth root, one protected
+credential file and explicit read-only intent. The service retains required TLS, creates no caller
+or channel-purger credential, opens no browser and prints no bootstrap secret into logs. The page
+marks it read-only and hides delete; the server independently rejects that mutation before any
+alternate connection. The private session file holds the full-launch bootstrap; logs give its
+reference only. User-auth/open targets and OS installation remain unsupported in this route.
+Existing legacy process records are still observed, never silently adopted. An already-running
+legacy dashboard is not restarted or converted by loading metadata. See [dashboard setup](watch-a-mesh.md#web-dashboard).
+
+## Registered lifecycle retirement in 0.91.0
+
+`auth retire <full-lifecycle-uid> [--yes]` has closed UID/space input, but the standalone CLI still
+lacks a supported native retirement instrument carrying its own current serve identity and gate.
+It refuses without publishing a request. It does not borrow the manager's identity, treat --yes as
+a grant, or call the host's interactive/managed loopback doors as a substitute. This remains an
+explicit authority gate, not a completed retirement operation.

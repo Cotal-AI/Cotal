@@ -118,15 +118,18 @@ const cmd = (name: string): Command => {
 };
 /** Run a REAL CLI command exactly as the dispatcher would: kernel-parsed argv → run(). */
 const run = (name: string, argv: string[]) => cmd(name).run(parseCommandArgs(cmd(name), argv));
-/** Capture console.log output of a run (ps prints rows). */
+/** Capture what a run writes on stdout (ps prints a report, or one envelope under --json). */
 async function capture(fn: () => Promise<void>): Promise<string> {
   let out = "";
   const real = console.log;
+  const write = process.stdout.write;
   console.log = (...a: unknown[]) => void (out += a.join(" ") + "\n");
+  process.stdout.write = ((chunk: string) => ((out += chunk), true)) as typeof process.stdout.write;
   try {
     await fn();
   } finally {
     console.log = real;
+    process.stdout.write = write;
   }
   return out;
 }
@@ -188,21 +191,24 @@ try {
   const psOut = await capture(() => run("ps", ["--space", SPACE]));
   ok("ps lists the detached agent under its OVERRIDDEN identity", /bard/.test(psOut) && !/poet/.test(psOut), psOut);
 
-  // B2 (#651, #905): the same rows, three presentations. BARE is one compact identity line per
-  // seat, including model and optional requested variant. WIDE adds one dim line of EXTRA operational
-  // facts without repeating that identity; pid is real and uid/instance/host attribute the seat.
-  // JSON is the manager's row verbatim, one line, parseable, fields equal to what the launch sent.
+  // B2 (#651, #905): the same rows, three presentations. BARE is a table with one compact identity
+  // row per seat, including model and optional requested variant. WIDE is one labeled record per
+  // seat that adds the EXTRA operational facts without repeating that identity; pid is real and
+  // uid/instance/host attribute the seat. JSON is one envelope whose items are the manager's rows
+  // verbatim, fields equal to what the launch sent.
   const psBare2 = await capture(() => run("ps", ["--space", SPACE]));
+  const bareLines = psBare2.trim().split("\n");
   ok("bare ps stays compact and includes model plus requested variant identity",
-    psBare2.trim().split("\n").length === 1 && /e2e · fancy \(high\) · pty/.test(psBare2), psBare2);
+    bareLines.length === 2 && /^NAME\s+AGENT\s+PROCESS\s+MESH/.test(bareLines[0] ?? "") && /e2e · fancy \(high\) · pty/.test(bareLines[1] ?? ""), psBare2);
   const psWide = await capture(() => run("ps", ["--space", SPACE, "--wide"]));
   ok("ps --wide adds operational facts without duplicating model or requested variant",
-    /e2e · fancy \(high\) · pty/.test(psWide) && !/\n[^\n]*model fancy \(high\)/.test(psWide) && /pid \d+/.test(psWide) && /uid [a-z0-9]{26,}/.test(psWide) && /instance [a-z0-9]{26,}/.test(psWide) && /host /.test(psWide), psWide);
+    /agent:\s+e2e · fancy \(high\) · pty/.test(psWide) && !/model:?\s+fancy/.test(psWide) && /pid:\s+\d+/.test(psWide) && /uid:\s+[a-z0-9]{26,}/.test(psWide) && /instance:\s+[a-z0-9]{26,}/.test(psWide) && /host:\s+\S/.test(psWide), psWide);
   const psJson = await capture(() => run("ps", ["--space", SPACE, "--json"]));
-  let jsonRow: Record<string, unknown> | undefined;
-  try { jsonRow = JSON.parse(psJson.trim().split("\n").find((l) => l.includes("bard")) ?? ""); } catch { /* graded below */ }
-  ok("ps --json emits the manager's row verbatim, one JSON line",
-    jsonRow !== undefined && jsonRow.name === "bard" && jsonRow.model === "fancy" && jsonRow.variant === "high" && typeof jsonRow.pid === "number" && typeof jsonRow.lifecycleUid === "string" && typeof jsonRow.cwd === "string", psJson);
+  let psEnvelope: { outcome?: string; result?: { items?: Record<string, unknown>[] } } | undefined;
+  try { psEnvelope = JSON.parse(psJson); } catch { /* graded below */ }
+  const jsonRow = psEnvelope?.result?.items?.find((row) => row.name === "bard");
+  ok("ps --json is one envelope whose items carry the manager's row verbatim",
+    psEnvelope?.outcome === "ok" && psJson.trim().split("\n").length === 1 && jsonRow !== undefined && jsonRow.model === "fancy" && jsonRow.variant === "high" && typeof jsonRow.pid === "number" && typeof jsonRow.lifecycleUid === "string" && typeof jsonRow.cwd === "string", psJson);
 
   // B3 (#651, #905): a variant WITHOUT a model survives in the compact identity and JSON. The wide
   // continuation must not repeat it now that provenance lives in the identity row.
@@ -213,15 +219,14 @@ try {
     lutWide = await capture(() => run("ps", ["--space", SPACE, "--wide"]));
     if (!/lutist/.test(lutWide)) await sleep(250);
   }
-  // The identity is on the seat line; operational wide facts are on the continuation immediately after.
-  const lutLines = lutWide.split("\n");
-  const lutIdx = lutLines.findIndex((l) => /lutist/.test(l));
-  const lutFacts = lutIdx >= 0 ? (lutLines[lutIdx + 1] ?? "") : "";
+  // Each seat is one record; the identity is its agent field and the operational facts follow it.
+  const lutRecord = lutWide.split("\n\n").find((record) => /name:\s+lutist/.test(record)) ?? "";
+  const lutFacts = lutRecord.split("\n").filter((line) => !/^\s*(name|agent|process|mesh|auth):/.test(line)).join("\n");
   ok("ps --wide keeps a variant-without-model in identity and out of operational facts",
-    lutIdx >= 0 && /e2e · variant high · pty/.test(lutLines[lutIdx] ?? "") && !/variant high|model /.test(lutFacts), lutWide);
+    /agent:\s+e2e · variant high · pty/.test(lutRecord) && !/variant high|model/.test(lutFacts), lutWide);
   const lutJsonOut = await capture(() => run("ps", ["--space", SPACE, "--json"]));
   let lutJson: Record<string, unknown> | undefined;
-  try { lutJson = JSON.parse(lutJsonOut.trim().split("\n").find((l) => l.includes("lutist")) ?? ""); } catch { /* graded below */ }
+  try { lutJson = (JSON.parse(lutJsonOut) as { result: { items: Record<string, unknown>[] } }).result.items.find((row) => row.name === "lutist"); } catch { /* graded below */ }
   ok("ps --json carries the variant and omits model for a variant-only pin",
     lutJson?.variant === "high" && !("model" in (lutJson ?? {})), lutJsonOut);
   // Tear lutist down so it does not linger into the single-seat teardown assertion below.

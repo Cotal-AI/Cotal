@@ -102,7 +102,7 @@ export function writeLaunchSpec(root: string, spec: MeshLaunchSpec, opts: { upda
 
 /** A channel's registry card (description/instructions/replay…) in the shape `seedChannelRegistry`
  *  writes. Oversize description/instructions are rejected at the write path. */
-function cardOf(ch: ResolvedChannel): ChannelConfig {
+export function cardOf(ch: ResolvedChannel): ChannelConfig {
   return {
     ...(ch.description !== undefined ? { description: ch.description } : {}),
     ...(ch.instructions !== undefined ? { instructions: ch.instructions } : {}),

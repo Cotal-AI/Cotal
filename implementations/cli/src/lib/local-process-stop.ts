@@ -4,7 +4,7 @@
 import { closeSync, existsSync, linkSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
-  identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, localProcessPath, parsePid, probeLiveness,
+  CommandFailure, commandIsCotalServiceManager, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, localProcessPath, parsePid, probeLiveness,
   readPidfile, readProcessCommand, removePidPair, requestLocalStop, stopReservationPath, verifyIdentityPin,
   type LocalProcess, type LocalProcessContext,
 } from "@cotal-ai/workspace";
@@ -164,6 +164,11 @@ export async function stopLocalProcess(
       stopped = true;
       return true;
     }
+    // Native manager service custody exists only on Linux. win32 has no argv source, so its
+    // cooperative stop of a pinned legacy manager is not an unreadable-role ambiguity.
+    const role = readProcessCommand(pid);
+    const windowsCooperative = cooperative && role.kind === "unreadable";
+    if (role.kind === "command" && commandIsCotalServiceManager(role.command) || component.name === "manager" && role.kind !== "command" && !windowsCooperative) throw new CommandFailure("refused", "UNSUPPORTED", "legacy shutdown cannot control a native manager service or an unreadable manager role; use service stop with its exact owned instance and native impact review. No signal was sent");
     authorized = true;
     const attempt = {
       target: identity.kind === "match" ? identity.record : { pid },

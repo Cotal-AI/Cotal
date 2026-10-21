@@ -80,6 +80,7 @@ import {
   invokeCommand,
   digestIdToken,
 } from "@cotal-ai/core";
+import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
@@ -194,7 +195,7 @@ import {
   type Identity,
   type ServiceNameAuthority,
 } from "@cotal-ai/core";
-import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerConnectorStatus, type ManagerStaticReconciliationFailure, type ManagerStaticReconciliationStatus, type ManagerStaticReconciliationSweep, type ManagerStatus } from "./manager-service-contract.js";
+import { MANAGER_ENDPOINT, managerClusterArtifacts, managerCommandDefs, managerContractArtifactValues, type ManagerConnectorStatus, type ManagerStaticReconciliationFailure, type ManagerStaticReconciliationStatus, type ManagerStaticReconciliationSweep, type ManagerStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 import {
@@ -214,6 +215,10 @@ import {
   StaticSlotReadError,
   STATIC_SLOT_READ_FAILED_DETAIL,
 } from "./static-lifecycle.js";
+import {
+  CHAT_ALIAS_PREFIX, CHAT_EXPIRY_CONCURRENCY, ChatSessionExpiry, chatOpenLists, chatRetireRefusal, drawChatAlias, isChatAlias, readChatOpenInput, readChatRetireInput,
+  sealChatAdmission, type ExpiringChatSession,
+} from "./chat-session.js";
 
 // Capture the loaded package version before an installation can replace its files.
 const MANAGER_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -418,6 +423,9 @@ export interface ManagerOptions {
   /** Spawn backend. `auto` (default) → pty; external runtimes are explicit-only. */
   runtime?: RuntimeMode;
   workspaceRoot?: string;
+  /** Trusted embedding hook after native identity selection, before endpoint construction.
+   *  It receives no key, credential or readiness claim. A rejection aborts this start. */
+  onServiceIdentity?: (identity: ManagerServiceIdentity) => void | Promise<void>;
   /** The selected registration requires every launched connector session to publish events. */
   eventsRequired?: boolean;
   /** Port for the console + attach HTTP/WS endpoint. 0 → ephemeral. */
@@ -574,6 +582,19 @@ export interface ManagerStopOptions {
   /** Stop and deprovision managed agents. The default releases detachable local custody and stops
    *  only the in-process seats that cannot outlive the manager. */
   withAgents?: boolean;
+}
+
+/** Public identity selected by this manager before constructing its endpoint. Not a grant. */
+export interface ManagerServiceIdentity {
+  endpoint: string;
+  instanceId: string;
+  principal: EpCaller;
+}
+
+/** Manager-owned local data for a workstation adapter, never a caller or serve grant. */
+export interface ManagerServiceObservation {
+  registration: ManagerServiceIdentity & { epoch: number };
+  stopImpact: ManagerStopImpact;
 }
 
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
@@ -1307,6 +1328,7 @@ export class Manager {
    *  {@link provisionEndpointGateOpen} idempotent (no core barrier change) and gives verified
    *  eviction a stable target (the predecessor's connections under this principal). Set in start(). */
   private managerServeIdentity!: Identity;
+  private readonly onServiceIdentity?: ManagerOptions["onServiceIdentity"];
   /** The manager's v0.4 service-endpoint serve state — the serve handle +
    *  its dedicated connection, the STABLE serve identity (renewals re-mint the same nkey), the
    *  branded serve grant, and the CURRENT credential (the connection's authenticator reads it on
@@ -1417,6 +1439,15 @@ export class Manager {
   /** Static aliases whose startup exact-op terminal is still in flight. Scoped per alias: control
    * serves during the sweep, but no caller can reuse or attach an alias the sweep still owns. */
   private readonly reconcilingAliases = new Set<string>();
+  /** In-flight static chat-session terminals, by lifecycle UID, so every caller that retires one
+   *  session joins one terminal instead of racing its CAS sequence. */
+  private readonly chatRetirements = new Map<string, Promise<void>>();
+  /** The expiry side of every chat session this process admitted and nothing retired sooner. */
+  private readonly chatExpiry = new ChatSessionExpiry((session) => this.expireStaticChatSession(session), {
+    retryDelaysMs: STATIC_RECONCILE_RETRY_DELAYS_MS,
+    concurrency: CHAT_EXPIRY_CONCURRENCY,
+    log: (line) => console.error(line),
+  });
   /** Current failed/recovered static reconciliation coordinates. This is an operator snapshot, not
    *  lifecycle authority: every re-drive re-reads broker KV and re-runs planStaticSlotResume. */
   private readonly staticReconcileItems = new Map<string, StaticReconcileItem>();
@@ -1546,6 +1577,7 @@ export class Manager {
   }
 
   constructor(opts: ManagerOptions) {
+    if (opts.onServiceIdentity !== undefined && typeof opts.onServiceIdentity !== "function") throw new Error("manager onServiceIdentity must be a trusted embedding callback");
     if (opts.execution !== undefined && opts.execution !== "runtime" && opts.execution !== "none")
       throw new Error(`unknown manager execution capability ${JSON.stringify(opts.execution)}`);
     if (opts.execution === "none" && (!opts.pooled || !opts.remoteAuthority || opts.runtime !== undefined))
@@ -1561,6 +1593,7 @@ export class Manager {
     this.servers = opts.servers;
     this.name = opts.name ?? "manager";
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
+    this.onServiceIdentity = opts.onServiceIdentity;
     this.eventsRequired = opts.eventsRequired === true;
     this.maxSessions = opts.maxSessions;
     this.remoteAuthority = opts.remoteAuthority;
@@ -1638,6 +1671,36 @@ export class Manager {
   adoptRuntimeHandle(reference: RuntimeReference): AgentHandle {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     return requireRuntimeAdopt(this.requiredRuntime, reference);
+  }
+
+  /** Snapshot this embedding's own registration and stop policy. It is not a fresh serving
+   *  response, registration-leader read or authorization for another process to act. Wire callers
+   *  still use status through its fresh owner/admin visibility gate. No credential or URL leaves. */
+  localServiceObservation(): ManagerServiceObservation | undefined {
+    const state = this.serviceServe;
+    if (!state) return undefined;
+    const identity = this.serviceIdentityObservation();
+    if (state.grant.endpoint !== identity.endpoint || state.grant.instanceId !== identity.instanceId || state.grant.owner !== identity.principal.owner) throw new Error("the manager's local service observation does not match its owned serve incarnation");
+    const stopImpact = this.managerStatusData(undefined).stopImpact;
+    if (!stopImpact) throw new Error("the manager did not expose its own native stop policy");
+    // The local receipt keeps its revision-32 shape: an older controller's closed reader refuses an
+    // extra key. The preserved-exit check reads the binding through `localPreservation` instead.
+    const { preservation: _preservation, ...ordinary } = stopImpact;
+    return { registration: { ...identity, epoch: state.grant.epoch }, stopImpact: ordinary };
+  }
+
+  /** The attempt and inventory digest this embedding holds while maintenance is not `active`, for
+   *  its own native child only. Absent when active or before an inventory exists. */
+  localPreservation(): { attemptId: string; inventorySha256: string } | undefined {
+    return this.managerStatusData(undefined).stopImpact?.preservation;
+  }
+
+  private serviceIdentityObservation(): ManagerServiceIdentity {
+    if (!this.managerInstanceId || !this.managerServeIdentity) throw new Error("manager native service identity has not been selected");
+    const principal: EpCaller = this.remoteAuthority
+      ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.serve, uid: this.managerLifecycleUid }
+      : { owner: DEV_OWNER, actor: this.managerServeIdentity.id, uid: this.managerLifecycleUid };
+    return Object.freeze({ endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId, principal: Object.freeze(principal) });
   }
 
   /** The console page URL (manager-hosted, loopback). */
@@ -1853,6 +1916,7 @@ export class Manager {
       }
       }
     }
+    await this.onServiceIdentity?.(this.serviceIdentityObservation());
     let creds: (() => Promise<string>) | undefined;
     let id: string | undefined;
     if (this.remoteAuthority) {
@@ -3030,11 +3094,15 @@ export class Manager {
       throw new Error(`manager shutdown could not prove every seat exited: ${failures.join("; ")}`);
   }
 
+  private isProcessBoundSeat(agent: ManagedAgent): boolean {
+    return agent.handle.kind === "pty" && typeof agent.handle.release !== "function";
+  }
+
   /** Drop this manager's local custody of every seat that can outlive it. A pty seat whose handle
    *  cannot be released lives in this process and closes with it, so it is left for {@link stop} to
    *  stop instead. */
   private releaseManagedAgents(): string[] {
-    const managed = [...this.agents.values()].filter((a) => !(a.handle.kind === "pty" && typeof a.handle.release !== "function"));
+    const managed = [...this.agents.values()].filter((a) => !this.isProcessBoundSeat(a));
     const failures: string[] = [];
     for (const a of managed) {
       try {
@@ -3134,6 +3202,7 @@ export class Manager {
     this.leaseStopping = true;
     this.transcripts?.stop();
     this.staticReconcileStopping = true;
+    this.chatExpiry.stop();
     const starting = this.startTask;
     for (const item of this.staticReconcileItems.values()) {
       if (item.timer) clearTimeout(item.timer);
@@ -3165,7 +3234,7 @@ export class Manager {
         else {
           // An in-process seat cannot be detached from the process that is exiting, so the default
           // stop stops and deprovisions it as `withAgents` does instead of orphaning its footprint.
-          const inProcess = [...this.agents.values()].filter((a) => a.handle.kind === "pty" && typeof a.handle.release !== "function");
+          const inProcess = [...this.agents.values()].filter((a) => this.isProcessBoundSeat(a));
           releaseFailures = this.releaseManagedAgents();
           await this.teardownManagedAgents(inProcess);
         }
@@ -3186,6 +3255,11 @@ export class Manager {
         failures.push(`${name}: ${rejectionText(e)}`);
       }
     };
+    // The expiry that would end a chat session stops with this process, and nothing can adopt one,
+    // so an active stop retires every session this process admitted, under either agent policy, as
+    // it does an in-process seat. A preserving stop leaves them to the next start's sweep.
+    if (this.maintenanceState === "active" && !this.resumeRequired) await step("retire chat sessions", () => this.retireChatSessionsOnStop());
+    else this.reportChatSessionsLeftAtStop(this.resumeRequired ? "this manager is waiting for a resume" : "this manager is preserving its state");
     // A seat that may still be alive keeps this instance's leases and registration (see
     // teardownManagedAgents): they lapse on their TTL instead of being handed to a successor.
     if (seatFailure === undefined) {
@@ -3592,6 +3666,27 @@ export class Manager {
     }
   }
 
+  /** `status` only: {@link serveGated}, except that a fully preserved manager, and an active one
+   *  launched for a resume that has not committed it yet, still answer it. A preserved-exit stop's
+   *  caller-attributed preview needs the preserved manager's stop impact, and a resumed service's
+   *  readiness reads the same status; the maintenance fence refuses every other command in both
+   *  states. The read is counted in `lifecycleInFlight` like any admitted operation and released in
+   *  `finally`, so a drain waits at most for one status snapshot; the membership gate still
+   *  applies. `preserving` and a stopping manager stay fenced. Status writes nothing. */
+  private async serveObservation<T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> {
+    const preserved = this.maintenanceState === "preserved" && !this.resumeRequired;
+    const resumePending = this.maintenanceState === "active" && this.resumeRequired;
+    if (this.leaseStopping || !preserved && !resumePending) return this.serveGated(ctx, fn);
+    const membership = this.lifecycleMembershipRefusal(principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key);
+    if (membership) throw new EpEnvelopeError("permission-denied", membership);
+    this.lifecycleInFlight++;
+    try {
+      return await fn();
+    } finally {
+      this.releaseLifecycle();
+    }
+  }
+
   /** The ep door's ADMIN flag for a caller. Static mesh: `true` — the
    *  admin-grade rows (any-mode despawn/attach, the `manager.admin` family, `launch`) are minted
    *  only into operator instruments (§13.2: `any` is operator-policy-mintable; the agent/spawn
@@ -3763,7 +3858,7 @@ export class Manager {
     return managerCommandDefs({
       // A remote Manager files every seat under its own owner, so only a user mesh's shared local
       // Manager narrows the count, and status never waits on a remote admin check.
-      status: (ctx) => this.serveGated(ctx, async () => this.managerStatusData(this.remoteAuthority ? undefined : await this.psOwnerFilter(ctx.subject.caller, false))),
+      status: (ctx) => this.serveObservation(ctx, async () => this.managerStatusData(this.remoteAuthority ? undefined : await this.psOwnerFilter(ctx.subject.caller, false))),
       ps: (ctx) => this.serveGated(ctx, async () => this.list(await this.psOwnerFilter(ctx.subject.caller, false))),
       inspect: (ctx) => this.serveGated(ctx, async () => {
         const name = String(args(ctx).name ?? "").trim();
@@ -3817,7 +3912,11 @@ export class Manager {
           ]);
         let observed;
         try {
-          observed = await listStaticSlotObservations(recordsKv, DEV_OWNER, this.managerInstanceId);
+          const query = args(ctx);
+          observed = await listStaticSlotObservations(recordsKv, DEV_OWNER, this.managerInstanceId, {
+            ...(query.names === undefined ? {} : { names: query.names as string[] }),
+            ...(query.includeRetired === true ? { includeRetired: true } : {}),
+          });
         } catch (error) {
           throw new EpEnvelopeError("unavailable", `the durable static slot state could not be scanned: ${rejectionText(error)}`, [
             { kind: STATIC_SLOT_READ_FAILED_DETAIL, name: "*", record: error instanceof StaticSlotReadError ? error.record : "slot-or-head", operation: "scan" },
@@ -3845,7 +3944,7 @@ export class Manager {
       resolveCwd: (ctx) => this.serveGated(ctx, () => this.resolveSpawnCwd(args(ctx).cwd)),
       resolveAgent: (ctx) => this.serveGated(ctx, async () => {
         const persona = await this.spawnPersona(args(ctx) as Pick<StartAgentOpts, "name" | "config" | "agent" | "defaultAgent">, callerOf(ctx), ctx.subject.caller);
-        if ("error" in persona) throw new EpEnvelopeError(persona.error.startsWith("no persona") ? "not-found" : "failed-precondition", persona.error);
+        if ("error" in persona) throw new EpEnvelopeError(persona.code ?? (persona.error.startsWith("no persona") ? "not-found" : "failed-precondition"), persona.error);
         return { agent: persona.agent };
       }),
       // `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
@@ -3894,6 +3993,10 @@ export class Manager {
       cancel: (ctx) => this.serveGated(ctx, () => this.serveTurnCancel(ctx)),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
+      // Reach is the broker's: only operator instruments carry these rows. The serve gate is the
+      // maintenance fence, so neither runs while a shutdown or resume holds control.
+      chatSessionOpen: (ctx) => this.serveGated(ctx, () => this.openStaticChatSession(args(ctx))),
+      chatSessionRetire: (ctx) => this.serveGated(ctx, () => this.retireStaticChatSession(args(ctx))),
       listPersonas: (ctx) => this.serveGated(ctx, () => unwrap(this.opListPersonas(callerOf(ctx), false))),
       showPersona: (ctx) => this.serveGated(ctx, () => {
         const r = this.opShowPersona(args(ctx), callerOf(ctx), false);
@@ -4230,6 +4333,9 @@ export class Manager {
         parent: spawnerPr ? opts.spawner : undefined,
         label: opts.label,
         lifecycleUid: opts.lifecycleUid,
+        // This manager attests its own persisted logical instance id: the same id a static slot
+        // records as its owner. Recovery binds a managed row to a manager only through this.
+        custody: { kind: "local-manager", instanceId: this.managerInstanceId },
       });
       // Durables + ACL row, LIFECYCLE-keyed (SPEC 13.1) — the same onboarding as static agents minus
       // the mint (a user agent's credential is its bearer, minted by the callout per connect from the
@@ -5601,7 +5707,7 @@ export class Manager {
       if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
       try {
         const catalog = await connector.listModels({ refresh });
-        return { agent: connector.name, supported: true, ...catalog };
+        return { agent: connector.name, supported: catalog.unavailable === undefined, ...catalog };
       } catch (e) {
         return { agent: connector.name, supported: true, models: [], error: rejectionText(e) };
       }
@@ -5747,7 +5853,7 @@ export class Manager {
     opts: Pick<StartAgentOpts, "name" | "config" | "agent" | "defaultAgent" | "resolved">,
     spawner: string | undefined,
     authenticatedCaller: EpCaller | undefined,
-  ): Promise<{ ref: string; configPath: string; def: AgentDef | undefined; agent: string } | { error: string }> {
+  ): Promise<{ ref: string; configPath: string; def: AgentDef | undefined; agent: string } | { error: string; code?: "bad-request" }> {
     // Both config-taking wire commands and direct/roster starts enter here before interpreting
     // a path. A resolved manifest is host-built authority over its own materialized resource,
     // never a wire-supplied config override (the public schemas accept no `resolved` field).
@@ -5792,9 +5898,9 @@ export class Manager {
     let def: AgentDef | undefined;
     if (!opts.resolved) {
       try {
-        def = loadAgentFile(configPath);
+        def = loadLaunchPersonaFile(configPath);
       } catch (e) {
-        return { error: rejectionText(e) };
+        return { error: rejectionText(e), ...(e instanceof PersonaSourceError ? { code: "bad-request" as const } : {}) };
       }
       // Shared operator files remain launchable. Owned content follows the catalog's visibility
       // decision before connector loading or any allocation. A hosted run acts for its admission;
@@ -5825,7 +5931,7 @@ export class Manager {
       spawner = opts.delegatedIntent.parent;
     }
     const persona = await this.spawnPersona(opts, spawner, authenticatedCaller);
-    if ("error" in persona) return { ok: false, error: persona.error };
+    if ("error" in persona) return { ok: false, error: persona.error, ...(persona.code ? { code: persona.code } : {}) };
     const { ref, configPath, def, agent } = persona;
 
     // Materialize the requested connector up front — the ONE async step in the spawn path (a lazy
@@ -5837,7 +5943,11 @@ export class Manager {
     try {
       connector = await this.resolveConnector(agent);
     } catch (e) {
-      return { ok: false, error: rejectionText(e) };
+      const error = rejectionText(e);
+      // An action refusal here precedes capacity, allocation and onAccepted. Preserve that proof
+      // through serveSpawnGoal without changing the direct startAgent ControlReply contract.
+      if (hooks?.onAccepted) throw new EpEnvelopeError("failed-precondition", error, undefined, "not-executed");
+      return { ok: false, error };
     }
 
     const readinessTimeoutMs = connector.readinessTimeoutMs ?? this.readinessTimeoutMs;
@@ -6112,6 +6222,11 @@ export class Manager {
     } else {
       name = this.uniqueName(identityName);
     }
+    // The `chat_` prefix belongs to static chat sessions, whose aliases only `chat-session-open`
+    // draws. Checked once the name is fixed by either branch above, so a persona name, a numbered
+    // collision, a manifest name and a `--name` override all meet it, and before the reservation.
+    if (name.startsWith(CHAT_ALIAS_PREFIX))
+      return { ok: false, error: `the name "${name}" starts with "${CHAT_ALIAS_PREFIX}", which is reserved for chat sessions; pick another name` };
     // Set once the agent's footprint (durables + creds, or the user-mode grant + secret files)
     // exists; cleared when a live slot takes ownership. If it survives to `finally`, the spawn threw
     // AFTER provisioning (buildLaunch / runtime.spawn) — the orphan-rollback tears it down. Carries
@@ -7704,6 +7819,7 @@ export class Manager {
   private managerStatusData(ownerFilter: string | undefined): ManagerStatus {
     return {
       instanceId: this.managerInstanceId,
+      lifecycleUid: this.managerLifecycleUid,
       host: hostname(),
       version: MANAGER_VERSION,
       execution: this.execution,
@@ -7716,6 +7832,34 @@ export class Manager {
       connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
       classSpawn: this.classSpawnEnabled(),
       staticReconciliation: this.staticReconciliationStatus(),
+      stopImpact: {
+        agentScope: ownerFilter === undefined ? "manager" : "owner-filtered",
+        observedAt: new Date().toISOString(),
+        maintenance: this.maintenanceState,
+        resumeRequired: this.resumeRequired,
+        stopping: this.leaseStopping,
+        lifecycleInFlight: this.lifecycleInFlight,
+        reservedLaunches: this.reserved.size,
+        retirementsPending: this.retiring.size,
+        deprovisioningInFlight: this.deprovisioningFlight.size,
+        staticReconciliationInFlight: this.staticReconcileSweepsInFlight,
+        agents: [...this.agents.values()]
+          .filter((a) => ownerFilter === undefined || a.userOwner === ownerFilter)
+          .map((a): ManagerStopImpact["agents"][number] => ({
+            name: a.name,
+            id: a.id,
+            lifecycleUid: a.lifecycleUid,
+            mode: a.handle.kind,
+            defaultAction: this.maintenanceState !== "active" || this.resumeRequired
+              ? "stop-retaining-state" : this.isProcessBoundSeat(a) ? "stop" : "release-custody",
+            withAgentsAction: this.maintenanceState !== "active" || this.resumeRequired ? "stop-retaining-state" : "stop",
+          })),
+        // The same digest form `opResumePreserved` binds, so a preserved-exit stop and the later
+        // resume name one inventory.
+        ...(this.maintenanceState !== "active" && this.preservationAttemptId && this.preservationInventory
+          ? { preservation: { attemptId: this.preservationAttemptId, inventorySha256: createHash("sha256").update(JSON.stringify(this.preservationInventory)).digest("hex") } }
+          : {}),
+      },
     };
   }
 
@@ -9811,6 +9955,227 @@ export class Manager {
     }
   }
 
+  /** `chat-session-open`: admit one static chat session. The manager draws the `chat_` alias and a
+   *  fresh nkey identity, then runs the same native steps a static spawn does: the slot intent and
+   *  the shared activation saga, the provisioner's bind-only DM and DELIVER durables plus the ACL
+   *  row, and the agent-profile mint. The leaf carries the spawn's three lists under the spawn's
+   *  rules (`resolveReadAcl`, a default-deny post list, the foreign event-channel refusal) and
+   *  nothing else: no role (so no TASK queue), no capabilities, no endpoint rows, no issuance. It
+   *  expires at `ttl` with no renewal, because no managed row exists to renew it.
+   *
+   *  The session is registered with the tracker before the first durable write and scheduled for
+   *  its expiry before the reply is sent, or after a rollback that did not complete, so this
+   *  process retires it at the expiry even when the reply is lost or the client never retires.
+   *
+   *  The credential is ledgered before it leaves this process (slot credentialId, then the `cred.`
+   *  row), so the static terminal marks the row revoked and verify-evicts the session's principal;
+   *  the broker keeps accepting the leaf until its expiry. The direct ledger write is deliberate:
+   *  the leaf is not an issuance, so the issuance seam, which writes the same row inside its
+   *  finalization, never runs for it, and without the row the terminal's eviction set would be
+   *  empty. The credential leaves only sealed to `sealTo`, bound to the space, this instance and
+   *  the reply's fields, so a reply printed anywhere carries no usable credential. A failure at
+   *  any step drives the terminal before the refusal is returned, and the refusal says whether it
+   *  completed. */
+  private async openStaticChatSession(raw: unknown): Promise<{ alias: string; actor: string; lifecycleUid: string; expiresAt: number; sealer: string; sealed: string }> {
+    if (!this.auth || this.userMode)
+      throw new EpEnvelopeError("unimplemented", "chat-session-open admits static chat sessions only, and this manager is not a static-auth manager", undefined, "not-executed");
+    const input = readChatOpenInput(raw);
+    if ("error" in input) throw new EpEnvelopeError("bad-request", input.error, undefined, "not-executed");
+    const lists = chatOpenLists(input);
+    if ("error" in lists) throw new EpEnvelopeError("bad-request", lists.error, undefined, "not-executed");
+    const alias = drawChatAlias();
+    const identity = newIdentity();
+    // The spawn's rule, against the drawn actor: a concrete event channel of any other principal is
+    // refused, and a wildcard is an ordinary grant.
+    const foreign = foreignEventChannels([...lists.allowSubscribe, ...lists.allowPublish], DEV_OWNER, identity.id);
+    if (foreign.length)
+      throw new EpEnvelopeError("bad-request",
+        `chat-session-open asks for another agent's event channel: ${foreign.join(", ")}. A session may be granted its OWN event plane and no other, because that plane carries the session's tool inputs and outputs. Grant a reader out of band rather than through a chat session: ${this.readerRemedy(DEV_OWNER, foreign[0]!)}`,
+        undefined, "not-executed");
+    const lifecycleUid = mintLifecycleUid();
+    const exp = Math.floor(Date.now() / 1000) + input.ttl;
+    const pin = { owner: DEV_OWNER, actor: identity.id, lifecycleUid, alias };
+    const session: ExpiringChatSession = { alias, actor: identity.id, lifecycleUid, channels: lists.allowSubscribe, expiresAt: exp * 1000 };
+    // Registered before the first durable write, so the startup sweep never mistakes this opening's
+    // provisioning row for a crashed spawn, and the stop knows it.
+    try {
+      this.chatExpiry.register(session);
+    } catch (e) {
+      throw new EpEnvelopeError("unavailable", rejectionText(e), undefined, "not-executed");
+    }
+    try {
+      await this.withLifecycleExecutor(pin, (t) =>
+        activateStaticLifecycle(t, { owner: DEV_OWNER, alias, actor: identity.id, lifecycleUid, managerInstance: this.managerLifecycleUid, ownerInstanceId: this.managerInstanceId }),
+      );
+      const creds = await this.withProvisioner((prov) =>
+        provisionAgent(prov, this.auth!, identity, { subscribe: lists.subscribe, allowSubscribe: lists.allowSubscribe, allowPublish: lists.allowPublish, lifecycleUid, expiresAt: exp }),
+      );
+      // The same credential id the issuance path derives, so a re-sent identical credential maps to
+      // the same row.
+      const credentialId = rawDigest(creds).replace("sha256:", "sha256-");
+      await this.withLifecycleExecutor(pin, async (t) => {
+        await recordSlotCredential(t, DEV_OWNER, alias, lifecycleUid, credentialId);
+        await appendStaticCredentialRow(t, { lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, identity.id).key, exp });
+        const slot = await readStaticSlot(t, DEV_OWNER, alias);
+        if (slot === undefined || slot.row.lifecycleUid !== lifecycleUid || slot.row.phase !== "provisioning")
+          throw new Error(`the static slot for "${alias}" is ${slot === undefined ? "absent" : `${slot.row.phase} at uid ${slot.row.lifecycleUid}`}, not this opening's provisioning intent`);
+        await casStaticSlot(t, { ...slot.row, phase: "active" }, slot.revision);
+      });
+      const { sealer, sealed } = sealChatAdmission({
+        space: this.space, managerInstanceId: this.managerInstanceId, alias, actor: identity.id, lifecycleUid, expiresAt: exp * 1000, sealTo: input.sealTo, creds,
+      });
+      this.chatExpiry.arm(lifecycleUid);
+      console.error(`chat session ${alias} admitted as ${identity.id} (uid ${lifecycleUid}), expires ${new Date(exp * 1000).toISOString()}`);
+      return { alias, actor: identity.id, lifecycleUid, expiresAt: exp * 1000, sealer, sealed };
+    } catch (e) {
+      // A confirmed rollback leaves a known state, a retired slot. An unconfirmed one does not, so
+      // the session stays registered and its expiry, or the stop, retries the same terminal.
+      let rollback: string | undefined;
+      try {
+        await this.chatTerminal(session);
+      } catch (r) {
+        rollback = rejectionText(r);
+        try {
+          this.chatExpiry.arm(lifecycleUid);
+        } catch (t) {
+          rollback += `; ${rejectionText(t)}`;
+        }
+      }
+      throw new EpEnvelopeError(e instanceof EpEnvelopeError ? e.code : "unavailable",
+        `chat-session-open did not complete for ${alias}: ${rejectionText(e)}; ${rollback === undefined ? "its rollback retired the slot" : `its rollback was not confirmed (${rollback}), so the slot stays held until a retire, its expiry here, this manager's stop, or the next start of this manager instance`}`,
+        undefined, rollback === undefined ? "executed" : "unknown");
+    }
+  }
+
+  /** `chat-session-retire`: end one static chat session through the native static terminal (ledger
+   *  row marked revoked, verified eviction of its principal's live connections, footprint cleanup,
+   *  gate and head retirement). It refuses before any effect unless {@link admitChatRetirement}
+   *  admits the request. A terminal that cannot complete answers `failed` with the reason, never
+   *  success; the slot stays held. The broker keeps accepting the leaf until its expiry either way. */
+  private async retireStaticChatSession(raw: unknown): Promise<{ outcome: "retired" | "alreadyRetired" | "failed"; reason?: string }> {
+    if (!this.auth || this.userMode)
+      throw new EpEnvelopeError("unimplemented", "chat-session-retire retires static chat sessions only, and this manager is not a static-auth manager", undefined, "not-executed");
+    const input = readChatRetireInput(raw);
+    if ("error" in input) throw new EpEnvelopeError("bad-request", input.error, undefined, "not-executed");
+    if (await this.admitChatRetirement(input) === "alreadyRetired") return { outcome: "alreadyRetired" };
+    try {
+      await this.chatTerminal({ ...input, channels: this.chatExpiry.channels(input.lifecycleUid) });
+    } catch (e) {
+      return { outcome: "failed", reason: `retirement pending: ${rejectionText(e)}` };
+    }
+    return { outcome: "retired" };
+  }
+
+  /** The expiry cleanup's retirement of one session this process admitted. It is lifecycle work, so
+   *  it is admitted like a control call and a stop drains it. A throw is a failure the tracker
+   *  retries; a slot that is no longer this instance's to retire ends the tracking instead. */
+  private async expireStaticChatSession(session: ExpiringChatSession): Promise<void> {
+    const release = this.beginLifecycle();
+    if (!release) throw new Error(this.maintenanceError());
+    try {
+      console.error(`chat session ${session.alias} (uid ${session.lifecycleUid}) reached its expiry; retiring it`);
+      let admitted: "admitted" | "alreadyRetired";
+      try {
+        admitted = await this.admitChatRetirement(session);
+      } catch (e) {
+        if (e instanceof EpEnvelopeError && (e.code === "not-found" || e.code === "failed-precondition")) {
+          console.error(`! chat session ${session.alias} expired, but its slot is not this instance's to retire (${e.message}); expiry tracking ends`);
+          return;
+        }
+        throw e;
+      }
+      if (admitted === "admitted") await this.chatTerminal(session);
+    } finally {
+      release();
+    }
+  }
+
+  /** The ownership admission shared by `chat-session-retire`, the expiry and the stop. It throws a
+   *  not-executed refusal unless the alias is a chat alias whose slot this logical instance owns
+   *  at the requested UID and actor. An already retired slot ends its expiry tracking. */
+  private async admitChatRetirement(s: { alias: string; actor: string; lifecycleUid: string }): Promise<"admitted" | "alreadyRetired"> {
+    if (!isChatAlias(s.alias))
+      throw new EpEnvelopeError("permission-denied", `"${s.alias}" is not a chat session alias`, undefined, "not-executed");
+    if (this.reconcilingAliases.has(s.alias))
+      throw new EpEnvelopeError("unavailable", `the chat session "${s.alias}" is still reconciling at manager startup; that terminal owns it`, undefined, "not-executed");
+    const recordsKv = this.goalWriter?.ctx.kv;
+    if (!recordsKv)
+      throw new EpEnvelopeError("unavailable", `the durable static slot store is not ready while retiring "${s.alias}"`, undefined, "not-executed");
+    let slot;
+    try {
+      slot = await readStaticSlot(staticLifecycleTransport(recordsKv, recordsKv), DEV_OWNER, s.alias);
+    } catch (e) {
+      throw new EpEnvelopeError("unavailable", `the durable slot for "${s.alias}" could not be read: ${rejectionText(e)}`, undefined, "not-executed");
+    }
+    const refused = chatRetireRefusal(slot?.row, s, this.managerInstanceId);
+    if (refused) throw new EpEnvelopeError(refused.code, refused.message, undefined, "not-executed");
+    if (slot!.row.phase !== "retired") return "admitted";
+    this.chatExpiry.forget(s.lifecycleUid);
+    return "alreadyRetired";
+  }
+
+  /** One static terminal per chat session UID, however many callers ask: the explicit retire, the
+   *  expiry cleanup and the open's rollback join it instead of racing its CAS sequence. A completed
+   *  terminal ends the expiry tracking. `channels` names the membership rows to delete by name;
+   *  without it the delivery inventory alone finds them. */
+  private chatTerminal(s: { alias: string; actor: string; lifecycleUid: string; channels?: readonly string[] }): Promise<void> {
+    let flight = this.chatRetirements.get(s.lifecycleUid);
+    if (!flight) {
+      flight = this.driveStaticRetirement({ id: s.actor, name: s.alias, lifecycleUid: s.lifecycleUid, secretPaths: {}, ...(s.channels ? { launch: { allowSubscribe: s.channels } } : {}) }, true)
+        .then(() => this.chatExpiry.forget(s.lifecycleUid))
+        .finally(() => this.chatRetirements.delete(s.lifecycleUid));
+      this.chatRetirements.set(s.lifecycleUid, flight);
+    }
+    return flight;
+  }
+
+  /** Whether `row` is a chat slot this process registered, at its exact alias, actor and UID,
+   *  under this logical instance and this process's incarnation. */
+  private holdsLiveChatSlot(row: StaticManagedSlotRow): boolean {
+    return row.ownerInstanceId === this.managerInstanceId && row.managerInstance === this.managerLifecycleUid && this.chatExpiry.holdsExact(row);
+  }
+
+  /** The stop's retirement of every chat session this process still tracks, through the same
+   *  ownership admission and terminal as `chat-session-retire`, at most
+   *  {@link CHAT_EXPIRY_CONCURRENCY} at a time. It runs after the lifecycle fence closed and every
+   *  admitted operation drained, as the seat teardown does, and mints nothing the terminal does not
+   *  already mint. Every outcome is logged. It throws, naming each one, when any session was not
+   *  retired; that session stays held until the next start of this manager instance. */
+  private async retireChatSessionsOnStop(): Promise<void> {
+    const queue = this.chatExpiry.remaining();
+    const failed: string[] = [];
+    const retireOne = async (session: ExpiringChatSession): Promise<void> => {
+      const at = `chat session ${session.alias} (uid ${session.lifecycleUid})`;
+      try {
+        if (await this.admitChatRetirement(session) === "alreadyRetired") {
+          console.error(`${at} was already retired at stop`);
+          return;
+        }
+        await this.chatTerminal(session);
+        console.error(`${at} retired at stop`);
+      } catch (e) {
+        if (e instanceof EpEnvelopeError && (e.code === "not-found" || e.code === "failed-precondition")) {
+          this.chatExpiry.forget(session.lifecycleUid);
+          console.error(`! ${at} was not retired at stop: its slot is not this instance's to retire (${e.message})`);
+          return;
+        }
+        failed.push(`${session.alias} (uid ${session.lifecycleUid}): ${rejectionText(e)}`);
+        console.error(`! ${at} was not retired at stop (${rejectionText(e)}); it stays held until the next start of this manager instance`);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CHAT_EXPIRY_CONCURRENCY, queue.length) }, async () => {
+      for (let next = queue.shift(); next !== undefined; next = queue.shift()) await retireOne(next);
+    }));
+    if (failed.length)
+      throw new Error(`${failed.length} chat session(s) were not retired and stay held until the next start of this manager instance: ${failed.join("; ")}`);
+  }
+
+  /** Name, at a stop that does not retire them, each chat session this process still tracks. */
+  private reportChatSessionsLeftAtStop(why: string): void {
+    for (const session of this.chatExpiry.remaining())
+      console.error(`! chat session ${session.alias} (uid ${session.lifecycleUid}) was not retired because ${why}; the next start of this manager instance retires it`);
+  }
+
   /** F5(b) push renewal of ONE live managed-static credential (Unit B): re-mint the SAME nkey
    *  identity with the SAME scope (recorded on the managed row at spawn) and a fresh bounded
    *  exp, ledger the new credentialId (slot record first, then the row, then the file — a
@@ -10145,6 +10510,15 @@ export class Manager {
         // sibling row is reclaimed only by an explicit operator CAS takeover, never here.
         if (ownedBySibling(row, this.managerInstanceId)) {
           preservedForeign++;
+          continue;
+        }
+        // A chat session this process is opening or holds is live membership, as an adopted seat
+        // is: its own open, expiry or stop runs its terminal, which this sweep must not race. The
+        // match is the exact registered alias, actor and UID under this logical instance and this
+        // process's incarnation, so a foreign, legacy or unrecorded row, or any UID this process
+        // did not register, falls through to the ordinary plan below.
+        if (this.holdsLiveChatSlot(row)) {
+          preservedAdopted++;
           continue;
         }
         // ADOPTION is genuine membership: a slot backed by a live managed agent THIS process owns
@@ -10681,6 +11055,7 @@ export class Manager {
    *  owner-domain bound); undefined = unbounded. {@link NO_OWNER_MATCHES} matches nothing. */
   private list(ownerFilter?: string) {
     const roster = new Map(this.ep.getRoster().map((p) => [p.card.name, p]));
+    const observedAt = Date.now();
     // The roster is only evidence while THIS observer's presence watch is fresh. A stale view
     // (whole-bucket silence past TTL) or an unpopulated one (snapshot not yet replayed) cannot
     // support "offline" or "absent" for anyone: a live deployment on 2026-09-09 rendered every live seat as
@@ -10700,6 +11075,7 @@ export class Manager {
       // The connector-reported provider from presence (#785): the live roster card's `meta.provider`,
       // when it is a non-empty string. Absent when the connector reported none — never fabricated.
       const seen = roster.get(a.name);
+      const presenceIdentityVerified = this.isOwnPresence(a, seen);
       const providerMeta = seen?.card.meta?.provider;
       const provider = typeof providerMeta === "string" && providerMeta ? providerMeta : undefined;
       // The harness-reported condition beside the mesh status (#618): a turn that died upstream reads
@@ -10745,6 +11121,8 @@ export class Manager {
         // `current` is the only state in which `mesh` is a verdict; the other two are the
         // observer's own condition and travel on the row (older CLIs ignore the field).
         meshView: view.state,
+        presenceIdentityVerified,
+        ...(view.state === "current" && presenceIdentityVerified ? { presenceObservedAt: observedAt } : {}),
         ...(offlineSince !== undefined ? { offlineSince } : {}),
         // The incarnation coordinate (SPEC 13.1) — with `id`, exactly what a v0.4 caller needs to
         // build a targeted (`despawn`/`attach`) request against THIS incarnation.

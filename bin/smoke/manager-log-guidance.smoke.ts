@@ -41,7 +41,7 @@ check(
 );
 check(
   "the detached manager opens its logfile descriptor on the managerLogPath value",
-  /const fd = openSync\(logPath, "a", 0o600\);/.test(managerProc),
+  /const fd = openPrivateAppend\(logPath\);/.test(managerProc),
 );
 
 const spawn = readFileSync(join(REPO, "implementations/cli/src/commands/spawn-manifest.ts"), "utf8");

@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { type ParsedArgs } from "@cotal-ai/core";
-import { loadManifest, renderTopology, ManifestError } from "../lib/manifest/index.js";
+import { loadManifest, renderTopology, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { c } from "../ui.js";
 
 /**
@@ -28,6 +28,14 @@ export async function topology(args: ParsedArgs): Promise<void> {
   } catch (e) {
     failManifest(e);
   }
+}
+
+/** A manifest's declared space is the operation's target, so an explicit `--space` may only name the
+ *  same space; another one is refused before anything is written. */
+export function refuseManifestSpaceMismatch(prepared: PreparedManifest, space: string | undefined): void {
+  if (space === undefined || space === prepared.manifest.space) return;
+  console.error(c.red(`✗ --space ${space} does not match this manifest's space "${prepared.manifest.space}" - a manifest's space is its target; drop --space, or change the manifest`));
+  process.exit(1);
 }
 
 /** Print a manifest/file error as one red block (located issues for a ManifestError) and exit 1. */

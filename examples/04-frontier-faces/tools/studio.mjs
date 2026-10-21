@@ -177,7 +177,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let meshProc = null; // set only if WE started the mesh (so teardown stops it)
 
 // In AUTH mode every `cotal` call must run from ONE root, so the space's auth material (account
-// keys, the membership-observer cred, and the per-agent creds `cotal mint` writes) all land in the
+// keys, the membership-observer cred, and the per-agent creds `cotal auth mint` writes) all land in the
 // same `.cotal/`. The example dir is its own mesh root, which keeps this space's auth material out
 // of the repo root's (a different space lives there).
 const AUTH_ROOT = AUTH ? EX : ROOT;
@@ -198,10 +198,8 @@ function writeChannelSeed() {
  *  `{ path, lifecycleUid }`. The ACLs are the manifest's, so the BROKER, not agent goodwill,
  *  enforces the topology.
  *
- *  Minted in-process rather than via `cotal mint`: an agent cred's dm/dlv/chathist grants are
- *  lifecycle-keyed exact names (SPEC 13.1), so `mintCreds` needs the same `lifecycleUid` the agent
- *  will launch with. The CLI mints its own identity and never surfaces that uid, so the launcher
- *  has to own both halves. */
+ *  This composition mints in-process so it owns the identity and the lifecycle UID it launches
+ *  together. The grants and pre-created footprint use that same UID (SPEC 13.1). */
 let provisioner = null;
 /** A privileged, NON-consuming seat used only to pre-create other principals' broker footprint.
  *  Minting a cred is not enough on an authed mesh: dm/dlv durables are BIND-ONLY lifecycle-keyed
@@ -791,8 +789,7 @@ async function main() {
   if (!reused) await clearHistory(); // start clean unless we're joining someone else's live mesh
   await startOperator(reused);
 
-  // Mint every agent cred SEQUENTIALLY first: `cotal mint` mutates one shared auth dir, so six
-  // concurrent mints would race. The spawns below then just read the finished files.
+  // Provision every credential before spawning; the spawns below read the finished files.
   if (AUTH) {
     log(`minting ${roster.length} agent creds`);
     for (const name of roster) agentCreds.set(name, await mintCred(name, subsOf(name), pubsOf(name), agentMeta(name).role));

@@ -2,7 +2,7 @@
   "suite": [
     "bin/smoke/gate-inventory.smoke.ts"
   ],
-  "guard": "gate-inventory roots are what CI actually runs, and a live suite dropped from that chain is named as ungated",
+  "guard": "gate-inventory roots are what CI actually runs, including a suite list a workflow runs through the shard runner, and a suite dropped from that chain is named as ungated",
   "command": "pnpm smoke:gate-inventory",
   "completionMarker": "GATE INVENTORY",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/gate-inventory-roots.json",
@@ -21,6 +21,22 @@
       "replace": "",
       "expectRed": "      smoke:join-external:live",
       "cell": "smoke:join-external:live"
+    },
+    {
+      "name": "drop the platforms job's list so a suite only it runs looks gated again",
+      "file": ".github/workflows/ci.yml",
+      "find": "          COTAL_CI_SUITES: bin/smoke/platform-suites.txt\n",
+      "replace": "",
+      "expectRed": "      smoke:cli-pty",
+      "cell": "smoke:cli-pty"
+    },
+    {
+      "name": "the inventory stops reading the lists a workflow runs",
+      "file": "bin/smoke/gate-inventory.smoke.ts",
+      "find": "for (const { suites } of workflowLists) for (const s of suites) if (s in pkg.scripts) roots.add(s);\n",
+      "replace": "",
+      "expectRed": "      smoke:cli-pty",
+      "cell": "smoke:cli-pty"
     }
   ],
   "grades": "tool"

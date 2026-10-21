@@ -122,7 +122,7 @@ try {
    *  descendant under its open gate. Returns both bearers. */
   async function seedAlias(actor: string, handleId: string): Promise<{ root: string; desc: string; uid: string }> {
     const uid = mintLifecycleUid();
-    grantManagedActor(dir, { owner: OWNER, actor, scope: [], allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uid });
+    grantManagedActor(dir, { custody: { kind: "foreground" }, owner: OWNER, actor, scope: [], allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uid });
     const rootCredid = await plane!.mintConnectCredential({ owner: OWNER, actor, lifecycleUid: uid });
     await createSourceGateOpen(reg, { issuerKeyId: "smokekey", id: handleId });
     const descCredid = mintLifecycleUid();

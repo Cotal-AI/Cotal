@@ -1,0 +1,158 @@
+{
+  "suite": [
+    "implementations/cli/smoke/status-report.smoke.ts"
+  ],
+  "guard": "bare status checks only the selected registration unless --all, reports a part it cannot read, a persona catalog, the current-mesh pointer and a registry record included, as partial with a named warning, prints its sections in the agreed order with the hints last, and refuses --components with --all",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/status-report.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/status-report.json",
+  "why": [
+    "The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back."
+  ],
+  "mutations": [
+    {
+      "name": "every registration is checked without --all",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "check: all || m.space === chosen ? (",
+      "replace": "check: true ? (",
+      "expectRed": "the other registration is not checked",
+      "cell": "the other registration is not checked",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--all is not passed to the mesh check",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "const meshes = await readMeshes(selected, Boolean(values.all), gaps);",
+      "replace": "const meshes = await readMeshes(selected, false, gaps);",
+      "expectRed": "--all checks every registration",
+      "cell": "--all checks every registration",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a status that could not read a part is reported complete",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "      ...(parts ? { partial: { message:",
+      "replace": "      ...(false ? { partial: { message:",
+      "expectRed": "an unreadable pidfile makes status partial with exit 4",
+      "cell": "an unreadable pidfile makes status partial with exit 4",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an unreadable pidfile is not named as a warning",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "      gaps.add(\"PIDFILE_UNREADABLE\",",
+      "replace": "      if (false) gaps.add(\"PIDFILE_UNREADABLE\",",
+      "expectRed": "the warning names the unreadable pidfile",
+      "cell": "the warning names the unreadable pidfile",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "unreadable trust material is not a gap",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "    gaps.add(\"AUTH_UNREADABLE\",",
+      "replace": "    if (false) gaps.add(\"AUTH_UNREADABLE\",",
+      "expectRed": "unreadable trust material is reported partial, not crashed on",
+      "cell": "unreadable trust material is reported partial, not crashed on",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the hints print before the selected mesh",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "  const sections: Section[] = [machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected)];\n  if (r.hints.length) sections.push(",
+      "replace": "  const sections: Section[] = [machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected)];\n  if (r.hints.length) sections.splice(4, 0, ",
+      "expectRed": "the sections keep the infrastructure order and end with the hints",
+      "cell": "the sections keep the infrastructure order and end with the hints",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--components runs with --all",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "  if (values.components && (presentation !== \"rich\" || values.all))",
+      "replace": "  if (values.components && presentation !== \"rich\")",
+      "expectRed": "status --components --all is refused before any probe, exit 1",
+      "cell": "status --components --all is refused before any probe, exit 1",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the NATS row prints the raw source value",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "cell(m.nats === \"path\" ? \"nats-server on PATH\" : \"bundled nats-server\", \"ok\")",
+      "replace": "cell(m.nats, \"ok\")",
+      "expectRed": "the NATS row says where nats-server comes from in words",
+      "cell": "the NATS row says where nats-server comes from in words",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the membership feed row prints its raw ISO time",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "entries · updated ${formatAge(Math.max(0, Date.now() - Date.parse(s.membershipFeed.asOf)))} ago`",
+      "replace": "entries · ${s.membershipFeed.asOf}`",
+      "expectRed": "the membership feed row says how long ago it was updated",
+      "cell": "the membership feed row says how long ago it was updated",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--components takes --plain",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "  if (values.components && (presentation !== \"rich\" || values.all))",
+      "replace": "  if (values.components && (presentation === \"json\" || values.all))",
+      "expectRed": "status --components --plain is refused before any probe, exit 1",
+      "cell": "status --components --plain is refused before any probe, exit 1",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an unreadable persona catalog reads as an empty one",
+      "file": "implementations/cli/src/lib/personas.ts",
+      "find": "    if ((e as NodeJS.ErrnoException).code === \"ENOENT\") return [];\n",
+      "replace": "    if (e) return [];\n",
+      "expectRed": "an unreadable persona catalog is partial with exit 4",
+      "cell": "an unreadable persona catalog is partial with exit 4",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an unreadable current-mesh pointer reads as unset",
+      "file": "packages/workspace/src/mesh-registry.ts",
+      "find": "    if ((e as NodeJS.ErrnoException).code === \"ENOENT\") return undefined;\n    throw new MeshRegistryError(currentFile()",
+      "replace": "    if (e) return undefined;\n    throw new MeshRegistryError(currentFile()",
+      "expectRed": "an unreadable current-mesh pointer is partial with exit 4",
+      "cell": "an unreadable current-mesh pointer is partial with exit 4",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a registry record that will not parse hides the readable records",
+      "file": "packages/workspace/src/mesh-registry.ts",
+      "find": "      unusable.push(e);\n      continue;\n",
+      "replace": "      throw e;\n",
+      "expectRed": "the record is named and the readable records are still listed",
+      "cell": "the record is named and the readable records are still listed",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a selection the registry refused is not reported",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "    if (isMeshRegistryError(e)) {\n      gaps.add(\"MESH_REGISTRY_UNREADABLE\", e.message, { file: e.file });\n      hints.push(e.message);\n      return { resolved: false, code: \"registry-unreadable\", message: e.message };\n    }\n",
+      "replace": "",
+      "expectRed": "the selection is unresolved by the unreadable record",
+      "cell": "the selection is unresolved by the unreadable record",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an unreadable registry directory throws its raw error",
+      "file": "packages/workspace/src/mesh-registry.ts",
+      "find": "    throw new MeshRegistryError(meshesDir(), `the mesh registry ${meshesDir()} could not be read: ${(e as Error).message}`, { cause: e });\n",
+      "replace": "    throw e;\n",
+      "expectRed": "an unreadable registry directory is partial with exit 4, not unknown",
+      "cell": "an unreadable registry directory is partial with exit 4, not unknown",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an empty current-mesh pointer reads as unset",
+      "file": "packages/workspace/src/mesh-registry.ts",
+      "find": "  if (!space) throw new MeshRegistryError(currentFile(), `${currentFile()} is empty - select a mesh with \\`cotal use <space>\\` or remove the file`);\n",
+      "replace": "  if (!space) return undefined;\n",
+      "expectRed": "an empty current-mesh pointer is named, and the run is partial",
+      "cell": "an empty current-mesh pointer is named, and the run is partial",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

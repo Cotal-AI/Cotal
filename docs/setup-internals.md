@@ -10,46 +10,50 @@
 
 `cotal setup`
 ([`implementations/cli/src/commands/setup.ts`](../implementations/cli/src/commands/setup.ts))
-is **configure-only**: it checks prerequisites, installs the Claude Code
-plugin, and seeds persona files, and it **launches nothing**: no mesh, no web dashboard, no
-manager, no delivery daemon, no cmux/tmux session, no demo. Starting the stack is `cotal up`; the
-dashboard is `cotal web`. Every file it writes is announced (`→ wrote …` via `provenance.wrote`)
+saves configuration by default: it checks prerequisites, sets up the chosen application and
+runtimes, and seeds persona files. Start is a separate terminal choice or `--start`; a script must
+also pass `--detach`. The dashboard remains a separately configured `web` service preset. Every file it writes is announced (`→ wrote …` via `provenance.wrote`)
 on stderr, or on stdout with the error when a stderr write fails. Each announcement is one line: a
 control character or Unicode line separator in a path, such as a newline in `HOME`, is printed as
 a `\uXXXX` escape.
-It is two-tier, gated on a machine marker. Persona seeding resolves the selected mesh root first,
-then uses the same `.cotal/agents` catalog as spawn. With no mesh it names a cwd fallback; an
-ambiguous or broken target refuses rather than choosing a root.
+Every run takes the same inputs: destination, application, runtimes, project and space. With a
+terminal, `askInputs` asks for each one no flag gave and shows the answers before anything is
+written; Change asks again with the answers kept and Cancel saves nothing. Without one, or with
+`--yes`, `--no-input` or `--json`, `scriptedInputs` takes them from the flags and refuses a missing
+one. `--destination cloud` is refused as in development before anything else. `runtimeChoices`
+lists `pty`, the official runtimes with the host tools in `OFFICIAL_RUNTIME_TOOLS`, and each
+installed third-party runtime. A script's runtimes are the `--runtime` names, which `runtimeFlags`
+checks before any write: an unknown name or an official one whose tool is not on PATH is refused.
 
-**First run** (no `~/.cotal/onboarded.json`, or `--full`, or `--yes`) runs `runFirstRun(yes)`:
+`validateSetupArguments` rejects conflicting startup flags and non-detached scripted startup
+before seeding. `planSetup` checks preparation before it writes: the space name, the application against the setup
+connector surface, and the space at its destination. A local space goes through `checkLocalSpace`
+in [`space-registration.ts`](../implementations/cli/src/commands/space-registration.ts), the
+checks `space create` makes, which with setup's `again` reports a space already prepared or started
+at that root instead of refusing it; a local space also needs a `nats-server` to locate. A
+self-hosted space goes through `checkSelfHostedSpace`: a registration whose root is the project, or
+a connection file `addFromBundle` will register.
 
-- splash → intro → core **checks** (Node >= 22; **locate** `nats-server`: located, never
-  started) → **connector picker** (each selected connector's install, then its `mcpServers` action,
-  which for Claude copies your user-scope MCP servers into the cotal config unless it already
-  declares a list) → resolve and announce the persona destination → seed the generic
-  `default` and optional demo personas (david/sven/me) there → **offer a global install**
-  (`offerGlobalInstall`) → onboarded marker → a finale that
-  lists the commands to start things (`cotal up --detach`, `cotal web`, `cotal spawn …`,
-  `cotal console`, `cotal down`). Nothing is running when it returns.
-- The old `--auth` / `--open` flags are **gone**: they set the mesh MODE at launch time, and setup
-  no longer launches; mode is now `cotal up [--open]`'s concern (an unknown-option error names
-  them, no silent no-op).
+`prepare` then writes, in order: the prepared space or the registration, the `default` persona in
+`<project>/.cotal/agents` (plus the demo personas with `--demo`), the space's `harness`
+preference, the application's `connector` and `mcpServers` actions, every present connector's
+`skills` action, `~/.agents/skills` when it is not current, the chosen runtimes, and the onboarded
+stamp. `setUpRuntimes` adds a chosen official runtime that is not installed through `addExtension`
+at the CLI's version, the spec `cotal update` replays, then asks every chosen provider's
+`available()`; a missing tool, a failed install or a provider that does not answer makes the result
+`partial`. It never removes a runtime. Each write is
+recorded in the result's `written` list, so a rerun that changes nothing is a `no-op`. An
+application whose `requires` is not on PATH runs none of its actions, and the result is `partial`
+with the rest saved. The rich presentation narrates actions through `runSteps`; `--json` and
+`--plain` run them quietly and keep stdout for the result. The old `--auth` / `--open` flags are
+gone: mode is `cotal up [--open]`'s concern.
 
-**Later runs** run `runEnsure`: resolve and announce the same destination, re-seed the `default`
-persona if it's missing,
-re-offer the **global install** (`offerGlobalInstall`, same `isNpx()` + PATH-scan gate as first
-run, so a repeat `npx cotal-ai setup` on a machine that still lacks a durable `cotal` finally
-installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`connectorStatusRows`/`meshStatus`/`recordedWebUrl`/`managerUp` for NATS, the rows
-connector setup providers report, the mesh, the web dashboard, and the manager) and for anything down it prints the exact command to start it
-(`cotal up --detach`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
-still launches nothing.
-
-**`--skills`** is the status-card write: it asks installed connectors with a declared skills setup
+**`--skills`** writes skills only: it asks installed connectors with a declared skills setup
 hook to reconcile their own harness, then reconciles `~/.agents/skills`. The base CLI passes only the
 vendor-neutral skills directory, version, and state directory; connector packages own native assets
 and commands. It does not seed personas, install the mesh
-connector, offer a global install, or write the onboarded stamp. Combined with `--full` or
-`--demo` it is refused.
+connector, offer a global install, or write the onboarded stamp. Combined with another setup
+input, `--full` or `--demo` it is refused.
 
 The seeded `default` persona has an empty active `subscribe` set and wildcard
 `allowSubscribe`/`allowPublish` ACLs. A fresh agent receives no channel traffic until it joins a
@@ -67,37 +71,37 @@ and whose executables are on PATH
 ([`lib/assist.ts`](../implementations/cli/src/lib/assist.ts)). The provider owns the harness
 binary and its flags; the CLI only builds the prompt. When no connector can host one, the menu says
 so in one line. A provider may also declare `status`, which returns read-only rows about what it
-installed. `cotal status` and the setup card print them, and the CLI passes only its own version and
+installed. `cotal status` prints them, and the CLI passes only its own version and
 the `cotal setup --skills` remedy. The extensions manifest caches each connector's setup ref, so
 status imports only connectors that declare a provider. The seed reconcile refreshes a seeded entry
 whose cache predates that ref.
 
-The **connector picker** (`pickConnectors`) multiselects the **setup connector surface**
+The **application question** offers the **setup connector surface**
 (`setupConnectorSurface`): every connector name the live registry or the installed extension
 manifest advertises, materialized through the same loader the rest of the CLI uses. No connector
 name is written into `setup.ts`. `setupConnectorCandidates` turns that surface into choices and
 reads each hint off the connector's own declarations: `requires` names the executables a candidate
 still needs on PATH, `setup` says whether it owns setup actions at all, and `pluginRoot` says
-whether those actions install plugin assets. A selected candidate runs its connector-owned
+whether those actions install plugin assets. The chosen candidate runs its connector-owned
 `connector` action as a narrated step built by `actionStep`, which takes the action with the input its
 type declares, so the compiler checks each pairing. The provider side is checked too. Each action's
 `run`, `assist.run` and `status` are function-typed properties, which TypeScript checks strictly, so a
 provider whose callback narrows the input the CLI hands it does not compile. A candidate
 that declares no provider is simply marked ready (OpenCode auto-wires at spawn, injecting its
-plugin via `buildLaunch` and never writing the user's config). A selected candidate's `mcpServers` action runs next
+plugin via `buildLaunch` and never writing the user's config). The chosen candidate's `mcpServers` action runs next
 the same way: the Claude provider reads the user-scope servers from Claude Code's config and
 records them through the `seed` input the CLI hands it. That is workspace's `seedConnectorServers`,
 which writes the operator-level cotal config under a lock and only when it declares no list for that
 connector, so two setups run at once record one list. The `skills` action runs for every
 present connector that declares one, selected or not, because Cotal's authored skills are
-independent of mesh membership. Two experts (david, the engineer; sven, the guide) plus the
-operator's own driving session (`me`) are written by default, and `me` is the persona
+independent of mesh membership. With `--demo`, two experts (david, the engineer; sven, the guide)
+plus the operator's own driving session (`me`) are written too, and `me` is the persona
 `cotal spawn me` drives.
 
-**`--yes`** forces non-interactive accept-all even on a TTY: optional plus `confirm` steps run
-(so the demo personas are written), the global install takes its default, and a failure aborts
-with the log path and a non-zero exit. It still launches nothing. The control plane comes up with
-`cotal up --detach`. This is the agent/CI contract; keep it working.
+**`--yes`** asks nothing even on a TTY, so every input must be a flag. Optional and `confirm`
+steps run, the global install takes its default, and a failed action makes the result `partial`.
+It still launches nothing; the control plane comes up with `cotal up --detach`. The scripted form
+is the agent/CI contract; keep it working.
 
 ## Invariants
 
@@ -109,16 +113,25 @@ with the log path and a non-zero exit. It still launches nothing. The control pl
 | Claude Desktop entry | `desktopConfigPath` and the `cotal` server name in the claude connector's `src/desktop-config.ts`, and `desktopEntry` in its `src/setup.ts` | Desktop reads its config only when it starts. The entry runs the materialized `dist/mcp.cjs` with `--desktop`, so the materialize path and the entry must agree |
 | `Connector.pluginRoot` | [`packages/core/src/connector.ts`](../packages/core/src/connector.ts) (contract) plus set in the claude connector's `extension.ts` | A connector's declaration that it ships installable plugin assets; the picker phrases its hint from it |
 | `BUNDLED_PKG_PREFIX` | [`lib/nats-bin.ts`](../implementations/cli/src/lib/nats-bin.ts) ↔ the `@eplightning/nats-server-*` `optionalDependencies` in [`implementations/cli/package.json`](../implementations/cli/package.json) | The bundled NATS binary is resolved by `${prefix}-${platform}-${arch}`. (Future: swap the prefix to our own `@cotal-ai/nats-server-*`.) |
-| Onboard marker plus `ONBOARD_VERSION` | `~/.cotal/onboarded.json` in [`lib/onboard.ts`](../implementations/cli/src/lib/onboard.ts); version const in `setup.ts` | Flips first-run vs ensure |
+| Onboard marker plus `ONBOARD_VERSION` | `~/.cotal/onboarded.json` in [`lib/onboard.ts`](../implementations/cli/src/lib/onboard.ts); version const in `setup.ts` | Setup shows the splash until it is written |
 | Demo-agent format | `DEMO_AGENTS` in `setup.ts` matches the frontmatter shape read by [`packages/core/src/agent-file.ts`](../packages/core/src/agent-file.ts) (same as `examples/01-lateral-coordination/agents/`) | `cotal spawn <name>` loads these |
 | Managed personas | each `DEMO_AGENTS` body carries a `# managed by cotal-setup` frontmatter marker; `writeDemoAgent` refreshes the file when the body changes, backing a marker-less (user-edited) file up to `<name>.md.bak` first | Edit `DEMO_AGENTS` plus re-run setup to update david/sven/me; delete the marker line to take ownership |
-| `DEFAULT_SERVER` | [`packages/core/src/endpoint.ts`](../packages/core/src/endpoint.ts) | The address `cotal up` starts and the status card probes |
+| `DEFAULT_SERVER` | [`packages/core/src/endpoint.ts`](../packages/core/src/endpoint.ts) | The address `cotal up` starts |
 
 ## Background processes (`cotal up`)
 
-`cotal up` brings up the whole local stack in one place; since setup became configure-only
-(stage 2b), this is where the mesh and control plane start, so `cotal spawn --detach` /
-`cotal_spawn` find a manager right after `up`. The control plane comes up in cutover order:
+`cotal up` owns native local stack startup. Opt-in setup startup uses that same entry through
+`__setup-start`, with the prepared root, space and current CLI version checked before effects.
+The child passes that root to native `up --root`; it does not rely on an ambient workspace-root
+environment variable or an ancestor walk. It runs without prompts, and its output is not evidence. A nonzero or unconfirmed
+return retains uncertainty; timeout or interruption sends no unverified process signal. A successful
+return supplies only command completion and the root's recorded manager selector. Setup then calls
+`launchManagedPersona`, whose original native join receipt is the agent-readiness fact. The shared
+observer lets setup retain one finite JSON receipt rather than embedding a second spawn envelope.
+Self-hosted setup starts no local replacement stack. An explicit `--on` is validated
+before preparation, reaches the selected manager's credential issuance and native launch,
+and is refused for local startup. Preparation and startup failures remain separate.
+This composition does not complete the new whole-stack controller or privileged schema writer. The control plane comes up in cutover order:
 old-manager preflight → **delivery daemon** (auth mode only) → **manager**, via
 `ensureControlPlane`
 ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)). The preflight reads
@@ -154,7 +167,7 @@ fail-loud on collision.
   ([`lib/manager-proc.ts`](../implementations/cli/src/lib/manager-proc.ts)) re-execs `cotal
   supervise` detached (pty runtime); it answers the control plane
   (`cotal_spawn` / `cotal_despawn` / `cotal_persona`). Writes `.cotal/manager.<key>.log`;
-  `managerUp(space)` checks that space's pid record for setup's status card. The **manager itself**
+  `managerUp(space)` checks that space's pid record. The **manager itself**
   writes `.cotal/manager.<key>.pid`, so a supervisor started by a container entrypoint, by cron, or
   by hand is recorded the same way a detached `cotal up` is. Readers verify the recorded pid is alive and is a
   supervisor before trusting it ([Config](config.md#project-files)).
@@ -162,13 +175,11 @@ fail-loud on collision.
 The **web dashboard** is *not* part of `cotal up`. It ships inside `cotal-ai` as the `@cotal-ai/web`
 extension and is seeded automatically by the boot reconcile, the same durable, version-locked path as
 the built-in connectors (`SEEDED_EXTENSIONS`), so it always matches the CLI version and needs no
-separate install. Start it with `cotal web`; it records
-`.cotal/web.pid`, self-registers that process with `down`, and is addressed as
-`http://cotal.localhost:7799` (binds loopback; `*.localhost` resolves in Chrome/Firefox/Edge,
-Safari may need plain `127.0.0.1`). Setup's status card prints the address the dashboard recorded in
-`.cotal/web.session` once it was listening, while the PID in `.cotal/web.pid` is alive. A
-`.cotal/web.pid` that exists but cannot be read is named on the row as `pidfile unreadable`, an
-unreadable `.cotal/web.session` as `web.session unreadable`, and the rest of the card still prints.
+separate install. Configure its service definition and explicit protected credential before
+`cotal service start web`. The native child owns its PID claim and private full-launch bootstrap
+record. The preset is explicitly read-only and retains the registered TLS requirement. Its
+initialization phase does not prove a new authenticated health response; user-auth caller handoff
+and OS installation remain unsupported. See [dashboard setup](watch-a-mesh.md#web-dashboard).
 
 All recorded local processes self-register `local-process` descriptors. Bare `cotal down` resolves
 the full set and stops it in dependency order; `cotal down manager` (or another component name)
@@ -202,17 +213,20 @@ For ergonomics only, an npx run with no global `cotal` offers to `npm i -g cotal
 (`offerGlobalInstall`, pinned to the running version): gated on `isNpx()` plus a PATH scan
 (`cotalOnPath()`, not an exec probe, since `cotal --version` is not a real command). The
 interactive prompt defaults to yes, the non-interactive path (`--yes` or no TTY) takes the
-default, and a failed install is non-fatal (warn plus manual command). The same `self-exec.ts`
-exposes `displayCmd()`, the prefix (`cotal` / `npx cotal-ai` / `pnpm cotal`) used in the
-status-card hints so they match how you ran it.
+default, and a failed install is non-fatal (warn plus manual command). It is offered only in the
+rich presentation, so `--json` and `--plain` keep stdout for the result. The same `self-exec.ts`
+exposes `displayCmd()`, the prefix (`cotal` / `npx cotal-ai` / `pnpm cotal`) used in setup's next
+command so it matches how you ran it.
 
 ## Built-in connectors are seeded extensions
 
 The first-party connectors (`claude`, `opencode`, `codex`, `hermes`, `jcode`, `pi`) are **not** static-imported by
 the binary. The composition root (`bin/cotal.ts`) registers no connector; they self-register only when
-imported, and they are imported only once installed. On the first real command of each boot the CLI
-**seeds** them through the same `cotal ext add` path a third party uses, so they are ordinary
-extensions you can `cotal ext remove`. Code lives in [`implementations/cli/src/seed/`](../implementations/cli/src/seed/);
+imported, and they are imported only once installed. Before the first command of each boot that is
+not a read, the CLI **seeds** them through the same `cotal ext add` path a third party uses, so they
+are ordinary extensions you can `cotal ext remove`. A command or subcommand that declares `reads`
+installs and refreshes nothing, and the CLI never imports a built-in whose installed version differs
+from the binary's: it names the package with `cotal ext seed` instead. Code lives in [`implementations/cli/src/seed/`](../implementations/cli/src/seed/);
 the entry is `reconcileSeededConnectors()`, gated in `runCli` before the manifest overlay so
 `ext seed --repair` survives a corrupt manifest.
 

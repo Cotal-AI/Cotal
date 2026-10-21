@@ -40,7 +40,7 @@
     {
       "name": "transient CLI endpoints stop subscribing to recoverable warnings",
       "file": "implementations/cli/src/lib/transient.ts",
-      "find": "  ep.on(\"warning\", (e: Error) => console.error(c.yellow(\"! \" + e.message)));",
+      "find": "  ep.on(\"warning\", (e: Error) => report(\"warning\", e));",
       "replace": "  void ep;",
       "cell": "transient CLI commands surface endpoint warnings",
       "expectRed": "transient CLI commands surface endpoint warnings",

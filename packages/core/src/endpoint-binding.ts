@@ -35,7 +35,7 @@ import type { RecordKindDef } from "./endpoint-records.js";
 import { AUTHORITY_KIND_DEFS, callerReadableRecordKind } from "./endpoint-records.js";
 import { epjStreamName, epfStreamName, canonDurable, IDEMPOTENCY_HORIZON_MS_DEFAULT, RESULT_RETENTION_MS_DEFAULT, RECEIPT_RETENTION_MS_DEFAULT } from "./endpoint-journal.js";
 import { recordsBucket } from "./endpoint-records.js";
-import { ensureIssuedStores, issuedStoreStreamNames } from "./issued-authority.js";
+import { AUTHORITY_STORE_IMMUTABLE_FLAGS, WRITE_ONCE_PER_KEY, ensureIssuedStores, issuedStoreStreamNames } from "./issued-authority.js";
 import { admissionBucket, ensureAdmissionStore } from "./run-admission.js";
 
 // Re-exported so the binding module presents the complete §13.12 name table even though the
@@ -251,6 +251,105 @@ export function assertFactRetentionFloor(
     );
 }
 
+/** Pure native configurations for the directly declared endpoint/workflow streams. Bootstrap
+ *  consumes the same values that a schema observer reads; this performs no broker operation.
+ *  Authority/contract stores and the independent owned-stream census keep their own guards. */
+export function endpointDataStreamConfigs(space: string, opts: EndpointStreamOptions = {}): Array<Partial<StreamConfig> & { name: string }> {
+  const p = spacePrefix(space);
+  // Refused BEFORE the first stream exists, so a breaching config never leaves a half-built space.
+  assertFactRetentionFloor(opts.factMaxAgeMs, {
+    horizonMs: opts.idempotencyHorizonMs ?? IDEMPOTENCY_HORIZON_MS_DEFAULT,
+    ...(opts.resultRetentionMs !== undefined ? { resultRetentionMs: opts.resultRetentionMs } : {}),
+    ...(opts.receiptRetentionMs !== undefined ? { receiptRetentionMs: opts.receiptRetentionMs } : {}),
+  });
+  return [
+  // EPJ — raw submissions, untrusted, at-least-once. NO allow_direct (nothing reads it but the
+  // canonicalizer's durable and harness MSG.GET); duplicate window pinned to the server minimum.
+  {
+    name: epjStreamName(space),
+    subjects: [`${p}.epj.>`],
+    retention: RetentionPolicy.Limits,
+    storage: StorageType.File,
+    max_age: nanos(opts.submissionMaxAgeMs ?? EP_SUBMISSION_MAX_AGE_MS),
+    duplicate_window: nanos(EPJ_DUPLICATE_WINDOW_MS),
+  },
+  // EPF — canonical facts; acceptance is create-only CAS; allow_direct serves the §13.9
+  // last-by-subject fact reads (trusted principals only; callers read via the mediator).
+  {
+    name: epfStreamName(space),
+    subjects: [`${p}.epf.>`],
+    retention: RetentionPolicy.Limits,
+    storage: StorageType.File,
+    allow_direct: true,
+    ...(opts.factMaxAgeMs ? { max_age: nanos(opts.factMaxAgeMs) } : {}),
+  },
+  // EPE — events/progress.
+  {
+    name: epeStreamName(space),
+    subjects: [`${p}.epe.>`],
+    retention: RetentionPolicy.Limits,
+    storage: StorageType.File,
+    max_age: nanos(opts.eventMaxAgeMs ?? EP_EVENT_MAX_AGE_MS),
+  },
+  // EPT_REQ — schedule REQUESTS. Message schedules DISABLED (the default; asserted by the
+  // smoke): a client-set scheduling header here cannot arm anything, which is what closes the
+  // ADR-51 confused deputy — only the timer writer's `.armed` publish (on EPT) schedules.
+  {
+    name: eptReqStreamName(space),
+    subjects: [`${p}.ept.*.*.*.*.schedule`],
+    retention: RetentionPolicy.Limits,
+    storage: StorageType.File,
+    max_age: nanos(opts.ingressMaxAgeMs ?? EP_INGRESS_MAX_AGE_MS),
+  },
+  // EPR — record-write ingress, consumed only by the per-kind record writers.
+  {
+    name: eprStreamName(space),
+    subjects: [`${p}.epr.>`],
+    retention: RetentionPolicy.Limits,
+    storage: StorageType.File,
+    max_age: nanos(opts.ingressMaxAgeMs ?? EP_INGRESS_MAX_AGE_MS),
+  },
+  // EPT — authoritative schedules (.armed) + fires (.fire). AllowMsgSchedules; each schedule
+  // targets its sibling `.fire` (ADR-51 forbids target = publish subject), and both patterns
+  // live on THIS stream because ADR-51 requires the target be captured by the same stream.
+  {
+    name: eptStreamName(space),
+    subjects: [`${p}.ept.*.*.*.*.armed`, `${p}.ept.*.*.*.*.fire`],
+    retention: RetentionPolicy.Limits,
+    storage: StorageType.File,
+    allow_msg_schedules: true,
+    max_age: nanos(opts.timerMaxAgeMs ?? EP_TIMER_MAX_AGE_MS),
+  },
+  // EPW — work pools, one item per subject. NO allow_direct: the §13.6 reconciliation probe
+  // (an acked item leaves the WorkQueue, an in-flight one remains readable — exactly the
+  // predicate) is a FENCING read that gates the re-enqueue decision, so it goes leader-served
+  // STREAM.MSG.GET (§13.9 "Work-pool reconciliation probe"), never a follower-servable Direct Get whose stale miss
+  // would re-arm settled work. Nothing else reads EPW: the pool workers drain it via the
+  // WorkQueue consumer (CONSUMER.MSG.NEXT), not by subject read.
+  {
+    name: epwStreamName(space),
+    subjects: [`${p}.epw.>`],
+    retention: RetentionPolicy.Workqueue,
+    storage: StorageType.File,
+    allow_direct: false,
+  },
+  // WFJ — the workflow step journal, one subject per run (see wfjSubject: the activation barrier
+  // is per-subject, so the subject is the run). NO max_age: a run's journal must outlive any
+  // retention window a control-surface plane wants, because a run that sleeps for a month resumes
+  // by re-reading it, and an evicted prefix is not a shorter journal, it is a run that will
+  // re-perform effects it already performed. Retirement is by subject purge, deliberately.
+  // NO allow_direct: a resume must read its own predecessor's last appends, and Direct Get is
+  // follower-servable — a stale miss there reads as "this step never ran".
+  {
+    name: wfjStreamName(space),
+    subjects: [`${p}.wfj.*`],
+    retention: RetentionPolicy.Limits,
+    storage: StorageType.File,
+    allow_direct: false,
+  },
+  ];
+}
+
 /**
  * Create (idempotently) the §13.12 per-space control-surface resources: the seven JetStream
  * streams, the work-pool WorkQueue, and the KV buckets (records + auth + the §13.6 session ledger).
@@ -268,97 +367,7 @@ export async function createEndpointStreams(
   space: string,
   opts: EndpointStreamOptions = {},
 ): Promise<void> {
-  const p = spacePrefix(space);
-  // Refused BEFORE the first stream exists, so a breaching config never leaves a half-built space.
-  assertFactRetentionFloor(opts.factMaxAgeMs, {
-    horizonMs: opts.idempotencyHorizonMs ?? IDEMPOTENCY_HORIZON_MS_DEFAULT,
-    ...(opts.resultRetentionMs !== undefined ? { resultRetentionMs: opts.resultRetentionMs } : {}),
-    ...(opts.receiptRetentionMs !== undefined ? { receiptRetentionMs: opts.receiptRetentionMs } : {}),
-  });
-  // EPJ — raw submissions, untrusted, at-least-once. NO allow_direct (nothing reads it but the
-  // canonicalizer's durable and harness MSG.GET); duplicate window pinned to the server minimum.
-  await jsm.streams.add({
-    name: epjStreamName(space),
-    subjects: [`${p}.epj.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    max_age: nanos(opts.submissionMaxAgeMs ?? EP_SUBMISSION_MAX_AGE_MS),
-    duplicate_window: nanos(EPJ_DUPLICATE_WINDOW_MS),
-  });
-  // EPF — canonical facts; acceptance is create-only CAS; allow_direct serves the §13.9
-  // last-by-subject fact reads (trusted principals only; callers read via the mediator).
-  await jsm.streams.add({
-    name: epfStreamName(space),
-    subjects: [`${p}.epf.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    allow_direct: true,
-    ...(opts.factMaxAgeMs ? { max_age: nanos(opts.factMaxAgeMs) } : {}),
-  });
-  // EPE — events/progress.
-  await jsm.streams.add({
-    name: epeStreamName(space),
-    subjects: [`${p}.epe.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    max_age: nanos(opts.eventMaxAgeMs ?? EP_EVENT_MAX_AGE_MS),
-  });
-  // EPT_REQ — schedule REQUESTS. Message schedules DISABLED (the default; asserted by the
-  // smoke): a client-set scheduling header here cannot arm anything, which is what closes the
-  // ADR-51 confused deputy — only the timer writer's `.armed` publish (on EPT) schedules.
-  await jsm.streams.add({
-    name: eptReqStreamName(space),
-    subjects: [`${p}.ept.*.*.*.*.schedule`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    max_age: nanos(opts.ingressMaxAgeMs ?? EP_INGRESS_MAX_AGE_MS),
-  });
-  // EPR — record-write ingress, consumed only by the per-kind record writers.
-  await jsm.streams.add({
-    name: eprStreamName(space),
-    subjects: [`${p}.epr.>`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    max_age: nanos(opts.ingressMaxAgeMs ?? EP_INGRESS_MAX_AGE_MS),
-  });
-  // EPT — authoritative schedules (.armed) + fires (.fire). AllowMsgSchedules; each schedule
-  // targets its sibling `.fire` (ADR-51 forbids target = publish subject), and both patterns
-  // live on THIS stream because ADR-51 requires the target be captured by the same stream.
-  await jsm.streams.add({
-    name: eptStreamName(space),
-    subjects: [`${p}.ept.*.*.*.*.armed`, `${p}.ept.*.*.*.*.fire`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    allow_msg_schedules: true,
-    max_age: nanos(opts.timerMaxAgeMs ?? EP_TIMER_MAX_AGE_MS),
-  });
-  // EPW — work pools, one item per subject. NO allow_direct: the §13.6 reconciliation probe
-  // (an acked item leaves the WorkQueue, an in-flight one remains readable — exactly the
-  // predicate) is a FENCING read that gates the re-enqueue decision, so it goes leader-served
-  // STREAM.MSG.GET (§13.9 "Work-pool reconciliation probe"), never a follower-servable Direct Get whose stale miss
-  // would re-arm settled work. Nothing else reads EPW: the pool workers drain it via the
-  // WorkQueue consumer (CONSUMER.MSG.NEXT), not by subject read.
-  await jsm.streams.add({
-    name: epwStreamName(space),
-    subjects: [`${p}.epw.>`],
-    retention: RetentionPolicy.Workqueue,
-    storage: StorageType.File,
-    allow_direct: false,
-  });
-  // WFJ — the workflow step journal, one subject per run (see wfjSubject: the activation barrier
-  // is per-subject, so the subject is the run). NO max_age: a run's journal must outlive any
-  // retention window a control-surface plane wants, because a run that sleeps for a month resumes
-  // by re-reading it, and an evicted prefix is not a shorter journal, it is a run that will
-  // re-perform effects it already performed. Retirement is by subject purge, deliberately.
-  // NO allow_direct: a resume must read its own predecessor's last appends, and Direct Get is
-  // follower-servable — a stale miss there reads as "this step never ran".
-  await jsm.streams.add({
-    name: wfjStreamName(space),
-    subjects: [`${p}.wfj.*`],
-    retention: RetentionPolicy.Limits,
-    storage: StorageType.File,
-    allow_direct: false,
-  });
+  for (const definition of endpointDataStreamConfigs(space, opts)) await jsm.streams.add(definition);
   await ensureContractStore(jsm, space);
   await ensureAuthorityStores(jsm, kvm, space);
   // The issued-authority stores (SPEC 13.15) and the run admission store (SPEC 14.8) join the
@@ -372,6 +381,35 @@ export async function createEndpointStreams(
   // ONLY session rows (the §13.9 subject-blindness structural fix). Provisioned here so every mesh
   // that ensures the endpoint streams (auth + open both run this at the manager's boot) has it.
   await createSessionsStore(jsm, kvm, space);
+}
+
+/** Native contract-stream creation fields. Existing-store migration and shadow checks remain
+ *  in {@link ensureContractStore}; these values alone never authorize a change. */
+export function endpointContractStreamConfig(space: string) {
+  return {
+    name: epcStreamName(space),
+    subjects: [`${spacePrefix(space)}.epc.>`],
+    retention: RetentionPolicy.Limits,
+    storage: StorageType.File,
+    allow_direct: true,
+    deny_delete: true,
+    deny_purge: true,
+    ...WRITE_ONCE_PER_KEY,
+  };
+}
+
+/** Native authority-bucket creation inputs and post-create hardening. Reading a definition
+ *  does not replace the binding, leader-read or drift checks in {@link ensureAuthorityStores}. */
+export function endpointAuthorityStoreDefinitions(space: string) {
+  return {
+    records: { bucket: recordsBucket(space), createOptions: { allow_direct: true }, hardenAfterCreate: AUTHORITY_STORE_IMMUTABLE_FLAGS },
+    auth: { bucket: epAuthBucket(space), createOptions: { allow_direct: false, markerTTL: EP_AUTH_MARKER_TTL_MS } },
+  };
+}
+
+/** Native session-ledger creation inputs; verification remains in {@link createSessionsStore}. */
+export function endpointSessionStoreDefinition(space: string) {
+  return { bucket: sessionsBucket(space), createOptions: { allow_direct: false, markerTTL: EP_AUTH_MARKER_TTL_MS } };
 }
 
 /**
@@ -420,20 +458,11 @@ export async function createEndpointStreams(
  * lands; an older broker that ignores the flag is caught here and the daemon fails to start.
  */
 export async function ensureContractStore(jsm: JetStreamManager, space: string): Promise<void> {
-  const name = epcStreamName(space);
-  const subject = `${spacePrefix(space)}.epc.>`;
-  const hardening = { max_msgs_per_subject: 1, discard: DiscardPolicy.New, discard_new_per_subject: true } as const;
+  const definition = endpointContractStreamConfig(space);
+  const name = definition.name;
+  const hardening = WRITE_ONCE_PER_KEY;
   if (await jsm.streams.info(name).catch(() => undefined) === undefined) {
-    await jsm.streams.add({
-      name,
-      subjects: [subject],
-      retention: RetentionPolicy.Limits,
-      storage: StorageType.File,
-      allow_direct: true,
-      deny_delete: true,
-      deny_purge: true,
-      ...hardening,
-    });
+    await jsm.streams.add(definition);
   } else {
     // Upgrade path: an EPC stream from a pre-hardening release lacks the per-subject cap. Add it
     // idempotently (a live update of max_msgs_per_subject + discard settings is allowed and, tested,
@@ -459,6 +488,13 @@ export async function ensureContractStore(jsm: JetStreamManager, space: string):
     }
   }
   const cfg = (await jsm.streams.info(name)).config as StreamConfig & { discard_new_per_subject?: boolean };
+  assertContractStoreConfig(cfg, space);
+}
+
+/** Pure checks of the native contract-store invariants. This does not prove a legacy store
+ *  clean for migration and never applies the per-subject cap. */
+export function assertContractStoreConfig(cfg: StreamConfig & { discard_new_per_subject?: boolean }, space: string): void {
+  const name = epcStreamName(space), subject = `${spacePrefix(space)}.epc.>`;
   if (cfg.allow_direct !== true || cfg.deny_delete !== true || cfg.deny_purge !== true)
     throw new Error(`the contract store ${name} has a drifted shape (allow_direct=${String(cfg.allow_direct)}, deny_delete=${String(cfg.deny_delete)}, deny_purge=${String(cfg.deny_purge)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
   if (cfg.max_msgs_per_subject !== 1 || cfg.discard !== DiscardPolicy.New || cfg.discard_new_per_subject !== true)
@@ -491,26 +527,23 @@ export async function ensureAuthorityStores(jsm: JetStreamManager, kvm: Kvm, spa
   // through the SAME final `streams.info` + full normative verify — a drifted authority store is
   // an operator error, never silently adopted (§13.12: the flags + store-binding are load-bearing
   // for deny-new and the barrier CAS fences).
-  const recordBucket = recordsBucket(space);
+  const definitions = endpointAuthorityStoreDefinitions(space);
+  const recordBucket = definitions.records.bucket;
   const recordStream = `KV_${recordBucket}`;
   if (await jsm.streams.info(recordStream).catch(() => undefined) === undefined) {
-    await kvm.create(recordBucket, { allow_direct: true });
+    await kvm.create(recordBucket, definitions.records.createOptions);
     const recordConfig = (await jsm.streams.info(recordStream)).config;
-    await jsm.streams.update(recordStream, { ...recordConfig, allow_rollup_hdrs: false, deny_delete: true, deny_purge: true });
+    await jsm.streams.update(recordStream, { ...recordConfig, ...definitions.records.hardenAfterCreate });
   }
   const recordCfg = (await jsm.streams.info(recordStream)).config;
-  if (recordCfg.allow_direct !== true || recordCfg.allow_rollup_hdrs !== false || recordCfg.deny_delete !== true || recordCfg.deny_purge !== true)
-    throw new Error(`the records store ${recordBucket} has a drifted shape (allow_direct=${String(recordCfg.allow_direct)}, allow_rollup_hdrs=${String(recordCfg.allow_rollup_hdrs)}, deny_delete=${String(recordCfg.deny_delete)}, deny_purge=${String(recordCfg.deny_purge)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
-  assertAuthorityStoreBinding(recordCfg, recordBucket);
+  assertRecordsStoreConfig(recordCfg, space);
 
-  const authBucket = epAuthBucket(space);
+  const authBucket = definitions.auth.bucket;
   const authStream = `KV_${authBucket}`;
   if (await jsm.streams.info(authStream).catch(() => undefined) === undefined)
-    await kvm.create(authBucket, { allow_direct: false, markerTTL: EP_AUTH_MARKER_TTL_MS });
+    await kvm.create(authBucket, definitions.auth.createOptions);
   const authCfg = (await jsm.streams.info(authStream)).config as StreamConfig & { allow_msg_ttl?: boolean };
-  if (authCfg.allow_direct !== false || authCfg.allow_msg_ttl !== true)
-    throw new Error(`the auth store ${authBucket} has a drifted shape (allow_direct=${String(authCfg.allow_direct)}, allow_msg_ttl=${String(authCfg.allow_msg_ttl)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
-  assertAuthorityStoreBinding(authCfg, authBucket);
+  assertAuthStoreConfig(authCfg, space);
 }
 
 /** Create (idempotently) the per-space SESSION ledger store (§13.6): the DEDICATED
@@ -525,11 +558,34 @@ export async function ensureAuthorityStores(jsm: JetStreamManager, kvm: Kvm, spa
  *  structural fix for the §13.9 subject-blindness a shared auth bucket would carry (creds + gates).
  *  Create-or-verify, safe at every manager boot; a drifted store FAILS LOUD (§13.12). */
 export async function createSessionsStore(jsm: JetStreamManager, kvm: Kvm, space: string): Promise<void> {
-  const bucket = sessionsBucket(space);
+  const definition = endpointSessionStoreDefinition(space);
+  const bucket = definition.bucket;
   const stream = `KV_${bucket}`;
   if (await jsm.streams.info(stream).catch(() => undefined) === undefined)
-    await kvm.create(bucket, { allow_direct: false, markerTTL: EP_AUTH_MARKER_TTL_MS });
+    await kvm.create(bucket, definition.createOptions);
   const cfg = (await jsm.streams.info(stream)).config as StreamConfig & { allow_msg_ttl?: boolean };
+  assertSessionsStoreConfig(cfg, space);
+}
+
+/** Pure native records-store invariant checks; no read, repair or authority is supplied. */
+export function assertRecordsStoreConfig(recordCfg: StreamConfig, space: string): void {
+  const recordBucket = recordsBucket(space);
+  if (recordCfg.allow_direct !== true || recordCfg.allow_rollup_hdrs !== false || recordCfg.deny_delete !== true || recordCfg.deny_purge !== true)
+    throw new Error(`the records store ${recordBucket} has a drifted shape (allow_direct=${String(recordCfg.allow_direct)}, allow_rollup_hdrs=${String(recordCfg.allow_rollup_hdrs)}, deny_delete=${String(recordCfg.deny_delete)}, deny_purge=${String(recordCfg.deny_purge)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
+  assertAuthorityStoreBinding(recordCfg, recordBucket);
+}
+
+/** Pure native auth-store invariant checks; no read, repair or authority is supplied. */
+export function assertAuthStoreConfig(authCfg: StreamConfig & { allow_msg_ttl?: boolean }, space: string): void {
+  const authBucket = epAuthBucket(space);
+  if (authCfg.allow_direct !== false || authCfg.allow_msg_ttl !== true)
+    throw new Error(`the auth store ${authBucket} has a drifted shape (allow_direct=${String(authCfg.allow_direct)}, allow_msg_ttl=${String(authCfg.allow_msg_ttl)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
+  assertAuthorityStoreBinding(authCfg, authBucket);
+}
+
+/** Pure native sessions-store invariant checks; no read, repair or authority is supplied. */
+export function assertSessionsStoreConfig(cfg: StreamConfig & { allow_msg_ttl?: boolean }, space: string): void {
+  const bucket = sessionsBucket(space);
   if (cfg.allow_direct !== false || cfg.allow_msg_ttl !== true)
     throw new Error(`the sessions store ${bucket} has a drifted shape (allow_direct=${String(cfg.allow_direct)}, allow_msg_ttl=${String(cfg.allow_msg_ttl)}); an authority store is never silently adopted - reprovision it (SPEC 13.12)`);
   assertAuthorityStoreBinding(cfg, bucket);

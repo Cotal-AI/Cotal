@@ -1,5 +1,5 @@
 import * as p from "@clack/prompts";
-import { findMesh, type MeshEntry } from "@cotal-ai/workspace";
+import { findMesh, inputDisabledByFlag, type MeshEntry } from "@cotal-ai/workspace";
 import { bold, brand, brandBold, dim, ok } from "../lib/theme.js";
 import { abortIfCancel } from "../lib/cancel.js";
 import { readFileSync } from "node:fs";
@@ -88,7 +88,7 @@ export function clackIO(): WizardIO {
  *  this a missing flag would hang a script waiting on input nobody is there to give; the flag form
  *  keeps failing loud instead. */
 export function canPrompt(): boolean {
-  return Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY) && process.env.COTAL_NO_PROMPT !== "1";
+  return Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY) && process.env.COTAL_NO_PROMPT !== "1" && !inputDisabledByFlag();
 }
 
 /** Pre-filled from whatever the command line already supplied, so a half-typed command completes

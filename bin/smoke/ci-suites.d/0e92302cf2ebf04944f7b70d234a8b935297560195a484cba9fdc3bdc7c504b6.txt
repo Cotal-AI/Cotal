@@ -1,0 +1,3 @@
+# cotal config: preferences with their sources and shadowed values, scoped writes, the refusals, an
+# invalid file stopping every command, and the color, editor and detach-key consumers.
+smoke:config-preferences

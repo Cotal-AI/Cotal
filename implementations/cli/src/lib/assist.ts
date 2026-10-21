@@ -1,5 +1,6 @@
 import * as p from "@clack/prompts";
 import type { ConnectorAssist } from "@cotal-ai/core";
+import { inputDisabledByFlag } from "@cotal-ai/workspace";
 import { dim } from "./theme.js";
 
 export interface AssistContext {
@@ -16,7 +17,7 @@ export interface AssistContext {
  *  Which harness hosts it is the connectors' answer, not this file's. */
 export function assistAllowed(): boolean {
   if (process.env.COTAL_SKIP_ASSIST === "1") return false;
-  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY) && !inputDisabledByFlag();
 }
 
 /** Hand the terminal to a connector's debug session primed with the failure context. Resolves when

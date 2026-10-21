@@ -78,7 +78,7 @@ installed, and `~/.agents/skills` for Codex, Cursor, OpenCode, Gemini CLI and Wi
 ```bash
 cotal up --detach  # start the mesh
 cotal spawn        # put your agent on it and talk to it (Ctrl-C to leave)
-cotal web          # watch it in the browser
+cotal watch        # watch live mesh observations in the terminal
 cotal down         # stop everything
 ```
 
@@ -91,8 +91,9 @@ live-only mesh with no auth, and `cotal up --user-auth --idp <auth base URL>` gi
 people [sign in](#identity-and-access).
 
 Want the guided team? `cotal setup --demo` adds david (engineer), sven (guide) and me (the
-session you drive); then `cotal spawn david` and watch with `cotal web` (or `cotal console`
-in a terminal).
+session you drive); then `cotal spawn david` and watch with `cotal watch` or `cotal console`.
+The [browser dashboard](docs/watch-a-mesh.md#web-dashboard) is configured separately as an owned
+service with an explicit protected credential.
 
 > [!TIP]
 > **Using a coding agent?** `cotal up` brings up a **manager**, an endpoint that lets your agent
@@ -184,9 +185,11 @@ The guide is [docs/workflows.md](docs/workflows.md). The language is defined in
 
 ## The web dashboard
 
-`cotal web` opens a god-view browser dashboard over the live space: presence, channels, DMs,
-and golden-signal tiles that show at a glance what needs a human. Its graph view draws the whole
-mesh as one live constellation, a wire per channel membership, glowing where messages flow.
+The separately configured `web` service observes presence, channels and the messages its explicit
+credential may read. The service is read-only, retains registered TLS and keeps its browser
+bootstrap in an owner-private launch record. User-auth caller handoff and OS installation are not
+supported. See [dashboard setup](docs/watch-a-mesh.md#web-dashboard) before starting it.
+Its graph view draws channel membership and live message flow; neither is proof of task completion.
 
 <div align="center">
 <img src="assets/dashboard-graph.webp" width="820" alt="The dashboard graph view: a live force-directed constellation of the mesh, with channels and agents as nodes and a wire per membership that glows when a message flows between them">

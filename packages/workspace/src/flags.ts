@@ -7,7 +7,7 @@ import type { FlagSpec } from "@cotal-ai/core";
  * Declared `as const` so `FlagValues<typeof …>` derives each command's values type — the cast
  * in `run` is compile-checked against exactly these specs.
  */
-export const spaceFlag = { name: "space", type: "string", value: "<s>", description: "target space (default: the resolved mesh)" } as const satisfies FlagSpec;
+export const spaceFlag = { name: "space", short: "s", type: "string", value: "<s>", description: "target space (default: the resolved mesh)" } as const satisfies FlagSpec;
 export const serverFlag = { name: "server", type: "string", value: "<url>", description: "broker URL (overrides the mesh registry entry)" } as const satisfies FlagSpec;
 export const credsFlag = { name: "creds", type: "string", value: "<path>", description: "creds file for an off-registry connection" } as const satisfies FlagSpec;
 
@@ -32,15 +32,15 @@ export function hasMeshTargetFlags(flags: readonly FlagSpec[] | undefined): bool
  * keeps it honest.
  */
 export const launchFlags = [
-  { name: "name", type: "string", value: "<n>", description: "presence name override; does not choose the persona" },
+  { name: "name", short: "n", type: "string", value: "<n>", description: "presence name override; does not choose the persona" },
   { name: "config", type: "string", value: "<persona-or-path>", description: "persona catalog name or file path; defaults from COTAL_DEFAULT_PERSONA" },
   { name: "agent", type: "string", value: "<a>", description: "connector type (claude, opencode, hermes …); defaults from COTAL_DEFAULT_AGENT" },
   { name: "role", type: "string", value: "<r>", description: "role override (wins over the agent file's role:)" },
-  { name: "model", type: "string", value: "<m>", description: "model override (wins over the agent file's model:)" },
+  { name: "model", short: "m", type: "string", value: "<m>", description: "model override (wins over the agent file's model:)" },
   { name: "variant", type: "string", value: "<v>", description: "model variant override (connector-defined; wins over the agent file's variant:)" },
   { name: "opt", type: "string", multiple: true, value: "<k=v>", description: "connector-specific launch option (repeatable); wins per-key over the agent file's launchOptions:" },
-  { name: "cwd", type: "string", value: "<dir>", description: "working directory to root the agent at" },
-  { name: "prompt", type: "string", value: "<text>", description: "initial prompt auto-submitted at start" },
+  { name: "cwd", short: "C", type: "string", value: "<dir>", description: "working directory to root the agent at" },
+  { name: "prompt", short: "p", type: "string", value: "<text>", description: "initial prompt auto-submitted at start" },
   { name: "resume", type: "string", value: "<id>", description: "fork an existing session id into the mesh (only where the connector declares resume support; detached: pair with --cwd)" },
   { name: "events", type: "boolean", description: "force the session's AG-UI event plane on (already the default where supported)" },
   { name: "no-events", type: "boolean", description: "opt out of the session's AG-UI event plane" },

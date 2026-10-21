@@ -23,6 +23,7 @@ import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { mkSecretDir, type SecretStore } from "@cotal-ai/core";
 import { accountInventory, authDir, spaceSegment } from "./auth-paths.js";
+import { CommandFailure } from "./output.js";
 
 /** `<root>/.cotal` — the dir whose children the segment must never collide with. */
 export function cotalDir(root: string): string {
@@ -150,6 +151,18 @@ export function spaceMaterialMigrationRefusal(root: string): SpaceMaterialMigrat
   return undefined;
 }
 
+export interface MaterialMigrationReceipt {
+  readonly space: string;
+  readonly kind: string;
+  readonly from: string;
+  readonly to: string;
+}
+export interface MaterialPathOptions {
+  readonly readOnly?: boolean;
+  /** Called only after the native rename returns. Contents never cross this observation seam. */
+  readonly onMigrated?: (receipt: MaterialMigrationReceipt) => void;
+}
+
 /**
  * THE CHOKE POINT (§2 rules 1-4): resolve one kind's per-space location, migrating a legacy
  * root-scoped copy into it on first touch, or REFUSING when the move cannot be made honestly.
@@ -175,7 +188,7 @@ export function spaceMaterialMigrationRefusal(root: string): SpaceMaterialMigrat
  * rules 2-4 is the second idiom §4 forbids. `root` stays alongside it because rule 4's tenant count
  * is a property of the ROOT's account records, not of whichever directory the material sits in.
  */
-export function migrateLegacyMaterialIn(parent: string, root: string, space: string, kind: string): string {
+export function migrateLegacyMaterialIn(parent: string, root: string, space: string, kind: string, options: MaterialPathOptions = {}): string {
   const dir = parent;
   const canonical = join(dir, spaceSegment(space), kind);
   const legacyPath = join(dir, kind);
@@ -196,6 +209,7 @@ export function migrateLegacyMaterialIn(parent: string, root: string, space: str
     throw e;
   }
   if (!entries.some((e) => e.name === kind)) return canonical;
+  if (options.readOnly) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this credential observation requires a legacy material migration; no file was moved and no canonical absence was inferred", { target: { space }, remedy: "use the explicit supported mutation/update path for this root before retrying the observation" });
 
   // RULE 4 — refuse to migrate on a root holding more than one space.
   //
@@ -236,13 +250,14 @@ export function migrateLegacyMaterialIn(parent: string, root: string, space: str
   // dir to a SIBLING dir, so it never has to materialize a parent.
   mkSecretDir(join(dir, spaceSegment(space)));
   renameSync(legacyPath, canonical);
+  options.onMigrated?.({ space, kind, from: legacyPath, to: canonical });
   return canonical;
 }
 
 /** {@link migrateLegacyMaterialIn} at P7's placement — a legacy copy sitting directly under
  *  `<root>/.cotal/`. The five P7 resolvers' one entry point. */
-export function migrateLegacyCotalMaterial(root: string, space: string, kind: string): string {
-  return migrateLegacyMaterialIn(cotalDir(root), root, space, kind);
+export function migrateLegacyCotalMaterial(root: string, space: string, kind: string, options: MaterialPathOptions = {}): string {
+  return migrateLegacyMaterialIn(cotalDir(root), root, space, kind, options);
 }
 
 /**

@@ -1,0 +1,230 @@
+{
+  "suite": [
+    "implementations/cli/smoke/space-registration.smoke.ts"
+  ],
+  "guard": "space create prepares a space only for a free name and a free root that is not the home folder, makes its .cotal, and every reader lists, shows, selects or refuses it as prepared; up starts it only in its root and drops the prepared record; forget removes it",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/space-registration.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/space-create.json",
+  "why": [
+    "Each mutation removes one check space create makes before it writes, one place a reader recognises a prepared space, or one step up takes when it starts one. The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back."
+  ],
+  "mutations": [
+    {
+      "name": "create does not refuse a registered name",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  if (registered) {\n",
+      "replace": "  if (registered && name === \"\") {\n",
+      "expectRed": "a registered name is CONFLICT",
+      "cell": "a registered name is CONFLICT",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "create does not refuse a prepared name",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  if (prepared) {\n",
+      "replace": "  if (prepared && name === \"\") {\n",
+      "expectRed": "a prepared name is CONFLICT, exit 2, naming its root",
+      "cell": "a prepared name is CONFLICT, exit 2, naming its root",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "create does not read the root's space accounts",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "[...take(spacesAtRoot(root), target), ",
+      "replace": "[",
+      "expectRed": "a folder whose .cotal holds another space's account is CONFLICT",
+      "cell": "a folder whose .cotal holds another space's account is CONFLICT",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "create does not read the registrations rooted there",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "...loadMeshes().filter((m) => here(m.root)).map((m) => m.space), ",
+      "replace": "",
+      "expectRed": "a folder a registration names as its root is CONFLICT",
+      "cell": "a folder a registration names as its root is CONFLICT",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "create does not read the space prepared there",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": ", ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)]",
+      "replace": "]",
+      "expectRed": "a folder already prepared for a space is CONFLICT",
+      "cell": "a folder already prepared for a space is CONFLICT",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "create accepts the home folder",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  if (resolve(root, \".cotal\") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))\n",
+      "replace": "  if (root === \"\")\n",
+      "expectRed": "the home folder is CONFLICT",
+      "cell": "the home folder is CONFLICT",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "create accepts a --root that is not a directory",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  if (!isDir(root)) throw usage(",
+      "replace": "  if (false) throw usage(",
+      "expectRed": "a --root that is not a directory is USAGE_INVALID",
+      "cell": "a --root that is not a directory is USAGE_INVALID",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "create does not make the root's .cotal",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  mkdirSync(join(root, \".cotal\"), { recursive: true });\n",
+      "replace": "",
+      "expectRed": "create prepares the space in this folder and makes its .cotal: ok, nothing registered",
+      "cell": "create prepares the space in this folder and makes its .cotal: ok, nothing registered",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "add does not refuse a prepared name",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  if (findPreparedSpace(name))\n    throw refuse(",
+      "replace": "  if (findPreparedSpace(name) && false)\n    throw refuse(",
+      "expectRed": "adding a prepared name is CONFLICT, naming cotal up",
+      "cell": "adding a prepared name is CONFLICT, naming cotal up",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "forget leaves a prepared space recorded",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "    removePreparedSpace(name);\n",
+      "replace": "",
+      "expectRed": "a prepared space is forgotten; the .cotal create made stays",
+      "cell": "a prepared space is forgotten; the .cotal create made stays",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "create takes every add flag",
+      "file": "implementations/cli/src/commands/space.ts",
+      "find": "!(sub === \"create\" && flag === \"root\")",
+      "replace": "sub !== \"create\"",
+      "expectRed": "an add flag other than --root on create is USAGE_INVALID",
+      "cell": "an add flag other than --root on create is USAGE_INVALID",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "space lists no prepared spaces",
+      "file": "implementations/cli/src/commands/space.ts",
+      "find": "    const prepared = loadPreparedSpaces().map((p) => preparedRow(p, current));\n",
+      "replace": "    const prepared: PreparedRow[] = [];\n",
+      "expectRed": "space lists it apart from the registrations",
+      "cell": "space lists it apart from the registrations",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "space show does not find a prepared space",
+      "file": "implementations/cli/src/commands/space.ts",
+      "find": "      const p = findPreparedSpace(name);\n",
+      "replace": "      const p = undefined as PreparedSpace | undefined;\n",
+      "expectRed": "space show shows it as prepared",
+      "cell": "space show shows it as prepared",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a selected prepared space is warned about as missing",
+      "file": "implementations/cli/src/commands/space.ts",
+      "find": " || result.prepared.some((p) => p.current)) return [];",
+      "replace": ") return [];",
+      "expectRed": "a selected prepared space is not warned about as missing",
+      "cell": "a selected prepared space is not warned about as missing",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "use does not find a prepared space",
+      "file": "implementations/cli/src/commands/use.ts",
+      "find": "  const p = m ? undefined : findPreparedSpace(name);\n",
+      "replace": "  const p = undefined as ReturnType<typeof findPreparedSpace>;\n",
+      "expectRed": "use selects it and names its root",
+      "cell": "use selects it and names its root",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "status calls a prepared selection not recorded",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "m.currentPrepared ? \"prepared, not started\" : \"not recorded\"",
+      "replace": "\"not recorded\"",
+      "expectRed": "status says the selected space is prepared, not started",
+      "cell": "status says the selected space is prepared, not started",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--space does not refuse a prepared space",
+      "file": "packages/workspace/src/mesh-target.ts",
+      "find": "      notStarted(flags.space);\n",
+      "replace": "",
+      "expectRed": "a command naming it with --space is TARGET_UNAVAILABLE, naming its root",
+      "cell": "a command naming it with --space is TARGET_UNAVAILABLE, naming its root",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the selection does not refuse a prepared space",
+      "file": "packages/workspace/src/mesh-target.ts",
+      "find": "      notStarted(current);\n",
+      "replace": "",
+      "expectRed": "a command that targets it is TARGET_UNAVAILABLE, naming cotal up in its root",
+      "cell": "a command that targets it is TARGET_UNAVAILABLE, naming cotal up in its root",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the local root does not refuse a prepared space",
+      "file": "packages/workspace/src/mesh-target.ts",
+      "find": "    if (prepared) notStarted(prepared.space);\n",
+      "replace": "",
+      "expectRed": "a command run in its root with nothing selected is TARGET_UNAVAILABLE",
+      "cell": "a command run in its root with nothing selected is TARGET_UNAVAILABLE",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "not-started is not a target-unavailable code",
+      "file": "packages/workspace/src/connect.ts",
+      "find": "    case \"not-started\":\n      return \"TARGET_UNAVAILABLE\";\n",
+      "replace": "    case \"not-started\":\n      return \"TARGET_NOT_FOUND\";\n",
+      "expectRed": "a command that targets it is TARGET_UNAVAILABLE, naming cotal up in its root",
+      "cell": "a command that targets it is TARGET_UNAVAILABLE, naming cotal up in its root",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "up in a prepared root starts the default space",
+      "file": "packages/workspace/src/space.ts",
+      "find": " ?? preparedSpaceAt(root)?.space ?? DEFAULT_SPACE;",
+      "replace": " ?? DEFAULT_SPACE;",
+      "expectRed": "up in its root starts it under its name, and the prepared record goes",
+      "cell": "up in its root starts it under its name, and the prepared record goes",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "up starts a prepared space from another root",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  if (prepared && canonicalRoot(prepared.root) !== canonicalRoot(root))\n",
+      "replace": "  if (prepared && space === \"\")\n",
+      "expectRed": "up --space for it from another folder refuses, naming its root, and makes nothing there",
+      "cell": "up --space for it from another folder refuses, naming its root, and makes nothing there",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "up runs another space in a prepared root",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "?.space ?? preparedSpaceAt(root)?.space].filter(",
+      "replace": "?.space].filter(",
+      "expectRed": "up --space for another space in its root refuses",
+      "cell": "up --space for another space in its root refuses",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "up keeps the prepared record of a space it started",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  removePreparedSpace(m.space);",
+      "replace": "",
+      "expectRed": "up in its root starts it under its name, and the prepared record goes",
+      "cell": "up in its root starts it under its name, and the prepared record goes",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

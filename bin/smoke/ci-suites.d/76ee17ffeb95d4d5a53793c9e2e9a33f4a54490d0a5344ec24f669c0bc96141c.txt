@@ -1,0 +1,3 @@
+# doctor auth reports a credential with no expiry claim as a finding, including an agent credential
+# auth mint wrote without an expiry flag, and ends failed (exit 5). Broker-free; a staged static root.
+smoke:doctor-unbounded

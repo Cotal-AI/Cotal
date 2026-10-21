@@ -228,7 +228,7 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   and a foreground `cotal spawn` on your own machine grants whatever you name because it mints
   from your own signing material. [connect-claude.md](connect-claude.md#event-plane) spells all
   three out. Who may READ a plane is minted separately and out of band either way, with
-  `cotal actor grant` on a user-auth mesh and `cotal mint --profile agent --allow-subscribe` on a
+  `cotal actor grant` on a user-auth mesh and `cotal auth mint --profile agent --allow-subscribe` on a
   static one. Who may read the plane is still that mint, not the spawn grant.
 - **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
   every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.

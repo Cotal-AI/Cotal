@@ -1,0 +1,3 @@
+# A re-grant or revoke whose actor row changes or disappears while its lifecycle retires ends
+# partial (exit 4) and names the retired lifecycle, never unknown. Broker-free; a stub auth service.
+smoke:actor-retire-partial

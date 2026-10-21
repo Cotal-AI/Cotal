@@ -27,7 +27,7 @@
  * mediated reads stay the remedy.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { DiscardPolicy, type JetStreamManager, type MsgRequest } from "@nats-io/jetstream";
+import { DiscardPolicy, type JetStreamManager, type MsgRequest, type StreamConfig } from "@nats-io/jetstream";
 import type { KV, Kvm } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { canonicalJson, rawDigest } from "./canonical.js";
@@ -510,6 +510,16 @@ export function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): I
   });
 }
 
+/** Shared native creation inputs. Immutability, no-eviction and binding verification stay
+ *  in {@link ensureIssuedStores}; a definition is not a migration or provisioning grant. */
+export function issuedStoreDefinitions(space: string) {
+  return ([[issuedBucket(space), false], [acceptedBucket(space), true]] as const).map(([bucket, direct]) => ({
+    bucket,
+    createOptions: { allow_direct: direct },
+    hardenAfterCreate: { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...(direct ? WRITE_ONCE_PER_KEY : APPEND_ONLY_PER_KEY) },
+  }));
+}
+
 /** Create-or-verify the two issued-authority stores. Evidence: `allow_direct=false`, file,
  *  no eviction. Accepted: `allow_direct=true`, file, no eviction. A drifted store fails loud. */
 export async function ensureIssuedStores(jsm: JetStreamManager, kvm: Kvm, space: string): Promise<void> {
@@ -527,20 +537,28 @@ export async function ensureIssuedStores(jsm: JetStreamManager, kvm: Kvm, space:
   //   is ever removed, and every immutable row (the evidence, the source index) is read as the
   //   FIRST message on its key, so a later write on the same key is inert to every reader. The
   //   attempt row is read last-by-key, as its CAS requires.
-  for (const [bucket, direct] of [[issuedBucket(space), false], [acceptedBucket(space), true]] as const) {
+  for (const { bucket, createOptions, hardenAfterCreate: shape } of issuedStoreDefinitions(space)) {
     const stream = `KV_${bucket}`;
-    const shape = { ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...(direct ? WRITE_ONCE_PER_KEY : APPEND_ONLY_PER_KEY) };
     if (await jsm.streams.info(stream).catch(() => undefined) === undefined) {
-      await kvm.create(bucket, { allow_direct: direct });
+      await kvm.create(bucket, createOptions);
       const created = (await jsm.streams.info(stream)).config;
       await jsm.streams.update(stream, { ...created, ...shape });
     }
     const cfg = (await jsm.streams.info(stream)).config;
-    if (cfg.allow_direct !== direct || cfg.storage !== "file" || (cfg.max_age ?? 0) !== 0 || (cfg.max_msgs ?? -1) > 0 || (cfg.max_bytes ?? -1) > 0
-      || !Array.isArray(cfg.subjects) || cfg.subjects.length !== 1 || cfg.subjects[0] !== `$KV.${bucket}.>`)
-      throw new Error(`the issued-authority store ${bucket} has a drifted shape (allow_direct=${String(cfg.allow_direct)}); an authority store is never silently adopted - reprovision it (SPEC 13.15)`);
-    assertStoreShape(cfg as unknown as Record<string, unknown>, shape, bucket, "SPEC 13.15");
+    assertIssuedStoreConfig(cfg, space, bucket);
   }
+}
+
+/** Pure native issued/accepted-store invariant checks. The bucket must belong to this space;
+ *  passing these checks is not accepted issuance or permission to change a store. */
+export function assertIssuedStoreConfig(cfg: StreamConfig, space: string, bucket: string): void {
+  const definition = issuedStoreDefinitions(space).find((item) => item.bucket === bucket);
+  if (!definition) throw new Error("issued-store verification requires a native issued/accepted bucket of the selected space");
+  const direct = definition.createOptions.allow_direct, shape = definition.hardenAfterCreate;
+  if (cfg.allow_direct !== direct || cfg.storage !== "file" || (cfg.max_age ?? 0) !== 0 || (cfg.max_msgs ?? -1) > 0 || (cfg.max_bytes ?? -1) > 0
+    || !Array.isArray(cfg.subjects) || cfg.subjects.length !== 1 || cfg.subjects[0] !== `$KV.${bucket}.>`)
+    throw new Error(`the issued-authority store ${bucket} has a drifted shape (allow_direct=${String(cfg.allow_direct)}); an authority store is never silently adopted - reprovision it (SPEC 13.15)`);
+  assertStoreShape(cfg as unknown as Record<string, unknown>, shape, bucket, "SPEC 13.15");
 }
 
 // ---- the accepted row ----------------------------------------------------------------------------

@@ -1,3 +1,4 @@
+import { CommandFailure } from "./output.js";
 import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
@@ -38,6 +39,11 @@ const AUTH_FILE = "auth.json";
 
 export function authDir(root: string): string {
   return join(root, ".cotal", "auth");
+}
+
+/** `<root>/.cotal/stack-controller.json`, the whole-stack journal `cotal up` writes for this root. */
+export function stackJournalPath(root: string): string {
+  return join(root, ".cotal", "stack-controller.json");
 }
 
 /** The ONE injective, case-safe space key: lowercase hex of the space's UTF-8 bytes. Every
@@ -134,9 +140,9 @@ export function spaceFromSegment(name: string): string | undefined {
  *  the canonical segment HERE means no flow can ever read (or worse, `ensure*`-REGENERATE) beside
  *  material the old layout still holds. Deliberately not in {@link hasUserAuthState} alone: a
  *  user-mode connect through a registry record never consults the marker before minting. */
-export function userAuthStateDir(root: string, space: string): string {
+export function userAuthStateDir(root: string, space: string, options: { readonly readOnly?: boolean } = {}): string {
   const canonical = join(authDir(root), spaceSegment(space));
-  migrateLegacyUserAuthState(root, space, canonical);
+  migrateLegacyUserAuthState(root, space, canonical, options);
   return canonical;
 }
 
@@ -154,7 +160,7 @@ export function userAuthStateDir(root: string, space: string): string {
  *  (the old bug: a user-auth space flips, and `mint` writes static admin creds) or stealing another
  *  tenant's canonical dir. Refuse and make the operator disambiguate, rather than infer ownership
  *  from the directory spelling. */
-function migrateLegacyUserAuthState(root: string, space: string, canonical: string): void {
+function migrateLegacyUserAuthState(root: string, space: string, canonical: string, options: { readonly readOnly?: boolean }): void {
   const legacyName = encodeURIComponent(space);
   if (legacyName === "creds") return;
   const dir = authDir(root);
@@ -177,6 +183,7 @@ function migrateLegacyUserAuthState(root: string, space: string, canonical: stri
   // legacy path is a crashed enable, not state, so it neither migrates nor blocks.
   const hit = entries.find((e) => e.name === legacyName && e.isDirectory());
   if (!hit || !pathHasUserAuthMarker(legacyPath)) return;
+  if (options.readOnly) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this observation encountered legacy user-auth state requiring migration; no directory was moved and static mode was not inferred", { target: { space }, remedy: "complete this root's supported explicit migration before retrying the observation" });
   // Real pre-hex state exists for this space. Two situations are irreducibly ambiguous and FAIL
   // LOUD rather than guess: (1) the legacy name is also another space's canonical segment; (2) a
   // canonical dir already exists (a crashed/partial new-layout enable) - migrating would either
@@ -230,8 +237,8 @@ function pathHasUserAuthMarker(dir: string): boolean {
  *  `existsSync` on {@link userAuthStateDir}: only a real provider pin inside a real directory
  *  counts. The state-dir read goes through {@link userAuthStateDir}, so a pre-hex legacy layout
  *  has already been migrated by the time the marker is checked. */
-export function hasUserAuthState(root: string, space: string): boolean {
-  return pathHasUserAuthMarker(userAuthStateDir(root, space));
+export function hasUserAuthState(root: string, space: string, options: { readonly readOnly?: boolean } = {}): boolean {
+  return pathHasUserAuthMarker(userAuthStateDir(root, space, options));
 }
 
 /** Every space with user-auth state under this auth dir, detectable WITHOUT `broker.json`/accounts:

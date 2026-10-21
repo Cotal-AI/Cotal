@@ -1,0 +1,3 @@
+# With no connector installed, setup refuses an unknown --harness as usage and names a seed step
+# that can run from this binary.
+smoke:setup-no-connector

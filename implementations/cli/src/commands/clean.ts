@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
-import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type AuthProvider, type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
+import { clearSpaceHistory, isReachable, registry, resolveAuthProvider, type AuthProvider, type CompletionResult, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import {
   DELIVERY_CREDS_KIND,
   MEMBERSHIP_CONFIG_KIND,
@@ -23,7 +23,6 @@ import {
   removeMeshesByRoot,
   resolveRuntimeSpace,
   resolveSpace,
-  rollbackRestore,
   SYSTEM_CREDS_FILES,
   workspaceSecretStore,
   type LocalProcess,
@@ -34,6 +33,9 @@ import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { pidfileState, pidfileTargets } from "./down.js";
 import { localProcessSurface } from "../ext-loader.js";
+import { readStackJournal, STACK_DEFINITION } from "../lib/stack-journal.js";
+import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
+import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
 
 const TARGETS = ["history", "store", "all", "restore-fallback", "restore-attempt"] as const;
 type Target = (typeof TARGETS)[number];
@@ -80,7 +82,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
       const journal = readMaintenanceJournal(root);
       if (!journal || journal.state !== "restore-ready" || journal.restore.attemptId !== values.attempt)
         throw new Error(`no pre-commit restore attempt ${values.attempt} is recorded${journal ? ` (maintenance state is ${journal.state}${"restore" in journal ? ` for attempt ${journal.restore.attemptId}` : ""})` : ""}`);
-      rollbackRestore(lock);
+      rollbackRestoreWithBroker(lock);
       console.log(c.green(`✓ rolled back stale restore attempt ${values.attempt}`));
       console.log(c.dim("  the preserved source is back at ready; resume with `cotal up` or retry `cotal up --restore`"));
     } finally {
@@ -194,6 +196,21 @@ export function liveMeshProcesses(root: string, space?: string): string[] {
     const record = possiblyRunning(component, context);
     if (record) running.push(record);
   }
+  // A controller stack member counts as live unless its process is gone and its
+  // record carries the stop receipt its role requires. Backup, reset store and reset space share this.
+  // The members live under the stack's own recorded space. A space derived from the root's pidfiles
+  // or accounts can name another tenant, or the default, once the stack is stopped.
+  const stack = readStackJournal(root);
+  if (stack) {
+    for (const definition of Object.values(STACK_DEFINITION)) {
+      for (const row of serviceInstances(stack.journal.space, definition)) {
+        const value = row.record.value;
+        const gone = ["gone", "previous-boot"].includes(observeServiceProcess(value));
+        const receipted = value.state === "stopped" && Boolean(value.nativeStop ?? value.kernelStop ?? value.processStop);
+        if (!gone || !receipted) running.push(`${definition}, instance ${row.name}${gone ? ", no stop receipt" : ""}`);
+      }
+    }
+  }
   return running;
 }
 
@@ -205,6 +222,25 @@ function possiblyRunning(component: LocalProcess, context: LocalProcessContext):
   const state = pidfileState(localProcessPath(component.pidFile, context));
   if (state.liveness === "dead") return undefined;
   return `${component.label}, ${[state.pid && `pid ${state.pid}`, state.note].filter(Boolean).join(", ")}`;
+}
+
+/** Fixed filesystem targets shared by native identity cleanup and its read-only impact plan. */
+export function localIdentityCleanupTargets(root: string, space: string) {
+  const control = join(root, ".cotal");
+  return {
+    material: spaceMaterialDir(root, space), renewal: renewalRecordPath(root, space),
+    legacy: [...SYSTEM_CREDS_FILES, MEMBERSHIP_CONFIG_KIND, "renewal.json"].map((name) => join(control, name)),
+    runtime: pidfileTargets(space, root).flatMap(([path]) => [path, `${path}.identity`]),
+    run: join(control, "run"), auth: authDir(root),
+  };
+}
+
+export interface ReviewedIdentityCleanup {
+  store: SecretStore;
+  provider: AuthProvider | null;
+  agentKeys: readonly string[];
+  beforeRemove(path: string): void;
+  afterRemove(path: string): void;
 }
 
 /** Delete the stopped mesh's local state and return what was removed (paths relative to the root).
@@ -221,24 +257,31 @@ function possiblyRunning(component: LocalProcess, context: LocalProcessContext):
  *  as-is, with `auth.json` still present to name the space. This surface stays the LOCAL
  *  filesystem composition (hosted resets ride the closed composition's own store + the same
  *  provider hook, never a KMS mode on this CLI). */
-export async function removeLocalState(root: string, opts: { includeAuth: boolean; storeDir?: string }): Promise<string[]> {
+export async function removeLocalState(root: string, opts: { includeAuth: boolean; storeDir?: string; space?: string; expectedStore?: { path: string; identity?: { dev: bigint; ino: bigint } }; onRemoved?: (label: string) => void; identity?: ReviewedIdentityCleanup }): Promise<string[]> {
   const removed: string[] = [];
+  const recordRemoved = (label: string) => { removed.push(label); opts.onRemoved?.(label); };
   const rm = (path: string, label: string) => {
+    opts.identity?.beforeRemove(path);
     if (!existsSync(path)) return;
     rmSync(path, { recursive: true, force: true });
-    removed.push(label);
+    opts.identity?.afterRemove(path);
+    recordRemoved(label);
   };
-  // The space must be read before `.cotal/auth` goes - it names the auth service's pidfile
-  // and keys the provider's secret deprovision.
-  const space = resolveSpace(root);
+  // Trust removal always derives its space from the root's local authority. A named
+  // store-only reset may supply the recorded open space, which has no auth record.
+  if (opts.includeAuth && opts.space !== undefined) throw new Error("identity cleanup cannot take a caller-selected space");
+  const space = opts.space ?? resolveSpace(root);
   const store = safeStoreCleanupPath(root, opts.storeDir);
+  if (opts.expectedStore && (store.path !== opts.expectedStore.path || Boolean(store.identity) !== Boolean(opts.expectedStore.identity) || store.identity && (store.identity.dev !== opts.expectedStore.identity?.dev || store.identity.ino !== opts.expectedStore.identity?.ino)))
+    throw new Error("store path or pinned filesystem identity changed before cleanup; no directory was removed");
   if (store.identity) {
     removePinnedStoreDirectory(store.path, store.identity);
-    removed.push(opts.storeDir ? store.path : ".cotal/nats (JetStream store)");
+    recordRemoved(opts.storeDir ? store.path : ".cotal/nats (JetStream store)");
   }
   if (opts.includeAuth) {
+    const targets = localIdentityCleanupTargets(root, space);
     // ---- the seam deletes, before ANY raw identity removal (see the doc above) ----
-    const secrets = workspaceSecretStore(root);
+    const secrets = opts.identity?.store ?? workspaceSecretStore(root);
     const failures: string[] = [];
     // Both kinds are PER-SPACE as of P7 (§3.1's `(space) => key` shape), and both are swept at BOTH
     // spellings: the segmented key this space writes today, and the flat pre-P7 key, which a root
@@ -254,7 +297,7 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
       try {
         if ((await secrets.get(key)) !== undefined) {
           await secrets.delete(key);
-          removed.push(`.cotal/${key}`);
+          recordRemoved(`.cotal/${key}`);
         }
       } catch (e) {
         failures.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
@@ -273,10 +316,10 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // sweep above is (never move material into the path you are about to delete), which is why it
     // reports both the segmented keys and the flat pre-P1 level rather than resolving through
     // `agentCredsDir`.
-    for (const key of agentSecretKeysUnder(root)) {
+    for (const key of opts.identity?.agentKeys ?? agentSecretKeysUnder(root)) {
       try {
         await secrets.delete(key);
-        removed.push(`.cotal/${key}`);
+        recordRemoved(`.cotal/${key}`);
       } catch (e) {
         failures.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -284,9 +327,10 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // Gate on registration: an open-mode composition may not register an auth provider, and a
     // reset there must not start failing. With one registered, its deprovision must SUCCEED
     // (absent keys are idempotent no-ops) before the identity goes.
-    if (registry.all<AuthProvider>("auth-provider").length) {
+    const provider = opts.identity ? opts.identity.provider : registry.all<AuthProvider>("auth-provider").length ? resolveAuthProvider() : null;
+    if (provider) {
       try {
-        await resolveAuthProvider().deprovisionSecrets({ store: secrets, space });
+        await provider.deprovisionSecrets({ store: secrets, space });
       } catch (e) {
         failures.push(e instanceof Error ? e.message : String(e));
       }
@@ -310,29 +354,26 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // went through the store above; the seam deletes are authoritative and their failure already
     // threw, so by here the dir holds only what a raw rm owns. On a multi-space root this removes
     // ONLY this space's segment — the other tenants' material is not this reset's to touch.
-    rm(spaceMaterialDir(root, space), `.cotal/${spaceSegment(space)} (this space's material)`);
+    rm(targets.material, `.cotal/${spaceSegment(space)} (this space's material)`);
     // This space's renewal record is per-space (#1850), removed with the rest of its material. The
     // LEGACY root-scoped `renewal.json` below stays in the list too: a pre-per-space build's copy
     // must not survive a full local reset either.
-    rm(renewalRecordPath(root, space), `${relative(root, renewalRecordPath(root, space))} (renewal record)`);
-    for (const f of [
+    rm(targets.renewal, `${relative(root, targets.renewal)} (renewal record)`);
+    for (const path of targets.legacy) {
       // The LEGACY FLAT copies of the raw P7 kinds: still present on a root no post-P7 `up` has
       // touched, and this surface must not leave old-operator $SYS material behind because the
       // migration had not run yet. The $SYS pair comes from its ONE named source, shared with the
       // rotation writer, so a file added to that class can never be minted-but-not-swept.
-      ...SYSTEM_CREDS_FILES,
-      MEMBERSHIP_CONFIG_KIND,
-      "renewal.json",
-    ]) rm(join(root, ".cotal", f), `.cotal/${f}`);
+      rm(path, relative(root, path));
+    }
     // Crash residue: after a clean `down` none of this exists; after a crash the dead pidfiles and
     // transient launch artifacts are exactly the leftovers a "full local reset" must not keep.
     // Absolute paths, every spelling: the runtime records are `{space}` templates now, and the
     // delivery-aware marker rides along with them (it was a literal in the list above).
-    for (const [path] of pidfileTargets(space, root)) {
-      rm(path, `${relative(root, path)} (stale runtime record)`);
-      rm(`${path}.identity`, `${relative(root, path)}.identity (stale identity pin)`); // #969 sibling of the record
+    for (const path of targets.runtime) {
+      rm(path, `${relative(root, path)} (${path.endsWith(".identity") ? "stale identity pin" : "stale runtime record"})`);
     }
-    rm(join(root, ".cotal", "run"), ".cotal/run (launch artifacts)");
+    rm(targets.run, ".cotal/run (launch artifacts)");
     // The auth dir's NON-namer contents (callout, creds, server.conf, the user-auth state dir, any
     // stray) are removed BEFORE the trust records — a locked/immutable stray UNDER `.cotal/auth`
     // throws HERE, while the namer is still present, so a re-run still resolves THIS space. Removing
@@ -340,7 +381,7 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // a stray survived after the namer had already gone. The protected set is exactly what
     // `deleteSpaceAuth` owns: the account record (the space NAMER `resolveSpace` reads), the broker
     // record, and the legacy monolith.
-    const authDirPath = join(root, ".cotal", "auth");
+    const authDirPath = targets.auth;
     const trustRecord = (entry: string) => entry === "auth.json" || entry === "broker.json" || (entry.startsWith("account.") && entry.endsWith(".json"));
     if (existsSync(authDirPath))
       for (const entry of readdirSync(authDirPath))
@@ -348,11 +389,12 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // The trust records — the space-NAMER last among them — die ABSOLUTELY LAST, as a single
     // authoritative op: the store delete is real for a non-FS store, and on the FS composition it
     // removes the same files.
-    if (existsSync(authDirPath))
-      for (const entry of readdirSync(authDirPath))
-        if (trustRecord(entry)) removed.push(`.cotal/auth/${entry} (space trust)`);
+    const trustPaths = existsSync(authDirPath) ? readdirSync(authDirPath).filter(trustRecord) : [];
     await deleteSpaceAuth(secrets, space);
+    for (const entry of trustPaths) recordRemoved(`.cotal/auth/${entry} (space trust)`);
+    opts.identity?.beforeRemove(authDirPath);
     rmSync(authDirPath, { recursive: true, force: true }); // drop the now-empty auth dir (nothing lockable left)
+    opts.identity?.afterRemove(authDirPath);
   }
   return removed;
 }
@@ -363,7 +405,8 @@ function pathContains(parent: string, child: string): boolean {
   return path === "" || (path !== ".." && !path.startsWith(`..${separator}`) && !isAbsolute(path));
 }
 
-function safeStoreCleanupPath(root: string, override: string | undefined): { path: string; identity?: { dev: bigint; ino: bigint } } {
+/** Inspect the same pinned local store path that the existing guarded cleanup deletes. */
+export function safeStoreCleanupPath(root: string, override: string | undefined): { path: string; identity?: { dev: bigint; ino: bigint } } {
   const requested = resolve(override ?? join(root, ".cotal", "nats"));
   if (!existsSync(requested)) return { path: requested };
   const stat = lstatSync(requested, { bigint: true });

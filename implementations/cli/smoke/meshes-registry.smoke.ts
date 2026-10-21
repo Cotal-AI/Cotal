@@ -759,7 +759,12 @@ try {
     name: "catalog-smoke",
     async prepareSpaceCatalogs(opts: { idpUrl?: string }) {
       catalogCalls.push(opts.idpUrl);
-      return opts.idpUrl === liveIdp ? [liveResult] : [liveResult, deadResult];
+      if (opts.idpUrl === "https://none.example/api/auth") return [];
+      return opts.idpUrl === liveIdp ? [liveResult] : opts.idpUrl === deadIdp ? [deadResult] : [liveResult, deadResult];
+    },
+    // Status reads the selected discovered space's login state: no session here.
+    async userStatus() {
+      return { idpUrl: liveIdp };
     },
   } as unknown as import("@cotal-ai/core").AuthProvider);
   const { prepareCatalogCommand } = await import("../src/commands/sync.js");
@@ -798,6 +803,52 @@ try {
     catalogCalls.length === 1 && catalogCalls[0] === undefined && diagnostic.out.includes(`${liveIdp}  not-modified`) &&
       diagnostic.out.includes(`${deadIdp}  failed: ${deadResult.error}`) && (process.exitCode === undefined || process.exitCode === 0),
     { catalogCalls, out: diagnostic.out, exitCode: process.exitCode });
+  // `cotal sync` on the envelope: each account's refresh, a failed account named in a warning with
+  // the result partial, and a refusal when no account could be refreshed.
+  const { sync } = await import("../src/commands/sync.js");
+  const synced = async (values: Record<string, string | boolean>) => {
+    const written: string[] = [];
+    const write = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => (written.push(String(chunk)), true)) as typeof process.stdout.write;
+    let thrown: { code?: string; outcome?: string } | undefined;
+    process.exitCode = undefined;
+    try {
+      await sync({ positionals: [], values: { json: true, ...values }, raw: [] });
+    } catch (e) {
+      thrown = e as { code?: string; outcome?: string };
+    } finally {
+      process.stdout.write = write;
+    }
+    const exitCode = process.exitCode;
+    process.exitCode = undefined;
+    let env: Record<string, any> | undefined;
+    try {
+      env = JSON.parse(written.join(""));
+    } catch {
+      env = undefined;
+    }
+    return { env, thrown, exitCode };
+  };
+  const both = await synced({});
+  check("sync --json reports every account, and a failed one makes it partial, exit 4",
+    both.env?.outcome === "partial" && both.exitCode === 4 && both.env.result.kind === "sync" && both.env.result.accounts.length === 2 &&
+      both.env.result.accounts.some((a: { idp: string; state: string; error: unknown }) => a.idp === liveIdp && a.state === "not-modified" && a.error === null),
+    both);
+  check("the failed account is named in a CATALOG_UNAVAILABLE warning and keeps its error",
+    both.env?.warnings?.length === 1 && both.env.warnings[0].code === "CATALOG_UNAVAILABLE" && both.env.warnings[0].target.idp === deadIdp &&
+      both.env.result.accounts.some((a: { idp: string; error: unknown }) => a.idp === deadIdp && a.error === deadResult.error),
+    both.env?.warnings);
+  const one = await synced({ idp: liveIdp });
+  check("sync --idp refreshes that account alone: ok, exit 0, its IdP the target",
+    one.env?.outcome === "ok" && (one.exitCode ?? 0) === 0 && one.env.target?.idp === liveIdp && one.env.result.accounts.length === 1, one);
+  const allFailed = await synced({ idp: deadIdp });
+  check("sync with no account refreshed is refused DEPENDENCY_UNAVAILABLE", allFailed.thrown?.code === "DEPENDENCY_UNAVAILABLE" && allFailed.env === undefined, allFailed);
+  const none = await synced({ idp: "https://none.example/api/auth" });
+  check("sync with no signed-in account reports none: ok, an empty list", none.env?.outcome === "ok" && none.env.result.accounts.length === 0, none);
+  const human = await capture(() => sync({ positionals: [], values: { idp: liveIdp }, raw: [] }));
+  process.exitCode = undefined;
+  check("sync's human report titles each account and names its state", human.out.includes(liveIdp) && human.out.includes("not-modified"), human);
+
   registry.unregister("auth-provider", "catalog-smoke");
   removeMesh("local-selected");
   removeMesh("catalog-selected");

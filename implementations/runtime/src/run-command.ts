@@ -62,7 +62,10 @@ import {
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
 import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
-import { connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
+import { CommandFailure, presentationOf, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
+import { offlineWorkflow } from "./offline-command.js";
+import { seatTurnCommand } from "./seat-turn-command.js";
+import { printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { migrateRun, type MigrateReport } from "./migrate.js";
 import { cotalLangRunHost as runHost, journalRows } from "./run-host.js";
@@ -80,6 +83,7 @@ interface RunValues {
   creds?: string;
   file?: string;
   endpoint?: string;
+  on?: string;
   timeout?: string;
   by?: string;
   value?: string;
@@ -103,8 +107,11 @@ interface RunValues {
   page?: boolean;
   limit?: string;
   cursor?: string;
-  /** Hosted verbs only: the manager instance to address, as `cotal ps` prints it. */
-  on?: string;
+  plain?: boolean;
+  handler?: string;
+  status?: string;
+  to?: string;
+  note?: string;
 }
 
 interface Planes {
@@ -413,7 +420,7 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
   // the record's state beside its revocation marker (SPEC 14.8), so `--local` and hosted agree
   // row for row, `--json` included.
   const rows = await runHost.list(planes, values.endpoint !== undefined ? { endpoint: values.endpoint } : {});
-  printRuns(planes.space, rows, values.json === true);
+  printRunList(planes.space, rows, values);
 }
 
 async function journal(values: RunValues, planes: Planes, endpoint: string, runId: string | undefined, takeoverId: string): Promise<void> {
@@ -422,8 +429,9 @@ async function journal(values: RunValues, planes: Planes, endpoint: string, runI
     process.exit(1);
   }
   // The replay durable is named by the takeover id this call's credential was minted for.
-  const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
-  printJournal(runId, await journalRows(planes.kv, endpoint, replay.records), values.json === true);
+  const view = await runHost.status(planes, { endpoint, runId, takeoverId });
+  if (!view) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no workflow record was returned for this run", { target: { space: planes.space, endpoint, run: runId } });
+  printRunDetail(planes.space, view, values);
 }
 
 /** `answer --local`: the pause is found under the READ credential this call was opened on, then
@@ -603,8 +611,9 @@ export function unansweredManagerRefusal(e: EpEnvelopeError): string {
  *  fetch, digest-verified recompile), then the invoke, re-issued after a bind split
  *  ({@link invokeRepairingSplit}). The reply's data on success; on a refusal the manager's own
  *  sentence, printed, and a non-zero exit. */
-async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined): Promise<unknown> {
+async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined, resolved?: (space: string) => void): Promise<unknown> {
   const t = await resolveRunControlTarget(values);
+  resolved?.(t.space);
   const who = controlCaller(t.auth);
   if ("refusal" in who) {
     console.error(who.refusal);
@@ -656,27 +665,13 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
  *  target resolution unchanged. `--on` reaches the mint on every path and becomes the instance the
  *  call addresses; a user-mode view already carries the instance its issuer bound. */
 async function resolveRunControlTarget(values: RunValues): Promise<ControlTarget> {
-  const on = onInstanceOrExit(values.on);
+  const on = values.on;
   const seat = values.creds === undefined ? await resolveSeatControlTarget(values, on) : undefined;
-  const t = seat?.mode === "auth" ? seat : await resolveControlTarget(values, "control-caller-privileged", on);
-  if (on === undefined) return t;
-  if (t.auth.managerInstanceId !== undefined && t.auth.managerInstanceId !== on) {
-    console.error("run: the manager pin differs from this credential's instance authority");
-    process.exit(1);
-  }
-  return { ...t, auth: { ...t.auth, managerInstanceId: on } };
-}
-
-/** `--on <instance>`, checked as the CLI's other pinning commands check it: an empty value (an unset
- *  shell variable) is refused rather than read as absent, and the id must be a lifecycle token. */
-function onInstanceOrExit(on: string | undefined): string | undefined {
-  if (on === undefined) return undefined;
-  try {
-    return assertLifecycleToken(on, "instanceId");
-  } catch (e) {
-    console.error(`run: ${(e as Error).message}. --on wants the whole manager instance id as \`cotal ps\` prints it`);
-    process.exit(1);
-  }
+  const target = seat?.mode === "auth" ? seat : await resolveControlTarget(values, "control-caller-privileged", on);
+  if (on === undefined) return target;
+  if (target.auth.managerInstanceId !== undefined && target.auth.managerInstanceId !== on)
+    throw new CommandFailure("refused", "CONFLICT", "the requested manager instance differs from this credential's instance authority; no other manager was selected");
+  return { ...target, auth: { ...target.auth, managerInstanceId: on } };
 }
 
 function renderLangProblem(d: EpErrorDetail): string {
@@ -685,88 +680,9 @@ function renderLangProblem(d: EpErrorDetail): string {
   return `  ${String(d.code ?? "L????")} ${String(d.title ?? "")} (${at})\n    ${String(d.cause ?? "")}\n    fix: ${String(d.fix ?? "")}`;
 }
 
-/** `--json` prints each row unchanged as one JSON object per line, as `cotal ps --json` does for
- *  seats: stdout carries rows only, so an empty journal prints nothing there. */
-function printJournal(runId: string, rows: readonly RunJournalRow[], json: boolean): void {
-  if (json) {
-    for (const r of rows) console.log(JSON.stringify(r));
-    return;
-  }
-  if (rows.length === 0) {
-    console.log(`run ${runId}: no journal records (never started, or retired)`);
-    return;
-  }
-  for (const r of rows) {
-    if (r.kind === "activation") {
-      console.log(`#${r.n}  activation  holder=${r.holder} epoch=${r.epoch} replayedTo=${r.replayedTo}`);
-      continue;
-    }
-    console.log(`#${r.n}  step        ${r.step}  ${r.outcome}`);
-    if (r.asks !== undefined) console.log(`            asks        ${r.asks}${r.addressee !== undefined ? `  (escalates to ${r.addressee})` : ""}`);
-    if (r.answer !== undefined) {
-      const facts = [
-        ...(Object.hasOwn(r.answer, "value") ? [`value=${JSON.stringify(r.answer.value)}`] : []),
-        ...(r.answer.by !== undefined ? [`by=${JSON.stringify(r.answer.by)}`] : []),
-        ...(r.answer.artifact !== undefined ? [`artifact=${JSON.stringify(r.answer.artifact)}`] : []),
-        ...(r.answer.at !== undefined ? [`at=${JSON.stringify(r.answer.at)}`] : []),
-        `answerId=${JSON.stringify(r.answer.answerId)}`,
-      ];
-      console.log(`            answered    ${facts.join("  ")}`);
-    }
-    for (const m of r.amendments ?? []) {
-      const facts = [
-        ...(Object.hasOwn(m, "value") ? [`value=${JSON.stringify(m.value)}`] : []),
-        `by=${JSON.stringify(m.by)}`,
-        ...(m.artifact !== undefined ? [`artifact=${JSON.stringify(m.artifact)}`] : []),
-        `at=${JSON.stringify(m.at)}`,
-        `supersedes=${JSON.stringify(m.supersedes)}`,
-        `answerId=${JSON.stringify(m.answerId)}`,
-      ];
-      console.log(`            amended     ${facts.join("  ")}`);
-    }
-  }
-}
-
-function printRuns(space: string, rows: readonly RunListRow[], json: boolean): void {
-  // A marker the host could not read fails the listing after every row is printed, under `--json`
-  // as in the table: its reason and the record's word on stderr, and exit 1.
-  const unchecked = rows.filter((r) => r.revocationUnreadable !== undefined);
-  const reportUnchecked = (): void => {
-    for (const r of unchecked)
-      console.error(`${r.endpoint}/${r.runId}: revocation marker could not be read (${r.revocationUnreadable}); its record reads ${r.state ?? "(no status)"}`);
-    if (unchecked.length > 0) process.exitCode = 1;
-  };
-  if (json) {
-    for (const r of rows) console.log(JSON.stringify(r));
-    reportUnchecked();
-    return;
-  }
-  if (rows.length === 0) {
-    console.log(`no workflow runs recorded in space ${space}`);
-    return;
-  }
-  // The same reading as `run ps --local`: a marker wins over the record's state, and a marker the
-  // host could not read prints `unchecked` with the record's word on stderr and exit 1.
-  const table = rows.map((r) => [
-    r.runId,
-    r.endpoint,
-    r.revoked !== undefined ? "revoked" : r.revocationUnreadable !== undefined ? "unchecked" : r.state ?? "(no status)",
-    r.holder ?? "-",
-    r.journalHigh === undefined ? "-" : String(r.journalHigh),
-    r.forkedFrom === undefined ? "-" : `${r.forkedFrom.run}@${r.forkedFrom.step}`,
-  ]);
-  const header = ["RUN", "ENDPOINT", "STATE", "HOLDER", "JOURNAL", "FORKED-FROM"];
-  const widths = header.map((h, i) => Math.max(h.length, ...table.map((r) => (r[i] as string).length)));
-  const line = (r: string[]) => r.map((cell, i) => cell.padEnd(widths[i] as number)).join("  ");
-  console.log(line(header));
-  for (const r of table) console.log(line(r));
-  for (const r of rows)
-    if (r.revoked !== undefined)
-      console.log(`${r.endpoint}/${r.runId}: revoked by ${r.revoked.by} (${r.revoked.reason}); the status record is left as its driver last wrote it`);
-  reportUnchecked();
-}
-
 async function hosted(values: RunValues, verb: string, a: string | undefined, b: string | undefined): Promise<void> {
+  let space: string | undefined;
+  const ask = (command: string, args: Record<string, unknown> | undefined) => askHost(values, command, args, (resolved) => { space = resolved; });
   const endpoint = values.endpoint !== undefined ? { endpoint: values.endpoint } : {};
   // A hosted drive is recorded under the manager's own endpoint; a caller cannot choose another,
   // so an `--endpoint` here is refused rather than dropped.
@@ -786,13 +702,12 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
   }
   if (verb === "start") {
     const source = readProgram(values);
-    const started = await askHost(values, "run-start", {
+    const started = await ask("run-start", {
       source,
       file: values.file,
       ...(values.timeout !== undefined ? { timeout: values.timeout } : {}),
     }) as { runId: string };
-    console.log(`started run ${started.runId} on the manager; it runs there until it completes or is held`);
-    console.log(`  cotal run journal ${started.runId}    # follow its steps`);
+    runReceipt("start", space, started, values);
     return;
   }
   if (verb === "resume") {
@@ -801,13 +716,13 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
       console.error(`run resume: the manager resumes a run from its recorded program, so --file is not taken; a run with no recorded program is resumed with \`cotal run resume ${a} --local --file <program>\``);
       process.exit(1);
     }
-    const resumed = await askHost(values, "run-resume", { runId: a, ...(values.timeout !== undefined ? { timeout: values.timeout } : {}) }) as { runId: string };
-    console.log(`resumed run ${resumed.runId} on the manager`);
+    const resumed = await ask("run-resume", { runId: a, ...(values.timeout !== undefined ? { timeout: values.timeout } : {}) }) as { runId: string };
+    runReceipt("resume", space, resumed, values);
     return;
   }
   if (verb === "ps") {
     if (values.page === true) {
-      const page = await askHost(values, "run-ps", { ...endpoint, page: {
+      const page = await ask("run-ps", { ...endpoint, page: {
         ...(values.limit !== undefined ? { limit: Number(values.limit) } : {}),
         ...(values.cursor !== undefined ? { cursor: values.cursor } : {}),
       } });
@@ -820,18 +735,15 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
       }
       return;
     }
-    const rows = await askHost(values, "run-ps", Object.keys(endpoint).length ? endpoint : undefined) as RunListRow[];
-    const t = values.space ?? "(the resolved mesh)";
-    printRuns(t, rows, values.json === true);
+    const rows = await ask("run-ps", Object.keys(endpoint).length ? endpoint : undefined) as RunListRow[];
+    printRunList(space, rows, values);
     return;
   }
   if (verb === "journal") {
     if (a === undefined) { console.error(USAGE); process.exit(1); }
-    const view = await askHost(values, "run-status", { runId: a, ...endpoint }) as RunStatusView;
-    const st = view.status;
-    // Under --json the run's header line is structure, not a row: it goes to stderr.
-    (values.json === true ? console.error : console.log)(`run ${view.runId} on ${view.endpoint}: ${st === undefined ? "(no status)" : `${st.state}, holder ${st.holder}, epoch ${st.epoch}`}`);
-    printJournal(view.runId, view.journal, values.json === true);
+    const view = await ask("run-status", { runId: a, ...endpoint }) as RunStatusView;
+    if (space === undefined) throw new Error("the native run target was not reported");
+    printRunDetail(space, view, values);
     return;
   }
   // answer and amend: the manager records the caller as the answerer (SPEC 14.5), so no `--by`
@@ -842,7 +754,7 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     process.exit(1);
   }
   const value = parseAnswerValue(values);
-  const result = await askHost(values, "run-answer", {
+  const result = await ask("run-answer", {
     runId: a,
     stepKey: b,
     ...endpoint,
@@ -850,40 +762,15 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
     ...(verb === "amend" ? { amend: true } : {}),
   });
-  console.log(JSON.stringify(result, null, 2));
+  runReceipt(verb, space, result, values);
 }
 
 /** `cotal run <start|resume|ps|journal|answer|amend>` — dispatch. The manager hosts by default;
  *  `--local` drives in this process over one connection per invocation. */
 export async function runWorkflow(args: ParsedArgs): Promise<void> {
-  const values = args.values as RunValues;
-  const [verb, a, b] = args.positionals;
-  if (verb === undefined || !["start", "resume", "ps", "journal", "answer", "amend", "revoke", "migrate"].includes(verb)) {
-    console.error(USAGE);
-    process.exit(1);
-  }
-  if (values.page !== undefined || values.limit !== undefined || values.cursor !== undefined) {
-    if (verb !== "ps" || values.local === true || values.page !== true || values.on === undefined) {
-      console.error("diagnostic paging requires run ps --page --on <instance> without --local");
-      process.exit(1);
-    }
-    if (values.limit !== undefined && (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 16)) {
-      console.error("run ps --page: --limit must be between 1 and 16");
-      process.exit(1);
-    }
-    if (values.cursor !== undefined && (values.cursor.length > 3072 || !/^[A-Za-z0-9_-]+$/.test(values.cursor))) {
-      console.error("run ps --page: invalid cursor encoding");
-      process.exit(1);
-    }
-  }
-  if (values.json === true && verb !== "ps" && verb !== "journal") {
-    console.error(`run ${verb}: --json is taken by \`ps\` and \`journal\` only`);
-    process.exit(1);
-  }
-  if (values.on !== undefined && values.local === true) {
-    console.error(`run ${verb}: --on pins a hosted verb to one manager instance and --local drives in this process, so pass one of them`);
-    process.exit(1);
-  }
+  const { values, verb, a, b } = workflowArguments(args);
+  if (verb === "validate" || verb === "plan" || verb === "simulate") return offlineWorkflow(verb, a!, values);
+  if (verb === "turns" || verb === "yield") return seatTurnCommand(verb, a, values);
   if (verb === "revoke") {
     // Revocation is an operator act on the admission store, never a served command: the marker is
     // written from the folder's trust material, so it is `--local` only.
@@ -916,4 +803,71 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
   } finally {
     await planes.close();
   }
+}
+
+/** Public workflow grammar, before catalog preparation or native requests. */
+export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: string; a?: string; b?: string } {
+  const values = { ...args.values } as RunValues;
+  presentationOf(values);
+  const [raw = "list", first, second, ...extra] = args.positionals;
+  const verb = ({ list: "ps", show: "journal", check: "migrate" } as Record<string, string>)[raw] ?? raw;
+  const usage = (message: string): never => { throw new CommandFailure("refused", "USAGE_INVALID", message); };
+  if (extra.length || !["start", "resume", "ps", "journal", "answer", "amend", "revoke", "migrate", "validate", "plan", "simulate", "turns", "yield"].includes(verb)) usage("choose a declared run command; run it bare to list workflows");
+  let a: string | undefined = first;
+  let b: string | undefined = second;
+  if (verb === "start") {
+    if (second !== undefined || (first !== undefined && values.file !== undefined)) usage("run start takes one source file");
+    values.file = first ?? values.file;
+    if (!values.file?.trim()) usage("run start requires a workflow source file");
+    a = undefined;
+  } else if (verb === "migrate") {
+    if (!first || (second !== undefined && values.file !== undefined)) usage("run check takes a run id and one edited source file");
+    values.file = second ?? values.file;
+    if (!values.file?.trim()) usage("run check requires the edited source file");
+    values.local = true;
+    b = undefined;
+  } else if (["validate", "plan", "simulate"].includes(verb)) {
+    if (!first || second !== undefined || values.file !== undefined) usage(`run ${verb} takes one positional source file`);
+    if (values.space !== undefined || values.server !== undefined || values.creds !== undefined || values.endpoint !== undefined || values.local !== undefined) usage(`run ${verb} is offline and takes no mesh or caller selection`);
+  } else if (verb === "ps" || verb === "turns") {
+    if (first !== undefined) usage(`run ${raw} takes no positional argument`);
+  } else if (verb === "answer" || verb === "amend") {
+    if (!first || !second) usage(`run ${verb} requires a run id and step key`);
+  } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`);
+  const scopes: Record<string, readonly string[]> = {
+    timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],
+    "admit-read": ["start"], "admit-publish": ["start"], adopt: ["migrate"], release: ["migrate"], "discard-approvals": ["migrate"],
+  };
+  for (const [flag, modes] of Object.entries(scopes)) if (args.values[flag] !== undefined && !modes.includes(verb)) usage(`--${flag} is not taken by this run command`);
+  if (values.page !== undefined || values.limit !== undefined || values.cursor !== undefined) {
+    if (verb !== "ps" || values.local === true || values.page !== true || values.on === undefined)
+      usage("diagnostic paging requires run --page --on <instance> without --local");
+    if (values.limit !== undefined && (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 16))
+      usage("run --page: --limit must be between 1 and 16");
+    if (values.cursor !== undefined && (values.cursor.length > 3072 || !/^[A-Za-z0-9_-]+$/.test(values.cursor)))
+      usage("run --page: invalid cursor encoding");
+    if (values.plain) usage("diagnostic pages produce bounded JSON and take no --plain");
+  }
+  if ((values["admit-read"] !== undefined || values["admit-publish"] !== undefined) && values.local !== true) usage("admission ceilings belong to the explicit local start");
+  if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
+  if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");
+  if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
+  if (values.value !== undefined) { try { JSON.parse(values.value); } catch { usage("--value must be valid JSON"); } }
+  if (values.handler !== undefined && verb !== "simulate") usage("--handler belongs to run simulate");
+  if ((values.status !== undefined || values.to !== undefined || values.note !== undefined) && verb !== "yield") usage("--status, --to and --note belong to run yield");
+  if (verb === "yield") {
+    if (!["done", "blocked", "handoff"].includes(values.status ?? "")) usage("run yield requires --status done, blocked or handoff");
+    if (values.status === "handoff" ? !values.to?.trim() : values.to !== undefined) usage("--to is required only for a handoff yield");
+  }
+  if (verb === "turns" || verb === "yield") {
+    if (values.creds !== undefined || values.endpoint !== undefined || values.local !== undefined || values.by !== undefined) usage("run turns/yield use the managed seat's own identity, not an operator override");
+  }
+  if (values.file !== undefined && !["start", "resume", "migrate"].includes(verb)) usage("this run command takes no --file");
+  if (values.on !== undefined) {
+    if (values.local === true || ["validate", "plan", "simulate", "turns", "yield", "revoke"].includes(verb)) usage("--on pins a hosted run command; local and offline commands take no manager instance");
+    try { assertLifecycleToken(values.on, "instanceId"); }
+    catch { usage("--on requires the full manager instance id as cotal ps prints it"); }
+  }
+  if ((values.json || values.plain) && values.local && !["ps", "journal"].includes(verb)) usage("the local drive does not implement structured or plain receipts; use the hosted form");
+  return { values, verb, ...(a === undefined ? {} : { a }), ...(b === undefined ? {} : { b }) };
 }

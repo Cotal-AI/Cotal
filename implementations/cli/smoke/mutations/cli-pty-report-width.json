@@ -1,0 +1,24 @@
+{
+  "suite": [
+    "implementations/cli/smoke/cli-pty.smoke.ts"
+  ],
+  "guard": "a report written to a real terminal fits that terminal's width: a table where it fits, one labeled record per row where it does not",
+  "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:cli-pty",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/cli-pty-report-width.json",
+  "why": [
+    "Only a real terminal reports a width, so only the pty suite can show a report reads it. The report child imports the workspace build, so the mutation rebuilds it and the restore rebuilds it back."
+  ],
+  "mutations": [
+    {
+      "name": "a report ignores the terminal's width",
+      "file": "packages/workspace/src/present.ts",
+      "find": "  return stream.isTTY && stream.columns ? stream.columns : Number.POSITIVE_INFINITY;\n",
+      "replace": "  return Number.POSITIVE_INFINITY;\n",
+      "expectRed": "a report on a 20-column terminal is one labeled record",
+      "cell": "a report on a 20-column terminal is one labeled record",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:cli-pty",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    }
+  ]
+}

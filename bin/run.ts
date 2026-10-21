@@ -17,6 +17,7 @@ import "@cotal-ai/manager"; // self-registers `supervise` — the agent-supervis
 import "@cotal-ai/delivery"; // self-registers `deliver` — the server-side Plane-3 delivery daemon
 import "@cotal-ai/runtime"; // self-registers `run` — the workflow-run operator surface (start/resume/ps/journal/answer)
 import "@cotal-ai/auth"; // self-registers login / logout — per-user IdP sessions (device-code sign-in)
+import "./docs.js"; // self-registers `docs`; the docs bundle loads only when `docs` runs
 // Self-registers the `ag-ui.frame` part renderer, so `cotal console` and `cotal join` draw an event
 // frame instead of `[unrenderable part kind "ag-ui.frame"]`.
 //
@@ -32,7 +33,7 @@ import "@cotal-ai/connector-core/agui-render";
 import { registry } from "@cotal-ai/core";
 
 // A CLI must exit quietly when its stdout is closed early — piped to `head`, a pager that quits,
-// or a shell's process substitution (`source <(cotal completion bash)`). Node otherwise turns the
+// or a shell's process substitution (`source <(cotal completion script bash)`). Node otherwise turns the
 // closed-pipe write into a fatal unhandled 'error' event with a stack trace. Mirror SIGPIPE: exit
 // 0. Registered before any command can write.
 process.stdout.on("error", (e: NodeJS.ErrnoException) => {
@@ -46,7 +47,7 @@ process.stdout.on("error", (e: NodeJS.ErrnoException) => {
 // materializes each lazily when a command resolves it; the default agent is `COTAL_DEFAULT_AGENT`
 // (else claude), resolved manager-side. The old `"cotal"` default-agent alias is gone with them.
 //
-// Bare `cotal` prints help; explicit `cotal setup` runs guided setup. The published binary is
+// Bare `cotal` prints the entry screen; explicit `cotal setup` runs guided setup. The published binary is
 // the ONE composition root that loads operator-installed extensions (`cotal ext add …`) — commands,
 // runtimes, connectors, and local process components all self-register from those packages. Library
 // roots keep the explicit-import model.

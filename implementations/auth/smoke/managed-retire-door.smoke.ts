@@ -136,7 +136,7 @@ try {
   plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet, probeEvictor: countingEvictor });
   const wreg = await openLifecycleRegistry(wide.nc, space);
   const door = (actor: string, lifecycleUid: string) => outcome(() => plane!.retireManagedLifecycle({ owner: OWNER, actor, lifecycleUid }));
-  const grant = (actor: string, lifecycleUid: string) => grantManagedActor(dir, {
+  const grant = (actor: string, lifecycleUid: string) => grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid,
   });
   const live = async (actor: string): Promise<string> => {

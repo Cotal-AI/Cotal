@@ -195,7 +195,7 @@ try {
   }
   grantActor(serverDir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], lifecycleUid });
   const secret = newActorToken();
-  grantManagedActor(serverDir, { owner: OWNER, actor: ACTOR, scope: ["role:worker"], allowSubscribe: ["general"],
+  grantManagedActor(serverDir, { custody: { kind: "foreground" }, owner: OWNER, actor: ACTOR, scope: ["role:worker"], allowSubscribe: ["general"],
     allowPublish: ["general"], parent: `${OWNER}.cli`, tokenHash: secret.tokenHash, lifecycleUid });
   writeFileSync(tokenPath, secret.actorToken, { mode: 0o600 });
   writeFileSync(sentinelPath, callout.sentinelCreds, { mode: 0o600 });

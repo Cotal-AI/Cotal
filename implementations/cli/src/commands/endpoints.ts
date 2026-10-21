@@ -1,43 +1,54 @@
-import { peerLabel, presenceText, type ParsedArgs, type Presence } from "@cotal-ai/core";
+import { peerLabel, presenceText, type FlagSpec, type ParsedArgs, type Presence } from "@cotal-ai/core";
+import { jsonFlag, plainFlag, presentationOf, renderReport, targetFlags, terminalWidth, writeResult, type Report } from "@cotal-ai/workspace";
+import { activityAge, presenceFacts } from "../ui.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
-import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
 
-/** List the mesh presence roster, including infrastructure endpoints such as the manager. */
+export const endpointsFlags = [...targetFlags, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
+
+function rowsOf(roster: readonly Presence[]) {
+  return roster.map((presence) => ({
+    name: presence.card.name,
+    label: peerLabel(presence.card),
+    id: presence.card.id,
+    kind: presence.card.kind,
+    role: presence.card.role ?? null,
+    reportedStatus: presence.status,
+    facts: presenceFacts(presence),
+    activity: presence.activity ?? null,
+    activityAge: activityAge(presence),
+  })).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+}
+
+/** Authorized live presence, not the endpoint-registration or saved-reference inventory. */
 export async function endpoints(args: ParsedArgs): Promise<void> {
-  const { ep, space } = await openTransient(args.values as ConnectValues, "endpoints");
+  const presentation = presentationOf(args.values);
+  const { ep, space } = await openTransient(args.values as ConnectValues, "endpoints", { throwOnRefusal: true });
+  let items: ReturnType<typeof rowsOf>;
   try {
-    printEndpoints(ep.getRoster(), space);
-  } finally {
-    await ep.stop();
-  }
+    await ep.waitForPresenceSnapshot();
+    items = rowsOf(ep.getRoster());
+  } finally { await ep.stop(); }
+  writeResult(presentation, { command: "endpoints", target: { space }, result: { kind: "live-presence", scope: "authorized live presence including agents and infrastructure", items } }, (result) => endpointsView(result.items, space));
 }
 
 export function printEndpoints(roster: Presence[], space: string): void {
-  if (!roster.length) {
-    console.log(c.dim(`(no endpoints present in "${space}")`));
-    return;
-  }
+  console.log(renderReport(endpointsView(rowsOf(roster), space), "rich", terminalWidth(process.stdout)));
+}
 
-  const counts = new Map<string, number>();
-  for (const presence of roster) {
-    const name = presence.card.name.toLowerCase();
-    counts.set(name, (counts.get(name) ?? 0) + 1);
-  }
-  const rows = roster
-    .map((presence) => {
-      const duplicate = (counts.get(presence.card.name.toLowerCase()) ?? 0) > 1;
-      return {
-        presence,
-        label: `${peerLabel(presence.card)}${duplicate ? ` [${presence.card.id}]` : ""}`,
-        kind: presence.card.kind ?? "endpoint",
-      };
-    })
-    .sort((a, b) => a.label.localeCompare(b.label));
-  const labelWidth = Math.max(...rows.map((row) => row.label.length));
-  const kindWidth = Math.max(...rows.map((row) => row.kind.length));
-  for (const row of rows) {
-    const activity = row.presence.activity ? `  ${c.dim(presenceText(row.presence.activity) + activityAge(row.presence))}` : "";
-    const condition = presenceDetail(row.presence);
-    console.log(`${c.bold(row.label.padEnd(labelWidth))}  ${c.dim(row.kind.padEnd(kindWidth))}  ${statusBadge(row.presence.status)}${condition}${activity}`);
-  }
+function endpointsView(items: ReturnType<typeof rowsOf>, space: string): Report {
+  return { sections: [
+    { title: `Live presence · ${space}`, blocks: [items.length ? {
+      kind: "table",
+      columns: [{ key: "name", label: "Participant" }, { key: "kind", label: "Kind" }, { key: "state", label: "Reported state" }, { key: "activity", label: "Activity" }, { key: "id", label: "Identity" }],
+      rows: items.map((item) => ({
+        name: { text: item.label, tone: "command" },
+        kind: item.kind ?? "not reported",
+        state: { text: `${item.reportedStatus === "working" ? "working · progress unknown" : item.reportedStatus}${item.facts.condition}${item.facts.ages}`, tone: item.reportedStatus === "waiting" ? "waiting" : "hint" },
+        activity: item.activity ? `${presenceText(item.activity)}${item.activityAge}` : "not reported",
+        id: item.id,
+      })),
+    } : { kind: "lines", lines: ["No participants in this presence snapshot."] },
+    { kind: "lines", lines: [{ text: "Live presence includes agents and infrastructure. It is not the saved-reference or service-registration inventory, and reported activity is not task completion.", tone: "hint" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal who", description: "Read the agent roster and its reported work signals" }, { command: "cotal endpoint describe <endpoint>", description: "Resolve a native endpoint's verified command contract" }] }] },
+  ] };
 }
