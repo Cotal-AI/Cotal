@@ -173,7 +173,8 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   }
   // An earlier operation with no outcome is recorded as failed from its members' evidence first.
   const { snapshot: settledSnapshot, settled } = settleStackOperation(lock, previous);
-  let journal: StackJournal = { ...settledSnapshot.journal, operation: newStackOperation("down", withAgents), members: settledSnapshot.journal.members.map((row) => ({ ...row, state: row.instanceId === null ? "not-attempted" : "planned", code: undefined })), updatedAt: new Date().toISOString() };
+  // A replacement an earlier `up` journaled is resolved from its own record, as the stop planned it.
+  let journal: StackJournal = { ...settledSnapshot.journal, operation: newStackOperation("down", withAgents), members: withSettledMembers(settledSnapshot.journal, undefined).members.map((row) => ({ ...row, state: row.instanceId === null ? "not-attempted" : "planned", code: undefined })), updatedAt: new Date().toISOString() };
   let snapshot: StackJournalSnapshot = writeStackJournal(root, settledSnapshot, journal);
   const mark = (role: StackRole, change: Partial<StackMember>) => {
     journal = { ...journal, members: journal.members.map((row) => row.role === role ? { ...row, ...change } : row), updatedAt: new Date().toISOString() };

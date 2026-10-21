@@ -7,6 +7,7 @@
  *  exact service-controller instance. Trust and the broker configuration are prepared explicitly
  *  here, outside any adapter plan. A failure after the first effect is reported as partial or
  *  unknown with the members it changed; nothing already started is rolled back. */
+import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -26,7 +27,7 @@ import { prepareProcessService, removeStoppedInstanceRecords, settleExitedInstan
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
-import { foreignLocalProcesses, newStackOperation, readStackJournal, settleStackOperation, stackMaintenanceFence, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, newStackOperation, readStackJournal, settleStackOperation, stackMaintenanceFence, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userLoginRequired, userLoginState, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
 
 /** Callbacks into the native broker preparation that `up.ts` owns. They hold private authority
@@ -200,8 +201,10 @@ function canonicalBinary(bin: string): string {
  *  definition naming another adapter or root refuses. One whose volatile launch options differ (the
  *  broker's freshly allocated websocket port, a different selected binary) is redefined only when
  *  every recorded instance of it is stopped with its terminal receipt; those stopped records are
- *  removed with the definition under its writer lock, exactly as `service remove` requires. */
-function ensureDefinition(space: string, role: StackRole, input: ServiceDefinitionInput, root: string): ServiceDefinitionSnapshot {
+ *  removed with the definition under its writer lock, exactly as `service remove` requires. `replace`
+ *  journals the replacement's IDs before that retirement and the new definition's revision after it,
+ *  so an `up` cut off before the replacement's readiness is recorded leaves a resolvable transition. */
+function ensureDefinition(space: string, role: StackRole, input: ServiceDefinitionInput, root: string, replace: (definitionRevision?: string) => void): ServiceDefinitionSnapshot {
   const store = serviceDefinitionStore(space), name = STACK_DEFINITION[role];
   const existing = store.read(name);
   const wanted = input.launch;
@@ -214,10 +217,13 @@ function ensureDefinition(space: string, role: StackRole, input: ServiceDefiniti
     if (serviceInstances(space, name).some((row) => observeServiceProcess(row.record.value) === "running")) return existing;
     // A member that crashed is recorded as such first, so its record can go with the definition.
     settleExitedInstances(existing);
+    replace();
     store.commit(name, existing, undefined, () => removeStoppedInstanceRecords(space, name));
   }
   store.commit(name, undefined, validateServiceDefinition(input, space));
-  return store.read(name)!;
+  const saved = store.read(name)!;
+  if (existing) replace(saved.record.revision);
+  return saved;
 }
 
 function adapterDefinition(space: string, adapter: string, options: Record<string, unknown>, timeoutMs: number): ServiceDefinitionInput {
@@ -332,7 +338,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     if (request.idp !== undefined || !(brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running")) await preflightUserStack(root, space, request.idp);
   }
   const roles = STACK_ROLES.filter((role) => stackRoleApplies(mode, role) && !(role === "manager" && request.noManager));
-  const members: StackMember[] = STACK_ROLES.map((role) => ({ role, definition: STACK_DEFINITION[role], instanceId: current?.journal.members.find((row) => row.role === role)?.instanceId ?? null, state: roles.includes(role) ? "planned" : "not-attempted" }));
+  // A replacement an earlier `up` journaled is resolved from its own record before it is carried over.
+  const recordedMembers = current ? withSettledMembers(current.journal, undefined).members : [];
+  const members: StackMember[] = STACK_ROLES.map((role) => ({ role, definition: STACK_DEFINITION[role], instanceId: recordedMembers.find((row) => row.role === role)?.instanceId ?? null, state: roles.includes(role) ? "planned" : "not-attempted" }));
   let journal: StackJournal = { schemaVersion: 1, kind: "cotal-stack-controller", root, space, server, mode, ...(recordedBroker ? { broker: recordedBroker } : {}), members, operation: newStackOperation("up"), updatedAt: new Date().toISOString() };
   // The whole scoped plan is durable before the first effect. A crash after this reads as unsettled
   // until the next whole-stack operation settles it from its members' evidence.
@@ -346,17 +354,24 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     journal = { ...journal, members: journal.members.map((row) => row.role === role ? { ...row, ...change } : row), updatedAt: new Date().toISOString() };
     snapshot = writeStackJournal(root, snapshot, journal);
   };
+  // A redefinition retires the member's recorded instance with its old definition. The replacement's
+  // IDs are journaled before that retirement and the new definition's revision before its launch.
+  const replace = (role: StackRole) => (definitionRevision?: string) => {
+    const row = journal.members.find((member) => member.role === role)!;
+    mark(role, { replacement: definitionRevision === undefined ? { operation: journal.operation.id, instanceId: randomUUID(), launchRequestId: randomUUID() } : { ...row.replacement!, definitionRevision } });
+  };
   const start = async (role: StackRole, definition: ServiceDefinitionSnapshot) => {
     prepareProcessService(definition);
     const current = serviceInstances(space, definition.name);
     if (current.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a stack definition has several instance records; no instance was chosen", { target: { space, definition: definition.name, candidates: current.map((row) => row.name) } });
-    const recorded = journal.members.find((row) => row.role === role)!.instanceId;
+    const { instanceId: recorded, replacement } = journal.members.find((row) => row.role === role)!;
     if (current[0] && recorded && current[0].name !== recorded) throw new CommandFailure("refused", "CONFLICT", "the stack journal and the definition's instance record name different instances; neither was adopted", { target: { space, definition: definition.name } });
     // A readiness wait can take many seconds, so a text run says what it waits for instead of going silent.
     if (request.presentation !== "json" && !(current[0] && observeServiceProcess(current[0].record.value) === "running"))
       process.stderr.write(`Starting ${definition.name}; waiting up to ${Math.round(definition.record.value.readiness.timeoutMs / 1000)}s for its readiness check\n`);
-    const started = await startProcessService(definition, current[0] ? { instance: current[0].name } : {});
-    mark(role, { instanceId: started.instance.name, state: started.noOp ? "reused" : "started" });
+    // A redefined member starts its replacement under the IDs the journal already names.
+    const started = await startProcessService(definition, replacement ? { replacement: { instanceId: replacement.instanceId, launchRequestId: replacement.launchRequestId } } : current[0] ? { instance: current[0].name } : {});
+    mark(role, { instanceId: started.instance.name, state: started.noOp ? "reused" : "started", replacement: undefined });
     if (!started.noOp) changed.push(instanceProjection(started.instance));
     return started.instance;
   };
@@ -391,7 +406,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const savedOptions = savedBroker?.record.value.launch.type === "adapter" ? savedBroker.record.value.launch.options : undefined;
     if (!prepared && !savedOptions) throw new CommandFailure("refused", "CONFLICT", "a broker instance runs without its saved stack definition; it was not adopted", { target: { space, definition: STACK_DEFINITION.broker } });
     const brokerOptions = prepared ? { root, config: prepared.confPath, binary: canonicalBinary(prepared.bin), server } : { ...savedOptions! };
-    const broker = ensureDefinition(space, "broker", adapterDefinition(space, STACK_ADAPTER.broker, brokerOptions, 30000), root);
+    const broker = ensureDefinition(space, "broker", adapterDefinition(space, STACK_ADAPTER.broker, brokerOptions, 30000), root, replace("broker"));
     if (storePin) recheckExistingStore(storePin, { root, space });
     await start("broker", broker);
     if (prepared) {
@@ -413,7 +428,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const authRows = serviceInstances(space, STACK_DEFINITION.auth);
       const authRunning = authRows.length === 1 && observeServiceProcess(authRows[0]!.record.value) === "running";
       if (!prepared?.user && !authRunning) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the user stack's auth service is stopped while its broker still runs; its native preparation runs only with a broker start, so it was not started from other material", { target: { root, space }, remedy: "stop the stack with bare cotal down, then run bare cotal up" });
-      const authService = ensureDefinition(space, "auth", adapterDefinition(space, STACK_ADAPTER.auth, { root, server }, 60000), root);
+      const authService = ensureDefinition(space, "auth", adapterDefinition(space, STACK_ADAPTER.auth, { root, server }, 60000), root, replace("auth"));
       const instance = await start("auth", authService);
       if (prepared?.user) {
         failedRole = "auth";
@@ -433,7 +448,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const credsPath = join(root, ".cotal", credsKey);
       const deliveryRows = serviceInstances(space, STACK_DEFINITION.delivery);
       if (!(deliveryRows.length === 1 && observeServiceProcess(deliveryRows[0]!.record.value) === "running")) await store.put(credsKey, await mintCreds(auth, newIdentity(), "delivery"));
-      const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server }, 40000), root);
+      const delivery = ensureDefinition(space, "delivery", adapterDefinition(space, STACK_ADAPTER.delivery, { root, creds: credsPath, server }, 40000), root, replace("delivery"));
       await start("delivery", delivery);
     }
     // A user stack's manager is read and stopped as the invoking user's existing login. Without a
@@ -458,7 +473,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         options.launch = launch.path;
         options["launch-sha256"] = launch.sha256;
       }
-      const manager = ensureDefinition(space, "manager", adapterDefinition(space, STACK_ADAPTER.manager, options, 60000), root);
+      const manager = ensureDefinition(space, "manager", adapterDefinition(space, STACK_ADAPTER.manager, options, 60000), root, replace("manager"));
       await start("manager", manager);
     }
     if (!loginBlock) settle("completed");

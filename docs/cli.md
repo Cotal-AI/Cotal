@@ -582,7 +582,17 @@ process (pid and start time) is gone is recorded as failed, the earlier operatio
 failed, and the command continues with an `OPERATION_SETTLED` warning. A member that is still
 running is kept: `up` reuses it and `down` stops it. A member whose process cannot be established,
 or one with a stop that was requested and never confirmed, refuses `LIFECYCLE_BLOCKED` and names
-`cotal service status <definition> --instance <id> --space <space>`. A preserve or resume that
+`cotal service status <definition> --instance <id> --space <space>`. A manager stop whose request
+was published and never confirmed keeps the manager's record `stopping` under that request, also
+after its process exits. After a `down` that ends this way, the next bare `up` or `down` refuses
+`LIFECYCLE_BLOCKED` and names the instance and the original request. Its exit is never recorded as
+a crash, and no `up`, `down`, `service stop` or `service remove` relaunches it, removes its record
+or removes the stack's registration. No command in this release clears such a stop. When `up` redefines a member because its launch options changed, the journal records the
+replacement's instance and launch request before the old instance is retired, and the new
+definition's revision before the replacement launches. After an `up` cut off in between, the next
+bare `up` or `down` adopts the replacement only when its record carries that launch request and
+revision for the same operation; `down` stops it and `up` reuses it. Any other instance record
+refuses `CONFLICT`, and nothing is adopted. A preserve or resume that
 never recorded its outcome stays with its own maintenance attempt. A member that exits before
 readiness is recorded as failed with its exit code, and the refusal names its log with
 `cotal service logs <definition> --instance <id> --space <space>`.

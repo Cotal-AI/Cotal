@@ -30,7 +30,12 @@ export function stackRoleApplies(mode: StackMode, role: StackRole): boolean {
 }
 
 export type StackMemberState = "planned" | "not-attempted" | "started" | "reused" | "stopped" | "already-stopped" | "refused" | "failed" | "unknown";
-export interface StackMember { role: StackRole; definition: string; instanceId: string | null; state: StackMemberState; code?: string }
+/** A redefinition in flight: the instance an `up` launches for a member after it retires the
+ *  member's recorded instance with the old definition. Its IDs are journaled before that retirement
+ *  and the new definition's revision before the launch, so a crash in between is resolved from the
+ *  replacement's own record (see {@link withSettledMembers}). */
+export interface StackReplacement { operation: string; instanceId: string; launchRequestId: string; definitionRevision?: string }
+export interface StackMember { role: StackRole; definition: string; instanceId: string | null; state: StackMemberState; code?: string; replacement?: StackReplacement }
 export interface StackJournal {
   schemaVersion: 1;
   kind: "cotal-stack-controller";
@@ -73,11 +78,12 @@ function validate(input: unknown, root: string): StackJournal {
     value.members = [value.members[0], { role: "auth", definition: STACK_DEFINITION.auth, instanceId: null, state: "not-attempted" }, ...value.members.slice(1)];
   if (value.schemaVersion !== 1 || value.kind !== "cotal-stack-controller" || value.root !== root || typeof value.space !== "string" || !value.space || typeof value.server !== "string" || !value.server || !STACK_MODES.includes(value.mode as StackMode) || typeof value.updatedAt !== "string" || !Array.isArray(value.members) || value.members.length !== STACK_ROLES.length) invalid();
   const members = (value.members as unknown[]).map((row, index) => {
-    const member = localRecordObject(row, ["role", "definition", "instanceId", "state", "code"]);
+    const member = localRecordObject(row, ["role", "definition", "instanceId", "state", "code", "replacement"]);
     const role = STACK_ROLES[index]!;
     if (member.role !== role || member.definition !== STACK_DEFINITION[role] || !STATES.includes(String(member.state)) || member.code !== undefined && (typeof member.code !== "string" || !/^[A-Z_]{1,64}$/.test(member.code))) invalid();
     if (member.instanceId !== null) { try { serviceOperationId(member.instanceId); } catch { invalid(); } }
-    if (!stackRoleApplies(value.mode as StackMode, role) && (member.instanceId !== null || member.state !== "not-attempted")) invalid();
+    if (member.replacement !== undefined) replacementOf(member.replacement);
+    if (!stackRoleApplies(value.mode as StackMode, role) && (member.instanceId !== null || member.state !== "not-attempted" || member.replacement !== undefined)) invalid();
     return member as unknown as StackMember;
   });
   const operation = localRecordObject(value.operation, ["id", "kind", "phase", "recordedAt", "withAgents", "maintenanceAttemptId"]);
@@ -88,6 +94,12 @@ function validate(input: unknown, root: string): StackJournal {
   const broker = value.broker === undefined ? undefined : brokerInputs(value.broker);
   const { broker: _broker, ...rest } = value as unknown as StackJournal;
   return { ...rest, members, ...(broker ? { broker } : {}), operation: operation as unknown as StackJournal["operation"] };
+}
+
+function replacementOf(input: unknown): StackReplacement {
+  const value = localRecordObject(input, ["operation", "instanceId", "launchRequestId", "definitionRevision"]);
+  try { for (const id of [value.operation, value.instanceId, value.launchRequestId, ...(value.definitionRevision === undefined ? [] : [value.definitionRevision])]) serviceOperationId(id); } catch { invalid(); }
+  return value as unknown as StackReplacement;
 }
 
 export interface StackBrokerInputs { storeDir: string; maxFileStore?: number; host?: string }
@@ -226,7 +238,7 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
     // Nothing was changed by this command, so its own outcome is a known refusal.
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", value.state === "stopping"
       ? "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
-      : "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed }, remedy: inspect(row.name) });
+      : "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(value.state === "stopping" ? { requestId: value.requestId } : {}) }, remedy: inspect(row.name) });
   } finally { hold?.release(); }
 }
 
@@ -248,12 +260,32 @@ export function settleStackOperation(lock: MaintenanceLock, snapshot: StackJourn
   return { snapshot: settled, settled: { operation, members } };
 }
 
-/** The journal with each member row that has no recorded instance given the one the settlement
- *  classified under that member's stack definition. An `up` cut off during a member's readiness
- *  leaves that member's instance unrecorded; it is the stack's own member, never another dependant. */
+/** The journal with each journaled replacement resolved, and each member row that has no recorded
+ *  instance given the one the settlement classified under that member's stack definition. An `up`
+ *  cut off during a member's readiness leaves that member's instance unrecorded; it is the stack's
+ *  own member, never another dependant. */
 export function withSettledMembers(journal: StackJournal, settlement: StackSettlement | undefined): StackJournal {
-  if (!settlement) return journal;
-  return { ...journal, members: journal.members.map((row) => row.instanceId !== null ? row : { ...row, instanceId: settlement.members.find((member) => member.role === row.role)?.instanceId ?? null }) };
+  const members = journal.members.map((row) => resolveReplacement(journal, row));
+  return { ...journal, members: settlement ? members.map((row) => row.instanceId !== null ? row : { ...row, instanceId: settlement.members.find((member) => member.role === row.role)?.instanceId ?? null }) : members };
+}
+
+/** A member row with its journaled replacement resolved from the definition's single instance
+ *  record. The recorded instance stays when the retirement never happened, and none remains when
+ *  nothing was launched. The replacement is adopted only when its record carries the journaled
+ *  launch request and definition revision, the saved definition is that revision, and this journal's
+ *  operation journaled it. Any other record refuses, and nothing is adopted. */
+function resolveReplacement(journal: StackJournal, row: StackMember): StackMember {
+  const { replacement, ...member } = row;
+  if (!replacement) return row;
+  const space = journal.space, rows = serviceInstances(space, row.definition), found = rows[0];
+  const target = { root: journal.root, space, operation: journal.operation.id, definition: row.definition, recorded: row.instanceId, replacement: replacement.instanceId, launchRequestId: replacement.launchRequestId, found: rows.map((item) => item.name) };
+  if (rows.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a stack definition has several instance records; the journaled replacement was not resolved", { target });
+  if (!found) return { ...member, instanceId: null };
+  if (found.name === row.instanceId) return member;
+  const value = found.record.value;
+  if (replacement.operation === journal.operation.id && replacement.definitionRevision !== undefined && found.name === replacement.instanceId && value.launchRequestId === replacement.launchRequestId && value.definitionRevision === replacement.definitionRevision && serviceDefinitionStore(space).read(row.definition)?.record.revision === replacement.definitionRevision)
+    return { ...member, instanceId: found.name };
+  throw new CommandFailure("refused", "CONFLICT", "the definition's instance record is not the replacement this stack journal recorded for its operation; neither was adopted", { target, remedy: `inspect it with cotal service status ${row.definition} --instance ${found.name} --space ${space}` });
 }
 
 /** The read-only classification `settleStackOperation` would record, for a preview. Writes nothing. */

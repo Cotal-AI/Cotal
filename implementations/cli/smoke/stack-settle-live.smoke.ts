@@ -15,18 +15,27 @@
  *     0002 the delivery-aware marker is 0600. After a clean down, a group-writable `.cotal/auth`
  *     makes `reset space --dry-run` name it and its repair. A `down` after every member crashed
  *     exits 0, and the reset preview then names `cotal up` and `cotal down`.
+ *  5. An unconfirmed native manager stop. The manager is frozen when its stop request is published,
+ *     so the first `down` reports the stop unknown and the manager record stays `stopping` under that
+ *     request. While the manager runs and after it is killed, `down` refuses `LIFECYCLE_BLOCKED`
+ *     naming the instance and the request, and nothing is stopped or cleaned up; after it is gone
+ *     `up` refuses the same way and launches no manager.
+ *  6. An interrupted redefinition. An `up` whose `--max-sessions` redefines the manager is killed
+ *     while the replacement manager is frozen before its readiness is recorded. The next bare `down`
+ *     adopts the journaled replacement and stops it; in a second stack the next bare `up` adopts it
+ *     and reuses it.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { mintLifecycleUid } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, MANAGER_DELIVERY_AWARE_MARKER } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, MANAGER_DELIVERY_AWARE_MARKER, readServiceStopRequest } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -40,7 +49,7 @@ for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete
 // Set before the stores are imported; they read COTAL_HOME on each call.
 process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
-const { observeServiceProcess, serviceInstances } = await import("../src/lib/service-instances.js");
+const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { readStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -48,7 +57,7 @@ const anchors = new Map<string, SmokeSandboxAnchor>();
 const roots: string[] = [];
 const owned = new Set<number>();
 
-type Envelope = { outcome: string; result?: Record<string, unknown>; warnings?: { code: string }[]; error?: { code: string; message: string; remedy?: string } };
+type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Record<string, unknown>; warnings?: { code: string }[]; error?: { code: string; message: string; remedy?: string } };
 type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stderr: string; env?: Envelope };
 const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run => {
   const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000 };
@@ -60,6 +69,22 @@ const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run
   return { status: run.status, signal: run.signal, ms: Date.now() - began, stderr: run.stderr, env: parsed };
 };
 const cli = (cwd: string, ...args: string[]): Run => cliAs(env, cwd, ...args);
+/** `cli` without blocking this process, so a watcher in it can act while the command runs. */
+const cliAsync = (cwd: string, ...args: string[]): Promise<Run> => {
+  assertSmokeSandboxDown(anchors.get(cwd), args, { cwd, env });
+  const began = Date.now();
+  const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "", stderr = "";
+  child.stdout!.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+  child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+  const timer = setTimeout(() => child.kill("SIGKILL"), 180_000);
+  return new Promise((done) => child.once("close", (status, signal) => {
+    clearTimeout(timer);
+    let parsed: Envelope | undefined;
+    try { parsed = JSON.parse(stdout) as Envelope; } catch { parsed = undefined; }
+    done({ status, signal, ms: Date.now() - began, stderr, env: parsed });
+  }));
+};
 const shown = (run: Run) => ({ status: run.status, signal: run.signal, ms: run.ms, outcome: run.env?.outcome, error: run.env?.error, stderr: run.stderr.slice(-1500) });
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -232,6 +257,93 @@ try {
     const unreceipted = cli(root, "reset", "store", space, "--dry-run", "--json");
     const verdict = unreceipted.env?.result?.applyVerdict as { offered?: boolean; remedy?: string | null } | undefined;
     check("reset store --dry-run after crashes refuses in its verdict and names cotal up then cotal down", unreceipted.status === 0 && verdict?.offered === false && Boolean(verdict.remedy?.includes("cotal up")) && Boolean(verdict.remedy?.includes("cotal down")), shown(unreceipted));
+  }
+
+  // 5. A native manager stop that was submitted and never confirmed (B2-1). The manager is frozen
+  //    the moment its stop request file appears, before it acts on the signal that follows, so no
+  //    terminal receipt can come. It is killed after the checks made while it runs.
+  {
+    const space = "unconfirmed";
+    const root = prepare(space);
+    const port = await freePort();
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track(space);
+    check("up starts the stack whose manager stop is left unconfirmed", started.status === 0, shown(started));
+    const manager = serviceInstances(space, "stack-manager")[0];
+    const pid = manager?.record.value.process?.pid ?? null;
+    const states = serviceInstanceStore(space).directory();
+    let frozen = false;
+    const watcher = states && pid !== null ? watch(states, (_event, name) => {
+      if (frozen || !String(name ?? "").endsWith(".stop.json")) return;
+      frozen = true;
+      try { process.kill(pid, "SIGSTOP"); } catch { /* the checks below report it */ }
+    }) : undefined;
+    const first = await cliAsync(root, "down", "--yes", "--json");
+    watcher?.close();
+    check("the manager was frozen once its stop request was published", frozen && pid !== null && alive(pid), { frozen, pid });
+    check("the first down reports the manager stop unknown", first.status !== 0 && first.env?.outcome === "unknown" && first.env.error?.code === "OPERATION_UNKNOWN", shown(first));
+    let request: string | undefined;
+    try { request = manager && states ? readServiceStopRequest({ space, instanceId: manager.name, launchRequestId: manager.record.value.launchRequestId, stateDirectory: states })?.requestId : undefined; } catch { request = undefined; }
+    const record = () => serviceInstances(space, "stack-manager").map((row) => ({ instanceId: row.name, state: row.record.value.state, requestId: row.record.value.requestId }));
+    const held = () => { const rows = record(); return request !== undefined && rows.length === 1 && rows[0]!.instanceId === manager?.name && rows[0]!.state === "stopping" && rows[0]!.requestId === request; };
+    check("the manager record stays stopping under its published request", held(), { request, record: record() });
+    // Each refusal names the instance and the request, and its remedy is the exact status command.
+    const names = (run: Run) => run.status === 2 && run.env?.error?.code === "LIFECYCLE_BLOCKED" && run.env.target?.instanceId === manager?.name && run.env.target?.requestId === request && Boolean(run.env.error.remedy?.includes(`cotal service status stack-manager --instance ${manager?.name} --space ${space}`));
+    const delivery = pidOf(space, "stack-delivery"), broker = pidOf(space, "stack-broker");
+    const whileRunning = cli(root, "down", "--yes", "--json");
+    check("while the frozen manager runs, down refuses naming its instance and request", names(whileRunning) && pid !== null && alive(pid) && held(), shown(whileRunning));
+    if (pid !== null) process.kill(pid, "SIGKILL");
+    await until(() => gone(space, "stack-manager"), 10_000);
+    const afterExit = cli(root, "down", "--yes", "--json");
+    check("after the manager exits, down still refuses naming its instance and request", names(afterExit) && held(), shown(afterExit));
+    check("no member was stopped and no registration was removed", delivery !== null && alive(delivery) && broker !== null && alive(broker) && findMesh(space) !== undefined, { delivery, broker, registered: findMesh(space) !== undefined });
+    const restart = cli(root, "up", "--json");
+    check("after the manager exits, up refuses the same way and launches no manager", names(restart) && held(), shown(restart));
+  }
+
+  // 6. A redefinition cut off before its replacement's readiness is recorded (B2-2). After a clean up
+  //    and down, an up with --max-sessions changes the manager definition, so it retires the stopped
+  //    manager instance with the old definition and launches a replacement. Once the replacement's
+  //    process is pinned it is frozen, so its readiness cannot be recorded, and the up is killed; the
+  //    replacement then resumes and serves with nothing recording it.
+  const interruptRedefinition = async (space: string): Promise<{ root: string; replacement?: string }> => {
+    const root = prepare(space);
+    const port = await freePort();
+    const first = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track(space);
+    const retired = serviceInstances(space, "stack-manager")[0]?.name;
+    const clean = cli(root, "down", "--yes", "--json");
+    check(`${space}: a clean up and down leave the manager instance a redefinition retires`, first.status === 0 && clean.status === 0 && retired !== undefined, { up: shown(first), down: shown(clean) });
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--max-sessions", "32", "--json"], { cwd: root, env, stdio: "ignore" });
+    const launched = () => { try { return serviceInstances(space, "stack-manager").find((row) => row.name !== retired && row.record.value.process !== undefined); } catch { return undefined; } };
+    const pinned = await until(() => launched() !== undefined, 120_000);
+    const replacement = launched();
+    const pid = replacement?.record.value.process?.pid;
+    if (pid !== undefined) process.kill(pid, "SIGSTOP");
+    track(space);
+    const journal = readStackJournal(root)?.journal, row = journal?.members.find((member) => member.role === "manager");
+    check(`${space}: the up is killed after the redefinition and before the replacement's readiness is recorded`, pinned && child.exitCode === null && journal?.operation.kind === "up" && journal.operation.phase === "applying" && row !== undefined && row.instanceId !== replacement?.name, { pinned, exitCode: child.exitCode, operation: journal?.operation, manager: row });
+    child.kill("SIGKILL");
+    await exited(child);
+    if (pid !== undefined) process.kill(pid, "SIGCONT");
+    const serving = await until(() => cli(root, "ps", "--json").status === 0, 60_000);
+    check(`${space}: the resumed replacement manager serves`, serving, { replacement: replacement?.name });
+    return { root, replacement: replacement?.name };
+  };
+  {
+    const { root, replacement } = await interruptRedefinition("redefdown");
+    const recovered = cli(root, "down", "--yes", "--json");
+    const row = readStackJournal(root)?.journal.members.find((member) => member.role === "manager");
+    check("bare down after the interrupted redefinition adopts the journaled replacement and stops it", recovered.status === 0 && recovered.env?.outcome === "ok" && Boolean(recovered.env.warnings?.some((warning) => warning.code === "OPERATION_SETTLED")) && row?.instanceId === replacement && row?.state === "stopped" && gone("redefdown", "stack-manager"), shown(recovered));
+  }
+  {
+    const { root, replacement } = await interruptRedefinition("redefup");
+    const recovered = cli(root, "up", "--json");
+    track("redefup");
+    const journal = readStackJournal(root)?.journal, row = journal?.members.find((member) => member.role === "manager");
+    check("bare up after the interrupted redefinition adopts the journaled replacement and reuses it", recovered.status === 0 && row?.instanceId === replacement && row?.state === "reused" && journal?.operation.phase === "completed" && serviceInstances("redefup", "stack-manager").length === 1, shown(recovered));
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("down then stops the recovered stack", stopped.status === 0 && gone("redefup", "stack-manager"), shown(stopped));
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");
