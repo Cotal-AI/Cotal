@@ -100,6 +100,7 @@ const host: GatewayHost = {
   async open(account, name) {
     opened.push(`${account}/${name}`);
     if (name === "quota_probe") throw new Error("quota exceeded");
+    if (name === "business-model") throw new Error("Cloud agent names must be 1–64 lowercase letters, numbers, or underscores; dots and hyphens are not allowed.");
     if (name === "full" || name.startsWith("full_")) throw new NameTaken(name);
     const key = `${account}/${name}`;
     if (reserved.has(key)) throw new NameTaken(name);
@@ -206,6 +207,17 @@ try {
   // ---- the offered surface ----
   const tools = (await a.listTools()).tools;
   const names = new Set(tools.map((t) => t.name));
+  const readOnly = new Set(["cotal_orientation", "cotal_connection_status", "cotal_roster", "cotal_channel_info", "cotal_channels"]);
+  const additive = new Set(["cotal_connect", "cotal_send", "cotal_dm", "cotal_anycast", "cotal_join"]);
+  const destructive = new Set(["cotal_disconnect", "cotal_wait", "cotal_inbox", "cotal_status", "cotal_channel_mode", "cotal_leave"]);
+  check(
+    "every gateway tool declares its read and update effects",
+    tools.length === readOnly.size + additive.size + destructive.size && tools.every((t) =>
+      (readOnly.has(t.name) || additive.has(t.name) || destructive.has(t.name)) &&
+      t.annotations?.readOnlyHint === readOnly.has(t.name) &&
+      t.annotations?.destructiveHint === destructive.has(t.name)),
+    tools.map((t) => ({ name: t.name, annotations: t.annotations })),
+  );
   check("connect and disconnect are offered", names.has("cotal_connect") && names.has("cotal_disconnect"));
   check("seat authority is not offered", !["cotal_spawn", "cotal_despawn", "cotal_persona", "cotal_run", "cotal_reconnect", "cotal_yield"].some((n) => names.has(n)));
   const routed = tools.filter((t) => t.name !== "cotal_connect");
@@ -232,6 +244,9 @@ try {
   const quota = await call(a, "cotal_connect", { name: "quota_probe" });
   check("a non-collision failure is reported", quota.isError && quota.text.includes("quota exceeded"), quota);
   check("a non-collision failure is not retried under another name", !opened.includes("acct_a/quota_probe_2") && opened.filter((o) => o === "acct_a/quota_probe").length === 1, opened);
+  const cloudInvalid = await call(a, "cotal_connect", { name: "business-model" });
+  check("an embedder's stricter name error reaches the real MCP caller unchanged", cloudInvalid.isError && cloudInvalid.text === 'cotal_connect failed for "business-model": Cloud agent names must be 1–64 lowercase letters, numbers, or underscores; dots and hyphens are not allowed.', cloudInvalid);
+  check("an embedder's name validation refusal is neither retried nor reserved", opened.filter((o) => o === "acct_a/business-model").length === 1 && !opened.includes("acct_a/business-model_2") && !reserved.has("acct_a/business-model"), opened);
   const other = await call(b, "cotal_connect", { name: "claude" });
   check("another account's names are its own", !other.isError && other.text.startsWith("Connected as claude."), other);
   const idB = idOf(other);

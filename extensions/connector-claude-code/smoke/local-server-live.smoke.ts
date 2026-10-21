@@ -170,8 +170,11 @@ interface Monitor {
 const monitors: Monitor[] = [];
 
 /** Run the plugin's monitor as Claude Code runs it, for the Claude Code process `claudePid`. */
-function monitor(claudePid: number, extra: NodeJS.ProcessEnv = {}): Monitor {
-  const p = spawn(process.execPath, [MONITOR], { cwd: ROOT, env: { ...env, CLAUDE_PID: String(claudePid), ...extra }, stdio: ["ignore", "pipe", "pipe"] });
+function monitor(claudePid: number, extra: NodeJS.ProcessEnv = {}, native = false): Monitor {
+  const monitorEnv = { ...env, ...extra };
+  if (native) delete monitorEnv.CLAUDE_PID;
+  else monitorEnv.CLAUDE_PID = String(claudePid);
+  const p = spawn(process.execPath, [MONITOR, ...(native ? ["--native"] : [])], { cwd: ROOT, env: monitorEnv, stdio: ["ignore", "pipe", "pipe"] });
   const m: Monitor = { p, lines: [], exited: new Promise((r) => p.on("exit", (code) => r(code))) };
   let buf = "";
   p.stdout!.on("data", (d) => {
@@ -221,7 +224,7 @@ try {
   const a = await code.call("cotal_connect", { name: "claude_local" });
   const idA = connectionId(a);
   check("a Claude Code conversation connects under the name it asked for", /^Connected as claude_local\./.test(a) && idA !== "", a);
-  check("  and is told no monitor runs yet, so it listens with cotal_wait", /No Cotal monitor runs in this session/.test(a) && /cotal_wait/.test(a), a);
+  check("  and is told automatic messages are unavailable until its reader connects", /Automatic incoming messages are unavailable/.test(a) && /cotal_wait/.test(a), a);
   check("  holding one credential directory of its own", heldBy(code.p.pid).length === 1, heldBy(code.p.pid));
 
   // Desktop's working directory is not the person's project. This one starts in the decoy project,
@@ -257,7 +260,7 @@ try {
   const before1 = cotal(ROOT, "send", "dm", "claude_local", "m1");
   check("a DM lands while no monitor reads the feed", before1.status === 0, before1.stderr);
   await sleep(1_500);
-  const mon = monitor(process.pid);
+  const mon = monitor(process.pid, {}, true);
   check(
     "a monitor that starts after the message still gets its wake, as one fixed line",
     (await until(() => mon.lines.length > 0)) && mon.lines.length === 1 && mon.lines[0] === wakeFor(idA),
@@ -292,8 +295,18 @@ try {
   twin.p.stdin!.end();
   await twin.exited;
   const e = await code.call("cotal_connect", { name: "claude_seen" });
-  check("a conversation that connects while the monitor reads is told it will be woken", /The Cotal monitor runs in this session/.test(e), e);
+  check("a conversation that connects while the native reader runs reports its attachment", /The Cotal incoming-message reader is connected/.test(e), e);
   await code.call("cotal_disconnect", { connection_id: connectionId(e) });
+
+  const replay = connectionId(await code.call("cotal_connect", { name: "claude_replay" }));
+  cotal(ROOT, "send", "dm", "claude_replay", "replay-pending");
+  check("a native reader gets a wake before it restarts", await until(() => mon.lines.includes(wakeFor(replay))), mon.lines);
+  mon.p.kill("SIGTERM");
+  await within(mon.exited);
+  const reattached = monitor(process.pid, {}, true);
+  check("a restarted native reader reoffers an unread wake", await until(() => reattached.lines.includes(wakeFor(replay))), reattached.lines);
+  await code.call("cotal_inbox", { connection_id: replay });
+  await code.call("cotal_disconnect", { connection_id: replay });
 
   // A feed the server did not open: anything but a connection id on its own line is dropped.
   const stand = spawn("sleep", ["600"], { stdio: "ignore" });

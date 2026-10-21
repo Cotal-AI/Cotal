@@ -20,6 +20,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { assertValidName } from "@cotal-ai/core";
 import { cotalToolSpecs, parseToolArgs, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
@@ -79,6 +80,37 @@ export const GATEWAY_TOOLS: ReadonlySet<string> = new Set([
   "cotal_join",
   "cotal_leave",
 ]);
+
+const READ_ONLY = { readOnlyHint: true, destructiveHint: false };
+const ADDITIVE = { readOnlyHint: false, destructiveHint: false };
+const UPDATING = { readOnlyHint: false, destructiveHint: true };
+
+// Inbox and wait consume messages. Status can change attention, and disconnect, leave and channel
+// mode can remove a connection or subscription. None of those are read-only queries.
+const GATEWAY_ANNOTATIONS: Readonly<Record<string, ToolAnnotations>> = {
+  cotal_connect: ADDITIVE,
+  cotal_disconnect: UPDATING,
+  cotal_wait: UPDATING,
+  cotal_orientation: READ_ONLY,
+  cotal_connection_status: READ_ONLY,
+  cotal_roster: READ_ONLY,
+  cotal_inbox: UPDATING,
+  cotal_send: ADDITIVE,
+  cotal_dm: ADDITIVE,
+  cotal_anycast: ADDITIVE,
+  cotal_status: UPDATING,
+  cotal_channel_info: READ_ONLY,
+  cotal_channels: READ_ONLY,
+  cotal_channel_mode: UPDATING,
+  cotal_join: ADDITIVE,
+  cotal_leave: UPDATING,
+};
+
+function gatewayAnnotations(name: string): ToolAnnotations {
+  const annotations = GATEWAY_ANNOTATIONS[name];
+  if (!annotations) throw new Error(`Missing gateway tool annotations for ${name}`);
+  return annotations;
+}
 
 /** How many names `cotal_connect` tries: the requested one, then `_2` up to this suffix. */
 export const GATEWAY_NAME_ATTEMPTS = 20;
@@ -272,11 +304,16 @@ export function registerCotalGatewayTools(
       if (c.agent.stopping || signalled.has(c.agent) || (holding.get(c.agent) ?? 0) > 0 || wakeCount(c.agent) === 0) return;
       if (wake.signal(c)) signalled.add(c.agent);
     };
-    watched.add(fire);
+    const replay = () => {
+      // A previous reader may have exited before its client started a turn.
+      signalled.delete(c.agent);
+      fire();
+    };
+    watched.add(replay);
     c.agent.on("incoming", fire);
     c.agent.on("mention-wake", fire);
     c.agent.once("stopping", () => {
-      watched.delete(fire);
+      watched.delete(replay);
       c.agent.off("incoming", fire);
       c.agent.off("mention-wake", fire);
     });
@@ -286,6 +323,7 @@ export function registerCotalGatewayTools(
     "cotal_connect",
     {
       title: "Cotal: connect this conversation",
+      annotations: gatewayAnnotations("cotal_connect"),
       description:
         "Join the Cotal mesh as a new agent for THIS conversation and return its connection_id. Call it once per " +
         "conversation, keep the connection_id, and pass it on every other cotal_* call. If the name is taken, the " +
@@ -330,6 +368,7 @@ export function registerCotalGatewayTools(
     "cotal_disconnect",
     {
       title: "Cotal: disconnect this conversation",
+      annotations: gatewayAnnotations("cotal_disconnect"),
       description: "Leave the mesh for this conversation's connection. Other conversations stay connected.",
       inputSchema: z.strictObject({ connection_id: CONNECTION_ID }),
     },
@@ -350,6 +389,7 @@ export function registerCotalGatewayTools(
     "cotal_wait",
     {
       title: "Cotal: wait for a message",
+      annotations: gatewayAnnotations("cotal_wait"),
       description:
         `Wait for a message to this connection, and return it as cotal_inbox would. It returns at once when one is ` +
         `already waiting, and otherwise as soon as one arrives, or after at most ${waitSeconds} seconds with none. ` +
@@ -405,6 +445,7 @@ export function registerCotalGatewayTools(
       spec.name,
       {
         title: spec.title,
+        annotations: gatewayAnnotations(spec.name),
         description: `${spec.description} Requires this conversation's connection_id from cotal_connect.`,
         inputSchema: shape.extend({ connection_id: CONNECTION_ID }),
       },
