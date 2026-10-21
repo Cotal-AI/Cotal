@@ -51,8 +51,10 @@ const safeMount = (mount: string): string => {
 const unescapeMount = (mount: string): string => mount.replace(/\\(040|011|012|134)/g, (_, code: string) =>
   code === "040" ? " " : code === "011" ? "\t" : code === "012" ? "\n" : "\\");
 
-const LOCAL_LINUX_FILESYSTEMS = new Set(["btrfs", "exfat", "ext2", "ext3", "ext4", "f2fs", "ntfs3", "overlay", "vfat", "xfs", "zfs"]);
+const LOCAL_LINUX_FILESYSTEMS = new Set(["btrfs", "exfat", "ext2", "ext3", "ext4", "f2fs", "ntfs3", "vfat", "xfs", "zfs"]);
 const privateMount = (mount: string): boolean => mount === "/home" || mount.startsWith("/home/") || mount.startsWith("/run/user/");
+const relevantLinuxMount = (mount: string, fsType: string): boolean =>
+  mount === "/" || (LOCAL_LINUX_FILESYSTEMS.has(fsType) && mount.split("/").filter(Boolean).length <= 2);
 
 async function linuxMounts(): Promise<string[]> {
   const text = await readFile("/proc/self/mountinfo", "utf8");
@@ -63,7 +65,7 @@ async function linuxMounts(): Promise<string[]> {
     const source = fields[separator + 2] ?? "";
     const fsType = fields[separator + 1] ?? "";
     const mount = unescapeMount(fields[4]!);
-    if (!LOCAL_LINUX_FILESYSTEMS.has(fsType) || source.startsWith("//") || source.startsWith("\\\\") || privateMount(mount)) return [];
+    if (!relevantLinuxMount(mount, fsType) || source.startsWith("//") || source.startsWith("\\\\") || privateMount(mount)) return [];
     return [mount];
   });
 }

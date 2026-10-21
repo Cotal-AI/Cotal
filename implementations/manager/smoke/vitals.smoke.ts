@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { cpus, platform, totalmem } from "node:os";
 import { EpEnvelopeError } from "@cotal-ai/core";
 import {
   MANAGER_VITALS_MAX_MOUNTS,
@@ -34,6 +35,15 @@ const refusal = async (run: () => Promise<unknown>, code: string, text: RegExp) 
 };
 
 await cell("Linux returns a complete, sorted, invocation-time sample", async () => {
+  if (platform() === "linux") {
+    const live = await measureManagerVitals();
+    assert.equal(live.cpu.logicalCount, cpus().length);
+    assert.equal(live.memory.totalBytes, totalmem());
+    assert(live.memory.availableBytes <= live.memory.totalBytes);
+    assert(live.filesystems.length <= MANAGER_VITALS_MAX_MOUNTS);
+    assert.deepEqual(live.filesystems.map((row) => row.mount), [...live.filesystems.map((row) => row.mount)].sort());
+    assert(live.filesystems.every((row) => row.freeBytes <= row.totalBytes));
+  }
   const value = await measureManagerVitals(deps());
   assert.equal(value.sampledAt, "2026-10-21T22:00:00.000Z");
   assert.deepEqual(value.cpu, { logicalCount: 8, load1: 0.25, load5: 0.5, load15: 0.75 });
