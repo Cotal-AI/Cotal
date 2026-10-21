@@ -65,11 +65,11 @@ export function recordedWebUrl(context: LocalProcessContext): string | undefined
   }
 }
 
-/** True when an installed extension contributes the `web` command and its package is on disk, so
- * the separately configured dashboard service can start it. A manifest or package record that cannot be read throws, like every
- * other reader. */
+/** True when an installed extension contributes the `web` service preset and its package is on disk,
+ * so `cotal service add --preset web` can configure the dashboard. A manifest or package record that
+ * cannot be read throws, like every other reader. */
 export function webInstalled(): boolean {
-  return loadExtensionsManifest().extensions.some((e) => e.commands.some((cmd) => cmd.name === "web") && installedExtensionVersion(e.pkg) !== undefined);
+  return loadExtensionsManifest().extensions.some((e) => e.servicePresets?.some((preset) => preset.name === "web") === true && installedExtensionVersion(e.pkg) !== undefined);
 }
 
 export interface MachineStatus {

@@ -447,6 +447,8 @@ try {
     /web\s+serving/.test(webServingText) && webServingText.includes(`pid ${web}`) && webServingText.includes(`port ${webPort}`) && webServingText.includes("http reachable"), webServingText);
   check("a service-run dashboard is graded from its own instance's session record",
     instance?.instanceId !== undefined && webServingText.includes(`service instance ${instance.instanceId}`), webServingText);
+  check("status reports the dashboard extension that provides the web preset as installed",
+    /Dashboard:\s+(?:● )?installed\b/.test(webServingText), webServingText);
   // The pidfile's holder picks the session record. A stale `web.session` beside a service-held
   // web.pid names a port nothing listens on, so reading it would grade the live dashboard not-serving.
   const legacySession = canonicalLocalProcessPath(WEB_SESSION_FILE, { root: webRoot, space: WEB_SPACE });
