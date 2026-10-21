@@ -251,6 +251,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   });
 
   assert.deepEqual(failures, [], `AGENT-32 acceptance cells red=${failures.length}/2:\n${failures.join("\n")}`);
+  console.log("✓ AGENT-32 orientation identity cells passed (2/2)");
 }
 
 // 3 — core/more grouping covers exactly the gated set (minus orientation itself), no dupes.
