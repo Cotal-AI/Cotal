@@ -313,6 +313,14 @@ try {
   rmSync(openRoot, { recursive: true, force: true });
   rmSync(otherRoot, { recursive: true, force: true });
 
+  // A retained bare `down` reaches its pidfile sweep only for one registration that `cotal up`
+  // started at this root, and refuses when another registration names the same broker address
+  // (docs/cli.md, `down`). `up` records `origin: "up"` and the broker it started, so every stack the
+  // `down` cells below stop is recorded that way, each on its own closed loopback port. "main" keeps
+  // port 1 from the `clean all` cells above.
+  const upEntry = (space: string, root: string, port: number) =>
+    ({ ...entry(space, root), server: `nats://127.0.0.1:${port}`, origin: "up" as const });
+
   // --- `down` must NOT erase the record of a process it cannot stop (EPERM) -------------------
   // The e2e chain the cleanup guard protects: an unsignalable live broker + `cotal down` +
   // `cotal clean store` must end in a REFUSAL - if `down` swallowed the EPERM and dropped the
@@ -321,7 +329,7 @@ try {
     const downRoot = meshRoot();
     writeFileSync(join(downRoot, ".cotal", "nats.pid"), "1"); // pid 1: alive, unsignalable as non-root
     writeFileSync(join(downRoot, ".cotal", "nats.pid.identity"), `1 ${defaultStartToken(1)}`); // #969: pin what a real up pins, so the graded refusal is the EPERM one
-    recordMesh(entry("eperm-mesh", downRoot));
+    recordMesh(upEntry("eperm-mesh", downRoot, 2));
     process.exitCode = 0;
     const cwd2 = process.cwd();
     process.chdir(downRoot);
@@ -344,7 +352,7 @@ try {
     writeFileSync(join(blockedRoot, ".cotal", "manager.pid"), "1");
     writeFileSync(join(blockedRoot, ".cotal", "manager.pid.identity"), `1 ${defaultStartToken(1)}`);
     writeFileSync(join(blockedRoot, ".cotal", "nats.pid"), String(blockedBroker.pid));
-    recordMesh(entry("blocked-down", blockedRoot));
+    recordMesh(upEntry("blocked-down", blockedRoot, 3));
     process.exitCode = 0;
     process.chdir(blockedRoot);
     try {
@@ -374,7 +382,7 @@ try {
   // #969: a real `up` pins the pid to its process start; the planted record must match that shape
   // or the identity gate correctly refuses it as a legacy record.
   writeFileSync(join(openRoot2, ".cotal", "nats.pid.identity"), `${broker.pid} ${defaultStartToken(broker.pid ?? 0)}`);
-  recordMesh(entry("named-open-2", openRoot2)); // "main" (unrelated root) is still recorded from above
+  recordMesh(upEntry("named-open-2", openRoot2, 4)); // "main" (unrelated root) is still recorded from above
   setCurrent("named-open-2");
   process.exitCode = 0;
   const cwd3 = process.cwd();
