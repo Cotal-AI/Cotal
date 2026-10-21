@@ -511,25 +511,32 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       if (host.space !== space) throw new EpEnvelopeError("permission-denied", "the effect registry belongs to another space");
       live.add(trip);
       if (tripped !== undefined) trip(tripped);
-      try { return await run({ host, h: HOSTS.get(host)!, endMs: Date.now() + S2A_INVOCATION_MS, operationId: scope.operationId ?? "", bound: false }); }
+      try { return await run({ host, h: HOSTS.get(host)!, endMs: Date.now() + S2A_INVOCATION_MS, operationId: scope.operationId ?? "", bound: true }); }
       finally { live.delete(trip); }
     } finally { await effect.close(); }
   }
   const readCtx = (inv: Inv, step: string) => { const c = context(inv.h, inv.endMs); c.step = step; return c; };
   /** Normal advancement only, and only before the original deadline. */
   const authorityCtx = (inv: Inv, notAfterMs: number, step: string) => { const c = context(inv.h, Math.min(inv.endMs, notAfterMs)); c.step = step; return c; };
-  /** A held step after a binding names its operation; before one it is a zero-write denial. */
+  /** A held step names its operation whenever the request may be bound: until this invocation's own
+   *  binding read finds the key absent, and again once its create may be issued. Only a step after
+   *  that absence is a zero-write denial, and the absence is point-in-time: another invocation of
+   *  the same request already in flight can still bind it later. */
   const heldArm = (inv: Inv, e: Held): Arms => {
     const reason = e.reason === "deadline" && Date.now() >= inv.endMs ? "reconcile-pending" : e.reason;
     return inv.bound ? { state: "held", operationId: inv.operationId, reason, phase: e.step, ...(inv.assignmentDigest ? { assignmentDigest: inv.assignmentDigest } : {}) } : denied("unavailable");
   };
   /** A discovery read failed. A request that is or may be bound is never a zero-write denial; one
-   *  bound to another body gets the answer its admission would give. */
-  const discoveryHeld = (operationId: string, requestDigest: string, authorized: boolean, found: Read<Op> | undefined, e: Held, assignmentDigest?: string): Arms => {
+   *  bound to another body is a conflict, as its admission would answer. */
+  const discoveryHeld = (operationId: string, requestDigest: string, found: Read<Op> | undefined, e: Held, assignmentDigest?: string): Arms => {
     if (found?.state === "absent") return denied("unavailable");
-    if (found?.state === "value" && found.row.requestDigest !== requestDigest) return denied(authorized ? "conflict" : "permission-denied");
+    if (found?.state === "value" && found.row.requestDigest !== requestDigest) return denied("conflict");
     return { state: "held", operationId, reason: e.reason, phase: e.step, ...(assignmentDigest ? { assignmentDigest } : {}) };
   };
+  /** The held arm of a request this invocation read nothing about: its deterministic operation
+   *  coordinate, the same whether or not the request is bound or its granter authorized. */
+  const unread = (requestId: string, reason: string, phase: string, assignmentDigest?: string): Arms =>
+    ({ state: "held", operationId: serviceHostOperationId(space, requestId), reason, phase, ...(assignmentDigest ? { assignmentDigest } : {}) });
   const interactive = (o: string) => {
     try { return (findInteractiveActor(opts.ledgerDir, o, "cli") ?? findInteractiveActor(opts.ledgerDir, o, "web")) !== undefined; }
     catch { return false; }
@@ -568,9 +575,12 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     const req = parseServiceRegisterRequest(raw);
     const env = { v: 1 as const, kind: "service-endpoint-host" as const, operation: "register" as const, requestId: req.requestId, space, accountPublicKey };
     const out = (a: Arms | Registered) => ({ ...env, ...a }) as ServiceRegisterResult;
-    if (tripped !== undefined) return out(denied("unavailable"));
+    // The latch comes before the ledger and every broker read; a tripped engine cannot tell a bound request.
+    if (tripped !== undefined) return out(unread(req.requestId, "readiness", "open"));
     const { owner: o, endpoint: e, instanceId: i, clusterDigests, commands } = req.input;
-    if (req.granter.owner !== o || !interactive(o)) return out(denied("permission-denied"));
+    if (req.granter.owner !== o) return out(denied("permission-denied"));                                   // never binds
+    // Authorization precedes every request-key read, and its refusal is one answer whether or not the request is bound.
+    if (!interactive(o)) return out(unread(req.requestId, "permission-denied", "authorize"));
     const operationId = serviceHostOperationId(space, req.requestId), requestDigest = requestDigestOf(req);
     const proposalDigest = contractDigest({ v: 1, kind: "service-proposal-body", accountPublicKey, space, owner: o, endpoint: e, instanceId: i, clusterDigests, commands });
     const proposalId = proposalIdOf(proposalDigest, req.requestId);
@@ -589,9 +599,9 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
             const op = await readOp(ctx, operationId);
             if (op.state === "value") {
               if (op.row.requestDigest !== requestDigest) return denied("conflict");
-              inv.bound = true;
               return await advanceRegister(inv, op.row);
             }
+            inv.bound = false;
             ctx.step = "R3-decide";
             const now = Date.now(), cap = await readCapacity(ctx);
             const decision = await registerRefusal(ctx, sel, cap, now);
@@ -604,12 +614,11 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
             // The create may be issued from here, so a held step names the operation.
             inv.bound = true;
             if ((await put(ctx, opKey(operationId), binding, parseServiceHostOperationRecord)) !== "moved") return await advanceRegister(inv, binding);
-            // A lost create is a concurrent first use: re-read, then conflict or replay.
-            inv.bound = false;
+            // A lost create is a concurrent first use, so the request stays possibly bound: re-read, then conflict or replay.
           }
         } catch (err) { if (err instanceof Held) return heldArm(inv, err); throw err; }
       }));
-    } catch (err) { if (err instanceof Held) return out(denied("unavailable")); throw err; }
+    } catch (err) { if (err instanceof Held) return out(unread(req.requestId, err.reason, err.step)); throw err; }
 
     async function advanceRegister(inv: Inv, first: Op): Promise<Arms | Registered> {
       const ctx = readCtx(inv, "R-replay");
@@ -744,6 +753,8 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     instanceId: t.instanceId, register: t.register, state: t.state, operationId: t.operationId, approvalDigest: t.approvalDigest, reason: t.reason, at: seconds(t.atMs) });
 
   async function decide(req: Extract<ServiceHostRequest, { operation: "decide" }>, authorized: boolean): Promise<DecideOut> {
+    // Authorization precedes every request-key read, and its refusal is one answer whether or not the request is bound.
+    if (!authorized) return unread(req.requestId, "permission-denied", "authorize");
     const operationId = serviceHostOperationId(space, req.requestId), requestDigest = requestDigestOf(req), { proposalId } = req.input;
     const approve = req.input.decision === "approve";
     type Admitted = { kind: "out"; out: DecideOut } | { kind: "bind"; binding: OpLive };
@@ -757,7 +768,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       if (op.state === "value" && op.row.kind === "service-host-operation" && op.row.plan.kind === "approve") scope.lifecycleUid = op.row.plan.reservation.native.lifecycleUid;
       if (prop.state === "value") { scope.endpoint = prop.row.endpoint; scope.instanceId = prop.row.instanceId; }
       if (op.state === "absent" && approve) scope.lifecycleUid = mintLifecycleUid();
-    } catch (e) { if (e instanceof Held) return discoveryHeld(operationId, requestDigest, authorized, found, e); throw e; }
+    } catch (e) { if (e instanceof Held) return discoveryHeld(operationId, requestDigest, found, e); throw e; }
     try {
       return await invoke(scope, async (inv) => {
         inv.operationId = operationId;
@@ -767,24 +778,21 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
             if (n >= S2A_MAX_REDECIDE) held("contention", ctx.step);
             const op = await readOp(ctx, operationId);
             if (op.state === "value" && op.row.requestDigest === requestDigest) {
-              inv.bound = true;
-              if (!authorized || (req.granter.kind === "owner" && op.row.projection.subjectOwner !== req.granter.owner))
+              if (req.granter.kind === "owner" && op.row.projection.subjectOwner !== req.granter.owner)
                 return { state: "held", operationId, reason: "permission-denied", phase: "authorize" };
               return approve ? await advanceApprove(inv, op.row) : await advanceRefuse(inv, op.row);
             }
-            // Authorization comes before any answer that discloses another body's binding.
-            if (!authorized) return denied("permission-denied");
             if (op.state === "value") return denied("conflict");
+            inv.bound = false;
             const admitted = approve ? await admitApprove(inv, ctx, scope.lifecycleUid!) : await admitRefuse(inv, ctx);
             if (admitted.kind === "out") return admitted.out;
             inv.bound = true;
             if ((await put(ctx, opKey(operationId), admitted.binding, parseServiceHostOperationRecord)) !== "moved")
               return approve ? await advanceApprove(inv, admitted.binding) : await advanceRefuse(inv, admitted.binding);
-            inv.bound = false;
           }
         } catch (err) { if (err instanceof Held) return heldArm(inv, err); throw err; }
       });
-    } catch (err) { if (err instanceof Held) return discoveryHeld(operationId, requestDigest, authorized, found, err); throw err; }
+    } catch (err) { if (err instanceof Held) return discoveryHeld(operationId, requestDigest, found, err); throw err; }
 
 
     async function admitApprove(inv: Inv, ctx: Ctx, lifecycleUid: string): Promise<Admitted> {
@@ -1046,7 +1054,9 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     const operationId = serviceHostOperationId(space, req.requestId), requestDigest = requestDigestOf(req);
     const { endpoint: e, instanceId: i, expectedAssignmentDigest, cause } = req.input;
     const ownerCause = cause === "owner-request";
-    if ((req.granter.kind === "owner") !== ownerCause) return denied("permission-denied");
+    if ((req.granter.kind === "owner") !== ownerCause) return denied("permission-denied");                 // never binds
+    // Authorization precedes every request-key read, and its refusal is one answer whether or not the request is bound.
+    if (!authorized) return unread(req.requestId, "permission-denied", "authorize", expectedAssignmentDigest);
     const scope: ServiceHostEffectScope = { operation: "revoke", operationId, proposalId: null, endpoint: e, instanceId: i, lifecycleUid: null };
     let found: Read<Op> | undefined;
     try {
@@ -1055,23 +1065,22 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       const asg = await readAssignment(dctx, e, i);
       if (asg.state === "value") { scope.proposalId = asg.row.proposalId; if (asg.row.state === "bound") scope.lifecycleUid = asg.row.reservation.native.lifecycleUid; }
       else scope.proposalId = eligible(await readCapacity(dctx), Date.now()).find((x) => x.endpoint === e && x.instanceId === i)?.proposalId ?? null;
-    } catch (err) { if (err instanceof Held) return discoveryHeld(operationId, requestDigest, authorized, found, err, expectedAssignmentDigest); throw err; }
+    } catch (err) { if (err instanceof Held) return discoveryHeld(operationId, requestDigest, found, err, expectedAssignmentDigest); throw err; }
     try {
       return await invoke(scope, async (inv) => {
-        inv.operationId = operationId;
+        inv.operationId = operationId; inv.assignmentDigest = expectedAssignmentDigest;
         try {
           const ctx = readCtx(inv, "V0-read");
           for (let n = 0; ; n++) {
             if (n >= S2A_MAX_REDECIDE) held("contention", ctx.step);
             const op = await readOp(ctx, operationId);
             if (op.state === "value" && op.row.requestDigest === requestDigest) {
-              inv.bound = true; inv.assignmentDigest = expectedAssignmentDigest;
-              if (!authorized || (req.granter.kind === "owner" && op.row.projection.subjectOwner !== req.granter.owner))
+              if (req.granter.kind === "owner" && op.row.projection.subjectOwner !== req.granter.owner)
                 return { state: "held", operationId, reason: "permission-denied", phase: "authorize", assignmentDigest: expectedAssignmentDigest };
               return await advanceRevoke(inv, op.row);
             }
-            if (!authorized) return denied("permission-denied");
             if (op.state === "value") return denied("conflict");
+            inv.bound = false;
             // V0: the assignment, else an approving proposal at the selector, then the assignment again.
             let asg = await readAssignment(ctx, e, i);
             let prop: Read<Proposal> = { state: "absent" };
@@ -1092,13 +1101,12 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
               account: { accountPublicKey, space }, granter: req.granter, admittedAtMs: now, notAfterMs: now + S2A_OPERATION_TTL_MS,
               admissionEpoch: adm.state === "value" ? adm.row.epoch : 0, projection: { subjectOwner, endpoint: e, instanceId: i, proposalId },
               plan: { kind: "revoke", endpoint: e, instanceId: i, expectedAssignmentDigest, cause }, progress: { state: "admitted" }, debt: [] };
-            inv.bound = true; inv.assignmentDigest = expectedAssignmentDigest;
+            inv.bound = true;
             if ((await put(ctx, opKey(operationId), binding, parseServiceHostOperationRecord)) !== "moved") return await advanceRevoke(inv, binding);
-            inv.bound = false; inv.assignmentDigest = undefined;
           }
         } catch (err) { if (err instanceof Held) return heldArm(inv, err); throw err; }
       });
-    } catch (err) { if (err instanceof Held) return discoveryHeld(operationId, requestDigest, authorized, found, err, expectedAssignmentDigest); throw err; }
+    } catch (err) { if (err instanceof Held) return discoveryHeld(operationId, requestDigest, found, err, expectedAssignmentDigest); throw err; }
 
     async function advanceRevoke(inv: Inv, first: Op): Promise<Arms> {
       const ctx = readCtx(inv, "V-replay");
@@ -1220,7 +1228,10 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     const req = parseServiceHostRequest(raw);
     const env = { v: 1 as const, kind: "service-endpoint-host" as const, operation: req.operation, requestId: req.requestId, space, accountPublicKey };
     const out = (r: object) => ({ ...env, ...r }) as ServiceHostResult;
-    if (tripped !== undefined) return out(denied("unavailable"));
+    // The latch comes before the ledger and every broker read. A request that could bind holds under its
+    // operation coordinate, with no deny-new claim because no gate was read; a read never binds.
+    if (tripped !== undefined) return out(req.operation === "decide" || req.operation === "revoke"
+      ? unread(req.requestId, "readiness", "open", req.operation === "revoke" ? req.input.expectedAssignmentDigest : undefined) : denied("unavailable"));
     const authorized = req.granter.kind === "operator" || interactive(req.granter.owner);
     switch (req.operation) {
       case "decide": return out(await decide(req, authorized));

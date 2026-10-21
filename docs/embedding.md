@@ -1278,9 +1278,14 @@ A second package-internal dormant module builds service host operations on that 
 admission, decide (approve or refuse), revoke, and the operation and proposal reads. It shares the
 writer's sealed host, plane-claim hold check and fatal latch, and each invocation opens its own
 custody host over a per-invocation effect registry. Its records and their write order are in SPEC
-§13.1. Results name their bound operation once a binding exists: `pending`, `held` and `refused` all
-carry `operationId`, and any of them carries `debt` while a capacity release it owes is unobserved.
-`denied` means the invocation wrote nothing. Revoke results report
+§13.1. Results name their operation once a binding exists or may exist: `pending`, `held` and
+`refused` all carry `operationId`, and any of them carries `debt` while a capacity release it owes is
+unobserved. A `held` result by itself implies neither a binding nor an authorized granter: a tripped
+engine, or a granter without a current interactive row, gets one `held` answer for a register,
+decide or revoke before any read of the request's keys. `denied` means the invocation wrote nothing,
+and either the request can never bind or the invocation's own read found no binding. That read is
+point-in-time; another invocation of the same request already in flight can still bind it later.
+Revoke results report
 `denyNew` from an endpoint-gate read, and that is `unknown` when the read failed. Completed results
 say whether this invocation applied them or returned a stored record. A stored approval returns
 unchanged, and its `approvedGateRevision` is null unless its own gate CAS was observed. Nothing in the

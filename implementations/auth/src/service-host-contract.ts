@@ -226,8 +226,11 @@ interface ServiceHostOutputs {
   "admission-open": { state: "open"; restoreId: string; revision: number };
 }
 /** Non-completion arms. `denied` means this invocation wrote nothing and no operation is bound to
- *  the request (or the request conflicts with one). Every other arm names its bound operation, and
- *  none of them means the request was not executed. */
+ *  the request (or the request conflicts with one): either the request can never bind, or this
+ *  invocation's own read found no binding. That read is point-in-time; another invocation of the
+ *  same request already in flight can still bind it later. Every other arm names the operation the
+ *  request is or may be bound to; `held` by itself implies neither a binding nor an authorized
+ *  granter, and none of them means the request was not executed. */
 export type ServiceHostPending = { state: "pending"; operationId: string; phase: string; notBefore?: number;
   assignmentDigest?: string; denyNew?: ServiceDenyNew; root?: "none" | "revoked" | "retained-stamped"; debt?: ServiceHostDebt[] };
 export type ServiceHostHeld = { state: "held"; operationId: string; reason: string; phase: string;
