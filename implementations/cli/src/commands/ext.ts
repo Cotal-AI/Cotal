@@ -345,6 +345,8 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   }
   provenance.wrote(`extensions manifest (+${pkg}@${version})`, extensionsManifestPath());
   announce(c.green(`✓ added ${pkg}@${version}`) + c.dim(` - provides: ${contributed.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`));
+  if (!entry.serviceMetadata && (servicePresets.length || localProcesses.some((component) => component.service !== undefined)))
+    announce(c.dim(`  its services cannot run on this platform: protected workstation file access is not available in this release`));
   }
 
   function fail(p: string, why: string): never {

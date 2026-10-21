@@ -4847,6 +4847,9 @@ unchanged instance records and definition. Logs are retained. No process or OS u
 by this operation. The presets are described below. A preset is not installed under an OS
 supervisor.
 Protected local records currently refuse on Windows; no weaker file-access path is substituted.
+There, `cotal ext add` and the setup seed still add an extension that declares service adapters or
+presets, record no service receipt and say that its services cannot run on this platform; any use of
+them refuses Unsupported.
 
 ### Service presets
 
