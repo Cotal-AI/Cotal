@@ -101,7 +101,7 @@ try {
   }) };
   const bytes = JSON.stringify(manifest); writeFileSync(join(root, "manifest.json"), bytes);
   const checks = ["cold restart replaces every process generation", "native process identity round-trips before daemon startup"];
-  for (const round of [0, 1]) for (const name of ["Manager, delivery and broker survive startup", "native Manager control answers", "empty Manager roster is an empty JSONL stream", "native shutdown policy is accepted once", "owned broker listener closed"]) checks.push(`round ${round} ${name}`);
+  for (const round of [0, 1]) for (const name of ["Manager, delivery and broker survive startup", "native Manager control answers", "empty Manager roster is an empty seat list", "native shutdown policy is accepted once", "owned broker listener closed"]) checks.push(`round ${round} ${name}`);
   for (const round of [0, 1]) for (const component of ["manager", "delivery"]) checks.push(`round ${round} Windows ${component} cleanup handler ran`);
   let firstReceipt;
   for (const [runner, platform, arch] of [["ubuntu-latest", "linux", "x64"], ["ubuntu-24.04-arm", "linux", "arm64"], ["macos-15-intel", "darwin", "x64"], ["macos-15", "darwin", "arm64"], ["windows-latest", "win32", "x64"], ["windows-11-arm", "win32", "arm64"]]) {
