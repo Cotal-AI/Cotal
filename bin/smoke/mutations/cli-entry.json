@@ -74,8 +74,8 @@
     {
       "name": "a subcommand alias reaches the command uncanonicalized",
       "file": "implementations/cli/src/command.ts",
-      "find": "  if (!sub || sub.name === parsed.positionals[0]) return parsed;\n",
-      "replace": "  if (!sub || sub.name !== \"\") return parsed;\n",
+      "find": "    changed ||= sub.name !== positionals[index]; positionals[index] = sub.name;\n",
+      "replace": "    changed ||= sub.name !== positionals[index];\n",
       "expectRed": "ext rm runs ext remove",
       "cell": "ext rm runs ext remove",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
@@ -84,8 +84,8 @@
     {
       "name": "an undeclared subcommand reaches the effects",
       "file": "implementations/cli/src/command.ts",
-      "find": "  if (cmd.subcommands?.length && first !== undefined && !findSubcommand(cmd, first))\n",
-      "replace": "  if (cmd.subcommands?.length && first !== undefined && !findSubcommand(cmd, first) && first === \"\")\n",
+      "find": "  if (cmd.subcommands?.length && first !== undefined && cmd.name !== \"history\" && !findSubcommand(cmd, first))\n",
+      "replace": "  if (cmd.subcommands?.length && first !== undefined && cmd.name !== \"history\" && !findSubcommand(cmd, first) && first === \"\")\n",
       "expectRed": "an undeclared subcommand writes no seed store",
       "cell": "an undeclared subcommand writes no seed store",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
@@ -104,8 +104,8 @@
     {
       "name": "command help lists hidden subcommands",
       "file": "implementations/cli/src/help.ts",
-      "find": "  const subs = (sub ? [] : (cmd.subcommands ?? [])).filter((s) => !s.hidden);\n",
-      "replace": "  const subs = sub ? [] : (cmd.subcommands ?? []);\n",
+      "find": "  const subs = (sub ? sub.subcommands ?? [] : cmd.subcommands ?? []).filter((item) => !item.hidden);",
+      "replace": "  const subs = sub ? sub.subcommands ?? [] : cmd.subcommands ?? [];",
       "expectRed": "command help does not list a hidden subcommand",
       "cell": "command help does not list a hidden subcommand",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
@@ -134,8 +134,8 @@
     {
       "name": "a fresh machine is not pointed to setup",
       "file": "implementations/cli/src/help.ts",
-      "find": "  if (space === undefined) out += `No space is selected. Run ${c.cyan(\"cotal setup\")} to prepare one.\\n`;\n",
-      "replace": "  if (space === undefined) out += `No space is selected.\\n`;\n",
+      "find": "  ] : [[\"setup\", \"cotal setup\", \"Choose your application and prepare a space\"]]));",
+      "replace": "  ] : []));",
       "expectRed": "a fresh machine is pointed to setup",
       "cell": "a fresh machine is pointed to setup",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",

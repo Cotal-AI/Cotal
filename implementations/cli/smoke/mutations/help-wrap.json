@@ -21,16 +21,6 @@
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
-      "name": "a usage line breaks inside an option",
-      "file": "implementations/cli/src/help.ts",
-      "find": "=> usage.match(/\\[[^\\]]*\\]|\\S+/g) ?? [usage];\n",
-      "replace": "=> usage.split(\" \");\n",
-      "expectRed": "on 80 columns its usage wraps only between options",
-      "cell": "on 80 columns its usage wraps only between options",
-      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build"
-    },
-    {
       "name": "the help footer is not wrapped",
       "file": "implementations/cli/src/help.ts",
       "find": "  for (const note of notes) out += `\\n${hang(\"\", note, width, c.dim).join(\"\\n\")}`;\n",

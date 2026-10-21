@@ -13,7 +13,7 @@
   "mutations": [
     {
       "name": "installed completion stubs stop calling __complete",
-      "file": "implementations/cli/src/commands/completion.ts",
+      "file": "implementations/cli/src/lib/completion-scripts.ts",
       "find": "    '  out=\"$(cotal __complete \"${args[@]}\" 2>/dev/null)\" || return',",
       "replace": "    '  out=\"$(cotal completion-candidates \"${args[@]}\" 2>/dev/null)\" || return',",
       "expectRed": "completion install bash writes a stub that calls `cotal __complete`",

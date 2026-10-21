@@ -13,11 +13,13 @@ import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { openLifecycleRegistry, registryStores } from "../src/lifecycle-registry.js";
 import { appendNativeServiceCallerGrant, beginNativeServiceCallerRevocation, parseNativeServiceCallerPolicy } from "../src/service-caller-policy.js";
 import type { ServiceCallerGrant } from "../src/service-host-contract.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const port = await pickFreePort(), servers = `nats://127.0.0.1:${port}`;
-const dir = mkdtempSync(join(process.env.JCODE_SCRATCH_DIR ?? process.env.HOME!, "r9-policy-cap-"));
+const dir = mkdtempSync(join(process.env.JCODE_SCRATCH_DIR ?? process.env.HOME!, SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), `listen: 127.0.0.1:${port}\nmax_payload: 4194304\njetstream { store_dir: ${JSON.stringify(join(dir, "js"))} }\n`);
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, dir);
 let nc: NatsConnection | undefined;
 const bytes = (v: unknown) => Buffer.byteLength(canonicalJson(v)), enc = (v: unknown) => new TextEncoder().encode(canonicalJson(v));
 try {
@@ -88,4 +90,5 @@ try {
   await nc?.close();
   if (broker.exitCode === null && broker.signalCode === null) { const exited = once(broker, "exit"); broker.kill("SIGTERM"); await exited; }
   console.log(JSON.stringify({ ownedBrokerExit: broker.exitCode, signal: broker.signalCode, retainedScratch: dir }));
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }

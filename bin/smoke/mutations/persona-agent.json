@@ -142,7 +142,7 @@
     {
       "cell": "G1: a saved user harness reaches the manager as the caller default for an unpinned persona",
       "name": "the caller default leaves out the saved harness",
-      "file": "implementations/cli/src/commands/spawn.ts",
+      "file": "implementations/cli/src/lib/spawn-defaults.ts",
       "find": "  const winner = resolvePreference(\"harness\", { space, preferences: cachedPreferences() }).winner;",
       "replace": "  const winner = resolvePreference(\"harness\", { space, preferences: { schemaVersion: 1, revision: 0, defaults: {}, spaces: {} } }).winner;",
       "expectRed": "G1: a saved user harness reaches the manager as the caller default for an unpinned persona",
@@ -151,7 +151,7 @@
     {
       "cell": "G5: a saved persona preference picks the persona of a bare detached spawn",
       "name": "a bare spawn leaves out the saved persona",
-      "file": "implementations/cli/src/commands/spawn.ts",
+      "file": "implementations/cli/src/lib/spawn-defaults.ts",
       "find": "  const winner = resolvePreference(\"persona\", ctx).winner!;",
       "replace": "  const winner = resolvePreference(\"persona\", { ...ctx, preferences: { schemaVersion: 1, revision: 0, defaults: {}, spaces: {} } }).winner!;",
       "expectRed": "G5: a saved persona preference picks the persona of a bare detached spawn",

@@ -4,15 +4,15 @@
     {
       "name": "PREDICTED KILLED (>=2 red) - every live pid reads as a manager, so a recycled pid belonging to an unrelated process is treated as the running supervisor and gets signalled by a stop",
       "file": "packages/workspace/src/pid.ts",
-      "find": "  return /(^|\\s)supervise(\\s|$)/.test(command);",
+      "find": "  return /(^|\\s)(?:supervise|__daemon-manager|__service-manager)(\\s|$)/.test(command);",
       "replace": "  return command.length >= 0;",
       "expectRed": "an unrelated command line is NOT a manager"
     },
     {
       "name": "PREDICTED KILLED (>=1 red) - `supervise` matches anywhere in the argv rather than as its own word, so a path or a flag containing it counts as a manager",
       "file": "packages/workspace/src/pid.ts",
-      "find": "  return /(^|\\s)supervise(\\s|$)/.test(command);",
-      "replace": "  return command.includes(\"supervise\");",
+      "find": "  return /(^|\\s)(?:supervise|__daemon-manager|__service-manager)(\\s|$)/.test(command);",
+      "replace": "  return /(?:supervise|__daemon-manager|__service-manager)/.test(command);",
       "expectRed": "an unrelated command line is NOT a manager"
     },
     {

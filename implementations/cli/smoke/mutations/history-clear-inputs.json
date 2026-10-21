@@ -14,7 +14,7 @@
     {
       "name": "clear accepts an extra channel",
       "file": "implementations/cli/src/commands/history.ts",
-      "find": "    if (rest.length) throw usage(\"history clear takes no channel; it clears every channel in the selected space\");\n",
+      "find": "    if (args.positionals.length !== 1) throw usage(\"history clear takes no channel; it clears all retained channel history in the selected space\");\n",
       "replace": "",
       "expectRed": "history clear refuses an extra channel before purging either channel",
       "cell": "history clear refuses an extra channel before purging either channel",
@@ -23,8 +23,8 @@
     {
       "name": "clear accepts --since",
       "file": "implementations/cli/src/commands/history.ts",
-      "find": "v.since !== undefined || ",
-      "replace": "",
+      "find": "([\"since\", \"limit\", \"from\", \"grep\", \"follow\"] as const)",
+      "replace": "([\"limit\", \"from\", \"grep\", \"follow\"] as const)",
       "expectRed": "history clear refuses --since before purging either channel",
       "cell": "history clear refuses --since before purging either channel",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -32,8 +32,8 @@
     {
       "name": "clear accepts --limit",
       "file": "implementations/cli/src/commands/history.ts",
-      "find": "v.limit !== undefined || ",
-      "replace": "",
+      "find": "([\"since\", \"limit\", \"from\", \"grep\", \"follow\"] as const)",
+      "replace": "([\"since\", \"from\", \"grep\", \"follow\"] as const)",
       "expectRed": "history clear refuses --limit before purging either channel",
       "cell": "history clear refuses --limit before purging either channel",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -41,8 +41,8 @@
     {
       "name": "clear accepts --from",
       "file": "implementations/cli/src/commands/history.ts",
-      "find": "v.from !== undefined || ",
-      "replace": "",
+      "find": "([\"since\", \"limit\", \"from\", \"grep\", \"follow\"] as const)",
+      "replace": "([\"since\", \"limit\", \"grep\", \"follow\"] as const)",
       "expectRed": "history clear refuses --from before purging either channel",
       "cell": "history clear refuses --from before purging either channel",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -50,8 +50,8 @@
     {
       "name": "clear accepts --grep",
       "file": "implementations/cli/src/commands/history.ts",
-      "find": "v.grep !== undefined || ",
-      "replace": "",
+      "find": "([\"since\", \"limit\", \"from\", \"grep\", \"follow\"] as const)",
+      "replace": "([\"since\", \"limit\", \"from\", \"follow\"] as const)",
       "expectRed": "history clear refuses --grep before purging either channel",
       "cell": "history clear refuses --grep before purging either channel",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -59,8 +59,8 @@
     {
       "name": "clear accepts --follow",
       "file": "implementations/cli/src/commands/history.ts",
-      "find": " || v.follow)",
-      "replace": ")",
+      "find": "([\"since\", \"limit\", \"from\", \"grep\", \"follow\"] as const)",
+      "replace": "([\"since\", \"limit\", \"from\", \"grep\"] as const)",
       "expectRed": "history clear refuses --follow before purging either channel",
       "cell": "history clear refuses --follow before purging either channel",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"

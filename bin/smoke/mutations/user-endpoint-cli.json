@@ -14,9 +14,9 @@
   "mutations": [
     {
       "name": "restore the old generic CLI static-auth-only guard",
-      "file": "implementations/cli/src/commands/describe.ts",
-      "find": "  if (!t.auth.epCaller || (!t.auth.creds && !(t.auth.bearer && t.auth.sentinelCreds))) {",
-      "replace": "  if (!t.auth.epCaller || !t.auth.creds) {",
+      "file": "implementations/cli/src/lib/endpoint-client.ts",
+      "find": "  if (!target.auth.epCaller || (!target.auth.creds && !(target.auth.bearer && target.auth.sentinelCreds))) throw",
+      "replace": "  if (!target.auth.epCaller || !target.auth.creds) throw",
       "expectRed": "the shipped CLI describes manager through the normal user's bearer",
       "cell": "the shipped CLI describes manager through the normal user's bearer",
       "afterRestore": "pnpm --filter cotal-ai... build",

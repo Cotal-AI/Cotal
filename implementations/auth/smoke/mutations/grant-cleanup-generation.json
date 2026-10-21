@@ -8,15 +8,15 @@
     {
       "name": "remove fresh grant occupancy refusal",
       "file": "implementations/auth/src/provider.ts",
-      "find": "if (fresh && findActorUnified(dir, owner, actor) !== undefined)",
-      "replace": "if (false && fresh && findActorUnified(dir, owner, actor) !== undefined)",
+      "find": "      if (fresh && tx.read(owner, actor) !== undefined)",
+      "replace": "      if (false && fresh && tx.read(owner, actor) !== undefined)",
       "expectRed": "fresh grant refuses without replacing original row"
     },
     {
       "name": "remove exact token cleanup guard",
       "file": "implementations/auth/src/provider.ts",
-      "find": "if (actorToken !== undefined && findActorUnified(dir, owner, actor)?.tokenHash !== hashActorToken(actorToken)) return false;",
-      "replace": "if (false && actorToken !== undefined && findActorUnified(dir, owner, actor)?.tokenHash !== hashActorToken(actorToken)) return false;",
+      "find": "      if (actorToken !== undefined && tx.read(owner, actor)?.tokenHash !== hashActorToken(actorToken)) return false;",
+      "replace": "      if (false && actorToken !== undefined && tx.read(owner, actor)?.tokenHash !== hashActorToken(actorToken)) return false;",
       "expectRed": "stale token cleanup cannot revoke same-UID successor"
     },
     {

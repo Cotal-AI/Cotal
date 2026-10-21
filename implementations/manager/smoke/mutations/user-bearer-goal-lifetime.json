@@ -131,7 +131,7 @@
     },
     {
       "name": "M14 publish outside the owned reply setup promise",
-      "file": "packages/core/src/endpoint-verbs.ts",
+      "file": "packages/core/src/endpoint-call.ts",
       "find": "      opts.signal?.throwIfAborted();\n      nc.publish(req.subject, req.body, { reply: noRespReplyTo });\n    });",
       "replace": "      opts.signal?.throwIfAborted();\n    });\n    nc.publish(req.subject, req.body, { reply: noRespReplyTo });",
       "afterRestore": "pnpm --filter @cotal-ai/core build",

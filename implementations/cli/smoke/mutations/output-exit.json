@@ -69,7 +69,7 @@
     {
       "name": "a connect refusal from a structured command is reported unknown",
       "file": "implementations/cli/src/command.ts",
-      "find": "      if (isConnectRefusal(e)) failureExit(cmd, e.failure(), json);\n",
+      "find": "      if (isConnectRefusal(e)) failureExit(cmd, inOperationSpace(e.failure(), scope.space), json, parsed.values.plain === true);\n",
       "replace": "",
       "expectRed": "a connect refusal from a structured command exits 2",
       "cell": "a connect refusal from a structured command exits 2"
@@ -85,7 +85,7 @@
     {
       "name": "a space catalog that stopped a structured command is reported unknown",
       "file": "implementations/cli/src/command.ts",
-      "find": "      if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure(\"refused\", e.code, e.message), json);\n",
+      "find": "      if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure(\"refused\", e.code, e.message), json, parsed.values.plain === true);\n",
       "replace": "",
       "expectRed": "a space catalog that stopped the command exits 2",
       "cell": "a space catalog that stopped the command exits 2"

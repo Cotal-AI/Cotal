@@ -3,7 +3,7 @@
   "mutations": [
     {
       "name": "PREDICTED KILLED (1 red) - the probe's deadline timer holds the event loop again, so a command whose gather has already finished waits out every LIVE instance's probe budget before it can exit - the 4.0s `cotal ps` regression, measured",
-      "file": "packages/core/src/endpoint-verbs.ts",
+      "file": "packages/core/src/endpoint-call.ts",
       "find": "      timer.unref?.();",
       "replace": "",
       "expectRed": "a probe with its whole budget still to run adds NOTHING to the resources keeping this process alive"

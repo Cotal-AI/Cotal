@@ -49,7 +49,7 @@
     },
     {
       "name": "the status watch is never released, leaking one listener per call",
-      "file": "packages/core/src/endpoint-verbs.ts",
+      "file": "packages/core/src/endpoint-call.ts",
       "find": "    denialWatch?.release();",
       "replace": "    void denialWatch;",
       "expectRed": "12 denied invokes leave the listener count where they found it",
