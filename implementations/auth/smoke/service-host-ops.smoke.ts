@@ -106,7 +106,7 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
     const r7 = await e.register(full);
     c.check("A7 (S-1, simulated row) 32 eligible entries for one owner refuse with zero writes", r7.state === "denied" && r7.reason === "resource-exhausted" && (await opRecord(f, full.requestId)) === null, r7);
     const capRev = (await f.auth.get("svccap.space"))!.revision;
-    await f.auth.update("svccap.space", bytesOf({ v: 1, kind: "service-proposal-capacity", pending: fill(256, Date.now() - 1, other) }), capRev);
+    await f.auth.update("svccap.space", bytesOf({ v: 1, kind: "service-proposal-capacity", pending: fill(256, Date.now() - 1).map((x, k) => ({ ...x, owner: `u_${String.fromCharCode(97 + (k % 26)).repeat(26)}` })) }), capRev);
     const r8 = await e.register(reg(f));
     const pruned = await f.value(f.auth, "svccap.space");
     c.check("A8 (S-12, simulated row) an all-expired 256-entry row is pruned and admission proceeds", r8.state === "registered" && (pruned?.pending as unknown[]).length === 1, { r8, n: (pruned?.pending as unknown[])?.length });
