@@ -444,10 +444,10 @@ function assertSessionStores(paths: readonly string[]): string[] {
     try {
       stat = statSync(resolved);
     } catch (error) {
-      throw new Error(`--session-store ${resolved} cannot be read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}); name the harness transcript store directory for this host`);
+      throw new CommandFailure("refused", "USAGE_INVALID", `--session-store ${resolved} cannot be read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message}); name the harness transcript store directory for this host`);
     }
     if (!stat.isDirectory())
-      throw new Error(`--session-store ${resolved} is not a directory; name the harness transcript store directory for this host`);
+      throw new CommandFailure("refused", "USAGE_INVALID", `--session-store ${resolved} is not a directory; name the harness transcript store directory for this host`);
     return resolved;
   });
 }
@@ -456,7 +456,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
   const root = cotalRoot();
   const matching = loadMeshes().filter((mesh) => mesh.root === root);
   if (matching.length !== 1)
-    throw new Error(`down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}`);
+    throw new CommandFailure("refused", matching.length ? "TARGET_AMBIGUOUS" : "TARGET_NOT_FOUND", `down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}, and nothing was stopped`, { target: { root, spaces: matching.map((mesh) => mesh.space) } });
   const mesh = matching[0];
   const storeDir = storeOverride ? resolveStore(storeOverride) : join(root, ".cotal", "nats");
   // The store cap the broker was started with travels with the store, so the resume re-renders it.
