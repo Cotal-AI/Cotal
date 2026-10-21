@@ -470,7 +470,7 @@ registry.register(
   const unavailableManifest = join(sandbox, "unavailable.yaml");
   writeFileSync(unavailableManifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: unavailable\nruntime: fixture-unavailable\nchannels: {}\n`);
   const unavailable = cotal(["up", "-f", unavailableManifest]);
-  ok("up -f rejects an unavailable extension runtime before starting the broker", unavailable.status === 1 && /not reachable/.test(unavailable.stderr) && !existsSync(join(sandbox, ".cotal", "nats.pid")), unavailable.stderr.slice(-400));
+  ok("up -f rejects an unavailable extension runtime before starting the broker", unavailable.status === 2 && /DEPENDENCY_UNAVAILABLE/.test(unavailable.stderr) && /not reachable/.test(unavailable.stderr) && !existsSync(join(sandbox, ".cotal", "nats.pid")), unavailable.stderr.slice(-400));
 
   mkdirSync(join(sandbox, ".cotal"), { recursive: true });
   const daemon = (childCode = "setInterval(() => {}, 1000)"): number => {

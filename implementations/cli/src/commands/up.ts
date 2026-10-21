@@ -2727,8 +2727,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // CLI and resolves the same installed package when `supervise --runtime <name>` starts.
   try { await preflightRuntime(runtime); }
   catch (error) {
-    if (opts.freshTeamBoot) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the requested runtime did not pass preflight; no fresh boot intent or broker was started", { target: { space: m.space, runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" });
-    throw error;
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the requested runtime did not pass preflight; ${opts.freshTeamBoot ? "no fresh boot intent or broker was started" : "no broker was started"}`, { target: { space: m.space, runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" });
   }
 
   // up -f never adopts a running broker. The old spawn -f route is no longer a manifest deploy.
