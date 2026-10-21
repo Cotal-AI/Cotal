@@ -1543,8 +1543,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // the refusal is printed with the reap route and the latch is released, so the stack keeps running
   // in the foreground; the operator ends it with `cotal down --with-agents` from another terminal,
   // and the broker-exit handler below already ends `up` when the broker goes.
-  // stopDelivery and stopAuthService are the stops `cotal down delivery` and `cotal down auth`
-  // perform (reservation, SIGKILL escalation); the rest of the teardown must run even if one fails —
+  // stopDelivery and stopAuthService are the stops bare `cotal down` performs for those daemons
+  // (reservation, SIGKILL escalation); the rest of the teardown must run even if one fails —
   // the failure is logged, never swallowed silently. Teardown is AWAITED before the broker is
   // signalled, so it never races a broker that is already going away.
   let stopping = false;
@@ -1625,7 +1625,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // it cannot reach the broker, and a starved host makes a running broker look unreachable, so it can
     // end while this broker serves on. Nothing else brings it back, and every static retirement then
     // fails on the ctl.delivery-admin rail and holds its name until an operator re-runs `cotal up`. A
-    // clean exit or SIGTERM/SIGINT is a deliberate stop (`cotal down delivery`) and stays stopped, and so
+    // clean exit or SIGTERM/SIGINT is a deliberate stop (`cotal down`) and stays stopped, and so
     // is the SIGKILL `down` escalates to when a starved daemon outlives its grace, also when either ends a
     // replacement this loop is still waiting on: that attempt then fails, and retrying it would undo the
     // stop. A failed attempt waits out the lease TTL, the longest a dead holder's lease blocks its

@@ -1,4 +1,4 @@
-import { readFileSync, rmSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
@@ -154,9 +154,15 @@ function previewWholeStack(args: ParsedArgs): void {
   let additiveRecords: ReturnType<typeof listLedgerFiles>, additiveAttempts: ReturnType<typeof listAdditiveTeamAttempts>;
   let bootAttempts: ReturnType<typeof listFreshTeamAttempts>, bootSummaries: ReturnType<typeof listFreshTeamSummaries>;
   let otherBrokerRegistrations: Array<{ space: string; root: string; origin: string }>;
+  // A root with no control directory, or with no stack registered at it, holds no stack. That is a
+  // plain miss, not records that could not be read.
+  const noStack = () => new CommandFailure("refused", "TARGET_NOT_FOUND", "there is no stack at this folder's root, so there is nothing to preview", { target, remedy: "run `cotal down --dry-run` from the folder where `cotal up` started the stack" });
   try {
+    try { lstatSync(join(root, ".cotal")); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") throw noStack(); throw error; }
     if (!realDirNoSymlink(root, ".cotal")) throw new Error("missing project control directory");
     const local = localMeshesForRoot(root), sole = local[0];
+    if (!local.length) throw noStack();
     if (local.length !== 1 || sole?.origin !== "up") throw new Error("no unique locally started stack at this root");
     const candidate = selectedSpace ? findMesh(selectedSpace) : sole;
     if (!candidate || candidate.origin !== "up" || candidate.space !== sole.space || canonicalRoot(candidate.root) !== root) throw new Error("space does not belong to the selected root");
@@ -392,14 +398,14 @@ export function processAlive(component: LocalProcess, context: LocalProcessConte
   return pid !== undefined && isAlive(pid);
 }
 
-/** Whether a component MIGHT still be running - the question the pre-stop `stopLast` guard must ask,
- *  and it fails CLOSED on uncertainty. A component with NO pidfile, an EMPTY husk, or a valid pid
- *  PROVEN dead (ESRCH) is not running. ANY other state - an unparsable/unattributable record, or a
- *  valid pid that is alive or whose liveness cannot be confirmed (`unknown`) - MIGHT be running, so
- *  it must BLOCK a stop-last (broker) shutdown. `processAlive` collapses unparsable and `unknown` to
- *  "not alive", which is fine for "is it worth stopping" but WRONG for "is it safe to stop the broker
- *  out from under this": that read would let `cotal down nats` orphan a live auth signer behind a
- *  torn pidfile. Only an ESRCH-confirmed death (or no record) clears a dependant. */
+/** Whether a component MIGHT still be running. It fails CLOSED on uncertainty. A component with NO
+ *  pidfile, an EMPTY husk, or a valid pid PROVEN dead (ESRCH) is not running. ANY other state - an
+ *  unparsable/unattributable record, or a valid pid that is alive or whose liveness cannot be
+ *  confirmed (`unknown`) - MIGHT be running. `down --preserve-state` asks it to fence an uncertain
+ *  delivery daemon, to treat an uncertain manager as alive, and to refuse to call a cut complete.
+ *  `processAlive` collapses unparsable and `unknown` to "not alive", which is fine for "is it worth
+ *  stopping" but WRONG for those questions: it would count a live auth signer behind a torn pidfile
+ *  as stopped. Only an ESRCH-confirmed death (or no record) clears a component. */
 export function mayBeRunning(component: LocalProcess, context: LocalProcessContext): boolean {
   const raw = readPidfile(localProcessPath(component.pidFile, context));
   if (!raw) return false; // no record, or an empty pre-protocol husk: no process behind it

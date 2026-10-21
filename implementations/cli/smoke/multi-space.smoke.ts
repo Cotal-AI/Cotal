@@ -713,11 +713,10 @@ try {
       (await stopLocalProcess(authComponent as never, dpCtx as never)) === true && !existsSync(marker) && !existsSync(dpPid));
   }
 
-  console.log("\n26) the PRE-STOP `stopLast` dependant guard fails CLOSED on an unattributable dependant (mayBeRunning)");
-  // `cotal down nats` (nats = stopLast) must NOT stop the broker while an unselected dependant (the
-  // auth signer) may be running - including behind a torn/unattributable pidfile. `processAlive`
-  // collapsed unparsable/unknown to "not running" and let `down nats` orphan a live signer; the
-  // guard now uses `mayBeRunning`, which fails closed on uncertainty.
+  console.log("\n26) mayBeRunning fails CLOSED on an unattributable record, and a named `down nats` leaves it alone");
+  // `mayBeRunning` is the liveness question `down --preserve-state` asks before it fences a daemon or
+  // calls a cut complete, so it must fail closed on a torn/unattributable pidfile. `processAlive`
+  // collapses unparsable/unknown to "not running", which would count a live auth signer as stopped.
   const { mayBeRunning, down: downCmd } = await import("../src/commands/down.js");
   const { resolveSpace: resolveDpSpace } = await import("../src/lib/status.js");
   const guardRoot = await makeRoot("stoplast", ["downtenant"]);
@@ -740,8 +739,7 @@ try {
   check("mayBeRunning: a LIVE pid ⇒ true", mayBeRunning(authComp as never, guardCtx as never) === true);
   // The REAL command path: `cotal down nats` is a named down, so a service stop. It resolves a saved
   // service definition and never a component's pidfile (docs/cli.md, `down`), so with none saved it
-  // refuses before any teardown and leaves the unattributable auth record as it was. The stop-last
-  // guard's predicate is the mayBeRunning contract checked directly above.
+  // refuses before any teardown and leaves the unattributable auth record as it was.
   const prevCwd26 = process.cwd();
   const prevExit = process.exitCode;
   process.chdir(guardRoot);
@@ -755,7 +753,7 @@ try {
     }
   } finally {
     process.chdir(prevCwd26);
-    process.exitCode = prevExit; // the guard throw never sets exitCode, but stay defensive
+    process.exitCode = prevExit; // the refusal never sets exitCode, but stay defensive
   }
 
   console.log("\n27) `doctor auth` on a multi-space root: loud refusal bare, actionable with --space, no false-healthy on a typo");

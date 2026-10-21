@@ -105,7 +105,7 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
 }
 
 // ── 2. a VALID dry run reaches the command body while writing nothing ─────────────────────────────
-// In an isolated sandbox there is no stack record, so the bare preview refuses CONFLICT, exit 2.
+// In an isolated sandbox there is no stack, so the bare preview refuses TARGET_NOT_FOUND, exit 2.
 // That is still the cell that matters here: the refusal comes from the command body, so reaching it
 // proves the boot gate was skipped for a well-formed dry run too, not merely for the one that fails
 // validation. The writes are asserted by the shared `cotal()` helper above.
@@ -114,7 +114,7 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   const out = `${r.stdout}${r.stderr}`;
   check(
     "a valid dry run reaches the command body",
-    r.status === 2 && /could not be inspected consistently; no stop target was inferred/.test(out),
+    r.status === 2 && /there is no stack at this folder's root, so there is nothing to preview/.test(out),
     { status: r.status, out: out.slice(0, 400) },
   );
   check(

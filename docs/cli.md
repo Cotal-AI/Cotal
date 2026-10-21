@@ -682,7 +682,9 @@ queries. Duplicate names and `--instance` with multiple names are usage errors. 
 `cotal service stop <manager-name> --instance <full-id> --with-agents`; it is never dropped.
 
 Bare `down --dry-run` reads local process records for one registered space at the current
-project root. Add `--space <name>` to confirm that exact space belongs to this root;
+project root. A root with no `.cotal/` directory, or with no stack registered at it, refuses
+`TARGET_NOT_FOUND`, exit 2, because there is no stack there to preview. Add `--space <name>` to
+confirm that exact space belongs to this root;
 `--json` and `--plain` produce a partial, finite inspection receipt. It lists pidfile
 liveness, readable additive deployment IDs, retained additive attempts and
 unreadable paths under this root, and saved service definitions, instance IDs, recorded states and

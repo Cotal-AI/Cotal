@@ -238,9 +238,9 @@ export const AUTH_PROCESS: LocalProcess = {
   visibleWhen: "user-auth",
 };
 
-/** Stop THIS space's auth service with the stop `cotal down auth` runs. Scoped by the space-carrying
- *  pidfile, never a root-global kill. Throws, with the record kept, when the stop is refused or the
- *  death is not confirmed. */
+/** Stop THIS space's auth service with the stop bare `cotal down` runs for it. Scoped by the
+ *  space-carrying pidfile, never a root-global kill. Throws, with the record kept, when the stop is
+ *  refused or the death is not confirmed. */
 export async function stopAuthService(space: string): Promise<void> {
   await stopLocalProcess(AUTH_PROCESS, { root: cotalRoot(), space });
 }
