@@ -232,8 +232,8 @@ const pidRecordsUnder = (root: string): boolean => readdirSync(join(root, ".cota
  *  remains at the top of its `.cotal`. The root still holds the broker configuration a start rendered
  *  there (`server-open.conf`, or `auth/server.conf` in auth mode) or a space prepared there. When the
  *  root names its space, none of that space's saved services runs either. Undefined when any of that
- *  is missing, so bare down refuses rather than guess. `nothingRunning` reads every other process
- *  record under the root before it answers. */
+ *  is missing, so bare down refuses rather than guess. `nothingRunning` reads every other record a
+ *  local-process descriptor names under the root, for any space, before it answers. */
 function stoppedLegacyStack(): { root: string; space?: string } | undefined {
   const root = canonicalRoot(cotalRoot());
   if (root === canonicalRoot(homedir()) || !realDirNoSymlink(root, ".cotal") || meshesForRoot(root).length || pidRecordsUnder(root)) return undefined;

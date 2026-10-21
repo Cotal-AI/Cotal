@@ -15,7 +15,7 @@ import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
 import {
   canonicalLocalProcessPath,
@@ -632,25 +632,53 @@ try {
   try {
     const nested: LocalProcess = { kind: "local-process", name: "nested-worker", label: "nested worker", pidFile: "daemon/worker.pid" };
     const suffixed: LocalProcess = { kind: "local-process", name: "record-worker", label: "record worker", pidFile: "worker.record" };
-    saveExtensionsManifest({ extensions: [{ pkg: "@example/workers", version: "0.0.0", spec: "@example/workers", commands: [], localProcesses: [cacheLocalProcess(nested), cacheLocalProcess(suffixed)] }] });
-    const workers = [nested, suffixed].map((descriptor) => {
+    const templated: LocalProcess = { kind: "local-process", name: "templated-worker", label: "templated worker", pidFile: "daemon/worker.{space}.record" };
+    saveExtensionsManifest({ extensions: [{ pkg: "@example/workers", version: "0.0.0", spec: "@example/workers", commands: [], localProcesses: [cacheLocalProcess(nested), cacheLocalProcess(suffixed), cacheLocalProcess(templated)] }] });
+    /** A live child of this suite, its pid written at `record`. */
+    const liveAt = (record: string) => {
       const child = spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000);"], { detached: true, stdio: "ignore" });
       spawnedChildren.push(child);   // <- before the record write, as in meshWithDashboard
       child.unref();
-      const record = join(stoppedRoot, ".cotal", descriptor.pidFile);
       mkdirSync(dirname(record), { recursive: true });
       writeFileSync(record, String(child.pid), { mode: 0o600 });
-      return { child, record };
-    });
+      return { child, record, path: relative(stoppedRoot, record) };
+    };
+    const recordsOf = (run: { error?: unknown }) => (run.error as { target?: { processes?: string[] } } | undefined)?.target?.processes ?? [];
+    const workers = [nested, suffixed].map((descriptor) => liveAt(join(stoppedRoot, ".cotal", descriptor.pidFile)));
     const recorded = await bareDownIn(stoppedRoot);
-    const listed = (recorded.error as { target?: { processes?: string[] } } | undefined)?.target?.processes ?? [];
-    check("a live process an installed extension records at a nested path or a non-.pid name keeps bare down from a no-op, points at cotal status, and stays running with its record",
-      recorded.error?.code === "LIFECYCLE_BLOCKED" && /cotal status/.test(recorded.error.remedy ?? "") && !/is not running/.test(recorded.out) &&
+    const listed = recordsOf(recorded);
+    check("a live process an installed extension records at a nested path or a non-.pid name keeps bare down from a no-op, names each record and pid in the message and remedy, and stays running with its record",
+      recorded.error?.code === "LIFECYCLE_BLOCKED" && !/is not running/.test(recorded.out) &&
         listed.some((row) => row.startsWith("nested-worker at .cotal/daemon/worker.pid")) && listed.some((row) => row.startsWith("record-worker at .cotal/worker.record")) &&
-        workers.every(({ child, record }) => alive(child.pid!) && existsSync(record)),
+        workers.every(({ child, record, path }) => (recorded.error?.message ?? "").includes(`at ${path} (pid ${child.pid})`) && (recorded.error?.remedy ?? "").includes(`pid ${child.pid} at ${path}`) && alive(child.pid!) && existsSync(record)),
       { ...recorded, listed });
     for (const { child } of workers) try { process.kill(child.pid!, "SIGTERM"); } catch { /* already gone */ }
     for (let i = 0; i < 100 && workers.some(({ child }) => alive(child.pid!)); i++) await sleep(50);
+    for (const { record } of workers) rmSync(record, { force: true });
+    // A `{space}` template's record of a space no manager or delivery record names is found by listing
+    // what the template names, and counts the same way. The same record under another root does not.
+    const other = liveAt(canonicalLocalProcessPath(templated.pidFile, { root: stoppedRoot, space: "other" }));
+    const foreign = liveAt(canonicalLocalProcessPath(templated.pidFile, { root: neverRoot, space: "other" }));
+    const otherDown = await bareDownIn(stoppedRoot);
+    const otherLine = `templated-worker at ${other.path} (pid ${other.child.pid})`;
+    check("a live record of a {space} extension template, for a space no manager or delivery record names, keeps bare down from a no-op and is named with its pid, and another root's record is not",
+      otherDown.error?.code === "LIFECYCLE_BLOCKED" && recordsOf(otherDown).join("\n") === otherLine && (otherDown.error.message ?? "").includes(otherLine) &&
+        (otherDown.error.remedy ?? "").includes(`pid ${other.child.pid} at ${other.path}`) && alive(other.child.pid!) && existsSync(other.record) && alive(foreign.child.pid!) && existsSync(foreign.record),
+      { ...otherDown, listed: recordsOf(otherDown) });
+    for (const { child } of [other, foreign]) try { process.kill(child.pid!, "SIGTERM"); } catch { /* already gone */ }
+    for (let i = 0; i < 100 && [other, foreign].some(({ child }) => alive(child.pid!)); i++) await sleep(50);
+    for (const { record } of [other, foreign]) rmSync(record, { force: true });
+    // A file the template matches whose space segment decodes through neither spelling still counts,
+    // listed as unattributable, whatever it holds.
+    const strayRecord = join(stoppedRoot, ".cotal", "daemon", "worker.no space.record");
+    writeFileSync(strayRecord, "", { mode: 0o600 });
+    const strayDown = await bareDownIn(stoppedRoot);
+    const strayPath = relative(stoppedRoot, strayRecord);
+    check("a record a {space} template matches whose space segment decodes to no space keeps bare down from a no-op, listed as unattributable",
+      strayDown.error?.code === "LIFECYCLE_BLOCKED" && recordsOf(strayDown).join("\n") === `templated-worker at ${strayPath} (unattributable record name)` &&
+        (strayDown.error.remedy ?? "").includes(strayPath) && existsSync(strayRecord),
+      { ...strayDown, listed: recordsOf(strayDown) });
+    rmSync(strayRecord);
   } finally {
     setInstalledExtensionsEnabled(false);
     if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;

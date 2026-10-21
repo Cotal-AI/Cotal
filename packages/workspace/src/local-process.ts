@@ -1,5 +1,5 @@
 import { readdirSync, rmSync } from "node:fs";
-import { isAbsolute, join, normalize, dirname, basename } from "node:path";
+import { isAbsolute, join, normalize, dirname, basename, sep } from "node:path";
 import type { Extension } from "@cotal-ai/core";
 import { spaceFromKey, spaceKey } from "./auth-paths.js";
 import { commandIsCotalDelivery, parsePid, probeLiveness, readPidfile } from "./pid.js";
@@ -147,6 +147,77 @@ export function localProcessPathCandidates(template: string, context: LocalProce
   const preSegmentation = PRE_SEGMENTATION_RUNTIME_RECORDS.get(template);
   if (preSegmentation !== undefined) add(preSegmentation);
   return paths;
+}
+
+/** A record {@link recordedLocalProcessPaths} found, with the space its `{space}` segment decodes to. */
+export interface SpacedRecordPath {
+  readonly path: string;
+  /** Absent when the segment decodes through neither spelling a writer used. */
+  readonly space?: string;
+  /** A directory the template reaches that exists but could not be listed: a record may sit in it. */
+  readonly unlisted?: true;
+}
+
+/**
+ * Every record under `<root>/.cotal` that a `{space}` template names for ANY space: the inverse of
+ * {@link localProcessPathCandidates}. It lists the directories the template's parts reach, byte-exact,
+ * instead of expanding a space already known, so a record of a space nothing else names is found.
+ * A segment decodes through the hex key first, then the pre-hex `encodeURIComponent` spelling; one
+ * that decodes through neither is still returned, with no space. The pre-segmentation root-scoped
+ * spelling names no space, and the candidates of any space already name it. Read only.
+ */
+export function recordedLocalProcessPaths(template: string, root: string): SpacedRecordPath[] {
+  const contained = normalize(template);
+  if (!template.includes("{space}") || isAbsolute(template) || contained === ".." || contained.startsWith(`..${sep}`))
+    throw new Error(`local-process template must name {space} and stay under .cotal: ${JSON.stringify(template)}`);
+  const parts = contained.split(sep);
+  const found: SpacedRecordPath[] = [];
+  const walk = (dir: string, at: number, segment: string | undefined): void => {
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") found.push({ path: dir, unlisted: true });
+      return;
+    }
+    for (const name of names) {
+      let bound = segment;
+      if (!parts[at].includes("{space}")) {
+        if (name !== parts[at]) continue;
+      } else {
+        bound = segmentIn(parts[at], name);
+        if (bound === undefined || (segment !== undefined && bound !== segment)) continue;
+      }
+      if (at < parts.length - 1) walk(join(dir, name), at + 1, bound);
+      else found.push({ path: join(dir, name), ...spaceOfSegment(bound!) });
+    }
+  };
+  walk(join(root, ".cotal"), 0, undefined);
+  return found;
+}
+
+/** The segment `name` binds to every `{space}` in one path part, or undefined when it does not fit. */
+function segmentIn(part: string, name: string): string | undefined {
+  const fixed = part.split("{space}");
+  const length = (name.length - fixed.join("").length) / (fixed.length - 1);
+  if (!Number.isInteger(length) || length < 0) return undefined;
+  const segment = name.slice(fixed[0].length, fixed[0].length + length);
+  return fixed.join(segment) === name ? segment : undefined;
+}
+
+/** The space a writer spelled as `segment`: the hex key, else the pre-hex encoding, else none. */
+function spaceOfSegment(segment: string): { space?: string } {
+  const space = spaceFromKey(segment);
+  if (space !== undefined) return { space };
+  try {
+    const decoded = decodeURIComponent(segment);
+    if (encodeURIComponent(decoded) !== segment) return {};
+    spaceKey(decoded); // throws for a name no space can have
+    return { space: decoded };
+  } catch {
+    return {}; // not a pre-hex spelling either
+  }
 }
 
 /**

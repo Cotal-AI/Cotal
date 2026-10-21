@@ -5,7 +5,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, admittedControllerRestore, canonicalRoot, decodeLocalJson, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, parsePid, probeLiveness, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedRuntimeSpaces, serviceOperationId, type ControllerStackView, stackJournalPath } from "@cotal-ai/workspace";
+import { CommandFailure, admittedControllerRestore, canonicalRoot, decodeLocalJson, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, parsePid, probeLiveness, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, stackJournalPath } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 
@@ -192,30 +192,41 @@ export function foreignLocalProcesses(root: string, space: string): string[] {
   return foreign;
 }
 
-/** Every local-process record under the root that may still front a process, whichever space or
- *  extension wrote it: each descriptor's every spelling, nested paths and other suffixes included,
- *  expanded for `spaces` and for every space the root's runtime records name. A live or unanswered
- *  pid, an unattributable record and one that cannot be read all count; only an empty or ESRCH-proven
- *  dead record does not. Read only: nothing is stopped, adopted or removed. */
-export function recordedProcessesUnder(root: string, spaces: readonly string[]): string[] {
-  const found: string[] = [];
-  let recorded: string[] = [];
-  try { recorded = recordedRuntimeSpaces(root).map((row) => row.space); }
-  catch { found.push(".cotal runtime records (unreadable)"); }
-  const surface = localProcessSurface(), seen = new Set<string>();
-  for (const space of new Set([...spaces, ...recorded]))
-    for (const component of surface)
-      for (const path of localProcessPathCandidates(component.pidFile, { root, space })) {
-        if (seen.has(path)) continue;
-        seen.add(path);
-        const at = `${component.name} at ${relative(root, path)}`;
-        let raw: string | undefined;
-        try { raw = readPidfile(path); } catch { found.push(`${at} (unreadable record)`); continue; }
-        if (!raw) continue;
-        const pid = parsePid(raw);
-        if (pid === undefined) found.push(`${at} (unattributable record)`);
-        else if (probeLiveness(pid) !== "dead") found.push(`${at} (pid ${pid})`);
-      }
+/** A record under a root that may still front a process: whose descriptor names it, its path
+ *  relative to the root, the pid it holds when one parses, and why it counts. */
+export interface RecordedProcess { readonly name: string; readonly path: string; readonly pid?: number; readonly note: string }
+
+/** How a refusal lists one record: `<name> at <path> (<note>)`. */
+export const recordedProcessLine = (row: RecordedProcess): string => `${row.name} at ${row.path} (${row.note})`;
+
+/** Every local-process record under the root that may still front a process. Each descriptor's
+ *  candidates are read for `spaces`, and a `{space}` template's records for any other space are
+ *  found by listing what it names under `.cotal`. A live or unanswered pid, an unattributable or
+ *  unreadable record, a record whose space segment decodes to no space and a directory that cannot
+ *  be listed all count; only an empty or ESRCH-proven dead record of a known space does not. Read
+ *  only: nothing is stopped, adopted or removed. */
+export function recordedProcessesUnder(root: string, spaces: readonly string[]): RecordedProcess[] {
+  const found: RecordedProcess[] = [], seen = new Set<string>();
+  const read = (name: string, path: string, attributed: boolean): void => {
+    if (seen.has(path)) return;
+    seen.add(path);
+    const at = { name, path: relative(root, path) };
+    let raw: string | undefined;
+    try { raw = readPidfile(path); } catch { found.push({ ...at, note: "unreadable record" }); return; }
+    if (raw === undefined) return; // removed since the listing
+    const pid = raw ? parsePid(raw) : undefined;
+    if (!attributed) found.push({ ...at, ...(pid === undefined ? {} : { pid }), note: pid === undefined ? "unattributable record name" : `unattributable record name, pid ${pid}` });
+    else if (raw && pid === undefined) found.push({ ...at, note: "unattributable record" });
+    else if (pid !== undefined && probeLiveness(pid) !== "dead") found.push({ ...at, pid, note: `pid ${pid}` });
+  };
+  for (const component of localProcessSurface()) {
+    for (const space of spaces) for (const path of localProcessPathCandidates(component.pidFile, { root, space })) read(component.name, path, true);
+    if (!component.pidFile.includes("{space}")) continue;
+    for (const match of recordedLocalProcessPaths(component.pidFile, root)) {
+      if (!match.unlisted) read(component.name, match.path, match.space !== undefined);
+      else if (!seen.has(match.path)) { seen.add(match.path); found.push({ name: component.name, path: relative(root, match.path), note: "directory could not be listed" }); }
+    }
+  }
   return found;
 }
 

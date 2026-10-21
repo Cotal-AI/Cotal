@@ -3,13 +3,13 @@
   "suite": [
     "implementations/cli/smoke/down-target.smoke.ts"
   ],
-  "guard": "a bare down of a legacy root whose stack is already stopped is a no-op in every presentation, and a root with no such evidence, a leftover process record, a live process an installed extension records deeper in .cotal or under another suffix, or two registrations still refuses with one next step",
+  "guard": "a bare down of a legacy root whose stack is already stopped is a no-op in every presentation, and a root with no such evidence, a leftover process record, a live process an installed extension records anywhere in .cotal or for any space, a record whose space segment decodes to no space, or two registrations still refuses with one next step",
   "command": "pnpm --filter @cotal-ai/cli... build > /dev/null && pnpm smoke:down-target",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-stopped-legacy.json",
   "why": [
     "A legacy root's own down removes its registration, so a second bare down used to refuse CONFLICT with no next step. The evidence that it is stopped is the broker configuration a start rendered there, or a space prepared there, with no registration and no process record left. Each mutation drops one part of that evidence or one answer, and the suite drives the in-process down from a planted root.",
     "Every build is scoped to the @cotal-ai/cli dependency closure, as in down-unowned-broker.json.",
-    "The no-op reads every installed local-process record, wherever under .cotal its descriptor puts it, so a process recorded at a nested path or under another suffix refuses it."
+    "The no-op reads every record a local-process descriptor names under the root: each descriptor's candidates for the root's space, and a {space} descriptor's records for any space, found by listing what its template names. A record at a nested path, under another suffix, for a space nothing else names, or whose space segment decodes to no space refuses it, and the refusal names each record and pid."
   ],
   "mutations": [
     {
@@ -69,10 +69,28 @@
     {
       "name": "the no-op reads only top-level .pid records",
       "file": "implementations/cli/src/lib/stack-journal.ts",
-      "find": "  const surface = localProcessSurface(), seen = new Set<string>();\n",
-      "replace": "  const surface = localProcessSurface().filter((component) => component.pidFile.endsWith(\".pid\") && !component.pidFile.includes(\"/\")), seen = new Set<string>();\n",
-      "expectRed": "a live process an installed extension records at a nested path or a non-.pid name keeps bare down from a no-op, points at cotal status, and stays running with its record",
-      "cell": "a live process an installed extension records at a nested path or a non-.pid name keeps bare down from a no-op, points at cotal status, and stays running with its record",
+      "find": "  for (const component of localProcessSurface()) {\n    for (const space of spaces) for (const path of localProcessPathCandidates(component.pidFile, { root, space })) read(component.name, path, true);\n",
+      "replace": "  for (const component of localProcessSurface().filter((component) => component.pidFile.endsWith(\".pid\") && !component.pidFile.includes(\"/\"))) {\n    for (const space of spaces) for (const path of localProcessPathCandidates(component.pidFile, { root, space })) read(component.name, path, true);\n",
+      "expectRed": "a live process an installed extension records at a nested path or a non-.pid name keeps bare down from a no-op, names each record and pid in the message and remedy, and stays running with its record",
+      "cell": "a live process an installed extension records at a nested path or a non-.pid name keeps bare down from a no-op, names each record and pid in the message and remedy, and stays running with its record",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "a {space} template is read only for the root's own space",
+      "file": "implementations/cli/src/lib/stack-journal.ts",
+      "find": "    if (!component.pidFile.includes(\"{space}\")) continue;\n",
+      "replace": "    if (component.pidFile) continue;\n",
+      "expectRed": "a live record of a {space} extension template, for a space no manager or delivery record names, keeps bare down from a no-op and is named with its pid, and another root's record is not",
+      "cell": "a live record of a {space} extension template, for a space no manager or delivery record names, keeps bare down from a no-op and is named with its pid, and another root's record is not",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "a record whose space segment decodes to no space is read as attributed",
+      "file": "implementations/cli/src/lib/stack-journal.ts",
+      "find": "      if (!match.unlisted) read(component.name, match.path, match.space !== undefined);\n",
+      "replace": "      if (!match.unlisted) read(component.name, match.path, true);\n",
+      "expectRed": "a record a {space} template matches whose space segment decodes to no space keeps bare down from a no-op, listed as unattributable",
+      "cell": "a record a {space} template matches whose space segment decodes to no space keeps bare down from a no-op, listed as unattributable",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
     }
   ]

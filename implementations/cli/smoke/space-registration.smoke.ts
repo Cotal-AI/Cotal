@@ -463,12 +463,25 @@ setCurrent("keep");
   standIns.push(otherManager);
   const otherRecord = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: fresh, space: "other" });
   writeFileSync(otherRecord, String(otherManager.pid), { mode: 0o600 });
+  const otherPath = join(".cotal", basename(otherRecord));
+  const otherLine = `manager at ${otherPath} (pid ${otherManager.pid})`;
+  // The text refusal shows the evidence without --json.
+  assertSmokeSandboxDown(sandbox, ["down"], { cwd: fresh, env: runEnv });
+  const otherText = await run(["down"], {}, fresh);
+  check("the text refusal names the other space's manager record and its pid",
+    otherText.status === 2 && otherText.stderr.includes(otherLine) && otherManager.exitCode === null && existsSync(otherRecord), shown(otherText));
+  // Following the printed next step: each pid it names sits at the path it names, and is the live
+  // process. Only the next step says "pid <n> at <path>".
+  const remedyChecks = [...otherText.stderr.matchAll(/pid (\d+) at (\S+?)[,;]/g)].map(([, pid, path]) => ({ pid, path }));
+  check("following the remedy reaches the recorded path, which holds the live pid it names",
+    remedyChecks.length === 1 && remedyChecks.every(({ pid, path }) => existsSync(join(fresh, path)) && readFileSync(join(fresh, path), "utf8").trim() === pid && pid === String(otherManager.pid)) &&
+      otherManager.exitCode === null && otherManager.signalCode === null, { stderr: otherText.stderr.slice(0, 700), remedyChecks });
   assertSmokeSandboxDown(sandbox, ["down", "--json"], { cwd: fresh, env: runEnv });
   const otherSpace = await json(["down"], fresh);
   const recorded: string[] = otherSpace.env?.target?.processes ?? [];
-  check("a live manager recorded for another space under the root keeps a second bare down from a no-op, points at cotal status, and stays running with its record",
-    refused(otherSpace, 2, "LIFECYCLE_BLOCKED") && (otherSpace.env?.error?.remedy ?? "").includes("cotal status") &&
-      recorded.includes(`manager at ${join(".cotal", basename(otherRecord))} (pid ${otherManager.pid})`) &&
+  check("a live manager recorded for another space under the root keeps a second bare down from a no-op, names the record and its pid in the remedy, and stays running with its record",
+    refused(otherSpace, 2, "LIFECYCLE_BLOCKED") && (otherSpace.env?.error?.remedy ?? "").includes(`pid ${otherManager.pid} at ${otherPath}`) &&
+      recorded.includes(otherLine) &&
       otherManager.exitCode === null && otherManager.signalCode === null && existsSync(otherRecord) && journalBytes() === stoppedJournal, shown(otherSpace));
   if (otherManager.exitCode === null && otherManager.signalCode === null) await new Promise((done) => { otherManager.once("exit", done); otherManager.kill("SIGKILL"); });
   rmSync(otherRecord);

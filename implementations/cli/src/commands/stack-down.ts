@@ -18,7 +18,7 @@ import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, stopProcessService } from "../lib/service-process.js";
-import { foreignLocalProcesses, newStackOperation, processGone, readStackJournal, recordedProcessesUnder, refuseControllerCut, stackMaintenanceFence, stackScopeRefusals, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, newStackOperation, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, stackMaintenanceFence, stackScopeRefusals, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -75,15 +75,24 @@ function alreadyStopped(journal: StackJournal, members: readonly Member[]): bool
 }
 
 /** A bare down of a stack that is not running stops nothing. It answers with a no-op and writes
- *  nothing, so it needs no --yes, and its preview shows the same. Before it says so it reads every
- *  process record under the root, for every space and extension. One that may still front a process
- *  refuses instead, and nothing is stopped, adopted or removed. A real --with-agents refuses too,
- *  because no running manager can stop the agents; its preview shows the no-op. The legacy route
- *  answers the same way. */
+ *  nothing, so it needs no --yes, and its preview shows the same. Before it says so it reads the
+ *  root's process records: every descriptor's for this stack's space, and a `{space}` descriptor's
+ *  for any space its records name. One that may still front a process refuses instead, naming each
+ *  record and its pid in the message and the remedy, because no command shows another space's
+ *  records; nothing is stopped, adopted or removed. A real --with-agents refuses too, because no
+ *  running manager can stop the agents; its preview shows the no-op. The legacy route answers the
+ *  same way. */
 export function nothingRunning(presentation: Presentation, target: { root: string; space?: string; server?: string }, withAgents: boolean): void {
   // A root that names no space resolves to the default one, as `resolveSpace` answers.
   const remaining = recordedProcessesUnder(target.root, [target.space ?? DEFAULT_SPACE]);
-  if (remaining.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a process recorded under this root may still run, so bare down did not report the stack stopped; nothing was stopped, adopted or removed", { target: { ...target, processes: remaining }, remedy: "run `cotal status` here to see what this folder records" });
+  if (remaining.length) {
+    const lines = remaining.map(recordedProcessLine);
+    const checks = remaining.map((row) => row.pid === undefined ? row.path : `pid ${row.pid} at ${row.path}`);
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `recorded processes under this root may still run (${lines.join("; ")}), so bare down did not report the stack stopped; nothing was stopped, adopted or removed`, {
+      target: { ...target, processes: lines },
+      remedy: `check ${checks.join(", ")}; stop each process where it was started, or remove a record whose process is gone, then run \`cotal down\` again`,
+    });
+  }
   if (withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's running manager, and this folder's stack is not running; nothing was stopped", { target, remedy: "start it with `cotal up`, then run `cotal down --with-agents`" });
   writeResult(presentation, { command: "down", target, result: { kind: "stack-not-running", ...target }, noOp: true }, () => ({ sections: [
     { title: `The stack in ${target.root} is not running`, blocks: [{ kind: "lines", lines: ["Nothing was stopped."] }] },

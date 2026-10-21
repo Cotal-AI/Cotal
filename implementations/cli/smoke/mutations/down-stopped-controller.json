@@ -2,13 +2,13 @@
   "suite": [
     "implementations/cli/smoke/space-registration.smoke.ts"
   ],
-  "guard": "a second bare down of a controller stack its own down stopped is a no-op without --yes that writes nothing, in every presentation, unless a process recorded under its root for another space may still run, and a running stack's missing --yes refusal is one line and its remedy",
+  "guard": "a second bare down of a controller stack its own down stopped is a no-op without --yes that writes nothing, in every presentation, unless a process recorded under its root for another space may still run, which it refuses naming the record, its path and pid in the text and the next step; and a running stack's missing --yes refusal is one line and its remedy",
   "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/space-registration.smoke.ts",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-stopped-controller.json",
   "why": [
     "A second bare down of a stopped controller stack used to refuse for --yes and print the whole usage text, although nothing would stop. The suite drives the built binary through a prepared root's up, down and second down, so each mutation rebuilds it and the restore rebuilds it back.",
-    "The no-op reads every process record under the root, so a live manager another space recorded there refuses it. The suite plants that record over a process of its own."
+    "The no-op reads every record a local-process descriptor names under the root, for any space a record name holds, so a live manager another space recorded there refuses it. The suite plants that record over a process of its own, checks the text refusal names it, and follows the printed next step to the record and its live pid."
   ],
   "mutations": [
     {
@@ -32,10 +32,28 @@
     {
       "name": "the no-op reads only the stack's own space",
       "file": "implementations/cli/src/lib/stack-journal.ts",
-      "find": "  try { recorded = recordedRuntimeSpaces(root).map((row) => row.space); }\n",
-      "replace": "  try { recorded = []; }\n",
-      "expectRed": "a live manager recorded for another space under the root keeps a second bare down from a no-op, points at cotal status, and stays running with its record",
-      "cell": "a live manager recorded for another space under the root keeps a second bare down from a no-op, points at cotal status, and stays running with its record",
+      "find": "    if (!component.pidFile.includes(\"{space}\")) continue;\n",
+      "replace": "    if (component.pidFile) continue;\n",
+      "expectRed": "the text refusal names the other space's manager record and its pid",
+      "cell": "the text refusal names the other space's manager record and its pid",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the refusal drops the records it found from its message",
+      "file": "implementations/cli/src/commands/stack-down.ts",
+      "find": "`recorded processes under this root may still run (${lines.join(\"; \")}), so bare down",
+      "replace": "`recorded processes under this root may still run, so bare down",
+      "expectRed": "the text refusal names the other space's manager record and its pid",
+      "cell": "the text refusal names the other space's manager record and its pid",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the next step names the record paths without their pids",
+      "file": "implementations/cli/src/commands/stack-down.ts",
+      "find": "    const checks = remaining.map((row) => row.pid === undefined ? row.path : `pid ${row.pid} at ${row.path}`);\n",
+      "replace": "    const checks = remaining.map((row) => row.path);\n",
+      "expectRed": "following the remedy reaches the recorded path, which holds the live pid it names",
+      "cell": "following the remedy reaches the recorded path, which holds the live pid it names",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]

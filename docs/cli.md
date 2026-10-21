@@ -749,11 +749,13 @@ and the root still holds the broker configuration a start rendered there or a sp
 Without that evidence a legacy root still refuses, with one next step: `TARGET_NOT_FOUND` when
 nothing shows a stack there, and `CONFLICT` when several registrations name the root or a process
 record remains that no registration explains. Before either kind of root reports the no-op, `down`
-reads every local-process record under the root, for the stack's space and for every space the
-root's manager and delivery records name. That includes an installed extension's records, at any
-path and name under `.cotal`. A record whose process runs, whose liveness the kernel does not
-answer, or that cannot be read or attributed refuses `LIFECYCLE_BLOCKED` and names `cotal status`.
-That refusal stops, adopts and removes nothing. `--with-agents` on a stopped stack refuses
+reads every record a local-process descriptor names under the root, an installed extension's
+included, at any path and name under `.cotal`. A descriptor whose record name holds a space is read
+for every space its files under the root name, as well as the stack's own. A record whose process
+runs, whose liveness the kernel does not answer, or that cannot be read or attributed refuses
+`LIFECYCLE_BLOCKED`, and so does a file whose space part decodes to no space. The refusal lists each
+record by name, path under the root and pid, and its next step names the pids and paths to check.
+It stops, adopts and removes nothing. `--with-agents` on a stopped stack refuses
 `LIFECYCLE_BLOCKED`, because no running manager can stop the agents; start the stack first. Its
 preview, `cotal down --dry-run --with-agents`, shows the no-op.
 
