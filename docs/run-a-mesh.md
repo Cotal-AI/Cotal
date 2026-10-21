@@ -319,7 +319,8 @@ nothing about the other host.
 
 A legacy stack has no command that stops one of its parts without tearing down the mesh. A named
 `cotal down <name>` stops a saved service definition, such as a controller stack's `stack-manager`
-or a `web` service, and never one legacy component. Bare `cotal down` stops the whole stack and
+or a `web` service, and never one legacy component. Bare `cotal down` stops the whole stack, on a
+legacy root after first stopping the space's running services through the service controller, and
 leaves managed agents running as unmanaged OS processes, except pty seats, which stop with the
 manager. `cotal down --with-agents` is the previous reap. If a pinned manager has no
 spare-capability record, stop its managed agents explicitly before running that whole-stack

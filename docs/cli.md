@@ -700,7 +700,9 @@ unreadable paths under this root, and saved service definitions, instance IDs, r
 hosts, supervisor receipts, and retained install, uninstall and unit-action
 attempts in the selected space's workstation store. Saved records are not attributed to this project root, and their recorded
 states do not prove live process or supervisor status. A submitted native attempt may have
-changed state; the preview neither reconciles nor retries it. Other local registrations with
+changed state; the preview neither reconciles nor retries it. For each saved service instance it
+also shows what bare `down` would do with it: stop it, skip it as already stopped, or refuse, with
+the reason. That plan observes processes on this host and changes nothing. Other local registrations with
 the exact recorded broker address appear as possible sharing. No match does not exclude
 address aliases, remote tenants or live attachments. The preview does not establish process
 ownership, the complete service set, exclusive broker use or agent impact.
@@ -726,9 +728,8 @@ no `--yes`, so `cotal down --yes` there is refused and stops nothing; run `cotal
 Before a retained bare apply
 reaches its pidfile sweep, it now requires one locally started registration under
 a real isolated project root and refuses pending maintenance transitions, any valid or
-unreadable additive ledger or attempt under that root, any other local registration at
-the exact recorded broker address, or any selected-space service instance,
-supervisor receipt or native attempt. These are known-blocker
+unreadable additive ledger or attempt under that root, or any other local registration at
+the exact recorded broker address. These are known-blocker
 checks, not a complete live broker-sharing or stop plan; aliases, remote tenants,
 agent impact and process identity remain unproved. These paths do not check full
 whole-stack target ownership, set exclusion, confirmed agent impact or schema
@@ -738,6 +739,17 @@ maintenance lock, without adopting its effects into the preserved set.
 A validated completed restore in `active` for the registered space does not block ordinary
 bare `down`. The other root, ownership, sharing and native process guards still apply, and
 stopping leaves the restore journal and fallback store unchanged.
+
+After those checks, a retained bare apply stops the selected space's service instances before its
+pidfile sweep. Each goes through the service controller with the checks and receipt of
+`cotal service stop <name> --instance <id> --yes`, and saved definitions stay. An instance whose
+process is already gone is skipped. Every instance is checked before the first stop, and one that
+cannot be verified refuses with no service stopped and the broker still running. An unreadable
+service record keeps the code of its read refusal. A retained native attempt, an unsettled request,
+a process that cannot be observed, or a record from another host, which bare `down` does not touch,
+refuses `LIFECYCLE_BLOCKED`, exit 2. The remedy names that service and the command to run. A stop that does not confirm ends the sequence with the
+stack still running, and completed stops are not rolled back. `--with-agents` refuses when a
+service would be stopped, because the legacy reap does not reach a service's agents.
 
 
 ```bash
