@@ -350,13 +350,62 @@ async function completionOut(positionals: string[]): Promise<string> {
   const { EpEnvelopeError } = await import("@cotal-ai/core");
   const { endpointFailure, withPairedCallerRemedy } = await import("../src/lib/endpoint-errors.js");
   const denied = endpointFailure(new EpEnvelopeError("permission-denied", "refused by the broker", undefined, "not-executed"), { space: "s" }, true);
-  const named = withPairedCallerRemedy(denied, "com.example.reviews");
+  const named = withPairedCallerRemedy(denied, "com.example.reviews", { space: "s" });
   assert.equal(`${named.outcome}/${named.code}`, "refused/PERMISSION_DENIED", "naming a paired caller keeps the refusal");
-  assert.equal(named.remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --out <private-file>, then rerun with --creds <private-file>", "a refused call to another endpoint names the caller file that makes it");
+  assert.equal(named.remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --space s --out <private-file>, then rerun with --creds <private-file>", "a refused call to another endpoint names the caller file that makes it");
   assert.deepEqual([named.native, named.target], [denied.native, denied.target], "the remedy keeps the native cause and the target");
-  assert.equal(withPairedCallerRemedy(denied, "manager").remedy, undefined, "a refused manager call names no caller file, because the operator instrument already requests the manager");
+  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://127.0.0.1:4333" }).remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --space s --server nats://127.0.0.1:4333 --out <private-file>, then rerun with --creds <private-file>", "the caller remedy keeps the --server the call was given");
+  assert.equal(withPairedCallerRemedy(denied, "com.example.reviews", { space: "s", server: "nats://h:1 o'k" }).remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --space s --server 'nats://h:1 o'\\''k' --out <private-file>, then rerun with --creds <private-file>", "a server a shell would split is quoted in the caller remedy");
+  assert.equal(withPairedCallerRemedy(denied, "manager", { space: "s" }).remedy, undefined, "a refused manager call names no caller file, because the operator instrument already requests the manager");
   const unknown = endpointFailure(new Error("lost"), { space: "s" }, true);
-  assert.equal(withPairedCallerRemedy(unknown, "com.example.reviews"), unknown, "only a refusal gains the caller-file remedy");
+  assert.equal(withPairedCallerRemedy(unknown, "com.example.reviews", { space: "s" }), unknown, "only a refusal gains the caller-file remedy");
+}
+
+// --- the caller remedy names the space the refused call resolved, not the current one -------------
+// `endpoint invoke` reaches this refusal only after a static-auth broker answers and a served
+// endpoint is described, so this cell runs without either: it takes the space from the selection
+// the invocation makes, builds the remedy with the arguments `invokeCmd` passes, and reads the
+// remedy's flags back through the resolver `auth mint` runs.
+{
+  const { EpEnvelopeError } = await import("@cotal-ai/core");
+  const { recordMesh, setCurrent } = await import("@cotal-ai/workspace");
+  const { endpointFailure, withPairedCallerRemedy } = await import("../src/lib/endpoint-errors.js");
+  const { resolveEndpointSelection } = await import("../src/lib/endpoint-selection.js");
+  const { resolveMintTarget } = await import("../src/lib/credential-authority.js");
+  const priorHome = process.env.COTAL_HOME, cwd = process.cwd();
+  const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "cotal-caller-space-")));
+  const servers = { alpha: "nats://127.0.0.1:4301", beta: "nats://127.0.0.1:4302" } as const;
+  process.env.COTAL_HOME = join(sandbox, "home");
+  try {
+    for (const space of ["alpha", "beta"] as const) {
+      mkdirSync(join(sandbox, space, ".cotal"), { recursive: true });
+      recordMesh({ space, server: servers[space], root: join(sandbox, space), mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+    }
+    setCurrent("alpha");
+    mkdirSync(join(sandbox, "elsewhere"));
+    process.chdir(join(sandbox, "elsewhere"));
+    // The flags of the remedy a refused `endpoint invoke ep:com.example.reviews <command>` names.
+    const remedyFor = (values: { space?: string; server?: string }) => {
+      const selection = resolveEndpointSelection("ep:com.example.reviews", values);
+      const denied = endpointFailure(new EpEnvelopeError("permission-denied", "refused by the broker", undefined, "not-executed"), { space: selection.space, endpoint: selection.endpoint }, true);
+      const remedy = withPairedCallerRemedy(denied, selection.endpoint, { space: selection.space, ...(values.server === undefined ? {} : { server: values.server }) }).remedy ?? "";
+      return (name: "space" | "server") => new RegExp(` --${name} (\\S+)`, "u").exec(remedy)?.[1];
+    };
+    const requested = remedyFor({ space: "beta" });
+    assert.equal(requested("space"), "beta", "the caller remedy names the space the refused call resolved, not the current one");
+    const minted = resolveMintTarget({ space: requested("space") ?? "" });
+    assert.deepEqual([minted.space, minted.root, minted.server], ["beta", join(sandbox, "beta"), servers.beta], "auth mint with the remedy's --space resolves the refused call's root and broker");
+    assert.equal(resolveMintTarget({}).space, "alpha", "control: auth mint without --space resolves the current space, which did not refuse");
+    const overServer = remedyFor({ space: "beta", server: servers.beta });
+    assert.deepEqual([overServer("space"), overServer("server")], ["beta", servers.beta], "the caller remedy keeps the --server the refused call was given");
+    const mintedOver = resolveMintTarget({ space: overServer("space") ?? "", server: overServer("server") ?? "" });
+    assert.deepEqual([mintedOver.root, mintedOver.server], [join(sandbox, "beta"), servers.beta], "auth mint with the remedy's --space and --server resolves the refused call's root and broker");
+  } finally {
+    process.chdir(cwd);
+    if (priorHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = priorHome;
+    rmSync(sandbox, { recursive: true, force: true });
+  }
 }
 
 // --- endpoint init's Next is the check command for the contract it created ------------------------

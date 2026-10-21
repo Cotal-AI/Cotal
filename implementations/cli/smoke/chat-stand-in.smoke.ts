@@ -4,7 +4,8 @@
  * SCOPE, stated honestly: sections 1 and 2 drive the `--plain` and `--stdio` front ends over a
  * recording stand-in typed as an admitted session, which answers `identity`, `subscribe`,
  * `surfaced` and `close` and nothing else. Section 3 builds the real native session over a
- * recording stand-in endpoint. Neither stand-in is an admitted session or a native endpoint, and
+ * recording stand-in endpoint, and section 4 sends a DM through it from the views' `@` target and
+ * from a `--stdio` `dm` request. Neither stand-in is an admitted session or a native endpoint, and
  * this suite never claims to test the native endpoint: it proves only what the front ends and the
  * session's own checks do with what a stand-in reports. It pins:
  *   - `--plain` prints the close summary once, after `/quit` and after end of input;
@@ -13,7 +14,9 @@
  *     exits with that close's status (`requested` is 4), not the closed-pipe exit 0. This part runs
  *     this file again as a child process and closes its stdout pipe for real;
  *   - the native session refuses a send, join or channel mode outside its grant without calling the
- *     endpoint, and still reaches the endpoint for a granted channel.
+ *     endpoint, and still reaches the endpoint for a granted channel;
+ *   - a typed DM target that parses as a principal is sent to that principal, absent and unheard,
+ *     and the present peer whose display name spells it receives nothing.
  * Admission, retirement, delivery and every broker behavior are NOT covered here.
  *
  * Run: pnpm smoke:chat-stand-in
@@ -23,10 +26,13 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import type { CotalEndpoint } from "@cotal-ai/core";
+import { publish } from "../src/chat/controller.js";
 import { loadChatFrontEnd } from "../src/chat/frontend.js";
 import { NativeChatSession } from "../src/chat/native-session.js";
+import { parseRecipient } from "../src/chat/picker.js";
 import { runPlain } from "../src/chat/plain.js";
 import type { AdmittedChatSession, CloseReport, SessionEvent, SessionIdentity } from "../src/chat/session.js";
+import { dispatch, parseRequestLine } from "../src/chat/stdio.js";
 import { closeSummary } from "../src/chat/view.js";
 import { closeExitCode } from "../src/commands/chat.js";
 import { stdoutError } from "../src/lib/stdout-owner.js";
@@ -134,6 +140,30 @@ if (mode === "plain" || mode === "stdio") {
     const ok = await general.join("general");
     const stored = await general.send("hi", "general", []);
     check("a granted join and send reach the endpoint", ok.outcome === "ok" && stored.outcome === "stored" && calls.join() === "joinChannel,getChannelConfig,multicast", { ok, stored, calls });
+  }
+
+  console.log("4. a typed principal reaches that principal, never a peer whose display name spells it");
+  {
+    // u_z.alice is not on the roster and this session never heard from it. The present peer
+    // u_d.mallory carries it as its display name.
+    const sent: string[] = [];
+    const endpoint = {
+      on: () => {}, off: () => {},
+      getRoster: () => [{ card: { id: "u_d.mallory", name: "u_z.alice", kind: "agent" }, status: "idle", ts: 0 }],
+      presenceView: () => ({ state: "current" }),
+      unicastAttributed: async (to: string) => { sent.push(to); return { msg: { id: `d${sent.length}` }, ack: { seq: sent.length, duplicate: false } }; },
+    } as unknown as CotalEndpoint;
+    const session = new NativeChatSession({ endpoint, identity, retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }) });
+    const typed = parseRecipient("@u_z.alice");
+    const viaView = typed.ok ? await publish(session, typed.recipient, "for alice") : undefined;
+    check("an @ target that parses as a principal is sent to that principal, absent and unheard",
+      viaView?.outcome === "stored" && viaView.recipient?.id === "u_z.alice" && sent.join() === "u_z.alice", { typed, viaView, sent });
+    const line = parseRequestLine(JSON.stringify({ schemaVersion: 1, type: "dm", id: "d1", to: "u_z.alice", text: "for alice" }));
+    const viaStdio = line.ok ? (await dispatch(session, line.request)).record : undefined;
+    const stdioRecipient = (viaStdio?.result as { recipient?: { id?: string } } | undefined)?.recipient;
+    check("a --stdio dm whose to parses as a principal is sent to that principal, absent and unheard",
+      viaStdio?.outcome === "stored" && stdioRecipient?.id === "u_z.alice" && sent.join() === "u_z.alice,u_z.alice", { line, viaStdio, sent });
+    check("the peer whose display name spells the principal received nothing", !sent.includes("u_d.mallory"), sent);
   }
 
   finish();

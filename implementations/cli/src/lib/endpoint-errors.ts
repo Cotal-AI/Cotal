@@ -21,13 +21,19 @@ export function endpointFailure(error: unknown, target: Record<string, unknown>,
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", "the invocation outcome is not confirmed; no blind retry was made", { target, native, remedy: "inspect the original endpoint and request before another invocation" });
 }
 
+/** `value` as one POSIX shell word, quoted when a shell would split or expand it. */
+const shellWord = (value: string): string => /^[A-Za-z0-9_./:+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+
 /** The operator instrument holds request rows for the manager endpoint only, so the broker refuses
  *  its call to any other endpoint before execution. A paired caller file for that endpoint can make
- *  the call, and the refusal names how to issue one. */
-export function withPairedCallerRemedy(failure: CommandFailure, endpoint: string): CommandFailure {
+ *  the call, and the refusal names how to issue one. The issuance names the space the call resolved
+ *  and any `--server` it was given, so `auth mint` resolves the same registered root and signer
+ *  rather than the current selection. */
+export function withPairedCallerRemedy(failure: CommandFailure, endpoint: string, target: { space: string; server?: string }): CommandFailure {
   if (failure.code !== "PERMISSION_DENIED" || failure.remedy !== undefined || endpoint === BASELINE_LIFECYCLE_ENDPOINT) return failure;
+  const server = target.server === undefined ? "" : ` --server ${shellWord(target.server)}`;
   return new CommandFailure(failure.outcome, failure.code, failure.message, {
     target: failure.target, ...(failure.native ? { native: failure.native } : {}), ...(failure.changed ? { changed: failure.changed } : {}),
-    remedy: `issue a caller for ${endpoint} with cotal auth mint <name> --endpoint ${endpoint} --out <private-file>, then rerun with --creds <private-file>`,
+    remedy: `issue a caller for ${endpoint} with cotal auth mint <name> --endpoint ${endpoint} --space ${shellWord(target.space)}${server} --out <private-file>, then rerun with --creds <private-file>`,
   });
 }

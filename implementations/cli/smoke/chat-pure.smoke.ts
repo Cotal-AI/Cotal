@@ -365,6 +365,11 @@ const task = msg({ id: "t1", kind: "anycast", service: "reviewer", from: { id: "
   check("a heard sender's principal resolves to that sender", !("outcome" in exact) && exact.id === "u_a.alice" && exact.name === "alice", exact);
   const named = resolveDmTarget("u_a.alice", [...roster, presence("u_d.mallory", "u_a.alice")], "current", engine, identity.principal);
   check("a present peer whose display name is a heard principal does not capture that principal", !("outcome" in named) && named.id === "u_a.alice", named);
+  const unheard = resolveDmTarget("u_z.alice", [...roster, presence("u_d.mallory", "u_z.alice")], "current", heard(), identity.principal);
+  check("a typed principal absent from the roster and never heard goes to that principal, not to a peer whose display name spells it",
+    !("outcome" in unheard) && unheard.id === "u_z.alice" && unheard.name === "u_z.alice", unheard);
+  const typedSelf = resolveDmTarget(identity.principal, roster, "current", engine, identity.principal);
+  check("a typed target that is this session's principal refuses as usage, as the exact target does", "outcome" in typedSelf && typedSelf.code === "USAGE_INVALID", typedSelf);
   const bob = resolveDmTarget("bob", roster, "current", engine, identity.principal);
   check("a name one principal carries still resolves", !("outcome" in bob) && bob.id === "o.bob", bob);
   const went = resolveDmTarget("alice", [presence("u_c.alice", "alice"), presence("u_a.alice", "alice", "offline")], "current", engine, identity.principal);

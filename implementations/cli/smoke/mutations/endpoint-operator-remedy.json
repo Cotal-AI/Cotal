@@ -2,11 +2,12 @@
   "suite": [
     "implementations/cli/smoke/command-kernel.smoke.ts"
   ],
-  "guard": "a refused operator call to an endpoint other than the manager names the paired caller file that makes it, and endpoint init's Next names the contract it created, quoted for a shell",
+  "guard": "a refused operator call to an endpoint other than the manager names the paired caller file that makes it, issued for the space the call resolved and any --server it was given, and endpoint init's Next names the contract it created, quoted for a shell",
   "command": "pnpm smoke:cli-kernel",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/endpoint-operator-remedy.json",
   "why": [
     "The operator instrument holds request rows for the manager only, so the broker refuses its call to any other endpoint. A refusal with no next step leaves the operator holding a credential whose whoami reads capabilities: all.",
+    "An auth mint resolves its own target, so an issuance without --space signs for the current space rather than the one that refused. The remedy carries the resolved space and an explicit --server, each quoted for a shell when it needs to be.",
     "The init scaffold knows the directory it created, so a placeholder in its Next is a step the operator has to rewrite by hand.",
     "The suite imports the CLI source and runs endpoint init in process, so no mutation needs a build."
   ],
@@ -26,6 +27,30 @@
       "replace": "endpoint === `${BASELINE_LIFECYCLE_ENDPOINT}.`) return failure;",
       "expectRed": "a refused manager call names no caller file, because the operator instrument already requests the manager",
       "cell": "a refused manager call names no caller file, because the operator instrument already requests the manager"
+    },
+    {
+      "name": "the caller remedy drops the resolved space",
+      "file": "implementations/cli/src/lib/endpoint-errors.ts",
+      "find": " --space ${shellWord(target.space)}${server} --out <private-file>",
+      "replace": "${server} --out <private-file>",
+      "expectRed": "a refused call to another endpoint names the caller file that makes it",
+      "cell": "a refused call to another endpoint names the caller file that makes it"
+    },
+    {
+      "name": "the caller remedy drops an explicit --server",
+      "file": "implementations/cli/src/lib/endpoint-errors.ts",
+      "find": "  const server = target.server === undefined ? \"\" : ` --server ${shellWord(target.server)}`;",
+      "replace": "  const server = \"\";",
+      "expectRed": "the caller remedy keeps the --server the call was given",
+      "cell": "the caller remedy keeps the --server the call was given"
+    },
+    {
+      "name": "the caller remedy does not quote a server",
+      "file": "implementations/cli/src/lib/endpoint-errors.ts",
+      "find": "const shellWord = (value: string): string => /^[A-Za-z0-9_./:+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\\\''`)}'`;",
+      "replace": "const shellWord = (value: string): string => value;",
+      "expectRed": "a server a shell would split is quoted in the caller remedy",
+      "cell": "a server a shell would split is quoted in the caller remedy"
     },
     {
       "name": "endpoint init prints the directory placeholder",

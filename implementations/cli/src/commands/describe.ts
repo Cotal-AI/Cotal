@@ -195,7 +195,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     }
   } catch (error) {
     const refused = endpointFailure(error, { ...target, accepted: accepted ?? null }, mayHaveInvoked);
-    const failure = pairedCaller && mayHaveInvoked ? withPairedCallerRemedy(refused, endpoint) : refused;
+    const failure = pairedCaller && mayHaveInvoked ? withPairedCallerRemedy(refused, endpoint, { space: selection.space, ...(values.server === undefined ? {} : { server: values.server }) }) : refused;
     if (streamStarted) {
       writeStreamRecord(streamRecord("goal", "error", target, { outcome: failure.outcome, error: failure.detail(), accepted: accepted ?? null }));
       writeStreamRecord(streamRecord("goal", "end", target, { reason: interrupted ?? "observation-ended", outcome: failure.outcome, accepted: accepted ?? null, actionUnaffectedByViewClose: true }));

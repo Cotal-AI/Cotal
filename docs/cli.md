@@ -2427,8 +2427,9 @@ reach needs the `admin` scope). An open mesh has no service registry.
 On a static-auth root the operator's own credential sends requests to the manager endpoint only, so
 the broker refuses its `invoke` of any other endpoint before the call runs. When the call and the
 endpoint's whole command surface are untargeted synchronous ephemeral commands, the refusal names
-`cotal auth mint <name> --endpoint <endpoint> --out <private-file>`. Run the same `invoke` again
-with `--creds <private-file>`. An `invoke --on <instance>` of another endpoint is refused the same
+`cotal auth mint <name> --endpoint <endpoint> --space <space> --out <private-file>`, with the space
+the call resolved and the `--server` it was given, if any, so the caller is issued for the space that
+refused even when another space is current. Run the same `invoke` again with `--creds <private-file>`. An `invoke --on <instance>` of another endpoint is refused the same
 way and names no remedy: with `--on` the operator's credential still carries manager rows only, and
 a paired caller file takes no instance pin.
 
@@ -3291,8 +3292,11 @@ and with its principal when another principal in the session carries the same na
 `--plain` cannot relabel a line it already printed, so it prints one line naming those principals
 when a name becomes shared. A typed `@<name>` must name one principal among the present peers and
 the senders the session heard from. A name that more than one of them carries refuses and lists
-them, so type `@<owner>.<actor>` instead. A principal typed in full goes to that principal even when
-a peer's display name matches it. A `--stdio` `dm` request resolves its `to` the same way.
+them, so type `@<owner>.<actor>` instead. A target that parses as `<owner>.<actor>` goes to that
+principal whether or not it is present or was heard from, and is never matched against display
+names. A peer whose display name parses as a principal therefore cannot be reached by that name;
+`/reply` and its full principal still reach it. Typing the session's own principal refuses with
+`USAGE_INVALID`. A `--stdio` `dm` request resolves its `to` the same way.
 
 Every admission presents the session as an endpoint, so `--kind endpoint` is accepted and changes
 nothing. `--kind agent` refuses with exit 1 because a chat session never presents as an agent, and
@@ -3323,9 +3327,12 @@ when the outcome is unknown and 5 when it failed.
 stdin carries requests and stdout carries records, one JSON object per line, in UTF-8 with LF line
 ends. A CR before the LF is dropped, a blank line is ignored, and a last line with no LF still
 counts when input ends. A line longer than 1048576 UTF-16 code units is discarded up to its next LF
-and reported once with an `error` record. Bytes that are not valid UTF-8 can only make that line's
-JSON parse refuse. stdout carries records and nothing else. The session's diagnostics go to stderr,
-prefixed `cotal chat: `, and never repeat a message body.
+and reported once with an `error` record. Input is decoded as UTF-8 with replacement, so bytes
+that are not valid UTF-8 become U+FFFD. Inside a JSON string the line still parses: a `text` value
+is sent with U+FFFD in their place, and a field that accepts only some characters, such as `id`,
+refuses. Outside a string they make that line's JSON parse refuse. stdout carries records and
+nothing else. The session's diagnostics go to stderr, prefixed `cotal chat: `, and never repeat a
+message body.
 
 Every request and record carries `"schemaVersion":1`. A request names its `type` and an `id` you
 choose, 1 to 128 printable ASCII characters, and its `result` record repeats that id. A request that

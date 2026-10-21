@@ -90,11 +90,13 @@ export function grantRefusal(grant: readonly string[], channel: string, use: "re
 }
 
 /**
- * Resolve a DM target before any effect. `{ principal }` is sent as is. A typed string is an exact
- * principal first, a present peer's or a sender's this session heard from, so no display name can
- * capture it. Otherwise it is a display name, which must name one principal across the roster and
- * the heard senders: a name both carry refuses and lists them instead of picking the present one.
- * Absence is a verdict only on a current roster (endpoint.ts:2816-2823).
+ * Resolve a DM target before any effect. A `{ principal }` target, or a typed string that parses as
+ * a principal `<owner>.<actor>`, goes to that principal as is, whether or not it is present or was
+ * heard from. It is never matched against display names, so a peer whose display name spells a
+ * principal cannot capture it; that peer is reached by its own principal or `/reply`. Any other
+ * string is a display name, which must name one principal across the roster and the heard senders:
+ * a name both carry refuses and lists them instead of picking the present one. Absence is a verdict
+ * only on a current roster (endpoint.ts:2816-2823).
  */
 export function resolveDmTarget(
   to: DmTarget,
@@ -103,16 +105,13 @@ export function resolveDmTarget(
   engine: ParticipantEngine,
   selfPrincipal: string,
 ): { readonly id: string; readonly name: string } | Refused {
-  if (typeof to !== "string") {
-    if (!parsePrincipalKey(to.principal)) return refusedUsage(`"${to.principal}" is not a principal <owner>.<actor>`);
-    if (to.principal === selfPrincipal) return refusedUsage("a direct message needs a principal other than this session");
-    return { id: to.principal, name: roster.find((p) => p.card.id === to.principal)?.card.name ?? engine.senderName(to.principal) ?? to.principal };
+  if (typeof to !== "string" || parsePrincipalKey(to)) {
+    const principal = typeof to === "string" ? to : to.principal;
+    if (!parsePrincipalKey(principal)) return refusedUsage(`"${principal}" is not a principal <owner>.<actor>`);
+    if (principal === selfPrincipal) return refusedUsage("a direct message needs a principal other than this session");
+    return { id: principal, name: roster.find((p) => p.card.id === principal)?.card.name ?? engine.senderName(principal) ?? principal };
   }
   const peers = roster.filter((p) => p.card.id !== selfPrincipal);
-  const present = peers.find((p) => p.card.id === to);
-  if (present) return { id: present.card.id, name: present.card.name };
-  const heard = engine.senderName(to);
-  if (heard !== undefined) return { id: to, name: heard };
   let peer: Presence | undefined;
   try {
     peer = resolvePeer(peers, to);
