@@ -358,8 +358,11 @@ setCurrent("keep");
   check("a command run in its root with nothing selected is TARGET_UNAVAILABLE", refused(inRoot, 2, "TARGET_UNAVAILABLE") && /prepared but not started/.test(inRoot.env?.error?.message ?? ""), shown(inRoot));
   const selected = await json(["use", "demo"]);
   check("use selects it and names its root", selected.status === 0 && getCurrent() === "demo" && selected.env?.result.preparedRoot === fresh && selected.env.result.currentRecorded === false, shown(selected));
+  // The default report says it under Brokers; the recorded-meshes diagnostics say it again under --verbose.
   const status = await run(["status", "--plain"]);
-  check("status says the selected space is prepared, not started", /current mesh "demo" is prepared, not started/.test(status.stdout), shown(status));
+  check("status says the selected space is prepared, not started", status.status === 0 && /Selected space 'demo' is prepared, not started/.test(status.stdout), shown(status));
+  const verbose = await run(["status", "--plain", "--verbose"]);
+  check("status --verbose notes the selected space is prepared, not started", verbose.status === 0 && /current mesh "demo" is prepared, not started/.test(verbose.stdout), shown(verbose));
   const listed = await json(["space"]);
   check("a selected prepared space is not warned about as missing", listed.status === 0 && listed.env?.warnings.length === 0 && listed.env.result.prepared[0]?.current === true, listed.env?.warnings);
   const human = await run(["space", "--plain"]);
@@ -371,10 +374,10 @@ setCurrent("keep");
   const elsewhere = join(root, "elsewhere");
   mkdirSync(elsewhere);
   const server = `nats://127.0.0.1:${await freePort()}`;
-  const away = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "demo"], {}, elsewhere);
-  check("up --space for it from another folder refuses, naming its root, and makes nothing there", away.status === 1 && away.stderr.includes(`prepared in ${fresh}`) && !existsSync(join(elsewhere, ".cotal")), shown(away));
-  const otherName = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "other"], {}, fresh);
-  check("up --space for another space in its root refuses", otherName.status === 1 && /root of "demo"/.test(otherName.stderr) && findMesh("other") === undefined, shown(otherName));
+  const away = await json(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "demo"], elsewhere);
+  check("up --space for it from another folder refuses, naming its root, and makes nothing there", refused(away, 2, "TARGET_UNAVAILABLE") && away.env?.error?.message.includes(`prepared in ${fresh}`) && !existsSync(join(elsewhere, ".cotal")), shown(away));
+  const otherName = await json(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "other"], fresh);
+  check("up --space for another space in its root refuses", refused(otherName, 2, "CONFLICT") && /root of "demo"/.test(otherName.env?.error?.message ?? "") && findMesh("other") === undefined, shown(otherName));
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");
@@ -382,8 +385,9 @@ setCurrent("keep");
   check("the selection still names it", getCurrent() === "demo", getCurrent());
   const reads = await json(["space", "show", "demo"]);
   check("space show now reports its broker answering", reads.env?.result.kind === "space" && reads.env.result.check === "reachable", reads.env?.result);
-  assertSmokeSandboxDown(sandbox, ["down"], { cwd: fresh, env: runEnv });
-  const down = await run(["down"], {}, fresh);
+  // A prepared root starts as a controller stack, whose whole-stack down takes --yes outside a terminal.
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
+  const down = await run(["down", "--yes"], {}, fresh);
   check("down stops it", down.status === 0, shown(down));
 
   const later = join(home, "later");

@@ -3354,7 +3354,10 @@ function ensureRootForSpace(space: string): void {
   // below, so a refused start leaves nothing behind.
   const prepared = findPreparedSpace(space);
   if (prepared && canonicalRoot(prepared.root) !== canonicalRoot(root))
-    throw new Error(`space "${space}" is prepared in ${prepared.root} - start it with \`cotal up\` there, or \`cotal space forget ${space}\` to start it here`);
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `space "${space}" is prepared in ${prepared.root}`, {
+      target: { space, root: prepared.root },
+      remedy: `start it with \`cotal up\` there, or \`cotal space forget ${space}\` to start it here`,
+    });
   // What spaces does this root already host? Prefer auth material; fall back to a live MeshEntry
   // whose root is this directory (open meshes have no auth dir).
   const hosted = listSpaceAccounts(authDir(root));
@@ -3369,7 +3372,10 @@ function ensureRootForSpace(space: string): void {
     console.log(c.dim(`nearest mesh root ${root} hosts ${names} - making this folder its own root for "${space}"`));
     return;
   }
-  throw new Error(`this folder is the root of ${names} (${root}/.cotal), so it can't also run "${space}" - drop \`--space\` to run ${existing.length === 1 ? names : "one of those"}, or start "${space}" from a different folder (it becomes that mesh's own root)`);
+  throw new CommandFailure("refused", "CONFLICT", `this folder is the root of ${names} (${root}/.cotal), so it can't also run "${space}"`, {
+    target: { space, root, hosted: existing },
+    remedy: `drop \`--space\` to run ${existing.length === 1 ? names : "one of those"}, or start "${space}" from a different folder (it becomes that mesh's own root)`,
+  });
 }
 
 function realpathSafe(p: string): string {

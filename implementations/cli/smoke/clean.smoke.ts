@@ -22,6 +22,11 @@ const home = mkdtempSync(join(tmpdir(), "cotal-clean-home-"));
 process.env.COTAL_HOME = home;
 
 await import("../src/index.js"); // register the base local-process lifecycle descriptors
+// The binary also imports @cotal-ai/delivery, which registers delivery over the workspace's custody
+// descriptor. This package does not depend on it, so the suite registers that descriptor itself, and
+// `clean` and bare `down` see the delivery daemon as the binary's do.
+const { registry } = await import("@cotal-ai/core");
+registry.register((await import("@cotal-ai/workspace")).DELIVERY_PROCESS);
 const { clean, liveMeshProcess, removeLocalState } = await import("../src/commands/clean.js");
 const { down, pidfileState } = await import("../src/commands/down.js");
 const { isReachable } = await import("@cotal-ai/core");

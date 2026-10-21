@@ -7,7 +7,7 @@
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/space-create.json",
   "why": [
-    "Each mutation removes one check space create makes before it writes, one place a reader recognises a prepared space, or one step up takes when it starts one. The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back."
+    "Each mutation removes one check space create makes before it writes, one place a reader recognises a prepared space, or one step up takes when it starts one, or reports one of up's refusals as unknown. The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back."
   ],
   "mutations": [
     {
@@ -76,7 +76,7 @@
     {
       "name": "create does not make the root's .cotal",
       "file": "implementations/cli/src/commands/space-registration.ts",
-      "find": "  mkdirSync(join(root, \".cotal\"), { recursive: true });\n",
+      "find": "  mkdirSync(join(root, \".cotal\"), { recursive: true, mode: 0o700 });\n",
       "replace": "",
       "expectRed": "create prepares the space in this folder and makes its .cotal: ok, nothing registered",
       "cell": "create prepares the space in this folder and makes its .cotal: ok, nothing registered",
@@ -148,10 +148,19 @@
     {
       "name": "status calls a prepared selection not recorded",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "m.currentPrepared ? \"prepared, not started\" : \"not recorded\"",
+      "find": "r.meshes.currentPrepared ? \"prepared, not started\" : \"not recorded\"",
       "replace": "\"not recorded\"",
       "expectRed": "status says the selected space is prepared, not started",
       "cell": "status says the selected space is prepared, not started",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "status --verbose calls a prepared selection not recorded",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "m.currentPrepared ? \"prepared, not started\" : \"not recorded\"",
+      "replace": "\"not recorded\"",
+      "expectRed": "status --verbose notes the selected space is prepared, not started",
+      "cell": "status --verbose notes the selected space is prepared, not started",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
@@ -209,10 +218,28 @@
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
+      "name": "up reports a prepared space's other-root start as unknown",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "CommandFailure(\"refused\", \"TARGET_UNAVAILABLE\", `space \"${space}\" is prepared in ",
+      "replace": "CommandFailure(\"unknown\", \"OPERATION_UNKNOWN\", `space \"${space}\" is prepared in ",
+      "expectRed": "up --space for it from another folder refuses, naming its root, and makes nothing there",
+      "cell": "up --space for it from another folder refuses, naming its root, and makes nothing there",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
       "name": "up runs another space in a prepared root",
       "file": "implementations/cli/src/commands/up.ts",
       "find": "?.space ?? preparedSpaceAt(root)?.space].filter(",
       "replace": "?.space].filter(",
+      "expectRed": "up --space for another space in its root refuses",
+      "cell": "up --space for another space in its root refuses",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "up reports another space in a root as unknown",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "CommandFailure(\"refused\", \"CONFLICT\", `this folder is the root of ",
+      "replace": "CommandFailure(\"unknown\", \"OPERATION_UNKNOWN\", `this folder is the root of ",
       "expectRed": "up --space for another space in its root refuses",
       "cell": "up --space for another space in its root refuses",
       "afterRestore": "pnpm --filter cotal-ai... build"

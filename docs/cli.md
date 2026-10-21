@@ -1420,7 +1420,9 @@ selection as it is. It refuses with `CONFLICT` a name that is registered or prep
 space's root, and the home folder, whose `.cotal` holds this machine's own records. `space` lists
 prepared spaces under their own heading, and `space show` and `use` accept one. A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
-and so does `cotal up --space <name>` run from another folder. `space add` refuses a prepared name.
+and so does `cotal up --space <name>` run from another folder. `cotal up --space <name>` in a folder
+that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
+name.
 
 `space forget <name>` removes a registration this machine keeps. It stops nothing, deletes nothing on
 the broker, and keeps the files under its root. It refuses a space this machine is running with
