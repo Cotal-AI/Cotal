@@ -1596,7 +1596,11 @@ An authority plane opened with `serviceEndpoints` hosts these operations; withou
 the plane opens no service host, no discovery connection and no `svchost.admission` write. The host
 uses the plane's own claim hold, data account and actor ledger directory. Its startup MUST be named
 `normal`: a restore or a missing startup refuses the whole plane open, which unwinds what it opened
-and releases the claim. Discovery is one standing connection named
+and releases the claim. If that unwind cannot close an effect connection, for instance the startup
+admission write's, it stops there. The open still refuses, but with the close failure; the claim stays
+held; the cleanup timer, discovery, both scanners and every client opened so far stay live; and no
+handle exists to retry. Until the process exits, a successor cannot reclaim the claim while those
+scanners live; after exit, the existing crash reclaim applies. Discovery is one standing connection named
 `cotal:service-host-discovery:<space>` on the ordinary renewing profile with the read-only grant. A
 broker loss makes its reads fail until the stock client reconnects; a read that fails answers as
 `unavailable` within its invocation's own limit, with nothing written. A renewal failure closes it
@@ -1610,9 +1614,13 @@ every call that entered before it has returned, including one still reading disc
 effect connection. An effect connection whose close failed stays owned by the plane after its call
 has settled, and that call rejects with the failure. Close closes every such connection again and,
 while one remains open, rejects with the claim still held, so a later close retries it; a request
-that was only rejected does not hold close. Only then does close close discovery, and only after
-that does it release the claim. Close trips nothing; a call in flight ends under its own
-discovery-read bound and invocation deadline, each at most 60 s.
+that was only rejected does not hold close. A close rejected that way has already stopped the
+cleanup and sweep timers, but discovery, the administrative rail, both scanners and the remaining
+clients stay live, so no successor can reclaim the claim until a later close succeeds or the process
+exits. Only then does close close discovery, and only after that does it release the claim. Close
+itself trips no call it waits for: each ends under its own discovery-read bound and invocation
+deadline, each at most 60 s. Its own scanner teardown, after that wait, does trip the host, which by
+then has no call in flight, and does not make the plane fatal.
 
 The plane and a hosted context expose only `decide`, `revoke`, `operation-read` and `proposal-read`,
 as one in-process function; a hosted context refuses it as `unavailable` while it is not ready.

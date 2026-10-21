@@ -1314,7 +1314,9 @@ stays package-internal, so nothing in the product creates a proposal, and there 
 capability or caller policy. The host authenticates no caller: the embedder must authenticate the
 operator or owner granter it passes. The host runs over the plane's claim hold, data account and
 actor ledger directory. A restore or missing startup refuses the plane open, which unwinds and
-releases the claim. Its discovery connection is an ordinary renewing read-only client: a broker loss
+releases the claim. If that unwind cannot close an effect connection, it stops there: the claim
+stays held, the plane's clients, scanners and cleanup timer stay live, and there is no handle to
+retry. Only the process exiting ends them, after which the existing crash reclaim applies. Its discovery connection is an ordinary renewing read-only client: a broker loss
 fails its reads until the stock client reconnects, and those calls answer `unavailable` with nothing
 written. A renewal failure closes it permanently, and the host stays unavailable until the plane is
 opened again. Both plane fatal paths trip the host, and either one trips it even while the
@@ -1322,7 +1324,9 @@ plane closes, without making the plane fatal. Plane close refuses new host calls
 moment it is called, waits for every call that already entered, from entry through discovery and
 effect open, closes discovery and then releases the claim. An effect connection that failed to
 close stays owned past its call: close closes it again first, and rejects with the claim still held
-while it stays open, so you can retry close.
+while it stays open, so you can retry close. Until a retry succeeds or the process exits, discovery,
+the administrative rail, both scanners and the remaining clients stay live, so no successor can
+take over the claim.
 
 This is a refusal foundation, not service endpoint admission. Nothing in the product creates a
 proposal, so service bootstrap and cancellation are not available to embedders, and terminal
