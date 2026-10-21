@@ -448,6 +448,7 @@
     "smoke:service-host-ops:auth": "tsx implementations/auth/smoke/service-host-ops.smoke.ts",
     "smoke:service-host-effect:auth": "tsx implementations/auth/smoke/service-host-effect.smoke.ts",
     "smoke:service-host-plane:auth": "tsx implementations/auth/smoke/service-host-plane.smoke.ts",
+    "smoke:service-endpoint-authority:auth": "tsx implementations/auth/smoke/service-endpoint-authority.smoke.ts",
     "smoke:service-caller-policy": "tsx implementations/auth/smoke/service-caller-policy.smoke.ts",
     "smoke:describe-observation": "tsx packages/core/smoke/describe-observation.smoke.ts",
     "smoke:service-access": "tsx implementations/auth/smoke/service-access.smoke.ts",
