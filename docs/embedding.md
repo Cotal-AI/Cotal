@@ -1086,7 +1086,9 @@ scopes the capability out. None is a wire concern.
    reads from a fixed on-disk path are the *static* `membership-observer.creds` and
    `connection-evictor.creds` ($SYS creds, minted at the `up` that provisions the account and renewed by `up --rotate-sys`) and `membership.json`
    (`{accountId}`, non-secret config); those, plus the private provisioning wrapper, keep immediate
-   live eviction and a fully-hosted feed a partial gap. Missing files degrade membership to
+   live eviction and a fully-hosted feed a partial gap. A host that re-mints the observer into the
+   injected store under the same system signer and scope has it adopted by the running feed at 75%
+   of its lifetime. Missing files degrade membership to
    traffic-only and make live eviction refuse (loudly). The supported delivery contract here is the
    Plane-3 durable backstop.
 2. **Supervisor signer isolation.** `ManagerOptions.secretStore` now injects the one `SecretStore` the

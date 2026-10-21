@@ -687,7 +687,10 @@ still sets `COTAL_CREDS` itself.
   every agent cred and the store untouched but does invalidate earlier full backups (they bind to
   the operator JWT and system account they were taken under, so re-run `cotal backup` after). Past that horizon the mesh keeps delivering, but the
   membership feed and live eviction stop; `cotal doctor auth` and the manager warn from the 75%
-  point onward.
+  point onward. A host that keeps a registered system signer can re-mint the observer into the
+  delivery daemon's secret store instead: the feed reads it again at 75% of its lifetime, proves it
+  on a throwaway connection, and adopts it only when its issuer and permission scope match the
+  cred it started with.
 - **A copied static agent cred outlives its session.** One-shot command creds expire in
   minutes and the standing daemon creds in 24h with the manager renewing them (`cotal doctor
   auth` is the one diagnosis and repair surface). A manager-spawned agent cred also expires
