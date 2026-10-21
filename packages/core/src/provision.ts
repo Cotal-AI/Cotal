@@ -87,6 +87,7 @@ import { LIVENESS_PLANES } from "./liveness.js";
 import {
   epCallerGrantRows, epServeGrantRows, epBaselineGrantRows, baselineCallerCapabilities, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows,
   operatorInstrumentCapabilities, instanceOnlyManagerCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT,
+  MANAGER_VITALS_COMMAND, MANAGER_VITALS_SCOPE,
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
@@ -1677,6 +1678,7 @@ function managerCallerPermissions(space: string, pr: MintPrincipal, opts: MintOp
     ...baselineCallerCapabilities().filter((cap) => cap.endpoint === BASELINE_LIFECYCLE_ENDPOINT),
     ...(caps.includes("spawn") ? spawnCallerCapabilities(pr.owner) : []),
     ...(caps.includes("spawn") ? LAUNCH_READ_COMMANDS.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })) : []),
+    ...(caps.includes(MANAGER_VITALS_SCOPE) ? [{ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: MANAGER_VITALS_COMMAND }] : []),
     ...(caps.includes("run") ? runCallerCapabilities(pr.owner) : []),
     ...(caps.includes("admin") ? operatorInstrumentCapabilities("admin", pr.owner) : []),
   ];
