@@ -13,6 +13,7 @@ import {
   buildOrientation,
   renderOrientation,
   ORIENTATION_BOOTSTRAP,
+  CHANNEL_GUIDANCE,
   DOCS_VERSION,
   MeshAgent,
   type AgentConfig,
@@ -223,6 +224,9 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
 {
   assert.ok(ORIENTATION_BOOTSTRAP.length > 0, "bootstrap is non-empty");
   assert.match(ORIENTATION_BOOTSTRAP, /cotal_orientation/);
+  for (const tool of ["cotal_channels", "cotal_join", "cotal_send", "cotal_dm", "cotal_anycast"])
+    assert.ok(CHANNEL_GUIDANCE.includes(tool), `channel guidance names ${tool}`);
+  assert.match(CHANNEL_GUIDANCE, /#announce/, "channel guidance says when #announce is appropriate");
 }
 
 // 6 — the identity-plane gate (#740). `canSpawn` used to read "no static creds" as open mode, so a
