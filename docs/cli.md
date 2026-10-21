@@ -700,7 +700,9 @@ unreadable paths under this root, and saved service definitions, instance IDs, r
 hosts, supervisor receipts, and retained install, uninstall and unit-action
 attempts in the selected space's workstation store. Saved records are not attributed to this project root, and their recorded
 states do not prove live process or supervisor status. A submitted native attempt may have
-changed state; the preview neither reconciles nor retries it. Other local registrations with
+changed state; the preview neither reconciles nor retries it. For each saved service instance it
+also shows what bare `down` would do with it: stop it, skip it as already stopped, or refuse, with
+the reason. That plan observes processes on this host and changes nothing. Other local registrations with
 the exact recorded broker address appear as possible sharing. No match does not exclude
 address aliases, remote tenants or live attachments. The preview does not establish process
 ownership, the complete service set, exclusive broker use or agent impact.
@@ -726,9 +728,8 @@ no `--yes`, so `cotal down --yes` there is refused and stops nothing; run `cotal
 Before a retained bare apply
 reaches its pidfile sweep, it now requires one locally started registration under
 a real isolated project root and refuses pending maintenance transitions, any valid or
-unreadable additive ledger or attempt under that root, any other local registration at
-the exact recorded broker address, or any selected-space service instance,
-supervisor receipt or native attempt. These are known-blocker
+unreadable additive ledger or attempt under that root, or any other local registration at
+the exact recorded broker address. These are known-blocker
 checks, not a complete live broker-sharing or stop plan; aliases, remote tenants,
 agent impact and process identity remain unproved. These paths do not check full
 whole-stack target ownership, set exclusion, confirmed agent impact or schema
@@ -738,6 +739,17 @@ maintenance lock, without adopting its effects into the preserved set.
 A validated completed restore in `active` for the registered space does not block ordinary
 bare `down`. The other root, ownership, sharing and native process guards still apply, and
 stopping leaves the restore journal and fallback store unchanged.
+
+After those checks, a retained bare apply stops the selected space's service instances before its
+pidfile sweep. Each goes through the service controller with the checks and receipt of
+`cotal service stop <name> --instance <id> --yes`, and saved definitions stay. An instance whose
+process is already gone is skipped. Every instance is checked before the first stop, and one that
+cannot be verified refuses with no service stopped and the broker still running. An unreadable
+service record keeps the code of its read refusal. A retained native attempt, an unsettled request,
+a process that cannot be observed, or a record from another host, which bare `down` does not touch,
+refuses `LIFECYCLE_BLOCKED`, exit 2. The remedy names that service and the command to run. A stop that does not confirm ends the sequence with the
+stack still running, and completed stops are not rolled back. `--with-agents` refuses when a
+service would be stopped, because the legacy reap does not reach a service's agents.
 
 
 ```bash
@@ -4736,9 +4748,11 @@ submission, and a missing effect outcome is not a proved pre-execution refusal.
 Goal observation keeps the caller's authorized route. A class caller reads its original goal on
 that class route; an explicit `--on` or credential-bound instance stays pinned. Learning the
 accepting instance ID does not confer an instance route or cause another launch. The native
-follower verifies the returned fact against the original caller and goal. A missing connector
-refused before allocation carries `not-executed`; failures after allocation keep their native
-outcome rather than being reclassified from their message.
+follower verifies the returned fact against the original caller and goal. A launch the manager
+refuses before its first effect, such as a missing persona file or connector, carries
+`not-executed`. The CLI reports it `refused` with exit 2 and prints the manager's reason, which
+names the file it looked for. A failure after the manager reserved the name or wrote a launch file
+keeps its native outcome, and the CLI never reclassifies it from its message.
 
 
 ### Stopping an agent
@@ -4753,6 +4767,12 @@ not a separate measurement of process exit. Stop and input do not seed connector
 Failed name resolution refuses before a stop, terminal input or first attach is submitted. The
 receipt retains the inspect error and responding manager. It records local pre-submission proof
 without inventing a native effect outcome.
+
+When the manager refuses a stop, terminal input or first attach before anything ran, for example
+because the agent is not running or the caller may not control it, its reply carries
+`not-executed`. The CLI reports `refused` with exit 2, names the agent and prints the manager's
+reason on one line. A failure after an effect may have started, such as a terminal write the
+runtime rejected, stays `unknown` with exit 3, still shows the manager's reason, and is not retried.
 
 Managed imperative spawn accepts `--restarts <n> --restart-window <ms>` as a pair, using the
 existing native `supervise` object. Both values must be positive safe integers. Direct foreground

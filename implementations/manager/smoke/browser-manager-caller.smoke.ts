@@ -245,7 +245,7 @@ async function main() {
       /outcomeDigest/.test(err(first.tampered)?.message ?? ""), first.tampered);
     const refused = ok(first.refused);
     check("C15 a spawn the Manager refuses is a refusal: an error reply, not an unknown outcome, and nothing launched",
-      refused?.ok === false && refused.responder === A && refused.code === "failed-precondition" && /no persona "missing"/.test(refused.message ?? "") && refused.errorOutcome !== "unknown" && first.launches?.native === 1, first.refused);
+      refused?.ok === false && refused.responder === A && refused.code === "failed-precondition" && /no persona "missing"/.test(refused.message ?? "") && refused.errorOutcome === "not-executed" && first.launches?.native === 1, first.refused);
     const unknown = ok(first.unknown) ?? err(first.unknown);
     check("C16 a follow stopped after the submission reports outcome unknown, not a refusal",
       (ok(first.unknown)?.ok === false && ok(first.unknown)?.errorOutcome === "unknown") || err(first.unknown)?.outcome === "unknown", unknown);

@@ -2335,7 +2335,9 @@ or `unknown`, stating whether the command's effect occurred. It is emitted by th
 which is the only party that knows: a responder that refuses BEFORE dispatching to the handler
 MUST carry `not-executed`, and one that refuses AFTER the handler has run MUST carry `executed`.
 A responder that cannot distinguish the two MUST carry `unknown` rather than guess. An error
-reply that omits `outcome` MUST be read as `unknown`.
+reply that omits `outcome` MUST be read as `unknown`. A handler that refuses before its command's
+first effect has started SHOULD carry `not-executed`, because nothing occurred. A handler that
+refuses after an effect may have started MUST NOT carry `not-executed`.
 
 `outcome` describes a reply, and only a reply. A refusal a CALLER raises locally is not an
 `EndpointReply` and carries no `outcome` field. It does not follow that the caller knows nothing:
@@ -6074,6 +6076,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 | Date | Revision |
 | --- | --- |
 | 2026-10-21 | **Own-DM-only reader (§8), additive.** A client may read its DM inbox holding only its own `dm_` durable: it binds an existing durable, never creates one, refuses when it is missing, keeps the §5 sender check, and issues only CONSUMER.INFO, MSG.NEXT and ack requests on that durable. No credential profile is added. |
+| 2026-10-21 | **Handler refusals before any effect (§13.3), additive.** A handler that refuses before its command's first effect has started SHOULD carry `not-executed`, and one that refuses after an effect may have started MUST NOT carry it. |
 | 2026-10-21 | **User-mode chat sessions (§10, §13.1, §13.9), additive.** The auth service becomes a minting authority for chat sessions only. It admits one session per holder hash under the human's own `cli` grant, pins that grant, issues bearers of at most 900 s that it re-checks before and after signing, and mints the plain `agent` leaf with the session's lists. Three auth-bucket writer families (`chatholder`, `chatowner`, `chatsweep.cursor`) join the trusted auth path. |
 | 2026-10-21 | **Retirement-only manager composition (§13.1), additive.** An optional composition takes its own per-instance liveness lease before reading any lifecycle, slot or gate row. It records each slot as retired, already-retired, skipped-not-owned or held, never counts the latter two as retired, and introduces no new principal, credential profile or grant. |
 | 2026-10-19 | **A spawn-scoped `manager-caller` view reads its launch options (§9, §10), additive.** A person who may spawn on their own Manager could not read what a launch there needs: `status`, `models` and `resolve-cwd` were not in the view unless the actor held `admin`, and `resolve-cwd` was in no view at all. A view whose actor holds `spawn` now carries those three on its one pinned instance. A `run`-only or no-scope view gains nothing, `ps` and `slots` stay with `admin`, and no class, scatter or other-instance row is added. The standing `spawn` set is unchanged. |

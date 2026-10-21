@@ -562,7 +562,11 @@ Only a runtime that owns the child's input stream can serve it. The `pty` runtim
 external terminal runtimes attach to a process they do not own, and there the command refuses
 and names the runtime rather than dropping the keystroke. A seat that is not running refuses for
 its own reason, and the two are distinguishable, so a caller can tell "this will never work"
-from "not right now". See [cli.md](cli.md#input).
+from "not right now". Both refusals carry `not-executed`, because nothing was typed. A write the
+runtime rejects once delivery has started states no outcome, so a caller reads it as `unknown`.
+The manager's other control refusals follow the same rule: one raised before the command's first
+effect, such as a denied caller, a stale target or a missing persona file, carries `not-executed`.
+See [cli.md](cli.md#input).
 
 ## Grants
 

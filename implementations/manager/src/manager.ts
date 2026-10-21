@@ -1085,6 +1085,10 @@ export interface SpawnHooks {
    *  manufacture a `failed` from the non-ok reply and race the real `cancel`. Without it, a
    *  deliberate stop mid-launch reports the agent as having died on launch. */
   onTerminalDeferred?: () => void;
+  /** Fires right before the first effect this spawn or launch takes: the name reserve, a re-driven
+   *  teardown, or a launch file written to disk. A refusal before it changed nothing, so the
+   *  action path answers it `not-executed` (SPEC 13.3); one after it keeps an unknown outcome. */
+  onEffect?: () => void;
 }
 
 /** The spawn-as-action acceptance floor: the ALLOCATED agent identity (name + the
@@ -3657,8 +3661,9 @@ export class Manager {
   private async serveGated<T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> {
     const caller = principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
     const admission = this.admitControl(caller);
+    // Both fences refuse before the handler runs, so nothing ran (SPEC 13.3).
     if (admission.refusal !== undefined)
-      throw new EpEnvelopeError(admission.fence === "membership" ? "permission-denied" : "unavailable", admission.refusal);
+      throw new EpEnvelopeError(admission.fence === "membership" ? "permission-denied" : "unavailable", admission.refusal, undefined, "not-executed");
     try {
       return await fn();
     } finally {
@@ -3678,7 +3683,7 @@ export class Manager {
     const resumePending = this.maintenanceState === "active" && this.resumeRequired;
     if (this.leaseStopping || !preserved && !resumePending) return this.serveGated(ctx, fn);
     const membership = this.lifecycleMembershipRefusal(principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key);
-    if (membership) throw new EpEnvelopeError("permission-denied", membership);
+    if (membership) throw new EpEnvelopeError("permission-denied", membership, undefined, "not-executed");
     this.lifecycleInFlight++;
     try {
       return await fn();
@@ -3846,13 +3851,13 @@ export class Manager {
     // serveGated BYPASS (those ops must run while the maintenance fence holds) but not the gate.
     const adminGated = async <T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> => {
       if (!(await this.epAdminReach(ctx.subject.caller)))
-        throw new EpEnvelopeError("permission-denied", `${ctx.subject.command} is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2)`);
+        throw new EpEnvelopeError("permission-denied", `${ctx.subject.command} is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2)`, undefined, "not-executed");
       return fn();
     };
     const targetAgent = (ctx: EpServeContext): ManagedAgent => {
       const t = ctx.request.target!; // targeted commands only: the serve boundary enforced body-target presence + fresh currency
       const a = this.findManagedByTarget(t);
-      if (!a) throw new EpEnvelopeError("expired", `target ${t.owner}.${t.actor} (lifecycle ${t.lifecycleUid}) is not a live managed agent of this manager`);
+      if (!a) throw new EpEnvelopeError("expired", `target ${t.owner}.${t.actor} (lifecycle ${t.lifecycleUid}) is not a live managed agent of this manager`, undefined, "not-executed");
       return a;
     };
     return managerCommandDefs({
@@ -3957,13 +3962,13 @@ export class Manager {
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
-        if (denied) throw new EpEnvelopeError("permission-denied", denied);
+        if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
         return unwrap(this.despawnAuthorized(a, args(ctx).graceful !== false, true, callerOf(ctx)));
       }),
       attach: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
-        if (denied) throw new EpEnvelopeError("permission-denied", denied);
+        if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
         return unwrap(await this.attachAuthorized(a, ctx.subject.caller));
       }),
       // C3 `input`: the SAME authorization as `attach`, deliberately written out rather than
@@ -3972,7 +3977,7 @@ export class Manager {
       input: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
-        if (denied) throw new EpEnvelopeError("permission-denied", denied);
+        if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
         return this.inputAuthorized(a, args(ctx));
       }),
       // The turn relay (§8 durable actions): `turn` shares despawn/input's reach policy — the
@@ -3981,7 +3986,7 @@ export class Manager {
       turn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
-        if (denied) throw new EpEnvelopeError("permission-denied", denied);
+        if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
         return this.serveTurnGoal(ctx, a);
       }),
       // The seat's own half of the relay (`manager.self`, stop-self's tier): a seat pulls the
@@ -5791,6 +5796,7 @@ export class Manager {
         spec = parseLaunchSpec(args.spec, `inline launch spec (run ${runId})`);
         if (spec.runId !== runId)
           return { ok: false, error: `inline launch spec runId "${spec.runId}" does not match requested "${runId}"` };
+        hooks?.onEffect?.();
         persistLaunchSpec(this.workspaceRoot, spec);
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
@@ -5817,6 +5823,7 @@ export class Manager {
     }
     let configPath: string;
     try {
+      hooks?.onEffect?.();
       configPath = materializePersona(this.workspaceRoot, runId, la);
     } catch (e) {
       return { ok: false, error: rejectionText(e) };
@@ -6160,6 +6167,7 @@ export class Manager {
       return { ok: false, error: `the name "${identityName}" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };
     const held = this.retiring.get(identityName);
     if (held !== undefined) {
+      hooks?.onEffect?.();
       void this.deprovision(held.target).catch(() => {});
       const err = lifecycleBlocked("failed-precondition",
         `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name.`,
@@ -6242,6 +6250,7 @@ export class Manager {
     let seatHome: string | undefined;
     // Taken right before the try so its finally is the only release; a refusal belongs above the
     // allocation, where there is no name to give back.
+    hooks?.onEffect?.();
     this.reserved.add(name);
     try {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
@@ -8831,13 +8840,14 @@ export class Manager {
    *  Returns the acceptance floor payload {name, owner, actor, uid, goalId, fingerprint, executor}
    *  (the ALLOCATED identity). goalId = the request id (env.id). */
   private async serveSpawnGoal(ctx: EpServeContext, run: (hooks: SpawnHooks) => Promise<ControlReply>): Promise<SpawnAcceptance> {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    // These four refuse before anything is accepted or allocated, so they state it (SPEC 13.3).
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal(), undefined, "not-executed");
     const gw = this.goalWriter;
-    if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing; spawn-as-action cannot accept (SPEC 13.6)");
+    if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing; spawn-as-action cannot accept (SPEC 13.6)", undefined, "not-executed");
     // Refuse to accept until the boot reconcile of inherited goals completes, so a fresh
     // acceptance never races the sweep (settling a live goal mid-flight would steal its real terminal).
     if (!this.goalReconcileDone)
-      throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; retry shortly (SPEC 13.6)");
+      throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; retry shortly (SPEC 13.6)", undefined, "not-executed");
     const goalId = ctx.request.id;
     const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
     const ref = goalRefOf(ctx.subject, goalId);
@@ -8859,7 +8869,7 @@ export class Manager {
     const accepted = prior ?? ended;
     if (accepted !== undefined) {
       if (accepted.fingerprint !== fingerprint)
-        throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted under a different submission; one goalId never carries two specs (SPEC 13.6)`);
+        throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted under a different submission; one goalId never carries two specs (SPEC 13.6)`, undefined, "not-executed");
       return prior ?? this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor);
     }
 
@@ -8887,6 +8897,8 @@ export class Manager {
     // (#357): it had entered no terminal, so the fallback wrote one for it, using its own abort
     // message as the caller-visible outcome.
     let ownsGoal = false;
+    // Set by onEffect. A refusal that arrives with it still false changed nothing.
+    let effectStarted = false;
 
     // The terminal commits OFF-handler on the goal-writer connection (manager-only authority; a
     // caller cannot publish it). TWO COMPOSED FENCES (defense in depth): (a) reads THIS
@@ -9003,12 +9015,15 @@ export class Manager {
       // it and commits `cancel`. This only stops the non-ok reply below from manufacturing a
       // `failed` that would race that `cancel` (first-terminal-fact-wins).
       onTerminalDeferred: () => { terminalEntered = true; },
+      onEffect: () => { effectStarted = true; },
     });
     bg.then((reply) => {
       // Refused BEFORE onAccepted (hard-pin collision, capacity, persona-not-found) — no goal bound.
+      // Only a refusal before the first effect states `not-executed`; a later one, such as the
+      // alias gate that re-drives a teardown, leaves the outcome unknown.
       if (acceptance === undefined) {
         const details = reply.details;
-        rejectAccept(new EpEnvelopeError("failed-precondition", reply.error ?? "spawn refused at accept", details));
+        rejectAccept(new EpEnvelopeError("failed-precondition", reply.error ?? "spawn refused at accept", details, effectStarted ? undefined : "not-executed"));
         return;
       }
       // H1: `run` CATCHES its own body (a throw in buildLaunch/runtime.spawn) and RESOLVES `{ok:false}`
@@ -10896,13 +10911,16 @@ export class Manager {
    *  `enter` defaults to true: a harness command typed but not submitted has not been delivered.
    *  Nothing is echoed back; the caller reads the resulting turns from the event plane. */
   private async inputAuthorized(a: ManagedAgent, args: Record<string, unknown>): Promise<{ name: string; bytes: number }> {
+    // These three refuse before the first write, so nothing was typed (SPEC 13.3). A write the
+    // runtime rejects below states no outcome: the runtime contract does not say a rejected write
+    // delivered nothing, and an earlier slice may already have reached the seat.
     if (this.agents.get(a.name) !== a)
-      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" was replaced during authorization - retry`);
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" was replaced during authorization - retry`, undefined, "not-executed");
     if (a.handle.status() !== "running")
-      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" is not running (${a.handle.status()}); nothing to type into`);
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" is not running (${a.handle.status()}); nothing to type into`, undefined, "not-executed");
     const write = a.handle.write?.bind(a.handle);
     if (!write)
-      throw new EpEnvelopeError("unimplemented", `input is not supported by runtime ${a.handle.kind}`);
+      throw new EpEnvelopeError("unimplemented", `input is not supported by runtime ${a.handle.kind}`, undefined, "not-executed");
     // The contract validated `text` (non-empty, <= 64KiB) and `enter` (boolean) before this ran, so
     // the only decision left is the carriage return. `!== false` and not `?? true`: an ABSENT enter
     // and an explicit `true` must behave identically, and only `false` may suppress the return.
@@ -10973,16 +10991,17 @@ export class Manager {
    *  redeems it over the mesh with a per-session rails-only cred it mints itself. Only streamable
    *  backends (pty/host) attach; an external runtime's attach() throws with per-runtime guidance. */
   private async attachAuthorized(a: ManagedAgent, caller: { owner: string; actor: string; uid: string }): Promise<ControlReply> {
-    if (!this.sessionPlane) return { ok: false, error: "the manager session plane is not available (the manager is not fully started)" };
+    // Every refusal before establishAttach below has opened no session, so it states that (SPEC 13.3).
+    if (!this.sessionPlane) throw new EpEnvelopeError("failed-precondition", "the manager session plane is not available (the manager is not fully started)", undefined, "not-executed");
     // A name is a reusable slot and the authorization above can await (user mode reads the ledger).
     // The ep target is incarnation-pinned, so `a` cannot BE a successor — but the slot it names can
     // have been stopped and refilled while we waited, and everything below must act on the
     // incarnation this caller was actually authorized for, never on whoever holds the name now.
     if (this.agents.get(a.name) !== a)
-      return { ok: false, error: `agent "${a.name}" was replaced during authorization - retry` };
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" was replaced during authorization - retry`, undefined, "not-executed");
     // Never establish a session over a dead agent — a doomed session (the caller would get an
     // immediate process-exit at best, a confusing empty terminal at worst). Refuse honestly.
-    if (a.handle.status() !== "running") return { ok: false, error: `agent "${a.name}" is not running (${a.handle.status()}); nothing to attach` };
+    if (a.handle.status() !== "running") throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" is not running (${a.handle.status()}); nothing to attach`, undefined, "not-executed");
     // CLAIM the session slot BEFORE attaching the target's PTY, matching the console door: this door
     // used to attach first and check capacity inside establishAttach, so a `resource-exhausted`
     // refusal landed AFTER the attach. The claim is carried INTO establishAttach, so one reservation
@@ -10999,7 +11018,8 @@ export class Manager {
       session = a.handle.attach();
     } catch (e) {
       slot.release();
-      return { ok: false, error: rejectionText(e) };
+      // The external runtimes refuse attach() before acquiring anything (see the residual above).
+      throw new EpEnvelopeError("failed-precondition", rejectionText(e), undefined, "not-executed");
     }
     // establishAttach releases the claim it was handed on every exit; nothing to unwind here.
     const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);

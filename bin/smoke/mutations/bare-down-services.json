@@ -1,0 +1,53 @@
+{
+  "grades": "integration",
+  "suite": ["bin/smoke/manager-preset-live.smoke.ts"],
+  "guard": "bare cotal down on a legacy root stops the space's services through the service controller before the broker, skips one already stopped, refuses an unreadable service record with everything still running, and its dry run lists that plan",
+  "command": "pnpm --filter @cotal-ai/cli... build > /dev/null && pnpm smoke:manager-preset:live",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/bare-down-services.json",
+  "why": [
+    "Bare down on a legacy root used to refuse while any service record existed in the space, including a saved service that was already stopped. It now hands each running instance to the service controller, then sweeps the stack. The suite drives the real binary over a broker-only open stack with a saved manager preset.",
+    "The binary loads @cotal-ai/cli from its dist, so every run builds that closure first and every restore rebuilds it."
+  ],
+  "mutations": [
+    {
+      "name": "B1 a running service is treated as already stopped",
+      "file": "implementations/cli/src/commands/down-services.ts",
+      "find": "action: observed === \"running\" || receipts.has(row.name) ? \"stop\" : \"already-stopped\"",
+      "replace": "action: \"already-stopped\"",
+      "expectRed": "bare down stops the running service through the controller, then the broker",
+      "cell": "bare down stops the running service through the controller, then the broker",
+      "note": "The broker is swept while the manager service still runs, so its instance record stays running.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "B2 an unreadable service record no longer refuses the stop",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "  const services = planBareDownServices(mesh.space);\n  assertBareDownServicesVerified(mesh.space, services);",
+      "replace": "  let services: BareDownService[] = [];\n  try { services = planBareDownServices(mesh.space); } catch { services = []; }\n  assertBareDownServicesVerified(mesh.space, services);",
+      "expectRed": "bare down refuses an unreadable service record with the service and the broker still running",
+      "cell": "bare down refuses an unreadable service record with the service and the broker still running",
+      "note": "With the read refusal swallowed, bare down sees no service and stops the broker under the running manager.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "B3 the dry run drops the service plan",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "    serviceStops = planBareDownServices(mesh.space);",
+      "replace": "    serviceStops = [];",
+      "expectRed": "bare down --dry-run lists the running service it would stop and changes nothing",
+      "cell": "bare down --dry-run lists the running service it would stop and changes nothing",
+      "note": "The preview then lists no service, so it no longer says what bare down would stop first.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "B4 a stopped service is handed to the controller instead of skipped",
+      "file": "implementations/cli/src/commands/down-services.ts",
+      "find": "  const stops = rows.filter((row) => row.action === \"stop\");",
+      "replace": "  const stops = rows.filter((row) => row.action !== \"blocked\");",
+      "expectRed": "bare down skips the stopped service and stops the broker",
+      "cell": "bare down skips the stopped service and stops the broker",
+      "note": "The stopped manager then gets a no-op service stop receipt it should never have been sent.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    }
+  ]
+}
