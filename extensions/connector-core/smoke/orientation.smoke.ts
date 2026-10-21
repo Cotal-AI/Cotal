@@ -41,13 +41,13 @@ function cfg(over: Partial<AgentConfig> = {}): AgentConfig {
 // A minimal MeshAgent stub — buildOrientation only reads id/status/attention/roster/inboxCount
 // (plus presenceView since #1229: rendering consults the roster's trust state).
 function agentStub(
-  over: { roster?: any[]; unread?: number; presenceWriteFailure?: unknown; presenceView?: any } = {},
+  over: { id?: string; roster?: any[]; unread?: number; presenceWriteFailure?: unknown; presenceView?: any; connected?: boolean } = {},
 ): MeshAgent {
   return {
-    id: "ALICEID0000000000000000000000000000000000000",
+    id: over.id ?? "ALICEID0000000000000000000000000000000000000",
     status: "working",
     attention: "open",
-    connected: true,
+    connected: over.connected ?? true,
     transportConnected: true,
     presenceWriteFailure: over.presenceWriteFailure,
     roster: () => over.roster ?? [],
@@ -169,7 +169,18 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   const visible = cotalToolSpecs(authCfg).map((s) => ({ name: s.name, title: s.title }));
   const o = buildOrientation(agentStub(), authCfg, visible, 1_700_000_000_000);
 
-  assert.deepEqual(o.identity, { name: "alice", role: "reviewer", space: "demo", id: "ALICEID0000000000000000000000000000000000000", cotalVersion: DOCS_VERSION } as typeof o.identity);
+  assert.deepEqual(o.identity, {
+    state: "bound",
+    display: { name: "alice", role: "reviewer" },
+    principal: { owner: "unknown", actor: "unknown" },
+    lifecycleUid: "unknown",
+    replacement: { state: "unknown", predecessorLifecycleUid: "unknown" },
+    name: "alice",
+    role: "reviewer",
+    space: "demo",
+    id: "ALICEID0000000000000000000000000000000000000",
+    cotalVersion: DOCS_VERSION,
+  } as typeof o.identity);
   assert.equal(o.access.authMode, true);
   assert.deepEqual(o.access.read, ["general"]);
   assert.deepEqual(o.access.readAcl, ["general", "incident"]); // read ACL wider than active read
@@ -189,6 +200,57 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   const pinned = buildOrientation(agentStub(), cfg({ model: "grok-4.6" }), [], 1);
   assert.equal(pinned.identity.model, "grok-4.6");
   assert.match(renderOrientation(pinned), /Model pin: grok-4\.6/);
+}
+
+// 2b — AGENT-32: the public orientation path separates the display label from the wire principal
+// and the current lifecycle incarnation. A preserved resume proves this incarnation is a replacement,
+// but the launcher does not expose its predecessor's UID, so that value stays explicitly unknown.
+// The second cell drives the real cotal_orientation tool while the endpoint is not mesh-bound: the
+// structured card and its rendering must both say unbound rather than leaving callers to parse prose.
+{
+  const failures: string[] = [];
+  const cell = async (name: string, run: () => void | Promise<void>) => {
+    try {
+      await run();
+    } catch (error) {
+      failures.push(`${name}: ${(error as Error).message}`);
+    }
+  };
+  const identityCfg = cfg({
+    name: "display-name",
+    role: "worker",
+    lifecycleUid: "abcdefghijklmnopqrstuvwx12",
+    backfillFloor: 42,
+    userAuth: {
+      owner: "u_abcdefghijklmnopqrstuvwxyz",
+      actor: "actor_name",
+      sentinelCreds: "not-read-by-this-pure-smoke",
+      bearer: async () => "not-called-by-this-pure-smoke",
+    },
+  });
+
+  await cell("structured identity", () => {
+    const orientation = buildOrientation(agentStub({ id: "u_abcdefghijklmnopqrstuvwxyz.actor_name" }), identityCfg, [], 1);
+    const identity = orientation.identity as unknown as Record<string, unknown>;
+    assert.equal(identity.state, "bound", "a connected endpoint reports a bound identity state");
+    assert.deepEqual(identity.display, { name: "display-name", role: "worker" }, "display identity is explicitly labelled");
+    assert.deepEqual(identity.principal, { owner: "u_abcdefghijklmnopqrstuvwxyz", actor: "actor_name" }, "wire principal is explicitly labelled");
+    assert.equal(identity.lifecycleUid, "abcdefghijklmnopqrstuvwx12", "the current lifecycle UID is explicitly labelled");
+    assert.deepEqual(identity.replacement, { state: "replacement", predecessorLifecycleUid: "unknown" }, "a known replacement never presents its unknown predecessor as current");
+  });
+
+  await cell("structured unbound tool result", async () => {
+    const agent = agentStub({ id: "u_abcdefghijklmnopqrstuvwxyz.actor_name", connected: false });
+    const orientation = buildOrientation(agent, identityCfg, [], 1);
+    const identity = orientation.identity as unknown as Record<string, unknown>;
+    assert.equal(identity.state, "unbound", "a not-yet-bound endpoint reports an unbound identity state");
+    const spec = cotalToolSpecs(identityCfg).find((candidate) => candidate.name === "cotal_orientation");
+    assert.ok(spec, "orientation tool exists");
+    const result = await spec.run(agent, identityCfg, {});
+    assert.match(result.text, /identity state:\s*unbound/i, "the public tool renders the structured unbound state");
+  });
+
+  assert.deepEqual(failures, [], `AGENT-32 acceptance cells red=${failures.length}/2:\n${failures.join("\n")}`);
 }
 
 // 3 — core/more grouping covers exactly the gated set (minus orientation itself), no dupes.

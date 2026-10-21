@@ -9,7 +9,7 @@
  * The typed {@link Orientation} object is the source of truth; {@link renderOrientation} is one view of
  * it (the text the model reads). A future MCP resource can JSON-stringify the object directly.
  */
-import { peerLabel, type AttentionMode, type PresenceStatus } from "@cotal-ai/core";
+import { parsePrincipalKey, peerLabel, type AttentionMode, type PresenceStatus } from "@cotal-ai/core";
 import { presenceViewCondition, type MeshAgent } from "./agent.js";
 import { isAuthed, type AgentConfig } from "./config.js";
 import { DOCS_VERSION } from "./docs.js";
@@ -60,7 +60,28 @@ export interface Orientation {
   /** Snapshot stamp. The live fields below (peers / status / attention / unread) are as of this time;
    *  the identity/access/capabilities/tools fields are static for the session. */
   generatedAt: number;
-  identity: { name: string; role?: string; space: string; id: string; cotalVersion: string; model?: string };
+  identity: {
+    /** Whether this endpoint has completed its mesh bind. Configured labels are not a bound identity. */
+    state: "bound" | "unbound";
+    /** Human-facing label. It is deliberately separate from the wire principal. */
+    display: { name: string; role: string };
+    /** Broker-routed owner+actor identity, or explicit unknowns when no principal can be established. */
+    principal: { owner: string; actor: string };
+    /** This incarnation's lifecycle identity. Open/legacy callers that do not expose it report unknown. */
+    lifecycleUid: string;
+    /** Replacement evidence available to this connector. A predecessor UID is never inferred. */
+    replacement: {
+      state: "replacement" | "unknown";
+      predecessorLifecycleUid: string;
+    };
+    /** Existing compatibility fields retained for renderers and callers. */
+    name: string;
+    role?: string;
+    space: string;
+    id: string;
+    cotalVersion: string;
+    model?: string;
+  };
   access: {
     /** auth mode → these grants are broker-enforced; open mode → advisory (host-trusted) only. */
     authMode: boolean;
@@ -147,11 +168,27 @@ export function buildOrientation(
   const summary = peers.length
     ? shown.join(", ") + (peers.length > shown.length ? `, +${peers.length - shown.length} more` : "")
     : "no other peers present";
+  const principal = parsePrincipalKey(agent.id);
 
   return {
     v: 1,
     generatedAt,
-    identity: { name: config.name, role: config.role, space: config.space, id: agent.id, cotalVersion: DOCS_VERSION, ...(config.model ? { model: config.model } : {}) },
+    identity: {
+      state: agent.connected ? "bound" : "unbound",
+      display: { name: config.name, role: config.role ?? "unknown" },
+      principal: principal ?? { owner: "unknown", actor: "unknown" },
+      lifecycleUid: config.lifecycleUid ?? "unknown",
+      replacement: {
+        state: config.backfillFloor !== undefined ? "replacement" : "unknown",
+        predecessorLifecycleUid: "unknown",
+      },
+      name: config.name,
+      role: config.role,
+      space: config.space,
+      id: agent.id,
+      cotalVersion: DOCS_VERSION,
+      ...(config.model ? { model: config.model } : {}),
+    },
     access: {
       // AUTHENTICATED, not "has static creds": a user-auth mesh has no static creds and its grants
       // are broker-enforced, so `!!config.creds` told every agent on one that its grants were
@@ -187,6 +224,11 @@ export function renderOrientation(o: Orientation): string {
 
   const lines: string[] = [
     `You are ${who} in space "${o.identity.space}" (id ${o.identity.id.slice(0, 8)}…).`,
+    `Identity state: ${o.identity.state}`,
+    `  • display: ${o.identity.display.name}/${o.identity.display.role}`,
+    `  • principal: ${o.identity.principal.owner}.${o.identity.principal.actor}`,
+    `  • lifecycle UID: ${o.identity.lifecycleUid}`,
+    `  • replacement: ${o.identity.replacement.state} · predecessor lifecycle UID: ${o.identity.replacement.predecessorLifecycleUid}`,
     `Cotal v${o.identity.cotalVersion} — call cotal_docs for the version-exact spec, schema, and guides. ` +
       "Consult it before answering about Cotal or writing code against it; don't rely on training memory.",
     o.identity.model
