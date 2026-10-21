@@ -1281,7 +1281,10 @@ custody host over a per-invocation effect registry. That host writes only the in
 the exact keys discovery located before the effect registry opened, and the effect registry is
 handed the same key set so a broker grant can match it. A step that needs a key outside the scope
 holds as `scope-mismatch` before anything is issued; replaying the same request discovers what is
-stored and scopes it. The module's records and their write order are in SPEC §13.1. Results name their operation once a binding exists or may exist: `pending`, `held` and
+stored and scopes it. Each effect registry rides its own connection, whose credential publishes
+only that key set, never renews or reconnects, and expires at the invocation's original deadline
+rounded up to the whole second; the broker closes it up to 1999 ms after that deadline. Losing the
+connection fences the invocation. Discovery's credential has no write at all. The module's records and their write order are in SPEC §13.1. Results name their operation once a binding exists or may exist: `pending`, `held` and
 `refused` all carry `operationId`. A result can carry `debt`, the capacity releases its operation
 still owed as far as that invocation observed. A result without `debt` does not mean nothing is
 owed; the operation read is the authoritative view of the debt. A `held` result by itself implies

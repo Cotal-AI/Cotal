@@ -1546,6 +1546,17 @@ native custody keys of that one reservation. Only an approval's scope holds the 
 key; a revoke's never does. A step that needs a key outside the scope holds as `scope-mismatch`
 before anything is issued, including before native custody of a reservation the scope does not name.
 A replay of the same request discovers the stored binding and assignment and scopes them.
+Each invocation's effect connection is a fresh self-minted data-account identity named
+`cotal:service-host-effect:<space>`. Its credential publishes exactly the scope's keys as `$KV`
+subjects, and one more token under each auth family, beside the leader reads both stores need;
+discovery's credential publishes no `$KV` subject at all. Reads are not confined: the leader reads
+are stream-wide on both stores. The effect credential never renews or reconnects. Its one expiry is
+the invocation's original deadline, at most 60 s ahead, rounded up to the whole second. The broker
+checks expiry in whole seconds, so it closes the connection between that deadline and 1999 ms after
+it, never before. The close bounds the credential; it is not proof that an earlier write cannot
+still settle. Losing the effect connection fences the invocation: a later write holds, and a write
+in flight across the loss reports held. An effect connection that does not open holds as
+`unavailable` at `effect-open` with nothing written.
 Register reads admission, capacity, the selector's assignment and the name binding first. An initial
 refusal writes nothing and binds nothing. Otherwise the binding is created before the capacity CAS
 and the zero-history proposal create, whose times are fixed once in the binding. A refusal found
