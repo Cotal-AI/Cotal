@@ -30,9 +30,10 @@ An absent admission is an observation at read time, not proof that the original 
 still write. A changed caller generation or manager epoch refuses rather than adopting the run.
 
 The receiving manager or issuing host measures the request budget on its own monotonic clock,
-and checks the caller's authority expiry on the wall clock. A wall-clock step moves neither. The
-callback deadline a status read returns is a wall-clock record of that window, not something a
-caller or host enforces.
+and checks the caller's authority expiry on the wall clock. Wall-clock changes do not extend or
+spend the monotonic request budget. Authority expiry remains a wall-clock check. The callback
+deadline a status read returns is a wall-clock record of that window, not something a caller or
+host enforces.
 
 The original callback timer bounds waiting and starting more attempts. It does not cancel an
 already-issued broker publish, which may land later with the same frozen admission bytes.
