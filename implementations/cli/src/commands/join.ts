@@ -24,6 +24,7 @@ import {
 import { findMesh, inputDisabledByFlag, refreshRegistrationPolicy, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry } from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
 import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
+import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
 
 // The plan's stale-cred fail-fast gate: render an unprovisioned / auth-rejected join as ONE human
@@ -421,6 +422,7 @@ export async function join(args: ParsedArgs): Promise<void> {
             else {
               await ep.unicast(peer.card.id, text);
               print(`${c.magenta("(DM)")} ${c.dim("you →")} ${c.bold(peer.card.name)}: ${text}`);
+              if (peer.status === "offline") print(c.yellow(offlineRecipientNotice(peer.card.name)));
             }
           } catch (e) {
             if (!(e instanceof AmbiguousPeerError)) throw e;

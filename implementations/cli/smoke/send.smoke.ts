@@ -48,7 +48,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 40;
+const EXPECTED = 43;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -124,6 +124,14 @@ let dave: CotalEndpoint | undefined;
 let witness: CotalEndpoint | undefined;
 const expectedSender = `${userInfo().username}@${hostname()}`;
 const got: Array<{ route: string; text: string; fromId: string; fromName: string }> = [];
+// Bob's endpoint options and message handler, kept so the same lifecycle can come back later.
+let bobOptions: ConstructorParameters<typeof CotalEndpoint>[0];
+const onBobMessage = (message: CotalMessage, delivery: Delivery) => {
+  const text = message.parts.map((part) => (part.kind === "text" ? part.text : "")).join("");
+  const route = message.to ? "DM" : message.toService ? `ANY:${message.toService}` : `#${message.channel ?? ""}`;
+  got.push({ route, text, fromId: message.from.id, fromName: message.from.name });
+  delivery.ack();
+};
 
 try {
   check("the subprocess entry is the repository's real bin/cotal.ts", existsSync(cli), cli);
@@ -168,7 +176,7 @@ try {
     subscribe: ["general"],
     allowSubscribe: ["general"],
   });
-  bob = new CotalEndpoint({
+  bobOptions = {
     space,
     servers,
     creds: bobCreds,
@@ -177,13 +185,9 @@ try {
     channels: ["general"],
     heartbeatMs: 500,
     ttlMs: 10_000,
-  });
-  bob.on("message", (message: CotalMessage, delivery: Delivery) => {
-    const text = message.parts.map((part) => (part.kind === "text" ? part.text : "")).join("");
-    const route = message.to ? "DM" : message.toService ? `ANY:${message.toService}` : `#${message.channel ?? ""}`;
-    got.push({ route, text, fromId: message.from.id, fromName: message.from.name });
-    delivery.ack();
-  });
+  };
+  bob = new CotalEndpoint(bobOptions);
+  bob.on("message", onBobMessage);
   bob.on("error", (error: Error) => console.error("! bob:", error.message));
   await bob.start();
   await wait(800);
@@ -239,6 +243,7 @@ try {
     /Stored sequence:\s+\d+/.test(dm.stdout) && /Delivery:\s+not confirmed/.test(dm.stdout) && !dm.stdout.includes("delivered"),
     dm.stdout,
   );
+  check("the `send -t` to a live recipient prints no offline warning", dm.code === 0 && !dm.stderr.includes("is offline"), dm.stderr);
   check(
     "the outside-seat DM carries the credential-derived principal and CLI display name",
     got.some((m) => m.route === "DM" && m.text === dmText && m.fromId.startsWith(`${DEV_OWNER}.`) && m.fromName === expectedSender),
@@ -407,6 +412,12 @@ try {
     /Stored sequence:\s+\d+/.test(offlineDm.stdout) && /Delivery:\s+not confirmed/.test(offlineDm.stdout) && !offlineDm.stdout.includes("delivered"),
     offlineDm.stdout,
   );
+  // The warning may wrap at the terminal width, so its words are compared with whitespace collapsed.
+  check(
+    "the offline-window `send -t` warns that bob is offline and gets the message when he reconnects",
+    offlineDm.stderr.replace(/\s+/g, " ").includes("! bob is offline. The message is stored and delivered when bob reconnects; a new agent spawned as bob does not receive it."),
+    offlineDm.stderr,
+  );
   // Bob's held send is read through his exact durable, which does not depend on his card.
   const bobDurable = dmDurable(DEV_OWNER, bobIdentity.id, bobUid);
   const pendingBob = await run(["deliver", "pending", "bob", "--durable", bobDurable, "--creds", adminCreds, "--space", space, "--server", servers]);
@@ -509,6 +520,18 @@ try {
     { code: pendingWrongCreds.code, stderr: pendingWrongCreds.stderr },
   );
 
+  // What the offline warning promises: bob coming back under the same lifecycle receives the DM
+  // the offline-window send stored while he was gone.
+  bob = new CotalEndpoint(bobOptions);
+  bob.on("message", onBobMessage);
+  bob.on("error", () => {});
+  await bob.start();
+  for (let i = 0; i < 50 && !got.some((g) => g.route === "DM" && g.text === offlineText); i++) await wait(100);
+  check(
+    "bob, back under the same lifecycle, receives the DM sent while he was offline",
+    got.some((g) => g.route === "DM" && g.text === offlineText),
+    got.filter((g) => g.route === "DM").map((g) => g.text),
+  );
 } finally {
   await bob?.stop().catch(() => {});
   await carol?.stop().catch(() => {});

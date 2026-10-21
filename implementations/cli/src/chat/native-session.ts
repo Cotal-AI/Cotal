@@ -25,6 +25,7 @@ import {
   type Delivery,
   type MessageMeta,
   type Presence,
+  type PresenceStatus,
 } from "@cotal-ai/core";
 import type { RefusalCode } from "@cotal-ai/workspace";
 import { ParticipantEngine } from "./engine.js";
@@ -143,10 +144,13 @@ export class NativeChatSession implements AdmittedChatSession {
   async dm(to: string, text: string, replyTo?: string): Promise<PublishResult> {
     const ep = this.inputs.endpoint;
     let recipient: { id: string; name: string };
+    let recipientStatusAtSend: PresenceStatus | "unrostered" = "unrostered";
     try {
       const peer = resolvePeer(ep.getRoster(), to, { selfId: this.inputs.identity.principal });
-      if (peer) recipient = { id: peer.card.id, name: peer.card.name };
-      else {
+      if (peer) {
+        recipient = { id: peer.card.id, name: peer.card.name };
+        recipientStatusAtSend = peer.status;
+      } else {
         const rostered = new Set(ep.getRoster().map((p) => p.card.id));
         const held = this.engine.resolveUnrostered(to, rostered);
         if (held === "ambiguous") return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names more than one sender; use the full principal` };
@@ -164,7 +168,7 @@ export class NativeChatSession implements AdmittedChatSession {
     }
     try {
       const { msg, ack } = await ep.unicastAttributed(recipient.id, text, replyTo !== undefined ? { replyTo } : {});
-      return { outcome: "stored", messageId: msg.id, seq: ack.seq, duplicate: ack.duplicate, recipient };
+      return { outcome: "stored", messageId: msg.id, seq: ack.seq, duplicate: ack.duplicate, recipient, recipientStatusAtSend };
     } catch (e) {
       return classify(e);
     }

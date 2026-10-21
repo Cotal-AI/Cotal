@@ -74,6 +74,8 @@ export interface Stored {
   readonly registered?: boolean;
   /** For a DM, the resolved recipient. */
   readonly recipient?: { readonly id: string; readonly name: string };
+  /** For a DM, the recipient's roster status just before the publish; `unrostered` when it had no row. */
+  readonly recipientStatusAtSend?: PresenceStatus | "unrostered";
   /** For anycast, the live holders at send, when the presence view was current. */
   readonly holdersAtSend?: number;
 }
