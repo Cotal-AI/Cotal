@@ -577,19 +577,20 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   const log = openSetupLog(join(inputs.project, ".cotal", "setup.log"));
   const actions = actionRunner(narrate, opts.interactive, log);
   if (candidate.missing.length === 0) {
-    const provider = await availableSetupProvider(candidate.connector);
-    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv() }));
-    // Resolved again because the connector action can change what is on PATH, and a provider whose
-    // executables are gone must not write.
-    const share = (await availableSetupProvider(candidate.connector))?.mcpServers;
-    if (share) await actions.run(candidate.value, actionStep(share, connectorShareInput(candidate.connector)));
+    const provider = await connectorSetupProvider(candidate.connector);
+    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv() }, provider));
+    // Recheck inside each selected action so lost readiness is a recorded failure, never a skipped step.
+    const share = await connectorSetupProvider(candidate.connector);
+    if (share?.mcpServers) await actions.run(candidate.value, actionStep(share.mcpServers, connectorShareInput(candidate.connector), share));
+    const skills = await connectorSetupProvider(candidate.connector);
+    if (skills?.skills) await actions.run(candidate.value, actionStep(skills.skills, connectorSkillsInput(), skills));
   }
   // A connector's skills action runs for every connector whose harness is present, so someone using
   // that harness gets Cotal's skills even without joining the mesh through it.
   for (const other of await setupConnectorCandidates(await setupConnectorSurface())) {
-    if (other.missing.length > 0) continue;
-    const skills = (await availableSetupProvider(other.connector))?.skills;
-    if (skills) await actions.run(other.value, actionStep(skills, connectorSkillsInput()));
+    if (other.value === candidate.value || other.missing.length > 0) continue;
+    const provider = await connectorSetupProvider(other.connector);
+    if (provider?.skills) await actions.run(other.value, actionStep(provider.skills, connectorSkillsInput(), provider));
   }
   if (agentSkillsSkew().some((s) => s.state !== "current")) {
     const skills = seedAgentSkills(log);
@@ -1012,13 +1013,16 @@ async function availableSetupProvider(connector: Connector): Promise<ConnectorSe
  * compiler checks each call site's pairing of an action with the input it hands it. `NoInfer` infers
  * `I` from the action alone: inferring it from the input too widens it to accept a dropped
  * (`undefined`) input. */
-function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>): Step {
+function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>, provider: ConnectorSetupProvider): Step {
   return {
     name: setup.name,
     title: setup.title,
     explain: setup.explain,
     context: [...(setup.context ?? [])],
-    async run() { return setup.run(input); },
+    async run() {
+      if (!setupProviderAvailable(provider)) throw new Error(`${provider.name} is unavailable; ${setup.title} did not run`);
+      return setup.run(input);
+    },
   };
 }
 

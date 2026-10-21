@@ -74,6 +74,22 @@ try {
     assert.ok(result.result.actions.every((action) => !action.action.startsWith("claude-")));
     assert.equal(existsSync(join(home, ".cotal", "claude-plugin")), false, "unavailable unrelated Claude gets no new plugin");
     checks += 1;
+    if (kind === "broken") {
+      const count = join(home, "readiness-count");
+      writeFileSync(join(bin, "claude"), `#!${process.execPath}\nconst fs=require('node:fs'); const p=${JSON.stringify(count)}; const n=fs.existsSync(p)?Number(fs.readFileSync(p,'utf8')):0; fs.writeFileSync(p,String(n+1)); if(n===0 && process.argv[2]==='--version'){console.log('2.1.299 (Claude Code)');process.exit(0);}process.exit(1);\n`);
+      const changedProject = join(home, "changed-project");
+      mkdirSync(changedProject);
+      const changed = spawnSync(process.execPath, [command, "setup", "--destination", "local", "--harness", "claude", "--project", changedProject, "--space", "changed-readiness", "--configure-only", "--no-input", "--json"], {
+        env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_SKIP_ASSIST: "1" }, cwd: changedProject, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL",
+      });
+      assert.equal(changed.status, 4, `${changed.stdout}\n${changed.stderr}`);
+      const partial = JSON.parse(changed.stdout) as { outcome: string; result: { harness: { failed: { action: string } }; actions: unknown[] } };
+      assert.equal(partial.outcome, "partial", "lost readiness must not report a completed setup");
+      assert.equal(partial.result.harness.failed.action, "claude-plugin");
+      assert.deepEqual(partial.result.actions, []);
+      assert.equal(existsSync(join(home, ".cotal", "claude-plugin")), false, "the refused native action did not write its plugin");
+      checks += 1;
+    }
   }
   console.log(`native-availability.smoke: ${checks} boundary groups passed`);
 } finally {
