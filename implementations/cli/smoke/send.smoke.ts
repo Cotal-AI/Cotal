@@ -9,8 +9,9 @@
  * the seed store follows XDG_CONFIG_HOME (via globalConfigDir()), not COTAL_HOME.
  *
  * Leak check (#4091): each one-shot send reads presence and the channel registry once, with no watch
- * consumer, so the consumer count on both buckets is the same before and after the sends. The old
- * watch left one consumer per send on each bucket for five minutes. `cotal channels list` on the same
+ * consumer, and a channel send reads that channel's policy with a Direct Get, so the consumer count
+ * on both buckets is the same before and after the sends. The old watch, and the policy read's scan,
+ * left one consumer per send on the bucket they read for five minutes. `cotal channel` on the same
  * operator credential reads the registry with a Direct Get and leaves no consumer either.
  *
  * Run: pnpm smoke:send
@@ -209,7 +210,7 @@ try {
   const ask = await run(["send", "-r", "reviewer", askText]);
   await wait(700);
   const consumersAfter = await watchConsumers();
-  const listed = await run(["channels", "list"]);
+  const listed = await run(["channel"]);
   const consumersAfterList = await watchConsumers();
   await inspector.close();
 
@@ -223,9 +224,9 @@ try {
     consumersAfter.presence === consumersBefore.presence && consumersAfter.channels === consumersBefore.channels,
     { before: consumersBefore, after: consumersAfter },
   );
-  check("`cotal channels list` exits 0 and lists the seeded #general", listed.code === 0 && listed.stdout.includes("#general"), listed);
+  check("`cotal channel` exits 0 and lists the seeded #general", listed.code === 0 && listed.stdout.includes("#general"), listed);
   check(
-    "`cotal channels list` leaves no consumer on the channel-registry stream (#4091)",
+    "`cotal channel` leaves no consumer on the channel-registry stream (#4091)",
     consumersAfterList.channels === consumersAfter.channels,
     { before: consumersAfter, after: consumersAfterList },
   );

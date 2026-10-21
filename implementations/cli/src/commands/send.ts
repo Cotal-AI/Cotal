@@ -150,7 +150,10 @@ export async function send(args: ParsedArgs): Promise<void> {
     let policy: NonNullable<typeof receipt>["channelPolicy"] = null;
     if (input.mode === "msg") {
       try {
-        const registry = await readChannelRegistry({ servers: connection.server, space, ...(connection.bearer ? { bearer: connection.bearer, sentinelCreds: connection.sentinelCreds } : { creds: connection.creds }) });
+        // One Direct Get with a static or open credential, as the transient endpoint reads: the
+        // default scan's consumer outlives the send by five minutes (#4091). A user bearer has no
+        // Direct Get row, so it keeps the scan.
+        const registry = await readChannelRegistry({ servers: connection.server, space, ...(connection.bearer ? { bearer: connection.bearer, sentinelCreds: connection.sentinelCreds } : { creds: connection.creds }), directGet: !connection.bearer });
         const config = Object.hasOwn(registry.channels ?? {}, input.target) ? registry.channels![input.target] : undefined;
         policy = { registered: config !== undefined, replay: effectiveReplay(config, registry.defaults), window: config?.replayWindow ?? registry.defaults?.replayWindow ?? null, delivery: effectiveDeliveryClass(config, registry.defaults) };
         if (!policy.registered) warnings.push({ code: "CHANNEL_UNREGISTERED", target, message: "Unregistered channel: publication uses the native space policy and does not create channel metadata." });

@@ -3060,7 +3060,8 @@ consumer, so it leaves nothing on the broker when it exits. On a user-auth mesh 
 bearer, which has no batched read of those buckets, so it watches them instead, and each watch's
 consumer stays on the broker for five minutes after the send exits. A sustained send rate there can
 reach the broker's limit of 1000 consumers per stream, and the broker refuses further sends until
-the old consumers expire.
+the old consumers expire. A channel send also reads that channel's policy, with one Direct Get on a
+static or open mesh and with one more scan consumer on a user-auth mesh.
 
 A recipient can still answer a
 `send --to` or `send --role` with `cotal_dm`, by the sender's name or by the id on the message it

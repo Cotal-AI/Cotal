@@ -5,10 +5,12 @@
  * result, and that first report had no `Mesh:` line, so the space was named only after the review.
  * The impact is now the first report and begins with `Mesh: <space>`, as `down` does.
  *
- * Starts an open broker-only stack (`up --detach --open --no-manager`) in a sandboxed COTAL_HOME on
- * a free port, then stops its broker with `service stop stack-broker --yes --plain`; that stop is
- * also the teardown. If the suite fails before it, every running instance the sandbox's own
- * `service --json` inventory lists is sent SIGTERM by pid. Needs `nats-server` on PATH.
+ * Prepares a space at a sandboxed root (`space create`), so `up --detach --open --no-manager` starts
+ * it as a controller stack whose broker is the saved `stack-broker` definition. An unprepared root
+ * takes the retained launcher, which saves no definition for `service stop` to resolve. It then
+ * stops that broker with `service stop stack-broker --yes --plain`; that stop is also the teardown.
+ * If the suite fails before it, every running instance the sandbox's own `service --json` inventory
+ * lists is sent SIGTERM by pid. Needs `nats-server` on PATH.
  *
  * Run: pnpm smoke:service-stop-mesh:live
  */
@@ -41,8 +43,10 @@ const cotal = (...words: string[]) => {
 const shown = (r: ReturnType<typeof cotal>) => ({ status: r.status, stdout: r.stdout.slice(0, 1200), stderr: r.stderr.slice(0, 600) });
 
 try {
+  const prepared = cotal("space", "create", space, "--root", root);
+  check("fixture: the space is prepared at the sandbox root", prepared.status === 0, shown(prepared));
   const up = cotal("up", "--detach", "--open", "--no-manager", "--server", server, "--space", space);
-  check("fixture: an open broker-only stack starts", up.status === 0, shown(up));
+  check("fixture: an open broker-only controller stack starts", up.status === 0 && existsSync(join(root, ".cotal", "stack-controller.json")), shown(up));
 
   const stop = cotal("service", "stop", "stack-broker", "--yes", "--plain");
   const mesh = stop.stdout.indexOf(`Mesh: ${space}`), scope = stop.stdout.indexOf("Broker stop scope");
