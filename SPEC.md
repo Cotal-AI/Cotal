@@ -1552,9 +1552,13 @@ subjects, and one more token under each auth family, beside the leader reads bot
 discovery's credential publishes no `$KV` subject at all. Reads are not confined: the leader reads
 are stream-wide on both stores. The effect credential never renews or reconnects. Its one expiry is
 the invocation's original deadline, at most 60 s ahead, rounded up to the whole second. The broker
-checks expiry in whole seconds, so it closes the connection between that deadline and 1999 ms after
-it, never before. The close bounds the credential; it is not proof that an earlier write cannot
-still settle. Losing the effect connection fences the invocation: a later write holds, and a write
+checks expiry in whole seconds against its own clock: it admits no connect once its current second
+is past that expiry, and it closes a live connection with one whole-second timer armed at connect.
+With a broker clock that agrees with the host's and timely broker and client scheduling, that close
+comes within the second after the expiry, up to about 1999 ms after the deadline. This is timer
+granularity, not a guaranteed close time: a skewed clock or a paused or late broker or client moves
+the close either way. Neither the expiry nor the close is proof that an earlier write cannot still
+settle. Losing the effect connection fences the invocation: a later write holds, and a write
 in flight across the loss reports held. An effect connection that does not open holds as
 `unavailable` at `effect-open` with nothing written.
 Register reads admission, capacity, the selector's assignment and the name binding first. An initial

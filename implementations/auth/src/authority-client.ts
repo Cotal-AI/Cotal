@@ -474,15 +474,17 @@ export interface AuthorityClientOpts {
    *  `noReconnect` required, never a plane, custody or renewing profile. `deadlineMs` is the
    *  invocation's ORIGINAL deadline: a safe integer after now and at most
    *  {@link SERVICE_HOST_INVOCATION_MS} ahead. The credential's one fixed `exp` is
-   *  `ceil(deadlineMs / 1000)` whole seconds, so it never expires before that deadline; it is
-   *  never renewed, the connect is bounded by the remaining window, and {@link AuthorityClient.gone}
+   *  `ceil(deadlineMs / 1000)` whole seconds, so `exp * 1000` is never earlier than that deadline;
+   *  it is never renewed, the connect is bounded by the remaining window, and {@link AuthorityClient.gone}
    *  resolves when the connection is gone.
    *
-   *  Broker granularity, disclosed: nats-server checks `exp` in whole seconds and arms one timer at
-   *  connect, which fires inside the second after `exp`. The broker closes the connection between
-   *  the deadline and `deadlineMs + 1999` ms (measured on 2.12.12 and 2.14.0), never earlier. A
-   *  closed connection at or after the deadline is a bound on the credential, never proof that an
-   *  earlier write cannot still settle. */
+   *  Broker granularity, disclosed: nats-server checks `exp` in whole seconds against its own clock,
+   *  refuses a connect once its current second is past `exp`, and arms one whole-second timer at
+   *  connect to close a live connection. With a broker clock that agrees with this process's and
+   *  timely broker and client scheduling, that timer fires inside the second after `exp`, up to
+   *  about `deadlineMs + 1999` ms (observed on 2.12.12 and 2.14.0). That is timer granularity, not a
+   *  guaranteed close time: a skewed clock or a paused or late broker or client moves the close
+   *  either way. No close, at any time, proves that an earlier write cannot still settle. */
   serviceHostInvocation?: { deadlineMs: number };
 }
 

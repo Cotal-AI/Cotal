@@ -244,9 +244,10 @@ const L = (r: unknown) => r as Loose;
     const g = await within(eff.gone.then(() => true), 6_000);
     const goneAt = Date.now(), cause = await why;
     console.log(`INFO X1 broker close observed ${goneAt - dl} ms after the deadline, ${goneAt - exp * 1000} ms after exp (${exp * 1000 - dl} ms rounding)`);
-    c.check("X1 the broker closes the effect connection after its exp second, never before the original deadline", g === true && goneAt >= dl && goneAt >= exp * 1000,
-      { afterDeadlineMs: goneAt - dl, afterExpMs: goneAt - exp * 1000 });
-    c.check("X1 the close comes within the disclosed bound: before the end of the second after exp (deadline + 1999 ms) plus 500 ms scheduling slack",
+    // An ordinary-run observation on one host clock with an unpaused owned broker: timer granularity, not a close-time guarantee.
+    c.check("X1 (one host clock, unpaused broker) the broker closed the effect connection after its exp second, not before the original deadline",
+      g === true && goneAt >= dl && goneAt >= exp * 1000, { afterDeadlineMs: goneAt - dl, afterExpMs: goneAt - exp * 1000 });
+    c.check("X1 (one host clock, unpaused broker) the close came inside the second after exp, with this suite's 500 ms scheduling allowance",
       goneAt < exp * 1000 + 1_000 + 500 && goneAt - dl <= 1_999 + 500, { afterDeadlineMs: goneAt - dl });
     c.check("X1 the close is the broker's credential expiry, not a client close", /expired/i.test(String((cause as Error | undefined)?.message ?? "")), String(cause));
     await pause(1_500);
