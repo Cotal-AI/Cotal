@@ -199,25 +199,42 @@ export async function readNativeServiceAccess(reg: LifecycleRegistry, reader: Co
   return { witness, gateRevision: found.revision, expiresAt };
 }
 
-/** Final approval CAS. The host must first verify the proposal, owner consent and operator target policy. */
-export async function approveNativeServiceGate(reg: LifecycleRegistry, binding: ServiceAssignmentBinding, args: {
-  expectedRevision: number; rootCredentialId: string; approvalDigest: string; nameAuthorityRevision: number;
+/** The approval content of a first-approval gate CAS. */
+export interface ServiceApprovalArgs {
+  rootCredentialId: string; approvalDigest: string; nameAuthorityRevision: number;
   approvalExpiresAt: number | null; callerCeiling: EpCapability[];
-}): Promise<ServiceGateRead> {
-  const found = await current(reg, binding, args.expectedRevision);
-  if (found.row.state !== "open" || found.row.serviceAuthority.state !== "pending-root")
+}
+
+/** Pure first-approval precondition on a read gate row, in the approval CAS's own order. */
+export function assertApprovableServiceGate(row: ServiceRow, args: Pick<ServiceApprovalArgs, "nameAuthorityRevision">): void {
+  if (row.state !== "open" || row.serviceAuthority.state !== "pending-root")
     conflict("only the pending root assignment can receive its first approval");
   if (!Number.isSafeInteger(args.nameAuthorityRevision) || args.nameAuthorityRevision <= 0)
     throw new EpEnvelopeError("failed-precondition", "service approval requires its native name binding revision");
-  const now = Date.now();
+}
+
+/** Pure approved successor of `row`. `rootExpiresAt` comes from the live root proof read at
+ *  `nowMs`; `expired` when the approval is not live then. */
+export function approvedServiceGateRow(row: ServiceRow, args: ServiceApprovalArgs, rootExpiresAt: number, nowMs: number): ServiceRow {
   const authority: ServiceGateAuthority = {
-    ...found.row.serviceAuthority, state: "approved", rootCredentialId: args.rootCredentialId,
-    rootExpiresAt: await rootExpiry(reg, binding, args.rootCredentialId, now), approvalDigest: args.approvalDigest,
+    ...row.serviceAuthority, state: "approved", rootCredentialId: args.rootCredentialId,
+    rootExpiresAt, approvalDigest: args.approvalDigest,
     approvalExpiresAt: args.approvalExpiresAt, callerCeiling: parseEndpointCapabilities(args.callerCeiling),
   };
-  if (!serviceGateApprovalLive(authority, Math.floor(now / 1000)))
+  if (!serviceGateApprovalLive(authority, Math.floor(nowMs / 1000)))
     throw new EpEnvelopeError("expired", "service approval has already expired");
-  return replace(reg, binding, found, { ...found.row, nameAuthorityRevision: args.nameAuthorityRevision, serviceAuthority: authority });
+  return { ...row, nameAuthorityRevision: args.nameAuthorityRevision, serviceAuthority: authority };
+}
+
+/** Final approval CAS. The host must first verify the proposal, owner consent and operator target policy. */
+export async function approveNativeServiceGate(reg: LifecycleRegistry, binding: ServiceAssignmentBinding, args: ServiceApprovalArgs & {
+  expectedRevision: number;
+}): Promise<ServiceGateRead> {
+  const found = await current(reg, binding, args.expectedRevision);
+  assertApprovableServiceGate(found.row, args);
+  const now = Date.now();
+  const rootExpiresAt = await rootExpiry(reg, binding, args.rootCredentialId, now);
+  return replace(reg, binding, found, approvedServiceGateRow(found.row, args, rootExpiresAt, now));
 }
 
 /** The host withholds both access and renewal material until this monotonic activation CAS wins. */
