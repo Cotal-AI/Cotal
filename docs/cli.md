@@ -3328,9 +3328,10 @@ stdin carries requests and stdout carries records, one JSON object per line, in 
 ends. A CR before the LF is dropped, a blank line is ignored, and a last line with no LF still
 counts when input ends. A line longer than 1048576 UTF-16 code units is discarded up to its next LF
 and reported once with an `error` record. Input is decoded as UTF-8 with replacement, so bytes
-that are not valid UTF-8 become U+FFFD. Inside a JSON string the line still parses: a `text` value
-is sent with U+FFFD in their place, and a field that accepts only some characters, such as `id`,
-refuses. Outside a string they make that line's JSON parse refuse. stdout carries records and
+that are not valid UTF-8 become U+FFFD. In ordinary string content the line can still parse: a
+`text` value is sent with U+FFFD in their place, and a field that accepts only some characters,
+such as `id`, refuses. In an escape sequence such as `\` or `\u` and its four digits, or outside a
+string, they make that line's JSON parse refuse. stdout carries records and
 nothing else. The session's diagnostics go to stderr, prefixed `cotal chat: `, and never repeat a
 message body.
 

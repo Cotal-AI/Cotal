@@ -15,8 +15,9 @@ export const MAX_PENDING_OUTPUT_BYTES = 4 * 1024 * 1024;
 /**
  * Split decoded text into complete lines. A line longer than {@link MAX_REQUEST_LINE} is discarded
  * up to its next newline, and reported once with no content. A trailing `\r` before `\n` is dropped
- * (CRLF input). StringDecoder decodes invalid UTF-8 as U+FFFD, which never splits a line. Inside a
- * JSON string it reaches the request as U+FFFD; elsewhere it makes the JSON parse refuse.
+ * (CRLF input). StringDecoder decodes invalid UTF-8 as U+FFFD, which never splits a line. In ordinary
+ * string content it can reach the request as U+FFFD; in an escape sequence or outside a string it
+ * makes the JSON parse refuse.
  */
 export class LineFramer {
   private readonly decoder = new StringDecoder("utf8");
