@@ -381,8 +381,9 @@ try {
   // nothing at all — so a kind missing from the seam loop outlives its tenant with no second net.
   check("...deletes all four store-backed kinds at their SEGMENTED keys",
     reapStore.keys().join(",") === Object.keys(seeded("beta")).sort().join(","), reapStore.keys().join(","));
-  check("...and reports each removal by the key it removed",
-    reapKinds.every((k) => first.removed.includes(`.cotal/${segmentedKey(k, "alpha")}`)) && first.failed.length === 0,
+  check("...and reports each removal by the path or key it removed",
+    reapKinds.every((k) => first.removed.includes(`.cotal/${segmentedKey(k, "alpha")}`)) &&
+    first.removed.includes(`.cotal/${basename(renewalRecordPath(reaped, "alpha"))}`) && first.failed.length === 0,
     { removed: first.removed, failed: first.failed });
   // §2.2 needs steps 5-7 individually idempotent so a re-run after a crash FINISHES the removal.
   const second = await noThrow(() => reapSpaceMaterial(reaped, "alpha", reapStore.store));
@@ -417,6 +418,23 @@ try {
       .every((k) => partial.removed.includes(`.cotal/${segmentedKey(k, "alpha")}`)) &&
     partial.removed.some((r) => r.startsWith(`.cotal/${spaceSegment("alpha")} `)) &&
     !existsSync(spaceMaterialDir(reapFail, "alpha")), partial.removed);
+
+  // A malformed path state is explicit failure DATA too. In particular, the reaper must not use an
+  // existence check that launders every unreadable/non-file state into absence, and it must still
+  // finish independent work after that failure.
+  const reapRenewalFail = await makeRoot("reap-renewal-fail", ["alpha", "beta"]);
+  roots.push(reapRenewalFail);
+  stageSegment(reapRenewalFail, "alpha");
+  mkdirSync(renewalRecordPath(reapRenewalFail, "alpha"));
+  writeFileSync(join(renewalRecordPath(reapRenewalFail, "alpha"), "unexpected-child"), "not a record");
+  writeRenewalRecord(reapRenewalFail, "beta", { ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [] });
+  const renewalPartial = await noThrow(() => reapSpaceMaterial(reapRenewalFail, "alpha", memStore({}).store));
+  check("a non-file renewal state is RETURNED explicitly, not treated as absence",
+    renewalPartial.failed.length === 1 && renewalPartial.failed[0]?.includes(basename(renewalRecordPath(reapRenewalFail, "alpha"))) === true,
+    renewalPartial.failed);
+  check("...and the independent reap continues without touching the neighbour's renewal record",
+    !existsSync(spaceMaterialDir(reapRenewalFail, "alpha")) && existsSync(renewalRecordPath(reapRenewalFail, "beta")),
+    renewalPartial);
 
   // #1850: THE RENEWAL RECORD IS PER-SPACE, keyed the way the pidfiles are. Two spaces at one root
   // keep two records; a read for one space never returns the other's verdict; a root-only legacy
