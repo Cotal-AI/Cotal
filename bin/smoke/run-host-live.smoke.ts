@@ -364,7 +364,8 @@ try {
         const parts = command.match(/(?:[^\s']+|'[^']*')+/g)?.map((p) => p.startsWith("'") ? p.slice(1, -1) : p) ?? [];
         const [binary, ...args] = parts;
         if (binary === "cotal") {
-          renderedForm = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), ...args], {
+          // The rendered command as is, with `--json` added so its receipt is the CLI's result envelope.
+          renderedForm = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), ...args, "--json"], {
             cwd: wsA,
             env: {
               ...process.env,
@@ -376,8 +377,10 @@ try {
               COTAL_ACCEPTED_TOKEN: asked.issued?.acceptedToken ?? "",
             },
           }).then(({ stdout }) => {
-            const reply = JSON.parse(stdout) as { token?: unknown; answerId?: unknown };
-            return typeof reply.token === "string" && typeof reply.answerId === "string"
+            const out = JSON.parse(stdout) as { command?: unknown; outcome?: unknown; result?: { kind?: unknown; action?: unknown; result?: { token?: unknown; answerId?: unknown } } };
+            const reply = out.result?.result;
+            return out.command === "run" && out.outcome === "ok" && out.result?.kind === "run-receipt" && out.result.action === "answer"
+              && typeof reply?.token === "string" && typeof reply.answerId === "string"
               ? { ok: true as const, token: reply.token, answerId: reply.answerId }
               : { ok: false as const, error: `the CLI returned no answer coordinate: ${stdout}` };
           }, (e: unknown) => ({ ok: false as const, error: String((e as Error).message) }));
@@ -677,7 +680,10 @@ try {
   try {
     hostedOut = await cli(["start"], { file }).then((out) => out, (e: Error) => `threw: ${e.message}`);
     localOut = await cli(["start"], { file, local: true, "admit-read": "none", "admit-publish": "none" }).then((out) => out, (e: Error) => `threw: ${e.message}`);
-    ps = await cli(["ps"]);
+    // `--json` writes one result envelope straight to stdout, so the listing is read there.
+    const realWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => { LOGS.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)); return true; }) as typeof process.stdout.write;
+    try { ps = await cli(["ps"], { json: true }); } finally { process.stdout.write = realWrite; }
   } finally {
     console.log = realLog;
     console.error = realError;
@@ -686,7 +692,9 @@ try {
   }
   c("B1. `cotal run start` on an open mesh is refused by the manager, naming the space and that runs need a static-auth mesh", hostedOut.includes("threw: exit 1") && hostedOut.includes("an open mesh issues no caller authority") && hostedOut.includes(spaceB), hostedOut);
   c("B2. `cotal run start --local` on an open mesh is refused before any drive: no admission store stands there", localOut.includes("threw: exit 1") && localOut.includes("an open mesh keeps no admission store"), localOut);
-  c("B3. `cotal run ps` still reads there, and lists nothing", !ps.includes("run-"), ps);
+  const listed = (() => { try { return JSON.parse(ps) as { command?: unknown; outcome?: unknown; target?: { space?: unknown }; result?: { kind?: unknown; items?: unknown } }; } catch { return undefined; } })();
+  c("B3. `cotal run ps` still reads there, and lists nothing", listed?.command === "run" && listed.outcome === "ok" && listed.target?.space === spaceB
+    && listed.result?.kind === "runs" && Array.isArray(listed.result.items) && listed.result.items.length === 0, ps);
   await mgr.stop();
   mgr = undefined;
 } catch (e) {
