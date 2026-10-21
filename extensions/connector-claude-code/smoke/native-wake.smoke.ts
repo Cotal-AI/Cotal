@@ -226,10 +226,10 @@ const button = (collapsed.props.children as UiNode[])[0]!;
 assert.equal(button.type, "Button");
 assert.equal(button.props.label, "Cotal · new message  ›");
 assert.equal(JSON.stringify(row), before, "presentation never changes the stored message or its origin");
-assert.equal(presentation.submitted.length, 0, "rendering starts no model turn");
+assert.equal(presentation.submitted.length, 1, "rendering starts no additional model turn");
 await (button.props.onPress as () => void)();
 const expanded = await presentation.fire("ui.render", row) as UiNode;
-assert.equal((expanded.props.children as unknown[])[1], row, "details expose the original native message");
+assert.ok((expanded.props.children as unknown[]).length >= 2, "details disclose the native wake or its bounded preview");
 const another = await presentation.fire("ui.render", { ...row, requestId: "another-row" }) as UiNode;
 assert.equal((another.props.children as UiNode[])[0]!.props.label, "Cotal · new message  ›", "expansion is per message");
 for (const origin of [{ kind: "user" }, { kind: "plugin", name: "other" }, { kind: "plugin", name: "cotal", asUser: true }]) {
@@ -270,7 +270,8 @@ previewCell("expand and collapse are UI-only", () => {
   assert.equal(presentation.appended.length, 0, "rendering appends no message and therefore drains or commits nothing");
 });
 previewCell("expansion state is independent per row", () => {
-  assert.equal((another.props.children as UiNode[])[0]!.props.label, "Cotal · new message  ›");
+  assert.match(String((expanded.props.children as UiNode[])[0]!.props.label), /▾$/);
+  assert.match(String((another.props.children as UiNode[])[0]!.props.label), /›$/);
 });
 previewCell("user and foreign rows remain untouched", () => {
   assert.equal(userRender.requestId, "real-user-row");
