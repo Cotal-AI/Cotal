@@ -1523,7 +1523,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   );
   console.log(c.dim("Press Ctrl-C to stop.\n"));
   const listenerStartedAt = new Date().toISOString();
-  const child = spawn(bin, natsArgs, { stdio: "inherit" });
+  // A terminal sends Ctrl-C to the whole foreground process group. Keep the broker outside it
+  // on POSIX so only this owner receives the interrupt and can finish manager-first teardown
+  // before signalling the broker. Keep the child referenced and its output in this terminal.
+  const child = spawn(bin, natsArgs, { stdio: "inherit", detached: process.platform !== "win32" });
   let activationFinished = !resumeAttempt;
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
   releaseStartupLock();
