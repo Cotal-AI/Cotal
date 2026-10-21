@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
 import * as prompts from "@clack/prompts";
@@ -20,12 +20,13 @@ import {
   registry,
   parseCommandArgs,
   token,
+  writePrivateRecord,
   type Command,
   type FlagSpec,
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, claimServicePid, identityPinPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
+  authDir, canonicalLocalProcessPath, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
   brokerAddressForDisplay, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
@@ -91,7 +92,7 @@ function resumeCommitToken(v: Values, allowArgv: boolean): string | undefined {
  * A folder with no `.cotal/` is not a workspace and gets no record: creating one here would plant a
  * stray workspace root wherever a manager happened to be started.
  */
-export function recordManagerPid(root: string, space: string, options: { private?: true } = {}): () => void {
+export function recordManagerPid(root: string, space: string): () => void {
   const dir = join(root, ".cotal");
   if (!existsSync(dir)) {
     console.error(c.dim(`• no ${dir} here, so this manager is not recorded in a pidfile (nothing local will find it by pid)`));
@@ -108,11 +109,11 @@ export function recordManagerPid(root: string, space: string, options: { private
   const markerPath = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx);
   const mine = String(process.pid);
   // #969/#1238: publish the pair by rename so a later teardown never sees a torn pairing.
+  // Both records are created 0o600 under fresh names and renamed into place (writePidPair).
   writePidPair(pidPath, process.pid);
-  if (options.private) { chmodSync(pidPath, 0o600); chmodSync(identityPinPath(pidPath), 0o600); }
   // Written together and removed together: the marker proves the LIVE pid is a non-hosting build,
-  // and it is only meaningful while it names that same pid.
-  writeFileSync(markerPath, mine);
+  // and it is only meaningful while it names that same pid. A symlink at the marker is refused.
+  writePrivateRecord(markerPath, mine);
   return () => {
     for (const p of [markerPath, pidPath]) {
       try {
@@ -618,7 +619,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   // The control capability precedes the pid record, so a stop cannot observe a ready manager
   // before its cooperative endpoint exists. A failed start still publishes no pid record. A
   // managed child already owns its exact starting PID slot; it settles that same process here.
-  releaseSettledRecord = recordManagerPid(managerRoot, space, service ? { private: true } : {});
+  releaseSettledRecord = recordManagerPid(managerRoot, space);
   publishManagerSpareCapability(managerContext, mgr.spareSeats);
   if (!service) console.log(
     c.green("✓ manager up") +

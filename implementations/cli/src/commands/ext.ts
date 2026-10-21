@@ -170,7 +170,8 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   try {
     mkdirSync(dir, { recursive: true, mode: 0o755 });
     if (!existsSync(join(dir, "package.json"))) {
-      writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { mode: 0o644 });
+      // `wx`: a dangling link at the name passes the check above, and must not be followed.
+      writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { flag: "wx", mode: 0o644 });
       provenance.wrote("extensions prefix", join(dir, "package.json"));
     }
     await addTransaction();

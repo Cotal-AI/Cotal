@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { registry, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
+import { registry, writePrivateRecord, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
 import {
   CommandFailure,
   OFFICIAL_CONNECTORS,
@@ -1077,19 +1077,19 @@ const MANAGED_MARKER = "# managed by cotal-setup";
 
 /** Write a setup-managed demo persona, refreshing it when its DEMO_AGENTS body changes — but never
  *  silently clobber a file the user has taken ownership of (one without the marker): back it up to
- *  `<name>.md.bak` first. Missing or marker-carrying files are written in place; every write goes
- *  through `wrote`. */
+ *  `<name>.md.bak` first. Missing or marker-carrying files are written in place, 0o600 and never
+ *  through a symlink; every write goes through `wrote`. */
 function writeDemoAgent(path: string, body: string, wrote: (what: string, path: string) => void): void {
   if (existsSync(path)) {
     const cur = readFileSync(path, "utf8");
     if (cur === body) return; // already current
     if (!cur.includes(MANAGED_MARKER)) {
-      writeFileSync(`${path}.bak`, cur); // preserve a user/pre-marker edit
+      writePrivateRecord(`${path}.bak`, cur); // preserve a user/pre-marker edit
       wrote("backup of your edited persona", `${path}.bak`);
     }
   }
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, body);
+  writePrivateRecord(path, body);
   wrote("persona", path);
 }
 
@@ -1149,11 +1149,11 @@ export function reconcileDefaultAgent(path: string): "seeded" | "migrated" | "un
   if (existsSync(path)) {
     const replacement = migrateLegacyDefaultAgent(readFileSync(path, "utf8"));
     if (replacement === undefined) return "unchanged";
-    writeFileSync(path, replacement);
+    writePrivateRecord(path, replacement);
     return "migrated";
   }
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, DEFAULT_AGENT);
+  writePrivateRecord(path, DEFAULT_AGENT);
   return "seeded";
 }
 

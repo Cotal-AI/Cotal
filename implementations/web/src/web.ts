@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { closeSync, fchmodSync, fstatSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -17,6 +17,8 @@ import {
   clearChannel,
   assertValidChannel,
   hardenPrivate,
+  openPrivateAppend,
+  writePrivateRecord,
   type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
@@ -1216,15 +1218,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   if (sessionPath) {
     // The socket's address, not the requested one: a hostname `--host` binds the address it resolved to.
     const bound = httpServer.address() as AddressInfo;
-    // `mode:` on writeFileSync applies at CREATION ONLY — a stale `web.session` left behind with a
-    // broader mode would keep it and quietly hold the launch URL and readiness nonce world-readable.
-    // Open, then fchmod the DESCRIPTOR (not the path, which could be re-pointed between the calls),
-    // so the mode is enforced on every write rather than only the first.
-    const sfd = openSync(sessionPath, "w", 0o600);
-    try {
-      fchmodSync(sfd, 0o600);
-      writeFileSync(sfd, JSON.stringify({ launchUrl, readiness: gate.readinessNonce, host: bound.address, port: bound.port } satisfies WebSession));
-    } finally { closeSync(sfd); }
+    writeWebSession(sessionPath, { launchUrl, readiness: gate.readinessNonce, host: bound.address, port: bound.port });
     process.once("exit", () => rmSync(sessionPath, { force: true }));
   }
   if (!lifecycle) {
@@ -1323,14 +1317,20 @@ async function launchDetachedWeb(
   if (!noOpen) openBrowser(session.launchUrl);
 }
 
+/** Write the session file. A stale `web.session` with a broader mode is set to 0o600 through the
+ *  descriptor on every write, so the launch URL and readiness nonce never stay readable to others,
+ *  and a symlink at the name is refused rather than followed. */
+export function writeWebSession(path: string, session: WebSession): void {
+  writePrivateRecord(path, JSON.stringify(session));
+}
+
 /** Open the persistent detached log privately even when it pre-existed with permissive metadata. */
 export function openDetachedLog(logPath: string): number {
-  const logFd = openSync(logPath, "a", 0o600);
-  // Creation mode does not narrow a stale file. Harden the already-open descriptor before either
-  // child stream can write to it; then apply the core secret-file ACL convention for win32, where
-  // POSIX mode bits do not express privacy. Fail closed before spawning if either operation fails.
+  // The private open sets a stale file to 0o600 through the descriptor before either child stream
+  // can write to it, and refuses a symlink. Then apply the core secret-file ACL convention for
+  // win32, where POSIX mode bits do not express privacy. Fail closed before spawning if either fails.
+  const logFd = openPrivateAppend(logPath);
   try {
-    fchmodSync(logFd, 0o600);
     if (process.platform === "win32") hardenPrivate(logPath, "file");
     return logFd;
   } catch (e) {

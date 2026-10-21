@@ -20,6 +20,7 @@ import {
   hardenPrivate,
   isReachable,
   restoreProfilePermissions,
+  writeSecretFile,
   type BackupPermissionScope,
   type RestorePermissionScope,
   type SpaceAuth,
@@ -388,14 +389,17 @@ export async function startIsolatedBroker(options: {
   };
   // The watchdog OWNS the broker as its child: after this single spawn there is no instant at
   // which a broker can run unwatched — coordinator death or the deadline kills it via the parent
-  // check, and the broker pid reaches us only through the watchdog's durable handshake file.
+  // check, and the broker pid reaches us only through the watchdog's durable handshake file. It
+  // reopens the log and handshake files this attempt created with `wx`, and never through a link.
   const watchdogScript = [
     "const [bin,config,log,parent,deadline,pids]=process.argv.slice(1);",
     "const fs=require('node:fs');",
     "const {spawn}=require('node:child_process');",
-    "const fd=fs.openSync(log,'a');",
+    "const fd=fs.openSync(log,fs.constants.O_WRONLY|fs.constants.O_APPEND|fs.constants.O_NOFOLLOW);",
+    "const pidsFd=fs.openSync(pids,fs.constants.O_WRONLY|fs.constants.O_TRUNC|fs.constants.O_NOFOLLOW);",
     "const broker=spawn(bin,['-c',config],{stdio:['ignore','ignore',fd]});",
-    "fs.writeFileSync(pids,JSON.stringify({broker:broker.pid,watchdog:process.pid}));",
+    "fs.writeFileSync(pidsFd,JSON.stringify({broker:broker.pid,watchdog:process.pid}));",
+    "fs.closeSync(pidsFd);",
     "const alive=p=>{try{process.kill(p,0);return true}catch{return false}};",
     "const stop=()=>{try{process.kill(broker.pid,'SIGTERM')}catch{};setTimeout(()=>{if(alive(broker.pid))try{process.kill(broker.pid,'SIGKILL')}catch{}},3000).unref();};",
     "const tick=()=>{if(!alive(Number(parent))||Date.now()>=Number(deadline))stop();};",
@@ -445,7 +449,8 @@ export async function startIsolatedBroker(options: {
           // Every reload retires the preceding phase. The listener accepts one maintenance principal,
           // not the union of every authority used earlier in the attempt.
           logins.splice(0, logins.length, login);
-          writeFileSync(configPath, authenticatedConfig(account, port, options.storeDir, logins), { mode: 0o600 });
+          // The private open: never through a symlink, and the plaintext login stays 0o600.
+          writeSecretFile(configPath, authenticatedConfig(account, port, options.storeDir, logins));
           readLogTail();
           try {
             process.kill(brokerOwner!.pid, "SIGHUP");

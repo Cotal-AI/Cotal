@@ -483,11 +483,15 @@ even with a group-writable umask. `up` creates `.cotal` and the broker store own
 too. An existing directory keeps its mode. The broker log `.cotal/nats.log` and the auth service,
 delivery and manager logs are created owner-private as well, and the process records `up` writes, such as
 `.cotal/nats.pid` and its identity pin, are created `0600` under a fresh name that is never opened
-through a symlink, then renamed into place. A private file the CLI rewrites in place, such as a
-generated configuration, a credential, a process marker or one of those logs, is never written
-through a symlink. A file you
-own is set to `0600` through the open file. A symlink, a file another user owns or a name that is
-not a regular file is refused and left unchanged. On Windows the owner and symlink checks do not
+through a symlink, then renamed into place. The pid record and identity pin of a native service
+instance are published the same way. A file Cotal writes in place under `~/.cotal` or a
+project's `.cotal`, such as a generated configuration, a credential, a process marker, a persona,
+a seat record or one of those logs, is never written through a symlink.
+A file you own is set to `0600` through the open file. A symlink, a file another user owns or a name
+that is not a regular file is refused and left unchanged. A private directory is set to `0700`
+through its path, which follows a symlink; this step does not refuse a symlinked `~/.cotal` or
+`.cotal`.
+On Windows the owner and symlink checks do not
 apply, because POSIX modes are not that platform's protection model; the file is opened with mode
 `0600` and private secrets are locked down by their access list. When a service path check refuses a path, the refusal names the option,
 the path that failed, and its owner and mode. A whole-stack failure shows that sentence as its

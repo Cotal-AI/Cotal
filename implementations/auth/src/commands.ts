@@ -6,9 +6,9 @@ import { authServiceFlags } from "./daemon-flags.js";
  * (`~/.cotal`, `COTAL_HOME`-overridable) — per human, per machine, NOT per checkout: you are
  * logged in as YOU across every repo on this box.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import * as prompts from "@clack/prompts";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, isLoopbackLiteral, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, isLoopbackLiteral, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, writePrivateRecord, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import { CommandFailure, credentialMintFlags, validateCredentialMintArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, userAuthStateDir, deprecatedDaemonEntry, workspaceSecretStore, type AgentAuthHealth, type CredentialAction } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
@@ -383,6 +383,12 @@ async function runActor(args: ParsedArgs, target: { root: string; space: string 
   }, () => new CommandFailure(mutationAttempted ? "unknown" : "failed", mutationAttempted ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", mutationAttempted ? "the grant operation did not return a confirmed complete result; lifecycle retirement or a ledger update may have occurred; nothing was retried" : "the local grant authority or records could not be read", { target: { space, ...(actor ? { actor } : {}) }, remedy: "read the authoritative grant ledger before another mutation" }));
 }
 
+/** Record one `agent-bearer` attempt in the manager-composed health file, 0o600 and never through a
+ *  symlink ({@link writePrivateRecord}). */
+export function writeAgentAuthHealth(path: string, state: "ok" | "failed", reason?: string): void {
+  writePrivateRecord(path, JSON.stringify({ state, at: new Date().toISOString(), ...(reason ? { reason } : {}) } satisfies AgentAuthHealth));
+}
+
 /** `cotal agent-bearer` — the ONE thing a spawned user-mode agent execs to refresh its auth: read
  *  its spawn-time secret from the 0600 token file, exchange it at the space's auth service (agent
  *  grant type), print the fresh bearer to STDOUT, exit. Machine-facing: stdout carries the bearer
@@ -412,7 +418,7 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
     const path = v["health-file"];
     if (!path) return;
     try {
-      writeFileSync(path, JSON.stringify({ state, at: new Date().toISOString(), ...(reason ? { reason } : {}) } satisfies AgentAuthHealth));
+      writeAgentAuthHealth(path, state, reason);
     } catch { /* the exchange outcome still stands */ }
   };
   try {

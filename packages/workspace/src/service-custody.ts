@@ -1,9 +1,8 @@
-import { chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { writeSecretFileCreateOnly } from "@cotal-ai/core";
 import { canonicalLocalProcessPath, type LocalProcessContext } from "./local-process.js";
 import { CommandFailure } from "./output.js";
-import { identityPinPath, identityRecord, removePidPair, verifyIdentityPin, writePidPair } from "./pid.js";
+import { identityRecord, removePidPair, verifyIdentityPin, writePidPair } from "./pid.js";
 import { protectedLocalDirectory, readLocalRecordSource } from "./protected-records.js";
 
 /** Native child custody, not a launcher placeholder or adoption. Every existing slot refuses;
@@ -18,11 +17,10 @@ export function claimServicePid(context: LocalProcessContext, template: string):
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the native service PID slot is already held; no daemon or legacy record was adopted or reclaimed");
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "native service custody publication was not confirmed; any original claim was retained");
   }
-  // Reuse the native pair publisher. An incomplete publication stays as custody evidence.
+  // Reuse the native pair publisher, which creates both records 0o600. An incomplete publication
+  // stays as custody evidence.
   try {
     writePidPair(path, self.pid);
-    chmodSync(path, 0o600);
-    chmodSync(identityPinPath(path), 0o600);
   } catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "native service PID/pin publication was not confirmed; its claim was retained, without native initialization"); }
   return () => {
     const bytes = readLocalRecordSource(path, 128, true);

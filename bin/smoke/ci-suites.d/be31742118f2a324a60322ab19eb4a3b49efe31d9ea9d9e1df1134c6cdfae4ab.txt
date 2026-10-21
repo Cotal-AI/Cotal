@@ -1,0 +1,2 @@
+# Every private writer moved onto the no-follow open refuses a planted symlink and leaves its target unchanged, and creates its file 0600 under umask 0002. No broker.
+smoke:private-writers

@@ -156,7 +156,7 @@ function readinessFile(context: ServiceAdapterContext & { process: ProcessIdenti
  * symlink and only to a regular file this user owns, as other private files are tightened.
  */
 export function narrowPortsReport(path: string): void {
-  const refused = () => new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker ports report could not be made owner-private; no listener was attributed");
+  const refused = () => new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker ports report could not be made owner-private; no listener was attributed", { target: { path } });
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch { throw refused(); }
@@ -164,7 +164,12 @@ export function narrowPortsReport(path: string): void {
     const info = fstatSync(fd);
     if (!info.isFile() || process.getuid === undefined || info.uid !== process.getuid()) throw refused();
     fchmodSync(fd, 0o600);
-  } finally { closeSync(fd); }
+  } catch (error) {
+    // A failed close must not replace the refusal the caller needs to see.
+    try { closeSync(fd); } catch { /* the error above is the outcome */ }
+    throw error;
+  }
+  closeSync(fd);
 }
 
 /** The broker's own native ports file for this launch. Its directory is created fresh per launch

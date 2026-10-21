@@ -1,8 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { closeSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { CotalEndpoint, DEFAULT_SERVER, isReachable, mintLifecycleUid, type JsonValue, type ParsedArgs } from "@cotal-ai/core";
+import { CotalEndpoint, DEFAULT_SERVER, isReachable, mintLifecycleUid, openPrivateAppend, type JsonValue, type ParsedArgs } from "@cotal-ai/core";
 import { c } from "@cotal-ai/workspace";
 
 type FeedbackType = "bug" | "idea" | "friction" | "praise" | "other";
@@ -151,7 +151,7 @@ export async function runFeedbackIntake(args: ParsedArgs, hooks?: FeedbackIntake
       };
 
       if (hooks) hooks.append(record);
-      else appendFileSync(store, JSON.stringify(record) + "\n", { encoding: "utf8", mode: 0o600 });
+      else appendRecord(store, JSON.stringify(record) + "\n");
 
       let published = true;
       try {
@@ -192,6 +192,12 @@ export async function runFeedbackIntake(args: ParsedArgs, hooks?: FeedbackIntake
   console.log(`${c.bold("Cotal feedback intake")} — ${c.cyan(`http://${host}:${port}/v1/feedback`)}`);
   console.log(c.dim(`  space: ${space}  channel: #${channel}  store: ${store}`));
   await new Promise<void>(() => {});
+}
+
+/** Append one record to the owner-private store, never through a symlink ({@link openPrivateAppend}). */
+export function appendRecord(store: string, line: string): void {
+  const fd = openPrivateAppend(store);
+  try { writeFileSync(fd, line, "utf8"); } finally { closeSync(fd); }
 }
 
 function portOpt(raw: string | undefined): number {

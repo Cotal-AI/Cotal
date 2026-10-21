@@ -54,7 +54,10 @@ const BROAD_SIDS = ["S-1-1-0", "S-1-5-11", "S-1-5-32-545"] as const;
 /**
  * Lock a file or directory down to the current user (+ SYSTEM + Administrators) only.
  *
- * POSIX: `chmod` (0o600 file / 0o700 dir), which also tightens a path that already existed.
+ * POSIX: a file takes {@link openPrivate}'s rule, so a symlink, a non-regular file or another user's
+ * file is refused with `EPERM` and left unchanged, and an owned file is set to 0o600 through the
+ * descriptor. A directory is set to 0o700 with `chmod` by path, which follows a symlinked directory:
+ * a symlinked `~/.cotal` or project `.cotal` is a working setup, so it is not refused.
  * win32: harden the NTFS ACL with `icacls`: `/inheritance:r` drops inherited ACEs; `/remove:g` drops
  * any pre-existing EXPLICIT broad grant (Everyone / Authenticated Users / Users) that `/grant:r`
  * alone would leave intact (e.g. on a pre-planted or pre-existing target); `/grant:r` then sets ONLY
@@ -66,7 +69,8 @@ const BROAD_SIDS = ["S-1-1-0", "S-1-5-11", "S-1-5-32-545"] as const;
  */
 export function hardenPrivate(path: string, kind: "file" | "dir"): void {
   if (!isWin) {
-    chmodSync(path, kind === "dir" ? 0o700 : 0o600);
+    if (kind === "file") closeSync(openPrivate(path, constants.O_RDONLY));
+    else chmodSync(path, 0o700);
     return;
   }
   const perm = kind === "dir" ? "(OI)(CI)(F)" : "(F)";

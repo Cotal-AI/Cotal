@@ -1,10 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardSeatArtifacts } from "./artifacts.js";
-import { assertSeatId, capabilityToken, recordPath, seatId, socketPath, type SeatRecord, readRecord } from "./record.js";
+import { assertSeatId, capabilityToken, recordPath, seatId, socketPath, writePrivate, type SeatRecord, readRecord } from "./record.js";
 import { unattendedMs, assertSocketPathFits, unsupportedTransport } from "./protocol.js";
 
 export interface SeatLaunchSpec {
@@ -212,13 +212,13 @@ function startCustodian(opts: LaunchSeatOpts, artifactRoot: string) {
   });
   // Payload carries spec.env (provider keys) and the capability token.
   // argv is world-readable via /proc/<pid>/cmdline (0444). Inherit a 0600
-  // file as stdin so the JSON never appears on argv.
+  // file as stdin so the JSON never appears on argv. It is never written through a symlink.
   //
   // The run marker is the one thing deliberately ON argv, because that is the point of it: a census
   // must be able to attribute an orphan without the uid needed to read `/proc/<pid>/cwd`. It names a
   // run, never a credential.
   const launchPath = join(dirname(recPath), "launch.json");
-  writeFileSync(launchPath, payload, { mode: 0o600 });
+  writePrivate(launchPath, payload);
   const launchFd = openSync(launchPath, "r");
   const child = spawn(process.execPath, [custodianEntry(), RUN_MARKER_FLAG, run], {
     detached: true,

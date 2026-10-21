@@ -185,6 +185,8 @@ try {
     try { narrowPortsReport(linked); } catch (error) { refused = error; }
     check("a symlink at the report name refuses and is not followed",
       isCommandFailure(refused) && refused.code === "OPERATION_UNKNOWN" && mode(outside) === 0o644 && readFileSync(outside, "utf8") === "kept\n", refused);
+    check("...and the refusal names the report's path",
+      isCommandFailure(refused) && (refused.target as { path?: string } | null)?.path === linked, isCommandFailure(refused) ? refused.target : refused);
   }
 
   console.log("6. the manager log, which carries the console URL, opens owner-private and never through a symlink");
