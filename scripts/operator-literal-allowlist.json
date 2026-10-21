@@ -23,8 +23,8 @@
   },
   "docs/cli.md": {
     "home-path": {
-      "count": 3,
-      "reason": "macOS home path examples and a credential file path example"
+      "count": 2,
+      "reason": "macOS home path examples"
     }
   },
   "docs/run-a-mesh.md": {
