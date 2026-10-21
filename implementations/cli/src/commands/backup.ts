@@ -41,6 +41,7 @@ import {
 import { createArtifactWriter, snapshotFileName, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
 import { assertControllerResumeEligible } from "../lib/controller-resume.js";
 import { assertControllerBrokerConfig } from "../lib/controller-restore.js";
+import { refuseControllerCut } from "../lib/stack-journal.js";
 import { authorityFingerprint } from "../lib/maintenance-files.js";
 import { connectIsolatedBroker, createAttemptClone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "../lib/isolated-broker.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -384,6 +385,7 @@ export function validateBackupArguments(args: ParsedArgs): void {
   if (mode === "restore" && args.values.only !== undefined && args.values.only !== "registry")
     throw new CommandFailure("refused", "USAGE_INVALID", "backup restore accepts only --only registry; without it the restore follows the artifact's own selection");
   if (args.values["store-dir"] !== undefined && (typeof args.values["store-dir"] !== "string" || !args.values["store-dir"].trim() || /[\u0000-\u001f\u007f]/u.test(args.values["store-dir"]))) throw new CommandFailure("refused", "USAGE_INVALID", "--store-dir requires one path without terminal controls");
+  if (mode === "create" || mode === "restore") refuseControllerCut(cotalRoot(), mode === "create" ? "backup create" : "backup restore");
 }
 
 /** Native preservation/copy guards are unchanged; only final public observations reach the UI. */

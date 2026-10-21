@@ -176,7 +176,7 @@ import {
   currentControllerAttempt, managerResumeAttempt, relaunchCommittedManager, settleControllerResume, startControllerMember, startControllerMembers,
 } from "../lib/controller-resume.js";
 import { removeRetiredBrokerInstance } from "../lib/controller-restore.js";
-import { admittedStackRestore, readStackJournal } from "../lib/stack-journal.js";
+import { admittedStackRestore, readStackJournal, refuseControllerCut } from "../lib/stack-journal.js";
 import { serviceInstances } from "../lib/service-instances.js";
 import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
@@ -324,6 +324,7 @@ export function validateUpArguments(args: ParsedArgs): void {
     if (inheritedRoot && !(args.values.file && args.values["dry-run"] === true))
       throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with cotal space create <space> --root ., then use cotal up --root .; to start the home stack, run up from home itself" });
   }
+  if (args.values.restore !== undefined) refuseControllerCut(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot(), "up --restore");
 }
 
 function inheritedMachineHomeRoot(): string | undefined {

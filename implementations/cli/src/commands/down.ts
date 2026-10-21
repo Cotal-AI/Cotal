@@ -135,7 +135,7 @@ export function validateDownArguments(args: ParsedArgs): void {
     return;
   }
   if (args.values.instance !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--instance needs one explicit service definition name");
-  if (controllerStackRecorded(cotalRoot())) return validateStackDownArguments(args.values);
+  if (controllerStackRecorded(cotalRoot())) return validateStackDownArguments(cotalRoot(), args.values);
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
   if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.file === undefined && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined) return;
   if (args.values.json !== undefined || args.values.plain !== undefined || args.values.yes !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this author has structured output for bare-stack inspection, but not guarded whole-stack apply; no stack was stopped under unsupported receipt or acknowledgement flags");

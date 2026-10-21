@@ -569,6 +569,7 @@
     "smoke:manager-status-observation": "tsx implementations/manager/smoke/status-observation.smoke.ts",
     "smoke:manager-launch-admission": "tsx implementations/manager/smoke/launch-admission.smoke.ts",
     "smoke:maintenance-controller": "tsx packages/workspace/smoke/maintenance-controller.smoke.ts",
+    "smoke:controller-cut-withheld": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/controller-cut-withheld.smoke.ts",
     "smoke:controller-restore": "tsx implementations/cli/smoke/controller-restore.smoke.ts",
     "smoke:legacy-pty-custody": "pnpm --filter @cotal-ai/manager... build && tsx implementations/manager/smoke/legacy-pty-custody.smoke.ts",
     "smoke:custodial-pty": "pnpm --filter @cotal-ai/seat --filter @cotal-ai/core --filter @cotal-ai/workspace --filter @cotal-ai/manager build && tsx implementations/manager/smoke/custodial-pty.smoke.ts",

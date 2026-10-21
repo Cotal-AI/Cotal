@@ -421,6 +421,12 @@ old-source cleanup is `backup cleanup-fallback <full-attempt-id>`. Review `--dry
 `--yes` in scripts. Neither flag bypasses owner, deadline, root, journal revision or store-identity
 checks. Restore startup stays on its guarded existing route.
 
+A controller-owned stack cannot be preserved in 0.91.0. On a root with a stack journal,
+`down --preserve-state`, `backup create`, `backup restore` and `up --restore` refuse `UNSUPPORTED`
+before any effect. Stop such a stack with plain `cotal down`; it keeps its store, channels and
+history for the next `cotal up`. Preserve, backup and restore of a controller-owned stack return in
+a later release. A root without a stack journal keeps its preserve, backup and restore.
+
 ## Feedback input in 0.91.0
 
 Use a protected `feedback --key-file <path>` rather than placing an intake key on argv.

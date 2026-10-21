@@ -107,6 +107,23 @@ export function readStackJournal(root: string): StackJournalSnapshot | undefined
   return { journal: validate(decodeLocalJson(bytes), canonical), sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
+/** A controller-owned stack cannot be preserved in this release, so its preserve, and the backup and
+ *  restore that need a preserved cut, refuse while validating, before the seed or any effect. A
+ *  root with no stack journal keeps its legacy route. */
+export function refuseControllerCut(root: string, action: "down --preserve-state" | "backup create" | "backup restore" | "up --restore"): void {
+  const recorded = readStackJournal(root);
+  if (!recorded) return;
+  const preserve = action === "down --preserve-state";
+  throw new CommandFailure("refused", "UNSUPPORTED", preserve
+    ? "a controller-owned stack cannot be preserved in this release; nothing was stopped or written"
+    : `${action} needs a preserved cut, and a controller-owned stack cannot be preserved in this release; nothing was written`, {
+    target: { root: recorded.journal.root, space: recorded.journal.space },
+    remedy: preserve
+      ? "stop the stack with plain `cotal down`, which keeps its store, channels and history for the next `cotal up`; preserve on a controller-owned stack returns in a later release"
+      : "plain `cotal down` and `cotal up` keep this stack's store, channels and history; backup and restore of a controller-owned stack return in a later release",
+  });
+}
+
 /** Compare-and-replace under a private lock beside the journal. A changed journal refuses. */
 export function writeStackJournal(root: string, expected: StackJournalSnapshot | undefined, next: StackJournal): StackJournalSnapshot {
   const canonical = canonicalRoot(root);

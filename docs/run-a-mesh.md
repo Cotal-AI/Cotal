@@ -627,6 +627,11 @@ cotal up --restore ./space-backup --detach
 A refused cut leaves the mesh running and unfenced: fix what the refusal names and run
 `cotal down --preserve-state` again.
 
+A controller-owned stack, one whose root holds `.cotal/stack-controller.json`, cannot be preserved
+in this release. There, preserve, backup and restore refuse before any effect. Plain `cotal down`
+and `cotal up` keep that stack's store, channels and history
+([CLI reference](cli.md#backups)).
+
 Use `--store-dir` on both preservation and backup for a custom JetStream store. A store cap set
 with `cotal up --max-file-store <bytes>` travels with the preserved state, and the resume renders it
 again. nats-server reads the cap once at start and refuses a config reload that changes it, so a new

@@ -519,31 +519,12 @@ trust, configuration, a definition, an instance or the journal; a refusal there 
 it was. Schema apply is not supported. Fresh
 `team boot` uses the controller route described below. Recovery re-entry keeps its recorded mode.
 
-On a controller root, `down --preserve-state` first runs the scope check bare `down` runs. Another
-live or unresolved service instance in the space, a legacy pidfile process under the root, or
-another registration at the same broker address refuses before any effect, and the refusal names
-it. A retry of a committed cut runs the check again before any further stop. The preserve then
-proves, with no effect, that the stack's exact manager instance serves the preserved-exit stop
-contract: its own served-contract file must match
-the contract store, and on an authenticated space its described status contract too. An older
-manager refuses `UNSUPPORTED` before any stop, with `cotal service restart stack-manager --instance
-<id>` as the remedy. The preserve then fences delivery, prepares and commits the manager's
-preservation, and stops the manager with a preserved-exit request that retains its agents. Auth and
-the broker stop after it, each with its own receipt, and the cut records every receipt. Each
-preserved-exit attempt is journaled before it is published. A retry continues the same attempt: it
-settles forward from a completed receipt, makes a new attempt only when every earlier attempt left
-no request, receipt or reservation, refuses when the manager refused an earlier attempt, and
-otherwise holds for inspection. No command abandons a held cut. A preserved manager still answers
-`status`, so the preserved-exit preview reads its stop impact as the caller, on an open space too.
-That read is counted like any accepted request and gives up its slot when it returns. Every other
-manager command stays refused while preserved. Bare `up` then resumes a ready
-controller cut through the same recorded members: each start is journaled before it is made, a
-member that may have launched is held rather than started twice, and a member relaunched outside the
-resume refuses. The resumed manager answers `status` before the resume commits, which is how its
-readiness is read. After the manager commits the resume, only the manager may start again. It
-starts once its last recorded process is gone with its own native stop receipt, and it receives the
-journal's commit token as a protected file. Any other member that is not live holds the attempt, and
-a degraded attempt starts nothing.
+On a controller root, `down --preserve-state` refuses `UNSUPPORTED` (exit 2) in this release, in
+every stack mode. It refuses while validating its arguments, before the confirmation and before any
+stop, write or manager request. Plain `down` stops the stack and keeps its store, channels and
+history for the next `up`. Preserving a controller-owned stack returns in a later release.
+`backup create`, `backup restore` and `up --restore` need a preserved cut, so they refuse the same
+way on a controller root (see [Backups](#backups)).
 
 User-auth controller startup requires a plain loopback IP and an auth provider with read-only
 server preflight. A first enable checks the required IdP and its JWKS before creating maintenance
@@ -1098,13 +1079,16 @@ cotal backup restore <dir> [--only registry] [--store-dir <dir>] [--accept-missi
 cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 ```
 
+On a controller root, one with a stack journal, `backup create`, `backup restore` and
+`up --restore` refuse `UNSUPPORTED` (exit 2) in this release. Each needs a preserved cut, and
+`down --preserve-state` cannot make one there. They refuse while validating their arguments,
+before the connector seed or any write. Plain `down` and `up` keep a controller stack's store,
+channels and history. Backup and restore of a controller-owned stack return in a later release. The
+rest of this section applies to a root without a stack journal.
+
 Backup is offline-only. It requires the stable `ready` record from `down --preserve-state`, an exact
 store match, no recorded process that may still be running (the same test `clean` uses), and an
-unreachable exact endpoint from the recorded cut. On a controller root that test also counts any
-stack member that is not gone with its stop receipt, and a controller cut is backed up only while
-every member is the stopped record the cut recorded, at its expected definition revision, and the
-broker configuration that definition names still hashes to the cut launch's recorded configuration.
-That endpoint is probed immediately before cloning, so a live broker with a missing or stale pidfile
+unreachable exact endpoint from the recorded cut. That endpoint is probed immediately before cloning, so a live broker with a missing or stale pidfile
 is still refused. It claims the cut, reflink/copies the stopped source to a
 private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
 independent parent/deadline watchdog. A bootstrap broker that does not accept connections within
@@ -1152,40 +1136,7 @@ joined. Restore needs the stopped preserved cut from `down --preserve-state`. `u
 remains as the equivalent startup form, and its terminal output is unchanged. Unlike the other
 backup modes, `backup restore` runs the connector seed first, as `up` does, because it resumes seats.
 
-A cut the service controller owns restores through its own recorded members. Before staging, the
-cut must still match the stack journal, every member must be the stopped record the cut recorded,
-and the broker configuration must hash to the cut launch's recorded configuration. The broker
-address comes from the cut, so a different `--server` or `--host` refuses. Without `--store-dir`
-the restore uses the preserved store's own path, and the broker definition and configuration stay
-as they are. With another `--store-dir`, before commit intent the restore writes an attempt-owned
-copy of the configuration whose JetStream block names the target, and points only the broker
-definition's `config` at it. The configuration must hold the preserved store's JetStream block
-once. Each step is journaled before the definition write it names.
-
-The members then start as a resume does, each journaled first. When the broker definition was
-rewritten, the broker starts as a new instance whose IDs are journaled before its start, and the
-cut's broker record is removed once the restore is active. A mismatch there leaves the restore
-degraded and removes nothing. A member that cannot start holds the attempt at commit intent; bare
-`up` continues it.
-
-`backup recover` and `clean restore-attempt` roll a rewritten definition back before the store. The
-definition returns to the original configuration as a new revision, which the cut then expects.
-The cut's old broker record is never rewritten to that revision: the next resume or restore starts
-a new broker instance at it and removes the old record once active. A definition revision the
-journal cannot attribute holds, and nothing is overwritten.
-
-An active controller restore keeps its journal until `backup cleanup-fallback` or
-`clean restore-fallback` retires it, as a legacy restore does. While that journal names the same
-space, address and store as the stack journal, and the stack journal settled the restore, it does
-not fence that stack. Controller `down` and `up`, including `up --no-manager`, admit it and name it
-in their receipts as `admittedRestore`. The broker and manager services admit their launches under
-it. Each only reads the journal and never changes it. Every other maintenance state still refuses
-them. Under any other maintenance journal, the manager service launches only a resume or restore
-attempt's own manager, at the start the attempt journaled, as the broker service does. A
-`service restart` of the broker or manager carries no attempt, so it checks that its start would be
-admitted before it prepares or makes any stop, and otherwise refuses with nothing stopped.
-
-Two commands still refuse an active restore. `down --preserve-state` begins a new cut only after
+Two commands refuse an active restore. `down --preserve-state` begins a new cut only after
 the restore journal is retired, so it names `backup cleanup-fallback` as the next step. `team boot`
 resumes only a stopped stack whose manager never launched, and a restored stack's manager already
 ran, so start it with bare `cotal up` instead.

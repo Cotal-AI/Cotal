@@ -16,8 +16,7 @@ import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, stopProcessService } from "../lib/service-process.js";
-import { newStackOperation, processGone, readStackJournal, stackMaintenanceFence, stackScopeRefusals, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole } from "../lib/stack-journal.js";
-import { preserveControllerStack } from "../lib/controller-preserve.js";
+import { newStackOperation, processGone, readStackJournal, refuseControllerCut, stackMaintenanceFence, stackScopeRefusals, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole } from "../lib/stack-journal.js";
 import { untilInputEnds } from "../lib/prompt-input.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
@@ -29,12 +28,13 @@ export function controllerStackRecorded(root: string): boolean {
   return readStackJournal(canonicalRoot(root)) !== undefined;
 }
 
-export function validateStackDownArguments(values: ParsedArgs["values"]): void {
+export function validateStackDownArguments(root: string, values: ParsedArgs["values"]): void {
   const preserve = values["preserve-state"] === true;
   const allowed = new Set(preserve ? ["space", "yes", "json", "plain", "preserve-state", "store-dir", "session-store"] : ["space", "yes", "dry-run", "json", "plain", "with-agents"]);
   const unsupported = Object.keys(values).filter((name) => !allowed.has(name) && values[name] !== undefined && !(Array.isArray(values[name]) && (values[name] as unknown[]).length === 0));
   if (unsupported.length) throw new CommandFailure("refused", "USAGE_INVALID", preserve ? "a controller stack's preserve accepts only --space, --store-dir, --session-store, --yes and presentation flags; it is exclusive with --with-agents and --dry-run" : "a controller stack's bare down accepts only --space, --with-agents, --yes, --dry-run and presentation flags; no other option was ignored", { target: { options: unsupported } });
   if (values["dry-run"] === true && values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
+  if (preserve) refuseControllerCut(root, "down --preserve-state");
 }
 
 function readMembers(journal: StackJournal): Member[] {
@@ -79,33 +79,10 @@ function planView(journal: StackJournal, members: readonly Member[], withAgents:
   ] }] };
 }
 
-/** `down --preserve-state` on a controller root. The flow and its holds live in controller-preserve. */
-async function preserveStack(rootInput: string, values: ParsedArgs["values"], presentation: ReturnType<typeof presentationOf>, interactive: boolean): Promise<void> {
-  const root = canonicalRoot(rootInput);
-  const recorded = readStackJournal(root);
-  if (!recorded) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this root has no controller stack journal", { target: { root } });
-  if (values.space !== undefined && values.space !== recorded.journal.space) throw new CommandFailure("refused", "CONFLICT", "the selected space differs from this root's recorded controller stack; nothing was preserved", { target: { root, selectedSpace: values.space, recordedSpace: recorded.journal.space } });
-  const target = { root, space: recorded.journal.space, server: recorded.journal.server };
-  if (!values.yes && !interactive) throw new CommandFailure("refused", "USAGE_INVALID", "preserving the whole controller stack requires --yes outside an interactive terminal", { target });
-  if (!values.yes) {
-    const answer = await prompts.confirm({ message: `Preserve ${oneLine(recorded.journal.space)}'s controller stack: fence the manager, retain its agents and stop every recorded member?`, initialValue: false });
-    if (prompts.isCancel(answer) || !answer) {
-      writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-preserve", ...target, cancelled: true }, noOp: true, warnings: [{ code: "USER_CANCELLED", target, message: "nothing was preserved or stopped" }] }, () => ({ sections: [{ title: "Controller stack preserve cancelled", blocks: [{ kind: "lines", lines: ["Nothing was preserved or stopped."] }] }] }));
-      return;
-    }
-  }
-  const sessionStores = Array.isArray(values["session-store"]) ? (values["session-store"] as string[]) : values["session-store"] ? [String(values["session-store"])] : [];
-  const result = await preserveControllerStack(root, typeof values["store-dir"] === "string" ? values["store-dir"] : undefined, sessionStores);
-  writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-preserve", ...result } }, (row) => ({ sections: [{ title: "Controller stack preserved", blocks: [
-    { kind: "fields", rows: [["Space", row.space], ["Root", row.root], ["Attempt", row.attemptId], ["Store", row.storeDir], ["Seat checkpoints", String(row.checkpoints)]] },
-    { kind: "lines", lines: ["The stack is stopped with its state and agents retained. Each member's stop is recorded by its own receipt. Create a backup or resume with bare cotal up."] },
-  ] }] }));
-}
-
 export async function stackDown(rootInput: string, values: ParsedArgs["values"]): Promise<void> {
-  validateStackDownArguments(values);
+  // It refuses --preserve-state on a controller root, so only a bare stop continues.
+  validateStackDownArguments(rootInput, values);
   const presentation = presentationOf(values), interactive = canPrompt() && presentation !== "json";
-  if (values["preserve-state"] === true) return preserveStack(rootInput, values, presentation, interactive);
   const withAgents = values["with-agents"] === true;
   const root = canonicalRoot(rootInput);
   const previous = readStackJournal(root);
