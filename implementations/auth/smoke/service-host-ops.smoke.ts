@@ -1095,6 +1095,8 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
       await denial("an owner with no current interactive row reusing a bound approve requestId", () => e.handle({ ...ax, granter: outsider }), ["permission-denied"]);
       await denial("an owner with no current interactive row reusing a bound revoke requestId", () => e.handle({ ...rvO, granter: outsider }), ["permission-denied"]);
       await denial("an owner with no current interactive row reusing a bound register requestId", () => e.register({ ...rq, granter: outsider, input: { ...rq.input, owner: third } }), ["permission-denied"]);
+      await denial("my own reuse of my bound approve requestId with another body", () => e.handle({ ...ax, input: { ...ax.input, expectedProposalRevision: ax.input.expectedProposalRevision + 1 } }), ["conflict"]);
+      await denial("my own reuse of my bound revoke requestId with another body", () => e.handle({ ...rvO, input: { ...rvO.input, expectedAssignmentDigest: D("another") } }), ["conflict"]);
     });
     await cell(f, "M4", async () => {
       const rvX = revoke(f.endpoint, pX.instanceId, dX, "operator-request", operator);
