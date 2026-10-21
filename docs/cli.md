@@ -515,9 +515,10 @@ A space name belongs to one registered mesh. `up` refuses a name that another li
 takes over a name whose broker is not running, and when that registration belonged to another root
 it prints that root and its broker address. It refuses instead when that root holds a restore or a
 preserved cut in its maintenance journal: finish that attempt from its root, or start this stack
-under another `--space`. It also keeps the name when that root or its journal cannot be read, for
-example when access to a parent folder is denied, and names that root. Only a root that is gone or
-is not a directory gives up its name.
+under another `--space`. It also keeps the name, and names that root, when the root or its journal
+cannot be read, for example when access to a parent folder is denied, or when the recorded root is
+not an absolute path. A root counts as gone only when it no longer exists or is not a directory. A
+readable root with no maintenance journal also gives up its name.
 
 A foreground `up` holds the root's maintenance lock only while it starts the stack. A bare
 `cotal down` from another terminal can then stop the stack; the foreground `up` sees the completed

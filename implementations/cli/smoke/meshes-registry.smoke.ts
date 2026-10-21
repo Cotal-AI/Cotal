@@ -939,6 +939,22 @@ try {
     check("…and the refusal names that root and the error", vaultedError?.message.includes(`registered to ${vaultedRoot}, which could not be resolved (EACCES)`) === true && vaultedError.message.includes("did not take the name"), vaultedError?.message);
     removeMesh("vaulted");
   } else console.log("  (skipped: the inaccessible-root cell needs a non-root POSIX runner)");
+  // A relative recorded root names no directory without the cwd, so it is never taken as this root.
+  // From the new root, where "." resolves to it, with the recorded server and with another, and for a
+  // relative root that resolves elsewhere: each keeps its registration and names its removal.
+  const priorCwd = process.cwd();
+  process.chdir(localRoot);
+  try {
+    for (const [space, recorded, claimed] of [["rel-same", ".", DEAD], ["rel-other", ".", LIVE], ["rel-elsewhere", "../elsewhere", DEAD]] as const) {
+      recordMesh({ space, server: DEAD, root: recorded, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+      const before = JSON.stringify(findMesh(space));
+      let relativeError: Error | undefined;
+      await claimSpace(space, claimed, localRoot).catch((e: Error) => void (relativeError = e));
+      check(`a relative recorded root "${recorded}" keeps its registration (${space})`, JSON.stringify(findMesh(space)) === before, loadMeshes());
+      check(`…and the refusal names the record's removal (${space})`, relativeError?.message.includes(`registered to ${recorded}, which is not an absolute path`) === true && relativeError.message.includes(`cotal meshes rm ${space}`), relativeError?.message);
+      removeMesh(space);
+    }
+  } finally { process.chdir(priorCwd); }
   removeMesh("held");
   removeMesh("claimed");
   removeMesh("claimed-live");
