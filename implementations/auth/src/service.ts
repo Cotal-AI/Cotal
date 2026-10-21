@@ -29,7 +29,8 @@ import { createToolResultConsentSigner, makeToolResultConsentRecorder, type Tool
  * 127.0.0.1; TLS terminates at a reverse proxy — in-process TLS was rejected: it duplicates cert
  * renewal and forks deploy). It serves ONLY `GET /health`, `GET /jwks`, `POST /exchange`,
  * `POST /manager-service-authority`, and `GET /.well-known/cotal-mesh` (the generated discovery
- * bundle); everything else 404s. Its
+ * bundle), plus, only with `serviceEndpoints`, `/service-endpoint-authority` on both faces;
+ * everything else 404s. Its
  * `/exchange` demands NO capability — honestly: the 0600 cap is a same-uid file-ACL boundary with
  * no remote meaning, so requiring its bytes from a remote caller would prove nothing. The proof on
  * the public face is the credential itself: the human arm presents an EdDSA IdP JWT verified
@@ -62,7 +63,7 @@ import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { CotalEndpoint, deprovisionAgent, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, epgateKey, isCasLoss, sameManagedGrantCustody } from "@cotal-ai/core";
+import { CotalEndpoint, deprovisionAgent, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
@@ -92,6 +93,7 @@ import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import type { ServiceEndpointHost } from "./service-host-contract.js";
 import { openServiceHostEffect, openServiceHostOperations, type ServiceHostEffect, type ServiceHostEffectScope, type ServiceHostOperations, type ServiceHostOperationsOptions } from "./service-host-ops.js";
+import { SERVICE_ENDPOINT_AUTHORITY_PATH, answerServiceAuthority, serviceAuthorityDenied, serviceAuthorityInfo, type ServiceAuthorityDoor } from "./service-endpoint-authority.js";
 import { openAuthLedgerScannerCandidate } from "./ledger-scanner.js";
 import { openRecordsScannerCandidate } from "./records-scanner.js";
 import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, makeDeliveryAdminPrincipalOracle, scannerDeathCopy, planeClaimRefusal, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
@@ -351,9 +353,9 @@ export interface AuthAuthorityPlane {
    *  kept minting would look healthy while a successor reclaims its scanners). Never resolves on a
    *  clean close. */
   fenced: Promise<string>;
-  /** Present only with `serviceEndpoints`: the in-process service endpoint host (decide, revoke and
-   *  the operation and proposal reads). Trusted embedder only: the caller must authenticate the
-   *  granter it passes. */
+  /** Present only with `serviceEndpoints`: the in-process service endpoint host (decide, revoke, the
+   *  create-only name binding and the operation and proposal reads). Trusted embedder only: the
+   *  caller must authenticate the granter it passes. */
   serviceEndpointHost?: ServiceEndpointHost;
   /** Clean close (SPEC 13.13). Rejects when the plane did not release its claim; the barrier and
    *  the remaining clients still close. */
@@ -2223,7 +2225,8 @@ export interface AuthServiceHandle extends HostedServiceHandle {
   /** The service endpoint host (SPEC 13.1). Present only when `serviceEndpoints` was supplied to
    *  {@link startAuthService}. In-process and typed: no route, no capability, no caller policy. The
    *  embedder authenticates the granter it passes. Rejects `unavailable` while the context is not
-   *  ready, before the host reads or writes anything. */
+   *  ready, before the host reads or writes anything. The owner-proved public register and status
+   *  door is the separate `/service-endpoint-authority` route on both faces. */
   serviceEndpointHost?: ServiceEndpointHost;
   /** The platform readiness read (SPEC 13.9). Present only with `platformControl`. Answers the
    *  `status` of the currently assigned manager instance and refuses any other instance. It reads
@@ -2490,8 +2493,10 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       space, accountPublicKey: keys.dataAccount.pub, dir, store: secrets, idp: bridgeIdp, ownerSecret,
       signer: o.toolResultConsents, record: plane.recordToolResultConsent,
     });
+    const serviceEngine = plane.serviceEndpointHost !== undefined ? serviceHostEngineOf(plane.serviceEndpointHost) : undefined;
     const ctx: HandlerCtx = {
       ...(issueToolResultConsent ? { issueToolResultConsent } : {}),
+      ...(serviceEngine !== undefined ? { serviceAuthority: { space, accountPublicKey: keys.dataAccount.pub, engine: serviceEngine } } : {}),
       issuer,
       bridge,
       bridgeIdp,
@@ -2765,6 +2770,8 @@ type HumanHolder = Extract<ManagerAuthorityHolder, { scope: string[] }>;
 
 interface HandlerCtx {
   issueToolResultConsent?: (raw: unknown) => Promise<import("@cotal-ai/core").ToolResultConsent>;
+  /** Present only with `serviceEndpoints`: the public service endpoint authority door. */
+  serviceAuthority?: ServiceAuthorityDoor;
   issuer: UserTokenIssuer;
   bridge: IdpBridge;
   bridgeIdp: { issuer: string; audience: string; key: ReturnType<typeof pinnedJwksResolver> };
@@ -2985,6 +2992,7 @@ const ROUTES = new Map<string, RouteHandler>([
   ["/exchange", (req, res, ctx) => handleExchange(req, res, ctx, LOOPBACK_POLICY)],
   ["/manager-service-authority", (req, res, ctx) => handleManagerServiceAuthority(req, res, ctx, LOOPBACK_POLICY)],
   ["/manager-instances", (req, res, ctx) => handleManagerInstances(req, res, ctx, LOOPBACK_POLICY)],
+  [SERVICE_ENDPOINT_AUTHORITY_PATH, (req, res, ctx) => handleServiceEndpointAuthority(req, res, ctx, LOOPBACK_POLICY)],
   [INTERACTIVE_RETIRE_PATH, handleInteractiveLifecycleRetirement],
   [MANAGED_RETIRE_PATH, handleManagedLifecycleRetirement],
   [VERIFY_ENROLLMENT_PATH, handleVerifyManagedAgentEnrollment],
@@ -3469,6 +3477,46 @@ async function handleManagerInstances(req: IncomingMessage, res: ServerResponse,
   }
 }
 
+/** The public service endpoint authority route, on both faces and only with `serviceEndpoints`: GET
+ *  reads the account info, POST takes one `{request, proof}` envelope. The proof is the credential on
+ *  either face; the loopback capability is never read or accepted here. Only an IdP proof verifies in
+ *  this cut, against the pinned issuer and exact audience, and its subject derives the owner. A refused
+ *  proof counts against the face's refusal budget; a valid proof does not, whatever the answer. */
+async function handleServiceEndpointAuthority(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
+  const door = ctx.serviceAuthority;
+  if (door === undefined) return send(res, 404, { error: "service endpoint authority is not enabled for this space" });
+  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
+  const noStore = { "cache-control": "no-store" };
+  if (req.method === "GET") return send(res, 200, serviceAuthorityInfo(door), noStore);
+  if (req.method !== "POST") return send(res, 405, { error: "GET or POST only" });
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
+    return send(res, 415, { error: "content-type must be application/json" });
+  const peer = policy.peerKey(req);
+  const peerThrottled = policy.throttled(ctx, peer);
+  let envelope: ReturnType<typeof parseServiceAuthorityEnvelope>;
+  try { envelope = parseServiceAuthorityEnvelope(await readJsonBody(req, SERVICE_AUTHORITY_MAX_BYTES)); }
+  catch (e) { return sendRequestError(res, e); }
+  const { request, proof } = envelope;
+  const answer = (r: { status: number; body: unknown }) => send(res, r.status, r.body, noStore);
+  if (request.space !== door.space || request.accountPublicKey !== door.accountPublicKey) return answer(serviceAuthorityDenied(request, "account-mismatch"));
+  if (proof.kind !== "idp") return answer(serviceAuthorityDenied(request, "proof-unsupported"));
+  let owner: string;
+  try {
+    owner = deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, (await verifyIdpToken(proof.token, ctx.bridgeIdp)).sub);
+  } catch (e) {
+    policy.recordFailure(ctx, peer);
+    console.error(`auth-service: refused a service endpoint authority proof: ${e instanceof Error ? e.message : String(e)}`);
+    return answer(serviceAuthorityDenied(request, peerThrottled ? "rate-limited" : "unauthenticated"));
+  }
+  try {
+    return answer(await answerServiceAuthority(door, request, owner));
+  } catch (e) {
+    // After the proof, a register may already be bound: an unexpected failure is an unknown effect.
+    console.error(`auth-service: service endpoint authority ${request.operation} failed: ${e instanceof Error ? e.message : String(e)}`);
+    return send(res, 503, { error: "service endpoint authority did not complete; the request may be bound, so retain its request identity" }, noStore);
+  }
+}
+
 /** What {@link handleManagerServiceAuthority} reads. Exported so a host that serves the route with a
  *  context it builds itself is held by the compiler to every arm the dispatcher calls. `failures`
  *  and `badCaps` are the face's refusal windows, shared with its `/exchange` so neither route is a
@@ -3682,6 +3730,7 @@ function makePublicHandler(
     ["/exchange", (req, res, c) => handleExchange(req, res, c, policy)],
     ["/manager-service-authority", (req, res, c) => handleManagerServiceAuthority(req, res, c, policy)],
     ["/manager-instances", (req, res, c) => handleManagerInstances(req, res, c, policy)],
+    [SERVICE_ENDPOINT_AUTHORITY_PATH, (req, res, c) => handleServiceEndpointAuthority(req, res, c, policy)],
     [CHAT_SESSION_PATHS.open, (req, res, c) => handleChatSession(req, res, c, policy, "open")],
     [CHAT_SESSION_PATHS.bearer, (req, res, c) => handleChatSession(req, res, c, policy, "bearer")],
     [CHAT_SESSION_PATHS.retire, (req, res, c) => handleChatSession(req, res, c, policy, "retire")],
@@ -3723,16 +3772,16 @@ function makePublicHandler(
 }
 
 /** Read + parse a small JSON body, bounded — the exchange payload is an IdP JWT plus an actor name;
- *  64 KB clears any sane JWT while keeping the loopback surface un-floodable. */
-function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const MAX = 64 * 1024;
+ *  64 KB clears any sane JWT while keeping the loopback surface un-floodable. A route with a larger
+ *  protocol envelope passes its own bound. */
+function readJsonBody(req: IncomingMessage, max = 64 * 1024): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let size = 0;
     let tooLarge = false;
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => {
       size += c.length;
-      if (size > MAX) {
+      if (size > max) {
         // Stop retaining bytes immediately, but keep draining the request so the client receives
         // the explicit 413 JSON response. Destroying the socket hid the server's decision behind
         // an undici transport error and made the size-bound smoke unable to prove this guard.
@@ -3743,7 +3792,7 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
       if (!tooLarge) chunks.push(c);
     });
     req.on("end", () => {
-      if (tooLarge) return reject(new RequestBodyError(413, "request body too large (maximum 65536 bytes)"));
+      if (tooLarge) return reject(new RequestBodyError(413, `request body too large (maximum ${max} bytes)`));
       try {
         resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       } catch {
