@@ -756,8 +756,9 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     if (closing || fatalReason !== undefined) return;
     pruneTimer = setTimeout(() => {
       pruneFlight = pruneNativeIssuance(registry, Math.floor(Date.now() / 1000)).then(schedulePrune, (e: unknown) => {
-        if (closing) return;
         const copy = `native-issuance cleanup failed: ${e instanceof Error ? e.message : String(e)}`;
+        // As for a scanner death: a closing plane does not go fatal, but a call it is draining stops.
+        if (closing) { serviceHost?.trip(copy); return; }
         hold?.fence(copy);
         fatalReason = fatalReason ?? copy;
         serviceHost?.trip(copy);

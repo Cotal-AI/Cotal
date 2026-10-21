@@ -430,6 +430,41 @@ try {
       && !o.logs.some((l) => l.includes("STOPPED scanning")) && (await claimState()) === "released", closed);
   }
   {
+    // Z4: a cleanup pass fails on a malformed issuance row (simulation) while close waits on it. The
+    // pass fires within 4 s of the open; the owned broker is paused from 2.5 s, so that pass is still
+    // in flight when close begins at 4.3 s and fails only after the broker resumes.
+    const g = gate();
+    let armed = false, paused = false;
+    const o = await openPlane({ ...enabled, nativeIssuancePruneMs: 4000 }, { effect: async () => { if (armed) { armed = false; paused = true; await g.p; } } });
+    const t0 = Date.now();
+    const host = o.plane.serviceEndpointHost!;
+    await wideKv.create("natkey.not-a-user-key", new TextEncoder().encode("{}"));
+    const p = await registered(host);
+    const propRev = await revision(`svcprop.${p.proposalId}`);
+    armed = true;
+    const req = decide(p.proposalId, p.revision, name.revision);
+    const inflight = call(host, req);
+    for (let i = 0; i < 50 && !paused; i++) await wait(20);
+    await wait(Math.max(0, t0 + 2500 - Date.now()));
+    const fencedBefore = await within(o.plane.fenced, 1);
+    srv.kill("SIGSTOP");
+    let closing: Promise<void>;
+    try {
+      await wait(Math.max(0, t0 + 4300 - Date.now()));
+      closing = o.plane.close();
+    } finally { srv.kill("SIGCONT"); }
+    await wait(800);
+    c.check("Z4 setup: the cleanup pass had not run before close began", paused && fencedBefore === undefined, { paused, fencedBefore });
+    g.open();
+    const r = await inflight;
+    c.check("Z4 a cleanup failure while close drains holds the paused decide under its operation", r.state === "held" && r.operationId === serviceHostOperationId(space, req.requestId) && r.reason === "readiness", r);
+    c.check("Z4 nothing was written after the failure", (await wideKv.get(`svcop.${serviceHostOperationId(space, req.requestId)}`)) === null && (await revision(`svcprop.${p.proposalId}`)) === propRev);
+    const closed = await rejects(() => closing);
+    c.check("Z4 the closing plane did not go fatal and its close released the claim", closed === "" && (await within(o.plane.fenced, 300)) === undefined
+      && !o.logs.some((l) => l.includes("native-issuance cleanup failed")) && (await claimState()) === "released", closed);
+    await wideKv.delete("natkey.not-a-user-key");
+  }
+  {
     const o = await openPlane(enabled);
     await o.plane.close();
     c.check("Z3 an ordinary close stays clean: no fatal, no scanner-death copy, the claim released",
