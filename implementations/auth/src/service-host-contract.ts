@@ -229,7 +229,7 @@ interface ServiceHostOutputs {
  *  the request (or the request conflicts with one). Every other arm names its bound operation, and
  *  none of them means the request was not executed. */
 export type ServiceHostPending = { state: "pending"; operationId: string; phase: string; notBefore?: number;
-  assignmentDigest?: string; denyNew?: ServiceDenyNew; root?: "none" | "revoked" | "retained-stamped" };
+  assignmentDigest?: string; denyNew?: ServiceDenyNew; root?: "none" | "revoked" | "retained-stamped"; debt?: ServiceHostDebt[] };
 export type ServiceHostHeld = { state: "held"; operationId: string; reason: string; phase: string;
   assignmentDigest?: string; denyNew?: ServiceDenyNew; debt?: ServiceHostDebt[] };
 export type ServiceHostRefused = { state: "refused"; operationId: string; reason: ServiceOperationRefusal;
@@ -459,10 +459,10 @@ export function parseServiceHostResult(raw: unknown): ServiceHostResult {
   let keys: Rec;
   if (state === "denied") { keys = closed(raw, [...env, "reason"], ["boundOperationId"]); oneOf(o.reason, SERVICE_HOST_REASONS, "reason"); if (Object.hasOwn(o, "boundOperationId")) hex(o.boundOperationId, 32, "boundOperationId"); }
   else if (state === "pending") {
-    keys = closed(raw, [...env, "operationId", "phase"], ["notBefore", "assignmentDigest", "denyNew", "root"]);
+    keys = closed(raw, [...env, "operationId", "phase"], ["notBefore", "assignmentDigest", "denyNew", "root", "debt"]);
     hex(o.operationId, 32, "operationId"); text(o.phase, "phase", 64); if (Object.hasOwn(o, "notBefore")) nat(o.notBefore, "notBefore");
     if (Object.hasOwn(o, "assignmentDigest")) dig(o.assignmentDigest, "assignmentDigest"); if (Object.hasOwn(o, "denyNew")) oneOf(o.denyNew, DENY_NEW, "denyNew");
-    if (Object.hasOwn(o, "root")) oneOf(o.root, ["none", "revoked", "retained-stamped"], "root");
+    if (Object.hasOwn(o, "root")) oneOf(o.root, ["none", "revoked", "retained-stamped"], "root"); if (Object.hasOwn(o, "debt")) debtList(o.debt);
   } else if (state === "held") {
     keys = closed(raw, [...env, "operationId", "reason", "phase"], ["assignmentDigest", "denyNew", "debt"]);
     hex(o.operationId, 32, "operationId"); text(o.reason, "reason", 64); text(o.phase, "phase", 64);
