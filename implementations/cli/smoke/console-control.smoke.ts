@@ -142,7 +142,7 @@ try {
     await wait(3_300); // the previous notice auto-clears after 3 s; a stale one must not match
     m = s.mark();
     await s.command(`status ${seat}`);
-    if (await s.waitFor(new RegExp(`${seat} \\(worker\\) · seat · pty · running`), 20_000, m)) hits++;
+    if (await s.waitFor(new RegExp(`${seat}/worker · seat · pty · running`), 20_000, m)) hits++;
     else console.log(`    status ${seat} answered: ${clean(s.out.slice(m)).match(/status: [^│\n]*/)?.[0] ?? "(nothing)"}`);
   }
   await wait(3_300);
@@ -164,13 +164,13 @@ try {
   await wait(3_300);
   m = s.mark();
   await s.command("status w1");
-  const qualified = await s.waitFor(/w1 \(worker\).*mesh working · progress unknown/, 20_000, m);
+  const qualified = await s.waitFor(/w1\/worker.*mesh working · progress unknown/, 20_000, m);
   check(":status on a seat the mesh reports WORKING says progress unknown, not a bare working",
     qualified, clean(s.out.slice(m)).match(/status: [^│\n]*/)?.[0] ?? clean(s.out.slice(m)).slice(-200));
   await wait(3_300);
   m = s.mark();
   await s.command("status w2");
-  const idle = await s.waitFor(/w2 \(worker\).*mesh idle/, 20_000, m);
+  const idle = await s.waitFor(/w2\/worker.*mesh idle/, 20_000, m);
   check("...while an idle seat is reported plainly, so the qualifier is not printed unconditionally",
     idle, clean(s.out.slice(m)).match(/status: [^│\n]*/)?.[0] ?? clean(s.out.slice(m)).slice(-200));
   m = s.mark();
