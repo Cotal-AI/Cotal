@@ -43,7 +43,9 @@ spawn, and the caller sees the thrown value's `message`, or the value itself as 
 none. Everything else on the interface is optional and default-deny: declare
 `supportsModelVariant`/`supportsPrompt`/`supportsResume`/`supportsSessionContinuation`/`supportsSessionReopen`/`supportsToolListAnnounce` only if you honor them (a request for one you don't declare
 fails loud before any provisioning), list `requires` so a missing CLI fails with a clear message, and
-implement `listModels` only if you want a selector catalog. Implement `eventChannel` only if your
+implement `listModels` only if you want a selector catalog. When an install cannot list one, return
+`unavailable` with the reason rather than throwing, so the manager reports the catalog unsupported
+instead of unreadable. Implement `eventChannel` only if your
 session publishes a structured event plane: it names the channel the manager grants that session
 publish rights on, so the grant and the subject the session publishes to come from one function
 rather than two that can drift. Event planes are on by default when this method exists. A connector

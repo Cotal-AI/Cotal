@@ -37,13 +37,13 @@ The optional `condition` beside status relays a harness-reported cause such as `
 normal next turn starts. The optional `activeAt` is the epoch ms of the last work event the harness
 reported, such as a token or a tool call; missing means the connector reports none. `ts` is only the
 heartbeat, so a seat whose turn stopped advancing keeps a fresh `ts` and an old `activeAt`. The
-connector records it as events arrive and the next heartbeat carries it. `cotal ps`, `cotal status`,
+connector records it as events arrive and the next heartbeat carries it. `cotal ps`,
 `cotal endpoints`, `cotal console`, `cotal join` and `cotal_roster` print a condition with its age
 and the age of `activeAt`, such as `waiting (rate_limit for 40m) · active 40m ago`. The optional
 `statusSince` is the epoch ms when the instance entered its current status and activity. A change to
 either moves it, while a heartbeat or a repeated report does not, so an activity that outlived what
-it described reads as old. `cotal status`, `cotal endpoints`, `cotal console`, `cotal join` and
-`cotal_roster` print its age, such as `idle · unchanged for 40m`. An offline record carries none,
+it described reads as old. `cotal endpoints`, `cotal console`, `cotal join` and `cotal_roster` print
+its age, such as `idle · unchanged for 40m`. An offline record carries none,
 because an observer that derives `offline` from a stale heartbeat does not know when the peer left.
 The optional `activitySince` is when the current activity was set. A status change does not move it,
 so an activity left behind while hooks flip the status every turn still shows its age after the

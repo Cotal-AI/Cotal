@@ -88,9 +88,10 @@ function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
   }).trim();
   const line = opencodeLine(versionRaw, "opencode");
   if (line === 2)
-    throw new Error(
-      "opencode connector: 'cotal models' is not available for OpenCode 2.x (the catalog is served by a running opencode server, not the CLI); pass --model provider/model",
-    );
+    return {
+      models: [],
+      unavailable: "OpenCode 2.x serves its model catalog from a running opencode server, not the CLI; pass --model provider/model",
+    };
   const args = ["models", "--pure", "--verbose"];
   if (opts.refresh) args.push("--refresh");
   try {

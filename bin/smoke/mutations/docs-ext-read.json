@@ -1,0 +1,131 @@
+{
+  "suite": [
+    "bin/smoke/docs-ext-read.smoke.ts"
+  ],
+  "guard": "docs refuses a page with --search and --refresh without a page, loads the bundle only inside run, returns matching sections, reports a page read without --refresh as bundled and matches a slug without case or .md; the ext listing reports each entry's source, and ext root refuses --json",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/docs-ext-read.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/docs-ext-read.json",
+  "why": [
+    "The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back."
+  ],
+  "mutations": [
+    {
+      "name": "a page and --search are both taken",
+      "file": "bin/docs.ts",
+      "find": "  if (page !== undefined && query !== undefined) throw usage(\"give a page or --search, not both\");\n",
+      "replace": "",
+      "expectRed": "docs spec --search x is one USAGE_INVALID envelope, exit 1",
+      "cell": "docs spec --search x is one USAGE_INVALID envelope, exit 1",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--refresh without a page is ignored",
+      "file": "bin/docs.ts",
+      "find": "  if (v.refresh && page === undefined) throw usage(\"--refresh applies to reading a page; the index and search use the bundled docs\");\n",
+      "replace": "",
+      "expectRed": "docs --refresh is one USAGE_INVALID envelope, exit 1",
+      "cell": "docs --refresh is one USAGE_INVALID envelope, exit 1",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the docs bundle is imported at startup",
+      "file": "bin/docs.ts",
+      "find": "import { CommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type Cell, type Report } from \"@cotal-ai/workspace\";\n",
+      "replace": "import { CommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type Cell, type Report } from \"@cotal-ai/workspace\";\nimport * as eager from \"@cotal-ai/connector-core/docs\";\nvoid eager;\n",
+      "expectRed": "docs imports the bundle inside run, through its narrow subpath",
+      "cell": "docs imports the bundle inside run, through its narrow subpath",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a search returns no sections",
+      "file": "bin/docs.ts",
+      "find": "const hits = d.searchDocs(query).map(",
+      "replace": "const hits = d.searchDocs(query).slice(0, 0).map(",
+      "expectRed": "--search returns sections that hold the query, each naming its page",
+      "cell": "--search returns sections that hold the query, each naming its page",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a page read without --refresh claims a refresh",
+      "file": "extensions/connector-core/src/docs.ts",
+      "find": "  if (!opts.refresh) return { version, page: found, source: \"bundled\", refresh: null };",
+      "replace": "  if (!opts.refresh) return { version, page: found, source: \"bundled\", refresh: \"served\" };",
+      "expectRed": "a page is the bundled copy, with no refresh asked",
+      "cell": "a page is the bundled copy, with no refresh asked",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a page slug is matched with case and .md",
+      "file": "extensions/connector-core/src/docs.ts",
+      "find": "  const key = page.trim().toLowerCase().replace(/\\.md$/, \"\");",
+      "replace": "  const key = page.trim();",
+      "expectRed": "a page's slug is matched without case or .md, and the plain page says which copy it is",
+      "cell": "a page's slug is matched without case or .md, and the plain page says which copy it is",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the listing drops whether the seed installed an entry",
+      "file": "implementations/cli/src/commands/ext.ts",
+      "find": "    seeded: e.source === \"seeded\",",
+      "replace": "    seeded: false,",
+      "expectRed": "ext list --json holds each installed extension once, with its spec, source and what it provides",
+      "cell": "ext list --json holds each installed extension once, with its spec, source and what it provides",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the plain listing calls every entry added",
+      "file": "implementations/cli/src/commands/ext.ts",
+      "find": "source: row.seeded ? \"built in\" : \"added\"",
+      "replace": "source: \"added\"",
+      "expectRed": "the plain listing is a table with the source of each",
+      "cell": "the plain listing is a table with the source of each",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "ext root takes --json",
+      "file": "implementations/cli/src/commands/ext.ts",
+      "find": "  if (v.json || v.plain) throw usage(sub === \"root\"",
+      "replace": "  if (false) throw usage(sub === \"root\"",
+      "expectRed": "ext root --json is refused as text with no envelope, exit 1",
+      "cell": "ext root --json is refused as text with no envelope, exit 1",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "every ext mode reports by the listing's outputs",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  return ((sub ? sub.outputs : cmd.outputs) ?? []).some((mode) => mode === \"json\" || mode === \"ndjson\");\n",
+      "replace": "  return (cmd.outputs ?? []).some((mode) => mode === \"json\" || mode === \"ndjson\");\n",
+      "expectRed": "a mode without structured output keeps its exit: removing a missing package exits 1",
+      "cell": "a mode without structured output keeps its exit: removing a missing package exits 1",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "help shows the command's outputs on every subcommand",
+      "file": "implementations/cli/src/help.ts",
+      "find": "  const outputs = (sub ?? cmd).outputs ?? [];\n",
+      "replace": "  const outputs = cmd.outputs ?? [];\n",
+      "expectRed": "help names the listing's structured output and no other mode's",
+      "cell": "help names the listing's structured output and no other mode's",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the index shows each page's summary sentence again",
+      "file": "bin/docs.ts",
+      "find": "rows: pages.map((p) => ({ slug: { text: p.slug, tone: \"command\" as const }, title: p.title })) });",
+      "replace": "rows: pages.map((p) => ({ slug: { text: p.slug, tone: \"command\" as const }, title: (p as { summary?: string }).summary || p.title })) });",
+      "expectRed": "the index groups pages by category in PAGE and TITLE tables that fit 80 columns",
+      "cell": "the index groups pages by category in PAGE and TITLE tables that fit 80 columns",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the index puts every page under one heading",
+      "file": "bin/docs.ts",
+      "find": "for (const p of r.pages) groups.set(category(p.kind), [...(groups.get(category(p.kind)) ?? []), p]);",
+      "replace": "for (const p of r.pages) groups.set(\"Pages\", [...(groups.get(\"Pages\") ?? []), p]);",
+      "expectRed": "the plain index names the version, both groups and how to read a page",
+      "cell": "the plain index names the version, both groups and how to read a page",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

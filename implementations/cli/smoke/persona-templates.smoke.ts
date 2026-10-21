@@ -159,7 +159,7 @@ const walk = (dir: string) => {
     const lines = src.split("\n");
     for (let i = 0; i < lines.length; i++) {
       const window = lines.slice(i, i + 3).join("\n");
-      const isWrite = /\bwriteFileSync\(/.test(window);
+      const isWrite = /\b(?:writeFileSync|writePrivateRecord)\(/.test(window);
       if (!isWrite) continue;
       // Shared writers write the path they were HANDED, so the call site names no directory. Match
       // them by what they are rather than failing to see the files the guard rests on.

@@ -139,10 +139,60 @@ Manager `slots` (`manager.read`, untargeted) lists the durable static slot rows 
 owns. Only static managers hold these rows: a user-mode or open manager answers
 `failed-precondition`, and a manager whose durable store is not standing answers `unavailable`.
 Each row carries the same `readOrder` and `consistency` fields `inspect` uses, because the list
-is read the same way: torn across rows as well as within each row's slot/head pair. A `retired`
-row is never listed. `live` reflects the manager's live roster at render time, not the durable
-row. A slot row is never deleted, so a row whose latest operation is a DEL or PURGE marker is
-corruption: the list answers `unavailable` naming that row, as `inspect` does for its name.
+is read the same way: torn across rows as well as within each row's slot/head pair.
+With no arguments, retired rows remain excluded. From manager cluster revision 32,
+`{names: ["worker"], includeRetired: true}` point-reads up to 100 distinct aliases and
+includes their retired rows. An absent or sibling-owned slot is omitted, not reported
+as retired. Each returned row retains its principal, lifecycle UID, slot/head revisions,
+phase and any native cleanup-complete fact. Consumers must match every requested
+incarnation; a missing live row or an accepted stop is not a retirement result.
+`live` reflects the manager's live roster at render time, not the durable row. A slot row
+is never deleted, so a row whose latest operation is a DEL or PURGE marker is corruption:
+the list answers `unavailable` naming that row, as `inspect` does for its name.
+
+### Static chat sessions
+
+From manager cluster revision 34, a static manager admits chat sessions with
+`chat-session-open` and ends them with `chat-session-retire`. Both are untargeted and in the
+`manager.chat` class. Only operator instruments carry their rows; the `spawn` and `run`
+capabilities do not. A user-mode or open manager refuses both with `unimplemented`.
+
+`chat-session-open` takes `{subscribe, allowSubscribe, allowPublish, label, ttl, sealTo}`. The
+three lists are a spawn's, under a spawn's rules: `subscribe` is the session's initial channels,
+`allowSubscribe` its read ceiling (empty means `subscribe`, and `subscribe` must lie within it),
+and `allowPublish` its post list (empty means none). Each may be omitted. A session can join any
+channel under its ceiling, patterns included. A concrete event channel of another principal is
+refused, as it is for a spawn. The manager draws a `chat_<26 base32>` alias and a fresh nkey
+identity, runs the static slot activation, provisions the session's DM and DELIVER durables and
+ACL row, and mints an agent-profile leaf with no role, capabilities, endpoint rows or issuance.
+The leaf expires after `ttl` seconds, at most 900, and is never renewed. Because the leaf is not
+an issuance, the manager writes its credential ledger row itself before the credential leaves the
+process, and that row is what retirement marks revoked and verify-evicts.
+
+`sealTo` is a one-time curve public key (`X…`) the caller mints and keeps the private half of. The
+reply is `{alias, actor, lifecycleUid, expiresAt, sealer, sealed}`: `actor` is the nkey the
+broker authenticates, `alias` names the slot, and `expiresAt` is in epoch milliseconds. The
+credential is not in the reply in the clear. `sealed` is base64url, sealed to `sealTo` from the
+one-time `sealer` key with the NATS xkey format, and opens to the credential bound to the space,
+the admitting manager instance and every field of the reply. A generic invoke, an agent or a
+browser sees only that ciphertext. The chat adapter opens it once, refuses it unless every bound
+field matches, and keeps the credential in memory.
+
+`chat-session-retire` takes `{alias, actor, lifecycleUid}` and runs the static terminal. It refuses
+before any effect unless the alias is a chat alias whose slot this manager instance owns at that
+uid and actor. It answers `retired`, `alreadyRetired`, or `failed` with a `retirement pending:`
+reason while the slot stays held. Retirement marks the credential's ledger row revoked, verifies
+that the session's principal has no broker connection left, tears down its broker footprint and
+retires the slot. A static mesh has no broker-side credential revocation, so a copy of the leaf
+can still connect with the permissions it carries until its expiry. An ordinary spawn refuses any
+name that starts with `chat_`.
+
+The manager that admitted a session retires it at its expiry when nothing retired it sooner, so a
+lost reply or an abandoned client does not hold the slot. Its stop retires every session it still
+holds, with or without its agents, and names each one it could not retire; a stop that preserves
+the manager's state leaves them. Its own startup sweep never retires a session it is admitting or
+holds. A session that none of these retired stays held until the next start of that manager
+instance.
 
 ## Spawn is a goal
 
@@ -246,6 +296,7 @@ ambiguous or unauthorized selection refuses before the command is sent. An ambig
 owner's live manager instance ids and names the caller's way to pick one: `--on <instanceId>` for
 the CLI, `--manager-instance <instanceId>` for `cotal agent-bearer --manager-call`, and the
 `instance` argument for an agent's tools.
+A pin changes routing, not the caller's grant.
 
 Managed launches carry `COTAL_MANAGER_INSTANCE` so their tools address the manager that launched
 them; a tool's `instance` argument must name that same manager. The `cotal` commands run from their
@@ -448,7 +499,8 @@ the stamp. A remote manager asks its host to reconcile the holder only on `in-fl
 condition a gate repair can clear.
 
 For the instance that cannot cooperate, an operator names it:
-`cotal deregister-instance --instance <id>` ([cli.md](cli.md#deregister-instance)). It removes the
+`cotal endpoint deregister <endpoint> <full-instance-id>`
+([cli.md](cli.md#endpoint-deregister)). It removes the
 record only on the same evidence `cotal ps` acts on: the broker reporting nothing subscribed on
 that instance's own rail. It refuses if the instance answers a describe, refuses if the probe could
 not run at all, and refuses if the instance is merely quiet, because a hung process still holds its

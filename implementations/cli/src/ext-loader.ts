@@ -7,6 +7,10 @@ import {
   type RuntimeProvider,
 } from "@cotal-ai/core";
 import {
+  SEEDED_EXTENSIONS,
+  CommandFailure,
+  jsonFlag,
+  plainFlag,
   connectorInstallHint,
   extensionLocalProcesses,
   extensionProvides,
@@ -18,6 +22,7 @@ import {
   type LocalProcess,
 } from "@cotal-ai/workspace";
 import { c } from "./ui.js";
+import { cliVersion } from "./lib/version.js";
 
 /** The official first-party runtimes, name → npm package. This is NOT authority — registration is
  *  still explicit (`cotal ext add` installs the package; importing it self-registers the provider).
@@ -30,6 +35,17 @@ export const OFFICIAL_RUNTIMES: Readonly<Record<string, string>> = {
   tmux: "@cotal-ai/tmux",
   cmux: "@cotal-ai/cmux",
   herdr: "@cotal-ai/herdr",
+};
+
+/** The host tool each official runtime drives, for `cotal setup` to show before the package is
+ *  installed: any one of `names` on PATH counts, and the driver's `override` variable, when set,
+ *  names the tool instead. Kept beside {@link OFFICIAL_RUNTIMES} because an uninstalled provider
+ *  cannot be asked. */
+export const OFFICIAL_RUNTIME_TOOLS: Readonly<Record<string, { readonly names: readonly string[]; readonly override?: string }>> = {
+  orca: { names: ["orca-ide", "orca"], override: "COTAL_ORCA_BIN" },
+  tmux: { names: ["tmux"] },
+  cmux: { names: ["cmux"], override: "CMUX_BUNDLED_CLI_PATH" },
+  herdr: { names: ["herdr"] },
 };
 
 /** Every runtime name the CLI knows about without importing anything: `pty` (built in) + the officials. */
@@ -62,18 +78,24 @@ function unknownRuntimeError(name: string): string {
  *    builtin command NEVER throws over the collision.
  */
 
-/** A display-only stub for the help/complete surface. Running it resolves the REAL command:
- *  verify pin → import (self-registers) → re-resolve → parse LIVE specs → run. */
+/** A metadata stub for help, completion and the read-only seed decision. Running it resolves the
+ *  real command: verify pin → import (self-registers) → re-resolve → parse live specs → run. */
 function stubFor(ext: InstalledExtension, cached: CachedCommand): Command {
   return {
     kind: "command",
     name: cached.name,
     summary: cached.summary,
+    aliases: cached.aliases,
     group: cached.group ?? "Extensions",
     usage: cached.usage,
     hidden: cached.hidden,
     flags: cached.flags,
+    flagNames: cached.flagNames,
     positionals: cached.positionals,
+    subcommands: cached.subcommands,
+    outputs: cached.outputs,
+    examples: cached.examples,
+    reads: cached.reads,
     // Marker consumed by runCli: dispatch must swap the stub for the live command before parsing.
     extension: ext.pkg,
     async run(): Promise<void> {
@@ -99,13 +121,16 @@ export function commandSurface(): Command[] {
   return surface ?? registry.all<Command>("command");
 }
 
+/** Whether this composition root authorizes metadata reads from the installed extension prefix. */
+export function installedExtensionsEnabled(): boolean { return installedEnabled; }
+
 /** Registered and installed provider names without importing packages (safe for help/completion). */
 export function extensionNames(kind: string): string[] {
-  const names = new Set(registry.all().filter((ext) => ext.kind === kind).map((ext) => ext.name));
+  const names = new Set(registry.all().filter((ext) => ext.kind === kind && (kind !== "local-process" || (ext as LocalProcess).controllerOnly !== true)).map((ext) => ext.name));
   if (installedEnabled) {
     for (const ext of loadExtensionsManifest().extensions) {
       if (kind === "local-process") {
-        for (const process of extensionLocalProcesses(ext)) names.add(process.name);
+        for (const process of extensionLocalProcesses(ext)) if (!process.controllerOnly) names.add(process.name);
       } else {
         for (const ref of extensionProvides(ext)) if (ref.kind === kind) names.add(ref.name);
       }
@@ -116,11 +141,12 @@ export function extensionNames(kind: string): string[] {
 
 /** Base + cached installed process descriptors. No extension package is imported. */
 export function localProcessSurface(): LocalProcess[] {
-  const processes = [...registry.all<LocalProcess>("local-process")];
+  const processes = registry.all<LocalProcess>("local-process").filter((process) => !process.controllerOnly);
   const owners = new Map(processes.map((process) => [process.name, "this CLI"]));
   if (!installedEnabled) return processes;
   for (const ext of loadExtensionsManifest().extensions) {
     for (const process of extensionLocalProcesses(ext)) {
+      if (process.controllerOnly) continue;
       const owner = owners.get(process.name);
       if (owner) throw new Error(`local process "${process.name}" is provided by both ${owner} and ${ext.pkg}@${ext.version}`);
       owners.set(process.name, `${ext.pkg}@${ext.version}`);
@@ -139,11 +165,13 @@ export function isExtensionStub(cmd: Command): boolean {
  *  command list for help/complete/dispatch. Loud on builtin collisions; never imports. */
 export function overlayExtensions(reg: Registry): Command[] {
   const commands = [...reg.all<Command>("command")];
-  const owner = new Map<string, string>(); // command name → "" for a builtin, else the owning ext pkg
-  for (const cm of commands) owner.set(cm.name, "");
+  const owner = new Map<string, string>(); // command name or alias → "" for a builtin, else the owning ext pkg
+  for (const cm of commands) for (const word of [cm.name, ...(cm.aliases ?? [])]) owner.set(word, "");
   for (const ext of loadExtensionsManifest().extensions) {
     for (const cached of ext.commands) {
-      const holder = owner.get(cached.name);
+      const words = [cached.name, ...(cached.aliases ?? [])];
+      const clash = words.find((word) => owner.has(word));
+      const holder = clash === undefined ? undefined : owner.get(clash);
       if (holder !== undefined) {
         // add() refuses fresh collisions, so this install predates the clash: a base upgrade
         // shipped the name (builtin case), or the sibling was added under an older base that
@@ -151,17 +179,28 @@ export function overlayExtensions(reg: Registry): Command[] {
         console.error(
           c.red(
             holder === ""
-              ? `! command "${cached.name}" is provided by both this CLI and extension ${ext.pkg}@${ext.version} - the built-in wins; run \`cotal ext remove ${ext.pkg}\` (or update the extension) to clear this`
-              : `! command "${cached.name}" is provided by both extensions ${holder} and ${ext.pkg}@${ext.version} - ${holder} (installed first) wins; \`cotal ext remove\` one of them to clear this`,
+              ? `! command "${clash}" is provided by both this CLI and extension ${ext.pkg}@${ext.version} - the built-in wins; run \`cotal ext remove ${ext.pkg}\` (or update the extension) to clear this`
+              : `! command "${clash}" is provided by both extensions ${holder} and ${ext.pkg}@${ext.version} - ${holder} (installed first) wins; \`cotal ext remove\` one of them to clear this`,
           ),
         );
         continue;
       }
-      owner.set(cached.name, ext.pkg);
-      commands.push(stubFor(ext, cached));
+      for (const word of words) owner.set(word, ext.pkg);
+      commands.push(ext.pkg === "@cotal-ai/web" && cached.name === "web" ? obsoleteWebCommand() : stubFor(ext, cached));
     }
   }
   return commands;
+}
+
+/** An obsolete first-party descriptor is diagnostic only. Preserve normal collision ownership,
+ *  but never import its old command, repair the installation, or suggest removing the dashboard. */
+function obsoleteWebCommand(): Command {
+  const refuse = (): never => { throw new CommandFailure("refused", "CONFLICT", "this installed dashboard still declares the retired web command; no package was loaded, removed or reinstalled", { remedy: "run cotal update to refresh the matching @cotal-ai/web service preset; then use cotal service add web --preset web with its explicit options" }); };
+  return { kind: "command", name: "web", hidden: true, rawArgs: true,
+    summary: "outdated dashboard descriptor; refresh it with cotal update",
+    flags: [jsonFlag, plainFlag], outputs: ["json", "plain"], prepareMeshTarget: false,
+    validate: refuse, run: refuse,
+  };
 }
 
 /** Swap an extension STUB for its live command: verify the version pin, import the package (it
@@ -184,6 +223,8 @@ export async function materializeExtension<T extends Extension = Extension>(ref:
   if (registered) return registered as T;
   if (!installedEnabled)
     throw new Error(`no ${ref.kind} registered for "${ref.name}" - import its integration in this composition root`);
+  const skew = seededVersionSkew(ref);
+  if (skew) throw new Error(skew);
   return materializeFromManifest<T>(ref, {
     hint: (r) =>
       r.kind === "runtime"
@@ -192,6 +233,17 @@ export async function materializeExtension<T extends Extension = Extension>(ref:
           ? connectorInstallHint(r.name)
           : `no installed extension provides ${r.kind} "${r.name}" - install it with \`cotal ext add <npm-package>\``,
   });
+}
+
+/** Why the first-party package that provides `ref` must not load: the binary seeds it at its own
+ *  version, and the installed one differs, as after an upgrade until a command seeds again. A read
+ *  does not seed, so it reaches this. Loading it would pair this core with another version's package. */
+function seededVersionSkew(ref: ExtensionRef): string | undefined {
+  const ext = loadExtensionsManifest().extensions.find((candidate) =>
+    extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
+  );
+  if (!ext || ext.version === cliVersion() || !Object.values(SEEDED_EXTENSIONS).some((seeded) => seeded.pkg === ext.pkg)) return undefined;
+  return `${ext.pkg} is ${ext.version} and this cotal is ${cliVersion()} - run \`cotal ext seed\` to bring it to this version`;
 }
 
 /** Resolve and probe an extension runtime before a manifest command mutates local or mesh state. */

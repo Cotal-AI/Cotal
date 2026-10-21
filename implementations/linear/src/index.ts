@@ -1,6 +1,7 @@
+import "./service-adapter.js"; // self-registers the native Linear service preset and child
 import { registry, type Command } from "@cotal-ai/core";
-import { serverFlag, spaceFlag } from "@cotal-ai/workspace";
-import { linear, USAGE } from "./cli.js";
+import { jsonFlag, plainFlag, serverFlag, spaceFlag } from "@cotal-ai/workspace";
+import { linear, linearForms, validateLinearArguments, USAGE } from "./cli.js";
 
 /**
  * `@cotal-ai/linear`: the official Linear MCP server as a registered Cotal endpoint, plus the
@@ -16,11 +17,18 @@ const linearCommand: Command = {
   usage: USAGE,
   positionals: "<subcommand> …",
   prepareMeshTarget: false,
+  reads: true,
+  outputs: ["json", "plain"],
+  subcommands: [
+    { name: "account", summary: "record an explicit account or read its metadata", reads: true, prepareMeshTarget: false, outputs: ["json", "plain"], flagNames: ["json", "plain"], subcommands: linearForms.filter((form) => form.path[0] === "account").map((form) => ({ name: form.path[1]!, summary: form.summary, flagNames: [...form.flags], outputs: [...form.outputs], ...(form.reads ? { reads: true as const } : {}), prepareMeshTarget: false as const })) },
+    ...linearForms.filter((form) => form.path.length === 1).map((form) => ({ name: form.path[0], summary: form.summary, flagNames: [...form.flags], outputs: [...form.outputs], ...(form.reads ? { reads: true as const } : {}), prepareMeshTarget: false as const })),
+  ],
+  validate: validateLinearArguments,
   flags: [
     { name: "mode", type: "string", value: "<write|readonly>", description: "account add: which Linear MCP server the account uses" },
     { name: "token-stdin", type: "boolean", description: "account add: read the API key or OAuth token from stdin and store it 0600" },
     { name: "token-file", type: "string", value: "<path>", description: "account add: use an existing 0600 file holding the token" },
-    { name: "json", type: "boolean", description: "inventory: print the full inventory" },
+    jsonFlag, plainFlag,
     { name: "args", type: "string", value: "<json>", description: "call/prompt: arguments as a JSON object" },
     { name: "inventory", type: "string", value: "<digest>", description: "refuse before dispatch unless the live inventory has this digest" },
     { name: "timeout", type: "string", value: "<ms>", description: "request deadline in milliseconds (default 30000, max 120000)" },

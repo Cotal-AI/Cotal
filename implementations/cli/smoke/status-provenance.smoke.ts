@@ -62,14 +62,14 @@ async function check(name: string, run: () => Promise<void>): Promise<void> {
 try {
   await check("source status names the source checkout root", async () => {
     const out = await statusText(sourceEntry);
-    assert.match(out, new RegExp(`cotal-ai\\s+v${escapeRegex(sourceVersion)} \\(source checkout: ${escapeRegex(sourceRoot)}\\)`));
-    assert.match(out, new RegExp(`Claude skills\\s+v${pluginVersion} ≠ v${escapeRegex(sourceVersion)} · stale`));
+    assert.match(out, new RegExp(`cotal-ai:\\s+v${escapeRegex(sourceVersion)} \\(source checkout: ${escapeRegex(sourceRoot)}\\)`));
+    assert.match(out, new RegExp(`Claude skills:\\s+v${pluginVersion} ≠ v${escapeRegex(sourceVersion)} · stale`));
   });
 
   await check("installed status names the installed package root", async () => {
     const out = await statusText(installedShim);
-    assert.match(out, new RegExp(`cotal-ai\\s+v9\\.9\\.9 \\(installed: ${escapeRegex(realpathSync(installedRoot))}\\)`));
-    assert.match(out, new RegExp(`Claude skills\\s+v${pluginVersion} ≠ v9\\.9\\.9 · stale`));
+    assert.match(out, new RegExp(`cotal-ai:\\s+v9\\.9\\.9 \\(installed: ${escapeRegex(realpathSync(installedRoot))}\\)`));
+    assert.match(out, new RegExp(`Claude skills:\\s+v${pluginVersion} ≠ v9\\.9\\.9 · stale`));
   });
 } finally {
   process.argv[1] = realArgv1;

@@ -81,7 +81,7 @@ async function stop(child: ChildProcess | undefined): Promise<void> {
 }
 /** The bare-status delivery row, pid-normalized: the CLAIM the row makes, not its instance values. */
 function deliveryRow(text: string): string | undefined {
-  return text.split("\n").map((l) => strip(l).trimEnd()).find((l) => /^\s{2}delivery\s/.test(l))?.trim().replace(/\(pid \d+\)/, "(pid N)");
+  return text.split("\n").map((l) => strip(l).trimEnd()).find((l) => /^\s{2}delivery:\s/.test(l))?.trim().replace(/\(pid \d+\)/, "(pid N)");
 }
 function componentRow(text: string): string | undefined {
   return text.split("\n").map((l) => l.trim()).find((l) => /^delivery\s+(serving|not-serving|absent|refused|stopped)/.test(l));
@@ -128,7 +128,7 @@ try {
   check("CELL 1: it names the CONSEQUENCE rather than only the state",
     /no spawn, no retirement, no join until it binds/.test(unboundRow ?? ""), unboundRow);
   check("CELL 1: the mesh section states it too, with the command that starts it",
-    /delivery responder\s+NOT BOUND/.test(strip(unboundBare.text)) && /cotal deliver --space|cotal up/.test(strip(unboundBare.text)),
+    /delivery responder:\s+NOT BOUND/.test(strip(unboundBare.text)) && /cotal deliver --space|cotal up/.test(strip(unboundBare.text)),
     strip(unboundBare.text).split("\n").filter((l) => /responder/i.test(l)));
   // Bare status stays a recovery-oriented, zero-exit diagnostic: naming the axis must not turn it
   // into a monitor. `--components` owns the exit disposition.

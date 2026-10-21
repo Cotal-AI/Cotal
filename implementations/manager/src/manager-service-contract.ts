@@ -29,6 +29,7 @@
  *   manager.lifecycle despawn / attach / input             (owner-mode terminal/interactive)
  *   manager.self     stop                                  (self-mode halt; baseline)
  *   manager.persona  definePersona                         (privileged-grade; ownership-checked)
+ *   manager.chat     chat-session-open / chat-session-retire (operator instruments only; static managers)
  *   manager.admin    purge / launch / resume family / transcript-receive  (operator instruments only)
  *   manager.run      run-start / run-resume / run-answer   (the `run` capability + privileged instrument)
  *                    run-status / run-ps ride manager.read
@@ -56,7 +57,50 @@ export const MANAGER_CLUSTER_URN = "ai.cotal.manager";
 
 // ---- output/input schemas (closed unless the payload is genuinely open) ------------------------
 
-/** The read-only manager-health output. Manager-LEVEL — per-agent rows are `ps`/`inspect`. */
+const STOP_IMPACT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["agentScope", "observedAt", "maintenance", "resumeRequired", "stopping", "lifecycleInFlight", "reservedLaunches", "retirementsPending", "deprovisioningInFlight", "staticReconciliationInFlight", "agents"],
+  properties: {
+    agentScope: { enum: ["manager", "owner-filtered"] },
+    observedAt: { type: "string" },
+    maintenance: { enum: ["active", "preserving", "preserved"] },
+    resumeRequired: { type: "boolean" },
+    stopping: { type: "boolean" },
+    lifecycleInFlight: { type: "integer", minimum: 0 },
+    reservedLaunches: { type: "integer", minimum: 0 },
+    retirementsPending: { type: "integer", minimum: 0 },
+    deprovisioningInFlight: { type: "integer", minimum: 0 },
+    staticReconciliationInFlight: { type: "integer", minimum: 0 },
+    agents: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "id", "lifecycleUid", "mode", "defaultAction", "withAgentsAction"],
+        properties: {
+          name: { type: "string" },
+          id: { type: "string" },
+          lifecycleUid: { type: "string" },
+          mode: { type: "string" },
+          defaultAction: { enum: ["release-custody", "stop", "stop-retaining-state"] },
+          withAgentsAction: { enum: ["stop", "stop-retaining-state"] },
+        },
+      },
+    },
+    preservation: {
+      type: "object",
+      additionalProperties: false,
+      required: ["attemptId", "inventorySha256"],
+      properties: {
+        attemptId: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" },
+        inventorySha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+      },
+    },
+  },
+} as const;
+
+/** Read-only manager health and caller-scoped seat policy. Neither reserves or authorizes a stop. */
 const STATUS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -68,6 +112,8 @@ const STATUS_OUTPUT_SCHEMA = {
     host: { type: "string" },
     /** Running @cotal-ai/manager package version. Optional for older status payloads. */
     version: { type: "string" },
+    /** Native per-process incarnation, not inferred from a PID or a logical instance name. */
+    lifecycleUid: { type: "string" },
     execution: { enum: ["runtime", "none"] },
     /** The runtime kind serving agents (pty/tmux/cmux/orca/herdr). */
     runtime: { type: "string" },
@@ -100,6 +146,8 @@ const STATUS_OUTPUT_SCHEMA = {
         },
       },
     },
+    /** Caller-scoped native seat policy as observed now, not a stop reservation or cleanup receipt. */
+    stopImpact: STOP_IMPACT_SCHEMA,
     /** Current startup/post-adoption static lifecycle convergence state. */
     staticReconciliation: {
       type: "object",
@@ -155,6 +203,8 @@ export interface ManagerStatus {
   host?: string;
   /** Running @cotal-ai/manager package version. Older payloads may omit it. */
   version?: string;
+  /** Older managers can omit this process-incarnation coordinate. */
+  lifecycleUid?: string;
   execution: "runtime" | "none";
   runtime: string;
   custody: "legacy" | "custodied" | "none";
@@ -165,6 +215,32 @@ export interface ManagerStatus {
   connectors: ManagerConnectorStatus[];
   classSpawn: boolean;
   staticReconciliation: ManagerStaticReconciliationStatus;
+  /** Absent on older managers. Its presence grants no stop authority. */
+  stopImpact?: ManagerStopImpact;
+}
+
+export interface ManagerStopImpact {
+  agentScope: "manager" | "owner-filtered";
+  observedAt: string;
+  maintenance: "active" | "preserving" | "preserved";
+  resumeRequired: boolean;
+  stopping: boolean;
+  lifecycleInFlight: number;
+  reservedLaunches: number;
+  retirementsPending: number;
+  deprovisioningInFlight: number;
+  staticReconciliationInFlight: number;
+  agents: Array<{
+    name: string;
+    id: string;
+    lifecycleUid: string;
+    mode: string;
+    defaultAction: "release-custody" | "stop" | "stop-retaining-state";
+    withAgentsAction: "stop" | "stop-retaining-state";
+  }>;
+  /** Present only while maintenance is not `active` and an inventory exists: the attempt and the
+   *  inventory digest a preserved-exit stop must name. Absent on revision 32 and older. */
+  preservation?: { attemptId: string; inventorySha256: string };
 }
 
 export interface ManagerStaticReconciliationSweep {
@@ -244,6 +320,12 @@ const AGENT_ROW_SCHEMA = {
     // or `unpopulated` (its watch has not replayed the bucket yet; `absent` means nothing).
     // Optional so a v0.47 manager's rows still validate; a reader treats absence as `current`.
     meshView: { type: "string", enum: ["current", "stale", "unpopulated"] },
+    // Optional proof that the name-matched roster record also matches this managed principal
+    // and lifecycle UID. False is not proof the agent is absent; older managers omit the field.
+    presenceIdentityVerified: { type: "boolean" },
+    // Snapshot time of a current, identity-verified manager presence read, not the seat's
+    // unvalidated heartbeat timestamp. Absent when the view is stale or identity differs.
+    presenceObservedAt: { type: "integer", minimum: 0 },
     // Epoch ms of the seat's last presence heartbeat, present only when `mesh` is `offline` and
     // `meshView` is `current`: when the offline verdict began (#1208). Optional so an older
     // manager's rows still validate.
@@ -314,6 +396,15 @@ const SLOT_ROW_SCHEMA = {
   },
 } as const;
 const SLOTS_OUTPUT_SCHEMA = { type: "array", items: SLOT_ROW_SCHEMA } as const;
+const SLOTS_INPUT_SCHEMA = {
+  anyOf: [
+    { type: "null" },
+    { type: "object", additionalProperties: false, properties: {
+      names: { type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: { type: "string", pattern: "^[A-Za-z0-9_-]+$", maxLength: 200 } },
+      includeRetired: { type: "boolean" },
+    } },
+  ],
+} as const;
 
 const INSPECT_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name"],
@@ -581,6 +672,58 @@ const PERSONA_INPUT_SCHEMA = {
 const PERSONA_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name", "path"],
   properties: { name: { type: "string" }, path: { type: "string" } },
+} as const;
+
+/** A chat session's channel list: bounded, since every entry becomes broker permission rows. */
+const CHAT_CHANNEL_LIST = { type: "array", maxItems: 64, uniqueItems: true, items: { type: "string", minLength: 1 } } as const;
+/** An encoded curve public key, `X` and 55 base32 characters. */
+const CURVE_PUBLIC_KEY = { type: "string", pattern: "^X[A-Z2-7]{55}$" } as const;
+/** A static chat session's admission. The manager draws the alias and the identity; the caller
+ *  names the three lists a spawn takes (initial channels, read ceiling, post list) under the same
+ *  rules, a display label, a lifetime, and `sealTo`, the one-time curve key the credential is
+ *  sealed to. The leaf has no renewal, so `ttl` is capped at its 900-second life. */
+const CHAT_SESSION_OPEN_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["label", "ttl", "sealTo"],
+  properties: {
+    subscribe: CHAT_CHANNEL_LIST,
+    allowSubscribe: CHAT_CHANNEL_LIST,
+    allowPublish: CHAT_CHANNEL_LIST,
+    label: { type: "string", minLength: 1, maxLength: 128 },
+    ttl: { type: "integer", minimum: 1, maximum: 900 },
+    sealTo: CURVE_PUBLIC_KEY,
+  },
+} as const;
+/** `actor` is the session's nkey, its wire authority; `alias` is the routing-only slot name.
+ *  `expiresAt` is the leaf's expiry in epoch milliseconds. The credential is not here in the
+ *  clear: `sealed` (base64url) opens only with the private half of `sealTo`, from the one-time
+ *  `sealer` key, to a closed object binding the space, this manager instance and every field
+ *  above to the credential. */
+const CHAT_SESSION_OPEN_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["alias", "actor", "lifecycleUid", "expiresAt", "sealer", "sealed"],
+  properties: {
+    alias: { type: "string", pattern: "^chat_[a-z2-7]{26}$" },
+    actor: { type: "string", minLength: 1 },
+    lifecycleUid: { type: "string", minLength: 1 },
+    expiresAt: { type: "integer", minimum: 0 },
+    sealer: CURVE_PUBLIC_KEY,
+    sealed: { type: "string", minLength: 1 },
+  },
+} as const;
+const CHAT_SESSION_RETIRE_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["alias", "actor", "lifecycleUid"],
+  properties: {
+    alias: { type: "string", pattern: "^chat_[a-z2-7]{26}$" },
+    actor: { type: "string", minLength: 1 },
+    lifecycleUid: { type: "string", minLength: 1 },
+  },
+} as const;
+/** `failed` carries `reason`, starting `retirement pending:`. It is never a success. */
+const CHAT_SESSION_RETIRE_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["outcome"],
+  properties: {
+    outcome: { enum: ["retired", "alreadyRetired", "failed"] },
+    reason: { type: "string" },
+  },
 } as const;
 
 /** Catalog row for the mesh-side persona read (#402). Content only: name / role / model /
@@ -906,7 +1049,7 @@ const ROWS: CommandRow[] = [
   { name: "status", capability: "manager.read", input: VOID_SCHEMA, output: STATUS_OUTPUT_SCHEMA, targeted: false, handler: "status" },
   { name: "ps", capability: "manager.read", input: VOID_SCHEMA, output: PS_OUTPUT_SCHEMA, targeted: false, handler: "ps" },
   { name: "inspect", capability: "manager.read", input: INSPECT_INPUT_SCHEMA, output: AGENT_ROW_SCHEMA, targeted: false, handler: "inspect" },
-  { name: "slots", capability: "manager.read", input: VOID_SCHEMA, output: SLOTS_OUTPUT_SCHEMA, targeted: false, handler: "slots" },
+  { name: "slots", capability: "manager.read", input: SLOTS_INPUT_SCHEMA, output: SLOTS_OUTPUT_SCHEMA, targeted: false, handler: "slots" },
   { name: "models", capability: "manager.read", input: MODELS_INPUT_SCHEMA, output: MODELS_OUTPUT_SCHEMA, targeted: false, handler: "models" },
   { name: "resolve-cwd", capability: "manager.spawn", input: RESOLVE_CWD_INPUT_SCHEMA, output: RESOLVE_CWD_OUTPUT_SCHEMA, targeted: false, handler: "resolveCwd" },
   { name: "resolve-agent", capability: "manager.spawn", input: RESOLVE_AGENT_INPUT_SCHEMA, output: RESOLVE_AGENT_OUTPUT_SCHEMA, targeted: false, handler: "resolveAgent" },
@@ -940,6 +1083,10 @@ const ROWS: CommandRow[] = [
   { name: "run-ps", capability: "manager.read", input: RUN_PS_INPUT_SCHEMA, output: RUN_PS_OUTPUT_SCHEMA, targeted: false, handler: "runPs" },
   { name: "goal-result", capability: "manager.read", input: GOAL_RESULT_INPUT_SCHEMA, output: GOAL_RESULT_OUTPUT_SCHEMA, targeted: false, handler: "goalResult" },
   { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
+  // A static chat session's open and retire: untargeted, because the session does not exist before
+  // open and retire names it by its own slot. Minted into operator instruments only.
+  { name: "chat-session-open", capability: "manager.chat", input: CHAT_SESSION_OPEN_INPUT_SCHEMA, output: CHAT_SESSION_OPEN_OUTPUT_SCHEMA, targeted: false, handler: "chatSessionOpen" },
+  { name: "chat-session-retire", capability: "manager.chat", input: CHAT_SESSION_RETIRE_INPUT_SCHEMA, output: CHAT_SESSION_RETIRE_OUTPUT_SCHEMA, targeted: false, handler: "chatSessionRetire" },
   { name: "list-personas", capability: "manager.read", input: VOID_SCHEMA, output: LIST_PERSONAS_OUTPUT_SCHEMA, targeted: false, handler: "listPersonas" },
   { name: "show-persona", capability: "manager.read", input: SHOW_PERSONA_INPUT_SCHEMA, output: SHOW_PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "showPersona" },
   { name: "purge", capability: "manager.admin", input: PURGE_INPUT_SCHEMA, output: PURGE_OUTPUT_SCHEMA, targeted: false, handler: "purge" },
@@ -1076,7 +1223,25 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  27 = manager `status` adds `lastSweep.error`: why a static reconciliation sweep stopped before
  *  it planned any alias. A changed output contract is a changed described surface even though the
- *  command name is unchanged. */
+ *  command name is unchanged.
+ *
+ *  28 = manager `status` adds the answering host name and running package version.
+ *
+ *  29 = `run-ps` accepts a bounded page request and answers with a diagnostic run page.
+ *
+ *  30 = manager `status` adds caller-scoped stop impact and its process lifecycle UID.
+ *
+ *  31 = `ps`/`inspect` add an optional lifecycle-bound presence proof and a current-view
+ *  snapshot time. Older rows omit both.
+ *
+ *  32 = `slots` accepts an optional name selection and retired-row request. A changed input
+ *  contract is a changed described surface even though the command name is unchanged.
+ *
+ *  33 = `status.stopImpact` adds the optional `preservation` binding a preserved-exit stop names.
+ *  The status output schema is closed, so a revision-32 contract rejects it.
+ *
+ *  34 = `chat-session-open` and `chat-session-retire`: a static manager admits and retires a chat
+ *  session. New served commands cannot fold into 33. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1094,7 +1259,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 29,
+    revision: 34,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -1183,6 +1348,8 @@ export interface ManagerServiceHandlers {
   runPs(ctx: EpServeContext): unknown | Promise<unknown>;
   goalResult(ctx: EpServeContext): unknown | Promise<unknown>;
   definePersona(ctx: EpServeContext): unknown | Promise<unknown>;
+  chatSessionOpen(ctx: EpServeContext): unknown | Promise<unknown>;
+  chatSessionRetire(ctx: EpServeContext): unknown | Promise<unknown>;
   listPersonas(ctx: EpServeContext): unknown | Promise<unknown>;
   showPersona(ctx: EpServeContext): unknown | Promise<unknown>;
   purge(ctx: EpServeContext): unknown | Promise<unknown>;

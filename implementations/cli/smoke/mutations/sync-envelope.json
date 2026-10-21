@@ -1,0 +1,53 @@
+{
+  "suite": [
+    "implementations/cli/smoke/meshes-registry.smoke.ts"
+  ],
+  "guard": "cotal sync reports each signed-in account's refresh on the envelope, names a failed account in a warning with the result partial, takes --idp as its target, and refuses when no account could be refreshed",
+  "command": "pnpm smoke:meshes-registry",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/sync-envelope.json",
+  "why": [
+    "Each mutation removes one way a failed refresh reaches the result, or the --idp target. The suite imports the sync command from source, so no rebuild is needed."
+  ],
+  "mutations": [
+    {
+      "name": "a failed account does not make the result partial",
+      "file": "implementations/cli/src/commands/sync.ts",
+      "find": "      ...(failed.length > 0 ? { partial:",
+      "replace": "      ...(false ? { partial:",
+      "expectRed": "sync --json reports every account, and a failed one makes it partial, exit 4",
+      "cell": "sync --json reports every account, and a failed one makes it partial, exit 4"
+    },
+    {
+      "name": "a failed account is not named in a warning",
+      "file": "implementations/cli/src/commands/sync.ts",
+      "find": "  const warnings: OutputWarning[] = failed.map(",
+      "replace": "  const warnings: OutputWarning[] = failed.slice(0, 0).map(",
+      "expectRed": "the failed account is named in a CATALOG_UNAVAILABLE warning and keeps its error",
+      "cell": "the failed account is named in a CATALOG_UNAVAILABLE warning and keeps its error"
+    },
+    {
+      "name": "no refreshed account is not refused",
+      "file": "implementations/cli/src/commands/sync.ts",
+      "find": "  if (failed.length > 0 && failed.length === accounts.length)\n",
+      "replace": "  if (failed.length < 0)\n",
+      "expectRed": "sync with no account refreshed is refused DEPENDENCY_UNAVAILABLE",
+      "cell": "sync with no account refreshed is refused DEPENDENCY_UNAVAILABLE"
+    },
+    {
+      "name": "--idp is not the target",
+      "file": "implementations/cli/src/commands/sync.ts",
+      "find": "      target: values.idp === undefined ? null : { idp: values.idp },\n",
+      "replace": "      target: null,\n",
+      "expectRed": "sync --idp refreshes that account alone: ok, exit 0, its IdP the target",
+      "cell": "sync --idp refreshes that account alone: ok, exit 0, its IdP the target"
+    },
+    {
+      "name": "a failed account loses its error",
+      "file": "implementations/cli/src/commands/sync.ts",
+      "find": "      error: result.state === \"failed\" ? (result.error ?? \"refresh failed\") : null,\n",
+      "replace": "      error: null,\n",
+      "expectRed": "sync --json reports every account, and a failed one makes it partial, exit 4",
+      "cell": "sync --json reports every account, and a failed one makes it partial, exit 4"
+    }
+  ]
+}

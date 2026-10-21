@@ -5,14 +5,19 @@
  * send them. It is the manager's dependency (its `pty` runtime), not this package's: the CLI ships
  * no pty code, so the smokes borrow the manager's installed copy through that package's own
  * resolution rather than adding a test-only dependency to a published package.
+ *
+ * Every session starts node itself with tsx's loader, so the same argv runs the binary under a
+ * Linux or macOS pty and under Windows ConPTY. The `.bin/tsx` shim is a shell script on POSIX and a
+ * `.cmd` file on Windows, and a pty runs one executable, not a shell.
  */
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-export const TSX = join(repoRoot, "node_modules", ".bin", "tsx");
 export const COTAL = join(repoRoot, "bin", "cotal.ts");
+// tsx's own loader, by file URL, so the pty child resolves it from any working directory.
+const TSX_LOADER = import.meta.resolve("tsx");
 
 export interface Pty {
   onData(cb: (data: string) => void): void;
@@ -28,6 +33,27 @@ type PtySpawn = (
 const managerRequire = createRequire(join(repoRoot, "implementations", "manager", "package.json"));
 export const ptySpawn = (managerRequire("@lydell/node-pty") as { spawn: PtySpawn }).spawn;
 
+export interface PtyOptions {
+  cwd: string;
+  env: Record<string, string>;
+  cols?: number;
+  rows?: number;
+}
+
+/** Run node under a real pty with tsx's loader registered, so `args` may name a `.ts` entry. */
+export function nodePty(args: string[], opts: PtyOptions): Pty {
+  return ptySpawn(process.execPath, ["--import", TSX_LOADER, ...args], {
+    name: "xterm-256color",
+    cols: opts.cols ?? 120,
+    rows: opts.rows ?? 32,
+    cwd: opts.cwd,
+    env: opts.env,
+  });
+}
+
+/** Run the repo's `cotal` binary under a real pty. */
+export const cotalPty = (args: string[], opts: PtyOptions): Pty => nodePty([COTAL, ...args], opts);
+
 export const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 /** Strip CSI sequences so a marker can be matched through Ink's repaints. */
 export const clean = (s: string): string => s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
@@ -38,8 +64,7 @@ export class ConsoleSession {
   exited: { code: number } | undefined;
   private readonly p: Pty;
   constructor(args: string[], home: string, extraEnv: Record<string, string> = {}, size = { cols: 120, rows: 32 }) {
-    this.p = ptySpawn(TSX, [COTAL, "console", ...args], {
-      name: "xterm-256color",
+    this.p = cotalPty(["console", ...args], {
       cols: size.cols,
       rows: size.rows,
       cwd: repoRoot,

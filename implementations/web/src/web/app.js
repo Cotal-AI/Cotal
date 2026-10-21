@@ -14,6 +14,7 @@ const GLYPH = { working: "●", waiting: "◐", idle: "○", offline: "⊘" };
 const MODES = ["chat", "unicast", "anycast"];
 const isDemo = new URLSearchParams(location.search).has("demo");
 
+let channelDeleteSupported = false;
 let roster = [];
 let channels = new Map(); // name -> { messages, description?, replay, replayWindow?, deliveryClass }
 let unread = new Map(); // name -> messages seen since last viewed
@@ -622,7 +623,7 @@ function renderChannel() {
           <span class="chip mode on">👥 ${plural(memberCount, "member")}</span>
           ${policy.join("")}
           ${isDemo ? `<span class="chip static" title="demo only">✦ summarize</span><span class="chip static" title="demo only">🔕 mute</span>` : ""}
-          ${isDemo ? "" : `<span class="chip danger" id="ch-del" title="Delete this channel and all its messages">🗑 delete</span>`}
+          ${isDemo || !channelDeleteSupported ? "" : `<span class="chip danger" id="ch-del" title="Delete this channel and all its messages">🗑 delete</span>`}
         </div>
       </div>
       <div class="purpose">${purpose}</div>
@@ -641,7 +642,7 @@ function renderChannel() {
 // stream is irreversible. On success the channel drops from the sidebar and the view falls
 // back to all-activity; a stray live message would recreate it (deletion clears, not bans).
 async function deleteChannel(name) {
-  if (!name || name === "*") return;
+  if (!channelDeleteSupported || !name || name === "*") return;
   if (!confirm(`Delete #${name} and all its messages?\n\nThis purges the channel's history and cannot be undone.`)) return;
   try {
     const r = await fetch("/api/channel/delete", {
@@ -1014,7 +1015,7 @@ async function refresh() {
       {
         name: "space",
         read: async () => SNAP.readJson(await fetch("/api/meta"), "space"),
-        apply: (meta) => { $("space").textContent = `· ${meta.space}`; document.title = `Cotal · ${meta.space}`; },
+        apply: (meta) => { channelDeleteSupported = meta.channelDeleteSupported === true; $("space").textContent = `· ${meta.space}${channelDeleteSupported ? "" : " · read-only"}`; document.title = `Cotal · ${meta.space}`; },
       },
       {
         name: "peers",

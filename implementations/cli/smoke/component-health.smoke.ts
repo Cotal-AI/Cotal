@@ -356,7 +356,7 @@ try {
   const bare = cli("status", "--space", SPACE, "--server", server);
   const bareText = `${bare.stdout}${bare.stderr}`.replace(/\x1b\[[0-9;]*m/g, "");
   check("bare status says not serving for a live pid whose rail does not answer (#2073)",
-    /manager\s+not serving \(pid \d+\)/.test(bareText) && bareText.includes("service endpoint not answering") && !/manager\s+running \(pid/.test(bareText), bareText);
+    /manager:\s+not serving \(pid \d+\)/.test(bareText) && bareText.includes("service endpoint not answering") && !/manager:\s+running \(pid/.test(bareText), bareText);
   check("bare status keeps exit 0 when the manager is not serving (#2073)", bare.status === 0, bareText);
 
   await stop(holder);

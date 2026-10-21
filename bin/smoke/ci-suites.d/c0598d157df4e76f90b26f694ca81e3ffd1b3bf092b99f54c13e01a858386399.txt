@@ -1,0 +1,3 @@
+# Controller restore and resume journal writers: start rows, the committed manager relaunch row,
+# the broker definition rewrite phases, the journaled new broker and the active restore admission.
+smoke:maintenance-controller

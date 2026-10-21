@@ -19,11 +19,13 @@ import {
   type BackupStreamState,
 } from "@cotal-ai/core";
 import {
+  CommandFailure, isCommandFailure, isMaintenanceError, jsonFlag, plainFlag, presentationOf, writeResult, type Report,
   acquireMaintenanceLock,
   assertSingleSpaceBroker,
   assertStoreIdentity,
   authDir,
   claimMaintenanceReady,
+  cutController,
   getSpaceAuth,
   readMaintenanceJournal,
   recordMaintenanceClaimResources,
@@ -37,29 +39,40 @@ import {
   type ProcessOwner,
 } from "@cotal-ai/workspace";
 import { createArtifactWriter, snapshotFileName, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
+import { assertControllerResumeEligible } from "../lib/controller-resume.js";
+import { assertControllerBrokerConfig } from "../lib/controller-restore.js";
+import { refuseControllerCut } from "../lib/stack-journal.js";
 import { authorityFingerprint } from "../lib/maintenance-files.js";
 import { connectIsolatedBroker, createAttemptClone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "../lib/isolated-broker.js";
 import { cotalRoot } from "../lib/paths.js";
 import { liveMeshProcesses } from "./clean.js";
-import { c } from "../ui.js";
-import { completingFlagValue } from "../lib/completion.js";
+import { backupMaintenance } from "./backup-maintenance.js";
+import { backupRead } from "./backup-read.js";
+import { backupRestore } from "./backup-restore.js";
+import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 
 const OPERATION_TIMEOUT_MS = 30 * 60 * 1000;
 
-export const backupFlags: FlagSpec[] = [
-  { name: "only", type: "string", value: "<full|registry>", description: "artifact selection (default full; registry is the only partial)" },
-  { name: "store-dir", type: "string", value: "<dir>", description: "preserved source store (default .cotal/nats)" },
+export const backupFlags: FlagSpec[] = [jsonFlag, plainFlag,
+  { name: "yes", short: "y", type: "boolean", description: "recover/cleanup-fallback: confirm only the exact reviewed restore attempt" },
+  { name: "dry-run", type: "boolean", description: "recover/cleanup-fallback: read the original journal and paths without a lock or write" },
+  { name: "only", type: "string", value: "<full|registry>", description: "create: artifact selection (default full; registry is the only partial); restore: only registry, to restore just the registry (default follows the artifact)" },
+  { name: "store-dir", type: "string", value: "<dir>", description: "create: preserved source store; restore: restore target (default .cotal/nats)" },
+  { name: "accept-missing-source", type: "boolean", description: "restore: explicit disaster consent when the inode-bound preserved source is absent" },
 ];
 
 export function backupComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, backupFlags);
-  if (flag?.name === "only") return { items: ["full", "registry"].map((value) => ({ value })), directive: "nofiles" };
+  if (flag?.name === "only") return { items: (positionalsForCompletion(argv, backupFlags)[0] === "restore" ? ["registry"] : ["full", "registry"]).map((value) => ({ value })), directive: "nofiles" };
   if (flag?.name === "store-dir") return { items: [], directive: "default" };
-  return { items: backupFlags.map((item) => ({ value: `--${item.name}`, description: item.description })), directive: "nofiles" };
+  const words = positionalsForCompletion(argv, backupFlags);
+  return words.length <= 1 ? { items: ["create", "inspect", "verify", "restore", "recover", "cleanup-fallback"].map((value) => ({ value })), directive: "nofiles" } : { items: [], directive: "default" };
 }
 
 interface BackupValues {
+  json?: boolean;
+  plain?: boolean;
   only?: string;
   "store-dir"?: string;
 }
@@ -67,7 +80,7 @@ interface BackupValues {
 function selection(value: string | undefined): SpaceBackupSelection {
   if (value === undefined || value === "full") return "full";
   if (value === "registry") return "registry";
-  throw new Error("--only must be exactly full or registry");
+  throw new CommandFailure("refused", "USAGE_INVALID", "--only supports full or registry");
 }
 
 function localOwner(id: string): ProcessOwner {
@@ -82,6 +95,14 @@ function requireReady(root: string, storeDir: string): MaintenanceReadyRecord {
   if (!sameStoreIdentity(record.source, actual))
     throw new Error(`--store-dir does not match the preserved source ${record.source.path}`);
   assertStoreIdentity(record.source);
+  // Backup coupling: a controller cut is backed up only while every member is the
+  // stopped record the cut recorded, with its receipt, the broker definition is the expected one, and
+  // the configuration it names hashes to the cut launch's recorded configuration.
+  const controller = cutController(record.cut);
+  if (controller) {
+    assertControllerResumeEligible(record.space, controller, record.cutCompletion.controllerStops ?? [], controller.brokerDefinitionRevision);
+    assertControllerBrokerConfig(record.space, controller);
+  }
   return record;
 }
 
@@ -329,12 +350,77 @@ async function snapshotStream(
   }
 }
 
-/** Offline backup of one stable preservation cut. No implicit stop or restart. */
+interface BackupCreateResult {
+  readonly kind: "backup-created";
+  readonly directory: string;
+  readonly space: string;
+  readonly selection: SpaceBackupSelection;
+  readonly createdAt: string;
+  readonly streamCount: number;
+  readonly fileCount: number;
+  readonly attemptId: string;
+  readonly sourceGeneration: string;
+  readonly restored: false;
+}
+interface BackupObservation {
+  attemptId?: string;
+  priorClaimAttemptId?: string;
+  mutationAttempted: boolean;
+  cleanupConfirmed: boolean;
+  published?: BackupCreateResult;
+}
+
+export function validateBackupArguments(args: ParsedArgs): void {
+  presentationOf(args.values);
+  const [mode, directory, ...extra] = args.positionals;
+  if (!mode || !["create", "inspect", "verify", "restore", "recover", "cleanup-fallback"].includes(mode) || !directory?.trim() || extra.length || /[\u0000-\u001f\u007f]/u.test(directory)) throw new CommandFailure("refused", "USAGE_INVALID", "use backup create/inspect/verify/restore <directory>, or backup recover/cleanup-fallback <full-attempt-id>");
+  const maintenance = mode === "recover" || mode === "cleanup-fallback";
+  if (maintenance && !/^restore-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(directory)) throw new CommandFailure("refused", "USAGE_INVALID", "name the full native restore attempt, not a prefix, path or backup directory");
+  const allowed = new Set(["json", "plain", ...(mode === "create" ? ["only", "store-dir"] : mode === "restore" ? ["only", "store-dir", "accept-missing-source"] : maintenance ? ["yes", "dry-run"] : [])]);
+  if (Object.keys(args.values).some((flag) => !allowed.has(flag))) throw new CommandFailure("refused", "USAGE_INVALID", mode === "restore" ? "backup restore accepts only --only, --store-dir and --accept-missing-source; the space, broker and runtime come from the preserved cut" : "backup inspection and verification accept no creation, target or restore inputs");
+  if (mode === "create") selection(args.values.only as string | undefined);
+  // The native restore accepts only a registry narrowing and otherwise follows the artifact's own
+  // selection, so an explicit `full` could not be honored over a registry-only artifact. Refused here,
+  // before the seed or any effect, rather than dropped.
+  if (mode === "restore" && args.values.only !== undefined && args.values.only !== "registry")
+    throw new CommandFailure("refused", "USAGE_INVALID", "backup restore accepts only --only registry; without it the restore follows the artifact's own selection");
+  if (args.values["store-dir"] !== undefined && (typeof args.values["store-dir"] !== "string" || !args.values["store-dir"].trim() || /[\u0000-\u001f\u007f]/u.test(args.values["store-dir"]))) throw new CommandFailure("refused", "USAGE_INVALID", "--store-dir requires one path without terminal controls");
+  if (mode === "create" || mode === "restore") refuseControllerCut(cotalRoot(), mode === "create" ? "backup create" : "backup restore");
+}
+
+/** Native preservation/copy guards are unchanged; only final public observations reach the UI. */
 export async function backup(args: ParsedArgs): Promise<void> {
-  const [subcommand, destination, ...extra] = args.positionals;
+  validateBackupArguments(args);
+  if (args.positionals[0] === "recover" || args.positionals[0] === "cleanup-fallback") return backupMaintenance(args);
+  if (args.positionals[0] === "restore") return backupRestore(args);
+  if (args.positionals[0] !== "create") return backupRead(args);
+  const observed: BackupObservation = { mutationAttempted: false, cleanupConfirmed: false };
+  try { await createBackup(args, observed); }
+  catch (error) {
+    const target = { directory: resolve(args.positionals[1]!), attemptId: observed.attemptId ?? null, priorClaimAttemptId: observed.priorClaimAttemptId ?? null };
+    if (observed.published) {
+      const failure = new CommandFailure("partial", "OPERATION_PARTIAL", "the private artifact was published, but final maintenance cleanup was not confirmed; its receipt is retained", { target, changed: [{ kind: "published-backup", directory: observed.published.directory }], remedy: "inspect this original artifact and retained maintenance attempt before another create; do not delete an unreviewed fallback or claim" });
+      writeResult(presentationOf(args.values), { command: "backup create", target, result: { ...observed.published, cleanupConfirmed: observed.cleanupConfirmed }, failure }, backupCreateView);
+      return;
+    }
+    if (isCommandFailure(error) && !observed.mutationAttempted) throw error;
+    const outcome = !observed.mutationAttempted ? "refused" : observed.cleanupConfirmed ? "failed" : "unknown";
+    throw new CommandFailure(outcome, outcome === "refused" ? "LIFECYCLE_BLOCKED" : outcome === "failed" ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", outcome === "refused" ? "backup preparation did not establish an eligible stopped preserved cut; no published artifact was established" : outcome === "failed" ? "backup creation failed and its native attempt cleanup completed; no published artifact was established" : "the backup attempt did not confirm publication and cleanup; its original attempt is retained without a retry", { target, ...(isMaintenanceError(error) ? { native: { code: error.code } } : {}), remedy: "inspect the preserved-cut maintenance state and original attempt before recovery; raw snapshot, credential and native configuration values were not printed" });
+  }
+  writeResult(presentationOf(args.values), { command: "backup create", target: { space: observed.published!.space, directory: observed.published!.directory }, result: { ...observed.published!, cleanupConfirmed: observed.cleanupConfirmed } }, backupCreateView);
+}
+
+function backupCreateView(result: BackupCreateResult & { cleanupConfirmed: boolean }): Report {
+  return { sections: [{ title: "Private backup artifact published", blocks: [
+    { kind: "fields", rows: [["Artifact", result.directory], ["Space", result.space], ["Selection", result.selection], ["Created", result.createdAt], ["Streams", String(result.streamCount)], ["Files", String(result.fileCount)], ["Original attempt", result.attemptId], ["Source generation", result.sourceGeneration], ["Maintenance cleanup", result.cleanupConfirmed ? "native cleanup completed" : { text: "not confirmed", tone: "waiting" }], ["Restore", { text: "not attempted or proved", tone: "waiting" }]] },
+    { kind: "lines", lines: [{ text: "The artifact's completion manifest was published from the native preserved cut. Creation does not prove restoration or future authority continuity. Snapshot bytes, checkpoint contents and credentials remain private and are not printed or uploaded.", tone: "hint" }] },
+  ] }] };
+}
+
+/** Offline backup of one stable preservation cut. No implicit stop or restart. */
+async function createBackup(args: ParsedArgs, observed: BackupObservation): Promise<void> {
+  const destination = args.positionals[1]!;
   const values = args.values as BackupValues;
-  if (subcommand !== "create" || !destination || extra.length)
-    throw new Error("usage: cotal backup create <dir> [--only full|registry] [--store-dir <dir>]");
   const selected = selection(values.only);
   const root = cotalRoot();
   // The artifact snapshots the whole store but commits to ONE space's trust chain
@@ -345,6 +431,7 @@ export async function backup(args: ParsedArgs): Promise<void> {
   if (live.length) throw new Error(`backup is offline-only; still running: ${live.join(", ")}. Run \`cotal down --preserve-state\` first`);
   const storeDir = resolve(values["store-dir"] ?? resolve(root, ".cotal", "nats"));
   const attemptId = `backup-${randomUUID()}`;
+  observed.attemptId = attemptId;
   const deadline = new Date(Date.now() + OPERATION_TIMEOUT_MS);
   const destinationPath = resolve(destination);
   const clonePath = join(ensurePrivateAttemptsDir(root).path, `${attemptId}-clone`);
@@ -353,11 +440,14 @@ export async function backup(args: ParsedArgs): Promise<void> {
   let clone: ReturnType<typeof createAttemptClone> | undefined;
   let broker: IsolatedBroker | undefined;
   let claimed = false;
-  let succeeded = false;
   let writer: ReturnType<typeof createArtifactWriter> | undefined;
   try {
     const current = readMaintenanceJournal(root);
-    if (current?.state === "claimed") recoverStaleMaintenanceClaim(lock);
+    if (current?.state === "claimed") {
+      observed.mutationAttempted = true;
+      observed.priorClaimAttemptId = current.claim.attemptId;
+      recoverStaleMaintenanceClaim(lock);
+    }
     ready = requireReady(root, storeDir);
     assertBackupPaths(root, ready.source.path, destination);
     // The journal is ready with no live claim, and the destination is proven disjoint from the
@@ -378,6 +468,7 @@ export async function backup(args: ParsedArgs): Promise<void> {
     await assertEndpointUnreachable(recordedServer);
     // Ownership precedes existence: the claim is journaled with pending slots for every path this
     // attempt may create, so a crash at any later instant leaves a journal owner to recover from.
+    observed.mutationAttempted = true;
     claimMaintenanceReady(lock, {
       attemptId,
       deadline: deadline.toISOString(),
@@ -437,7 +528,7 @@ export async function backup(args: ParsedArgs): Promise<void> {
       throw new Error("smoke-injected failure before manifest publication");
     const checkpointName = "checkpoints.json";
     files.push(await writer.writeFile(checkpointName, "checkpoints", `${JSON.stringify(selected === "full" ? checkpoints : [], null, 2)}\n`));
-    writer.publish({
+    const published = writer.publish({
       space: ready.space,
       selection: selected,
       mode: ready.mode,
@@ -446,9 +537,7 @@ export async function backup(args: ParsedArgs): Promise<void> {
       streams,
       checkpoints: checkpointName,
     }, files);
-    console.log(c.green(`✓ ${selected} backup created for "${ready.space}"`));
-    console.log(c.dim(`  ${writer.directory}`));
-    succeeded = true;
+    observed.published = { kind: "backup-created", directory: writer.directory, space: ready.space, selection: selected, createdAt: published.createdAt, streamCount: streams.length, fileCount: files.length, attemptId, sourceGeneration: ready.source.generation, restored: false };
   } finally {
     // Ownership is surrendered ONLY once every owned resource is proven stopped and removed (or
     // published). Any cleanup failure keeps the claim so retry/stale-recovery finishes it — attempt
@@ -469,10 +558,10 @@ export async function backup(args: ParsedArgs): Promise<void> {
     } finally {
       releaseMaintenanceLock(lock);
     }
+    observed.cleanupConfirmed = claimed && !residue.length;
     if (residue.length) {
       const message = `backup attempt ${attemptId} retains its maintenance claim; cleanup incomplete: ${residue.join("; ")} — retry the command or recover the stale claim`;
-      if (succeeded) throw new Error(message);
-      console.error(c.red(`✗ ${message}`));
+      throw new Error(message);
     }
   }
 }

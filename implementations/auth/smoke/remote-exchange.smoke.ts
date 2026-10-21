@@ -311,7 +311,7 @@ try {
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator" });
   const secret = newActorToken();
   const agentLifecycleUid = mintLifecycleUid();
-  grantManagedActor(dir, {
+  grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor: AGENT, scope: ["role:worker"], allowSubscribe: ["general"], allowPublish: ["general"],
     parent: `${OWNER}.cli`, tokenHash: secret.tokenHash, lifecycleUid: agentLifecycleUid,
   });
@@ -356,7 +356,7 @@ try {
   const unavailableOwner = "u_" + "z".repeat(26);
   const unavailableActor = "unavailable";
   const unavailableSecret = newActorToken();
-  grantManagedActor(dir, { owner: unavailableOwner, actor: unavailableActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: unavailableSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
+  grantManagedActor(dir, { custody: { kind: "foreground" }, owner: unavailableOwner, actor: unavailableActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: unavailableSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
   const unavailableId = mintLifecycleUid();
   await putManager({ instanceId: unavailableId, principal: `${unavailableOwner}.${remoteManagerActors(unavailableId).serve}`, owner: unavailableOwner, state: "frozen" });
   const unavailable = await post(`${PUBLIC}/exchange`, { owner: unavailableOwner, actor: unavailableActor, actorToken: unavailableSecret.actorToken, view: "manager-caller" });
@@ -368,7 +368,7 @@ try {
   const wrongLocalOwner = "u_" + "y".repeat(26);
   const wrongLocalActor = "wronglocal";
   const wrongLocalSecret = newActorToken();
-  grantManagedActor(dir, { owner: wrongLocalOwner, actor: wrongLocalActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: wrongLocalSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
+  grantManagedActor(dir, { custody: { kind: "foreground" }, owner: wrongLocalOwner, actor: wrongLocalActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: wrongLocalSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
   const wrongLocalId = mintLifecycleUid();
   await putManager({ instanceId: wrongLocalId, principal: `local.${newIdentity().id}`, owner: "local" });
   const wrongLocal = await post(`${PUBLIC}/exchange`, { owner: wrongLocalOwner, actor: wrongLocalActor, actorToken: wrongLocalSecret.actorToken, view: "manager-caller", managerInstanceId: wrongLocalId });
@@ -424,7 +424,7 @@ try {
   check("a revoked row's actorToken is refused at the NEXT public exchange", afterRevoke.status === 401, afterRevoke.body);
   // Restore the row for the cells below (a fresh secret, as a real respawn would).
   const secret2 = newActorToken();
-  grantManagedActor(dir, {
+  grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor: AGENT, scope: ["role:worker"], allowSubscribe: ["general"], allowPublish: ["general"],
     parent: `${OWNER}.cli`, tokenHash: secret2.tokenHash, lifecycleUid: agentLifecycleUid,
   });

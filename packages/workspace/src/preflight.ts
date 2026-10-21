@@ -232,6 +232,12 @@ export interface MeshSweep {
   offline: string[];
 }
 
+/** Whether `server` answers a liveness probe. A first miss is confirmed with a second, longer probe
+ *  before it counts, so a slow link reads as live. */
+export async function brokerAnswers(server: string): Promise<boolean> {
+  return (await isReachable(server)) || (await isReachable(server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS }));
+}
+
 export async function pruneStaleMeshes(): Promise<MeshSweep> {
   const sweep: MeshSweep = { pruned: [], offline: [] };
   await Promise.all(
@@ -241,8 +247,7 @@ export async function pruneStaleMeshes(): Promise<MeshSweep> {
       // space-less control command may prepare hundreds of registrations, while only the command's
       // selected target is allowed to connect.
       if (m.origin === "catalog") return;
-      if (await isReachable(m.server)) return;
-      if (await isReachable(m.server, { timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS })) return;
+      if (await brokerAnswers(m.server)) return;
       // pruneMesh, not removeMesh: a liveness miss keeps the record (manual and up alike).
       (pruneMesh(m.space) ? sweep.pruned : sweep.offline).push(m.space);
     }),

@@ -15,6 +15,8 @@
  * expiry and renewal owner.
  */
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
+import { spaceDeletionStreams } from "./space-deletion-targets.js";
+import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
@@ -1994,25 +1996,17 @@ function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: 
   const CHAT = chatStream(space);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
   const MSHIP = `KV_${membershipBucket(space)}`;
-  // deleteSpace() deletes EVERY stream + KV bucket setup creates; each needs INFO (jsm existence)
-  // + DELETE. This is the ONLY cred that
-  // holds STREAM.DELETE. This list and deleteSpace()'s own array must agree:
-  // a stream in one and not the other is either an undeletable leak or a grant for nothing.
-  const del = [
-    CHAT, dmStream(space), taskStream(space), inboxStream(space), dlvStream(space),
-    PKV, CHKV, `KV_${membersBucket(space)}`, `KV_${aclBucket(space)}`,
-    MSHIP, `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
-    ...endpointPlaneStreamNames(space),
-    objectStoreStream(artifactBucket(space)),
-    ...transferStreams.map((name) => {
-      if (!isTransferStream(space, name)) throw new Error(`permissionsFor: teardown transferStreams names ${JSON.stringify(name)}, not one of ${space}'s transfer streams`);
-      return name;
-    }),
-  ].flatMap((s) => [`$JS.API.STREAM.INFO.${s}`, `$JS.API.STREAM.DELETE.${s}`]);
+  // The deletion path and the exact per-stream grants use one target list. Reject any caller-
+  // supplied transfer name that is not this space's transfer bucket before minting the grant.
+  for (const name of transferStreams)
+    if (!isTransferStream(space, name)) throw new Error(`permissionsFor: teardown transferStreams names ${JSON.stringify(name)}, not one of ${space}'s transfer streams`);
+  const del = spaceDeletionStreams(space, transferStreams)
+    .flatMap((s) => [`$JS.API.STREAM.INFO.${s}`, `$JS.API.STREAM.DELETE.${s}`]);
   return {
     pub: {
       allow: [
         "$JS.API.INFO",
+        BROKER_USER_INFO_SUBJECT, // confirm the current teardown connection's account before native impact reads
         // deleteSpace() enumerates the transfer streams (one per manager instance that received a
         // carried resume) by name shape; their names are not derivable from the space alone.
         "$JS.API.STREAM.NAMES",
@@ -2392,6 +2386,9 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
     pub: {
       allow: [
         "$JS.API.INFO",
+        // Current-connection identity only; the broker maps the account and requesting user.
+        // No subject containing another account/user and no system credential is granted.
+        BROKER_USER_INFO_SUBJECT,
         ...streamSetup,
         ...streamReconcile,
         ...ttlCanaries,
@@ -3037,6 +3034,12 @@ port: ${port}
 max_control_line: ${MAX_CONTROL_LINE_BYTES}
 ${renderTlsBlock(opts.transport)}${renderJetStreamBlock("openServerConfig", opts.storeDir, opts.maxFileStore)}
 `;
+}
+
+/** The exact `jetstream{}` block both broker renderers write for this store and cap, for a caller
+ *  that must find or replace it in a rendered configuration. */
+export function brokerJetStreamBlock(storeDir: string, maxFileStore?: number): string {
+  return renderJetStreamBlock("brokerJetStreamBlock", storeDir, maxFileStore);
 }
 
 /** The one place the `jetstream{}` block is produced, shared by both broker renderers. An unset

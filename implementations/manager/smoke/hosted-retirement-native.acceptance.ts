@@ -877,7 +877,7 @@ try {
   const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 
   async function provisionRetained(actor: string, lifecycleUid: string): Promise<ManagerResumeAgent> {
-    const grant = await cotalAuthProvider.grantAgent({
+    const grant = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" },
       store: hostStore, dir: hostDir, space, owner, actor, scope: [], allowSubscribe: [], allowPublish: [],
       parent: `${owner}.cli`, lifecycleUid,
     });
@@ -1002,7 +1002,7 @@ try {
       rowPresentAfterRevoke: rowAfterRevoke !== undefined,
       rowLifecycleUidAfterRevoke: rowAfterRevoke?.lifecycleUid,
     });
-  const restoredGrant = await cotalAuthProvider.grantAgent({
+  const restoredGrant = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" },
     store: hostStore, dir: hostDir, space, owner, actor: "validation_negative", lifecycleUid: validationUid,
     scope: [], allowSubscribe: [], allowPublish: [], parent: `${owner}.cli`,
   });

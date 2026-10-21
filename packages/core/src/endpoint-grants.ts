@@ -229,6 +229,11 @@ export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect"
 export const RUN_WRITE_COMMANDS = Object.freeze(["run-start", "run-resume"] as const);
 export const RUN_ANSWER_COMMAND = "run-answer" as const;
 export const RUN_READ_COMMANDS = Object.freeze(["run-status", "run-ps"] as const);
+/** A static manager's chat-session admission and retirement. Both MINT or END a credential for a
+ *  fresh session principal, so they ride the operator instrument tiers only, beside
+ *  `define-persona`. They are deliberately ABSENT from {@link SPAWN_CREATE_COMMANDS} and every
+ *  agent rollup: there, every spawn-capable agent could mint chat leaves. */
+export const CHAT_SESSION_COMMANDS = Object.freeze(["chat-session-open", "chat-session-retire"] as const);
 
 // ---- operator INSTRUMENT capability sets (the 1c grant-migration table's admin row) --------------
 /** The manager endpoint's read commands (`manager.read` class). */
@@ -311,6 +316,7 @@ const OPERATOR_SEAT_SNAP = Object.freeze([...OPERATOR_SEAT_COMMANDS]);
 const SPAWN_SERVICE_SNAP = Object.freeze([...SPAWN_SERVICE_COMMANDS]);
 const RUN_WRITE_SNAP = Object.freeze([...RUN_WRITE_COMMANDS]);
 const RUN_READ_SNAP = Object.freeze([...RUN_READ_COMMANDS]);
+const CHAT_SESSION_SNAP = Object.freeze([...CHAT_SESSION_COMMANDS]);
 const MANAGER_READ_SNAP = Object.freeze([...MANAGER_READ_COMMANDS]);
 const MANAGER_ADMIN_SNAP = Object.freeze([...MANAGER_ADMIN_COMMANDS]);
 
@@ -369,7 +375,8 @@ export function runCallerCapabilities(callerOwner: string): EpCapability[] {
  *  this for their ep rails; no new minting authority.
  *
  *  `privileged` (the ps/start instrument): the manager reads (incl. persona catalog list/show) +
- *  untargeted `spawn` + `define-persona` - structurally barred from cross-agent reach: no any-mode row.
+ *  untargeted `spawn` + `define-persona` + the static chat-session open/retire pair - structurally
+ *  barred from cross-agent reach: no any-mode row.
  *
  *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode `despawn`/`attach`
  *  (tOwner `"*"`), BOTH modes of `input` (which no other profile grants at all), and the
@@ -393,6 +400,7 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
     })),
     ...SPAWN_CREATE_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
+    ...CHAT_SESSION_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
     // The workflow-run surface (SPEC 14.3) rides the privileged tier as `cotal run`'s instrument:
     // the reads beside the manager reads, the writes beside `spawn`, which is the tier's existing
     // creation authority and what a program's own spawns already need.

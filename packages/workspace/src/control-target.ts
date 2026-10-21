@@ -68,8 +68,8 @@ const TARGET_ABSENT_CODES: ReadonlySet<string> = new Set<MeshTargetErrorCode>(["
  *
  * `instanceId` (`--on <instanceId>`) is forwarded to the instrument mint so the one-shot credential
  * carries the exact `ep.inst.…` rows for that instance; a credential cannot gain a rail after it is
- * issued, so it has to arrive here rather than at the invoke. On a user-auth mesh with none, a
- * managed seat's shell selects the manager that launched it.
+ * issued, so it has to arrive here rather than at the invoke. On a user-auth mesh
+ * without an explicit selector, a managed seat uses the manager that launched it.
  *
  * `onRefusal: "throw"` makes an unresolvable or unreachable mesh a thrown {@link ConnectRefusal}
  * instead of a printed sentence and `process.exit(1)`, for a loop that has to survive the broker

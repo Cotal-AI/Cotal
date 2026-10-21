@@ -59,12 +59,12 @@ try {
   });
 
   // ---- authorship boundary ----
-  const within = grantManagedActor(dir, {
+  const within = grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor: "rev", scope: [], parent: CLI,
     allowSubscribe: ["general", "review.pua"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
   });
   check("a within-envelope delegation is written (concrete channel under the subtree entry)", within.actor === "rev");
-  const recur = grantManagedActor(dir, {
+  const recur = grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor: "spawner2", scope: ["spawn"], parent: CLI,
     allowSubscribe: ["review.>"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
   });
@@ -72,7 +72,7 @@ try {
 
   const overRead = rejects(
     "an over-envelope READ is refused (ops.secret beyond [general, review.>])",
-    () => grantManagedActor(dir, {
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
       owner: OWNER, actor: "spy", scope: [], parent: CLI,
       allowSubscribe: ["ops.secret"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
     }),
@@ -84,7 +84,7 @@ try {
   check("…and no row was written", !existsSync(join(managedActorLedgerDir(dir), `${OWNER}.spy.json`)));
   rejects(
     "a wildcard READ wider than the subtree is refused (review.> ⊅ >)",
-    () => grantManagedActor(dir, {
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
       owner: OWNER, actor: "spy", scope: [], parent: CLI,
       allowSubscribe: [">"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
     }),
@@ -92,7 +92,7 @@ try {
   );
   rejects(
     "an over-envelope POST is refused independently of read",
-    () => grantManagedActor(dir, {
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
       owner: OWNER, actor: "spy", scope: [], parent: CLI,
       allowSubscribe: ["general"], allowPublish: ["review.pua"], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
     }),
@@ -100,7 +100,7 @@ try {
   );
   rejects(
     "an over-envelope SCOPE is refused (admin beyond [spawn]) — the admin-persona pickup is closed",
-    () => grantManagedActor(dir, {
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
       owner: OWNER, actor: "boss", scope: ["admin"], parent: CLI,
       allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
     }),
@@ -108,7 +108,7 @@ try {
   );
   rejects(
     "a cross-owner delegation is refused (agents live under their spawner's owner)",
-    () => grantManagedActor(dir, {
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
       owner: OTHER, actor: "mole", scope: [], parent: CLI,
       allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
     }),
@@ -116,7 +116,7 @@ try {
   );
   const ghostMsg = rejects(
     "an unknown spawner principal is refused (no grant = no delegation authority)",
-    () => grantManagedActor(dir, {
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
       owner: OWNER, actor: "ghostkid", scope: [], parent: `${OWNER}.ghost`,
       allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
     }),
@@ -156,7 +156,7 @@ try {
   );
 
   // ---- the exemptions ----
-  const boot = grantManagedActor(dir, {
+  const boot = grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor: "rosterboot", scope: [], // no parent: operator/roster boot
     allowSubscribe: ["anything.at.all"], allowPublish: ["anything.at.all"], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
   });
@@ -164,7 +164,7 @@ try {
   grantActor(dir, {
     owner: OTHER, actor: "op", scope: ["admin"], allowSubscribe: ["general"], allowPublish: ["general"],
   });
-  const byAdmin = grantManagedActor(dir, {
+  const byAdmin = grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OTHER, actor: "wide", scope: ["spawn"], parent: `${OTHER}.op`,
     allowSubscribe: [">"], allowPublish: [">"], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
   });
@@ -172,7 +172,7 @@ try {
 
   // ---- exchange boundary: the envelope is a STANDING invariant ----
   const { actorToken, tokenHash } = newActorToken();
-  grantManagedActor(dir, {
+  grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor: "worker", scope: [], parent: CLI,
     allowSubscribe: ["general", "review.pua"], allowPublish: ["general"], tokenHash, lifecycleUid: mintLifecycleUid(),
   });
@@ -204,7 +204,7 @@ try {
 
   // ---- transitivity: the WHOLE chain must hold, not just the immediate link ----
   const gk = newActorToken();
-  grantManagedActor(dir, {
+  grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor: "grandkid", scope: [], parent: `${OWNER}.spawner2`,
     allowSubscribe: ["review.pua"], allowPublish: [], tokenHash: gk.tokenHash, lifecycleUid: mintLifecycleUid(),
   });
@@ -226,7 +226,7 @@ try {
   );
   rejects(
     "…and the surviving child cannot mint NEW grandchildren under the revoked root",
-    () => grantManagedActor(dir, {
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
       owner: OWNER, actor: "gk2", scope: [], parent: `${OWNER}.spawner2`,
       allowSubscribe: ["review.pua"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
     }),
@@ -244,16 +244,16 @@ try {
   // Legitimate upserts can close a parent LOOP (a parentless root re-parented under its own
   // descendant) — the walk must fail closed on the cycle, not spin or allow.
   const la = newActorToken();
-  grantManagedActor(dir, {
+  grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor: "loopa", scope: ["spawn"], allowSubscribe: ["general"], allowPublish: [], tokenHash: la.tokenHash, lifecycleUid: mintLifecycleUid(),
   });
-  grantManagedActor(dir, {
+  grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor: "loopb", scope: ["spawn"], parent: `${OWNER}.loopa`,
     allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
   });
   rejects(
     "re-parenting a root under its own descendant is refused (cycle, fail closed)",
-    () => grantManagedActor(dir, {
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
       owner: OWNER, actor: "loopa", scope: ["spawn"], parent: `${OWNER}.loopb`,
       allowSubscribe: ["general"], allowPublish: [], tokenHash: la.tokenHash, lifecycleUid: mintLifecycleUid(),
     }),
@@ -263,7 +263,7 @@ try {
   // ---- role delegation: a role is RECEIVE reach (shared task queue), delegated via `role:<r>` ----
   rejects(
     "a child role outside the spawner's scope is refused (role = shared task-queue reach)",
-    () => grantManagedActor(dir, {
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
       owner: OWNER, actor: "taskbot", scope: [], role: "reviewer", parent: CLI,
       allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
     }),
@@ -274,20 +274,20 @@ try {
   });
   const tb = newActorToken();
   check("the same role within a `role:reviewer` capability is written",
-    grantManagedActor(dir, {
+    grantManagedActor(dir, { custody: { kind: "foreground" },
       owner: OWNER, actor: "taskbot", scope: [], role: "reviewer", parent: CLI,
       allowSubscribe: ["general"], allowPublish: [], tokenHash: tb.tokenHash, lifecycleUid: mintLifecycleUid(),
     }).role === "reviewer");
   // ---- the lifecycle uid is CALLER-supplied in the managed space (issue #702) ----
   rejects("a managed grant without a lifecycle uid is refused (the ledger never mints one)",
-    () => grantManagedActor(dir, {
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
       owner: OWNER, actor: "uidless", scope: [], parent: CLI,
       allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash,
     } as Omit<Parameters<typeof grantManagedActor>[1], "lifecycleUid">),
     "lifecycle uid");
   const ctlUid = mintLifecycleUid();
   check("the control row carrying the caller's uid is written with exactly that uid",
-    grantManagedActor(dir, {
+    grantManagedActor(dir, { custody: { kind: "foreground" },
       owner: OWNER, actor: "uidctl", scope: [], parent: CLI,
       allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: ctlUid,
     }).lifecycleUid === ctlUid);
@@ -311,7 +311,7 @@ try {
   });
   const escMsg = rejects(
     "an over-envelope delegation under a quoted-label spawner still refuses",
-    () => grantManagedActor(dir, {
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
       owner: OTHER, actor: "kid", scope: [], parent: `${OTHER}.op2`,
       allowSubscribe: ["ops"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
     }),

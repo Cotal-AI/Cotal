@@ -1,0 +1,122 @@
+{
+  "suite": [
+    "implementations/cli/smoke/target-resolution.smoke.ts"
+  ],
+  "guard": "with no explicit target and no selection, a terminal chooses between running spaces for one run and the selection stays; a script, --json and --no-input refuse an ambiguous target with the remedy apart from the message; a manifest's declared space is the target of up -f and spawn -f, and another --space is refused before anything is written",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/target-resolution.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/target-resolution.json",
+  "why": [
+    "Each mutation removes one condition the chooser checks before it asks, one way the answer becomes the run's target, one place a manifest's space is enforced, or one place a refusal keeps its remedy apart. The suite drives the binary from source over built packages, so each mutation rebuilds them and the restore rebuilds them back."
+  ],
+  "mutations": [
+    {
+      "name": "the chosen space is not used",
+      "file": "implementations/cli/src/lib/choose-target.ts",
+      "find": "  values.space = chosen;\n",
+      "replace": "",
+      "expectRed": "the chosen space is the one the command reads",
+      "cell": "the chosen space is the one the command reads",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a --json caller is asked",
+      "file": "implementations/cli/src/lib/choose-target.ts",
+      "find": " || values.json === true) return;",
+      "replace": ") return;",
+      "expectRed": "a command's own --json on a terminal is not asked either",
+      "cell": "a command's own --json on a terminal is not asked either",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--space does not stop the question",
+      "file": "implementations/cli/src/lib/choose-target.ts",
+      "find": "  if (values.space !== undefined || values.server",
+      "replace": "  if (values.server",
+      "expectRed": "--space on a terminal is not asked",
+      "cell": "--space on a terminal is not asked",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--no-input is asked",
+      "file": "implementations/cli/src/lib/choose-target.ts",
+      "find": "  if (!canPrompt()) return;\n",
+      "replace": "",
+      "expectRed": "--no-input on a terminal refuses without asking",
+      "cell": "--no-input on a terminal refuses without asking",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "cancelling falls through to the command",
+      "file": "implementations/cli/src/lib/choose-target.ts",
+      "find": "    process.exit(0);\n",
+      "replace": "    return;\n",
+      "expectRed": "cancelling the question does nothing and exits 0",
+      "cell": "cancelling the question does nothing and exits 0",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the kernel does not offer the choice",
+      "file": "implementations/cli/src/command.ts",
+      "find": "    await chooseMeshTarget(args);\n",
+      "replace": "",
+      "expectRed": "a terminal is asked which running space",
+      "cell": "a terminal is asked which running space",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a manifest's space is overridden by --space",
+      "file": "implementations/cli/src/commands/topology.ts",
+      "find": "  if (space === undefined || space === prepared.manifest.space) return;\n",
+      "replace": "  return;\n",
+      "expectRed": "up -f with a --space naming another space refuses, exit 1, naming both",
+      "cell": "up -f with a --space naming another space refuses, exit 1, naming both",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "up -f does not compare --space with the manifest",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "  refuseManifestSpaceMismatch(prepared, opts.space);\n",
+      "replace": "",
+      "expectRed": "up -f with a --space naming another space refuses, exit 1, naming both",
+      "cell": "up -f with a --space naming another space refuses, exit 1, naming both",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "spawn -f does not compare --space with the manifest",
+      "file": "implementations/cli/src/commands/spawn-manifest.ts",
+      "find": "  refuseManifestSpaceMismatch(prepared, flags.space);\n",
+      "replace": "",
+      "expectRed": "spawn -f with a --space naming another space refuses before it connects",
+      "cell": "spawn -f with a --space naming another space refuses before it connects",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "up -f prepares the root before the mismatch is refused",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "if (values.space === undefined || values.space === prepared.manifest.space) ensureRootForSpace(prepared.manifest.space);",
+      "replace": "ensureRootForSpace(prepared.manifest.space);",
+      "expectRed": "the refused up -f wrote nothing",
+      "cell": "the refused up -f wrote nothing",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a connect refusal folds its remedy into the message",
+      "file": "packages/workspace/src/connect.ts",
+      "find": "    const remedy = this.parts?.remedy ?? this.hint?.trim();\n",
+      "replace": "    const remedy = this.hint?.trim();\n",
+      "expectRed": "its message names the running spaces and its remedy says how to pick one",
+      "cell": "its message names the running spaces and its remedy says how to pick one",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a target refusal in the kernel folds its remedy into the message",
+      "file": "implementations/cli/src/command.ts",
+      "find": "        failureExit(cmd, new CommandFailure(\"refused\", targetErrorCode(e.code), message, remedy ? { remedy } : {}), json);",
+      "replace": "        failureExit(cmd, new CommandFailure(\"refused\", targetErrorCode(e.code), message), json);",
+      "expectRed": "a command that resolves its own target refuses the same way, its remedy apart from its message",
+      "cell": "a command that resolves its own target refuses the same way, its remedy apart from its message",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

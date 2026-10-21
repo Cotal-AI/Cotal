@@ -111,7 +111,7 @@ The guarantees, at a glance, each enforced by the broker per
   Despawn drives the full §13.1 retirement. Its ledger rows are revoked, and the manager's control
   surface refuses the retired incarnation's credential outright. What remains: within
   the TTL window a *copied* cred keeps its inline data-plane grants (static has no auth callout,
-  so nothing re-checks at reconnect), and an out-of-band `cotal mint` cred is still long-lived
+  so nothing re-checks at reconnect), and an out-of-band `cotal auth mint` cred is still long-lived
   until key rotation. A per-user-auth mesh closes both: short-lived bearers, ledger revocation
   that bites at the next connect, and live-connection eviction
   ([identity & auth](identity-and-auth.md)). A copied signing *seed* still stays valid until

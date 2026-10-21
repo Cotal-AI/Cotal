@@ -18,8 +18,8 @@
     {
       "name": "R1 interactive re-grant preserves the predecessor UID instead of retiring and rotating it",
       "file": "implementations/auth/src/commands.ts",
-      "find": "      if (current?.lifecycleUid) {\n        await retireInteractiveActorLifecycle(dir, current, \"re-grant\");\n        const refreshed = findInteractiveActor(dir, owner, actor);\n        if (refreshed?.lifecycleUid !== current.lifecycleUid)\n          throw new Error(`cannot re-grant \"${owner}/${actor}\": the actor row changed while its predecessor retired. Nothing was overwritten; re-read \\`cotal actor list\\` and retry.`);\n      }\n      const row = grantActor(dir, {\n        owner,\n        actor,",
-      "replace": "      const row = grantActor(dir, {\n        owner,\n        actor,\n        lifecycleUid: current?.lifecycleUid,",
+      "find": "      if (current?.lifecycleUid) {\n        mutationAttempted = true;\n        // Async retirement runs before the transaction, never inside it.\n        retired = await retireInteractiveActorLifecycle(dir, current, \"re-grant\");\n      }\n      mutationAttempted = true;\n      const grantRow = {\n        owner,\n        actor,\n",
+      "replace": "      mutationAttempted = true;\n      const grantRow = {\n        owner,\n        actor,\n        lifecycleUid: current?.lifecycleUid,\n",
       "expectRed": "copied elevated bearer is refused after re-grant rotates its lifecycle",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
     },
@@ -33,8 +33,8 @@
     {
       "name": "R3 actor revoke deletes the row without retiring its current lifecycle",
       "file": "implementations/auth/src/commands.ts",
-      "find": "      await retireInteractiveActorLifecycle(dir, current, \"revoke\");",
-      "replace": "",
+      "find": "      const retired = await retireInteractiveActorLifecycle(dir, current, \"revoke\");",
+      "replace": "      const retired = false;",
       "expectRed": "user-mode send works again after the heal",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
     },
@@ -82,7 +82,7 @@
       "name": "R9 a retirement transport failure is treated as success and the row rotates anyway",
       "file": "implementations/auth/src/commands.ts",
       "find": "  } catch (error) {\n    throw new Error(`cannot ${operation} \"${row.owner}/${row.actor}\": its lifecycle retirement could not reach the auth service (${error instanceof Error ? error.message : String(error)}). The actor row was not changed; recover with \\`cotal up\\`, then retry.`);\n  }",
-      "replace": "  } catch {\n    return;\n  }",
+      "replace": "  } catch {\n    return false;\n  }",
       "expectRed": "re-grant with a dead auth service is refused before changing the row",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
     },

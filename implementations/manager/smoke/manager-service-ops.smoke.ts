@@ -600,11 +600,21 @@ try {
     const prow = ((psP.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === wp.name);
     check("a persona-file model surfaces in the ps row (no --model flag)", prow?.model === "persona-m", prow);
     // A whitespace-only persona model is refused at load: dropping it here while a foreground launch
-    // rendered it into the harness command made one persona launch two ways (#2862).
-    writeFileSync(join(workspaceRoot, ".cotal", "agents", "emodel.md"), `---\nname: emodel\nrole: worker\nmodel: "   "\n---\n`);
+    // rendered it into the harness command made one persona launch two ways (#2862). The launch loader
+    // reports any parser refusal without the file's contents, so the reply names only the file and the
+    // selector class; the native parser, run on the same bytes, shows the model rule is the refusal.
+    const emodelPath = join(workspaceRoot, ".cotal", "agents", "emodel.md");
+    writeFileSync(emodelPath, `---\nname: emodel\nrole: worker\nmodel: "   "\n---\n`);
+    let parserRefusal = "";
+    try { loadAgentFile(emodelPath); } catch (e) { parserRefusal = (e as Error).message; }
     const rE = await A.call("spawn", { name: "emodel", agent: "e2e-stub", cwd: repoRoot, events: false });
+    const refusal = String(rE.reply.error?.message ?? "");
+    const psE = await A.call("ps");
     check("a whitespace-only persona model is refused at load, not launched without a pin",
-      rE.reply.ok === false && String(rE.reply.error?.message ?? "").includes('"model" must not be empty'), rE.reply);
+      parserRefusal.includes('"model" must not be empty')
+      && rE.reply.ok === false && refusal.includes(`persona file ${emodelPath} has invalid native frontmatter`) && refusal.includes("selectors")
+      && psE.reply.ok === true && !((psE.reply.data as Array<{ name: string }>) ?? []).some((x) => x.name === "emodel"),
+      { parserRefusal, reply: rE.reply });
   }
   {
     const rB = await B.call("despawn", { graceful: true }, { actor: w1.id, lifecycleUid: w1.lifecycleUid });

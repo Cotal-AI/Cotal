@@ -199,6 +199,12 @@ function baseConfig(name: string, subjects: string[]): CanonicalBackupStreamConf
   };
 }
 
+/** First-party creation baseline shared by bootstrap and backup definitions. These are desired
+ *  native fields, not defaults filled into a broker observation or authorization to create. */
+export function spaceStreamCreationBase(name: string, subjects: string[]): CanonicalBackupStreamConfig {
+  return baseConfig(name, [...subjects]);
+}
+
 /** Current canonical config for one of the eight backed-up streams. Restore callers must use this
  * config, not the config embedded in untrusted snapshot bytes. */
 export function canonicalBackupStreamConfig(space: string, stream: string): CanonicalBackupStreamConfig {
@@ -260,6 +266,13 @@ const INERT_CONFIG_DEFAULTS: Record<string, unknown> = {
   allow_msg_counter: false,
   persist_mode: "",
 };
+
+/** Existing first-party baseline values for read-only comparison outside declared fields.
+ *  These are not inferred SDK defaults, missing-field normalization or provisioning authority.
+ *  Return fresh nested values so an inspection cannot mutate the backup validator's policy. */
+export function streamReadPolicyBaseline(name: string, subjects: string[]) {
+  return { ...baseConfig(name, [...subjects]), ...structuredClone(INERT_CONFIG_DEFAULTS) };
+}
 
 function normalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(normalize);

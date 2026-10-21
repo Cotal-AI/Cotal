@@ -1,4 +1,4 @@
-import { spawnSync, existsSync, mkdtempSync, symlinkSync, tmpdir, join, REPO, BIN, check, HOST_ENV, freshCfg, seedDir, readJson, track, finishScenario } from "./harness.js";
+import { spawnSync, existsSync, mkdtempSync, symlinkSync, tmpdir, join, REPO, BIN, check, cotal, HOST_ENV, freshCfg, seedDir, readJson, track, finishScenario } from "./harness.js";
 
 try {
   // ── the GLOBAL-INSTALL shape: the binary reached through a bin SYMLINK ────────────────────────────
@@ -13,11 +13,12 @@ try {
     const linkDir = track(mkdtempSync(join(tmpdir(), "cotal-seed-binlink-")));
     const link = join(linkDir, "cotal");
     symlinkSync(BIN, link);
-    const r = spawnSync("node", [link, "ext", "list"], {
+    // A boot through the link: `sync` is not a read, so the seed gate runs before it.
+    const r = spawnSync("node", [link, "sync"], {
       encoding: "utf8",
       env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
     });
-    const out = r.stdout ?? "";
+    const out = cotal(cfg, ["ext", "list"]).stdout;
     const names = ["claude", "opencode", "codex", "hermes", "jcode", "pi"].filter((n) => out.includes(`connector:${n}`));
     if (names.length !== 6) console.log(`[diag] symlinked boot status=${r.status}\n--stdout--\n${out}\n--stderr--\n${r.stderr}`);
     check("symlinked bin: boot resolves the generation (no 'cannot determine' fail)", !/cannot determine the seed generation/.test(r.stderr ?? ""), r.stderr);

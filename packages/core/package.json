@@ -56,7 +56,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/resolve.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts && pnpm smoke:schema-own-properties && pnpm smoke:schema-own-properties-controls",
+    "test": "tsx smoke/resolve.smoke.ts && tsx smoke/registry-aliases.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts && pnpm smoke:schema-own-properties && pnpm smoke:schema-own-properties-controls",
     "smoke:backup": "tsx smoke/backup.smoke.ts",
     "smoke:backup:live": "tsx smoke/backup-live.smoke.ts",
     "prepublishOnly": "pnpm run build",

@@ -2,10 +2,11 @@
 
 > **Reference**: describes the TypeScript reference implementation (the `cotal` CLI and connectors), not the wire contract. · **For:** operators · **Wire contract:** [SPEC](../SPEC.md)
 
-Three things configure a Cotal workstation: the **config file** (per-connector settings, notably
-which of your MCP servers get shared with spawned agents), a set of **`COTAL_*` environment
-variables**, and the **on-disk layout** under a project's `.cotal/` and your machine's `~/.cotal`.
-None of these are part of the wire contract; they configure the reference implementation only.
+Four things configure a Cotal workstation: the **config file** (per-connector settings, notably
+which of your MCP servers get shared with spawned agents), your **preferences** (the defaults your
+own commands use, set with `cotal config`), a set of **`COTAL_*` environment variables**, and the
+**on-disk layout** under a project's `.cotal/` and your machine's `~/.cotal`. None of these are part
+of the wire contract; they configure the reference implementation only.
 
 ## The config file
 
@@ -33,7 +34,7 @@ disabled-server and managed-policy rules. An empty Cotal sharing map does not di
 sources. Use `--share-tools none` for Cotal alone, or name declared servers to restrict one spawn.
 Carried sessions retain their private home's isolated MCP configuration.
 
-On its first run `cotal setup` still seeds eligible user-scope declarations into this file and
+On its first run, `cotal setup` with Claude as the application still seeds eligible user-scope declarations into this file and
 keeps an existing list. Native discovery does not depend on that snapshot. Every enabled server
 may start a process per seat, so use an explicit sharing selection for a lighter seat.
 
@@ -123,6 +124,44 @@ reads the file once, so the seat launches with the shared servers and `spawn.env
 contents its policy check read. Seats that are already running are not re-checked, including a
 supervised restart or a preserved seat resumed after maintenance.
 
+## Preferences
+
+Preferences are the defaults your own commands use when nothing more specific names a value. You set
+them with [`cotal config`](cli.md#config), for yourself or for one space, and they are saved in
+`preferences.json` in the configuration directory (see [Configuration files](#configuration-files)).
+
+| Key | Values | Per space | Environment | Default | Read by |
+|---|---|---|---|---|---|
+| `harness` | a connector name, such as `claude` or `opencode` | yes | `COTAL_DEFAULT_AGENT` | `claude` | `spawn` |
+| `persona` | a catalog name or a path | yes | `COTAL_DEFAULT_PERSONA` | `default` | `spawn` |
+| `detach-key` | `ctrl-<char>` or `^<char>` | no | `COTAL_DETACH_KEY` | `ctrl-]` | `attach` |
+| `color` | `auto`, `always` or `never` | no | `FORCE_COLOR`, then `NO_COLOR` | `auto` | every command |
+| `editor` | an editor command, such as `code --wait` | no | `VISUAL`, then `EDITOR` | none | `personas edit` |
+
+One resolver decides each key, in this order: an explicit flag, the persona's pin, the environment
+variable, your value for the space the command acts on, your own value, then the default. For a
+detached `spawn` the manager's own `COTAL_DEFAULT_AGENT` sits between your values and the product
+default. `--no-color` and `--plain` beat the `color` key. `FORCE_COLOR` turns color on, or off when it
+is `0` or `false`, and a non-empty `NO_COLOR` turns it off; both beat a saved value. `cotal config`
+shows the value that wins and every other value it outranks, so a shell export that hides a saved
+value is visible.
+
+`harness` is checked against the official connectors and the ones installed extensions provide. A
+value is checked when it is written, and an unknown key or an invalid value is refused with the valid
+ones. Preferences hold no credentials. They change future commands, not agents already running.
+
+The file is private to its owner and versioned:
+
+```json
+{ "schemaVersion": 1, "revision": 3, "defaults": { "harness": "opencode" }, "spaces": { "demo": { "persona": "reviewer" } } }
+```
+
+`revision` counts the writes. A write holds a lock, refuses with `CONFLICT` if the file changed after
+the command read it, and replaces the file atomically, so two writers never lose an edit. A file that
+does not validate (not JSON, a newer `schemaVersion`, an unknown key or an invalid value) stops every
+command except help and shell completion, with an error that names the file and the problem.
+Nothing resets it: fix or remove the file.
+
 ## Environment variables
 
 These are the operator-facing variables. Most of the connector-session ones (space, name, role, …)
@@ -154,11 +193,11 @@ other value when it starts, naming the variable.
 | `COTAL_CHANNEL` | Claude connector | Force channel wake-nudges on (`1`) / off; set to `1` by the Claude launcher | on when the MCP client declares the `claude/channel` capability in `initialize` |
 | `COTAL_EVENTS` | connector session | Arm this session's event plane (`1`); set by the launcher unless the launch used `--no-events` | launcher-managed |
 | `COTAL_EVENTS_REQUIRED` | hand-driven user-mode connector | Trusted registration says events are mandatory; arms the plane and refuses if the session grant omits its event channel. Launcher-managed sessions carry this in launch material instead | off |
-| `COTAL_DEFAULT_AGENT` | `cotal spawn` | Default connector type for a bare spawn (below an explicit `--agent` and the persona's `agent:` pin) | `claude` |
-| `COTAL_DEFAULT_PERSONA` | `cotal spawn` | Default persona for a bare spawn | `default` |
+| `COTAL_DEFAULT_AGENT` | `cotal spawn` | Default connector type for a bare spawn (below an explicit `--agent` and the persona's `agent:` pin, above a saved [`harness` preference](#preferences)) | `claude` |
+| `COTAL_DEFAULT_PERSONA` | `cotal spawn` | Default persona for a bare spawn (above a saved [`persona` preference](#preferences)) | `default` |
 | `COTAL_SKIP_CONNECTOR_SEED` | boot gate | Skip the automatic built-in-connector seed/refresh on a command (`1`); `cotal ext seed` still works. `agent-bearer` skips the gate by name, no flag needed | off |
 | `COTAL_ALLOW_CHECKOUT_SEED` | seed store | Permit a source-checkout CLI to write the operator-global seed store (`1`) after isolating `$XDG_CONFIG_HOME`. Used by in-tree seed smokes that spawn the checkout-shaped `bin/` CLI into a scratch config. Any other value is ignored. The checkout refusal does not name this variable. | off |
-| `COTAL_DETACH_KEY` | `cotal attach` | Detach escape key (ctrl-<char> / ^<char>), matched as the control byte or its kitty / modifyOtherKeys encoding | `ctrl-]` |
+| `COTAL_DETACH_KEY` | `cotal attach` | Detach escape key (ctrl-<char> / ^<char>), matched as the control byte or its kitty / modifyOtherKeys encoding (above a saved [`detach-key` preference](#preferences)) | `ctrl-]` |
 | `COTAL_FEEDBACK_KEY` | `feedback`, connector | Beta feedback key → keyed intake | none (public intake) |
 | `COTAL_FEEDBACK_EMAIL` | `feedback`, connector | Contact email for the keyless public intake | your git email |
 | `COTAL_FEEDBACK_URL` | `feedback`, connector | Intake URL override (self-hosted) | keyed / public intake |
@@ -372,7 +411,7 @@ project paths on the live machine.
 |---|---|
 | `meshes/space.<key>.json` | Registry of running meshes: one file per broker `cotal up` started (server URL, root path, mode, TLS-required client intent when recorded, attach bind host and live-session ceiling when the operator set them); `<key>` is the same case-safe hex encoding of the space name, and the record's own `space` field is authoritative |
 | `current-mesh` | Default space a bare `cotal spawn` joins (set by `cotal use`) |
-| `onboarded.json` | First-run marker (with `ONBOARD_VERSION`) that flips setup between first-run and status-card |
+| `onboarded.json` | Marker (with `ONBOARD_VERSION`) that `cotal setup` writes once; setup shows its splash until then |
 | the Claude plugin marketplace | The installed `cotal-mesh` plugin assets |
 
 ### Configuration files
@@ -383,6 +422,7 @@ Distinct from `~/.cotal`. Location: `$XDG_CONFIG_HOME/cotal`, else `~/.config/co
 | Path | What it is |
 |---|---|
 | `config.json` | Operator-level connector config (the base layer above) |
+| `preferences.json` | Your [preferences](#preferences), private to you (`0600`), written by `cotal config` |
 | `extensions/` | `cotal ext` install prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache. Built-in connectors install here too, seeded on first run |
 | `seed/` | Built-in-connector seeding state: the `ever-seeded` authority (+ durable backup), the init witness, the version stamp, the crash cursor, and `store/<version>/<name>` (the stable payloads `ext add --install-links` reifies each seeded connector from) |
 

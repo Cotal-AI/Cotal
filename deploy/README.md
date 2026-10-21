@@ -9,7 +9,7 @@ Two shapes, picked by the container's command:
 | command | shape |
 |---------|-------|
 | `supervise --space <s> --roster /workspace/roster.yaml` | a manager plus every agent in the roster |
-| `spawn <name>` | one foreground agent (loads `.cotal/agents/<name>.md`) |
+| `spawn <name> --foreground` | one foreground agent (loads `.cotal/agents/<name>.md`) |
 
 One agent or twenty, claude or opencode: all config, never the image.
 
@@ -46,7 +46,7 @@ docker build -f deploy/docker/Dockerfile -t cotal-runner .
 **3. Emit the signer.** Account signing material only, no operator key:
 
 ```bash
-cotal mint --signer     # writes ./signer.json
+cotal auth signer --out signer.json
 ```
 
 **4. Describe the team:**

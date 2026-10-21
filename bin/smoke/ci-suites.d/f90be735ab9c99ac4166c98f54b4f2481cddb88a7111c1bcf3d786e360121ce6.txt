@@ -1,0 +1,3 @@
+# A preset start refused before its process exists records a failed instance with no process,
+# and a second start, a stop and a removal clear it instead of blocking on it.
+smoke:service-preparation-refusal

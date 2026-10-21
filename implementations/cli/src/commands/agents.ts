@@ -1,8 +1,36 @@
-import { dialerFor, mintCreds, newIdentity, openSessionRail, peerLabel, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
-import { ConnectRefusal, divergentCwdAnchor, isWorkspaceTargetError, loadMeshes, renderWorkspaceError, targetFlags, userSessionAuth } from "@cotal-ai/workspace";
+import { DEV_OWNER, assertLifecycleToken, dialerFor, mintCreds, newIdentity, openSessionRail, peerLabel, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
+import {
+  CommandFailure,
+  ConnectRefusal,
+  divergentCwdAnchor,
+  isWorkspaceTargetError,
+  jsonFlag,
+  loadMeshes,
+  oneLine,
+  renderReport,
+  terminalWidth,
+  plainFlag,
+  presentationOf,
+  resolveSeatControlTarget,
+  renderWorkspaceError,
+  targetFlags,
+  userSessionAuth,
+  writeResult,
+  type Block,
+  type ConnectFlags,
+  type Cell,
+  type OutputWarning,
+  type Report,
+  type Section,
+  type Styled,
+  type Tone,
+  recordOperationSpace,
+} from "@cotal-ai/workspace";
+import * as prompts from "@clack/prompts";
+import { canPrompt } from "./meshes-wizard.js";
 import { type NatsConnection } from "@nats-io/transport-node";
-import { c, presenceDetail } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
+import { c, presenceFacts } from "../ui.js";
+import { askManager, scatterManager, failIfNotOk, managerFailure, readFailure, resolveControlTarget, onInstance, onInstanceOrExit, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin } from "../lib/control.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
@@ -20,15 +48,17 @@ const nameFlag = (what: string) =>
 // seat); `--json` is the machine form (one JSON object per line, exactly the row the manager
 // sent). Mutually exclusive because they are two answers to "how should I read this".
 const wideFlag = { name: "wide", type: "boolean", description: "also print the per-seat facts the manager already records: cwd, pid, spawner, lifecycle uid, host/instance" } as const;
-const jsonFlag = { name: "json", type: "boolean", description: "machine-readable: one JSON object per seat per line (instance headers go to stderr)" } as const;
-const slotsFlag = { name: "slots", type: "boolean", description: "list durable static slot rows instead of live seats (#1274); mutually exclusive with --wide" } as const;
-export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)"), onFlag] as const satisfies readonly FlagSpec[];
-export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag, slotsFlag] as const satisfies readonly FlagSpec[];
+const slotsFlag = { name: "slots", type: "boolean", description: "list the durable static slots instead of live seats; not with --wide" } as const;
+export const stopFlags = [...targetFlags, nameFlag("agent name; you can name it positionally"),
+  { name: "self", type: "boolean", description: "stop only the verified managed seat running this command" },
+  { name: "force", type: "boolean", description: "request native hard despawn (graceful:false); does not bypass authority" },
+  onFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
+export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag, plainFlag, slotsFlag] as const satisfies readonly FlagSpec[];
 /** `--no-reconnect`: one session, exit when it ends, whatever ended it. The default reconnects,
  *  which is right for a person at a terminal and wrong for a script that wants a single run with a
  *  single exit code. */
 const noReconnectFlag = { name: "no-reconnect", type: "boolean", description: "exit when the session ends instead of re-establishing it" } as const;
-export const attachFlags = [...targetFlags, nameFlag("managed agent to attach to (required)"), onFlag, noReconnectFlag] as const satisfies readonly FlagSpec[];
+export const attachFlags = [...targetFlags, nameFlag("agent name; you can name it positionally"), onFlag, noReconnectFlag] as const satisfies readonly FlagSpec[];
 /** `cotal input`: type into a seat without holding a terminal open. `--text` is a VALUE flag, so
  *  its argument is taken verbatim and may begin with `/` or `-` (`--text "/compact"`) - which is
  *  the point: a harness command is exactly the payload that would be eaten by a positional
@@ -40,7 +70,7 @@ export const inputFlags = [
   nameFlag("managed agent to type into (required)"),
   { name: "text", type: "string", value: "<text>", description: "the text to type, verbatim (required); quote it when it starts with / or -" },
   { name: "no-enter", type: "boolean", description: "type the text without pressing Enter after it" },
-  onFlag,
+  onFlag, jsonFlag, plainFlag,
 ] as const satisfies readonly FlagSpec[];
 
 export function managedAgentComplete(argv: string[]): CompletionResult {
@@ -53,30 +83,69 @@ export function managedAgentComplete(argv: string[]): CompletionResult {
   return { items: [], directive: "nofiles" };
 }
 
-export async function stop(args: ParsedArgs): Promise<void> {
-  const v = args.values as FlagValues<typeof stopFlags>;
-  if (!v.name) {
-    console.error(c.red("--name is required"));
-    process.exit(1);
+/** The named target grammar, checked before any command preparation. */
+export function managedTarget(args: ParsedArgs, operation: "stop" | "attach", allowPicker = false): string | undefined {
+  const named = typeof args.values.name === "string" ? args.values.name : undefined;
+  if (args.positionals.length > 1 || (args.positionals.length && named !== undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", `choose one agent: cotal ${operation} <name>`);
+  const name = args.positionals[0] ?? named;
+  if (typeof args.values.on === "string") onInstance(args.values.on, `cotal ${operation}`);
+  if (name === undefined && operation === "attach" && allowPicker) {
+    if (!canPrompt()) throw new CommandFailure("refused", "USAGE_INVALID", "name the agent to attach without an interactive terminal", { remedy: "run cotal ps, then cotal attach <name>" });
+    return undefined;
   }
-  // STATIC mesh: operator stop is a cross-agent op — the `control-caller-admin` instrument holds
-  // the any-mode despawn row, so `reach: "any"` names any target (the broker grant IS the
-  // authority).
-  // USER mesh: ONE deterministic path — the op rides the operator's own bearer with `reach:
-  // "owner"` (its own-domain despawn row), and the MANAGER authorizes: agents under your own
-  // owner pass with scope "spawn", another owner's agent needs "admin" on your ledger row (the
-  // handler's fresh any-mode authorization). No client-side try-admin-then-owner fallback.
-  // Seat-locality: the manager that can stop a seat is the one HOSTING it, so resolve WHERE before
-  // choosing WHO. Must precede the mint — a credential cannot gain an instance rail after issuance.
-  const on = await pinForTarget(v, "cotal stop");
-  const t = await resolveControlTarget(v, "control-caller-admin", on);
-  const reach = t.auth.bearer ? "owner" : "any";
-  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
-  failIfNotOk(reply);
-  // User mesh: a stop IS a grant revoke (rows are runtime grants — a non-running agent holds no
-  // standing mint secret); a respawn re-grants automatically. Say so, so the operator's
-  // restart-vs-revoke model is visible at the command, not inferred from docs.
-  console.log(c.dim(`✓ stopped ${v.name}${t.auth.bearer ? " - its actor grant is revoked; a respawn re-grants automatically" : ""}`));
+  if (name !== undefined && /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "the agent name contains terminal control characters");
+  if (!name?.trim()) throw new CommandFailure("refused", "USAGE_INVALID", `name the agent to ${operation}`, { remedy: "run cotal ps, then cotal " + operation + " <name>" });
+  return name;
+}
+
+export function validateStopArguments(args: ParsedArgs): void {
+  presentationOf(args.values);
+  if (args.values.self) {
+    if (args.positionals.length || args.values.name !== undefined || args.values.creds !== undefined)
+      throw new CommandFailure("refused", "USAGE_INVALID", "stop --self takes no other agent or caller credential");
+    if (args.values.on !== undefined) {
+      const pin = onInstance(String(args.values.on), "cotal stop --self");
+      if (pin !== process.env.COTAL_MANAGER_INSTANCE) throw new CommandFailure("refused", "CONFLICT", "stop --self cannot select a different manager than the seat's launcher");
+    }
+    return;
+  }
+  managedTarget(args, "stop");
+}
+
+export async function stop(args: ParsedArgs): Promise<void> {
+  validateStopArguments(args);
+  const v = args.values as FlagValues<typeof stopFlags>;
+  let on: string | undefined;
+  let t: Awaited<ReturnType<typeof resolveControlTarget>>;
+  let name: string | undefined;
+  if (v.self) {
+    const space = v.space ?? process.env.COTAL_SPACE;
+    const manager = process.env.COTAL_MANAGER_INSTANCE;
+    if (!space || !manager) throw new CommandFailure("refused", "UNSUPPORTED", "stop --self requires a managed seat's own shell, space and launcher attribution");
+    on = onInstance(manager, "cotal stop --self");
+    let seat: Awaited<ReturnType<typeof resolveSeatControlTarget>>;
+    try { seat = await resolveSeatControlTarget({ space, server: v.server }, on); }
+    catch { throw new CommandFailure("refused", "AUTH_REQUIRED", "the seat's own caller could not be verified; no operator identity was substituted"); }
+    if (!seat) throw new CommandFailure("refused", "UNSUPPORTED", "this caller cannot stop itself through the CLI; missing or mismatched seat context and user-auth self impersonation never fall back to the operator");
+    t = seat;
+  } else {
+    name = managedTarget(args, "stop");
+    on = await pinForTarget({ ...v, name } as never, "cotal stop");
+    t = await resolveControlTarget(v, "control-caller-admin", on);
+  }
+  recordOperationSpace(t.space);
+  const reply = await askManager(t.space, t.server, v.self ? "stopSelf" : "stop", { ...(name ? { name } : {}), graceful: v.force !== true }, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId: on });
+  const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, selection: v.self ? "verified-self" : "named", ...(name ? { agent: name } : {}) };
+  if (!reply.ok) throw managerFailure(reply, "agent stop", target);
+  const data = reply.data as { name?: unknown; stopped?: unknown; graceful?: unknown } | undefined;
+  if (!data || typeof data.name !== "string" || typeof data.stopped !== "boolean" || typeof data.graceful !== "boolean")
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the manager answered, but the stop receipt could not be read; the request was not repeated", { target, ...(reply.request ? { native: { detail: { request: reply.request } } } : {}) });
+  if (!data.stopped) throw new CommandFailure("failed", "OPERATION_FAILED", "the manager reported that it did not stop the selected agent", { target });
+  const result = { kind: "agent-stop", name: data.name, stopped: data.stopped, graceful: data.graceful, request: reply.request ?? null, grantRevocation: t.auth.bearer ? "native user-mode stop policy" : "not asserted" };
+  writeResult(presentationOf(v), { command: "stop", target, result }, (row): Report => ({ sections: [
+    { title: "Agent stop acknowledged", blocks: [{ kind: "fields", rows: [["Agent", row.name], ["Space", t.space], ["Manager", reply.managerInstanceId ?? "not attributed"], ["Native mode", row.graceful ? "graceful" : "hard despawn"], ["Selection", v.self ? "this verified seat only" : "named agent's resolved incarnation"]] }, { kind: "lines", lines: [{ text: "This is the manager's stop result, not an independent process-exit measurement. No other agent was selected and no replacement was launched.", tone: "hint" }] }] },
+  ] }));
 }
 
 type AgentRow = {
@@ -93,6 +162,10 @@ type AgentRow = {
   activeAt?: number;
   /** The manager's own presence-view state when it built the row; absent from older managers. */
   meshView?: "current" | "stale" | "unpopulated";
+  /** Manager's exact principal + UID comparison for the name-matched presence row. */
+  presenceIdentityVerified?: boolean;
+  /** Manager snapshot time, only on a current exact-identity presence row. */
+  presenceObservedAt?: number;
   /** Epoch ms of the seat's last heartbeat, only beside an `offline` verdict; absent from older managers. */
   offlineSince?: number;
   authHealth?: string;
@@ -112,6 +185,40 @@ type AgentRow = {
   lifecycleUid: string;
   id: string;
 };
+
+/** The named status contract separates process, presence and work observations. A missing
+ * manager field is null, never inferred from a process handle or an old heartbeat. */
+function agentStatusProjection(row: AgentRow, managerInstanceId: string | null) {
+  const principal = row.id.split(".");
+  const owner = principal.length === 1 ? DEV_OWNER : principal.length === 2 && principal[0] ? principal[0] : null;
+  const actor = principal.length === 1 ? principal[0] || null : principal.length === 2 && principal[1] ? principal[1] : null;
+  const viewCurrent = row.meshView === undefined || row.meshView === "current";
+  const exactPresence = viewCurrent && row.presenceIdentityVerified === true;
+  const reportedAt = typeof row.activeAt === "number" && Number.isFinite(row.activeAt) && Math.abs(row.activeAt) <= 8.64e15
+    ? new Date(row.activeAt).toISOString() : null;
+  const observedAt = exactPresence && typeof row.presenceObservedAt === "number" && Number.isSafeInteger(row.presenceObservedAt) && row.presenceObservedAt >= 0 && row.presenceObservedAt <= 8.64e15
+    ? new Date(row.presenceObservedAt).toISOString() : null;
+  const since = row.condition?.since;
+  const conditionSince = typeof since === "number" && Number.isSafeInteger(since) && since >= 0 && since <= 8.64e15
+    ? new Date(since).toISOString() : null;
+  return {
+    identity: { name: row.name, owner, actor, lifecycleUid: row.lifecycleUid || null, source: "manager-ps" },
+    execution: { managerInstanceId, host: row.host ?? null, harness: row.agent, model: row.model ?? null,
+      runtime: row.mode, pid: typeof row.pid === "number" && Number.isSafeInteger(row.pid) && row.pid > 0 ? row.pid : null, processState: row.status, source: "manager-ps" },
+    mesh: { presenceState: exactPresence ? row.mesh : null, observedAt, nameMatchedState: !exactPresence && viewCurrent && row.mesh !== "absent" ? row.mesh : null,
+      source: exactPresence ? "manager-ps-exact-principal-lifecycle-current-view" : "manager-ps-name-match-not-incarnation-verified" },
+    activity: { state: exactPresence && ["idle", "working", "waiting"].includes(row.mesh) ? row.mesh : null,
+      text: null, reportedAt: exactPresence ? reportedAt : null, nameMatchedWorkEventAt: exactPresence ? null : reportedAt,
+      condition: exactPresence ? row.condition ?? null : null, conditionSince: exactPresence ? conditionSince : null,
+      nameMatchedCondition: exactPresence ? null : row.condition ?? null,
+      source: exactPresence ? "manager-ps-exact-principal-lifecycle-current-view" : "manager-ps-name-match-not-incarnation-verified" },
+    details: { role: row.role ?? null, variant: row.variant ?? null, provider: row.provider ?? null,
+      providerSource: row.provider ? exactPresence ? "exact-principal-lifecycle" : "name-match-unverified" : null, cwd: row.cwd ?? null,
+      uptimeMs: row.uptimeMs, spawner: row.spawner ?? null, presenceView: row.meshView ?? null, presenceIdentityVerified: row.presenceIdentityVerified ?? null,
+      presenceObservedAt: row.presenceObservedAt ?? null, offlineSince: row.offlineSince ?? null,
+      authHealth: row.authHealth ?? null, authReason: row.authReason ?? null, resume: row.resume ?? null },
+  };
+}
 
 /** A seat's compact runtime identity. Model is provenance, not a debugging detail, so it belongs
  *  beside the connector in the default row. `variant` is the requested override the manager
@@ -276,20 +383,19 @@ export function seatMissRefusal(
  *  - `not-probed` / `probe-refused`: this command could not ask. That is a fact about the command,
  *    not the instance, and saying so is what keeps a local gap from reading as a remote fault.
  */
-function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanceId: string): string {
+function silentManager(liveness: ScatterInstanceLiveness | undefined, instanceId: string): { state: Styled; remedy?: string } {
   if (liveness === "gone")
-    return (
-      c.red("registration is stale") +
-      c.dim(` (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)`) +
-      c.dim(`\n  ↳ remove the record: cotal deregister-instance --instance ${instanceId}`)
-    );
+    return {
+      state: { text: "registration is stale (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)", tone: "failed" },
+      remedy: `remove the record: cotal deregister-instance --instance ${instanceId}`,
+    };
   const why =
     liveness === "probe-refused"
       ? " (its liveness could not be probed: the broker refused this command's probe, named above)"
       : liveness === "not-probed"
         ? " (its liveness was not probed: this command holds no probe grant for it)"
         : " (either the host is alive and slow, or it died and its registration was never removed)";
-  return c.red("registered, no answer within the deadline") + c.dim(why);
+  return { state: { text: `registered, no answer within the deadline${why}`, tone: "failed" } };
 }
 
 /** The mesh column of one `ps` row. A verdict needs a fresh observer: when the manager reports its
@@ -299,89 +405,90 @@ function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanc
  *  on. A row from a manager that predates `meshView` carries no field and renders as before.
  *  An offline verdict says how long it has stood when the row carries `offlineSince` (#1208), so a
  *  seat that dropped a minute ago reads differently from one that dropped two days ago. */
-export function meshColumn(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt" | "offlineSince">, now = Date.now()): string {
-  if (r.meshView === "stale") return c.yellow("mesh unknown") + c.dim(" (manager's presence view is stale)");
-  if (r.meshView === "unpopulated") return c.yellow("mesh unknown") + c.dim(" (manager's presence view not yet populated)");
+export function meshCell(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt" | "offlineSince">, now = Date.now()): Styled {
+  if (r.meshView === "stale") return { text: "mesh unknown (manager's presence view is stale)", tone: "waiting" };
+  if (r.meshView === "unpopulated") return { text: "mesh unknown (manager's presence view not yet populated)", tone: "waiting" };
   // The harness-reported condition and the last work progress ride beside the status, as the roster
   // renders them (#618): a turn that died upstream 40m ago reads `waiting (rate_limit for 40m) ·
   // active 40m ago`, not a bare `waiting`, and a turn that stopped advancing shows the age of its
   // last event.
-  const condition = presenceDetail(r, now);
-  const mesh = r.mesh === "absent"
-    ? c.yellow("not in roster")
-    : r.mesh === "offline"
-      ? c.dim(r.offlineSince === undefined ? "mesh offline" : `mesh offline for ${fmtUptime(now - r.offlineSince)}`)
-      : r.mesh === "working"
-        ? c.green("working · progress unknown")
-        : r.mesh === "waiting"
-          ? c.yellow("waiting")
-          : c.cyan(r.mesh);
-  return mesh + condition;
+  const { condition, ages } = presenceFacts(r, now);
+  const detail = condition + ages;
+  if (r.mesh === "absent") return { text: `not in roster${detail}`, tone: "waiting" };
+  if (r.mesh === "offline")
+    return { text: `${r.offlineSince === undefined ? "mesh offline" : `mesh offline for ${fmtUptime(now - r.offlineSince)}`}${detail}`, tone: "hint" };
+  if (r.mesh === "working") return { text: `working · progress unknown${detail}`, tone: "ok" };
+  if (r.mesh === "waiting") return { text: `waiting${detail}`, tone: "waiting" };
+  return { text: `${r.mesh}${detail}` };
 }
 
-/** Render one managed-agent row (process fact, mesh fact, optional auth-health line), indented for
- *  the per-manager grouping a class scatter prints.
+/** The process column of one `ps` row, beside the mesh column and never folded into it.
  *
- *  Two facts, printed as two facts. The manager reports the PROCESS (`status` from the runtime
- *  handle, `uptimeMs` from its start) and the MESH presence separately, and they disagree in the
- *  common failure: a seat that is `running` for two days but `offline` on the mesh. Folding them
- *  into one word rendered ten live processes as "offline" and a 57h-old process with no roster
- *  entry as "starting…", both false. `mesh: absent` means exactly "not in the presence roster",
- *  so it prints as that; the process age next to it tells the reader whether it is a fresh start
- *  or a seat that never joined. */
-function printAgentRow(r: AgentRow, indent = ""): void {
-  const proc =
-    r.status === "running"
-      ? c.green("running") + c.dim(" " + fmtUptime(r.uptimeMs))
-      : r.status === "exited"
-        ? c.red("exited") + c.dim(" after " + fmtUptime(r.uptimeMs))
-        : c.yellow(r.status) + c.dim(" " + fmtUptime(r.uptimeMs));
-  const mesh = meshColumn(r);
-  // Confirmed failure is red; ambiguity/warning states (unknown/stale) are yellow — the operator
-  // triages "definitely broken" before "might be".
-  const authColor = r.authHealth === "auth-renewal-failed" ? c.red : c.yellow;
-  console.log(
-    `${indent}${c.bold(peerLabel(r))}  ${c.dim(
-      agentIdentity(r),
-    )}  ${proc}  ${mesh}${r.authHealth ? "  " + authColor(r.authHealth) : ""}`,
-  );
-  // The detached agent's ONLY operator window into a failing bearer refresh: the provider command's
-  // operator-exact sentence, verbatim (it already names the repair).
-  if (r.authHealth && r.authReason) console.log(authColor(`${indent}    ${r.authReason}`));
+ *  Two facts, shown as two facts. The manager reports the PROCESS (`status` from the runtime handle,
+ *  `uptimeMs` from its start) and the MESH presence separately, and they disagree in the common
+ *  failure: a seat that is `running` for two days but `offline` on the mesh. Folding them into one
+ *  word rendered ten live processes as "offline" and a 57h-old process with no roster entry as
+ *  "starting…", both false. `mesh: absent` means exactly "not in the presence roster", so it prints
+ *  as that; the process age next to it tells the reader whether it is a fresh start or a seat that
+ *  never joined. */
+function processCell(r: AgentRow): Styled {
+  if (r.status === "running") return { text: `running ${fmtUptime(r.uptimeMs)}`, tone: "ok" };
+  if (r.status === "exited") return { text: `exited after ${fmtUptime(r.uptimeMs)}`, tone: "failed" };
+  return { text: `${r.status} ${fmtUptime(r.uptimeMs)}`, tone: "waiting" };
 }
 
-/** Extra operational facts for `--wide`. Model and requested variant are already in the compact
- *  identity row, so repeating them here would make wide output noisier without adding provenance.
- *  Only fields the manager actually recorded print; lifecycle uid is required on every row. */
-export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host" | "resume">): string[] {
-  const facts: string[] = [];
-  if (r.provider) facts.push(`provider ${r.provider}`);
-  if (r.cwd) facts.push(`cwd ${r.cwd}`);
-  if (r.pid !== undefined) facts.push(`pid ${r.pid}`);
-  if (r.spawner) facts.push(`spawner ${r.spawner}`);
-  facts.push(`uid ${r.lifecycleUid}`);
-  if (r.instanceId) facts.push(`instance ${r.instanceId}`);
-  if (r.host) facts.push(`host ${r.host}`);
+/** Confirmed failure is red; ambiguity/warning states (unknown/stale) are amber, so the operator
+ *  triages "definitely broken" before "might be". */
+const authTone = (r: AgentRow): Tone => (r.authHealth === "auth-renewal-failed" ? "failed" : "waiting");
+
+/** Extra operational facts for `--wide`, as label and value. Model and requested variant are already
+ *  in the compact identity, so repeating them here would make wide output noisier without adding
+ *  provenance. Only fields the manager actually recorded appear; lifecycle uid is required on every
+ *  row. */
+function wideFields(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host" | "resume">): [string, string][] {
+  const fields: [string, string][] = [];
+  if (r.provider) fields.push(["provider", r.provider]);
+  if (r.cwd) fields.push(["cwd", r.cwd]);
+  if (r.pid !== undefined) fields.push(["pid", String(r.pid)]);
+  if (r.spawner) fields.push(["spawner", r.spawner]);
+  fields.push(["uid", r.lifecycleUid]);
+  if (r.instanceId) fields.push(["instance", r.instanceId]);
+  if (r.host) fields.push(["host", r.host]);
   if (r.resume) {
     const { source, title, transcriptSha256, host, transferredAt } = r.resume;
-    facts.push(`forked from ${host ? `${host}:` : ""}${source}${title ? ` ${JSON.stringify(title)}` : ""}${transcriptSha256 ? ` sha256:${transcriptSha256}` : ""}${transferredAt ? ` carried ${transferredAt}` : ""}`);
+    fields.push(["forked from", `${host ? `${host}:` : ""}${source}${title ? ` ${JSON.stringify(title)}` : ""}${transcriptSha256 ? ` sha256:${transcriptSha256}` : ""}${transferredAt ? ` carried ${transferredAt}` : ""}`]);
   }
-  return facts;
+  return fields;
 }
 
-function printWideFacts(r: AgentRow, indent = ""): void {
-  console.log(c.dim(`${indent}    ${agentWideFacts(r).join("  ·  ")}`));
+/** {@link wideFields} as one line of facts. */
+export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host" | "resume">): string[] {
+  return wideFields(r).map(([label, value]) => `${label} ${value}`);
 }
 
-/** How one seat renders in the chosen presentation. `--json` prints the manager's row EXACTLY as
- *  received; `--wide` adds the facts line under the compact row. */
-function printSeat(r: AgentRow, opts: { wide: boolean; json: boolean }, indent = ""): void {
-  if (opts.json) {
-    console.log(JSON.stringify(r));
-    return;
-  }
-  printAgentRow(r, indent);
-  if (opts.wide) printWideFacts(r, indent);
+/** The seats one manager answered with: a table, or with `--wide` one labeled record per seat. A
+ *  failing bearer refresh is a detached seat's only window to the operator, so the provider's own
+ *  sentence follows, verbatim (it already names the repair). A record's labels read as its facts'
+ *  do, and a field the seat leaves empty is left out. */
+function seatBlocks(rows: readonly AgentRow[], wide: boolean): Block[] {
+  const auth = rows.some((r) => r.authHealth);
+  const cells = (r: AgentRow): [string, Cell][] => [
+    ["NAME", peerLabel(r)],
+    ["AGENT", { text: agentIdentity(r), tone: "hint" }],
+    ["PROCESS", processCell(r)],
+    ["MESH", meshCell(r)],
+    ...(auth ? [["AUTH", r.authHealth ? { text: r.authHealth, tone: authTone(r) } : ""] as [string, Cell]] : []),
+  ];
+  const blocks: Block[] = wide
+    ? rows.flatMap((r, i): Block[] => [...(i ? [{ kind: "lines", lines: [""] } as const] : []), { kind: "fields", rows: [...cells(r).filter(([, value]) => value !== "").map(([label, value]): [string, Cell] => [label.toLowerCase(), value]), ...wideFields(r)] }])
+    : [{
+        kind: "table",
+        columns: cells(rows[0]!).map(([label]) => ({ key: label, label })),
+        rows: rows.map((r) => Object.fromEntries(cells(r))),
+      }];
+  const reasons = rows.filter((r) => r.authHealth && r.authReason).map((r): Cell => ({ text: `${peerLabel(r)}: ${r.authReason}`, tone: authTone(r) }));
+  if (reasons.length) blocks.push({ kind: "lines", lines: reasons });
+  return blocks;
 }
 
 /** One durable static slot row, the `slots` command's answer (#1274). Unlike `AgentRow` there is
@@ -404,146 +511,285 @@ type SlotRow = {
   managerInstanceId: string;
 };
 
-/** `--slots` rendering, beside `printSeat`. `--json` prints the row unchanged; the human form is
- *  one compact line naming phase, slot uid, cleanup, head and liveness. */
-function printSlot(r: SlotRow, opts: { json: boolean }, indent = ""): void {
-  if (opts.json) {
-    console.log(JSON.stringify(r));
-    return;
-  }
-  const cleanup = r.cleanupComplete === undefined ? "unknown" : String(r.cleanupComplete);
-  const head = r.headState === undefined ? "absent" : `${r.headState}${r.headOp ? ` op ${r.headOp.kind}:${r.headOp.opId}` : ""}`;
-  console.log(`${indent}${r.name}  ${r.slotPhase}  slot ${r.slotLifecycleUid}  cleanupComplete=${cleanup}  head=${head}  live=${r.live}  readOrder=slot,head consistency=${r.consistency}`);
+/** `--slots`: one row per slot naming phase, slot uid, cleanup, head and liveness. The read order
+ *  and its consistency are the same on every row, so they are stated once. */
+function slotBlocks(rows: readonly SlotRow[]): Block[] {
+  return [
+    {
+      kind: "table",
+      columns: [
+        { key: "name", label: "NAME" },
+        { key: "phase", label: "PHASE" },
+        { key: "slot", label: "SLOT" },
+        { key: "cleanup", label: "CLEANUP COMPLETE" },
+        { key: "head", label: "HEAD" },
+        { key: "live", label: "LIVE" },
+      ],
+      rows: rows.map((r) => ({
+        name: r.name,
+        phase: r.slotPhase,
+        slot: r.slotLifecycleUid,
+        cleanup: r.cleanupComplete === undefined ? "unknown" : String(r.cleanupComplete),
+        head: r.headState === undefined ? "absent" : `${r.headState}${r.headOp ? ` op ${r.headOp.kind}:${r.headOp.opId}` : ""}`,
+        live: String(r.live),
+      })),
+    },
+    { kind: "lines", lines: [{ text: `read order slot,head; consistency ${rows[0]!.consistency}`, tone: "hint" }] },
+  ];
+}
+
+/** What one manager instance answered a `ps` census with. */
+export interface ManagerAnswer {
+  readonly instanceId: string;
+  /** `answered`; `silent` (registered, no answer within the deadline); `refused` (it answered with an
+   *  error); `contract-mismatch` (it serves a different `ps` contract, so its rows were not read). */
+  readonly state: "answered" | "silent" | "refused" | "contract-mismatch";
+  /** What this command established about a silent instance's liveness. */
+  readonly liveness?: ScatterInstanceLiveness;
+  /** A refusal's own sentence, with the endpoint's code when it carried one. */
+  readonly error?: string;
+  readonly code?: string;
+}
+
+/** What `cotal ps` read: each seat (or, with `--slots`, each static slot) exactly as its manager
+ *  returned it, and what each manager instance asked answered. A manager that did not answer is
+ *  listed, never dropped, so a short list is not mistaken for a complete one. */
+export interface PsResult {
+  readonly kind: "seats" | "slots";
+  readonly items: readonly unknown[];
+  readonly managers: readonly ManagerAnswer[];
+}
+
+/** `rowsOf` is each answered instance's rows as the census received them, so a row that names no
+ *  instance of its own is still listed under the manager that returned it. */
+function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map()): Report {
+  const empty = result.kind === "slots" ? "No active static slots." : "No managed agents.";
+  const blocksFor = (rows: readonly unknown[]): Block[] =>
+    !rows.length ? [{ kind: "lines", lines: [{ text: empty, tone: "hint" }] }]
+    : result.kind === "slots" ? slotBlocks(rows as SlotRow[])
+    : seatBlocks(rows as AgentRow[], wide);
+  // A single manager that answered is the common case: a flat list, no per-manager grouping noise.
+  if (result.managers.length <= 1 && result.managers.every((m) => m.state === "answered")) return { sections: [
+    { title: result.kind === "slots" ? "Static slots" : "Agents", blocks: blocksFor(result.items) },
+    { title: "Next", blocks: [{ kind: "commands", items: result.items.length ? [
+      { command: "cotal attach <name>", description: "Return to an agent's terminal" },
+      { command: "cotal stop <name>", description: "Stop one agent" },
+    ] : [{ command: "cotal spawn", description: "Launch your default agent" }] }] },
+  ] };
+  // Several managers: one section each, named by the FULL instance id, since `--on` takes nothing
+  // shorter and this is precisely where it becomes the one way to address a manager. Silent and
+  // refused instances are shown, never dropped.
+  return {
+    sections: result.managers.map((m): Section => {
+      const title = `manager ${m.instanceId}`;
+      if (m.state === "silent") {
+        const silent = silentManager(m.liveness, m.instanceId);
+        return { title, blocks: [{ kind: "lines", lines: [silent.state, ...(silent.remedy ? [{ text: `↳ ${silent.remedy}`, tone: "hint" } as const] : [])] }] };
+      }
+      if (m.state === "contract-mismatch") return { title, blocks: [{ kind: "lines", lines: [{ text: "contract mismatch; seats not listed", tone: "failed" }] }] };
+      if (m.state === "refused") return { title, blocks: [{ kind: "lines", lines: [{ text: `list refused: ${m.error}`, tone: "failed" }] }] };
+      const rows = rowsOf.get(m.instanceId) ?? [];
+      const count = rows.length ? `${rows.length} ${result.kind === "slots" ? "slot" : "agent"}${rows.length === 1 ? "" : "s"}` : `no ${result.kind === "slots" ? "slots" : "agents"}`;
+      return { title, blocks: [{ kind: "lines", lines: [{ text: count, tone: "hint" }] }, ...(rows.length ? blocksFor(rows) : [])] };
+    }),
+  };
 }
 
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
-  // #651 presentations: the two forms are mutually exclusive because they answer "how do I read
-  // this" two different ways;
-  // inventing a precedence would be a silent fallback, so refuse instead.
-  const opts = { wide: v.wide === true, json: v.json === true, slots: v.slots === true };
-  if (opts.wide && opts.json) {
-    console.error(c.red("✗ --wide and --json are mutually exclusive: --wide is the human table, --json the machine form"));
-    process.exit(1);
+  // #651 presentations: --wide is a human layout and --json the document that already carries every
+  // field, so the pair asks one question two ways; inventing a precedence would be a silent
+  // fallback, so refuse instead.
+  const presentation = presentationOf(v);
+  const wide = v.wide === true;
+  const slots = v.slots === true;
+  if (wide && presentation === "json")
+    throw new CommandFailure("refused", "USAGE_INVALID", "--wide and --json are mutually exclusive: --wide is the human layout, --json the document with every field", { remedy: "drop --wide; --json already carries every field the manager recorded" });
+  if (slots && wide)
+    throw new CommandFailure("refused", "USAGE_INVALID", "--slots and --wide are mutually exclusive: --slots lists durable static slot rows, --wide the live seat facts", { remedy: "pass one of them" });
+  const command = slots ? "slots" : "ps";
+  const kind = slots ? "slots" : "seats";
+  const census = await readSeats(v, command, onInstance(v.on, "cotal ps"));
+  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf);
+  writeResult(
+    presentation,
+    {
+      command: "ps",
+      target: census.target,
+      result: { kind, items: census.items, managers: census.managers },
+      completeness: census.partial ? "partial" : "complete",
+      warnings: census.warnings,
+      ...(census.partial ? { partial: census.partial } : {}),
+    },
+    view,
+  );
+}
+
+/** A named-agent detail uses the same authorized census as ps, never an invented process view. */
+export async function agentStatus(args: ParsedArgs): Promise<void> {
+  const name = args.positionals[0]!;
+  const values = args.values as FlagValues<typeof psFlags>;
+  const census = await readSeats(values, "ps", onInstance(values.on, "cotal status"));
+  const rows = census.items.map((value): AgentRow => {
+    if (!value || typeof value !== "object") throw new CommandFailure("failed", "OPERATION_FAILED", "a manager returned an invalid agent record", { target: census.target });
+    const row = value as Partial<AgentRow>;
+    if (typeof row.name !== "string" || typeof row.id !== "string" || typeof row.agent !== "string" || typeof row.mode !== "string" || typeof row.status !== "string" || typeof row.mesh !== "string" || typeof row.uptimeMs !== "number" || !Number.isFinite(row.uptimeMs))
+      throw new CommandFailure("failed", "OPERATION_FAILED", "a manager returned an incomplete agent record", { target: census.target });
+    return value as AgentRow;
+  });
+  const matches = rows.filter((row) => row.name === name || row.id === name);
+  if (matches.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "more than one manager reports this agent; select a manager with --on", { target: { ...census.target, name, candidates: matches.map((row) => ({ name: row.name, id: row.id, instanceId: row.instanceId ?? null })) } });
+  if (!matches.length && !census.partial) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { ...census.target, name } });
+  const item = matches[0] ?? null;
+  const managerInstanceId = item ? [...census.rowsOf].find(([, rows]) => rows.includes(item))?.[0] ?? census.target.managerInstanceId ?? item.instanceId ?? null : null;
+  let managerHint = "";
+  if (managerInstanceId) {
+    try { managerHint = ` --on ${assertLifecycleToken(managerInstanceId, "instanceId")}`; }
+    catch { managerHint = " --on <manager-instance>"; }
   }
-  if (opts.slots && opts.wide) {
-    console.error(c.red("✗ --slots and --wide are mutually exclusive: --slots lists durable static slot rows, --wide the live seat facts"));
-    process.exit(1);
-  }
-  const command = opts.slots ? "slots" : "ps";
-  const emptyLine = opts.slots ? "(no nonretired static slots)" : "(no managed agents)";
-  const print = opts.slots
-    ? (r: unknown, indent = ""): void => printSlot(r as SlotRow, { json: opts.json }, indent)
-    : (r: unknown, indent = ""): void => printSeat(r as AgentRow, opts, indent);
-  const on = onInstanceOrExit(v.on, "cotal ps");
+  const projected = item ? agentStatusProjection(item, managerInstanceId) : { identity: null, execution: null, mesh: null, activity: null, details: null };
+  writeResult(presentationOf(values), {
+    command: "status",
+    target: { ...census.target, name },
+    result: { kind: "agent", ...projected, managers: census.managers },
+    completeness: census.partial ? "partial" : "complete",
+    warnings: census.warnings,
+    ...(census.partial ? { partial: census.partial } : {}),
+  }, (result) => {
+    const row = item;
+    if (!row || !result.identity || !result.execution || !result.mesh || !result.activity || !result.details) return { sections: [
+      { title: "Agent could not be located", blocks: [{ kind: "lines", lines: [{ text: "Some managers did not answer. This does not establish that the agent is gone.", tone: "waiting" }] }] },
+      { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ps", description: "See the responding and unavailable managers" }, { command: "cotal status <agent> --on <manager-instance>", description: "Address a known manager directly" }] }] },
+    ] };
+    const identity = result.identity, execution = result.execution, mesh = result.mesh, activity = result.activity;
+    const credential: [string, Cell][] = row.authHealth ? [["Credential", { text: row.authHealth, tone: authTone(row) }]] : [];
+    return { sections: [
+      { title: "Identity", blocks: [
+        ...(census.partial ? [{ kind: "lines" as const, lines: [{ text: "Other managers did not answer. This is one known match, not a complete uniqueness check.", tone: "waiting" as const }] }] : []),
+        { kind: "fields", rows: [["Agent", identity.name], ["Space", census.target.space], ["Principal", row.id], ["Owner", identity.owner ?? "not established"], ["Actor", identity.actor ?? "not established"], ["Lifecycle", identity.lifecycleUid ?? "not reported"], ["Role", result.details.role ?? "not reported"]] },
+      ] },
+      { title: "Execution", blocks: [
+        { kind: "fields", rows: [["Process", processCell(row)], ["Application", execution.harness], ["Model", execution.model ? `${execution.model} · requested, not provider-confirmed` : "not reported"], ["Variant", result.details.variant ?? "not reported"], ["Reported provider", result.details.providerSource === "exact-principal-lifecycle" ? result.details.provider ?? "not reported" : "not established"], ["Name-matched provider", result.details.providerSource === "name-match-unverified" ? result.details.provider ?? "not reported" : "none"], ["Runtime", execution.runtime], ["PID", execution.pid === null ? "not reported" : String(execution.pid)], ["Host", execution.host ?? "not reported"], ["Folder", result.details.cwd ?? "not reported"], ["Manager", execution.managerInstanceId ?? "not reported"], ...credential] },
+        ...(row.authReason ? [{ kind: "lines" as const, lines: [{ text: row.authReason, tone: authTone(row) }] }] : []),
+      ] },
+      { title: "Mesh", blocks: [
+        { kind: "fields", rows: [["Exact presence", mesh.presenceState ?? "not established"], ["Connection", mesh.presenceState === null ? "not attributable to this lifecycle" : meshCell(row)], ["Name-matched roster", mesh.nameMatchedState === null ? "none separate" : meshCell(row)], ["Observed at", mesh.observedAt ?? "not reported"], ["Presence view", result.details.presenceView ?? "not reported"]] },
+        ...(mesh.presenceState === null ? [{ kind: "lines" as const, lines: [{ text: "This manager has not established a current roster record for the agent's exact principal and lifecycle UID. A matching name alone is not proof.", tone: "waiting" as const }] }] : []),
+      ] },
+      { title: "Last reported activity", blocks: [
+        { kind: "fields", rows: [["State", activity.state ?? "not established"], ["Text", "not reported"], ["Condition", activity.condition?.code ?? "not established"], ["Condition since", activity.conditionSince ?? "not reported"], ["Work event", activity.reportedAt ?? "not reported"], ["Unverified name-match condition", activity.nameMatchedCondition?.code ?? "none"], ["Unverified name-match event", activity.nameMatchedWorkEventAt ?? "none"]] },
+        { kind: "lines", lines: [{ text: "A work event is not task completion or a measured blocked duration. A name-match without the manager's exact-identity proof is not this agent's activity.", tone: "hint" }] },
+      ] },
+      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal attach <agent>${managerHint}`, description: managerHint ? "Return to its terminal through this manager" : "Return to its terminal" }, { command: `cotal stop <agent>${managerHint}`, description: managerHint ? "Stop the named agent through this manager" : "Stop the named agent" }] }] },
+    ] };
+  });
+}
+
+/** One census of the managed seats (or, for `slots`, the static slots): each answered manager
+ *  instance's rows as it returned them, every instance's answer, a warning for each one that did not
+ *  return its rows, and the partial notice when any did not. */
+export interface SeatCensus {
+  readonly target: { space: string; scope: string; managerInstanceId?: string | null };
+  readonly items: unknown[];
+  readonly managers: ManagerAnswer[];
+  readonly warnings: OutputWarning[];
+  readonly rowsOf: Map<string, unknown[]>;
+  readonly partial?: { message: string; remedy: string };
+}
+
+/** Read the managed seats the way `ps` lists them: from one manager when `on` pins it or the caller
+ *  holds a user bearer, otherwise from every registered instance. Throws the classified failure when
+ *  the target cannot be resolved or no manager can be asked. */
+export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: string | undefined): Promise<SeatCensus> {
   // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
   // this resolve, and a credential cannot gain an instance rail after it is minted.
-  const t = await resolveControlTarget(v, "control-caller-privileged", on);
-  // `--on <instance>`: pin ps to ONE manager instance's `inst` route (P2 item 3 multi-manager) — a
-  // single-manager view. Same path for both modes (no freeze; no scatter).
-  if (on !== undefined) {
-    const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, { instanceId: on });
-    failIfNotOk(reply);
-    const rows = (reply.data as unknown[]) ?? [];
-    if (!rows.length) {
-      // A JSON stream with zero rows is zero lines on stdout, not a prose line that would
-      // corrupt a consumer reading JSONL.
-      if (!opts.json) console.log(c.dim(emptyLine));
-      return;
-    }
-    for (const r of rows) print(r);
-    return;
-  }
+  const t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
+  recordOperationSpace(t.space);
 
+  // One manager instance: `--on <instance>` pins ps to its `inst` route on a multi-manager mesh,
+  // and in USER MODE (bearer present) the borrowed manager view pins one authorized instance and
+  // keeps the actor's existing command scopes. That view has no registry freeze rows and never
+  // scatters; the manager answers from its in-memory roster with an owner filter, which is not a
+  // complete multi-manager inventory (see docs/cli.md), and the target says so.
+  //
   // Mode chosen UP FRONT from the connection shape. Never try-scatter-catch-degrade: a silent
   // downgrade is the bug this branch fixes, and reintroducing it in the fix would be the whole
   // night in miniature.
-  //
-  // USER MODE (bearer present): the borrowed manager view pins one authorized instance and keeps
-  // the actor's existing command scopes. It has no registry freeze rows and never scatters.
-  // The manager answers from its in-memory roster with an owner filter; this is not a complete
-  // multi-manager inventory (see docs/cli.md).
-  //
-  // STATIC/OPEN (no bearer): class scatter. The operator instrument (or bare open connect) holds
-  // the freeze rows; every registered instance is attributed, and a non-answering one is labeled
-  // unreachable (pin 3).
-  if (t.auth.bearer) {
-    // No explicit --on on this branch; askManager uses the issuer's concrete selection.
-    const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, {});
-    failIfNotOk(reply);
-    const rows = (reply.data as unknown[]) ?? [];
-    if (!rows.length) {
-      if (!opts.json) console.log(c.dim(emptyLine));
-      return;
+  if (on !== undefined || t.auth.bearer) {
+    const instanceId = on ?? t.auth.managerInstanceId;
+    const target = { space: t.space, scope: "manager", managerInstanceId: instanceId ?? null };
+    const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, on !== undefined ? { instanceId: on } : {});
+    if (!reply.ok) {
+      const failure = readFailure(reply, target);
+      // A user-mode manager view that the broker refused before any responder saw the call. The
+      // broker does not say which row was missing, so this names the documented requirement for
+      // these reads instead of asserting a cause, and keeps the native refusal as it was.
+      if (t.auth.bearer && failure.code === "PERMISSION_DENIED" && reply.nativeOutcome === "not-executed")
+        throw new CommandFailure(failure.outcome, failure.code, failure.message, {
+          target,
+          remedy: `on a user-auth mesh, the manager's \`${command}\` read is documented to need the \`admin\` scope on your actor grant; \`spawn\` alone does not carry it. Check what your row holds with \`cotal auth grants\``,
+          ...(failure.native ? { native: failure.native } : {}),
+        });
+      throw failure;
     }
-    for (const r of rows) print(r);
-    return;
+    const items = (reply.data as unknown[]) ?? [];
+    return { target, items, managers: instanceId ? [{ instanceId, state: "answered" }] : [], warnings: [], rowsOf: new Map() };
   }
 
+  // STATIC/OPEN (no bearer): class scatter. The operator instrument (or bare open connect) holds the
+  // freeze rows; every registered instance is attributed, and a non-answering one is labeled with
+  // what this command established about it (pin 3).
+  const target = { space: t.space, scope: "all-managers" };
   const scatter = await scatterManager(t.space, t.server, command, t.auth, t.spaceAuth);
-  if (!scatter.ok) {
-    console.error(c.red(`✗ ${scatter.error}`));
-    process.exit(1);
-  }
+  if (!scatter.ok) throw readFailure(scatter, target);
   // Stable ordering: reachable instances first, then by instance id.
   const instances = [...scatter.instances].sort(
     (a, b) => Number(b.reachable) - Number(a.reachable) || a.instanceId.localeCompare(b.instanceId),
   );
-  // A single-manager space is the common case — print a flat list, no per-manager grouping noise.
-  if (instances.length === 1 && instances[0].reachable && !instances[0].error) {
-    const rows = (instances[0].data as unknown[]) ?? [];
-    if (!rows.length) {
-      if (!opts.json) console.log(c.dim(emptyLine));
-      return;
-    }
-    for (const r of rows) print(r);
-    return;
-  }
-  // Multi-manager: group under a per-instance header; unreachable instances are shown, never dropped.
-  //
-  // The header prints the FULL instance id, not a prefix. This block runs only in a multi-manager
-  // space (precisely when the split makes `--on <instance>` the one way to address a manager) and
-  // `--on` takes nothing but the whole 26-32 char lifecycle token (`assertLifecycleToken`). An
-  // abbreviated header therefore showed the operator an id that the very next command refuses
-  // (`"4ik6rb0e" is not a valid lifecycle token`), with the full value printed nowhere: the remedy
-  // was named and then withheld. Width costs one line here; the prefix cost the flag entirely.
-  let incomplete = false;
+  const items: unknown[] = [];
+  const managers: ManagerAnswer[] = [];
+  const warnings: OutputWarning[] = [];
   const mismatches: string[] = [];
+  const rowsOf = new Map<string, unknown[]>();
   for (const inst of instances) {
-    const label = `manager ${inst.instanceId}`;
-    // Under --json the instance headers are STRUCTURE, not data: they go to stderr so stdout is
-    // pure rows (each row carries its own instanceId/host, so nothing is lost).
-    const header = (line: string): void => { (opts.json ? console.error : console.log)(line); };
+    const at = { space: t.space, managerInstanceId: inst.instanceId };
     if (!inst.reachable) {
-      incomplete = true;
       // Not "unreachable": the client holds no network verdict. What it knows is which question it
       // asked about this instance and what came back, which is narrower and more useful. The four
-      // cases and their wording are `silentManagerRow`.
-      header(`${c.bold(label)}  ${silentManagerRow(inst.liveness, inst.instanceId)}`);
+      // cases and their wording are `silentManager`.
+      managers.push({ instanceId: inst.instanceId, state: "silent", ...(inst.liveness ? { liveness: inst.liveness } : {}) });
+      warnings.push({ code: "MANAGER_SILENT", target: at, message: `manager ${inst.instanceId}: ${silentManager(inst.liveness, inst.instanceId).state.text}` });
       continue;
     }
     if (inst.error) {
-      incomplete = true;
       const mismatch = /^pinned digests (sha256:[a-f0-9]{64})\/(sha256:[a-f0-9]{64}) do not match the served contract (sha256:[a-f0-9]{64})\/(sha256:[a-f0-9]{64});/.exec(inst.error);
+      const code = inst.code === undefined ? {} : { code: inst.code };
       if (mismatch) {
-        header(`${c.bold(label)}  ${c.red("contract mismatch; seats not listed")}`);
+        managers.push({ instanceId: inst.instanceId, state: "contract-mismatch", error: inst.error, ...code });
         mismatches.push(`manager ${inst.instanceId}: requested input/output ${mismatch[1]} / ${mismatch[2]}; served input/output ${mismatch[3]} / ${mismatch[4]}`);
+        warnings.push({ code: "MANAGER_CONTRACT_MISMATCH", target: at, message: `manager ${inst.instanceId} serves a different ps contract; its seats were not listed` });
       } else {
-        header(`${c.bold(label)}  ${c.red(`list refused: ${inst.error}`)}`);
+        managers.push({ instanceId: inst.instanceId, state: "refused", error: inst.error, ...code });
+        warnings.push({ code: "MANAGER_REFUSED", target: at, message: `manager ${inst.instanceId} refused the list: ${inst.error}` });
       }
       continue;
     }
     const rows = (inst.data as unknown[]) ?? [];
-    header(`${c.bold(label)}  ${c.dim(rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}` : "no agents")}`);
-    for (const r of rows) print(r, "  ");
+    managers.push({ instanceId: inst.instanceId, state: "answered" });
+    rowsOf.set(inst.instanceId, rows);
+    items.push(...rows);
   }
-  if (mismatches.length)
-    console.error(c.red(`✗ Managers in this space serve different ps contracts. ${mismatches.join("; ")}. Align the manager versions and retry.`));
-  if (incomplete) {
-    console.error(c.red("✗ Incomplete manager census: some instances did not return seats. Rows above are partial, not a complete list."));
-    process.exitCode = 1;
-
-  }
+  const unread = managers.filter((m) => m.state !== "answered").length;
+  const kind = command === "slots" ? "slots" : "seats";
+  const partial = unread
+    ? {
+        message: `Incomplete manager census: ${unread} of ${managers.length} instances did not return ${kind}. Rows above are partial, not a complete list.`,
+        remedy: mismatches.length
+          ? `Managers in this space serve different ps contracts. ${mismatches.join("; ")}. Align the manager versions and retry.`
+          : "retry, or read one manager with `cotal ps --on <instance>`",
+      }
+    : undefined;
+  return { target, items, managers, warnings, rowsOf, ...(partial ? { partial } : {}) };
 }
 
 /** Re-establishment backoff, in order; the last value is the cap and repeats forever. A seat that
@@ -635,7 +881,12 @@ export function attachRefusal(
  * helper can wrap it, and it only rethrows the codes that are not "no mesh found", so that is fatal
  * too. Anything else, including a broker that is not reachable yet, is transient.
  */
+class SeatAttachCallerUnavailable extends Error {
+  constructor() { super("the launching seat could not re-establish its own caller; no operator identity was substituted"); }
+}
+
 function thrownEstablishment(e: unknown): { ok: false; kind: "fatal" | "transient"; message: string } {
+  if (e instanceof SeatAttachCallerUnavailable) return { ok: false, kind: "fatal", message: e.message };
   if (e instanceof ConnectRefusal && e.kind === "permanent")
     return { ok: false, kind: "fatal", message: [e.rendered.replace(/^✗ /, ""), e.hint].filter(Boolean).join("\n") };
   if (isWorkspaceTargetError(e))
@@ -714,10 +965,18 @@ async function establishAttachSession(
   // mid-session, and the refusal becomes a status-line notice instead. So "first" here means the
   // first attempt of a command that wants the exit.
   const first = firstAttempt && (v.onRefusal ?? "exit") === "exit";
-  const t = await resolveControlTarget(v, "control-caller-admin", on, first ? {} : { onRefusal: "throw" });
+  const seat = v.asSeat ? await resolveSeatControlTarget(v, on) : undefined;
+  if (v.asSeat && !seat) throw new SeatAttachCallerUnavailable();
+  const t = seat ?? await resolveControlTarget(v, "control-caller-admin", on, first ? {} : { onRefusal: "throw" });
+  recordOperationSpace(t.space);
   const reach = t.auth.bearer ? "owner" : "any";
-  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
-  if (!reply.ok) return { ok: false, kind: attachRefusal(reply.code, reply.details), message: reply.error ?? "error", fromManager: true };
+  if (first) console.error(renderReport({ space: t.space, sections: [{ title: "Attach", blocks: [{ kind: "fields", rows: [["Agent", v.name], ["Manager", on ?? t.auth.managerInstanceId ?? "native selection"]] }] }] }, "rich", terminalWidth(process.stderr)));
+  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on, expectedTarget: v.expectedTarget });
+  if (!reply.ok) {
+    if (first && (reply.preSubmitRefusal || reply.nativeOutcome === "not-executed"))
+      throw managerFailure(reply, "terminal attach", { space: t.space, agent: v.name, managerInstanceId: reply.managerInstanceId ?? on ?? null });
+    return { ok: false, kind: attachRefusal(reply.code, reply.details), message: reply.error ?? "error", fromManager: true };
+  }
   // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
   // mesh. A static-auth mesh mints a per-session, rails-only caller cred from the resolved root's
   // seed. A registered open mesh has no seed: the same bare connection `askManagerEp` already used
@@ -1108,7 +1367,7 @@ async function runAttachLoop(
       // change. Racing a promise that can never settle would be the same thing written longer.
       const detached = watch ? await Promise.race([waited, watch.pressed.then(() => true)]) : await waited;
       clearTimeout(timer);
-      if (detached) return await done({ kind: "ended" });
+      if (detached) return await done({ kind: "ended", reason: "detached" });
       attempt++;
     }
     // Give the manager its slots back BEFORE claiming another one. The order is load-bearing at the
@@ -1145,7 +1404,7 @@ async function runAttachLoop(
           // abandoned backoff timer, one layer down.
           await closeLink(late.nc);
         }
-        return await done({ kind: "ended" });
+        return await done({ kind: "ended", reason: "detached" });
       }
     }
     try {
@@ -1219,7 +1478,7 @@ async function runAttachLoop(
     if (!reconnect) {
       // One-shot: a faulted session still throws, so `--no-reconnect` exits the way it does today.
       if (outcome.error) throw outcome.error;
-      return await done({ kind: "ended" });
+      return await done({ kind: "ended", reason: outcome.reason });
     }
     if (!isTransportEnd(outcome.reason)) {
       // A faulted end this classification does not recognise is NOT a detach. Printing
@@ -1227,7 +1486,7 @@ async function runAttachLoop(
       // so it exits non-zero carrying the fault. Every `fireEnd` site passes a reason today, so
       // this is a guard against a future one that forgets, not a live path.
       if (outcome.error) return await done({ kind: "failed", message: outcome.error.message });
-      return await done({ kind: "ended" });
+      return await done({ kind: "ended", reason: outcome.reason });
     }
     console.error(c.dim("[cotal: connection lost, reconnecting]"));
     // Raw from here on, whether or not the session that just ended reached ready. A first session
@@ -1241,12 +1500,12 @@ async function runAttachLoop(
 
 /** How the attach finished, decided inside the loop and acted on outside it — so the terminal is
  *  always given back before anything prints or exits. */
-export type AttachVerdict = { kind: "ended" } | { kind: "gone" } | { kind: "failed"; message: string };
+export type AttachVerdict = { kind: "ended"; reason: string } | { kind: "gone" } | { kind: "failed"; message: string };
 
 /** What an attach needs to know: the mesh coordinates the control commands take, plus the seat,
  *  plus what an unresolvable mesh does on the first attempt (`exit`, the command's default, or
  *  `throw`, which the console needs because an exit inside a TUI blanks the screen). */
-export type AttachTarget = Pick<FlagValues<typeof attachFlags>, "space" | "server" | "creds"> & { name: string; onRefusal?: "exit" | "throw" };
+export type AttachTarget = Pick<FlagValues<typeof attachFlags>, "space" | "server" | "creds"> & { name: string; onRefusal?: "exit" | "throw"; expectedTarget?: ManagerPin["expectedTarget"]; asSeat?: boolean };
 
 /**
  * The whole attach, as one call: seat locality, the establish-redeem-drive loop with its reconnect,
@@ -1284,29 +1543,45 @@ export async function attachSeat(
   }
 }
 
+async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ name: string; on: string; expectedTarget: NonNullable<ManagerPin["expectedTarget"]> } | undefined> {
+  const census = await readSeats(values, "ps", onInstance(values.on, "cotal attach"));
+  const choices = census.items.map((value) => {
+    const row = value as Partial<AgentRow> | null;
+    if (!row || typeof row.name !== "string" || typeof row.id !== "string" || typeof row.lifecycleUid !== "string")
+      throw new CommandFailure("refused", "UNSUPPORTED", "a manager did not report the identity needed for a safe attach selection", { remedy: "align the manager versions before using the picker", target: census.target });
+    const on = [...census.rowsOf].find(([, rows]) => rows.includes(value))?.[0] ?? census.target.managerInstanceId;
+    if (!on) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the agent's manager instance was not established", { target: census.target });
+    return { name: row.name, on, expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid }, status: typeof row.status === "string" ? row.status : "not reported" };
+  });
+  if (census.partial) console.error(renderReport({ space: census.target.space, sections: [{ title: "Agent list is partial", blocks: [{ kind: "lines", lines: [{ text: census.partial.message, tone: "waiting" }] }] }] }, "rich", terminalWidth(process.stderr)));
+  if (!choices.length) throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy: "run cotal ps, or launch an agent with cotal spawn" });
+  const choice = await prompts.select({
+    message: `Return to an agent in ${oneLine(census.target.space)}`,
+    options: choices.map((item, index) => ({ value: index, label: oneLine(`${item.name} · ${item.status}`), hint: oneLine(`${item.expectedTarget.id} · manager ${item.on}`) })),
+  });
+  if (prompts.isCancel(choice)) return undefined;
+  const selected = choices[choice]!;
+  console.error(renderReport({ space: census.target.space, sections: [{ title: "Attaching", blocks: [{ kind: "fields", rows: [["Agent", selected.name], ["Identity", selected.expectedTarget.id], ["Manager", selected.on], ["Detach", `${detachKey().label} leaves the agent running`]] }] }] }, "rich", terminalWidth(process.stderr)));
+  return selected;
+}
+
 export async function attach(args: ParsedArgs): Promise<void> {
-  const v = args.values as FlagValues<typeof attachFlags>;
-  if (!v.name) {
-    console.error(c.red("--name is required"));
-    process.exit(1);
-  }
-  const reconnecting = v["no-reconnect"] !== true;
-  // Seat-locality first, exactly as `stop` does it: attaching to a seat means reaching the process,
-  // which only its host manager has. Resolved ONCE — the seat does not move between reconnects, and
-  // a manager that stops answering is a transient the loop already retries through. An explicit
-  // `--on` skips the lookup (the empty-value refusal lives in `pinForTarget`).
-  const on = v.on !== undefined ? await pinForTarget(v as never, "cotal attach") : undefined;
-  const verdict = await attachSeat({ space: v.space, server: v.server, creds: v.creds, name: v.name }, { reconnect: reconnecting, onRefusal: "exit", on });
-  if (verdict.kind === "failed") {
-    console.error(c.red(`✗ ${verdict.message}`));
-    process.exit(1);
-  }
-  if (verdict.kind === "gone") {
-    console.error(c.dim(`\nseat ${v.name} is gone`));
+  const name = managedTarget(args, "attach", true);
+  const selection = name === undefined ? await pickAttach(args.values as FlagValues<typeof attachFlags>) : undefined;
+  if (name === undefined && selection === undefined) {
+    console.error("Attach cancelled. No agent was stopped.");
     return;
   }
-  console.error(c.dim(`\ndetached from ${v.name}`));
-
+  const v = { ...args.values, name: name ?? selection!.name, ...(selection ? { on: selection.on } : {}) } as FlagValues<typeof attachFlags> & { name: string };
+  const reconnecting = v["no-reconnect"] !== true;
+  const on = v.on !== undefined ? await pinForTarget(v as never, "cotal attach") : undefined;
+  const verdict = await attachSeat({ space: v.space, server: v.server, creds: v.creds, name: v.name, ...(selection ? { expectedTarget: selection.expectedTarget } : {}) }, { reconnect: reconnecting, onRefusal: "exit", on });
+  if (verdict.kind === "failed") throw new CommandFailure("failed", "OPERATION_FAILED", verdict.message);
+  const detached = verdict.kind === "ended" && verdict.reason === "detached";
+  console.error(renderReport({ sections: [{ title: verdict.kind === "gone" ? "Attach target no longer available" : detached ? "Detached" : "Attach session ended", blocks: [
+    { kind: "fields", rows: [["Agent", v.name]] },
+    { kind: "lines", lines: [{ text: verdict.kind === "gone" ? "The selected agent or incarnation was not available to this attach request." : detached ? "Detaching did not send a stop request." : "The terminal session ended. This view sent no agent stop request; run cotal ps to check the agent's current state.", tone: "hint" }] },
+  ] }] }, "rich", terminalWidth(process.stderr)));
 }
 
 /**
@@ -1320,25 +1595,35 @@ export async function attach(args: ParsedArgs): Promise<void> {
  * reads the resulting turns from the event plane or the transcript, so this prints only what was
  * delivered.
  */
+export function inputArguments(args: ParsedArgs): { name: string; text: string } {
+  presentationOf(args.values);
+  const [positionalName, positionalText, ...extra] = args.positionals;
+  const values = args.values as FlagValues<typeof inputFlags>;
+  if (extra.length || (positionalName !== undefined && values.name !== undefined) || (positionalText !== undefined && values.text !== undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", "choose one agent and one text source: cotal input <agent> <text>, or --name and --text");
+  const name = positionalName ?? values.name;
+  const text = positionalText ?? values.text;
+  if (!name?.trim() || /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "input needs one concrete agent name without terminal control characters");
+  if (!text) throw new CommandFailure("refused", "USAGE_INVALID", "input needs nonempty text; use --text for a value beginning with a dash");
+  if (values.on !== undefined) onInstance(values.on, "cotal input");
+  return { name, text };
+}
+
 export async function input(args: ParsedArgs): Promise<void> {
-  const v = args.values as FlagValues<typeof inputFlags>;
-  if (!v.name) {
-    console.error(c.red("--name is required"));
-    process.exit(1);
-  }
-  // An EMPTY --text is refused here rather than sent: the op's contract requires a non-empty
-  // string, so sending it would spend a round trip to be told the same thing in a contract error
-  // that names a schema instead of the flag the operator got wrong. `v.text === undefined` (flag
-  // omitted) and `""` (flag given, empty) are the same mistake to the caller, so one message.
-  if (!v.text) {
-    console.error(c.red("--text is required and must not be empty"));
-    process.exit(1);
-  }
+  const parsed = inputArguments(args);
+  const v = { ...args.values, ...parsed } as FlagValues<typeof inputFlags> & { name: string; text: string };
   const on = await pinForTarget(v as never, "cotal input");
   const t = await resolveControlTarget(v, "control-caller-admin", on);
+  recordOperationSpace(t.space);
   const reach = t.auth.bearer ? "owner" : "any";
   const reply = await askManager(t.space, t.server, "input", { name: v.name, text: v.text, enter: v["no-enter"] !== true }, t.auth, reach, undefined, { instanceId: on });
-  failIfNotOk(reply);
-  const { name, bytes } = reply.data as { name: string; bytes: number };
-  console.log(c.dim(`✓ sent ${bytes} bytes to ${name}`));
+  const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, agent: v.name };
+  if (!reply.ok) throw managerFailure(reply, "terminal input", target);
+  const data = reply.data as { name?: unknown; bytes?: unknown } | undefined;
+  if (!data || typeof data.name !== "string" || typeof data.bytes !== "number" || !Number.isSafeInteger(data.bytes) || data.bytes < 0)
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the manager answered, but the terminal-input receipt was unreadable; the text was not sent again", { target, ...(reply.request ? { native: { detail: { request: reply.request } } } : {}) });
+  const result = { kind: "terminal-input", name: data.name, bytes: Number(data.bytes), enterRequested: v["no-enter"] !== true, request: reply.request ?? null };
+  writeResult(presentationOf(v), { command: "input", target, result }, (row): Report => ({ sections: [
+    { title: "Terminal input written", blocks: [{ kind: "fields", rows: [["Agent", row.name], ["Space", t.space], ["Manager", reply.managerInstanceId ?? "not attributed"], ["Bytes reported", String(row.bytes)], ["Enter requested", row.enterRequested ? "yes" : "no"]] }, { kind: "lines", lines: [{ text: "The native manager acknowledged writing to the terminal. This does not prove the application read it or completed a task. The input text is not echoed.", tone: "hint" }] }] },
+  ] }));
 }

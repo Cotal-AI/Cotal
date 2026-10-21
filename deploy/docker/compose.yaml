@@ -35,11 +35,12 @@ services:
     cap_drop: [ALL]
     restart: unless-stopped
 
-  # A solo agent: one foreground session, no manager. `spawn` loads .cotal/agents/<name>.md.
+  # A solo agent: one foreground session, no manager. `spawn --foreground` runs the application
+  # directly in the container and loads .cotal/agents/<name>.md.
   # Use one container per agent when you want each agent's secrets isolated from the others.
   solo:
     image: cotal-runner
-    command: ["spawn", "scout"]                              # loads /workspace/.cotal/agents/scout.md
+    command: ["spawn", "scout", "--foreground"]              # loads /workspace/.cotal/agents/scout.md
     environment:
       COTAL_SERVERS: ${COTAL_SERVERS:-tls://broker.host:4222}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}    # scout is a claude agent; swap per its connector

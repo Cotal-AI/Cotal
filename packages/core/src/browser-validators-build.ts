@@ -16,7 +16,7 @@ export interface BrowserContractSource {
   label: string;
   /** The digest the endpoint publishes for this cluster document. */
   clusterDigest: string;
-  document: { urn: string; revision: number; commands: Array<{ name: string; inputDigest: string; outputDigest: string }> };
+  document: { urn: string; revision: number; commands: Array<{ name: string; inputDigest: string; outputDigest: string; action?: true }> };
   roots: unknown[];
 }
 

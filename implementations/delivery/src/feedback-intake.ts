@@ -1,8 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { closeSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { CotalEndpoint, DEFAULT_SERVER, isReachable, mintLifecycleUid, type JsonValue, type ParsedArgs } from "@cotal-ai/core";
+import { CotalEndpoint, DEFAULT_SERVER, isReachable, mintLifecycleUid, openPrivateAppend, type JsonValue, type ParsedArgs } from "@cotal-ai/core";
 import { c } from "@cotal-ai/workspace";
 
 type FeedbackType = "bug" | "idea" | "friction" | "praise" | "other";
@@ -58,7 +58,15 @@ class HttpError extends Error {
   }
 }
 
-export async function runFeedbackIntake(args: ParsedArgs): Promise<void> {
+export interface FeedbackIntakeHooks {
+  readonly creds: string;
+  readonly testers: readonly FeedbackTester[];
+  readonly store: string;
+  readonly append: (record: JsonFeedbackRecord) => void;
+  readonly ready: () => Promise<void> | void;
+}
+
+export async function runFeedbackIntake(args: ParsedArgs, hooks?: FeedbackIntakeHooks): Promise<void> {
   const values = args.values as {
     host?: string;
     port?: string;
@@ -70,6 +78,7 @@ export async function runFeedbackIntake(args: ParsedArgs): Promise<void> {
     creds?: string;
     "max-bytes"?: string;
     "rate-limit"?: string;
+    tls?: boolean;
   };
 
   if (!values.keys || !values.creds) {
@@ -85,15 +94,15 @@ export async function runFeedbackIntake(args: ParsedArgs): Promise<void> {
   const port = portOpt(values.port);
   const maxBytes = numberOpt(values["max-bytes"], 64 * 1024, "max-bytes");
   const rateLimit = numberOpt(values["rate-limit"], 30, "rate-limit");
-  const store = resolve(values.store ?? ".cotal/feedback/feedback.jsonl");
+  const store = hooks ? hooks.store : resolve(values.store ?? ".cotal/feedback/feedback.jsonl");
   const space = values.space ?? "beta-feedback";
   const channel = values.channel ?? "feedback";
   const natsServer = values.server ?? DEFAULT_SERVER;
-  const creds = readFileSync(values.creds, "utf8");
-  const testers = loadTesters(resolve(values.keys));
+  const creds = hooks ? hooks.creds : readFileSync(values.creds, "utf8");
+  const testers = hooks ? hooks.testers : loadTesters(resolve(values.keys));
   const rate = new Map<string, { minute: number; count: number }>();
 
-  if (!(await isReachable(natsServer, { creds }))) {
+  if (!(await isReachable(natsServer, { creds, ...(values.tls ? { tls: true } : {}) }))) {
     console.error(c.red(`Can't reach NATS at ${natsServer} with the intake creds.`));
     process.exit(1);
   }
@@ -101,6 +110,7 @@ export async function runFeedbackIntake(args: ParsedArgs): Promise<void> {
   const ep = new CotalEndpoint({
     space,
     servers: natsServer,
+    ...(values.tls ? { tls: true } : {}),
     creds,
     channels: [channel],
     // Registers on the roster (deliberately visible infra), so under auth it is lifecycle-keyed
@@ -114,11 +124,11 @@ export async function runFeedbackIntake(args: ParsedArgs): Promise<void> {
       role: "feedback",
     },
   });
-  ep.on("error", (e: Error) => console.error(c.red("! " + e.message)));
-  ep.on("warning", (e: Error) => console.error(c.red("! " + e.message)));
+  ep.on("error", (e: Error) => console.error(c.red(hooks ? "! Native intake transport reported an error; secret-bearing diagnostics are omitted." : "! " + e.message)));
+  ep.on("warning", (e: Error) => console.error(c.red(hooks ? "! Native intake transport reported a warning; secret-bearing diagnostics are omitted." : "! " + e.message)));
   await ep.start();
 
-  mkdirSync(dirname(store), { recursive: true });
+  if (!hooks) mkdirSync(dirname(store), { recursive: true });
 
   const http = createServer(async (req, res) => {
     try {
@@ -140,7 +150,8 @@ export async function runFeedbackIntake(args: ParsedArgs): Promise<void> {
         feedback: payload,
       };
 
-      appendFileSync(store, JSON.stringify(record) + "\n", { encoding: "utf8", mode: 0o600 });
+      if (hooks) hooks.append(record);
+      else appendRecord(store, JSON.stringify(record) + "\n");
 
       let published = true;
       try {
@@ -153,12 +164,12 @@ export async function runFeedbackIntake(args: ParsedArgs): Promise<void> {
         });
       } catch (e) {
         published = false;
-        console.error(c.red(`! stored feedback ${record.id}, but couldn't publish to Cotal: ${(e as Error).message}`));
+        console.error(c.red(hooks ? `! stored feedback ${record.id}, but native publication was not confirmed; raw diagnostics are omitted.` : `! stored feedback ${record.id}, but couldn't publish to Cotal: ${(e as Error).message}`));
       }
 
       return json(res, 202, { ok: true, id: record.id, published });
     } catch (e) {
-      const err = e instanceof HttpError ? e : new HttpError(500, (e as Error).message);
+      const err = e instanceof HttpError ? e : new HttpError(500, hooks ? "native intake request failed" : (e as Error).message);
       return json(res, err.status, { error: err.message });
     }
   });
@@ -170,9 +181,6 @@ export async function runFeedbackIntake(args: ParsedArgs): Promise<void> {
   });
 
   await new Promise<void>((resolve) => http.listen(port, host, resolve));
-  console.log(`${c.bold("Cotal feedback intake")} — ${c.cyan(`http://${host}:${port}/v1/feedback`)}`);
-  console.log(c.dim(`  space: ${space}  channel: #${channel}  store: ${store}`));
-
   const shutdown = async () => {
     http.close();
     await ep.stop();
@@ -180,7 +188,16 @@ export async function runFeedbackIntake(args: ParsedArgs): Promise<void> {
   };
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+  if (hooks) await hooks.ready();
+  console.log(`${c.bold("Cotal feedback intake")} — ${c.cyan(`http://${host}:${port}/v1/feedback`)}`);
+  console.log(c.dim(`  space: ${space}  channel: #${channel}  store: ${store}`));
   await new Promise<void>(() => {});
+}
+
+/** Append one record to the owner-private store, never through a symlink ({@link openPrivateAppend}). */
+export function appendRecord(store: string, line: string): void {
+  const fd = openPrivateAppend(store);
+  try { writeFileSync(fd, line, "utf8"); } finally { closeSync(fd); }
 }
 
 function portOpt(raw: string | undefined): number {
@@ -198,8 +215,12 @@ function numberOpt(raw: string | undefined, fallback: number, name: string): num
 }
 
 function loadTesters(path: string): FeedbackTester[] {
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as { keys?: unknown };
-  if (!Array.isArray(parsed.keys)) throw new Error(`feedback keys file ${path} must contain { "keys": [...] }`);
+  return feedbackTesters(JSON.parse(readFileSync(path, "utf8")), path);
+}
+
+export function feedbackTesters(value: unknown, path = "protected input"): FeedbackTester[] {
+  const parsed = value as { keys?: unknown } | null;
+  if (!parsed || !Array.isArray(parsed.keys)) throw new Error(`feedback keys file ${path} must contain { "keys": [...] }`);
   const out: FeedbackTester[] = [];
   for (const entry of parsed.keys) {
     if (!entry || typeof entry !== "object") throw new Error(`feedback keys file ${path} has a non-object key entry`);
@@ -218,7 +239,7 @@ function bearer(req: IncomingMessage): string {
   return m[1].trim();
 }
 
-function findTester(testers: FeedbackTester[], key: string): FeedbackTester | undefined {
+function findTester(testers: readonly FeedbackTester[], key: string): FeedbackTester | undefined {
   return testers.find((tester) => safeEqual(tester.key, key));
 }
 

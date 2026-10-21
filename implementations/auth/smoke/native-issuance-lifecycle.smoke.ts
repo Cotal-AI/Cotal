@@ -106,7 +106,7 @@ try {
   const kv = await new Kvm(setup.nc).open(epAuthBucket(space));
   const grant = async (actor: string, scope: string[] = ["spawn"]) => {
     const uid = mintLifecycleUid();
-    grantManagedActor(dir, { owner: OWNER, actor, scope, allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uid });
+    grantManagedActor(dir, { custody: { kind: "foreground" }, owner: OWNER, actor, scope, allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uid });
     return { uid, credid: await plane!.mintConnectCredential({ owner: OWNER, actor, lifecycleUid: uid }) };
   };
   const issuer = createUserTokenIssuer({ issuer: ISS, key: await generateSigningKey() });

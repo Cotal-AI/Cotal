@@ -239,7 +239,7 @@ Unsubscribe from a channel mid-session; you stop receiving its messages. Leaving
 
 *spawn a new teammate*
 
-Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal web` so the user can watch the mesh in real time.
+Ask the manager to start a new peer endpoint in your space. It joins the mesh as a lateral peer and, under the cmux runtime, appears in its own tab. A Cotal peer is a real, addressable process the user can watch; you can reach it by DM, find it on the roster, and coordinate with it later. Use it for teammate work that should stay visible on the mesh. Pass `prompt` when it should begin immediately; the connector auto-submits that prompt as its first turn. When you first bring a team online, if the live web dashboard is down, suggest `cotal watch` for a live terminal view. The dashboard service is configured and started separately; do not install or launch it implicitly.
 
 - **Side-effect:** starts a new agent process via the manager.
 - **Available:** capability-gated: injected only for personas declaring `capabilities: [spawn]` (auth mode); open mode is permissive.
@@ -333,7 +333,7 @@ ANSWER: first inspect status, then pass `verb: "answer"`, `runId`, the exact ope
 
 RESUME: pass `verb: "resume"` and `runId` to continue a run from its recorded source. A held run appears as `released` in status. Do not start a duplicate run to continue it or resume one the manager is already driving.
 
-Runs continue independently of your session and can recover after a manager restart. Their channel effects are bounded by the starting credential's issued channel scope. To report that your assigned agent turn is blocked or handed off, use `cotal_yield` instead.
+Runs continue independently of your session and can recover after a manager restart. Their channel effects are bounded by the starting credential's issued channel scope. To report that your assigned agent turn is blocked or handed off, use `cotal_yield` instead. Pass `instance` for the exact manager when an unbound user-auth caller has several managers; a failed pin does not fall back.
 
 - **Side-effect:** starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only.
 - **Available:** capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode). Hosted runs require issued caller authority and an execution-capable manager. Managed user-auth agents use their own bearer command and selected participant manager, with current child and direct-parent `run` grants. Open meshes and execution-free control managers refuse execution ([workflow setup](workflows.md#from-an-agent-session)).
@@ -357,7 +357,7 @@ Runs continue independently of your session and can recover after a manager rest
 
 *define a persona*
 
-Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). It stays silent unless you pass `announce` with a channel. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. A prompt that is already a complete agent file (its own --- frontmatter) is merged into one block: grants, role, and agent from that block survive, and explicit arguments such as model win. A malformed leading frontmatter block is refused rather than wrapped.
+Define a new persona and save it as config (the manager writes .cotal/agents/<name>.md). It stays silent unless you pass `announce` with a channel. Afterwards cotal_spawn(name) launches a real agent wearing this persona/model. A prompt that is already a complete agent file (its own --- frontmatter) is merged into one block: grants, role, and agent from that block survive, and explicit arguments such as model win. A malformed leading frontmatter block is refused rather than wrapped. Pass `instance` to save on one full manager instance in a multi-manager space; a failed pin never falls back.
 
 - **Side-effect:** writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce`.
 - **Available:** capability-gated like cotal_spawn.
@@ -380,7 +380,7 @@ Define a new persona and save it as config (the manager writes .cotal/agents/<na
 
 *list or show personas*
 
-Read the workspace persona catalog the manager owns (.cotal/agents). Omit `name` to list spawnable persona names (role, model, and a one-line description when you own the file). Pass `name` to show one card you own, including the persona body. Same ownership as cotal_persona: a file you do not own lists as a name only, while unauthorized, unknown, and unparseable shows are all not-found. Use this to see whether a name is taken before cotal_persona, or what a teammate's persona says, without shelling out.
+Read the workspace persona catalog the manager owns (.cotal/agents). Omit `name` to list spawnable persona names (role, model, and a one-line description when you own the file). Pass `name` to show one card you own, including the persona body. Same ownership as cotal_persona: a file you do not own lists as a name only, while unauthorized, unknown, and unparseable shows are all not-found. Use this to see whether a name is taken before cotal_persona, or what a teammate's persona says, without shelling out. Pass `instance` to read one manager's catalog when the owner has several managers.
 
 - **Side-effect:** read-only.
 - **Available:** capability-gated like cotal_spawn.

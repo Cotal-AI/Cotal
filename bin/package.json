@@ -33,7 +33,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "tsx smoke/dep-pins.smoke.ts",
+    "test": "tsx smoke/dep-pins.smoke.ts && tsx smoke/capability-census.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
     "seeded-connectors": "node scripts/copy-seeded-connectors.mjs",
@@ -56,6 +56,7 @@
     "@cotal-ai/connector-hermes": "workspace:*",
     "@cotal-ai/connector-jcode": "workspace:*",
     "@cotal-ai/connector-opencode": "workspace:*",
+    "@cotal-ai/linear": "workspace:*",
     "@cotal-ai/pi": "workspace:*",
     "@cotal-ai/smoke-kit": "workspace:*",
     "@cotal-ai/web": "workspace:*",

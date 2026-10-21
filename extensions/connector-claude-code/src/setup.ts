@@ -8,6 +8,7 @@ import {
   globalConfigPath,
   mcpServerProblem,
   registry,
+  writePrivateRecord,
   type ConnectorSetupProvider,
   type ConnectorStatusInput,
   type ConnectorStatusRow,
@@ -85,7 +86,7 @@ function marketplaceDir(): string {
   return join(cotalHome(), "claude-plugin");
 }
 
-function materialize(name: string, root: string, assets: readonly string[], version?: string, files: Readonly<Record<string, string>> = {}): void {
+export function materialize(name: string, root: string, assets: readonly string[], version?: string, files: Readonly<Record<string, string>> = {}): void {
   const market = marketplaceDir();
   mkdirSync(market, { recursive: true });
   const dest = join(market, name);
@@ -102,7 +103,9 @@ function materialize(name: string, root: string, assets: readonly string[], vers
   let movedAside = false;
   let swapped = false;
   try {
-    mkdirSync(staging, { recursive: true });
+    // Created here, never adopted: a name already at `staging` (a link included) fails the mkdir,
+    // so every write below lands in a directory this call made.
+    mkdirSync(staging);
     for (const asset of assets) {
       const destination = join(staging, asset);
       mkdirSync(join(destination, ".."), { recursive: true });
@@ -187,7 +190,7 @@ export function marketplaceManifest(market: string): {
 export function writeMarketplaceManifest(market: string): string {
   const path = join(market, ".claude-plugin", "marketplace.json");
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(marketplaceManifest(market), null, 2) + "\n");
+  writePrivateRecord(path, JSON.stringify(marketplaceManifest(market), null, 2) + "\n");
   return path;
 }
 
@@ -396,7 +399,9 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
       const payload = join(stateDir, `.claude-skills-payload.${process.pid}`);
       rmSync(payload, { recursive: true, force: true });
       try {
-        mkdirSync(payload, { recursive: true });
+        // Created here, never adopted, like the marketplace staging directory.
+        mkdirSync(stateDir, { recursive: true });
+        mkdirSync(payload);
         cpSync(join(manifestRoot, ".claude-plugin"), join(payload, ".claude-plugin"), { recursive: true, dereference: true });
         cpSync(skillsDir, join(payload, "skills"), { recursive: true, dereference: true });
         materialize("cotal-skills", payload, [".claude-plugin", "skills"], version);

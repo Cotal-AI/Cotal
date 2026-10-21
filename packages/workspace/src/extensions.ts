@@ -2,10 +2,12 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, 
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Command, Connector, Extension, ExtensionRef, FlagSpec } from "@cotal-ai/core";
+import type { Command, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
 import { globalConfigDir } from "@cotal-ai/core";
 import { inspectLock } from "./advisory-lock.js";
-import { localProcessPath, type LocalProcess } from "./local-process.js";
+import { canonicalLocalProcessPath, localProcessPath, type LocalProcess } from "./local-process.js";
+import type { ServicePreset } from "./service-preset.js";
+import { serviceAdapterDeclaration } from "./service-adapter.js";
 
 /**
  * Operator-installed extensions (`cotal ext add <npm-package>`): the workstation state.
@@ -22,17 +24,28 @@ import { localProcessPath, type LocalProcess } from "./local-process.js";
  *    prescribing `cotal ext add` again — never a silent re-cache.
  */
 
-/** One cached command: the JSON-serializable display surface of a {@link Command} (its `run` /
- *  `complete` functions stay in the package — the cache can render help and offer flag names,
- *  nothing more). */
+/** Serializable command declarations for help, completion and read-only boot policy. The `run` and
+ *  `complete` callbacks stay in their package; command arguments are parsed against the live specs. */
 export interface CachedCommand {
   readonly name: string;
   readonly summary: string;
+  readonly aliases?: readonly string[];
   readonly group?: string;
   readonly usage?: string;
   readonly hidden?: boolean;
   readonly flags?: readonly FlagSpec[];
+  readonly flagNames?: readonly string[];
   readonly positionals?: string;
+  readonly subcommands?: readonly Subcommand[];
+  readonly outputs?: readonly OutputMode[];
+  readonly examples?: readonly string[];
+  /** The bare command opts out of connector seeding before materialization. */
+  readonly reads?: true;
+}
+
+/** One registry contribution of an installed package, with the aliases it claims in its kind. */
+export interface ProvidedRef extends ExtensionRef {
+  readonly aliases?: readonly string[];
 }
 
 /** Connector boot metadata cached at install time so the manager can inspect harness availability
@@ -57,12 +70,15 @@ export interface InstalledExtension {
   readonly source?: "seeded";
   /** Every registry contribution made by the package. Older command-only manifests omit this; the
    *  loader derives `command:<name>` entries from `commands` for compatibility. */
-  readonly provides?: readonly ExtensionRef[];
+  readonly provides?: readonly ProvidedRef[];
   readonly commands: readonly CachedCommand[];
   /** Declarative connector harness metadata used at manager boot without importing package code. */
   readonly connectors?: readonly CachedConnector[];
   /** Declarative process metadata used without importing package code. */
   readonly localProcesses?: readonly LocalProcess[];
+  readonly servicePresets?: readonly ServicePreset[];
+  /** Cached service declaration fingerprints, bound to the installed package metadata. */
+  readonly serviceMetadata?: { readonly schemaVersion: 1; readonly packageJsonSha256: string; readonly declarationsSha256: string };
 }
 
 export interface ExtensionsManifest {
@@ -131,16 +147,22 @@ export function quarantineExtensionsManifest(): string | undefined {
   return aside;
 }
 
-/** Strip a live {@link Command} down to its serializable display surface for the cache. */
+/** Cache a command's serializable help and read-only boot declarations. */
 export function cacheCommand(cmd: Command): CachedCommand {
   return {
     name: cmd.name,
     summary: cmd.summary,
+    aliases: cmd.aliases,
     group: cmd.group,
     usage: cmd.usage,
     hidden: cmd.hidden,
     flags: cmd.flags,
+    flagNames: cmd.flagNames,
     positionals: cmd.positionals,
+    subcommands: cmd.subcommands,
+    outputs: cmd.outputs,
+    examples: cmd.examples,
+    reads: cmd.reads,
   };
 }
 
@@ -174,13 +196,14 @@ export function extensionConnectors(ext: InstalledExtension): readonly CachedCon
 }
 
 /** Stable, serializable registry keys contributed by one imported package. */
-export function cacheExtension(ext: Extension): ExtensionRef {
-  return { kind: ext.kind, name: ext.name };
+export function cacheExtension(ext: Extension): ProvidedRef {
+  return { kind: ext.kind, name: ext.name, ...(ext.aliases?.length ? { aliases: [...ext.aliases] } : {}) };
 }
 
 export function cacheLocalProcess(component: LocalProcess): LocalProcess {
+  if (component.controllerOnly !== undefined && (component.controllerOnly !== true || component.service === undefined)) throw new Error("controller-only local processes must declare their service ABI");
   if (typeof component.pidFile !== "string") throw new Error(`local-process ${component.name} must declare a string pidFile template`);
-  localProcessPath(component.pidFile, { root: process.cwd(), space: "validation" });
+  (component.controllerOnly ? canonicalLocalProcessPath : localProcessPath)(component.pidFile, { root: process.cwd(), space: "validation" });
   for (const artifact of component.artifacts ?? []) {
     if (typeof artifact !== "string") throw new Error(`local-process ${component.name} artifacts must be string templates`);
     localProcessPath(artifact, { root: process.cwd(), space: "validation" });
@@ -195,6 +218,8 @@ export function cacheLocalProcess(component: LocalProcess): LocalProcess {
     kind: "local-process",
     name: component.name,
     label: component.label,
+    ...(component.controllerOnly === true ? { controllerOnly: true as const } : {}),
+    ...(component.service === undefined ? {} : { service: serviceAdapterDeclaration(component.service) }),
     order: component.order,
     pidFile: component.pidFile,
     cooperativeStop: component.cooperativeStop,
@@ -211,8 +236,13 @@ export function extensionLocalProcesses(ext: InstalledExtension): readonly Local
 }
 
 /** Registry contributions recorded for an installed package, including old command-only entries. */
-export function extensionProvides(ext: InstalledExtension): readonly ExtensionRef[] {
-  return ext.provides ?? ext.commands.map((command) => ({ kind: "command", name: command.name }));
+export function extensionProvides(ext: InstalledExtension): readonly ProvidedRef[] {
+  return ext.provides ?? ext.commands.map((command) => ({ kind: "command", name: command.name, aliases: command.aliases }));
+}
+
+/** Every word a contribution claims in its kind: its name, then its aliases. */
+export function providedWords(ref: ProvidedRef): string[] {
+  return [ref.name, ...(ref.aliases ?? [])];
 }
 
 /** The installed package's on-disk root inside the prefix. */

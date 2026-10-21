@@ -40,7 +40,7 @@ import { classifyAgents, classifyChannels, detectUnmanagedActors } from "../lib/
 import { connectProbe, launchAgent, settleRoster, waitLeaseGone, waitManagerReady } from "../lib/manifest/live.js";
 import { renderInherited, renderSpawnPlan, renderSpawnSummary, renderWarnings } from "../lib/manifest/render.js";
 import { serverUrlProblems } from "../lib/manifest/resolve.js";
-import { failManifest } from "./topology.js";
+import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { preflightRuntime } from "../ext-loader.js";
 
 export interface SpawnManifestFlags {
@@ -64,6 +64,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
   } catch (e) {
     failManifest(e);
   }
+  refuseManifestSpaceMismatch(prepared, flags.space);
   const serverProblems = flags.server === undefined ? [] : serverUrlProblems(flags.server, "--server");
   if (serverProblems.length) {
     for (const problem of serverProblems) console.error(c.red(`✗ ${problem}`));
@@ -349,7 +350,6 @@ function applyOverrides(prepared: PreparedManifest, o: SpawnManifestFlags): Prep
     manifest: {
       ...m,
       broker,
-      space: o.space ?? m.space,
       runtime: (o.runtime as typeof m.runtime) ?? m.runtime,
     },
   };

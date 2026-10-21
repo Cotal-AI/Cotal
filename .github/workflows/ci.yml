@@ -43,6 +43,8 @@ concurrency:
 #             bin/smoke/shard.mjs (each smoke still runs in its own broker; shards are on separate
 #             runners, so no cross-smoke port contention).
 #   • live  — the Linux-only live/lifecycle e2es (real broker + real agents, tmux/cmux/opencode).
+#   • platforms — the suites in bin/smoke/platform-suites.txt, run the same way on Linux, macOS and
+#             Windows, so each must pass on all three.
 # `ci-ok` fans them back in to one status. That status is advisory: `attribution` is the only
 # required status context on main, so a red `ci-ok` reports and the merge can still proceed. See
 # docs/design/upgrade-section-gate.md for why it was not made required.
@@ -262,6 +264,88 @@ jobs:
       - name: Transport liveness unit baseline
         run: pnpm smoke:transport-liveness
 
+  # The Windows identity binding needs an MSVC Developer Command Prompt, so it is built once here and
+  # downloaded by the Windows platforms leg, as windows.yml does.
+  workspace-native:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
+    uses: ./.github/workflows/workspace-native.yml
+    with:
+      architectures: '["x64"]'
+
+  platforms:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
+    needs: workspace-native
+    name: platforms (${{ matrix.os }})
+    timeout-minutes: 25
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/download-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: workspace-native-x64
+          path: packages/workspace/build/Release/win32-x64
+      - run: pnpm install --frozen-lockfile
+      - name: Cache nats-server
+        id: nats
+        uses: actions/cache@v4
+        with:
+          path: ~/nats-bin
+          key: nats-server-v2.12.12-${{ runner.os }}-${{ runner.arch }}-verified
+      # Checksum-pinned, from the release's SHA256SUMS.
+      - name: Install nats-server
+        if: steps.nats.outputs.cache-hit != 'true' && runner.os != 'Windows'
+        run: |
+          NATS_VERSION=v2.12.12
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            Linux-X64) NAME=linux-amd64 SHA256=0ade8c59f966a37b9898e5f9ae408ad47f64e529423d3d07330848f4c3bb9300 ;;
+            macOS-ARM64) NAME=darwin-arm64 SHA256=19981a9c7234fc1182c913f4590c2feb8704eb67dae0d7682c9aeba3b524cc8f ;;
+            *) echo "::error::no pinned nats-server for ${{ runner.os }}-${{ runner.arch }}"; exit 1 ;;
+          esac
+          curl -fsSL "https://github.com/nats-io/nats-server/releases/download/${NATS_VERSION}/nats-server-${NATS_VERSION}-${NAME}.tar.gz" -o "$RUNNER_TEMP/nats-server.tar.gz"
+          echo "$SHA256  $RUNNER_TEMP/nats-server.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/nats-server.tar.gz" -C "$RUNNER_TEMP"
+          mkdir -p ~/nats-bin
+          install "$RUNNER_TEMP/nats-server-${NATS_VERSION}-${NAME}/nats-server" ~/nats-bin/nats-server
+      - name: Install nats-server (Windows)
+        if: steps.nats.outputs.cache-hit != 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ("${{ runner.arch }}" -ne "X64") { Write-Output "::error::no pinned nats-server for Windows-${{ runner.arch }}"; exit 1 }
+          $NatsVersion = "v2.12.12"
+          $Sha256 = "66e2ab6250083794321905e1f79db4f4ea53465d84ba0760e9b00d022133050e"
+          $Name = "nats-server-$NatsVersion-windows-amd64"
+          $Zip = Join-Path $env:RUNNER_TEMP "$Name.zip"
+          Invoke-WebRequest -Uri "https://github.com/nats-io/nats-server/releases/download/$NatsVersion/$Name.zip" -OutFile $Zip
+          $Actual = (Get-FileHash $Zip -Algorithm SHA256).Hash
+          if ($Actual -ne $Sha256) { throw "nats-server zip checksum mismatch: got $Actual expected $Sha256" }
+          Expand-Archive -Path $Zip -DestinationPath $env:RUNNER_TEMP -Force
+          New-Item -ItemType Directory -Force -Path "$HOME\nats-bin" | Out-Null
+          Copy-Item "$env:RUNNER_TEMP\$Name\nats-server.exe" "$HOME\nats-bin\nats-server.exe" -Force
+      - name: nats-server on PATH
+        if: runner.os != 'Windows'
+        run: echo "$HOME/nats-bin" >> "$GITHUB_PATH"
+      - name: nats-server on PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "$HOME\nats-bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Build
+        run: pnpm build
+      - name: Platform suites
+        env:
+          COTAL_CI_SUITES: bin/smoke/platform-suites.txt
+        run: node bin/smoke/shard.mjs 0 1
+
   # Native linux-x64 and linux-arm64 SO_PEERCRED helpers, then one pack on x64
   # that assembles BOTH into the tarball the ARM load job consumes unchanged.
   # The ARM load job must not rebuild. A queued-never-started job is not a measurement.
@@ -433,7 +517,7 @@ jobs:
     # jobs may sit on ci-ok's needs as long as they are not always-running aggregates.
     name: ci-ok (live outcome classified)
     if: ${{ always() && github.event_name != 'workflow_dispatch' }}
-    needs: [unit, smoke, live, seat-pack, seat-linux-arm64]
+    needs: [unit, smoke, live, platforms, seat-pack, seat-linux-arm64]
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -460,8 +544,8 @@ jobs:
           --head-ref "$HEAD_REF"
       - name: Gate
         run: |
-          echo "unit=${{ needs.unit.result }} smoke=${{ needs.smoke.result }} live=${{ needs.live.result }} seat-pack=${{ needs.seat-pack.result }} seat-linux-arm64=${{ needs.seat-linux-arm64.result }}"
-          [ "${{ needs.unit.result }}" = "success" ] && [ "${{ needs.smoke.result }}" = "success" ] && [ "${{ needs.live.result }}" = "success" ] && [ "${{ needs.seat-pack.result }}" = "success" ] && [ "${{ needs.seat-linux-arm64.result }}" = "success" ]
+          echo "unit=${{ needs.unit.result }} smoke=${{ needs.smoke.result }} live=${{ needs.live.result }} platforms=${{ needs.platforms.result }} seat-pack=${{ needs.seat-pack.result }} seat-linux-arm64=${{ needs.seat-linux-arm64.result }}"
+          [ "${{ needs.unit.result }}" = "success" ] && [ "${{ needs.smoke.result }}" = "success" ] && [ "${{ needs.live.result }}" = "success" ] && [ "${{ needs.platforms.result }}" = "success" ] && [ "${{ needs.seat-pack.result }}" = "success" ] && [ "${{ needs.seat-linux-arm64.result }}" = "success" ]
 
   validator-lock-acquisition:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.acquisition == 'validators-0155' }}

@@ -22,7 +22,7 @@ readers and none of the NATS client, zod or yaml. Siblings: [OpenCode](connect-o
 > wake an idle session until an organization Owner enables them.
 
 ```bash
-cotal setup      # one-time: installs the plugin, seeds one agent; launches nothing
+cotal setup --configure-only  # install the plugin and seed one agent without startup
 cotal up         # brings up the mesh + delivery daemon + a detached manager
 ```
 
@@ -556,7 +556,7 @@ On a **static** mesh there is no actor ledger for `actor grant` to write to, and
 so; mint the reader instead:
 
 ```bash
-cotal mint watcher --profile agent --allow-subscribe 'events.<owner>.<actor>' --provision
+cotal auth mint watcher --profile agent --allow-subscribe 'events.<owner>.<actor>' --provision
 ```
 
 The **agent** profile, not the observer one. `mint` reads `--allow-subscribe` only for that

@@ -107,13 +107,206 @@ name. The CLI does carry a small, non-authoritative map of the first-party runti
 hint for a known-but-uninstalled runtime and to list them in `cotal runtimes`; it never resolves or
 registers a provider.
 
-Machine-local processes use the same registry. The base CLI contributes broker/control-plane
+Machine-local processes use the same registry. The CLI and its composed native packages contribute broker/control-plane
 `local-process` descriptors, while an installed package contributes its own (for example `web`).
 That keeps `cotal down <component>` and `cotal status` extensible without teaching the base CLI
 package-specific pidfiles. A provider process claims its declared pidfile with exclusive create;
 extension removal reserves that same path so startup cannot cross uninstall. A descriptor may set
 `cooperativeStop` to use the workspace's process-bound local cleanup capability on Windows.
 Manager and delivery declare it; injected hosted services do not use this workstation channel.
+
+The workstation service controller also uses `local-process` declarations. A provider can declare
+its closed service option schema, lifecycle capabilities and launch/readiness hooks. Metadata is
+cached at extension installation, with declaration and package-metadata fingerprints. Saving a
+service definition does not import provider code. An explicit launch loads through the normal
+version-locked registry path and pins its adapter provenance beside the direct process identity.
+Native readiness remains the adapter's attributed observation, not a new wire authority. Service
+launch intents participate in extension removal guards. Delivery registers its own adapter over
+shared workspace custody metadata; CLI stop clients do not import the delivery implementation.
+Native startup receipts are private, request-specific local observations without credentials.
+A trusted embedding captures the manager's selected public identity through `onServiceIdentity`
+before endpoint construction. A protected file binds that selection to the service instance,
+launch request and real process creation identity. It supplies no epoch, readiness or grant.
+Dotted endpoint classes retain their native grammar; encoding is validation, not replacement.
+
+The manager child exclusively claims its real creation-pinned native PID slot before endpoint
+initialization; that starting record is not serving evidence. Existing custody is not adopted or
+reclaimed. It settles that same process only after native start, and release remains owner-bound.
+The manager adapter correlates that binding with an attributed current instance/epoch response
+and its process lifecycle UID. It preserves the invoking caller, selected root/broker and required
+TLS. The native status policy uses the same fresh owner/admin visibility and process-bound seat
+predicate as native shutdown. Owner-filtered visibility, pending work and maintenance block stop.
+A preserved manager, and one launched for a resume that has not committed, still answers `status`
+through the same membership gate, as a counted read that writes nothing; every other command stays
+fenced in those states. A preserving or stopping manager answers nothing.
+The confirmed full scope is rechecked under the native stop reservation and again in the child.
+
+Native stop hooks bind service, launch and stop IDs plus both process creation identities. Phase
+files are create-only, and accepted/returned evidence plus the original process exit is required
+for a stopped record. A missing terminal remains unknown; generic signal escalation is not a
+native stop substitute. Reservations are not reclaimed. Lease, registration and family cleanup
+still remain not checked in the receipt. The service layer stays workstation-local and adds no
+wire authority. See [CLI services](cli.md#owned-process-services).
+
+The auth-service adapter loads its existing prepared native projection and claims its per-space
+PID custody in the real child. Its startup phase follows native plane initialization and signal
+handlers, without exposing the private loopback capability. Daemon input validation and flags are
+shared with the legacy entry. The current adapter refuses remote or TLS-required broker targets
+because that native transport has not propagated the required TLS policy through every connection.
+It does not create account/issuer material or start dependencies.
+
+The Linear adapter similarly calls its native account/inventory/registration/renewal implementation
+through a trusted root and initialization callback. It adds no issuer or generic caller authority.
+Its private initialization phase is process evidence only, not a broker flush or a fresh endpoint
+response. User-auth/open targets and OS-service modes remain unsupported. Auth and Linear presets declare
+foreground lifetime through the shared process controller and their native signal handlers. The
+terminal lifetime is printed before launch; output is inherited, not captured in a background log.
+Native service child boot skips connector repair/seed. Native bounded close/deregistration remains
+distinct from confirmed cleanup. Manager foreground mode still requires its agent-impact flow.
+
+Supervisor receipts are separate protected workstation records bound to a full instance,
+definition revision, machine and OS user. Their read view checks recorded unit-file bytes only;
+loaded OS state and autostart remain unchecked. It does not read another execution host's unit
+path, and missing/modified/unreadable files do not authorize direct process fallback or removal.
+The native install/uninstall and OS control path is not implemented by those receipts.
+An explicit status read can query only the unchanged recorded systemd user unit on its execution
+host. The query requests fixed public properties, checks its physical fragment and attributes its
+main PID against creation-pinned instance/launcher records. Native state, enablement, reload need
+and unverified drop-ins stay distinct; none is endpoint readiness or an authorization to mutate.
+Inventories and offline previews do not run the OS query.
+Recorded systemd logs select the original invocation, boot, unit and OS UID through native
+journal fields, without querying or adopting the current invocation. Finite reads and streaming
+records are bounded; native cursors/timestamps remain intact and omitted records are gaps.
+Leaving a stream closes its journal reader, not the service. Retention/access completeness and
+native cleanup remain unestablished. No old direct-child file is substituted for a missing journal.
+The private direct-process unit entry bypasses extension overlays, seed/reconcile and provider
+materialization. Its validated controller identity and recorded native invocation precede process
+replacement. It does not fork a detached wrapper, and its starting record is not evidence that the
+executable ran. Unit installation, native actions and private-store generation changes are not
+supported.
+
+Bare status reads selected-space owned definitions and instance records separately from legacy
+pidfiles and remote registrations. It shares the controller's public projections, preserving
+full instance/host identities and historical readiness times without a fresh serving claim.
+Unreadable families stay unavailable and make the report partial. The read imports no provider,
+controls no service and runs no OS unit query; local records grant no remote process ownership.
+
+Named multi-service stops resolve one selected space and all full owned instances before effects.
+They reject duplicate names, shared process/native identities, foreign or unresolved custody,
+recorded OS supervisors and unsupported process roles. Metadata-only previews import no provider
+and take no reservation. Confirmed actions reserve definitions in stable order and recheck every
+record and complete native impact before the first stop. Each per-effect native guard remains in
+force. A later failure leaves subsequent members unattempted; one receipt preserves the known and
+unknown outcomes without rollback, automatic retry or a cleanup claim. Failed/unattempted rows
+retain labeled pre-stop snapshots rather than inferred current state.
+
+The schema catalog collects native creation inputs for message/control streams, durable registries,
+TTL and membership buckets, contract/authority/session stores and artifacts. Bootstrap uses the same
+builders. Its native retention, shadow, immutability, leader-read and artifact checks remain in place.
+The independent owned-stream and backup inventories are not derived from this catalog.
+A separate desired-creation configuration shares the first-party stream baseline, native subjects,
+validated public scalar KV defaults, explicit options and hardening. It rejects unexpanded inputs.
+Hardening is included in the create request rather than applied after adopting an existing bucket.
+This value does not open a connection, create a store, repair drift or authorize apply.
+
+A read-only facade exposes stream-info without connection creation or mutating methods. Its observer
+keeps structured permission denial, reported not-found, target mismatch and failed reads distinct.
+A shared five-second budget labels unvisited resources without claiming request cancellation.
+It does not retry with broader credentials. Server/account/mode binding and authoritative absence
+are not established by the supplied port or a claimed authority label.
+
+The shared diff compares declared stream fields and post-create hardening. It also calls shared
+pure checks for backup-stream, contract, authority/session, issued/admission and artifact invariants.
+Native creators use the same checks. The lifecycle binder and schema inspection also share the
+pure primary/Limits/no-global-eviction authority-store check. Schema rows name the first failing
+invariant's fields without copying native diagnostic text or supplied config values. The native
+bind error keeps its existing class, message and check order. This moves no lifecycle operation
+or store access into core. Migration routines and TTL write canaries are not read-only checks
+and are never called by the diff. Fields outside declarative comparison remain visible. For direct
+streams, extra observed fields are compared with the existing first-party baseline. Nondefault
+undeclared or unmodeled settings block the row without copying their values. Reserved NATS
+metadata follows the existing backup policy. Missing fields are not filled from desired values,
+and unspecified SDK defaults are not expanded by this comparison. Native KV/object-store
+subjects and explicit public options map to their documented wire fields, including TTL units,
+marker TTL and post-create hardening. An unsupported option blocks rather than disappearing;
+this mapping is not a complete effective SDK configuration or permission to reconcile. The extra-field
+policy also covers observed KV/object backing-stream fields. It shares the first-party stream
+baseline and reads only scalar public KV input defaults. Unknown or nondefault fields remain
+blocked. It preserves the native artifact policy that permits either direct-read setting and
+the native TTL policy that permits a smaller existing duplicate window. It fills no missing
+observed field and does not call an SDK constructor or claim complete effective defaults.
+The reconciliation policy names only existing native guard families: TTL enforcement with its
+canary, the stock legacy artifact cap and contract hardening with its shadow check. It shares
+the native legacy-cap constant and hardening fields. Other changed fields require migration.
+A required guard is not an accepted action. Inspection calls no migration or canary and cannot
+prove a contract stream clean from configuration alone. Apply still needs a fresh privileged
+barrier, native guards and readback.
+A native invariant match is not complete schema, target authority or permission to reconcile.
+SDK/server defaults, runtime checks and complete field policy remain outside this partial schema. Separate
+initialization definitions share native seed ordering, field-merge inputs and profile-default
+precedence. An explicit existing delivery class wins. Those definitions do not validate patches,
+observe revisions or make legacy seeding revision guarded. Patch text stays out of public operation
+diagnostics. A separate bounded registry observer validates native patch inputs before key reads,
+retains observed revisions and tombstones, and distinguishes missing, unavailable, denied,
+mismatched, malformed and unvisited rows. It checks the selected native handle names without
+opening a bucket. A deadline does not prove request cancellation. Existing values are private
+planning data, and successful native field validation is not complete field policy. Neither a
+null read nor a tombstone grants creation or write authority. A pure initialization comparison
+uses those observations and the same native seed-before-profile definitions. Known fields are
+closed over the native channel/default types and validated without changing legacy validators.
+Unmodeled fields block instead of being dropped. An existing valid row can yield a private
+candidate with its observed revision; a missing, deleted or unreadable row cannot. Explicit
+seed fields overwrite existing fields before the profile fills an absent delivery class.
+The public projection shows state, changed field names and revisions, never candidate values.
+No revision guard has run and no candidate is an accepted write plan.
+
+The prepared CLI inspection adapter resolves an existing open/static registration. It validates
+native profile/patch inputs before authority preparation. Static mode loads the full current trust
+chain and uses one native temporary provisioner connection with its own inbox. Explicit open mode
+loads no signer, mints no identity and uses no credentials. Both retain the registered TLS policy.
+The branches are selected before connection, never retried after an auth refusal. User-auth,
+off-registry targets, stripped static trust and reported broker-mode mismatch remain refused.
+Before static schema reads, a bounded native `$SYS.REQ.USER.INFO` query must match the minted
+user, selected account and connected server. This uses the provisioner's own connection and
+scoped inbox, not system credentials or an arbitrary-user query. Unavailable, denied or mismatched
+identity refuses without fallback. The service requires a configured system account. Returned
+permissions/expiry are not adopted as an issued ceiling or lifecycle proof. Explicit open mode
+does not invent an account identity or require this system service.
+It uses bind-only open/get and stream-info without create or repair. A reported server ID alone
+is not account proof; local reader closure does not prove credential revocation. The native
+identity observation does not authorize apply or establish definitive resource absence.
+No public command is connected to this adapter yet. Its prepared public projection and shared
+terminal view omit raw configs, registry values, private patches, unknown extra-field names and
+native diagnostic bodies. They label non-atomic reads and incomplete policy without a readiness
+or successful-apply claim.
+
+The catalog, observers and diff cannot authorize writes. Revision-bound initialization, privileged
+apply and stack/update integration are not supported.
+
+Standalone endpoint caller minting uses the same static-root/account policy as fixed-profile
+minting. A native control instrument resolves and digest-verifies the live surface before issuance.
+The supported subset is untargeted synchronous ephemeral commands; a surface requiring target,
+journal or action authority refuses in full. Core's agent provisioner supplies the lifecycle
+footprint and exact additional endpoint rows, not a hand-written grant profile. A create-only
+non-secret local intent precedes footprint work and prevents blind replay after interruption.
+Private output, provisioner close and unconfirmed cleanup remain separate observations. The paired
+file consumer checks the full selected static trust chain, native signature/current signer,
+matching user key and time window. It reconstructs permissions with the native builder and checks
+principal tags before the broker connection. A local intent selects the comparison, never authority.
+Only fresh synchronous untargeted methods within that native scope can be called; changed shapes
+and broader flags refuse without repair or caller fallback. No arbitrary raw-file triple, accepted
+generation, live lifecycle currency, managed launch or user-auth issuer is inferred.
+
+The dashboard service takes one explicit protected static credential, not a cached operator or
+seat identity. Its service mode is explicitly read-only and retains the registered TLS requirement.
+The protected file must bind to the root's current validated static issuer and matching user key
+before native initialization; no signer is forwarded to a handler or used for replacement minting.
+It never mints a purger credential or enters the native channel-delete transport. Browser bootstrap
+and readiness secrets stay in a create-only owner-private full-launch record. Native HTTP listen
+and installed signal handlers precede its process-initialization phase. That phase is not a fresh
+authenticated endpoint response. User-auth caller handoff and OS supervision remain unsupported.
+Old cached web commands refuse before package loading; the replacement is the declarative service
+preset, not an implicit reinstall or a second launcher.
 
 Beyond the app-bound connectors, `@cotal-ai/pi` is a **host-native plugin**: a pi extension
 loaded into the user's own pi (CLI or SDK-embedded), placing a Cotal endpoint inside the

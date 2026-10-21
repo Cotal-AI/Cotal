@@ -215,7 +215,7 @@ try {
       authorizedRequests.push(structuredClone(r));
       const t = r.target;
       const lifecycleUid = mintLifecycleUid();
-      grantManagedActor(hostDir, {
+      grantManagedActor(hostDir, { custody: { kind: "remote-manager", instanceId: r.instanceId },
         owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe: t.allowSubscribe ?? [], allowPublish: t.allowPublish ?? [],
         ...(t.role !== undefined ? { role: t.role } : {}), parent: `${owner}.${r.actor}`, lifecycleUid, tokenHash: t.tokenHash,
       } as never);

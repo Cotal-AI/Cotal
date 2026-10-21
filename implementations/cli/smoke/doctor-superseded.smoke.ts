@@ -20,10 +20,16 @@
  *           Before: `auth: 2 cred problems`, exit 1, on a healthy fleet.
  *   CELL 2  it is still VISIBLE, named as superseded, with a cleanup that is not a respawn.
  *           (A fix that merely hid the row would pass cell 1 and fail this.)
- *   CELL 3  the remedy for a recoverable credential says the daemon re-mints it and NOT to respawn.
+ *   CELL 3  the remedy for a recoverable credential names managed renewal of the same nkey and
+ *           says not to spawn another agent.
  *   CELL 4  REFUSE CONTROLS: a LONE expired incarnation is still a problem with a real remedy, and an
- *           UNREADABLE credential still says respawn — the one case where respawn was ever right.
- *           Without these, "stop saying respawn" could be implemented by never saying it.
+ *           UNREADABLE credential still gets its own remedy, the one case renewal cannot fix.
+ *           Without these, "stop saying respawn" could be implemented by giving every row one text.
+ *
+ * The cells read the `--json` envelope: the same items and repair text the rich view tabulates,
+ * without a table cell that wraps at a terminal's width. No remedy recommends a respawn any more.
+ * An unreadable credential's remedy says to inspect before choosing an explicit replacement and
+ * that the diagnosis does not authorize a blind respawn, so CELL 4 asserts that remedy.
  *
  * Run: pnpm smoke:doctor-superseded
  */
@@ -40,7 +46,6 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
-const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 const SPACE = "doctor-superseded";
 const auth = await createSpaceAuth(SPACE);
@@ -81,22 +86,24 @@ writeFileSync(join(credsDir, `worker.${liveUid}.creds`), await mintCreds(auth, n
 const orphanUid = mintLifecycleUid();
 writeFileSync(join(credsDir, `orphan.${orphanUid}.creds`), await incarnation({ expiresAt: now - 3600 }), { mode: 0o600 });
 
-// broken: an UNREADABLE credential — the one case where "respawn the agent" is the honest remedy.
+// broken: an UNREADABLE credential, the one case renewal cannot fix (control).
 writeFileSync(join(credsDir, `broken.${mintLifecycleUid()}.creds`), "not a creds file", { mode: 0o600 });
 
-const origCwd = process.cwd(), origLog = console.log, origErr = console.error;
-async function runDoctor(): Promise<{ out: string; code: number | undefined }> {
-  const lines: string[] = [];
-  console.log = (...a: unknown[]) => { lines.push(a.join(" ")); };
-  console.error = (...a: unknown[]) => { lines.push(a.join(" ")); };
+/** One row of the envelope's `items`, as `doctor auth --json` writes it. */
+interface Item { label: string; state: string; problem: string | null; repair: string | null; superseded: boolean }
+interface Envelope { outcome: string; error?: { code: string }; result: { items: Item[]; findings: number } }
+
+const origCwd = process.cwd(), origWrite = process.stdout.write;
+async function runDoctor(): Promise<{ envelope: Envelope; code: number | undefined }> {
+  let out = "";
+  process.stdout.write = ((chunk: string | Uint8Array) => ((out += String(chunk)), true)) as typeof process.stdout.write;
   process.exitCode = undefined;
   process.chdir(root);
   try {
-    await doctor({ values: { space: SPACE }, positionals: ["auth"], raw: [] });
-    return { out: strip(lines.join("\n")), code: process.exitCode as number | undefined };
+    await doctor({ values: { space: SPACE, json: true }, positionals: ["auth"], raw: [] });
+    return { envelope: JSON.parse(out) as Envelope, code: process.exitCode as number | undefined };
   } finally {
-    console.log = origLog;
-    console.error = origErr;
+    process.stdout.write = origWrite;
     process.chdir(origCwd);
     process.exitCode = 0;
   }
@@ -104,41 +111,50 @@ async function runDoctor(): Promise<{ out: string; code: number | undefined }> {
 
 try {
   const r = await runDoctor();
-  const lineFor = (file: string) => r.out.split("\n").map((l) => l.trim()).filter((l) => l.includes(file));
-  const husk = lineFor(`worker.${oldUid}.creds`);
-  const live = lineFor(`worker.${liveUid}.creds`);
-  const orphan = lineFor(`orphan.${orphanUid}.creds`);
+  const items = r.envelope.result.items;
+  const itemFor = (file: string) => items.find((row) => row.label === file);
+  const husk = itemFor(`worker.${oldUid}.creds`);
+  const live = itemFor(`worker.${liveUid}.creds`);
+  const orphan = itemFor(`orphan.${orphanUid}.creds`);
+  const broken = items.find((row) => row.label.startsWith("broken."));
+  /** Whether a row's remedy contains every part. A row with no remedy says nothing. */
+  const says = (row: Item | undefined, ...parts: string[]) => {
+    const text = row?.repair;
+    return typeof text === "string" && parts.every((part) => text.includes(part));
+  };
 
   // ---- CELL 1: the husk is not a problem ----
   check("CELL 1: the superseded incarnation is NOT reported as an EXPIRED problem",
-    !husk.some((l) => l.startsWith("✗") && l.includes("EXPIRED")), husk);
+    husk !== undefined && husk.problem === null, husk);
   check("CELL 1: the live incarnation of the same alias is not a problem either",
-    !live.some((l) => l.startsWith("✗")), live);
+    live !== undefined && live.problem === null, live);
 
   // ---- CELL 2: it is still visible, and named ----
-  check("CELL 2: the superseded file is still LISTED (hiding it is not the fix)", husk.length > 0, r.out);
+  check("CELL 2: the superseded file is still LISTED (hiding it is not the fix)", husk !== undefined, items);
   check("CELL 2: its row NAMES it superseded and names the alias whose successor is live",
-    husk.some((l) => /superseded/.test(l)) && husk.some((l) => l.includes("worker")), husk);
+    husk !== undefined && husk.state === "superseded-local-file" && husk.superseded && husk.label.startsWith("worker."), husk);
   check("CELL 2: its remedy is a file cleanup and explicitly NOT a respawn",
-    r.out.includes("DO NOT respawn the agent"), r.out);
+    says(husk, "an older local incarnation file exists", "before removing it", "Do not respawn an agent from this finding"), husk?.repair);
 
   // ---- CELL 3: the recoverable remedy ----
-  check("CELL 3: a recoverable agent credential says the manager RE-MINTS it",
-    /RE-MINTS this credential by itself/.test(r.out), orphan);
-  check("CELL 3: and that the agent is not restarted for it",
-    /adopts the new file without being restarted/.test(r.out), orphan);
+  check("CELL 3: a recoverable agent credential names managed renewal of the same nkey",
+    says(orphan, "supported managed renewal can re-sign the same nkey without a replacement"), orphan?.repair);
+  check("CELL 3: and says not to spawn another agent for it",
+    says(orphan, "Do not spawn another agent only because a local file expired"), orphan?.repair);
 
   // ---- CELL 4: refuse controls ----
   check("CELL 4 CONTROL: a LONE expired incarnation is STILL a problem (supersession is not a blanket excuse)",
-    orphan.some((l) => l.startsWith("✗") && l.includes("EXPIRED")), orphan);
-  check("CELL 4 CONTROL: an UNREADABLE credential still recommends a respawn (the one case it fits)",
-    /cannot be re-minted from disk/.test(r.out) && /respawn the agent/.test(r.out), r.out);
-  check("CELL 4 CONTROL: the run still exits 1, because real problems remain",
-    r.code === 1, r.code);
+    orphan !== undefined && orphan.state === "expired" && orphan.problem === "EXPIRED - the broker denies this credential" && !orphan.superseded, orphan);
+  check("CELL 4 CONTROL: an UNREADABLE credential keeps its own remedy (the one case renewal cannot fix)",
+    broken !== undefined && broken.state === "unreadable" && broken.problem !== null &&
+      says(broken, "native renewal skips unbounded or unreadable material") && !says(broken, "can re-sign the same nkey"), broken);
+  check("CELL 4 CONTROL: the run still fails, because real problems remain",
+    r.envelope.outcome === "failed" && r.envelope.error?.code === "OPERATION_FAILED" && r.code === 5, { outcome: r.envelope.outcome, error: r.envelope.error, code: r.code });
 
-  // ---- the verdict line an operator reads during an incident ----
-  check("the superseded count is reported as a tidy-up, not as fleet damage",
-    /superseded credential file/.test(r.out) && !/15 cred problems/.test(r.out), r.out);
+  // ---- the verdict an operator reads during an incident ----
+  const problems = items.filter((row) => row.problem !== null);
+  check("the superseded file is a tidy-up, not fleet damage: only the two real problems are counted",
+    r.envelope.result.findings === 2 && problems.map((row) => row.label).sort().join(" ") === [broken?.label, orphan?.label].sort().join(" "), problems);
 
   // ---- the ORDERING itself: which of two incarnations is the husk ----
   // A mutant that picked the FIRST file it saw instead of the newest `iat` survived the cells above,
@@ -147,12 +163,11 @@ try {
   // calls the LIVE credential a leftover and tells the operator to delete it, which is worse than the
   // bug being fixed. So the direction is asserted by name on both members of the pair.
   check("ORDERING: the OLDER incarnation is the one marked superseded",
-    husk.some((l) => /superseded/.test(l)), husk);
+    husk?.superseded === true, husk);
   check("ORDERING: the NEWER incarnation is NEVER marked superseded",
-    !live.some((l) => /superseded/.test(l)), live);
+    live !== undefined && !live.superseded && live.state !== "superseded-local-file", live);
   check("ORDERING: the newer incarnation is not offered for deletion",
-    !r.out.split("\n").some((l) => l.includes(`worker.${liveUid}.creds`) && /rm |DO NOT respawn/.test(l)),
-    live);
+    live !== undefined && live.repair === null, live);
 
   console.log(fail === 0 ? `\nDOCTOR-SUPERSEDED SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nDOCTOR-SUPERSEDED SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
   // Canonical sentinel: the shard runner refuses a suite that exits 0 having run zero cells, and

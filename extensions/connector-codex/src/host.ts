@@ -49,7 +49,7 @@ function onPath(bin: string): boolean {
   }
   return false;
 }
-import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
+import { hardenPrivate, loadAgentFile, openPrivateAppend } from "@cotal-ai/core";
 import {
   MeshAgent,
   configFromEnv,
@@ -1145,7 +1145,8 @@ export async function runCodexHost(): Promise<void> {
     const logPath = join(codexHome, "host.log");
     if (!logSink) {
       process.stderr.write(`[cotal-codex] handing the terminal to Codex — host log continues in ${logPath}\n`);
-      logSink = createWriteStream(logPath, { flags: "a" });
+      // Owner-private and never appended through a symlink: the stream writes to this descriptor.
+      logSink = createWriteStream(logPath, { fd: openPrivateAppend(logPath) });
       feedEnabled = false;
       log(`codex TUI attached to ${remote.url} thread ${threadId}`);
     }

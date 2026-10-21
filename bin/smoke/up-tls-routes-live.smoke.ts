@@ -531,6 +531,13 @@ async function main(): Promise<void> {
       const up = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
         "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
       assert.equal(up.status, 0, `TLS mesh must start for the ${command} cell:\n${up.out}`);
+      // `web` is an extension and this sandbox skips the connector seed, so install it here. Without
+      // it the cell ran an unknown command, whose refusal printed the command list, and "down" in
+      // that list satisfied the reason check below.
+      if (command === "web") {
+        const added = cotal(["ext", "add", join(import.meta.dirname, "..", "..", "implementations", "web")], home, cwd);
+        assert.equal(added.status, 0, `web cell setup: the web extension must install:\n${added.out}`);
+      }
       const tlsInfo = await serverInfo(port);
       assert.equal(tlsInfo?.tls_required, true, `${command} cell setup: broker must be TLS-required`);
 
@@ -581,7 +588,7 @@ async function main(): Promise<void> {
           // A fix that reds only the selected line while the list still prints green `reachable`
           // via a bare TCP/INFO probe is the FAIL1 residual that greened a substitute in one
           // section while redding another — operators read the list first.
-          assert.match(result.out, /connection\s+.*unreachable/,
+          assert.match(result.out, /connection:\s+.*unreachable/,
             `GATE FAILED (status): did not report the substituted plaintext broker unreachable:\n${result.out}`);
           assert.match(result.out, /\bdown\b/,
             `GATE FAILED (status Recorded Meshes): list did not mark the TLS-required mesh down ` +
@@ -590,6 +597,8 @@ async function main(): Promise<void> {
             `GATE FAILED (status Recorded Meshes): still printed green "reachable" for a ` +
             `tlsRequired mesh against a plaintext substitute:\n${result.out}`);
         }
+        assert.doesNotMatch(result.out, /unknown command/,
+          `${command} was never run, so its refusal says nothing about TLS:\n${result.out}`);
         assert.match(result.out, /tls|TLS|no mesh running|stale registry|unreachable|down/,
           `${command} refused, but for none of the transport/reachability reasons — assert on the ` +
           `REASON, or this passes for any startup failure:\n${result.out}`);
@@ -1011,7 +1020,7 @@ async function main(): Promise<void> {
     await new Promise((r) => setTimeout(r, 400));
     try {
       const st = cotal(["status"], home, cwd, { NODE_EXTRA_CA_CERTS: "" });
-      assert.match(st.out, /connection\s+.*unreachable/,
+      assert.match(st.out, /connection:\s+.*unreachable/,
         `GATE FAILED (S10 mirror): plaintext-on-port must be unreachable, not tls-trust:\n${st.out}`);
       assert.doesNotMatch(st.out, /tls-trust/,
         `GATE FAILED (S10 mirror): plaintext substitute classified tls-trust:\n${st.out}`);

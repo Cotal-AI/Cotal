@@ -1,27 +1,27 @@
 import type { NatsConnection } from "@nats-io/transport-node";
 import { openSessionRail, encodeTerminalData, terminalFrameBytes, decodeTerminalFrame, type SessionGrant } from "@cotal-ai/core";
+import { cachedPreferences, describeLayer, parseDetachKey, resolvePreference } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 
 /**
- * The detach key — Ctrl-] (0x1d) by default, as in telnet/ssh escape conventions. `COTAL_DETACH_KEY`
- * rebinds it to another control key when Ctrl-] clashes with a keybinding inside the agent's TUI;
- * accepts `ctrl-<char>` or `^<char>` (e.g. `ctrl-b`, `^_`). Read at point of use, per the repo's
- * `COTAL_*` convention. An unparseable value — including a set-but-empty or whitespace-only one —
- * throws (named), never silently falling back; the caller turns that into a loud exit. Only an
- * unset var = the Ctrl-] default.
+ * The detach key — Ctrl-] (0x1d) by default, as in telnet/ssh escape conventions. The `detach-key`
+ * preference rebinds it to another control key when Ctrl-] clashes with a keybinding inside the
+ * agent's TUI: `COTAL_DETACH_KEY`, then the saved preference (`cotal config set detach-key`). Both
+ * accept `ctrl-<char>` or `^<char>` (e.g. `ctrl-b`, `^_`). An unparseable `COTAL_DETACH_KEY` —
+ * including a set-but-empty or whitespace-only one — throws (named), never silently falling back;
+ * the caller turns that into a loud exit. A saved value was validated when it was written.
  */
-export function detachKey(): { byte: number; label: string; overridden: boolean } {
-  const spec = process.env.COTAL_DETACH_KEY;
-  if (spec === undefined) return { byte: 0x1d, label: "Ctrl-]", overridden: false };
-  const m = /^(?:ctrl-|\^)([a-z@[\\\]^_])$/i.exec(spec.trim());
-  if (!m) {
+export function detachKey(): { byte: number; label: string; overridden: boolean; from: string } {
+  const resolved = resolvePreference("detach-key", { preferences: cachedPreferences() });
+  const winner = resolved.winner!;
+  const key = parseDetachKey(winner.value);
+  if (!key) {
     throw new Error(
-      `invalid COTAL_DETACH_KEY "${spec}" - expected ctrl-<char> or ^<char> for a control key ` +
+      `invalid ${describeLayer(winner)} "${winner.value}" - expected ctrl-<char> or ^<char> for a control key ` +
         `(a-z, or one of @ [ \\ ] ^ _), e.g. ctrl-b`,
     );
   }
-  const ch = m[1].toUpperCase();
-  return { byte: ch.charCodeAt(0) & 0x1f, label: `Ctrl-${ch}`, overridden: true };
+  return { ...key, overridden: winner.source !== "default", from: describeLayer(winner) };
 }
 
 /**
@@ -447,7 +447,7 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
       }
       // Make an override visible (the CLI's "attached to X — Ctrl-] to detach" hint still prints the
       // default label). Only on override, so the default case stays free of duplicate noise.
-      if (detach.overridden) console.error(c.dim(`detach key: ${detach.label} (via COTAL_DETACH_KEY)`));
+      if (detach.overridden) console.error(c.dim(`detach key: ${detach.label} (from ${detach.from})`));
       term.enterRaw();
       stdin.resume();
       tookStdin = true;

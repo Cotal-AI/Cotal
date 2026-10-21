@@ -11,7 +11,10 @@
 import {
   chmodSync,
   closeSync,
+  constants,
   fchmodSync,
+  fstatSync,
+  ftruncateSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -21,7 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const isWin = process.platform === "win32";
 
@@ -51,7 +54,10 @@ const BROAD_SIDS = ["S-1-1-0", "S-1-5-11", "S-1-5-32-545"] as const;
 /**
  * Lock a file or directory down to the current user (+ SYSTEM + Administrators) only.
  *
- * POSIX: `chmod` (0o600 file / 0o700 dir), which also tightens a path that already existed.
+ * POSIX: a file takes {@link openPrivate}'s rule, so a symlink, a non-regular file or another user's
+ * file is refused with `EPERM` and left unchanged, and an owned file is set to 0o600 through the
+ * descriptor. A directory is set to 0o700 with `chmod` by path, which follows a symlinked directory:
+ * a symlinked `~/.cotal` or project `.cotal` is a working setup, so it is not refused.
  * win32: harden the NTFS ACL with `icacls`: `/inheritance:r` drops inherited ACEs; `/remove:g` drops
  * any pre-existing EXPLICIT broad grant (Everyone / Authenticated Users / Users) that `/grant:r`
  * alone would leave intact (e.g. on a pre-planted or pre-existing target); `/grant:r` then sets ONLY
@@ -63,7 +69,8 @@ const BROAD_SIDS = ["S-1-1-0", "S-1-5-11", "S-1-5-32-545"] as const;
  */
 export function hardenPrivate(path: string, kind: "file" | "dir"): void {
   if (!isWin) {
-    chmodSync(path, kind === "dir" ? 0o700 : 0o600);
+    if (kind === "file") closeSync(openPrivate(path, constants.O_RDONLY));
+    else chmodSync(path, 0o700);
     return;
   }
   const perm = kind === "dir" ? "(OI)(CI)(F)" : "(F)";
@@ -90,27 +97,109 @@ export function hardenPrivate(path: string, kind: "file" | "dir"): void {
   }
 }
 
-/**
- * Write a private secret file: mode 0o600 on the descriptor before the bytes, whether or not the
- * name already existed, then {@link hardenPrivate} for the win32 ACL. FAIL-CLOSED — if hardening
- * throws, the hardening error propagates (the caller never proceeds as if the secret were safe) and
- * the just-written file is best-effort deleted so it isn't left readable.
- */
-export function writeSecretFile(path: string, data: string | Buffer): void {
-  writePrivate(path, data, "w");
+/** A refused private open. The name was left as it was. */
+function notPrivate(path: string, why: string): NodeJS.ErrnoException {
+  const refused: NodeJS.ErrnoException = new Error(`refusing to write "${path}": it ${why}; it was left unchanged`);
+  refused.code = "EPERM";
+  return refused;
 }
 
-/** The fail-closed write {@link writeSecretFile} documents, with the open flag as a parameter so
- *  {@link writeSecretFileCreateOnlyRaw} can pass `wx`. */
-function writePrivate(path: string, data: string | Buffer, flag: "w" | "wx"): void {
-  const fd = openSync(path, flag, 0o600);
+/**
+ * Open `path` for writing as this user's private file, mode 0o600 when the open creates it.
+ *
+ * POSIX: the open never follows a final symlink (`O_NOFOLLOW`) and never waits on a FIFO
+ * (`O_NONBLOCK`). The opened inode must be a regular file this user owns; anything else is refused
+ * with code `EPERM` and left unchanged. An owned file is then set to 0o600 through the descriptor,
+ * which names no path, so a name swapped after the open cannot redirect the change.
+ *
+ * win32: POSIX owners, modes and `O_NOFOLLOW` are not that platform's protection model; its boundary
+ * is the NTFS ACL (see {@link hardenPrivate}). So the open there takes mode 0o600 with no owner check.
+ */
+function openPrivate(path: string, flags: number): number {
+  if (isWin) {
+    const fd = openSync(path, flags, 0o600);
+    try {
+      fchmodSync(fd, 0o600);
+    } catch (e) {
+      closeSync(fd);
+      throw e;
+    }
+    return fd;
+  }
+  let fd: number;
   try {
-    // The open mode applies only when the open creates the file; an existing one keeps its own.
+    fd = openSync(path, flags | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ELOOP") throw notPrivate(path, "is a symlink");
+    throw e;
+  }
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile()) throw notPrivate(path, "is not a regular file");
+    if (info.uid !== process.getuid!()) throw notPrivate(path, `is owned by uid ${info.uid}, not this user`);
     fchmodSync(fd, 0o600);
+    return fd;
+  } catch (e) {
+    closeSync(fd);
+    throw e;
+  }
+}
+
+/**
+ * Open a private log for appending under {@link openPrivate}'s rule: created 0o600, never through a
+ * final symlink, refused unless it is this user's regular file, and an owned log set to 0o600. The
+ * caller owns the returned descriptor.
+ */
+export function openPrivateAppend(path: string): number {
+  return openPrivate(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND);
+}
+
+/**
+ * Write a private secret file through {@link openPrivate}: mode 0o600 on the descriptor before the
+ * bytes, whether or not the name already existed, and on POSIX a refusal for a final symlink, a
+ * non-regular file or a file another user owns. Then {@link hardenPrivate} for the win32 ACL.
+ * FAIL-CLOSED — if hardening throws, the hardening error propagates (the caller never proceeds as if
+ * the secret were safe) and the just-written file is best-effort deleted so it isn't left readable.
+ */
+export function writeSecretFile(path: string, data: string | Buffer): void {
+  writePrivate(path, data, false);
+}
+
+/**
+ * Write an owner-private record in place under {@link openPrivate}'s rule, without the win32 ACL
+ * step {@link writeSecretFile} adds: for a record that is not a secret, such as a pid identity pin
+ * or a process marker. On POSIX a symlink, a non-regular file or a file another user owns is refused
+ * with `EPERM` and left unchanged.
+ */
+export function writePrivateRecord(path: string, data: string | Buffer): void {
+  writeBytes(path, data, false);
+}
+
+/**
+ * Create an owner-private record that must not exist yet, under {@link openPrivate}'s rule with
+ * `O_EXCL` and without the win32 ACL step: for a temporary that a rename then publishes. On POSIX any
+ * existing name, a symlink included, fails with `EEXIST` and is left as it was.
+ */
+export function createPrivateRecord(path: string, data: string | Buffer): void {
+  writeBytes(path, data, true);
+}
+
+/** {@link openPrivate}, then truncate and write the bytes; the descriptor is closed on every path. */
+function writeBytes(path: string, data: string | Buffer, exclusive: boolean): void {
+  // No O_TRUNC: a name openPrivate refuses keeps its bytes, so truncation waits until it passed.
+  const fd = openPrivate(path, constants.O_WRONLY | constants.O_CREAT | (exclusive ? constants.O_EXCL : 0));
+  try {
+    ftruncateSync(fd);
     writeFileSync(fd, data);
   } finally {
     closeSync(fd);
   }
+}
+
+/** The fail-closed write {@link writeSecretFile} documents, with exclusive create as a parameter so
+ *  {@link writeSecretFileCreateOnlyRaw} can ask for `O_EXCL`. */
+function writePrivate(path: string, data: string | Buffer, exclusive: boolean): void {
+  writeBytes(path, data, exclusive);
   if (!isWin) return;
   try {
     hardenPrivate(path, "file");
@@ -183,7 +272,7 @@ function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void
       throw taken;
     }
   }
-  writePrivate(path, data, "wx");
+  writePrivate(path, data, true);
 }
 
 /**
@@ -220,10 +309,11 @@ export function __setPublishLinkForTest(fn: ((from: string, to: string) => void)
  * two creators that collided on the name would plain-overwrite each other's bytes, and then the
  * one whose `link` succeeded would return the candidate IT minted while the published file held
  * the OTHER one's identity: the exact split this function exists to prevent, reintroduced one
- * step earlier. `wx` on the temp makes a collision fail loudly instead of silently swapping bytes.
+ * step earlier. `O_EXCL` on the temp makes a collision fail loudly instead of silently swapping bytes.
  */
 export function writeSecretFileCreateOnly(path: string, data: string | Buffer): void {
-  const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  // Keep the sibling name independent of the destination, which may already fill NAME_MAX.
+  const tmp = join(dirname(path), `.cotal-create.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
   // Exclusive, so EEXIST here means the temp name belongs to ANOTHER creator. Cleanup below must
   // never run in that case: unlinking it would delete a live creator's bytes out from under it.
   writeSecretFileCreateOnlyRaw(tmp, data);

@@ -17,7 +17,7 @@ try {
  const space="grant-custody", auth=await createSpaceAuth(space);
  await ensureCalloutAuth(store,{space,operatorSeed:auth.operator.seed,accountPub:auth.account.pub});
  const owner=deriveOwnerToken("f".repeat(32),"custody-human"),actor="fixture",uid=mintLifecycleUid();
- const args={store,dir,space,owner,actor,scope:[],allowSubscribe:[],allowPublish:[],lifecycleUid:uid};
+ const args={store,dir,space,owner,actor,scope:[],allowSubscribe:[],allowPublish:[],lifecycleUid:uid,custody:{kind:"foreground" as const}};
  const first=await cotalAuthProvider.grantAgent({...args,fresh:true});const row=findManagedActor(dir,owner,actor);
  await assert.rejects(cotalAuthProvider.grantAgent({...args,lifecycleUid:mintLifecycleUid(),fresh:true}),AgentGrantConflictError,"fresh grant refuses without replacing original row");
  check("fresh grant refuses without replacing original row",JSON.stringify(findManagedActor(dir,owner,actor))===JSON.stringify(row));

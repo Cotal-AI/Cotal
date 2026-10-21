@@ -1,7 +1,8 @@
-import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, lstatSync, readFileSync, type Stats } from "node:fs";
+import { join } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
-import { accountInventory, authDir, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, userAuthSpacesOnDisk } from "./auth-paths.js";
+import { accountInventory, authDir, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, stackJournalPath, userAuthSpacesOnDisk } from "./auth-paths.js";
+import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
 import {
   canonicalRoot,
   findMesh,
@@ -68,6 +69,8 @@ export interface MeshTarget {
 }
 
 export interface ResolveFlags {
+  /** Diagnostic/preview resolution must retain a stale registration rather than repair it. */
+  readOnly?: boolean;
   /** `--server <url>` — raw broker escape hatch. */
   server?: string;
   /** `--space <name>` — pick a specific running mesh from the registry. */
@@ -75,8 +78,8 @@ export interface ResolveFlags {
   /**
    * Spaces whose broker the last liveness sweep already found dead. Their records
    * stay (that is the registry's job); they are not live candidates for unflagged
-   * resolution. Named `--space` still resolves a dead record so preflight can
-   * name its root. Callers that do not sweep omit this; TAB completion must.
+   * resolution. Named `--space` and the selected `current` still resolve a dead record so
+   * preflight can name its root. Callers that do not sweep omit this; TAB completion must.
    */
   offline?: readonly string[];
 }
@@ -91,7 +94,8 @@ export type MeshTargetErrorCode =
   | "default-occupied"
   | "stale-auth-root"
   | "unreadable-auth"
-  | "user-auth-unrecorded";
+  | "user-auth-unrecorded"
+  | "not-started";
 
 /** Structured context for a {@link MeshTargetError} — enough for any surface to render its own
  *  recovery affordance (a CLI sentence, a web button, an SDK embed that wants no command at all). */
@@ -112,6 +116,8 @@ export interface MeshTargetErrorDetails {
   spaces?: string[];
   /** What the caller asked for that didn't match (e.g. an unknown `--space`). */
   requested?: string;
+  /** For `unknown-space`: the name came from the `cotal use` selection, not from `--space`. */
+  selected?: boolean;
   /** For `stale-auth-root`: the space the on-disk auth now claims, diverging from the record. */
   found?: string;
   /** For `stale-auth-root`: whether the diverging record was actually removed. An operator-registered
@@ -202,7 +208,7 @@ function assertRootIsSingleTenant(root: string): void {
     );
 }
 
-export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["source"]): MeshTarget {
+export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget["source"], readOnly = false): MeshTarget {
   // Honor the recorded mode: an OPEN mesh connects credlessly even if its root still has auth
   // material on disk (e.g. a root that once ran auth mode). Loading it would make `spawn` mint
   // creds against a broker that takes none. A USER mesh loads NO static auth either — its connect
@@ -224,7 +230,7 @@ export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget
     if (!auth) {
       const found = listSpaceAccounts(authDir(m.root));
       if (found.length) {
-        const removed = pruneMesh(m.space, "mismatch");
+        const removed = readOnly ? false : pruneMesh(m.space, "mismatch");
         throw new MeshTargetError(
           "stale-auth-root",
           `registry entry "${m.space}" points at ${m.root}, whose on-disk auth is now for "${found.join('", "')}"`,
@@ -258,7 +264,7 @@ export function targetFromEntry(m: MeshEntry, server: string, source: MeshTarget
   };
 }
 
-function localTarget(root: string, server: string, source: MeshTarget["source"]): MeshTarget {
+function localTarget(root: string, server: string, source: MeshTarget["source"], readOnly = false): MeshTarget {
   // No registry entry and no explicit space, so the root itself must name exactly one space;
   // `soleSpaceOf` fails loud rather than picking one when it holds several (or the tenant list is
   // unreadable). Surface that as a catchable target error so a caller like `status` reports it as an
@@ -278,7 +284,7 @@ function localTarget(root: string, server: string, source: MeshTarget["source"])
   // proves user auth was enabled here, and the alternative would classify the root "open" and
   // connect credlessly toward a user-auth broker. Fail closed on the marker, whichever half died.
   const userSpace = auth
-    ? hasUserAuthState(root, space)
+    ? hasUserAuthState(root, space, { readOnly })
       ? space
       : undefined
     : userAuthSpacesOnDisk(authDir(root))[0];
@@ -295,36 +301,66 @@ function localTarget(root: string, server: string, source: MeshTarget["source"])
 /** A `.cotal/` that a user actually created here — not the machine-home dir the cwd walk-up lands on
  *  from outside any project (which has no space, just the daemon's pid/onboard files). */
 function isGenuineSpace(root: string): boolean {
-  // Normalize both sides — COTAL_HOME may be relative or non-canonical, and a raw string compare
-  // would then let the real `~/.cotal` masquerade as a project space (or vice-versa).
-  return resolve(join(root, ".cotal")) !== resolve(homeCotalDir()) && existsSync(join(root, ".cotal"));
+  // Canonicalize both sides: COTAL_HOME may be relative or reached through a symlink, while the
+  // walked root comes from the canonical cwd, so a raw or lexical compare would let the real
+  // `~/.cotal` masquerade as a project space (or vice-versa).
+  return canonicalRoot(join(root, ".cotal")) !== canonicalRoot(homeCotalDir()) && existsSync(join(root, ".cotal"));
+}
+
+/** Refuses `space` when it is prepared and not started, before anything dials the address it would
+ *  have: another broker may answer there. */
+function notStarted(space: string): void {
+  const prepared = findPreparedSpace(space);
+  if (prepared) throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root });
+}
+
+/** The broker a root's own stack journal recorded, when the root has one. A journal that cannot be
+ *  read still proves a broker was recorded here, so it returns no server rather than nothing. The
+ *  server is only shown, never dialed. */
+function stackRecordedServer(root: string): { server?: string } | undefined {
+  const path = stackJournalPath(root);
+  let file: Stats;
+  try { file = lstatSync(path); } catch { return undefined; }
+  if (!file.isFile() || file.size > 64 * 1024) return {};
+  try {
+    const server = (JSON.parse(readFileSync(path, "utf8")) as { server?: unknown } | null)?.server;
+    return typeof server === "string" ? { server } : {};
+  } catch {
+    return {};
+  }
 }
 
 /**
  * Resolve the mesh target by precedence (first match wins):
  *  1. `--space` — registry lookup (errors if that space isn't running).
  *  2. `--server` — registry entry on that server (for creds/personas), else the local project.
- *  3. The live `current` selected by `cotal use` — from any directory.
+ *  3. The `current` selected by `cotal use`, from any directory. It stays the target when its broker
+ *     is down, and a selection that names no registration refuses rather than reaching another mesh.
  *  4. A genuine local project (`cwd` walks up to a real `.cotal/`).
  *  5. The registry's *running* meshes: 0 ⇒ error; 1 ⇒ use it; N ⇒ error naming
- *     each + its root. `flags.offline` (from a sweep) is excluded here and from
- *     a dangling `current`; a named `--space` is not filtered.
+ *     each + its root. `flags.offline` (from a sweep) is excluded here; a named `--space` and
+ *     the selected `current` are not filtered.
+ * A space `cotal space create` prepared and no `up` started, named by `--space`, selected, or
+ * prepared at the local project, refuses as `not-started`. So does a local project with no
+ * registration whose stack journal recorded a broker; only a project with neither gets the default.
  * No silent fallback — an unresolved target throws one human sentence.
  */
 export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTarget {
   const offline = new Set(flags.offline ?? []);
   if (flags.space) {
     const m = findMesh(flags.space);
-    if (!m)
+    if (!m) {
+      notStarted(flags.space);
       throw new MeshTargetError("unknown-space", `no mesh named "${flags.space}" is running`, {
         requested: flags.space,
       });
+    }
     // An explicit `--server` that overrides the recorded broker is an operator-supplied endpoint, not
     // the registry's — probing IT must never prune the recorded entry (a dead override would otherwise
     // delete a live registered mesh, and pre-pruning would block a live-override recovery). Mark it so
     // preflight classifies the failure as non-registry / no-prune.
     const overriding = flags.server !== undefined && flags.server !== m.server;
-    return targetFromEntry(m, flags.server ?? m.server, overriding ? "flag-space-override" : "flag-space");
+    return targetFromEntry(m, flags.server ?? m.server, overriding ? "flag-space-override" : "flag-space", flags.readOnly);
   }
 
   if (flags.server) {
@@ -346,18 +382,23 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       // shows several tenants (or an unreadable one), `--server` alone cannot pick, same as the bare
       // local branch below.
       assertRootIsSingleTenant(onServer[0].root);
-      return targetFromEntry(onServer[0], flags.server, "flag-server");
+      return targetFromEntry(onServer[0], flags.server, "flag-server", flags.readOnly);
     }
-    return localTarget(findCotalRoot(cwd), flags.server, "flag-server");
+    return localTarget(findCotalRoot(cwd), flags.server, "flag-server", flags.readOnly);
   }
 
   const meshes = loadMeshes();
   const current = getCurrent();
-  const cur = current ? meshes.find((m) => m.space === current) : undefined;
-  // A `current` whose broker the sweep already found dead is not a live target.
-  // Fall through so one remaining running mesh can still resolve, the way a
-  // deleted record used to; the record itself stays.
-  if (cur && !offline.has(cur.space)) return targetFromEntry(cur, cur.server, "current");
+  if (current) {
+    const cur = meshes.find((m) => m.space === current);
+    if (!cur) {
+      notStarted(current);
+      throw new MeshTargetError("unknown-space", `the selected space "${current}" is not registered here`, { requested: current, selected: true });
+    }
+    // A selected space whose broker is down is still the target: the preflight reports it not
+    // running, the way it does for a named `--space`, rather than another mesh answering instead.
+    return targetFromEntry(cur, cur.server, "current", flags.readOnly);
+  }
 
   const root = findCotalRoot(cwd);
   if (isGenuineSpace(root)) {
@@ -391,7 +432,15 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
         { available: rootMatches.map((m) => `${m.space} (${m.root})`) },
       );
     const recorded = rootMatches[0];
-    if (recorded) return targetFromEntry(recorded, recorded.server, "local-recorded");
+    if (recorded) return targetFromEntry(recorded, recorded.server, "local-recorded", flags.readOnly);
+    // A space prepared here and not started has no broker: the default address may be another's.
+    const prepared = preparedSpaceAt(root);
+    if (prepared) notStarted(prepared.space);
+    // A root whose own stack recorded a broker is not given the default address either: with no
+    // registration that stack is not running here, and the default port may hold another mesh. The
+    // space is left out, so no caller reads this root offline as a prepared space.
+    const stack = stackRecordedServer(root);
+    if (stack) throw new MeshTargetError("not-started", `the stack in ${root} recorded a broker, and no space is registered for it here`, { root, ...stack });
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the
     // fallback would silently join someone else's mesh on the default port with our persona (the
@@ -429,7 +478,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
         `another mesh ("${onDefault.space}") is running at ${DEFAULT_SERVER}`,
         { space: onDefault.space, server: DEFAULT_SERVER },
       );
-    return localTarget(root, DEFAULT_SERVER, "local-space");
+    return localTarget(root, DEFAULT_SERVER, "local-space", flags.readOnly);
   }
 
   // The fallback names *running* meshes. A liveness miss used to delete the record and
@@ -441,7 +490,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   // reports "recorded at <root> but not running".
   const running = meshes.filter((m) => !offline.has(m.space));
   if (running.length === 0) throw new MeshTargetError("no-meshes", "no mesh running");
-  if (running.length === 1) return targetFromEntry(running[0], running[0].server, "registry");
+  if (running.length === 1) return targetFromEntry(running[0], running[0].server, "registry", flags.readOnly);
 
   const names = running.map((m) => `${m.space} (${m.root})`);
   // `spaces` rides alongside the display strings: this is the one ambiguity whose members are each a

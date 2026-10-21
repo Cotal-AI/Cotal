@@ -1,7 +1,11 @@
 import { readFileSync, rmSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
+  CommandFailure,
+  localRecordName,
+  presentationOf,
   abortMaintenanceCut,
   acquireMaintenanceLock,
   assertSingleSpaceBroker,
@@ -14,6 +18,12 @@ import {
   meshesForRoot,
   localProcessPath,
   localProcessPathCandidates,
+  canonicalRoot,
+  brokerAddressForDisplay,
+  findMesh,
+  localMeshesForRoot,
+  writeResult,
+  type Report,
   readMaintenanceJournal,
   readMaintenanceResumeDocument,
   readPreservationCommitIntent,
@@ -47,6 +57,7 @@ import {
   DEV_OWNER,
   dialerFor,
   isReachable,
+  realDirNoSymlink,
   LEASE_TTL_MS,
   MANAGER_LEASE_KEY,
   MANAGER_LEASE_TTL_MS,
@@ -60,12 +71,18 @@ import {
   type ManagerLeaseInfo,
   type Presence,
 } from "@cotal-ai/core";
-import { extensionNames, localProcessSurface } from "../ext-loader.js";
+import { localProcessSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { parsePid, probeLiveness, readPidfile } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { downManifest } from "./down-manifest.js";
+import { listLedgerFiles } from "../lib/manifest/ledger.js";
+import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
+import { additiveTeamRecordedState, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
+import { service, serviceComplete, validateServiceArguments } from "./service-registry.js";
+import { stopNamedServiceSet } from "./service-set-stop.js";
+import { readLocalServiceCensus } from "../lib/service-census.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
@@ -73,6 +90,7 @@ import { captureSeatCheckpoint } from "../lib/seat-capture.js";
 import { processRecorded, stopLocalProcess } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
+import { controllerStackRecorded, stackDown, validateStackDownArguments } from "./stack-down.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
  *  `ManagerResumeAgent`; the CLI never imports it, because implementations do not depend on each
@@ -95,17 +113,158 @@ export function downComplete(argv: string[]): CompletionResult {
   if (argv.some((word) => word === "-f" || word === "--file" || word === "--run"))
     return { items: [], directive: "nofiles" };
   if ((argv[argv.length - 1] ?? "").startsWith("-")) return { items: [], directive: "nofiles" };
-  const used = new Set(argv.slice(0, -1).filter((word) => !word.startsWith("-")));
-  return {
-    items: extensionNames("local-process").filter((name) => !used.has(name)).map((value) => ({ value })),
-    directive: "nofiles",
-  };
+  return serviceComplete(["stop", ...(argv.length ? argv : [""])]);
 }
 
-/** Stop the whole local stack by default, or only named self-registered process components. The
- *  manifest forms remain ownership-scoped deploy teardown and cannot be mixed with components. */
+function namedStopArguments(args: ParsedArgs): ParsedArgs {
+  return { ...args, positionals: ["stop", args.positionals[0]!] };
+}
+
+/** Named stops use only the owned-service controller. Multiple definitions require complete
+ *  set selection, reservation and impact preflight. Legacy bare-stack integration stays separate. */
+export function validateDownArguments(args: ParsedArgs): void {
+  presentationOf(args.values);
+  if (args.positionals.length) {
+    for (const name of args.positionals) localRecordName(name);
+    if (args.values["with-agents"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "named down does not accept --with-agents; no flag was dropped", { remedy: "use cotal service stop <manager-name> --instance <full-id> --with-agents for the exact owned manager and its native impact review" });
+    if (args.values.instance !== undefined && args.positionals.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", "--instance qualifies one service name, never a multi-service set");
+    const allowed = new Set(["space", "instance", "yes", "dry-run", "json", "plain"]);
+    if (Object.keys(args.values).some((name) => !allowed.has(name))) throw new CommandFailure("refused", "USAGE_INVALID", "named down accepts only space, instance, confirmation, preview and presentation flags; no whole-stack or manifest option was ignored");
+    if (new Set(args.positionals).size !== args.positionals.length) throw new CommandFailure("refused", "USAGE_INVALID", "name each service once; duplicate targets were not silently collapsed");
+    for (const name of args.positionals) validateServiceArguments({ ...args, positionals: ["stop", name] });
+    return;
+  }
+  if (args.values.instance !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--instance needs one explicit service definition name");
+  if (controllerStackRecorded(cotalRoot())) return validateStackDownArguments(cotalRoot(), args.values);
+  if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
+  if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.file === undefined && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined) return;
+  if (args.values.json !== undefined || args.values.plain !== undefined || args.values.yes !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this author has structured output for bare-stack inspection, but not guarded whole-stack apply; no stack was stopped under unsupported receipt or acknowledgement flags");
+}
+
+/** A bare stack preview is a local record census, never an effect plan or stop authority. */
+function previewWholeStack(args: ParsedArgs): void {
+  const root = canonicalRoot(cotalRoot());
+  const selectedSpace = args.values.space as string | undefined;
+  const target = { root, ...(selectedSpace ? { space: selectedSpace } : {}) };
+  if (root === canonicalRoot(homedir())) throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated project root for a whole-stack preview", { target });
+  let mesh: NonNullable<ReturnType<typeof findMesh>>;
+  let maintenance: ReturnType<typeof readMaintenanceJournal>;
+  let components: Array<{ name: string; label: string; pidfile: string; recorded: boolean; liveness: "alive" | "dead" | "unknown"; pid: number | null; note: string | null }>;
+  let services: ReturnType<typeof readLocalServiceCensus>;
+  let additiveRecords: ReturnType<typeof listLedgerFiles>, additiveAttempts: ReturnType<typeof listAdditiveTeamAttempts>;
+  let bootAttempts: ReturnType<typeof listFreshTeamAttempts>, bootSummaries: ReturnType<typeof listFreshTeamSummaries>;
+  let otherBrokerRegistrations: Array<{ space: string; root: string; origin: string }>;
+  try {
+    if (!realDirNoSymlink(root, ".cotal")) throw new Error("missing project control directory");
+    const local = localMeshesForRoot(root), sole = local[0];
+    if (local.length !== 1 || sole?.origin !== "up") throw new Error("no unique locally started stack at this root");
+    const candidate = selectedSpace ? findMesh(selectedSpace) : sole;
+    if (!candidate || candidate.origin !== "up" || candidate.space !== sole.space || canonicalRoot(candidate.root) !== root) throw new Error("space does not belong to the selected root");
+    mesh = candidate;
+    assertSingleSpaceBroker(authDir(root), "down preview");
+    otherBrokerRegistrations = loadMeshes().filter((row) => row.space !== mesh.space && row.server === mesh.server)
+      .map((row) => ({ space: row.space, root: row.root, origin: row.origin ?? "not recorded" }));
+    maintenance = readMaintenanceJournal(root);
+    const context: LocalProcessContext = { root, space: mesh.space };
+    components = localProcessSurface().map((component) => {
+      const pidfile = localProcessPath(component.pidFile, context);
+      const state = pidfileState(pidfile);
+      return { name: component.name, label: component.label, pidfile, recorded: processRecorded(component, context), liveness: state.liveness, pid: state.pid ?? null, note: state.note ?? null };
+    });
+    services = readLocalServiceCensus(mesh.space);
+    additiveRecords = listLedgerFiles(root, { requireReadable: true });
+    additiveAttempts = listAdditiveTeamAttempts(root);
+    bootAttempts = listFreshTeamAttempts(root); bootSummaries = listFreshTeamSummaries(root);
+  } catch (error) {
+    if (error instanceof CommandFailure) throw error;
+    throw new CommandFailure("refused", "CONFLICT", "the local stack, process or service records, or maintenance state could not be inspected consistently; no stop target was inferred", { target });
+  }
+  const byBootId = new Map(bootSummaries.valid.map((summary) => [summary.deploymentId, summary]));
+  const unsettledBootAttempts = bootAttempts.valid.filter((attempt) => !freshTeamAttemptSettled(attempt, byBootId.get(attempt.deploymentId)));
+  const result = { kind: "whole-stack-local-preview", space: mesh.space, root, recordedBroker: brokerAddressForDisplay(mesh.server) ?? null,
+    maintenance: maintenance?.state ?? "none-recorded", withAgentsRequested: args.values["with-agents"] === true,
+    components, ...services, otherBrokerRegistrations,
+    additiveLedgers: additiveRecords.valid.map(({ ledger }) => ({ deploymentId: ledger.runId, space: ledger.space, agents: ledger.created.agents.length, channels: ledger.created.channels.length })),
+    unreadableAdditiveLedgers: additiveRecords.refused.map(({ path }) => path),
+    retainedAdditiveAttempts: additiveAttempts.valid.map((attempt) => ({ deploymentId: attempt.deploymentId, space: attempt.space, server: brokerAddressForDisplay(attempt.server) ?? "not displayable", createdAt: attempt.createdAt, recordedState: additiveTeamRecordedState(attempt, additiveAttempts) })),
+    unreadableAdditiveAttempts: additiveAttempts.refused.map(({ path }) => path),
+    unsettledBootAttempts: unsettledBootAttempts.map((attempt) => ({ deploymentId: attempt.deploymentId, space: attempt.space, server: brokerAddressForDisplay(attempt.server) ?? "not displayable", createdAt: attempt.createdAt })),
+    unreadableBootRecords: [...bootAttempts.refused, ...bootSummaries.refused].map(({ path }) => path),
+    brokerSharing: "exact recorded address matches only; aliases and live tenants not checked", agentImpact: "not-established", serviceInstanceScope: "selected-space workstation records only; root ownership and live state not established",
+    dryRun: true, effectAttempted: false, reserved: false };
+  writeResult(presentationOf(args.values), { command: "down", target: { root, space: mesh.space }, result,
+    completeness: "partial", partial: { message: "Pidfiles, additive ledgers, service records, supervisor receipts and retained attempts are not a complete owned stack or native agent-impact plan. No process identity, service root ownership, broker sharing or stop authority was established." } }, (data): Report => ({ sections: [
+    { title: "Whole-stack local inspection", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Root", data.root], ["Maintenance", data.maintenance], ["Saved service definitions", String(data.serviceDefinitions.length)], ["Saved service instances", String(data.serviceRecords.length)], ["Supervisor receipts", String(data.supervisors.length)], ["Retained native attempts", String(data.nativeAttempts.length)], ["Other exact-address registrations", String(data.otherBrokerRegistrations.length)], ["Additive ledgers", String(data.additiveLedgers.length)], ["Unreadable additive ledgers", String(data.unreadableAdditiveLedgers.length)], ["Retained additive deployments", String(data.retainedAdditiveAttempts.length)], ["Unreadable additive attempts", String(data.unreadableAdditiveAttempts.length)], ["Unsettled fresh attempts", String(data.unsettledBootAttempts.length)], ["Unreadable fresh records", String(data.unreadableBootRecords.length)], ["Deprovision agents", data.withAgentsRequested ? "requested; impact unknown" : "not requested; process impact unknown"], ["Stop authority", "not established"]] }, { kind: "lines", lines: [{ text: "This is a read of local records, not a stop plan. Liveness does not prove identity, and service, broker-sharing and agent consequences are not checked. No process was signalled.", tone: "waiting" }] }] },
+    { title: "Recorded broker address matches", blocks: [data.otherBrokerRegistrations.length ? { kind: "table", columns: [{ key: "space", label: "Other space" }, { key: "root", label: "Recorded root" }, { key: "origin", label: "Registration" }], rows: data.otherBrokerRegistrations.slice(0, 100) } : { kind: "lines", lines: ["No other registration uses this exact broker address in the local workstation registry."] }, { kind: "lines", lines: [...(data.otherBrokerRegistrations.length > 100 ? ["Additional exact-address matches are in JSON."] : []), "An exact-address match is a sharing warning. No match is not proof of an exclusive broker: aliases, remote tenants and live attachments were not checked."] }] },
+    { title: "Recorded additive deployments", blocks: [data.additiveLedgers.length ? { kind: "table", columns: [{ key: "id", label: "Deployment" }, { key: "space", label: "Recorded space" }, { key: "agents", label: "Agent rows" }, { key: "channels", label: "Channel rows" }], rows: data.additiveLedgers.slice(0, 100).map((row) => ({ id: row.deploymentId, space: row.space, agents: String(row.agents), channels: String(row.channels) })) } : { kind: "lines", lines: ["No readable additive ledgers under this project root."] }, { kind: "lines", lines: [...(data.additiveLedgers.length > 100 ? ["Additional additive ledgers are in JSON."] : []), ...data.unreadableAdditiveLedgers.slice(0, 100).map((path) => `Unreadable ledger: ${path}`), ...(data.unreadableAdditiveLedgers.length > 100 ? ["Additional unreadable paths are in JSON."] : []), "An additive ledger is not whole-stack ownership. A recorded or unreadable one blocks the retained bare apply; this preview changes nothing."] }] },
+    { title: "Retained additive deployments", blocks: [data.retainedAdditiveAttempts.length ? { kind: "table", columns: [{ key: "id", label: "Deployment" }, { key: "space", label: "Space" }, { key: "state", label: "Recorded state" }, { key: "time", label: "Intent recorded" }], rows: data.retainedAdditiveAttempts.slice(0, 100).map((attempt) => ({ id: attempt.deploymentId, space: attempt.space, state: attempt.recordedState, time: attempt.createdAt })) } : { kind: "lines", lines: ["No readable additive attempts under this root."] }, { kind: "lines", lines: [...data.unreadableAdditiveAttempts.slice(0, 100).map((path) => `Unreadable additive attempt: ${path}`), ...(data.retainedAdditiveAttempts.length > 100 || data.unreadableAdditiveAttempts.length > 100 ? ["Additional attempts or paths are in JSON."] : []), "Unsettled or unremoved additive deployments block the legacy bare stop. A full matched static agent-retirement receipt releases only its original deployment's blocker; all other ownership and process guards remain."] }] },
+    { title: "Fresh boot attempts", blocks: [data.unsettledBootAttempts.length ? { kind: "table", columns: [{ key: "deploymentId", label: "Deployment" }, { key: "space", label: "Space" }, { key: "server", label: "Recorded broker" }, { key: "createdAt", label: "Intent recorded" }], rows: data.unsettledBootAttempts.slice(0, 100) } : { kind: "lines", lines: ["No unsettled readable fresh boot attempts under this root."] }, { kind: "lines", lines: [...data.unreadableBootRecords.slice(0, 100).map((path) => `Unreadable fresh record: ${path}`), ...(data.unsettledBootAttempts.length > 100 || data.unreadableBootRecords.length > 100 ? ["Additional attempts or unreadable paths are in JSON."] : []), "An unsettled fresh attempt or unreadable record blocks the retained bare apply; a missing summary does not prove the broker never started."] }] },
+    { title: "Local process records", blocks: [data.components.length ? { kind: "table", columns: [{ key: "name", label: "Component" }, { key: "state", label: "Pidfile probe" }, { key: "record", label: "Recorded" }, { key: "pid", label: "PID" }], rows: data.components.map((row) => ({ name: row.label, state: row.liveness, record: row.recorded ? "yes" : "no", pid: row.pid === null ? "not pinned" : String(row.pid) })) } : { kind: "lines", lines: ["No local process descriptors were found."] }] },
+    { title: "Selected-space service definitions", blocks: [data.serviceDefinitions.length ? { kind: "table", columns: [{ key: "name", label: "Definition" }, { key: "launch", label: "Launch type" }, { key: "instances", label: "Instance records" }], rows: data.serviceDefinitions.slice(0, 100).map((row) => ({ name: row.name, launch: row.launch, instances: String(row.instanceRecords) })) } : { kind: "lines", lines: ["No saved service definitions in this space's workstation store."] }, ...(data.serviceDefinitions.length > 100 ? [{ kind: "lines" as const, lines: ["Additional definitions are in JSON."] }] : [])] },
+    { title: "Selected-space service instances", blocks: [data.serviceRecords.length ? { kind: "table", columns: [{ key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Recorded state" }, { key: "host", label: "Recorded host" }], rows: data.serviceRecords.slice(0, 100).map((row) => ({ definition: row.definition, instance: row.instanceId, state: row.recordedState, host: row.host })) } : { kind: "lines", lines: ["No saved service instances in this space's workstation store."] }, { kind: "lines", lines: [...(data.serviceRecords.length > 100 ? ["Additional service records are in JSON."] : []), "These records are scoped by space, not proven owned by this project root. Their recorded state is not live process or supervisor status; no instance was selected for stopping."] }] },
+    { title: "Recorded native supervisors", blocks: [data.supervisors.length ? { kind: "table", columns: [{ key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "mechanism", label: "Mechanism" }, { key: "unit", label: "Recorded unit" }], rows: data.supervisors.slice(0, 100).map((row) => ({ definition: row.definition, instance: row.instanceId, mechanism: row.mechanism, unit: row.unit })) } : { kind: "lines", lines: ["No supervisor receipts in this space's workstation store."] }, { kind: "lines", lines: [...(data.supervisors.length > 100 ? ["Additional supervisor receipts are in JSON."] : []), "A receipt is not a live unit observation or authority to stop it. No native service status request was made."] }] },
+    { title: "Retained native attempts", blocks: [data.nativeAttempts.length ? { kind: "table", columns: [{ key: "kind", label: "Action" }, { key: "definition", label: "Definition" }, { key: "instance", label: "Full instance" }, { key: "step", label: "Step" }, { key: "position", label: "Position" }], rows: data.nativeAttempts.slice(0, 100).map((row) => ({ kind: row.kind, definition: row.definition, instance: row.instanceId, step: row.step, position: row.position })) } : { kind: "lines", lines: ["No retained install, uninstall or unit-action attempts in this space's workstation store."] }, { kind: "lines", lines: [...(data.nativeAttempts.length > 100 ? ["Additional attempts and their full IDs are in JSON."] : []), "A submitted or unknown step may already have changed native state. This preview neither reconciles nor retries it."] }] },
+  ] }));
+}
+
+/** Keep the retained pidfile sweep from crossing known service custody or an exact recorded
+ *  broker-sharing boundary. This is not a complete live ownership or agent-impact proof. */
+function guardLegacyBareDown(): void {
+  const root = canonicalRoot(cotalRoot());
+  const target = { root };
+  if (root === canonicalRoot(homedir())) throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated whole-stack stop root; no process was signalled", { target });
+  let mesh: NonNullable<ReturnType<typeof findMesh>>;
+  try {
+    if (!realDirNoSymlink(root, ".cotal")) throw new Error("missing project control directory");
+    // A root that hosts several spaces refuses before the registration lookup, naming them.
+    try { assertSingleSpaceBroker(authDir(root), "bare down"); }
+    catch (error) { throw new CommandFailure("refused", "CONFLICT", (error as Error).message, { target }); }
+    const local = localMeshesForRoot(root), sole = local[0];
+    if (local.length !== 1 || sole?.origin !== "up") throw new Error("no unique locally started stack at this root");
+    mesh = sole;
+  } catch (error) {
+    if (error instanceof CommandFailure) throw error;
+    throw new CommandFailure("refused", "CONFLICT", "the local root has no unique owned stack registration and real control directory; no whole-stack stop target was inferred", { target });
+  }
+  const scoped = { root, space: mesh.space };
+  const maintenance = readMaintenanceJournal(root);
+  // A validated active restore is complete, so its retained journal does not fence ordinary stop.
+  // Pending transitions and a journal naming another space still cannot authorize this sweep.
+  if (maintenance && (maintenance.state !== "active" || maintenance.space !== mesh.space)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this stack retains a maintenance transition; ordinary bare down did not bypass it", { target: { ...scoped, state: maintenance.state } });
+  let ledgers: ReturnType<typeof listLedgerFiles>;
+  try { ledgers = listLedgerFiles(root, { requireReadable: true }); }
+  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the root's additive ledger directory could not be inspected; bare down did not infer that it owns every resource", { target: scoped }); }
+  if (ledgers.valid.length || ledgers.refused.length)
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "additive ownership ledgers or unreadable ledger records remain under this root; bare down did not adopt or stop their resources", { target: { ...scoped, deploymentIds: ledgers.valid.map(({ ledger }) => ledger.runId), unreadable: ledgers.refused.map(({ path }) => path) }, remedy: "finish each additive deployment's own lifecycle before a guarded whole-stack stop" });
+  let additiveAttempts: ReturnType<typeof listAdditiveTeamAttempts>;
+  try { additiveAttempts = listAdditiveTeamAttempts(root); }
+  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the additive attempt inventory could not be read; bare down did not infer an empty resource set", { target: scoped }); }
+  if (retainedAdditiveTeamAttempts(additiveAttempts).length || additiveAttempts.refused.length)
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an additive attempt or returned additive deployment remains under this root; legacy bare down did not adopt its resources", { target: { ...scoped, deploymentIds: retainedAdditiveTeamAttempts(additiveAttempts).map((attempt) => attempt.deploymentId), unreadable: additiveAttempts.refused.map(({ path }) => path) } });
+  let attempts: ReturnType<typeof listFreshTeamAttempts>, summaries: ReturnType<typeof listFreshTeamSummaries>;
+  try { attempts = listFreshTeamAttempts(root); summaries = listFreshTeamSummaries(root); }
+  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "fresh boot attempt or summary records could not be read; bare down did not infer stop authority", { target: scoped }); }
+  const returned = new Map(summaries.valid.map((summary) => [summary.deploymentId, summary]));
+  const unsettled = attempts.valid.filter((attempt) => !freshTeamAttemptSettled(attempt, returned.get(attempt.deploymentId)));
+  if (unsettled.length || attempts.refused.length || summaries.refused.length)
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a fresh boot attempt is unsettled or a boot record unreadable; legacy bare down did not stop a process whose original launch outcome is unknown", { target: { ...scoped, unsettledIds: unsettled.map((row) => row.deploymentId), unreadable: [...attempts.refused, ...summaries.refused].map(({ path }) => path) }, remedy: "inspect the original boot and process custody before any stop; the pidfile sweep is not recovery" });
+  const other = loadMeshes().filter((row) => row.space !== mesh.space && row.server === mesh.server);
+  if (other.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registered space names this exact broker address; bare down did not stop its shared listener", { target: { ...scoped, otherSpaces: other.map((row) => row.space) }, remedy: "inspect both registrations and their native ownership; an exact-address match is a blocker, while no match does not prove exclusivity" });
+  const services = readLocalServiceCensus(mesh.space);
+  if (services.serviceRecords.length || services.supervisors.length || services.nativeAttempts.length)
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "service-controller custody or a retained native attempt exists in this space; the legacy pidfile sweep did not stop its broker", { target: { ...scoped, instances: services.serviceRecords.map((row) => row.instanceId), supervisors: services.supervisors.map((row) => row.instanceId), attempts: services.nativeAttempts.map((row) => row.attemptId) }, remedy: "inspect the full service instances and attempts; whole-stack service-controller apply is not integrated" });
+}
+
+/** One named service is a thin native-controller alias. The retained bare-stack and manifest
+ *  paths below have not yet been replaced by the approved whole-stack controller. */
 export async function down(args: ParsedArgs): Promise<void> {
+  validateDownArguments(args);
+  if (args.positionals.length > 1) return stopNamedServiceSet(args);
+  if (args.positionals.length) return service(namedStopArguments(args), "down");
+  // A root whose stack the service controller owns stops only through its recorded members.
+  if (controllerStackRecorded(cotalRoot())) return stackDown(cotalRoot(), args.values);
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
+  if (values["dry-run"] && !values.file && !values.run && !values["preserve-state"] && !values["store-dir"] && !values["session-store"]?.length) return previewWholeStack(args);
   const requested = [...new Set(args.positionals)];
   if (values["preserve-state"] && values["with-agents"])
     throw new Error("--preserve-state cannot be combined with --with-agents");
@@ -129,6 +288,7 @@ export async function down(args: ParsedArgs): Promise<void> {
   }
   if (values.space && !requested.length)
     throw new Error("--space only selects the mesh for target-addressed components - name them (e.g. `cotal down web --space <name>`); bare `cotal down` always stops this folder's stack");
+  if (!requested.length) guardLegacyBareDown();
   const all = localProcessSurface();
   const known = all.map((component) => component.name).sort();
   const unknown = requested.filter((name) => !known.includes(name));
@@ -305,7 +465,7 @@ export function mayBeRunning(component: LocalProcess, context: LocalProcessConte
 
 /** The principal keys of every retained agent in a preservation inventory — the dot-form ids that
  *  appear in the presence roster, so a caller can tell which retained agents are still live. */
-function retainedPrincipalKeys(inventory: unknown): Set<string> {
+export function retainedPrincipalKeys(inventory: unknown): Set<string> {
   const agents = ((inventory as { agents?: Array<{
     identity?: { mode?: string; id?: string; owner?: string; actor?: string };
   }> }).agents ?? []);
@@ -352,6 +512,8 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
   const cap: { maxFileStore?: number } = mesh.maxFileStore !== undefined ? { maxFileStore: mesh.maxFileStore } : {};
   const lock = acquireMaintenanceLock(root);
   try {
+    const additiveAttempts = listAdditiveTeamAttempts(root);
+    if (retainedAdditiveTeamAttempts(additiveAttempts).length || additiveAttempts.refused.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an additive attempt or returned additive deployment remains; preserve-state down did not fold its resources into the retained stack", { target: { root, space: mesh.space, deploymentIds: retainedAdditiveTeamAttempts(additiveAttempts).map((attempt) => attempt.deploymentId), unreadable: additiveAttempts.refused.map(({ path }) => path) } });
     const all = localProcessSurface();
     const context: LocalProcessContext = { root, space: mesh.space };
     const existing = readMaintenanceJournal(root);
@@ -625,7 +787,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
  * source`, and a checkpoint inherits that refusal rather than writing something that will not
  * reproduce the seat.
  */
-function assertSeatsCheckpointable(inventory: unknown): void {
+export function assertSeatsCheckpointable(inventory: unknown): void {
   for (const entry of ((inventory as { agents?: ManagerResumeAgentShape[] }).agents ?? [])) {
     const keys = entry.launch?.unresolvedLaunchOptionKeys ?? [];
     if (keys.length)
@@ -635,7 +797,7 @@ function assertSeatsCheckpointable(inventory: unknown): void {
 }
 
 /** Capture one checkpoint per retained seat, after the cut has proven the whole stack down. */
-async function captureSeatCheckpoints(
+export async function captureSeatCheckpoints(
   root: string,
   space: string,
   resume: MaintenanceResumeDescriptor,
@@ -725,7 +887,7 @@ async function directKvValue<T>(
  *  continuously, so the cut publishes `ready` only once BOTH lease buckets hold no live value —
  *  a dead daemon's lease expires by TTL, a pidless live one keeps renewing and is refused here.
  *  Pidfiles are hints; leases are proof. */
-async function assertControlPlaneQuiesced(space: string, server: string): Promise<void> {
+export async function assertControlPlaneQuiesced(space: string, server: string): Promise<void> {
   const resolved = await connectOrExit({ space, server }, "deployer");
   const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
   const nc = await dialerFor(server)({
