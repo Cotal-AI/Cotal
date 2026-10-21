@@ -162,8 +162,9 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
 {
   const good = readFileSync(installedIndex, "utf8");
   writeFileSync(installedIndex, 'throw new Error("BOOM — cache must not import me");\n');
-  const help = cotal(["--help"]);
-  ok("--help lists the extension command WITHOUT importing it", help.status === 0 && /hello-ext/.test(help.stdout), help.stdout.slice(-400));
+  // The bare --help entry screen is curated; every command group, extensions included, is under help --all.
+  const help = cotal(["help", "--all"]);
+  ok("help --all lists the extension command WITHOUT importing it", help.status === 0 && /hello-ext/.test(help.stdout), help.stdout.slice(-400));
   const comp = cotal(["__complete", "hello-ext", "--"]);
   ok("<TAB> offers cached flags WITHOUT importing", comp.status === 0 && /--shout/.test(comp.stdout), comp.stdout);
   const run = cotal(["hello-ext"]);
