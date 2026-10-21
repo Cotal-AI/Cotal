@@ -135,6 +135,14 @@ export interface InboxItem {
   deliveryCount?: number;
 }
 
+/** A bounded, non-consuming view of the currently buffered inbox for presentation-only surfaces. */
+export interface InboxSnapshot {
+  /** Total buffered deliveries, including rows beyond {@link items}. */
+  unread: number;
+  /** Oldest buffered rows, copied without receive/ack handles. */
+  items: InboxItem[];
+}
+
 /** Reply correlation for outgoing messages (SPEC §5): `contextId` is the asker's conversation id,
  *  `replyTo` the id of the message being answered. */
 export interface Correlation {
@@ -1548,6 +1556,16 @@ export class MeshAgent extends EventEmitter {
 
   inboxCount(scope: InboxScope = "all"): number {
     return scope === "all" ? this.inbox.length : this.inbox.filter((p) => this.inScope(p, scope)).length;
+  }
+
+  /**
+   * Read a bounded presentation snapshot without draining, acknowledging, committing, holding or
+   * changing attention. The caller receives copies, so UI code cannot mutate the live inbox.
+   */
+  inboxSnapshot(limit = 3): InboxSnapshot {
+    if (!Number.isInteger(limit) || limit < 0 || limit > 8)
+      throw new Error(`inbox preview limit must be a whole number from 0 to 8, got ${limit}`);
+    return { unread: this.inbox.length, items: this.inbox.slice(0, limit).map((p) => ({ ...p.item })) };
   }
 
   /** Local receive time of the oldest still-buffered automatic delivery, if any. */

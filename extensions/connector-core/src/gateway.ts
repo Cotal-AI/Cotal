@@ -27,6 +27,7 @@ import { DOCS_VERSION } from "./docs.js";
 import { cotalToolSpecs, parseToolArgs, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
 import type { MeshAgent } from "./agent.js";
 import type { AgentConfig } from "./config.js";
+import { renderInboxPreview, type RenderedInboxPreview } from "./framing.js";
 
 /** Thrown by {@link GatewayHost.open} when, and only when, the issuer reports that the name already
  *  exists. It is the one failure that moves `cotal_connect` to the next candidate name. An auth,
@@ -137,7 +138,7 @@ export interface GatewayWake {
   /** Called when a connection gets something that ends a `cotal_wait` while none holds it, and
    *  not again for that connection until a `cotal_inbox` or `cotal_wait` reads its messages.
    *  Return false when no client heard it, so the next rewake signals it again. */
-  signal(connection: GatewayConnection): boolean;
+  signal(connection: GatewayConnection, preview: RenderedInboxPreview): boolean;
   /** What `cotal_connect` adds about listening, read when the connection opens: whether this
    *  client will be woken. */
   listening(): string;
@@ -303,7 +304,7 @@ export function registerCotalGatewayTools(
     mentionsOf(c.agent);
     const fire = () => {
       if (c.agent.stopping || signalled.has(c.agent) || (holding.get(c.agent) ?? 0) > 0 || wakeCount(c.agent) === 0) return;
-      if (wake.signal(c)) signalled.add(c.agent);
+      if (wake.signal(c, renderInboxPreview(c.agent.inboxSnapshot()))) signalled.add(c.agent);
     };
     const replay = () => {
       // A previous reader may have exited before its client started a turn.
