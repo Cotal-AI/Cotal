@@ -160,6 +160,12 @@ try {
   const rC = register(i3);
   const noRow = await viaProvider("c", rC), cOp = await opRead(engineOp(ownerC, rC));
   c.check("C7 an owner without a current interactive row is refused and binds nothing", denied(noRow, "permission-denied") && cOp.state === "absent", { noRow, cOp });
+  for (const control of ["auth", "delivery", "manager"]) {
+    const rN = { ...register(rid()), endpoint: control } as ServiceAuthorityRequest;
+    const first = await raw(on.url, { request: rN, proof: await idpProof("a") }), again = await viaProvider("a", rN), nOp = await opRead(engineOp(ownerA, rN));
+    c.check(`C8 a register naming the native control endpoint ${control} is a definite 403 permission-denied and binds nothing`, first.status === 403
+      && first.body.state === "denied" && first.body.reason === "permission-denied" && denied(again, "permission-denied") && nOp.state === "absent", { first, again, nOp });
+  }
 
   // ---- D: owner operation status ----
   const s1 = await viaProvider("a", status(i1, r1.requestId));
