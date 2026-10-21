@@ -2,18 +2,22 @@
  * (`startAuthService` with `serviceEndpoints`) on a JWT-permission broker serves the route on its
  * loopback and public faces. The provider client and the HTTP client reach it over real HTTP; the
  * host handle names the endpoint and approves, refuses and revokes. The signed IdP is a loopback
- * fixture serving /token and JWKS, and the owners' interactive actor rows are fixture rows. Nothing
- * here is native, Cloud or production acceptance, and nothing proves a human decision. */
+ * fixture serving /token and JWKS, and the owners' interactive actor rows are fixture rows. Section K
+ * moves one engine-written proposal past its expiry ("sim expiry": a controlled fixture timestamp,
+ * not 24 h elapsed). Nothing here is native, Cloud or production acceptance, and nothing proves a
+ * human decision. */
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { createAccount } from "@nats-io/nkeys";
+import { Kvm } from "@nats-io/kv";
 import {
-  SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA_DIGEST, mintCreds, newIdentity, parseServiceAuthorityResult, setupSpaceStreams,
+  SERVICE_AUTHORITY_MAX_BYTES, VOID_SCHEMA_DIGEST, epAuthBucket, mintCreds, newIdentity, parseServiceAuthorityResult, setupSpaceStreams,
   singleDocumentClosure, type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult,
 } from "@cotal-ai/core";
+import { openAuthorityClient } from "../src/authority-client.js";
 import { cotalAuthProvider } from "../src/provider.js";
 import { deriveOwnerForIdpSubject } from "../src/derive.js";
 import { grantActor } from "../src/ledger.js";
@@ -70,6 +74,7 @@ const [a] = fx.accounts;
 const space = a.space, accountPublicKey = a.accountPublicKey;
 const handles: AuthServiceHandle[] = [];
 const prevHome = process.env.COTAL_HOME;
+let harness: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
 try {
   await setupSpaceStreams({ servers: fx.servers, space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
   const stateDir = join(fx.dir, "svauth-state"), clientDir = join(fx.dir, "svauth-client"), home = join(fx.dir, "svauth-home");
@@ -257,7 +262,34 @@ try {
   c.check("J2 refused proofs exhaust the peer's budget (429) while a valid proof still answers", lastBad === 429 && stillValid.state === "status", { lastBad, stillValid });
   const loop = await raw(on.url, { request: st, proof: { kind: "idp", token: "not-a-jwt" } });
   c.check("J2 the public budget never consumes the loopback face's", loop.status === 401, loop);
+
+  // ---- K: an undecided proposal past its expiry (sim expiry) ----
+  const rExp = register(rid()), rLive = register(rid());
+  const kExp = await viaProvider("a", rExp), kLive = await viaProvider("a", rLive);
+  const expId = kExp.state === "approval-required" ? kExp.proposalId : "";
+  harness = await openAuthorityClient({ server: fx.servers, space, dataAccount: { pub: a.auth.account.pub, signingSeed: a.auth.account.signingSeed! },
+    label: `harness:${space}`, grants: (id) => ({ publish: [">"], subscribe: [`_INBOX_${id}.>`] }), log: () => {} });
+  const kv = await new Kvm(harness.nc).open(epAuthBucket(space));
+  const enc = new TextEncoder(), dec = new TextDecoder(), expire = Date.now() - 1;          // simulation: the canonical expiry has passed
+  const pe = (await kv.get(`svcprop.${expId}`))!;
+  await kv.update(`svcprop.${expId}`, enc.encode(JSON.stringify({ ...JSON.parse(dec.decode(pe.value)), expiresAtMs: expire })), pe.revision);
+  const ce = (await kv.get("svccap.space"))!, cap = JSON.parse(dec.decode(ce.value)) as { pending: Array<{ proposalId: string }> };
+  await kv.update("svccap.space", enc.encode(JSON.stringify({ ...cap, pending: cap.pending.map((x) => (x.proposalId === expId ? { ...x, expiresAtMs: expire } : x)) })), ce.revision);
+  await new Promise((r) => setTimeout(r, 1000));                                             // past the whole expiry second the view carries
+  const kRead = await propRead(expId);
+  c.check("K1 (sim expiry) the host still reads the expired proposal as live proposed", kRead.state === "present" && (kRead.record.value as { state: string }).state === "proposed", kRead);
+  const k2 = await viaProvider("a", status(rExp.instanceId, rExp.requestId)), k3 = await viaProvider("a", rExp);
+  c.check("K2 its status reads refused with reason expired", k2.state === "status" && k2.status.state === "refused" && k2.status.reason === "expired" && k2.status.proposalId === expId, k2);
+  c.check("K3 its register replay is denied proposal-expired, not approval-required", denied(k3, "proposal-expired"), k3);
+  const kDecide = await decide(ownerA, expId, kRead.state === "present" ? kRead.record.revision : 0, "approve");
+  c.check("K4 the host refuses its approval as expired, agreeing with the door", kDecide.state === "denied" && kDecide.reason === "expired", kDecide);
+  const k5 = await viaProvider("a", status(rLive.instanceId, rLive.requestId)), k6 = await viaProvider("a", rLive);
+  c.check("K5 the unexpired control still reads proposed and replays approval-required", k5.state === "status" && k5.status.state === "proposed"
+    && k6.state === "approval-required" && kLive.state === "approval-required" && k6.proposalId === kLive.proposalId, { k5, k6 });
+  const k7 = await viaProvider("a", status(i1, r1.requestId));
+  c.check("K6 the approved and revoked history keeps its answer", k7.state === "status" && k7.status.state === "revoking", k7);
 } finally {
+  await harness?.close().catch(() => {});
   if (prevHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prevHome;
   for (const h of handles) await h.close().catch(() => {});
   await fx.close();
