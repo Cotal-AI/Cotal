@@ -592,7 +592,8 @@ or one with a stop that was requested and never confirmed, refuses `LIFECYCLE_BL
 was published and never confirmed keeps the manager's record `stopping` under that request, also
 after its process exits. After a `down` that ends this way, the next bare `up` or `down` refuses
 `LIFECYCLE_BLOCKED` and names the instance and the original request. `service start`, `restart` and
-`stop` refuse it `OPERATION_UNKNOWN` before any readiness probe or record write. When the launch's
+`stop` refuse it `LIFECYCLE_BLOCKED`, exit 2, before any readiness probe, stop request or record write.
+The earlier stop's outcome stays unknown. When the launch's
 request file does not read as its own, the refusal reports that it is unknown whether a stop was
 published. A manager record that an earlier release left `unknown` while its launch still holds a
 stop request is recorded `stopping` under that request when its process is gone. Its exit is never

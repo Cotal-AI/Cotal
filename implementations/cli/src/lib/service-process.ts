@@ -76,11 +76,12 @@ export function retainedStopRequest(value: ServiceInstance): NativeStopEvidence 
 }
 
 /** The refusal for a retained native stop, made before any readiness probe, stop request or record
- *  write. A request file that does not read as this launch's own is named an unknown publication. */
+ *  write. This command has no effect, so it is refused; only the earlier stop's outcome is unknown. A
+ *  request file that does not read as this launch's own is named an unknown publication. */
 function retainedNativeStop(definition: ServiceDefinitionSnapshot, row: ServiceInstanceSnapshot, retained: NativeStopEvidence): CommandFailure {
-  return new CommandFailure("unknown", "OPERATION_UNKNOWN", retained.publication === "published"
-    ? "an earlier native stop request is retained without its terminal receipt; it was not resubmitted and its exit was not settled as a crash"
-    : "this launch's native stop request file does not read as its own, so whether an earlier stop was published is unknown; nothing was submitted and its exit was not settled as a crash",
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", retained.publication === "published"
+    ? "an earlier native stop request is retained without its terminal receipt, so its outcome is unknown; nothing was submitted or written and its exit was not settled as a crash"
+    : "this launch's native stop request file does not read as its own, so whether an earlier stop was published is unknown; nothing was submitted or written and its exit was not settled as a crash",
   { target: { ...instanceProjection(row), requestId: retained.requestId, stopPublication: retained.publication }, remedy: `inspect the original request with cotal service status ${definition.name} --instance ${row.name} --space ${row.record.value.space}` });
 }
 
