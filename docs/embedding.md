@@ -1249,7 +1249,8 @@ detect a cross-account pair of legitimately constructed handles. Future service 
 construct the registry, reader and callout from the same authenticated account context.
 
 A package-internal custody writer is not exported; in the product only the service endpoint host's
-decide and revoke reach it, and nothing in the product creates the proposal they would act on. Bootstrap
+decide and revoke reach it, and the proposals they act on come only from the owner-proved public
+authority route of a context opened with `serviceEndpoints`. Bootstrap
 writes the reservation, the pending-root endpoint gate, a creating head, a frozen activation native
 gate opened at generation1, a RootPlan fixed once by head CAS, the planned active root, an
 identical-bytes native gate touch and the active head stamp. It rechecks the endpoint gate at open
@@ -1275,8 +1276,9 @@ time the caller acts on it. The caller supplies that deadline and the
 reservation; nothing here authenticates a host, approves serving, retires terminally, releases an
 alias or rotates a root.
 
-A second package-internal dormant module builds service host operations on that writer: register
-admission, decide (approve or refuse), revoke, and the operation and proposal reads. It shares the
+A second package-internal module builds service host operations on that writer: register
+admission, decide (approve or refuse), revoke, a create-only name binding, and the operation and
+proposal reads. It shares the
 writer's sealed host, plane-claim hold check and fatal latch, and each invocation opens its own
 custody host over a per-invocation effect registry. That host writes only the invocation's scope,
 the exact keys discovery located before the effect registry opened, and the effect registry is
@@ -1308,11 +1310,14 @@ are public.
 
 `openAuthAuthorityPlane` and `startAuthService` take `serviceEndpoints: { startup: { kind: "normal" } }`
 to host these operations; it is off by default and no CLI flag sets it. With it, the plane and the
-hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke` and the two reads
-in process. A hosted context rejects it as `unavailable` while it is not ready. Register admission
-stays package-internal, so nothing in the product creates a proposal, and there is no route,
-capability or caller policy. The host authenticates no caller: the embedder must authenticate the
-operator or owner granter it passes. The host runs over the plane's claim hold, data account and
+hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke`, `name-bind` and
+the two reads in process. A hosted context rejects it as `unavailable` while it is not ready. That
+function has no route, capability or caller policy; register admission is reachable only through the
+public route below. The host authenticates no caller: the embedder must authenticate the operator or
+owner granter it passes. `name-bind` needs an operator granter and `expectedRevision: 0`. It creates
+the endpoint's name binding once, with your `claimReference`, and only the identical request recovers
+it; nothing updates, transfers or releases a name. The host checks no domain control, so verify the
+claim, or delegate a namespace you control, before you bind. The host runs over the plane's claim hold, data account and
 actor ledger directory. A restore or missing startup refuses the plane open, which unwinds and
 releases the claim. If that unwind cannot close an effect connection, it stops there: the claim
 stays held, the plane's clients, scanners and cleanup timer stay live, and there is no handle to
@@ -1328,9 +1333,21 @@ while it stays open, so you can retry close. Until a retry succeeds or the proce
 the administrative rail, both scanners and the remaining clients stay live, so no successor can
 take over the claim.
 
-This is a refusal foundation, not service endpoint admission. Nothing in the product creates a
-proposal, so service bootstrap and cancellation are not available to embedders, and terminal
-retirement, complete observer evidence, writer exclusion and restore readiness remain unavailable. Do not seed service reservations in an existing space, adopt old service-shaped rows,
+With `serviceEndpoints`, both faces also serve `/service-endpoint-authority`, and without it that
+route answers 404. `GET` returns the receiver's account and space. `POST` takes a `{request, proof}`
+envelope of at most 2 MiB; the IdP proof is the credential on either face and derives the owner, who
+needs a current interactive cli or web row. Register verifies the submitted closures against their
+digests and answers `approval-required` with the proposal id and digest. Status reads the caller's
+own register by its requestId. A typical sequence: the service registers, you bind its name with an
+operator `name-bind`, the owner approves with `decide`, and status then reads `approved-unregistered`
+while a replayed register answers `pending`. The auth provider's `serviceEndpointInfo` and
+`serviceEndpointAuthority` hooks are the client. A changed body under the same request id is a
+conflict, and another owner's equal request id is a separate request.
+
+This is proposal admission and approval, not a usable service endpoint. Approval runs service
+bootstrap and revoke runs cancellation, but no registration, service credential, callout or caller
+policy follows, and terminal retirement, complete observer evidence, writer exclusion and restore
+readiness remain unavailable. Do not seed service reservations in an existing space, adopt old service-shaped rows,
 or use ordinary retirement to make them terminal. A signing-key or raw-store holder can bypass
 helper guards, so schema rejection alone does not make mixed-version writers safe. Restore must
 quarantine service work until a separately supported reconciliation protocol is available.

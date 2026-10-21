@@ -1622,12 +1622,58 @@ itself trips no call it waits for: each ends under its own discovery-read bound 
 deadline, each at most 60 s. Its own scanner teardown, after that wait, does trip the host, which by
 then has no call in flight, and does not make the plane fatal.
 
-The plane and a hosted context expose only `decide`, `revoke`, `operation-read` and `proposal-read`,
-as one in-process function; a hosted context refuses it as `unavailable` while it is not ready.
-Register admission has no product caller, so no proposal can be created through the product. There
-is no route, capability, CLI flag or caller policy. The host checks an owner granter's current
-interactive row but authenticates no caller: the embedder MUST authenticate the granter it passes,
-operator or owner.
+The plane and a hosted context expose `decide`, `revoke`, `name-bind`, `operation-read` and
+`proposal-read` as one in-process function; a hosted context refuses it as `unavailable` while it is
+not ready. That function has no route, capability, CLI flag or caller policy. The host checks an
+owner granter's current interactive row but authenticates no caller: the embedder MUST authenticate
+the granter it passes, operator or owner.
+
+`name-bind` is create-only and needs an operator granter. Its `expectedRevision` MUST be 0; any other
+value answers `unsupported`, and a native control endpoint name is refused. It issues one
+zero-history create of `servicename.<endpointToken>` through its invocation's custody host, whose
+scope and effect credential hold only that key. The row binds account, space, endpoint, owner, the
+operator's `claimReference`, requestId and the canonical request digest. Only the identical request
+recovers an existing row; the same requestId with another body is a `conflict`, and any other request
+for a bound name is `name-bound`. Nothing updates, transfers or releases a binding. The host verifies
+no domain control: the claim reference is the operator's assertion, and an unused name is no proof.
+A `held` name binding names its requestId's deterministic operation coordinate, which no operation
+record carries; it recovers only by replaying the same request.
+
+The public route `/service-endpoint-authority` exists only with `serviceEndpoints`, on both faces;
+without it the route answers 404. `GET` returns `{v:1, kind:"service-endpoint-authority-info", space,
+accountPublicKey}` for the receiver's own account with `cache-control: no-store`. `POST` takes one
+envelope of at most 2 MiB. The proof is the credential on either face; the loopback capability is
+never read. A request naming another account or space is refused before its proof is used. Only an
+IdP proof verifies in this cut, under the pinned issuer and exact audience, and its subject derives
+the owner; a service proof answers `proof-unsupported`. A refused proof counts against the face's
+refusal budget and answers 401, or 429 once that budget is spent; a valid proof never consumes it.
+Protocol answers are 202 for `approval-required` and `pending`, 200 for `status`, and for `denied`
+409 on a conflict or closed proposal, 422 on refused input, 429 on a bound and 403 otherwise. An
+answer that cannot be completed after the proof, or a `held` engine answer, is a 503 with no
+protocol echo, because the request may already be bound.
+
+Register compiles the submitted closures in memory. Each cluster digest names a submitted manifest
+whose root names a submitted cluster document, each verified against its content digest, and every
+artifact must belong to a declared closure. The proposal's commands are exactly those documents'
+declarations; a journal-class command is refused as `unsupported-runtime`. Only
+`expected:{state:"unregistered"}` is admitted. The engine requestId is the first 32 lowercase hex
+characters of SHA-256 over the canonical JSON `["cotal-service-endpoint-authority", 1, account,
+space, owner, endpoint, instanceId, operation, requestId]`, with the derived owner, so the full public
+idempotency key selects the binding. That binding's request digest covers the public request's
+canonical digest, which excludes the proof: a changed public body under the same key is a
+`conflict`. A first admission answers `approval-required` with the proposal id and digest. A replay
+answers from the proposal as it is now: `approval-required` while it is live, `pending` at phase
+`approved-unregistered` while its approval stands, and `denied` once the proposal is refused or
+expired or its approval revoked. Register runs no registration barrier and never answers
+`registered` or a credential.
+
+Status admits only `target:{kind:"operation", requestId}`, for the caller's own register; another
+owner's request reads `not-found`. It answers `registering` while that register is in flight,
+`proposed` while its proposal is live, `approved-unregistered` with the approval digest from the
+assignment's endpoint gate, `revoking` once the assignment has a cancel identity, and `refused` for a
+refused register or a closed proposal. Instance status, activation, renewal, readiness, revocation
+and Describe views answer `denied` with `unsupported`. Admitting a proposal issues no service
+credential and enables no callout or caller policy.
 
 A local scoped Describe callback may receive immutable request context alongside the caller.
 Its subject comes from actual dispatch, and its fingerprint is the canonical digest of
