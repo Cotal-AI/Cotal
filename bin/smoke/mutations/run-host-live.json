@@ -84,8 +84,8 @@
     {
       "name": "run-resume is served while the boot reconcile is still collecting",
       "file": "implementations/manager/src/run-hosting.ts",
-      "find": "  async resume(args: { runId: string; timeout?: string }): Promise<{ runId: string }> {\n    this.assertReconciled();\n",
-      "replace": "  async resume(args: { runId: string; timeout?: string }): Promise<{ runId: string }> {\n",
+      "find": "  async resume(args: { runId: string; timeout?: string }, ctx?: EpServeContext): Promise<{ runId: string }> {\n    this.assertReconciled();\n",
+      "replace": "  async resume(args: { runId: string; timeout?: string }, ctx?: EpServeContext): Promise<{ runId: string }> {\n",
       "afterRestore": "pnpm --filter cotal-ai... build",
       "expectRed": "a resume of the very run the reconcile is taking back, arriving while it collects, is refused unavailable",
       "cell": "a resume of the very run the reconcile is taking back, arriving while it collects, is refused unavailable"

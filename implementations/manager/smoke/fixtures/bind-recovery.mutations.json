@@ -4,8 +4,8 @@
     {
       "name": "a long-lived client stops recovering from a bind refusal (the stale bind strands it)",
       "file": "packages/core/src/endpoint.ts",
-      "find": "        if (r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error)) {\n",
-      "replace": "        if (false && r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error)) {\n",
+      "find": "        for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && r.reply.ok === false\n          && (replyRefusedBeforeEffect(r.reply.error) || unmappedHere(r)); reissues++) {",
+      "replace": "        for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && r.reply.ok === false\n          && (false || unmappedHere(r)); reissues++) {",
       "expectRed": "the stale (epoch 0) bind was replaced by the successor's"
     },
     {

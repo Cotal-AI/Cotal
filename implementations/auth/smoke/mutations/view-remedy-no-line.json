@@ -43,8 +43,8 @@
     {
       "name": "manager-caller permissions are minted without the fresh gate authorizer",
       "file": "implementations/auth/src/permissions.ts",
-      "find": "        return authorizeManagerCaller(t.owner, instanceId).then(() => permissionsFor(\n          \"manager-caller\",",
-      "replace": "        return Promise.resolve(permissionsFor(\n          \"manager-caller\",",
+      "find": "        return authorizeManagerCaller(t.owner, instanceId).then(() =>\n",
+      "replace": "        return Promise.resolve().then(() =>\n",
       "expectRed": "manager-caller refuses when the gate is not open at the permission mint",
       "note": "The exchange-time choice is not enough because a gate may freeze or change owner before the broker JWT is minted."
     }

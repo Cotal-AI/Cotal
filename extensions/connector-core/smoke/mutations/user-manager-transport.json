@@ -18,8 +18,8 @@
     {
       "name": "bypass accepted-goal following for the real user spawn",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        r = opts.follow\n",
-      "replace": "        r = false\n",
+      "find": "          follow: follow ? (submit, prepare) => this.ep.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, submit, opts.deadlineMs, {",
+      "replace": "          follow: false ? (submit, prepare) => this.ep.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, submit, opts.deadlineMs, {",
       "expectRed": "first real spawn followed canonical goal to terminal",
       "cell": "first real spawn followed canonical goal to terminal"
     },

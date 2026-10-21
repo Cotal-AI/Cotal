@@ -81,8 +81,8 @@
     {
       "name": "the manager restores an intended-buffer receipt and ignores the runtime's accepted-byte count",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      let accepted: number;\n      try {\n        accepted = await write(part.data);\n      } catch (error) {\n        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n      }\n",
-      "replace": "      let accepted = Buffer.byteLength(part.data, \"utf8\");\n      try {\n        await write(part.data);\n      } catch (error) {\n        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n      }\n",
+      "find": "      let accepted: number;\n      try {\n        accepted = await write(part.data);\n      } catch (error) {\n        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${rejectionText(error)}`);\n      }\n",
+      "replace": "      let accepted = Buffer.byteLength(part.data, \"utf8\");\n      try {\n        await write(part.data);\n      } catch (error) {\n        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${rejectionText(error)}`);\n      }\n",
       "expectRed": "a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
       "cell": "a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
       "note": "This restores the pre-fix receipt source while preserving the surrounding rejection path: the manager awaits the runtime call but ignores its accepted-byte result and counts what it INTENDED to write. The dropped-write control then exits 0 and prints `sent 9 bytes` even though its child sink remains empty, so this exact regression cannot pass as a hedge or wording change. RE-ANCHORED for the bracketed-paste delivery: the loop now writes `part.data` and each write is length-checked, so the pre-paste anchor no longer matches."

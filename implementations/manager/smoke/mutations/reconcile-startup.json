@@ -41,8 +41,8 @@
     {
       "name": "the seat's turn pull answers during the boot window",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      throw new EpEnvelopeError(\"unavailable\", \"the manager is still reconciling accepted goals at boot; the pending-turn index is not rebuilt yet, retry (SPEC 13.6)\");",
-      "replace": "      void 0;",
+      "find": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } {\n",
+      "replace": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } {\n    if (!this.goalReconcileDone) return { turns: [] };\n",
       "expectRed": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
       "cell": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
       "note": "Measured 2026-09-03: KILLED. MANAGER RECONCILE STARTUP SMOKE FAILED  (5 passed, 1 failed) Named cell red: a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none"

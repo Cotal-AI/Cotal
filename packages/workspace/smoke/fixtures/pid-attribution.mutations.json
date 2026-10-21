@@ -18,8 +18,8 @@
     {
       "name": "PREDICTED KILLED (>=1 red) - a live pid is trusted without attributing it at all, so the FOREIGN state disappears and a stale record naming a live stranger reads as a healthy manager",
       "file": "implementations/cli/src/lib/manager-proc.ts",
-      "find": "  return { state: commandIsCotalSupervisor(cmd.command) ? \"alive\" : \"foreign\", pid, command: cmd.command };",
-      "replace": "  return { state: \"alive\", pid, command: cmd.command };",
+      "find": "  return readProcessRecord(PID_PATH(space, root), commandIsCotalSupervisor, probe, readCommand);",
+      "replace": "  return readProcessRecord(PID_PATH(space, root), () => true, probe, readCommand);",
       "expectRed": "a live pid that is NOT a manager reads as FOREIGN, not as a healthy manager"
     },
     {
