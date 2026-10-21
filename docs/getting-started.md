@@ -167,7 +167,9 @@ and **anycast** (to any one holder of a role). More in
 
 `cotal status` shows what is set up and running: the machine, its processes, the spaces it knows,
 and the start command for anything that is down. It starts nothing itself. Running `cotal setup`
-again with the same answers changes nothing.
+again with the same answers changes nothing. Another space needs no second setup:
+`cotal space create <name>` in another folder prepares it with the `default` persona and your
+application, and `cotal up` there starts it.
 
 The dashboard is a separately configured owned service. Its default bind is loopback port 7799;
 its private single-use browser link is kept in the original launch's owner-private session record,

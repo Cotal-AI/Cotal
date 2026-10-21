@@ -133,11 +133,14 @@ try {
   cliIn(autoRoot, "down");
   if (startedOccupant) cliIn(occupantRoot, "down");
 
+  // The warning needs a real invocation id, 32 hex characters, and the unit's MainPID equal to the
+  // up process. up runs systemctl as its own direct child, so the fake's $PPID is that pid.
+  const invocationId = "0123456789abcdef0123456789abcdef";
   const fakeSystemctl = join(fakeBin, "systemctl");
-  writeFileSync(fakeSystemctl, "#!/bin/sh\nprintf '%s\\n' 'Type=oneshot' 'RemainAfterExit=yes' 'Id=cotal-warning.service' 'InvocationID=warning-smoke'\n");
+  writeFileSync(fakeSystemctl, `#!/bin/sh\nprintf '%s\\n' 'Type=oneshot' 'RemainAfterExit=yes' 'Id=cotal-warning.service' 'InvocationID=${invocationId}' "MainPID=$PPID"\n`);
   chmodSync(fakeSystemctl, 0o755);
   const warned = cliInEnv(warningRoot, {
-    INVOCATION_ID: "warning-smoke",
+    INVOCATION_ID: invocationId,
     PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
   }, "up", "--detach", "--open", "--space", "warning");
   const warnedOutput = plain(warned.stdout + warned.stderr);
@@ -162,6 +165,8 @@ try {
   }
   ok("delivery-aware marker is bound to the manager pid", pidOf(recordName(MANAGER_DELIVERY_AWARE_MARKER)) === pidOf(recordName(MANAGER_PIDFILE)));
   ok("auth material was provisioned (.cotal/auth)", existsSync(join(root, ".cotal", "auth")));
+  const persona = join(root, ".cotal", "agents", "default.md");
+  ok("up --detach writes the default persona into the root's catalog and says so", existsSync(persona) && /wrote default persona: .*default\.md/.test(plain(up.stdout)), up.stdout);
 
   // 2) the manager ANSWERS a real `cotal ps` — no pre-arranged creds, resolved from the folder's
   //    auth + the sandboxed mesh registry, exactly as an operator would run it. Retried while the
@@ -171,7 +176,7 @@ try {
   for (let i = 0; i < 15 && !answered; i++) {
     const r = cli("ps");
     last = { stdout: r.stdout, stderr: r.stderr };
-    answered = r.status === 0 && /no managed agents/.test(r.stdout);
+    answered = r.status === 0 && /^\s*No managed agents\.$/m.test(r.stdout);
     if (!answered) await sleep(2000);
   }
   ok("cotal ps is answered by the detached manager", answered, last);
@@ -228,6 +233,8 @@ try {
     managerDead = !alive(preRestartPid);
   }
   ok("the manager is dead before the restore refresh", managerDead, preRestartPid);
+  // The same refresh also writes back a default persona that went missing.
+  rmSync(persona);
   const restored = cli("up", "--server", SERVER);
   const restoredOut = plain(restored.stdout + restored.stderr);
   ok("a refresh that restores a missing manager exits 0", restored.status === 0, restoredOut);
@@ -240,9 +247,12 @@ try {
     pidfile: pidOf(recordName(MANAGER_PIDFILE)),
   });
   pids[pids.indexOf(preRestartPid)] = restoredPid;
+  ok("the refresh writes back the missing default persona and says so", existsSync(persona) && /wrote default persona:/.test(restoredOut), restoredOut);
 
   // 2e) the SAME refresh, run again with nothing to heal, must print only the already-running line
   //     and NOT the restore line - the no-op case this defect used to make indistinguishable from 2d.
+  const editedPersona = `${readFileSync(persona, "utf8")}\nYou review pull requests.\n`;
+  writeFileSync(persona, editedPersona);
   const noop = cli("up", "--server", SERVER);
   const noopOut = plain(noop.stdout + noop.stderr);
   ok("a no-op refresh exits 0", noop.status === 0, noopOut);
@@ -253,6 +263,7 @@ try {
     noopOut,
   );
   ok("the manager pidfile is unchanged by the no-op refresh", pidOf(recordName(MANAGER_PIDFILE)) === restoredPid, managerPidFile);
+  ok("a no-op refresh leaves an edited default persona byte-identical and prints no write", readFileSync(persona, "utf8") === editedPersona && !/wrote default persona/.test(noopOut), noopOut);
 
   // 3) down stops the whole stack, symmetric with up. Poll: the SIGTERM'd manager/daemon shut
   //    down gracefully, which can take a few seconds on slow CI.
@@ -356,7 +367,7 @@ try {
     // config (the documented checkout opt-in), or boot reports "no connector available" and the
     // detached spawn finds no responder on the class rail.
     cliInEnv(fgRoot, { ...fgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
-    fgUp = spawnProc(TSX, [CLI, "up", "--server", fgServer], { cwd: fgRoot, env: fgEnv, stdio: ["ignore", "pipe", "pipe"] });
+    fgUp = spawnProc(TSX, [CLI, "up", "--foreground", "--server", fgServer], { cwd: fgRoot, env: fgEnv, stdio: ["ignore", "pipe", "pipe"] });
     let fgOutText = "";
     fgUp.stdout?.on("data", (b: Buffer) => void (fgOutText += b.toString()));
     fgUp.stderr?.on("data", (b: Buffer) => void (fgOutText += b.toString()));
@@ -370,7 +381,7 @@ try {
     fgManagerPid = Number(readFileSync(fgRecord(MANAGER_PIDFILE), "utf8").trim());
     ok("foreground manager is a live process", Number.isFinite(fgManagerPid) && alive(fgManagerPid), fgManagerPid);
     const spawnSeat = cliInEnv(fgRoot, fgEnv, "spawn", "seat", "--detach", "--no-events", "--name", "bard");
-    ok("detached spawn of the shim seat succeeds", spawnSeat.status === 0 && /spawned .*bard/.test(plain(spawnSeat.stdout)), spawnSeat.stdout + spawnSeat.stderr);
+    ok("detached spawn of the shim seat succeeds", spawnSeat.status === 0 && plain(spawnSeat.stdout).includes("Agent joined") && /^\s*Agent:\s+bard$/m.test(plain(spawnSeat.stdout)), spawnSeat.stdout + spawnSeat.stderr);
     for (let i = 0; i < 50 && fgSeatPid === undefined; i++) {
       try { fgSeatPid = Number(readFileSync(fgSeatPidFile, "utf8").trim()) || undefined; } catch { /* not yet */ }
       if (fgSeatPid === undefined) await sleep(200);
@@ -421,7 +432,7 @@ try {
   let rgUp: ChildProcess | undefined;
   try {
     cliInEnv(rgRoot, { ...rgEnv, COTAL_ALLOW_CHECKOUT_SEED: "1" }, "ext", "seed", "--repair");
-    rgUp = spawnProc(TSX, [CLI, "up", "--server", `nats://127.0.0.1:${rgPort}`], { cwd: rgRoot, env: rgEnv, stdio: ["ignore", "pipe", "pipe"] });
+    rgUp = spawnProc(TSX, [CLI, "up", "--foreground", "--server", `nats://127.0.0.1:${rgPort}`], { cwd: rgRoot, env: rgEnv, stdio: ["ignore", "pipe", "pipe"] });
     let rgOutText = "";
     rgUp.stdout?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
     rgUp.stderr?.on("data", (b: Buffer) => void (rgOutText += b.toString()));

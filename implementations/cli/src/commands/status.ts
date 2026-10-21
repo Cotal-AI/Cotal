@@ -36,6 +36,7 @@ import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, 
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { readPersonas, type PersonaEntry } from "../lib/personas.js";
+import { defaultPersonaFix } from "../lib/default-persona.js";
 import { c } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { agentStatus } from "./agents.js";
@@ -1263,7 +1264,12 @@ function nextActions(r: StatusResult): Section {
   if (!r.machine.connectors?.length) items.push({ command: `${cmd} setup`, description: "Set up an agent application and a space" });
   else {
     if (r.selected.resolved) {
-      if (r.selected.personas.default !== "valid") items.push({ command: `${cmd} setup`, description: "Configure your default agent" });
+      const s = r.selected;
+      // Name what fixes the default persona alone; setup does far more than that.
+      if (s.personas.default === "missing") {
+        const fix = defaultPersonaFix({ space: s.space, root: s.root, origin: r.meshes.items.find((m) => m.space === s.space)?.origin }, cmd);
+        items.push({ command: fix.command, description: fix.cwd ? `Write the default persona; run it in ${fix.cwd}` : "Create the default persona" });
+      } else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${s.space}`, description: "See what is wrong with the default persona" });
       else items.push({ command: `${cmd} spawn`, description: "Open your default agent" });
       items.push({ command: `${cmd} ps`, description: "See the agent roster" });
     }

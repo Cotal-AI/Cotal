@@ -270,7 +270,7 @@ async function main() {
     check("C27 the follow ignores them and returns A's own terminal for that goal, not B's forged success, and launches it once",
       hostile?.ok === false && hostile.responder === A && typeof hostile.code === "string" && hostile.code !== "succeeded" && hostile.errorOutcome !== "unknown"
         && !JSON.stringify(first.hostile).includes("forged") && first.launches?.decoy === 1, [first.hostile, first.launches]);
-    check("C24 a command the person's view does not carry (status) is a broker refusal before any effect, not unavailable",
+    check("C24 a command the person's view does not carry (ps) is a broker refusal before any effect, not unavailable",
       err(first.notGranted)?.code === "permission-denied" && err(first.notGranted)?.outcome === "not-executed" && err(first.notGranted)?.unanswered === false, first.notGranted);
   } finally {
     if (chrome && chrome.exitCode === null) await killAndAwaitExit(chrome, "SIGKILL");

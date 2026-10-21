@@ -8,14 +8,14 @@
   "completionMarker": "persona templates:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/default-agent-publish.json",
   "why": [
-    "Setup writes the default persona from a literal template rather than through the guarded agent-file writer.",
+    "Setup, space create and a local up write the default persona from a literal template rather than through the guarded agent-file writer.",
     "The mutation is compile-clean and restores the shipped regression: an empty default post ACL under the protocol's default-deny policy.",
     "The cells check the new-install grant and both sides of the byte-exact migration decision without touching real setup state."
   ],
   "mutations": [
     {
       "name": "M1 remove the default wildcard post grant",
-      "file": "implementations/cli/src/commands/setup.ts",
+      "file": "implementations/cli/src/lib/default-persona.ts",
       "find": "subscribe: []\nallowSubscribe: [\">\"]\nallowPublish: [\">\"]\ncapabilities: [spawn, run]",
       "replace": "subscribe: []\nallowSubscribe: [\">\"]\nallowPublish: []\ncapabilities: [spawn, run]",
       "expectRed": "default-channel-creation: default stays unsubscribed with wildcard read and post ACLs",
@@ -24,7 +24,7 @@
     },
     {
       "name": "M2 stop recognizing the byte-exact legacy default",
-      "file": "implementations/cli/src/commands/setup.ts",
+      "file": "implementations/cli/src/lib/default-persona.ts",
       "find": "  return current === LEGACY_DEFAULT_AGENT ? DEFAULT_AGENT : undefined;",
       "replace": "  return undefined;",
       "expectRed": "legacy-default-upgrade: the byte-exact legacy template gains wildcard post permission",
@@ -33,7 +33,7 @@
     },
     {
       "name": "M3 migrate every existing default regardless of user edits",
-      "file": "implementations/cli/src/commands/setup.ts",
+      "file": "implementations/cli/src/lib/default-persona.ts",
       "find": "  return current === LEGACY_DEFAULT_AGENT ? DEFAULT_AGENT : undefined;",
       "replace": "  return DEFAULT_AGENT;",
       "expectRed": "edited-default-preservation: a user-edited legacy persona stays byte-identical",
@@ -42,7 +42,7 @@
     },
     {
       "name": "M4 drift the frozen legacy fixture to the current wildcard post grant",
-      "file": "implementations/cli/src/commands/setup.ts",
+      "file": "implementations/cli/src/lib/default-persona.ts",
       "find": "  \"allowPublish: []\",",
       "replace": "  'allowPublish: [\">\"]',",
       "expectRed": "legacy-migration-fixture: the frozen legacy template carries the empty post ACL",
@@ -51,7 +51,7 @@
     },
     {
       "name": "M5 remove workflow capability from the setup default",
-      "file": "implementations/cli/src/commands/setup.ts",
+      "file": "implementations/cli/src/lib/default-persona.ts",
       "find": "allowPublish: [\">\"]\ncapabilities: [spawn, run]\n---",
       "replace": "allowPublish: [\">\"]\ncapabilities: [spawn]\n---",
       "expectRed": "default-workflow-capability: the default declares spawn and run",
@@ -85,6 +85,15 @@
       "cell": "--expires-in 0 exits 1 naming the value (a TTL the seam would refuse)",
       "note": "Drops the CLI-side validation so a zero TTL falls through to the seam's throw after the operator believed the mint was underway. The cell requires the refusal at the command surface, naming the value.",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "M9 a space this machine started is sent to persona create instead of up",
+      "file": "implementations/cli/src/lib/default-persona.ts",
+      "find": "  return space.origin === \"up\"\n",
+      "replace": "  return space.origin === \"never\"\n",
+      "expectRed": "default-persona-fix: a space this machine started is fixed by up in its root",
+      "cell": "default-persona-fix: a space this machine started is fixed by up in its root",
+      "note": "The status, spawn and app-identity remedies all take this decision. The cell grades it directly, without a broker."
     }
   ]
 }

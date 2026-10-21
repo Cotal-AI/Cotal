@@ -18,6 +18,7 @@ import {
 } from "@cotal-ai/core";
 import { defaultPersonaRef, resolveTargetOrThrow, type MeshTarget } from "@cotal-ai/workspace";
 import { liveMeshNames } from "../lib/live-names.js";
+import { defaultPersonaFix } from "../lib/default-persona.js";
 
 /** Every credential directory provision makes is a fresh `mkdtemp` under the OS temp dir with this prefix. */
 const CRED_DIR_PREFIX = "cotal-app-identity-";
@@ -80,6 +81,14 @@ function target(space: string | undefined): Promise<MeshTarget> {
   return resolveTargetOrThrow(space ? { space } : {});
 }
 
+/** What to run when the persona a bare spawn loads is missing. `up` in the root of a space this
+ *  machine started writes the `default` one; another name comes from `COTAL_DEFAULT_PERSONA`. */
+function missingPersonaNext(persona: string, t: MeshTarget): string {
+  if (persona !== "default") return "Create it, or point COTAL_DEFAULT_PERSONA at a persona that exists.";
+  const fix = defaultPersonaFix(t);
+  return fix.cwd ? `Run \`${fix.command}\` in ${fix.cwd} to write it.` : `Create it with \`${fix.command}\`.`;
+}
+
 async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<AppIdentityReply> {
   const name = values.name?.trim();
   if (!name) return { ok: false, error: "provision needs --name <name>" };
@@ -97,7 +106,7 @@ async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<A
     def = loadAgentFile(agentFilePath(t.root, persona));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT")
-      return { ok: false, error: `no "${persona}" persona in ${t.personaRoot} for the mesh "${t.space}". Run \`cotal setup\` to seed one.` };
+      return { ok: false, error: `no "${persona}" persona in ${t.personaRoot} for the mesh "${t.space}". ${missingPersonaNext(persona, t)}` };
     throw e;
   }
   // Derived as a foreground spawn derives them, and handed to the connector too, so the session's

@@ -7,7 +7,8 @@
  * Scripted: every input is a flag, a missing one is refused before anything is written, Cloud is
  * refused as in development, and a refusal leaves the sandbox as it was. A local space is prepared
  * the way `space create` prepares it, its default persona lands in the project's `.cotal/agents`,
- * and the application becomes the space's `harness` preference. A rerun changes nothing. A harness
+ * and the application becomes the space's `harness` preference, and yours when you have none. A
+ * rerun changes nothing. A harness
  * whose host tool is missing leaves the rest saved and the result partial. A self-hosted space is
  * one registered here, whose root is the project, or one registered from a connection file; either
  * way the persona lands in the catalog `cotal spawn` reads for that space. Without `--runtime` no
@@ -281,6 +282,8 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const persona = join(dir, ".cotal", "agents", "default.md");
   check("the default persona lands in the project's .cotal/agents and parses", existsSync(persona) && loadAgentFile(persona).name === "default_agent");
   check("the application is the space's harness preference", harnessOf("research") === "codex", readPreferences().spaces);
+  check("with no harness of your own, setup records the application as yours and lists the write",
+    readPreferences().defaults.harness === "codex" && written.includes("your harness preference"), { defaults: readPreferences().defaults, written });
   check("the next command is cotal up in the project", r?.next?.command === `${commandPrefix} up` && r.next.cwd === dir, r?.next);
   const space = await json(["space"]);
   check("cotal space lists it as prepared in the project", space.env?.result?.prepared?.some((p: { space: string; root: string }) => p.space === "research" && p.root === dir), shown(space));
@@ -312,6 +315,8 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
     partial.status === 4 && partial.env?.outcome === "partial" && partial.env.error?.code === "OPERATION_PARTIAL" && /claude needs claude on PATH/.test(partial.env.error.message) && partial.env.result.harness.missing.join() === "claude", shown(partial));
   check("and the rest is saved: the space, the persona and the preference",
     findPreparedSpace("claudespace")?.root === dir && existsSync(join(dir, ".cotal", "agents", "default.md")) && harnessOf("claudespace") === "claude");
+  check("a later setup with another application leaves your own harness as it was",
+    readPreferences().defaults.harness === "codex" && !partial.env?.result.written.some((w: { what: string }) => w.what === "your harness preference"), readPreferences().defaults);
   const human = await run(FULL("claudespace", dir, "claude"));
   check("its report does not call the space set up", human.status === 4 && /saved claudespace; claude is not set up yet/.test(human.stdout) && !/already set up/.test(human.stdout), shown(human));
 }
