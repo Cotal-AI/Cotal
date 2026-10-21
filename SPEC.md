@@ -1528,6 +1528,44 @@ and revocation can still fail the byte bound. Such residue blocks service writer
 enablement pending a separately authorized compatibility protocol. No cap raise, pruning,
 reactivation or terminal absence claim follows from the headroom check.
 
+Native service host operations keep five closed record families in the primary auth store:
+`svcop.<operationId>` (one request's binding), `svcprop.<proposalId>` (a proposal),
+`svccap.space` (the space's pending-proposal capacity), `svcasg.<endpointToken>.<instanceId>`
+(one selector's assignment) and `svchost.admission`. The operationId is the first 32 lowercase hex
+characters of SHA-256 over `cotal-service-host-op`, NUL, space, NUL and requestId, so one id
+namespace covers every host request in a space. A binding stores the canonical request digest; a
+reused requestId with any other body is a conflict and is never rebound. Every create requires zero
+retained key history, and a deletion or purge marker at any of these keys refuses and is never
+recreated. No record carries a TTL, and none is deleted or purged. A live operation or proposal
+becomes terminal only by a CAS on the same key, after every write it depends on is durable.
+
+Each write is one create or one exact-revision CAS on one key; there are no multi-key batches.
+Register reads admission, capacity, the selector's assignment and the name binding first. An initial
+refusal writes nothing and binds nothing. Otherwise the binding is created before the capacity CAS
+and the zero-history proposal create, whose times are fixed once in the binding. A refusal found
+after the binding exists is recorded on it. Capacity counts entries whose `expiresAtMs` is still in
+the future: at most 256 per space, 32 per owner and one per selector. Clock skew between writers
+can under-count that bound; it never extends authority. Past a register's own bound an absent
+proposal key is fenced with a terminal `expired` tombstone, so a delayed create loses. Every close
+writes the proposal's terminal record before it releases capacity. An unobserved release stays as
+recorded debt until a later read observes it.
+
+An approval binds before its first effect, then moves the proposal to `approving` at the admitted
+revision, creates the assignment, runs native custody bootstrap and writes the endpoint-gate approval
+CAS. No authority-increasing step starts at or after the operation's original deadline, which is at
+most ten minutes after admission and never past the proposal's expiry. An endpoint gate carrying
+the approval's digest, approved or later revoked, proves that approval landed; a landing observed
+after the deadline is recorded as a historical result, not current readiness. An expired approval
+that holds an assignment binds its own cancel identity in that assignment, or adopts the one
+already bound, and cancels natively.
+The assignment record carries the complete native cancel identity `{operationId, requestDigest,
+cause}`. Any authorized revoker can cancel from that record alone, and the first binding wins.
+Deny-new has landed exactly when the endpoint gate reads `revoked`. After that, an `approving`
+proposal of the assignment closes as `approved` when the gate carries an approval digest and as
+refused otherwise. Revocation stays nonterminal. Owner-scoped reads authorize against the subject
+owner fixed at binding, and terminal views carry no commands or cluster digests. None of these
+records proves a human decision, broker writer exclusion, restore readiness or terminal retirement.
+
 A local scoped Describe callback may receive immutable request context alongside the caller.
 Its subject comes from actual dispatch, and its fingerprint is the canonical digest of
 `{subject,envelope}`, using the complete original decoded JSON envelope after native Describe

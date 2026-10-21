@@ -1274,6 +1274,18 @@ time the caller acts on it. The caller supplies that deadline and the
 reservation; nothing here authenticates a host, approves serving, retires terminally, releases an
 alias or rotates a root.
 
+A second package-internal dormant module builds service host operations on that writer: register
+admission, decide (approve or refuse), revoke, and the operation and proposal reads. It shares the
+writer's sealed host, plane-claim hold check and fatal latch, and each invocation opens its own
+custody host over a per-invocation effect registry. Its records and their write order are in SPEC
+§13.1. Results name their bound operation once a binding exists: `pending`, `held` and `refused` all
+carry `operationId`, and `denied` means the invocation wrote nothing. Revoke results report
+`denyNew` from an endpoint-gate read, and that is `unknown` when the read failed. Completed results
+say whether this invocation applied them or returned a stored record. A stored approval returns
+unchanged, and its `approvedGateRevision` is null unless its own gate CAS was observed. Nothing in the
+product constructs this module and the index does not export it; only the typed request, result and
+view parsers in the service host contract are public.
+
 This is a refusal foundation, not service endpoint admission. The dormant writer above has no
 product caller, so service bootstrap and cancellation are not available to embedders, and terminal
 retirement, complete observer evidence, writer exclusion and restore readiness remain unavailable. Do not seed service reservations in an existing space, adopt old service-shaped rows,
