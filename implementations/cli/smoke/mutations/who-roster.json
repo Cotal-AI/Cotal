@@ -203,6 +203,15 @@
       "expectRed": "a live error roster is partial with ROSTER_ERROR and exit 4",
       "cell": "a live error roster is partial with ROSTER_ERROR and exit 4",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "who reads the roster once instead of watching it",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "    watch: true,\n",
+      "replace": "",
+      "expectRed": "a live unpopulated roster is partial with ROSTER_INCOMPLETE and exit 4",
+      "cell": "a live unpopulated roster is partial with ROSTER_INCOMPLETE and exit 4",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
 }

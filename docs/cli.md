@@ -2057,6 +2057,11 @@ A part `who` could not read makes the run `partial` (exit 4): a roster snapshot 
 `ps` names). A credential that may not read the roster is refused with `PERMISSION_DENIED` (exit 2),
 never shown an empty roster.
 
+`who` watches the roster and the channel registry on every mesh so it can report those states. On a
+static-auth or user-auth mesh the credential `who` connects with may not delete its watch consumers,
+so each one stays on the broker for five minutes after `who` exits. A script that runs `who` in a
+tight loop there can reach the broker's limit of 1000 consumers per stream.
+
 ## whoami
 
 ```bash

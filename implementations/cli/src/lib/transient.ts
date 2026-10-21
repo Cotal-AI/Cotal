@@ -30,12 +30,14 @@ export async function resolveConnect(values: ConnectValues): Promise<Connection>
  *  itself, binds no inbox, and consumes no channels. The caller stops it. Static and open credentials
  *  read both buckets once, leaving no watch consumer behind. A user bearer has no batched Direct Get
  *  row, so it watches them and waits for the presence replay; its consumer lasts until the broker's
- *  inactive threshold. `throwOnRefusal` hands connection refusals to the command kernel, and `report`
- *  takes endpoint errors and warnings instead of printing them. */
+ *  inactive threshold. `watch` keeps both watches for every credential, for a caller that reports
+ *  the watch's own state (`cotal who`); that caller waits for the presence replay itself, on its own
+ *  bound. `throwOnRefusal` hands connection refusals to the command kernel, and `report` takes
+ *  endpoint errors and warnings instead of printing them. */
 export async function openTransient(
   values: ConnectValues,
   name: string,
-  opts: { throwOnRefusal?: boolean; report?: (level: "error" | "warning", e: Error) => void } = {},
+  opts: { throwOnRefusal?: boolean; watch?: boolean; report?: (level: "error" | "warning", e: Error) => void } = {},
 ): Promise<{ ep: CotalEndpoint; space: string; connection: Connection }> {
   const conn = opts.throwOnRefusal ? await connectOrThrow(values, "operator") : await resolveConnect(values);
   const readOnce = conn.bearer === undefined;
@@ -47,7 +49,7 @@ export async function openTransient(
     consume: false,
     registerPresence: false,
     watchPresence: true,
-    readOnce,
+    readOnce: readOnce && !opts.watch,
     // Display name only. The wire principal comes from the resolved static credential or user
     // bearer; on an open mesh the endpoint self-mints it. Process environment never supplies
     // authority for an operator command.
@@ -58,7 +60,7 @@ export async function openTransient(
   ep.on("warning", (e: Error) => report("warning", e));
   try {
     await ep.start();
-    if (!readOnce) await ep.waitForPresenceSnapshot();
+    if (!readOnce && !opts.watch) await ep.waitForPresenceSnapshot();
   } catch (e) {
     await ep.stop().catch(() => {});
     throw e;
