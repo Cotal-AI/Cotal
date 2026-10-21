@@ -1,5 +1,33 @@
 # @cotal-ai/auth
 
+## 0.90.0
+
+### Minor Changes
+
+- 88ab21e: Refuse ordinary lifecycle mutation and connect paths for immutable service UID custody, including stamped-root retries and activation recovery. Preserve ordinary reservation records and keep service issuance, cancellation and retirement unavailable until their separate authority prerequisites are implemented.
+- 7b94728: Add host-only fresh revocation custody and sealed finite leader snapshots for private tool-result prerequisites. Existing stores and lost custody refuse. Runtime clock qualification remains explicitly unavailable, so this does not enable result serving or material issuance.
+- b928aaa: Add immutable local scoped-Describe receive context and complete-envelope fingerprints, plus an explicit bounded read-only service Describe client contract. Define closed service-authority contracts, provider HTTP client hooks, host control types, registration-bound access and renewal primitives, native service gate approval guards and credential-root access checks, native caller-policy storage, create-only application-service name bindings and caller-capability policy checks. Add focused transport and structural checks and document the read-only serving-grant reader. Native service registration remains unavailable until host lifecycle support is implemented.
+
+  Keep create-only native authority writes closed over deleted key history, including concurrent caller-policy creation and pending service gates.
+
+  Bind service serving-issuance evidence to broker connection coordinates and verify it after the native gate CAS.
+
+  Add a host-only service-callout mint seam with principal attribution, a separate client inbox nonce and an original fixed expiry.
+
+  Bind native service issuance receipts to the registered witness and epcred connection, and retain expired evidence until qualified retirement.
+
+  Compose an optional sealed native service callout with current root authorization, registered serving grants, connection-bound receipts and fixed-expiry encrypted responses. Production registration and lifecycle wiring remain unavailable.
+
+### Patch Changes
+
+- a793730: Add a package-internal dormant writer for native service custody bootstrap and endpoint-first cancellation. Nothing in the product calls it and it is not exported. It shares closed record shapes with the unchanged active-root reader, acts only under a genuine plane-claim hold re-read before and after each write, and bounds every request by the caller's original deadline. Bootstrap requests after the plan step are also bounded by the root plan's expiry, while cancellation keeps only its own deadline. Bootstrap holds instead of reporting an active root whose expiry its final check observes. It grants no approval, serving, terminal retirement, alias release or rotation.
+- 7657577: Refuse a native service endpoint gate as a session serving gate. The auth session redemption hooks now reject a service-family gate before they return a serving pin or stage any caller or serving ledger row, including a restage whose saved pin was taken while the gate was ordinary.
+- Updated dependencies [88ab21e]
+- Updated dependencies [b928aaa]
+  - @cotal-ai/core@0.90.0
+  - @cotal-ai/workspace@0.90.0
+  - @cotal-ai/lang@0.90.0
+
 ## 0.89.0
 
 ### Minor Changes
