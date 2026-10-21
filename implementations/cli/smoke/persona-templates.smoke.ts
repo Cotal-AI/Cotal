@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { DEFAULT_AGENT, LEGACY_DEFAULT_AGENT, reconcileDefaultAgent } from "../src/commands/setup.js";
+import { DEFAULT_AGENT, LEGACY_DEFAULT_AGENT, defaultPersonaFix, reconcileDefaultAgent } from "../src/lib/default-persona.js";
 
 let pass = 0;
 let fail = 0;
@@ -30,13 +30,15 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
-const setupSrc = readFileSync(fileURLToPath(new URL("../src/commands/setup.ts", import.meta.url)), "utf8");
+// The default's template lives with the writer every seeding command shares, and the guided team's
+// stay in setup. Each file is matched on its own, so a fence in one never pairs with one in the other.
+const templateSources = ["../src/commands/setup.ts", "../src/lib/default-persona.ts"].map((file) => readFileSync(fileURLToPath(new URL(file, import.meta.url)), "utf8"));
 
 // Every frontmatter block in setup's template literals. Anchored on the fences and on a `name:`
 // line ANYWHERE inside, not on the block starting with one: the managed-marker comment precedes
 // `name:` in the guided team's templates, and anchoring on the first line silently matched only
 // the one template that happens to start with it.
-const blocks = [...setupSrc.matchAll(/---\n([\s\S]*?)\n---/g)]
+const blocks = templateSources.flatMap((src) => [...src.matchAll(/---\n([\s\S]*?)\n---/g)])
   .map((m) => m[1])
   .filter((b) => /^name: /m.test(b));
 ok("setup ships at least the default persona plus the guided team", blocks.length >= 4, blocks.length);
@@ -127,12 +129,21 @@ try {
   rmSync(fixtureRoot, { recursive: true, force: true });
 }
 
+// The fix status, spawn and app-identity name for a missing default: `up` in the root of a space
+// this machine started writes it again, and any other space needs the file created.
+const upFix = defaultPersonaFix({ space: "s", root: "/r", origin: "up" });
+ok("default-persona-fix: a space this machine started is fixed by up in its root", upFix.command === "cotal up" && upFix.cwd === "/r", upFix);
+const fileFix = defaultPersonaFix({ space: "s", root: "/r", origin: "manual" });
+ok("default-persona-fix: any other space is fixed by creating the file in its catalog",
+  fileFix.command === "cotal persona create default --space s --file <persona.md>" && fileFix.cwd === undefined, fileFix);
+
 // The writer enumeration, by output path. Each entry is a file that names an agents directory AND
 // writes to it. Readers and path helpers are not listed. A new one fails this cell until someone
 // decides which half of the coverage it belongs to: the writer guard, or a template assertion.
 const KNOWN_WRITERS = [
   "packages/core/src/agent-file.ts", // saveAgentFile — guards itself
-  "implementations/cli/src/commands/setup.ts", // literal templates — asserted above
+  "implementations/cli/src/commands/setup.ts", // the guided team's literal templates — asserted above
+  "implementations/cli/src/lib/default-persona.ts", // the default's literal template — asserted above
 ];
 const searched = ["packages/core/src", "packages/workspace/src", "implementations", "extensions", "bin"];
 const found = new Set<string>();
@@ -165,7 +176,7 @@ const walk = (dir: string) => {
       // them by what they are rather than failing to see the files the guard rests on.
       const target =
         /["'`]agents["'`]|\.cotal\/agents|agentFilePath\(|cotalPath\("agents"/.test(window) ||
-        /export function (?:saveAgentFile|reconcileDefaultAgent)/.test(src);
+        /export function (?:saveAgentFile|reconcileDefaultAgent)|function writeDemoAgent\(/.test(src);
       if (target) found.add(rel);
     }
   }

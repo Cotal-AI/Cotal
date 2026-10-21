@@ -36,13 +36,16 @@ a connection file `addFromBundle` will register.
 
 `prepare` then writes, in order: the prepared space or the registration, the `default` persona in
 `<project>/.cotal/agents` (plus the demo personas with `--demo`), the space's `harness`
-preference, the application's `connector` and `mcpServers` actions, every present connector's
-`skills` action, `~/.agents/skills` when it is not current, the chosen runtimes, and the onboarded
-stamp. `setUpRuntimes` adds a chosen official runtime that is not installed through `addExtension`
-at the CLI's version, the spec `cotal update` replays, then asks every chosen provider's
+preference and your own when you have none, the application's `connector` and `mcpServers`
+actions, every present connector's `skills` action, `~/.agents/skills` when it is not current, the
+chosen runtimes, and the onboarded stamp. `setUpRuntimes` adds a chosen official runtime that is
+not installed through `addExtension` at the CLI's version, the spec `cotal update` replays, then asks every chosen provider's
 `available()`; a missing tool, a failed install or a provider that does not answer makes the result
 `partial`. It never removes a runtime. Each write is
-recorded in the result's `written` list, so a rerun that changes nothing is a `no-op`. An
+recorded in the result's `written` list, so a rerun that changes nothing is a `no-op`. The default
+persona comes from `seedDefaultPersona` in
+[`lib/default-persona.ts`](../implementations/cli/src/lib/default-persona.ts), which
+`space create` and a local `up` also call. An
 application whose `requires` is not on PATH runs none of its actions, and the result is `partial`
 with the rest saved. The rich presentation narrates actions through `runSteps`; `--json` and
 `--plain` run them quietly and keep stdout for the result. The old `--auth` / `--open` flags are

@@ -265,7 +265,7 @@ cotal setup --skills
 | Flag | Default | Meaning |
 |---|---|---|
 | `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server. `cloud` is refused as in development, before anything is written or contacted. |
-| `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. |
+| `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. When you have no `harness` preference of your own, it becomes yours too. |
 | `--runtime` | asked; none in a script | A runtime to set up besides the built-in `pty`: `tmux`, `cmux`, `orca`, `herdr` or an installed third-party one. Repeat it for each. |
 | `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. A script's folder must exist; a terminal offers to create it. |
 | `--space` | asked | The space to prepare (local) or the registered space to use (self-hosted). |
@@ -297,7 +297,9 @@ registered with `cotal space add` or a signed-in catalog, whose root must be `--
 `--connection-file` registers. Setup then seeds the `default` persona into
 `<project>/.cotal/agents`, the catalog `cotal spawn` reads for that space, records the application as
 the space's `harness` preference, runs the application's setup actions, and reconciles Cotal's
-skills. The result names the next command: `cotal up` in the project for a local space, or
+skills. When you have no `harness` preference of your own, setup also records the application as
+yours, so a space you prepare later with `space create` uses it. A value you already set stays.
+The result names the next command: `cotal up` in the project for a local space, or
 `cotal spawn --space <name>`. `--json` writes one envelope whose `result.written` lists every file
 setup wrote.
 
@@ -437,7 +439,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 |---|---|---|
 | `--server <url>` | auto (free local port) | Listen URL override. With `-f`, overrides the manifest's `broker.servers` under the same rules: a valid URL with no embedded credentials |
 | `--host <host>` | none | Bind host override for a **fresh** broker boot: an IP or hostname only, never a URL (that is `--server`) and never `host:port` (the port comes from `--server` or its default); a URL or port-bearing value is refused pointing at the right flag. With no `--server`, the broker URL is derived from it, so `--host <addr>` alone is enough to make a mesh reachable at that address; a `--host`/`--server` pair naming different addresses is refused. A wildcard bind (`0.0.0.0`, `::`) keeps a dialable loopback URL. Recorded on the mesh and reused by every later manager launch, so a repair or resume keeps remote [`attach`](#managed-seats) working. A live refresh (`✓ mesh already running`) does not rewrite `.cotal/auth/server.conf` or rebind nats; stop the broker, then re-run `up --host` |
-| `--space <s>` | the folder's name | Space name |
+| `--space <s>` | the folder's space | Space name |
 | `--root <prepared-dir>` | current folder's workspace | Use an existing local project's own `.cotal` root rather than inheriting one from the invoking folder. An absent, inherited or symlinked `.cotal`, or the machine's home store, refuses before startup. Prepare a new folder with `space create <space> --root <dir>` first. Relative file, restore, channels, TLS and store paths remain relative to the invoking folder. The native `up` selection rule still applies after startup. |
 | `--store-dir <dir>` | none | JetStream store directory (recorded; a repair up reuses it) |
 | `--max-file-store <bytes>` | nats-server's dynamic cap | JetStream file storage cap in bytes (a positive integer, no unit suffix). Without it nats-server sizes the store at start as three quarters of the free space on its filesystem. The cap is fixed at broker start: a running broker cannot change it (`cotal down` first), `down --preserve-state` keeps it for the resume, and a resume with a different value is refused. Not accepted with `-f` |
@@ -474,6 +476,10 @@ prepare that folder with `space create <space> --root .`, then run `up --root .`
 home folder if the home stack was intended. When `--root` names another prepared project, run bare
 `cotal down` from that project folder: bare down
 stops the folder's stack, and `down --space` is not a remote replacement for that scope. With no
+`--space`, `up` runs the folder's space: the one its auth account names, else the one its stack or
+running mesh records, else the one prepared there, else `main`. A second `up` in the same folder
+runs the same space again. A folder whose stack and registrations name more than one space refuses
+with `CONFLICT` and asks for `--space`. With no
 `--server`, it auto-selects a free port if the default address is taken, and a later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
 stays fail-loud on collision. A background boot also brings up the control plane (delivery daemon in auth
@@ -487,11 +493,21 @@ broker-only. For a split topology with a manager, wait for `.cotal/manager.<spac
 host and run [`supervise`](#supervise) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
-only what actually started. Ctrl-C on a foreground `up` stops the manager through the same stop as
-bare `cotal down` (see [`down`](#down)), then the rest of the stack, and reports managed agents
-under the same rule: when the manager stop is refused, Ctrl-C prints the refusal with the reap route
-and leaves the stack running. The `-f` form is a
+only what actually started. On POSIX, a foreground broker has its own session and process group.
+Terminal Ctrl-C reaches the CLI owner, which stops the manager through the same stop as bare
+`cotal down` (see [`down`](#down)), then the rest of the stack, and reports managed agents under
+the same rule. When the manager stop is refused, Ctrl-C prints the refusal with the reap route and
+leaves the stack running, including the manager, broker, delivery and any auth service. A second
+interrupt during teardown does not start another stop. Windows keeps its existing console signal
+behavior. The `-f` form is a
 [manifest deploy](#manifest-deploys).
+
+An `up` that starts or refreshes a space on this machine writes the `default` persona into
+`<root>/.cotal/agents` when the root has none, so a bare `cotal spawn` has a persona to launch. A
+space prepared or started before it had one gets it on its next `up`, and a persona you edited is
+left as it is. A controller stack lists the write under `result.written` and in its report, and the
+retained launcher prints the path it wrote. If the write fails, the stack stays up and the failure
+is a warning. A controller recovery or restore leaves the persona to the next `up`.
 
 The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
 even with a group-writable umask. `up` creates `.cotal` and the broker store owner-private (`0700`)
@@ -1427,7 +1443,9 @@ shape `space show` gives, with `verified` and `replaced`.
 
 `space create <name>` prepares a space to start on this machine. It records the name and the root,
 which is `--root` or this folder, and makes `<root>/.cotal/`; `cotal up` in that root then starts the
-space under that name and drops the prepared record. The project and its ancestors must be physical
+space under that name and drops the prepared record. It also writes the `default` persona into
+`<root>/.cotal/agents` when the root has none, as setup does, and leaves one you edited as it is.
+`--json` lists the files it wrote under `result.written`. The project and its ancestors must be physical
 directories owned by you or root, with no symlinks. World write refuses. Group write is allowed only
 on a directory you own whose group is your user private group, the Debian and Ubuntu default, and
 that has no extended ACL. On Linux, `getent` must show that the group is your primary group, lists
@@ -1951,7 +1969,9 @@ The persona (`--config` > positional > the [`persona` preference](config.md#pref
 `default`) is loaded from the target mesh's `.cotal/agents/` when it is a bare name. A reference that contains a path separator or
 ends in `.md` is loaded from that file. A relative path resolves against the mesh root, except that
 an enrollment or a managed handoff resolves `--config` against the working directory. A missing
-persona is refused with the catalog directory or the file that was checked. The launch flags
+persona is refused with the catalog directory or the file that was checked. A missing `default`
+persona also names the command that writes one: `cotal up` in the root of a space this machine
+started, or `cotal persona create default` for any other space. The launch flags
 override the file. On a user-auth mesh the
 effective name is also the agent's actor token, so it must match the token grammar (no `-`); the
 spawn is refused with that explanation before any request is sent. Foreground runs the agent

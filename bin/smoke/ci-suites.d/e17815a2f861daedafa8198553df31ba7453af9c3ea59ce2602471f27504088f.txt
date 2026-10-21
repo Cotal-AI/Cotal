@@ -1,0 +1,2 @@
+# Foreground terminal signals preserve guarded whole-stack ordering and exact-owned cleanup.
+smoke:foreground-up-signals:live

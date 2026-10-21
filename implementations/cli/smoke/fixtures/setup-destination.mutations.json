@@ -67,9 +67,9 @@
     },
     {
       "name": "the default persona lands in the project folder itself",
-      "file": "implementations/cli/src/commands/setup.ts",
-      "find": "  const defaultPersona = join(agents, \"default.md\");\n",
-      "replace": "  const defaultPersona = join(inputs.project, \"default.md\");\n",
+      "file": "implementations/cli/src/lib/default-persona.ts",
+      "find": "  const path = join(personaDir(root), \"default.md\");\n",
+      "replace": "  const path = join(root, \"default.md\");\n",
       "expectRed": "the default persona lands in the project's .cotal/agents and parses",
       "cell": "the default persona lands in the project's .cotal/agents and parses",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -306,6 +306,24 @@
       "replace": "  return spec;",
       "expectRed": "ext add of a first-party name with no version installs this cotal's version, not the registry's newest",
       "cell": "ext add of a first-party name with no version installs this cotal's version, not the registry's newest",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "setup never records the application as your own harness",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "  if (prefs.defaults.harness === undefined && writePreference({}, \"harness\", inputs.harness, prefs.revision).changed) wrote(\"your harness preference\", preferencesPath());\n",
+      "replace": "",
+      "expectRed": "with no harness of your own, setup records the application as yours and lists the write",
+      "cell": "with no harness of your own, setup records the application as yours and lists the write",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "setup replaces a harness you already chose",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "prefs.defaults.harness === undefined && writePreference({}, \"harness\"",
+      "replace": "writePreference({}, \"harness\"",
+      "expectRed": "a later setup with another application leaves your own harness as it was",
+      "cell": "a later setup with another application leaves your own harness as it was",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]

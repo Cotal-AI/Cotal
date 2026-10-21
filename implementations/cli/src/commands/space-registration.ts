@@ -31,6 +31,7 @@ import {
   type UserBundle,
 } from "@cotal-ai/workspace";
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
+import { seedDefaultPersona } from "../lib/default-persona.js";
 import {
   candidateTarget,
   checkDialPolicy,
@@ -90,6 +91,8 @@ interface SpaceCreated {
   readonly root: string;
   readonly preparedAt: string;
   readonly current: boolean;
+  /** Every file create wrote: the prepared record, and the default persona when the root had none. */
+  readonly written: readonly { readonly what: string; readonly path: string }[];
 }
 
 interface SpaceForgotten {
@@ -321,8 +324,9 @@ function addedView(r: SpaceAdded | AddCancelled): Report {
 
 /**
  * `cotal space create <name>` prepares a space to start on this machine: it records the name and
- * the root, and makes `<root>/.cotal/` so `cotal up` there starts it under that name. It starts
- * nothing, and the selection is left as it is. The root is `--root`, else this folder.
+ * the root, and makes `<root>/.cotal/` so `cotal up` there starts it under that name. It seeds the
+ * default persona there as setup does, so a bare `cotal spawn` in the space has one to launch. It
+ * starts nothing, and the selection is left as it is. The root is `--root`, else this folder.
  */
 export async function spaceCreate(rest: readonly string[], rootFlag: string | undefined, presentation: Presentation): Promise<void> {
   if (rest.length !== 1 || rest[0]!.trim() === "") throw usage("usage: cotal space create <name> [--root <dir>]");
@@ -330,8 +334,11 @@ export async function spaceCreate(rest: readonly string[], rootFlag: string | un
   const root = resolve(rootFlag ?? process.cwd());
   if (!isDir(root)) throw usage(`--root ${root} is not a directory`, "create the folder first, or pass an existing one");
   checkLocalSpace(name, root, "--root", false);
-  const ts = recordLocalSpace(name, root).preparedAt;
-  const result: SpaceCreated = { kind: "space-created", space: name, root, preparedAt: ts, current: getCurrent() === name };
+  const prepared = recordLocalSpace(name, root);
+  const written = [{ what: "prepared space", path: prepared.file }];
+  const persona = seedDefaultPersona(root);
+  if (persona) written.push(persona);
+  const result: SpaceCreated = { kind: "space-created", space: name, root, preparedAt: prepared.preparedAt, current: getCurrent() === name, written };
   writeResult(presentation, { command: "space", target: { space: name }, result }, createdView);
 }
 
@@ -399,6 +406,7 @@ function isDir(path: string): boolean {
 function createdView(r: SpaceCreated): Report {
   const lines: Cell[] = [
     { text: `prepared ${r.space}`, tone: "ok", mark: "✓" },
+    ...r.written.map((w): Cell => ({ text: `  wrote ${w.what}: ${w.path}`, tone: "hint" })),
     { text: `  start it with \`cotal up\` in ${r.root}`, tone: "hint" },
   ];
   if (!r.current) lines.push({ text: `  select it with \`cotal use ${r.space}\``, tone: "hint" });
