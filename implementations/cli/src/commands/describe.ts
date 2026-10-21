@@ -13,11 +13,11 @@ import {
 } from "@cotal-ai/workspace";
 import { followEndpointAction, type AcceptedEndpointGoal } from "../lib/endpoint-goal.js";
 import { endpointResolution, resolveEndpointSelection, validateEndpointSelector } from "../lib/endpoint-selection.js";
-import { endpointFailure, NativeReplyError } from "../lib/endpoint-errors.js";
+import { endpointFailure, NativeReplyError, withPairedCallerRemedy } from "../lib/endpoint-errors.js";
 import { refuseUnmappedHandle } from "../lib/endpoint-capability-gates.js";
 import { invokeEndpointScatter, writeEndpointScatter } from "../lib/endpoint-scatter.js";
 import { onInstance, onFlag } from "../lib/control.js";
-import { openEndpointConnection as epConnection } from "../lib/endpoint-client.js";
+import { openEndpointConnection as epConnection, pairedCallerCommand } from "../lib/endpoint-client.js";
 
 const endpointTargetFlags = targetFlags.map((flag) => flag.name === "creds" ? { ...flag, description: "explicit credential file; native calls require its paired standalone context and registered static root" } : flag);
 export const describeFlags = [...endpointTargetFlags, onFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
@@ -119,6 +119,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
   let mayHaveInvoked = false;
   let accepted: AcceptedEndpointGoal | undefined;
   let streamStarted = false;
+  let pairedCaller = false;
   let interrupted: "SIGINT" | "SIGTERM" | undefined;
   const follow = new AbortController();
   const onInterrupt = () => { interrupted = "SIGINT"; follow.abort(); };
@@ -134,13 +135,17 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
     const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: 10_000, ...(instanceId === undefined ? {} : { instanceId }) });
     const declaration = service.commands.get(command);
     if (!declaration) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this command is not in the endpoint's authorized described surface", { target });
-    if (callerCredential && (!callerCredential.commands.includes(command) || declaration.class !== "ephemeral" || declaration.targeted || declaration.action === true)) throw new CommandFailure("refused", "UNSUPPORTED", "this command is outside the file's native synchronous untargeted scope; no command was published and no operator, generation or broader authority was substituted", { target });
+    if (callerCredential && (!callerCredential.commands.includes(command) || !pairedCallerCommand(declaration))) throw new CommandFailure("refused", "UNSUPPORTED", "this command is outside the file's native synchronous untargeted scope; no command was published and no operator, generation or broader authority was substituted", { target });
     if (values.cast && declaration.class !== "ephemeral") throw new CommandFailure("refused", "USAGE_INVALID", "journaled commands cannot be cast; no command was published", { target });
     if (values.wait && declaration.action !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--wait belongs to a command declared as a native action; no command was submitted", { target });
     const nativeTarget = await resolveTarget(nc, space, service, values, selection.reference !== undefined);
     if (declaration.targeted !== (nativeTarget !== undefined) || nativeTarget && !declaration.modes.includes(nativeTarget.mode)) throw new CommandFailure("refused", "USAGE_INVALID", "the selected targeting mode does not match the endpoint's declared command", { target });
     const canonicalInput = input === undefined && !declaration.contract.input.validate(null) && declaration.contract.input.validate({}) ? {} : input ?? null;
     if (!declaration.contract.input.validate(canonicalInput)) throw new CommandFailure("refused", "SCHEMA_INVALID", "arguments do not match the fetched native input contract; no command was published", { target, remedy: "read describe --json for the declared schema; the argument body is not echoed" });
+    // A static-root operator instrument can request only the manager. A paired caller file makes
+    // this call to another endpoint when the call and the whole surface fit that file's mode.
+    pairedCaller = connection.mode === "auth" && !callerCredential && !selection.reference && on === undefined && nativeTarget === undefined
+      && !values.admin && !values.all && !values.cast && !values.wait && [...service.commands.values()].every(pairedCallerCommand);
     selection.check();
     const beforeSubmit = () => {
       selection.check();
@@ -189,7 +194,8 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
       };
     }
   } catch (error) {
-    const failure = endpointFailure(error, { ...target, accepted: accepted ?? null }, mayHaveInvoked);
+    const refused = endpointFailure(error, { ...target, accepted: accepted ?? null }, mayHaveInvoked);
+    const failure = pairedCaller && mayHaveInvoked ? withPairedCallerRemedy(refused, endpoint) : refused;
     if (streamStarted) {
       writeStreamRecord(streamRecord("goal", "error", target, { outcome: failure.outcome, error: failure.detail(), accepted: accepted ?? null }));
       writeStreamRecord(streamRecord("goal", "end", target, { reason: interrupted ?? "observation-ended", outcome: failure.outcome, accepted: accepted ?? null, actionUnaffectedByViewClose: true }));

@@ -364,13 +364,18 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   // A space started here before and stopped since keeps its trust in this root.
   if (again && held.length === 1 && held[0] === name) return "started";
   if (held.length > 0) {
+    // This root's stack journal: its space, undefined when there is none, null when it cannot be read.
+    let journaled: string | null | undefined = null;
+    try { journaled = readStackJournal(root)?.journal.space; } catch { journaled = null; }
+    // A controller stack whose registration is gone, after a refused first start or a forget, keeps
+    // its trust and stack journal for this same space here. Preparing it again restores what its
+    // next start needs; any other space's trust still refuses.
+    if (held.length === 1 && held[0] === name && journaled === name) return "created";
     // A space stopped here keeps its trust in this root after its registration is gone, and a plain
     // `cotal up` from this root starts it again on its own launcher. Only that one space can run here.
     // A root with a controller stack journal is not offered that, because its start needs a prepared
     // or locally started registration.
-    let journaled = true;
-    try { journaled = readStackJournal(canonicalRoot(root)) !== undefined; } catch { journaled = true; }
-    const stopped = held.length === 1 && !journaled && !loadMeshes().some((m) => here(m.root)) && preparedSpaceAt(root) === undefined;
+    const stopped = held.length === 1 && journaled === undefined && !loadMeshes().some((m) => here(m.root)) && preparedSpaceAt(root) === undefined;
     throw refuse("CONFLICT", `${root} is already the root of "${held.join('", "')}"`, target, stopped
       ? `start "${held[0]}" again with \`cotal up\` from ${root}${held[0] === name ? "" : `, or create "${name}" in another folder with ${flag} <dir>`}`
       : `create the space in another folder, or pass ${flag} <dir>`);

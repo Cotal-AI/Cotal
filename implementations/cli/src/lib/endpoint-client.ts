@@ -1,4 +1,4 @@
-import { dialerFor, issuedUserCaller, standaloneConnectOpts } from "@cotal-ai/core";
+import { dialerFor, issuedUserCaller, standaloneConnectOpts, type ResolvedCommand } from "@cotal-ai/core";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
   CommandFailure, isWorkspaceTargetError, readStandaloneEndpointCaller, resolveControlTarget,
@@ -15,6 +15,11 @@ export interface EndpointConnection {
   mode?: string;
   auth: ControlAuth;
   callerCredential?: Omit<StandaloneCaller["reference"], "brokerAdmitted"> & { brokerAdmitted: true; commands: readonly string[] };
+}
+
+/** A command a paired caller file can carry: untargeted, synchronous and ephemeral. */
+export function pairedCallerCommand(command: Pick<ResolvedCommand, "class" | "targeted" | "action">): boolean {
+  return command.class === "ephemeral" && !command.targeted && command.action !== true;
 }
 
 /** One native caller connection. Explicit paired files never enter the operator-mint resolver. */

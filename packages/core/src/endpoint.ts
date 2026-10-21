@@ -50,6 +50,7 @@ import { readAcceptedRow } from "./issued-authority.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
 import { isConsumerAlreadyExists, isConsumerNotFound, isJetStreamMissing } from "./jetstream-missing.js";
+import { isRestoredConsumer } from "./backup.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
@@ -5791,13 +5792,22 @@ export class CotalEndpoint extends EventEmitter {
     return { ok: false, error: `op "${req.op}" not supported on the delivery admin service` };
   }
 
+  /** Create one of the daemon's Plane-3 durables. A named create is idempotent for the same config,
+   *  and a denial is never taken for existence. The one conflict accepted is this durable as a full
+   *  restore recreated it, starting after its recorded ACK floor ({@link isRestoredConsumer}); every
+   *  other failure propagates. */
+  private async addPlane3Durable(stream: string, config: Partial<ConsumerConfig>): Promise<void> {
+    try { await this.jsm!.consumers.add(stream, config); }
+    catch (e) {
+      if (!isConsumerAlreadyExists(e) || !isRestoredConsumer(this.space, stream, await this.jsm!.consumers.info(stream, config.durable_name!), config)) throw e;
+    }
+  }
+
   /** Fan-out loop: bind the privileged `fanout` durable on CHAT and route each message (routing only —
    *  the trusted reader is the auth gate). */
   private async runFanout(): Promise<void> {
     if (!this.js || !this.jsm) return;
-    // Named consumer creation is idempotent for the same config. A denial must not be mistaken for
-    // "already exists"; let the broker response decide and propagate every failure.
-    await this.jsm.consumers.add(chatStream(this.space), fanoutDurableConfig(this.space, { ackWaitMs: this.ackWaitMs }));
+    await this.addPlane3Durable(chatStream(this.space), fanoutDurableConfig(this.space, { ackWaitMs: this.ackWaitMs }));
     const consumer = await this.js.consumers.get(chatStream(this.space), FANOUT_DURABLE);
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
@@ -5873,8 +5883,7 @@ export class CotalEndpoint extends EventEmitter {
    *  + transfer each entry. */
   private async runReader(): Promise<void> {
     if (!this.js || !this.jsm) return;
-    // Same fail-loud rule as fan-out: idempotent success is success, denial is not existence.
-    await this.jsm.consumers.add(inboxStream(this.space), inboxReaderConfig(this.space, { ackWaitMs: this.ackWaitMs }));
+    await this.addPlane3Durable(inboxStream(this.space), inboxReaderConfig(this.space, { ackWaitMs: this.ackWaitMs }));
     const consumer = await this.js.consumers.get(inboxStream(this.space), INBOX_READER_DURABLE);
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);

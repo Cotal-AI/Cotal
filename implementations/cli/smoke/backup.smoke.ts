@@ -6,16 +6,17 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
-import { createArtifactWriter, stageArtifact } from "../src/lib/backup-artifact.js";
+import { ArtifactFileFault, createArtifactWriter, stageArtifact } from "../src/lib/backup-artifact.js";
+import { backupRead } from "../src/commands/backup-read.js";
 import { down } from "../src/commands/down.js";
-import { backupComplete, chunkQueue, isStoppedKvWatcher } from "../src/commands/backup.js";
+import { backup, backupComplete, chunkQueue, isStoppedKvWatcher } from "../src/commands/backup.js";
 import { upComplete } from "../src/commands/up.js";
 import { createAttemptClone, ensurePrivateAttemptsDir } from "../src/lib/isolated-broker.js";
-import { isManagerCommitResult, isManagerFinalizeResult } from "../src/lib/restore.js";
+import { isManagerCommitResult, isManagerFinalizeResult, prepareRestore } from "../src/lib/restore.js";
 import { authorityFingerprint } from "../src/lib/maintenance-files.js";
 import { assertEndpointUnreachable } from "../src/lib/endpoint-cut.js";
 import { consumerConfigFromCheckpoint, createSpaceAuth, dmStream, rotateSystemAccount, taskStream } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, authDir, beginMaintenanceCut, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { DeliverPolicy, type ConsumerInfo } from "@nats-io/jetstream";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -58,10 +59,23 @@ try {
   staged.cleanup();
 
   writeFileSync(join(destination, "extra"), "x");
-  assert.throws(() => stageArtifact(destination, stagingParent), /extra, duplicate, or missing/);
+  assert.throws(() => stageArtifact(destination, stagingParent), (error: unknown) => error instanceof ArtifactFileFault && error.file === "extra" && error.fault === "undeclared");
   rmSync(join(destination, "extra"));
   writeFileSync(join(destination, "stream-a.snap"), "changed");
-  assert.throws(() => stageArtifact(destination, stagingParent), /grew while staging|size or SHA-256 mismatch/);
+  assert.throws(() => stageArtifact(destination, stagingParent), (error: unknown) => error instanceof ArtifactFileFault && error.file === "stream-a.snap" && error.fault === "mismatch");
+  // `backup verify` names the failing file and its fault, so an operator knows which copy is damaged.
+  const verifyFault = (file: string, fault: string, text: RegExp) => (error: unknown) => {
+    const target = isCommandFailure(error) ? error.target as { file?: unknown; fault?: unknown } : undefined;
+    return isCommandFailure(error) && error.code === "SCHEMA_INVALID" && text.test(error.message) && target?.file === file && target.fault === fault;
+  };
+  assert.throws(() => backupRead({ positionals: ["verify", realpathSync(destination)], values: {}, raw: [] }),
+    verifyFault("stream-a.snap", "mismatch", /^backup artifact file stream-a\.snap does not match its declared size and SHA-256/));
+  writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 9, 3]));
+  assert.throws(() => backupRead({ positionals: ["verify", realpathSync(destination)], values: {}, raw: [] }),
+    verifyFault("stream-a.snap", "mismatch", /stream-a\.snap does not match/), "a same-size flipped byte is a named mismatch");
+  rmSync(join(destination, "stream-a.snap"));
+  assert.throws(() => backupRead({ positionals: ["verify", realpathSync(destination)], values: {}, raw: [] }),
+    verifyFault("stream-a.snap", "missing", /^backup artifact is missing its declared file stream-a\.snap/));
   writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]));
   const traversing = JSON.parse(originalManifest) as { checkpoints: string };
   traversing.checkpoints = "../checkpoints.json";
@@ -266,6 +280,67 @@ try {
   );
   await new Promise<void>((resolveClose, rejectClose) => listener.close((error) => error ? rejectClose(error) : resolveClose()));
   await assertEndpointUnreachable(endpoint);
+
+  // A restore with no preserved cut to restore into refuses before the maintenance lock, and leaves
+  // the folder as it found it, so a later `up` there finds no state to start from.
+  const bare = join(root, "bare-folder");
+  mkdirSync(bare);
+  await assert.rejects(
+    prepareRestore(bare, { restore: destination }),
+    (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "LIFECYCLE_BLOCKED" && error.message.endsWith("found none") && (error.remedy ?? "").includes("cotal down --preserve-state"),
+    "a restore with no maintenance journal is a refusal that names the preserve",
+  );
+  assert.equal(existsSync(join(bare, ".cotal")), false, "the refused restore created no .cotal state");
+
+  // `backup create` refuses before any claim with a reason and a next step, and the refusal leaves no
+  // maintenance state. A destination that already exists is a conflict, not a failed creation.
+  const previousCwd = process.cwd(), previousHome = process.env.COTAL_HOME;
+  const createRoot = join(root, "create-root");
+  mkdirSync(join(createRoot, ".cotal"), { recursive: true });
+  process.env.COTAL_HOME = join(root, "create-home");
+  process.chdir(createRoot);
+  try {
+    await assert.rejects(
+      backup({ positionals: ["create", join(root, "create-artifact")], values: {}, raw: [] }),
+      (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "LIFECYCLE_BLOCKED" && error.message.includes("records none") && (error.remedy ?? "").includes("cotal down --preserve-state"),
+      "a create with no preserved cut says so and names the preserve",
+    );
+    assert.equal(existsSync(join(createRoot, ".cotal", "maintenance")), false, "that refusal created no maintenance state");
+    const createStore = join(createRoot, ".cotal", "nats");
+    mkdirSync(createStore, { recursive: true });
+    const createLock = acquireMaintenanceLock(createRoot);
+    const createResume = writeMaintenanceResumeDocument(createLock, { version: 1, inventory: { agents: [] }, launch: { runtime: "pty" } });
+    beginMaintenanceCut(createLock, { attemptId: "cut-create", space: "create", mode: "open", sourcePath: createStore, resume: createResume, launch: { server: "nats://127.0.0.1:4222" } });
+    releaseMaintenanceLock(createLock);
+    const existingArtifact = join(root, "create-existing");
+    mkdirSync(existingArtifact);
+    await assert.rejects(
+      backup({ positionals: ["create", existingArtifact], values: {}, raw: [] }),
+      (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "CONFLICT" && error.message.includes("already exists"),
+      "a create into an existing directory is a conflict refusal",
+    );
+    assert.equal(readMaintenanceJournal(createRoot)?.state, "cut-intent", "the conflict claimed nothing");
+    await assert.rejects(
+      backup({ positionals: ["create", join(root, "create-artifact")], values: {}, raw: [] }),
+      (error: unknown) => isCommandFailure(error) && error.code === "LIFECYCLE_BLOCKED" && error.message.endsWith("maintenance state is cut-intent") && (error.target as { space?: string }).space === "create",
+      "a create on an unfinished cut names its state and space",
+    );
+    // A recover or cleanup refusal shows the id format and why it found nothing to act on.
+    await assert.rejects(
+      backup({ positionals: ["recover", "00000000-0000-4000-8000-000000000000"], values: {}, raw: [] }),
+      (error: unknown) => isCommandFailure(error) && error.code === "USAGE_INVALID" && error.message.includes("restore-<uuid>") && (error.remedy ?? "").includes("cotal status"),
+      "a recover given a bare uuid shows the restore-<uuid> form",
+    );
+    await assert.rejects(
+      backup({ positionals: ["cleanup-fallback", "restore-00000000-0000-4000-8000-000000000000"], values: {}, raw: [] }),
+      (error: unknown) => isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && (error.remedy ?? "").includes("finds nothing to do"),
+      "a cleanup-fallback on a root with no restore attempt says why it found nothing",
+    );
+  } finally {
+    process.chdir(previousCwd);
+    if (previousHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = previousHome;
+  }
 
   console.log("backup CLI smoke: ok");
 } finally {

@@ -12,7 +12,7 @@
 // NOTE: registration order across these imports is NOT guaranteed (tsx's entry interop can
 // evaluate the smaller daemon graphs first) — display order is a non-goal here; `help` ranks
 // its groups explicitly (GROUP_ORDER in @cotal-ai/cli).
-import { runCli } from "@cotal-ai/cli"; // self-registers the base surface incl. spawn (foreground + --detach) / stop / ps / attach
+import { runCli, stdoutError } from "@cotal-ai/cli"; // self-registers the base surface incl. spawn (foreground + --detach) / stop / ps / attach
 import "@cotal-ai/manager"; // self-registers `supervise` — the agent-supervisor daemon
 import "@cotal-ai/delivery"; // self-registers `deliver` — the server-side Plane-3 delivery daemon
 import "@cotal-ai/runtime"; // self-registers `run` — the workflow-run operator surface (start/resume/ps/journal/answer)
@@ -35,11 +35,9 @@ import { registry } from "@cotal-ai/core";
 // A CLI must exit quietly when its stdout is closed early — piped to `head`, a pager that quits,
 // or a shell's process substitution (`source <(cotal completion script bash)`). Node otherwise turns the
 // closed-pipe write into a fatal unhandled 'error' event with a stack trace. Mirror SIGPIPE: exit
-// 0. Registered before any command can write.
-process.stdout.on("error", (e: NodeJS.ErrnoException) => {
-  if (e.code === "EPIPE") process.exit(0);
-  throw e;
-});
+// 0. A command that must close something first, such as a chat session, owns stdout's errors while
+// it runs, and this listener stands down for it. Registered before any command can write.
+process.stdout.on("error", stdoutError);
 
 // The four agent connectors (claude/opencode/hermes/pi) are NOT imported here: they are removable,
 // install-seeded `cotal ext` plugins loaded through the manifest, exactly like a third-party

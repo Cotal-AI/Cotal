@@ -65,8 +65,9 @@ interface CredReport {
 
 /** `cotal doctor auth` — the ONE stale-credential repair surface (D5 slice 6). Read-only diagnosis
  *  of every managed credential file in this folder against the credential-lifetime matrix, rendered
- *  as healthy / near-expiry (yellow) / expired / unreadable (red) with the LAST-RENEWAL timestamp
- *  for manager-reminted creds — ending in either `healthy` or the exact next command (exit 1).
+ *  as healthy / near-expiry (yellow) / expired / unbounded / unreadable (red) with the LAST-RENEWAL
+ *  timestamp for manager-reminted creds. Each finding carries its native guidance, and a run with
+ *  findings exits non-zero.
  *  `--fix` executes the one safe local repair (re-sign the class-2 daemon files for their existing
  *  nkeys); $SYS and agent creds are never auto-fixed — their repairs are printed, not guessed. */
 interface RepairObservation {
@@ -102,7 +103,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the local authority inventory could not be validated; no repair was attempted", { target: { root, space: values.space ?? null } }); }
   if (!auth) {
     if (values.fix || values.space) throw new CommandFailure("refused", "AUTH_REQUIRED", "no validated signing trust for the named local diagnostic scope is present; no open mode or broader authority was inferred", { target: { root, space: values.space ?? null } });
-    writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh." } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
+    writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh.", remedy: "run `cotal doctor auth` in a space's root folder; `cotal space` lists each space's root" } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
     return;
   }
   const target = { root, space: auth.space };

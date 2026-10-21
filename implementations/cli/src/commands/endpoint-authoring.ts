@@ -36,6 +36,11 @@ function directory(path: string): string | null {
   try { return realDirNoSymlink(root, ...path.slice(root.length).split(sep).filter(Boolean)); }
   catch { throw new CommandFailure("refused", "PERMISSION_DENIED", "the scaffold directory crosses a symlink or non-directory; no existing file was overwritten"); }
 }
+/** The check command for a created scaffold's contract, quoted for a POSIX shell when the path needs it. */
+export function scaffoldCheckCommand(directory: string): string {
+  const file = join(directory, "contract.json");
+  return `cotal ep check ${/^[A-Za-z0-9_./+-]+$/.test(file) ? file : `'${file.replace(/'/g, `'\\''`)}'`}`;
+}
 function missing(path: string): void {
   try { lstatSync(path); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the scaffold target cannot be inspected", { target: { path } }); }
@@ -85,6 +90,6 @@ export async function endpointAuthoring(args: ParsedArgs): Promise<void> {
   }
   writeResult(presentation, { command: "endpoint init", target: { path: destination }, result: { kind: "endpoint-scaffold", endpoint: source.endpoint, directory: destination, files: files.map((file) => ({ path: file.path, name: basename(file.path) })), changed, registered: false, handlerExecuted: false } }, (data): Report => ({ sections: [
     { title: "Endpoint files created", blocks: [{ kind: "fields", rows: [["Directory", data.directory], ["Example endpoint", data.endpoint], ...data.files.map((file) => [file.name, file.path] as const)] }, { kind: "lines", lines: [{ text: "The template declares one echo command. Choose your own reverse-DNS namespace before requesting serving authority. No handler was executed and nothing was registered or started.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ep check <directory>/contract.json", description: "Compile the edited contract offline before serving it" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: scaffoldCheckCommand(data.directory), description: "Compile the edited contract offline before serving it" }] }] },
   ] }));
 }

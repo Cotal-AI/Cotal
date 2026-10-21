@@ -6,6 +6,7 @@ import {
   readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report,
 } from "@cotal-ai/workspace";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
+import { restoreNextStep } from "../lib/restore.js";
 import { cotalRoot } from "../lib/paths.js";
 import { canPrompt } from "./meshes-wizard.js";
 
@@ -18,9 +19,9 @@ export async function backupMaintenance(args: ParsedArgs): Promise<void> {
   let recorded: ReturnType<typeof readMaintenanceJournal>;
   try { assertSingleSpaceBroker(authDir(root), `cotal backup ${mode}`); recorded = readMaintenanceJournal(root); }
   catch (error) { throw new CommandFailure("refused", isMaintenanceError(error) && error.code === "journal-missing" ? "TARGET_NOT_FOUND" : "LIFECYCLE_BLOCKED", "the local root has no safely readable single-space maintenance record; no recovery or cleanup was attempted", { target: { root, attemptId } }); }
-  if (!recorded || !("restore" in recorded) || recorded.restore.attemptId !== attemptId) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no maintenance record at this root names that full restore attempt; no source manifest or prefix was used", { target: { root, attemptId } });
-  if (mode === "recover" && recorded.state !== "restore-ready") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "pre-commit recovery requires restore-ready; a committed, active or degraded restore must recover forward instead of rolling back", { target: { root, space: recorded.space, attemptId, state: recorded.state } });
-  if (mode === "cleanup-fallback" && recorded.state !== "active") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "fallback cleanup requires the matching healthy active restore; no stopped or degraded state was promoted", { target: { root, space: recorded.space, attemptId, state: recorded.state } });
+  if (!recorded || !("restore" in recorded) || recorded.restore.attemptId !== attemptId) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no maintenance record at this root names that full restore attempt; no source manifest or prefix was used", { target: { root, attemptId }, remedy: recorded && "restore" in recorded ? `this root holds restore attempt ${recorded.restore.attemptId} (state ${recorded.state}); ${restoreNextStep(recorded.state, recorded.restore.attemptId)}` : mode === "cleanup-fallback" ? "this root holds no restore attempt; a completed cleanup-fallback retires its journal, so a repeated cleanup finds nothing to do" : "this root holds no restore attempt; cotal status shows its maintenance state" });
+  if (mode === "recover" && recorded.state !== "restore-ready") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "pre-commit recovery requires restore-ready; a committed, active or degraded restore must recover forward instead of rolling back", { target: { root, space: recorded.space, attemptId, state: recorded.state }, remedy: restoreNextStep(recorded.state, attemptId) });
+  if (mode === "cleanup-fallback" && recorded.state !== "active") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "fallback cleanup requires the matching healthy active restore; no stopped or degraded state was promoted", { target: { root, space: recorded.space, attemptId, state: recorded.state }, remedy: restoreNextStep(recorded.state, attemptId) });
   const snapshot = recorded as RecoveryRecord;
   const target = { root, space: snapshot.space, attemptId, revision: snapshot.revision };
   const restore = snapshot.restore;

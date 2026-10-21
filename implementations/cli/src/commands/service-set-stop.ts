@@ -5,6 +5,7 @@ import { personaCatalog } from "../lib/persona-files.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { preflightProcessServiceStop, prepareNativeServiceStop, selectServiceInstance, stopProcessService } from "../lib/service-process.js";
+import { stackMemberFor } from "../lib/stack-journal.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { nativeImpactView } from "./service-actions.js";
 
@@ -73,7 +74,10 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
   const store = serviceDefinitionStore(space), members: Member[] = [];
   for (const name of args.positionals) {
     const definition = store.read(name);
-    if (!definition) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "one named service has no saved definition in the selected space; no service was stopped", { target: { space, name } });
+    if (!definition) {
+      const stackName = stackMemberFor(space, name);
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "one named service has no saved definition in the selected space; no service was stopped", { target: { space, name }, ...(stackName ? { remedy: `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare cotal down to stop the whole stack` } : {}) });
+    }
     const instances = serviceInstances(space, name);
     let selected: ServiceInstanceSnapshot | undefined;
     if (instances.length > 1 && interactive) {

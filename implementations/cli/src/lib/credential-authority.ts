@@ -1,13 +1,17 @@
 import {
   CommandFailure, authDir, canonicalRoot, findCotalRoot, getSoleSpaceAuth, getSpaceAuth,
   hasUserAuthState, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode,
-  workspaceSecretStore, type MeshTarget,
+  workspaceErrorParts, workspaceSecretStore, type MeshTarget,
 } from "@cotal-ai/workspace";
 
 /** Offline resolution retains stale registrations instead of repairing the selected target. */
 export function resolveMintTarget(values: { space?: string; server?: string }): MeshTarget {
   try { return resolveMeshTarget(process.cwd(), { ...values, readOnly: true }); }
-  catch (error) { if (isWorkspaceTargetError(error)) throw new CommandFailure("refused", targetErrorCode(error.code), "the selected credential root could not be resolved; no other root was chosen"); throw error; }
+  catch (error) {
+    if (!isWorkspaceTargetError(error)) throw error;
+    const { remedy } = workspaceErrorParts({ kind: "target", error });
+    throw new CommandFailure("refused", targetErrorCode(error.code), "the selected credential root could not be resolved; no other root was chosen", remedy === undefined ? {} : { remedy });
+  }
 }
 
 /** Fixed profiles and endpoint callers share the same explicit local signing authority. */

@@ -81,9 +81,23 @@ function fsyncDirectory(path: string): void {
   }
 }
 
+function isSafeFileName(name: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}$/.test(name) && name !== "manifest.json";
+}
+
 function safeFileName(name: string): void {
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}$/.test(name) || name === "manifest.json")
-    throw new Error(`invalid backup artifact file name ${JSON.stringify(name)}`);
+  if (!isSafeFileName(name)) throw new Error(`invalid backup artifact file name ${JSON.stringify(name)}`);
+}
+
+/** One artifact file that is missing, undeclared, or not the declared size and SHA-256. `file` is null
+ *  for an undeclared name that is not a valid artifact file name, so it is never printed. */
+export class ArtifactFileFault extends Error {
+  constructor(readonly file: string | null, readonly fault: "missing" | "undeclared" | "mismatch") {
+    super(fault === "missing" ? `backup artifact is missing its declared file ${file}`
+      : fault === "undeclared" ? `backup artifact contains an undeclared file ${file ?? "with an invalid name"}`
+      : `backup artifact file ${file} does not match its declared size and SHA-256`);
+    this.name = "ArtifactFileFault";
+  }
 }
 
 function writeAll(fd: number, chunk: Uint8Array): void {
@@ -243,13 +257,12 @@ function copyPinnedFile(source: string, destination: string | undefined, expecte
       if (destinationFd !== undefined) writeAll(destinationFd, chunk);
       hash.update(chunk);
       size += count;
-      if (size > expected.size) throw new Error(`backup input grew while staging: ${source}`);
+      if (size > expected.size) throw new ArtifactFileFault(expected.path, "mismatch");
     }
     const after = fstatSync(sourceFd, { bigint: true });
     if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeNs !== after.mtimeNs)
       throw new Error(`backup input changed while staging: ${source}`);
-    if (size !== expected.size || hash.digest("hex") !== expected.sha256)
-      throw new Error(`backup input size or SHA-256 mismatch: ${source}`);
+    if (size !== expected.size || hash.digest("hex") !== expected.sha256) throw new ArtifactFileFault(expected.path, "mismatch");
     if (destinationFd !== undefined) {
       fsyncSync(destinationFd);
       if (fstatSync(destinationFd).size !== size) throw new Error(`staged backup size mismatch after writing ${destination}`);
@@ -262,14 +275,18 @@ function copyPinnedFile(source: string, destination: string | undefined, expecte
 
 /** The existing exact-name/metadata checks shared by staging and read-only inspection. */
 function validateArtifactInventory(artifact: string, manifest: BackupManifest): void {
+  for (const file of manifest.files) safeFileName(file.path);
   const expected = new Set(["manifest.json", ...manifest.files.map((file) => file.path)]);
   const actual = readdirSync(artifact);
-  if (new Set(actual).size !== actual.length || actual.some((name) => !expected.has(name)) || actual.length !== expected.size)
+  const missing = [...expected].find((name) => !actual.includes(name));
+  if (missing !== undefined) throw new ArtifactFileFault(missing, "missing");
+  const undeclared = actual.find((name) => !expected.has(name));
+  if (undeclared !== undefined) throw new ArtifactFileFault(isSafeFileName(undeclared) ? undeclared : null, "undeclared");
+  if (new Set(actual).size !== actual.length || actual.length !== expected.size)
     throw new Error("backup artifact contains extra, duplicate, or missing files");
   if (new Set(manifest.files.map((file) => file.path)).size !== manifest.files.length)
     throw new Error("backup artifact file inventory contains duplicate paths");
   for (const file of manifest.files) {
-    safeFileName(file.path);
     if (!Number.isSafeInteger(file.size) || file.size < 0 || !/^[0-9a-f]{64}$/.test(file.sha256) ||
         !["snapshot", "checkpoints"].includes(file.kind) ||
         (file.kind === "snapshot") !== (typeof file.stream === "string"))

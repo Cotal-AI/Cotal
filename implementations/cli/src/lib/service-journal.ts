@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { CommandFailure, oneLine, streamRecord, type Presentation, type RecordType } from "@cotal-ai/workspace";
 import { processServiceHost, type ServiceInstanceSnapshot } from "./service-instances.js";
+import { ownStdoutErrors } from "./stdout-owner.js";
 import type { serviceSupervisorProjection } from "./service-supervision.js";
 
 type RecordedSupervisor = ReturnType<typeof serviceSupervisorProjection>;
@@ -84,9 +85,8 @@ export async function followServiceJournal(selected: ServiceInstanceSnapshot, re
   const interrupt = () => stop("SIGINT"), terminate = () => stop("SIGTERM");
   const outputError = () => { brokenOutput = true; reason = "output-closed"; stopped.abort(); closeReader(); };
   process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
-  // The binary's global EPIPE handler can exit synchronously. Request this owned reader's
-  // shutdown first; a missing final stream record still proves no cleanup outcome.
-  process.stdout.prependListener("error", outputError);
+  // This reader owns stdout's errors, so a closed output stops journalctl before the process exits.
+  const releaseOutput = ownStdoutErrors(outputError);
   const write = async (text: string) => { if (!brokenOutput && !process.stdout.write(text)) await once(process.stdout, "drain", { signal: stopped.signal }); };
   const record = async (type: RecordType, data: unknown) => {
     if (presentation === "json") await write(`${JSON.stringify(streamRecord("logs", type, chosen.target, data))}\n`);
@@ -144,6 +144,6 @@ export async function followServiceJournal(selected: ServiceInstanceSnapshot, re
         await record("end", { reason, ...chosen.binding, deliveredRecords: count, rejectedRecords, diagnosticsWithheld, readerExitObserved: ended, journalRetention: "not-established", serviceUnchangedByView: true });
       } catch { /* A closed output has no guaranteed terminal record. */ }
     }
-    process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.stdout.off("error", outputError);
+    process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); releaseOutput();
   }
 }

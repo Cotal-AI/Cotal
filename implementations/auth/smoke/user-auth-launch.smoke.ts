@@ -11,7 +11,7 @@
  *      `cotal send -c` connects USER-MODE (login → exchange → bearer → callout) and the message
  *      lands on the wire as the derived `u_….cli` principal (witnessed on a static admin tap);
  *      the ported operator surfaces: `channel` on the plain grant, `history clear --yes`
- *      refused without scope "admin" (the purger view is not issued) then passing after it.
+ *      refused without scope "admin" (naming the purger view + the ADD re-grant) then passing after it.
  *   D. the deny matrix at the operator surface: revoked actor → refused exchange with the reason;
  *      logged-out machine → the exact `cotal login --idp …` line. No fallback anywhere.
  *   E. recovery: a crashed (SIGKILLed) auth service surfaces the exact `cotal up` recovery on a
@@ -315,20 +315,21 @@ try {
   // bearer, so the plain grant is enough — no view, no extra scope. `history clear` is
   // destructive, so it asks the exchange for the one-shot "purger" view, which only mints
   // against a FRESH ledger row carrying scope "admin". Without it the classified refusal says the
-  // purger view was not issued and nothing was purged, and it never suggests static mint repair.
+  // purger view was not issued and nothing was purged, and its remedy is the provider's sentence:
+  // the view, the missing scope and the ADD-to-current re-grant, never static mint repair.
   const chList = await cotal(["channel", "--space", SPACE]);
   // A fresh mesh has no registry ENTRIES (only `channel set` writes one), so the proof of the
   // read is the list's title for this space, which prints only after the registry read returned.
   check("`channel` lists user-mode on the plain grant (own agent bearer, no view)", chList.status === 0 && plain(chList.out).includes(`Channels · ${SPACE}`), chList.out);
   const clearNoAdmin = await cotal(["history", "clear", "--yes", "--space", SPACE]);
   check(
-    '`history clear --yes` without scope "admin" is refused as PERMISSION_DENIED, naming the purger view',
-    clearNoAdmin.status === 2 && clearNoAdmin.out.includes("PERMISSION_DENIED") && clearNoAdmin.out.includes("purger view was not issued"),
+    '`history clear --yes` without scope "admin" is refused as PERMISSION_DENIED, naming the purger view + the scope',
+    clearNoAdmin.status === 2 && clearNoAdmin.out.includes("PERMISSION_DENIED") && clearNoAdmin.out.includes('view "purger"') && clearNoAdmin.out.includes('needs scope "admin"'),
     clearNoAdmin.out,
   );
   check(
-    "…submits no purge and never suggests static mint repair",
-    clearNoAdmin.out.includes("no history purge was submitted") && !clearNoAdmin.out.includes("cotal mint"),
+    "…and the ADD-to-current re-grant on the WHOLE row, with no purge submitted and never static mint repair",
+    clearNoAdmin.out.includes("ADDED") && clearNoAdmin.out.includes("WHOLE ROW") && clearNoAdmin.out.includes("no history purge was submitted") && !clearNoAdmin.out.includes("cotal mint"),
     clearNoAdmin.out,
   );
   // Every field named, deliberately: this is a re-grant of a row that was narrowed above, and

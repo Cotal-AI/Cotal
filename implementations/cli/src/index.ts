@@ -379,7 +379,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "doctor",
     group: "Mesh",
-    summary: "credential-health diagnosis + repair - `doctor auth [--fix]` renders every managed cred (healthy/near-expiry/expired) and ends in `healthy` or the exact next command",
+    summary: "credential-health diagnosis + repair - `doctor auth [--fix]` lists every local cred's state (healthy/near-expiry/expired/unbounded) and the native guidance for each finding",
     positionals: "auth",
     flagNames: ["space", "json", "plain"],
     flags: doctorFlags,
@@ -835,6 +835,7 @@ const credentialMintAction: CredentialAction = { kind: "credential-action", name
 registry.register(...baseCommands, ...baseProcesses, credentialMintAction);
 
 export { runCli } from "./command.js";
+export { stdoutError } from "./lib/stdout-owner.js";
 export { setInstalledExtensionsEnabled } from "./ext-loader.js";
 export { c, statusBadge } from "./ui.js";
 // The full spawn grammar, for the composition root's launch-parity smoke (grammar ⊆ start-op ⊆ MCP).

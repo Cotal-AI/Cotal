@@ -166,6 +166,10 @@ export type SessionEvent =
    *  dropped buffer. Never presented as complete history. */
   | { readonly type: "gap"; readonly scope: string; readonly reason: string };
 
+/** A DM target. A string is a typed name or principal the session resolves. `{ principal }` is an
+ *  exact principal, such as a received message's sender, sent as is with no lookup. */
+export type DmTarget = string | { readonly principal: string };
+
 /**
  * One admitted opening. An adapter implements this over the existing participant engine; the CLI
  * front ends (TUI, `--stdio`) consume it and nothing else.
@@ -176,7 +180,7 @@ export interface AdmittedChatSession {
   subscribe(listener: (event: SessionEvent) => void): () => void;
 
   send(text: string, channel: string, mentions: readonly string[]): Promise<PublishResult>;
-  dm(to: string, text: string, replyTo?: string): Promise<PublishResult>;
+  dm(to: DmTarget, text: string, replyTo?: string): Promise<PublishResult>;
   anycast(role: string, text: string): Promise<PublishResult>;
 
   setStatus(status: Exclude<PresenceStatus, "offline">, activity?: string): Promise<Result<void>>;

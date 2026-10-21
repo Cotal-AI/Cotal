@@ -115,6 +115,7 @@ import {
   markOrdinaryResumeDegraded,
   replaceDeadOrdinaryResumeListener,
   localProcessOwnerStatus,
+  isMaintenanceError,
   readMaintenanceJournal,
   readMaintenanceResumeDocument,
   seatCheckpointDir,
@@ -177,7 +178,7 @@ import {
   currentControllerAttempt, managerResumeAttempt, relaunchCommittedManager, settleControllerResume, startControllerMember, startControllerMembers,
 } from "../lib/controller-resume.js";
 import { removeRetiredBrokerInstance } from "../lib/controller-restore.js";
-import { admittedStackRestore, readStackJournal, refuseControllerCut } from "../lib/stack-journal.js";
+import { acquireStackOperationLock, admittedStackRestore, readStackJournal, refuseControllerCut } from "../lib/stack-journal.js";
 import { serviceInstances } from "../lib/service-instances.js";
 import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
@@ -194,6 +195,7 @@ import {
   isManagerCommittedRestore,
   markPreparedRestoreActive,
   markPreparedRestoreDegraded,
+  heldRestoreAttempt,
   prepareRestore,
   recordPreparedRestoreManagerCommit,
   rehydratePreparedRestore,
@@ -229,7 +231,10 @@ const restoreSinks = new Map<string, (result: RestoreStartupResult) => void>();
 export async function startRestore(values: { restore: string; "restore-only"?: string; "accept-missing-source"?: boolean; "store-dir"?: string }): Promise<RestoreStartupResult> {
   let returned: RestoreStartupResult | undefined;
   await up({ values: { ...values }, positionals: [], raw: [] }, undefined, false, (result) => { returned = result; });
-  if (!returned) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the guarded restore returned without its activation result; the journal records its state and no step was repeated", { remedy: "inspect the root's maintenance journal; a stale attempt is recovered by `cotal backup recover <attempt-id>`" });
+  if (!returned) {
+    const root = cotalRoot(), held = heldRestoreAttempt(root);
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the guarded restore returned without its activation result; the journal records its state and no step was repeated", { target: { root, ...(held ? { attemptId: held.attemptId, journalState: held.journalState } : {}) }, remedy: held?.remedy ?? "this root's maintenance journal names no restore attempt; check it with cotal status" });
+  }
   return returned;
 }
 interface PendingOrdinaryResume {
@@ -317,6 +322,9 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values["no-manager"] === true && args.values["max-sessions"] !== undefined)
     throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager cannot be combined with --max-sessions because no manager starts", { remedy: "drop --max-sessions, or drop --no-manager to set the manager session ceiling" });
   if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
+  // A manifest boot checks its own `--server` override against `broker.servers`.
+  const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
+  if (serverProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${serverProblem}; nothing was started or written`, { remedy: "pass the address the local broker listens on, for example --server nats://127.0.0.1:4222" });
   if (args.values.file !== undefined && args.values.foreground === true) throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime");
   if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt");
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
@@ -335,6 +343,21 @@ export function validateUpArguments(args: ParsedArgs): void {
       throw new CommandFailure("refused", "CONFLICT", "this folder inherits the machine's home .cotal; up did not start a stack in that home root", { target: { root: process.cwd(), inheritedRoot }, remedy: "prepare this folder with cotal space create <space> --root ., then use cotal up --root .; to start the home stack, run up from home itself" });
   }
   if (args.values.restore !== undefined) refuseControllerCut(args.values.root !== undefined ? preparedUpRoot(String(args.values.root)) : cotalRoot(), "up --restore");
+}
+
+/** Why `--server` cannot be the address a local broker listens on, or undefined when it can. Both
+ *  launch routes need one nats:// or tls:// URL with a host and a TCP port, and without this check
+ *  a typo reached their first write. The message never repeats the value, which may carry a
+ *  credential. */
+function upServerProblem(server: string): string | undefined {
+  let url: URL;
+  try { url = new URL(server); } catch { return "--server is not a URL"; }
+  if (url.protocol !== "nats:" && url.protocol !== "tls:") return "--server must be a nats:// or tls:// URL";
+  if (url.username || url.password) return "--server must not embed credentials";
+  if (url.search || url.hash || (url.pathname && url.pathname !== "/") || server.includes(",")) return "--server must be one broker URL without a path, query or fragment";
+  if (!url.hostname) return "--server names no host";
+  if (url.port === "0") return "--server needs a TCP port from 1 to 65535";
+  return undefined;
 }
 
 function inheritedMachineHomeRoot(): string | undefined {
@@ -418,16 +441,30 @@ function assertFreshTeamBootOwnership(root: string, space: string, mode?: "open"
  *  or unknown stop is reported with its retained members; nothing is force-killed. */
 export function holdForegroundStack(root: string): Promise<void> {
   return new Promise<void>((resolveHold) => {
-    // A pending promise and signal listeners do not keep Node alive after its last socket closes.
-    const lifetime = setInterval(() => {}, 60_000);
+    // The hold ends on its own when another command completes a whole-stack stop or preserve of this
+    // root: a later operation recorded as completed is that evidence. Any other later operation,
+    // such as a refresh, keeps the hold. The poll also keeps Node alive, which a pending promise and
+    // signal listeners alone do not.
+    const recorded = () => { try { return readStackJournal(root)?.journal.operation; } catch { return undefined; } };
+    const held = recorded()?.id;
     let stopping = false;
+    const lifetime = setInterval(() => {
+      const operation = recorded();
+      if (stopping || !operation || operation.id === held || operation.phase !== "completed" || operation.kind !== "down" && operation.kind !== "preserve") return;
+      stopping = true;
+      process.off("SIGINT", interrupt); process.off("SIGTERM", terminate);
+      clearInterval(lifetime);
+      process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", terminalWidth(process.stderr))}\n`);
+      resolveHold();
+    }, 1000);
     const stop = (signal: "SIGINT" | "SIGTERM") => {
       if (stopping) return;
       stopping = true;
       process.off("SIGINT", interrupt); process.off("SIGTERM", terminate);
+      clearInterval(lifetime);
       void stackDown(root, { yes: true }).catch((error) => {
         process.stderr.write(`${renderReport(commandFailureReport(isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the foreground stack stop did not confirm its outcome; its members were retained")), "rich", terminalWidth(process.stderr))}\n`);
-      }).finally(() => { clearInterval(lifetime); process.exitCode = signal === "SIGINT" ? 130 : 143; resolveHold(); });
+      }).finally(() => { process.exitCode = signal === "SIGINT" ? 130 : 143; resolveHold(); });
     };
     const interrupt = () => stop("SIGINT");
     const terminate = () => stop("SIGTERM");
@@ -946,11 +983,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? (values.host ? reconcileHostAndServer(values.host, undefined) : DEFAULT_SERVER);
     const stackMode = requestedStackMode(values);
     const presentation = presentationOf(values);
-    const stackLock = acquireMaintenanceLock(meshRoot);
+    const stackLock = acquireStackOperationLock(meshRoot);
     const native = controllerStackNative();
     try {
       if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace);
-      await stackUp({ root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), foreground: values.foreground === true, presentation }, native);
+      await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), foreground: values.foreground === true, presentation }, native);
     } finally { releaseMaintenanceLock(stackLock); }
     if (values.foreground) await holdForegroundStack(meshRoot);
     return;
@@ -1467,7 +1504,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Transport policy is committed inside startMeshDetached before delivery launch (S5+S9).
     if (!quietRestore) {
       console.log(c.dim(`Started nats-server (${source}).`));
-      console.log(c.green(renderDetachedSummary({ pid, delivery, authService: wantUser && authService, manager, ...(values.root ? { root: cotalRoot() } : {}) })));
+      console.log(c.green(renderDetachedSummary({ pid, delivery, authService: wantUser && authService, manager, machineHome: canonicalRoot(cotalRoot()) === canonicalRoot(homedir()), ...(values.root ? { root: cotalRoot() } : {}) })));
     }
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
@@ -3436,7 +3473,8 @@ function manualClaimRemedy(space: string, server: string): string {
 
 /** A space name maps to one mesh in the registry (the key `--space`/`use`/`down` act on). Before
  *  starting a broker, refuse to reuse a space already claimed by a DIFFERENT live mesh — a stale/dead
- *  holder is reclaimed. Re-`up`ping the same mesh (same server + root) is a refresh (port-reachable
+ *  holder is reclaimed, and said so when it was another root's, unless that root still holds a
+ *  maintenance journal. Re-`up`ping the same mesh (same server + root) is a refresh (port-reachable
  *  path). NOTE: this is a best-effort sequential guard — two `cotal up --space X` racing from
  *  different roots within the same instant can both pass the check before either records; that
  *  concurrent case is out of scope (a single-operator CLI action), not synchronized with a lock. */
@@ -3453,7 +3491,19 @@ export async function claimSpace(space: string, server: string, root: string): P
   if (await isReachable(existing.server)) {
     throw new Error(`space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) - pick a different \`--space\`, or \`cotal down\` it first`);
   }
+  // A dead holder at another root keeps its name while that root holds a preserved cut or a restore:
+  // taking it would cut that root's recovery off from its space. A journal that cannot be read keeps it
+  // too. A root that is gone or is not a directory (`invalid-path`) holds no journal.
+  const otherRoot = canonicalRoot(existing.root) !== canonicalRoot(root);
+  if (otherRoot) {
+    let held: string | undefined;
+    try { held = readMaintenanceJournal(existing.root)?.state; }
+    catch (e) { if (!isMaintenanceError(e) || e.code !== "invalid-path") held = "unreadable"; }
+    if (held)
+      throw new Error(`space "${space}" is registered to ${existing.root}, whose maintenance journal holds a preserved cut or a restore (state ${held}) - \`cotal up\` did not take the name; finish that attempt from ${existing.root}, or start this stack under a different \`--space\``);
+  }
   removeMesh(space); // the prior holder's broker is gone — reclaim the name
+  if (otherRoot) console.error(`• space "${space}" was registered to ${existing.root}, whose broker at ${existing.server} is not running - this up takes the name over`);
 }
 
 /**

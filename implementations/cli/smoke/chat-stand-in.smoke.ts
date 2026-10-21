@@ -1,0 +1,140 @@
+/**
+ * chat over stand-ins (no broker, no admission, no endpoint).
+ *
+ * SCOPE, stated honestly: sections 1 and 2 drive the `--plain` and `--stdio` front ends over a
+ * recording stand-in typed as an admitted session, which answers `identity`, `subscribe`,
+ * `surfaced` and `close` and nothing else. Section 3 builds the real native session over a
+ * recording stand-in endpoint. Neither stand-in is an admitted session or a native endpoint, and
+ * this suite never claims to test the native endpoint: it proves only what the front ends and the
+ * session's own checks do with what a stand-in reports. It pins:
+ *   - `--plain` prints the close summary once, after `/quit` and after end of input;
+ *   - with the binary's `stdoutError` listener registered, as bin/run.ts registers it, a reader that
+ *     closes `--plain` or `--stdio` output ends input, the session is closed once, and the process
+ *     exits with that close's status (`requested` is 4), not the closed-pipe exit 0. This part runs
+ *     this file again as a child process and closes its stdout pipe for real;
+ *   - the native session refuses a send, join or channel mode outside its grant without calling the
+ *     endpoint, and still reaches the endpoint for a granted channel.
+ * Admission, retirement, delivery and every broker behavior are NOT covered here.
+ *
+ * Run: pnpm smoke:chat-stand-in
+ */
+import { spawn } from "node:child_process";
+import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
+import { createSuite } from "@cotal-ai/smoke-kit";
+import type { CotalEndpoint } from "@cotal-ai/core";
+import { loadChatFrontEnd } from "../src/chat/frontend.js";
+import { NativeChatSession } from "../src/chat/native-session.js";
+import { runPlain } from "../src/chat/plain.js";
+import type { AdmittedChatSession, CloseReport, SessionEvent, SessionIdentity } from "../src/chat/session.js";
+import { closeSummary } from "../src/chat/view.js";
+import { closeExitCode } from "../src/commands/chat.js";
+import { stdoutError } from "../src/lib/stdout-owner.js";
+
+const identity: SessionIdentity = { mode: "open", space: "front-end-space", principal: "local.k3j2", lifecycleUid: "01HZZZABCDEF", label: "me", allowSubscribe: [">"], allowPublish: [">"] };
+
+/** A stand-in that records its closes. With `chatter`, it reports a channel message every 10 ms
+ *  until it is closed, so a front end keeps writing. */
+function standIn(close: CloseReport, chatter = false): { session: AdmittedChatSession; closes: () => number } {
+  const listeners = new Set<(e: SessionEvent) => void>();
+  let closes = 0;
+  let n = 0;
+  const timer = chatter
+    ? setInterval(() => {
+      n++;
+      const event: SessionEvent = { type: "message", message: { deliveryKey: `k${n}`, id: `m${n}`, ts: Date.now(), kind: "channel", from: { id: "u_a.bob", name: "bob" }, channel: "general", text: `hello ${n}`, mentionsMe: false, historical: false } };
+      for (const l of listeners) l(event);
+    }, 10)
+    : undefined;
+  const session = {
+    identity: () => identity,
+    subscribe: (l: (e: SessionEvent) => void) => { listeners.add(l); return () => { listeners.delete(l); }; },
+    surfaced: () => {},
+    close: async () => { closes++; clearInterval(timer); return close; },
+  } as unknown as AdmittedChatSession;
+  return { session, closes: () => closes };
+}
+
+const mode = process.argv[2];
+if (mode === "plain" || mode === "stdio") {
+  process.stdout.on("error", stdoutError);
+  const { session, closes } = standIn({ retirement: "requested", connectionClosed: "confirmed", message: "" }, true);
+  const start = await loadChatFrontEnd(mode);
+  const close = await start({ session });
+  process.stderr.write(`closes ${closes()}\n`);
+  // What `cotal chat` does with the report a front end returns.
+  process.exitCode ??= closeExitCode(close);
+} else {
+  const { check, finish } = createSuite();
+
+  console.log("1. --plain prints its close summary once");
+  {
+    const close: CloseReport = { retirement: "retired", connectionClosed: "confirmed", message: "" };
+    const summary = closeSummary(identity, close);
+    for (const [how, lines] of [["/quit", ["/quit"]], ["end of input", []]] as const) {
+      const { session, closes } = standIn(close);
+      const input = new PassThrough();
+      const output = new PassThrough();
+      let printed = "";
+      output.setEncoding("utf8").on("data", (d: string) => { printed += d; });
+      const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY });
+      for (const line of lines) input.write(`${line}\n`);
+      input.end();
+      const state = await run;
+      const shown = printed.split("\n").filter((l) => l.includes(summary)).length;
+      check(`after ${how}, the session closes once and its summary prints once`, closes() === 1 && state.ended === close && shown === 1, { closes: closes(), shown, printed });
+    }
+  }
+
+  console.log("2. a reader that closes the output still closes the session");
+  /** Run one front end as a child and close its stdout pipe at once. Its stdin stays open. */
+  const run = (frontEnd: "plain" | "stdio"): Promise<{ code: number | null; stderr: string }> =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url), frontEnd], { stdio: ["pipe", "pipe", "pipe"] });
+      let stderr = "";
+      child.stderr.setEncoding("utf8").on("data", (d: string) => { stderr += d; });
+      const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
+      child.on("close", (code) => { clearTimeout(timer); child.stdin.destroy(); resolve({ code, stderr }); });
+      child.stdout.destroy();
+    });
+  for (const frontEnd of ["plain", "stdio"] as const) {
+    const r = await run(frontEnd);
+    check(`--${frontEnd}: the session closed once and the exit status is the close's (4), not the closed-pipe 0`, r.code === 4 && /^closes 1$/m.test(r.stderr), r);
+  }
+  {
+    const r = await run("stdio");
+    check("--stdio says on stderr that the reader closed stdout", r.stderr.includes("stdout closed by the reader; ending the session"), r);
+  }
+
+  console.log("3. the native session refuses a channel outside its grant before the endpoint");
+  {
+    const calls: string[] = [];
+    const endpoint = {
+      on: () => {}, off: () => {},
+      getChannelConfig: () => { calls.push("getChannelConfig"); return undefined; },
+      multicast: async () => { calls.push("multicast"); return { id: "m1" }; },
+      joinChannel: async () => { calls.push("joinChannel"); return { joined: true, backfilled: 0, durable: false }; },
+      setChannelModes: async () => { calls.push("setChannelModes"); },
+    } as unknown as CotalEndpoint;
+    const session = (read: string[], post: string[]) => new NativeChatSession({
+      endpoint, identity: { ...identity, mode: "static", allowSubscribe: read, allowPublish: post },
+      retire: async () => ({ retirement: "retired", connectionClosed: "confirmed", message: "" }),
+    });
+    const none = session([], []);
+    const sent = await none.send("hi", "review", []);
+    const joined = await none.join("review");
+    const moded = await none.setChannelMode("review", "quiet");
+    check("a session opened on no channel refuses a send, a join and a channel mode as permission denials",
+      [sent, joined, moded].every((r) => r.outcome === "refused" && r.code === "PERMISSION_DENIED"), [sent, joined, moded]);
+    check("...says it was opened on no channel", sent.outcome === "refused" && /opened on no channel/.test(sent.message), sent);
+    check("...and never called the endpoint", calls.length === 0, calls);
+    const general = session(["general"], ["general"]);
+    const other = await general.join("other");
+    check("a join outside the read grant refuses before the endpoint", other.outcome === "refused" && other.code === "PERMISSION_DENIED" && calls.length === 0, { other, calls });
+    const ok = await general.join("general");
+    const stored = await general.send("hi", "general", []);
+    check("a granted join and send reach the endpoint", ok.outcome === "ok" && stored.outcome === "stored" && calls.join() === "joinChannel,getChannelConfig,multicast", { ok, stored, calls });
+  }
+
+  finish();
+}

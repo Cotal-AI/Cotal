@@ -142,12 +142,15 @@ export function validateDownArguments(args: ParsedArgs): void {
   if (args.values.json !== undefined || args.values.plain !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack or a --dry-run preview; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
 }
 
+/** The one route that stops the stack `up` starts from the machine home. */
+const MACHINE_HOME_STOP = "stop the machine-home stack with cotal down --preserve-state, which keeps its state for the next cotal up";
+
 /** A bare stack preview is a local record census, never an effect plan or stop authority. */
 function previewWholeStack(args: ParsedArgs): void {
   const root = canonicalRoot(cotalRoot());
   const selectedSpace = args.values.space as string | undefined;
   const target = { root, ...(selectedSpace ? { space: selectedSpace } : {}) };
-  if (root === canonicalRoot(homedir())) throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated project root for a whole-stack preview", { target });
+  if (root === canonicalRoot(homedir())) throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated project root for a whole-stack preview", { target, remedy: MACHINE_HOME_STOP });
   let mesh: NonNullable<ReturnType<typeof findMesh>>;
   let maintenance: ReturnType<typeof readMaintenanceJournal>;
   let components: Array<{ name: string; label: string; pidfile: string; recorded: boolean; liveness: "alive" | "dead" | "unknown"; pid: number | null; note: string | null }>;
@@ -222,7 +225,7 @@ function previewWholeStack(args: ParsedArgs): void {
 function guardLegacyBareDown(): { space: string; services: BareDownService[] } {
   const root = canonicalRoot(cotalRoot());
   const target = { root };
-  if (root === canonicalRoot(homedir())) throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated whole-stack stop root; no process was signalled", { target });
+  if (root === canonicalRoot(homedir())) throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated whole-stack stop root; no process was signalled", { target, remedy: MACHINE_HOME_STOP });
   let mesh: NonNullable<ReturnType<typeof findMesh>>;
   try {
     if (!realDirNoSymlink(root, ".cotal")) throw new Error("missing project control directory");

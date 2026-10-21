@@ -4,25 +4,36 @@
  * creates a session; every call goes through the {@link AdmittedChatSession} it was given.
  */
 import { oneLine } from "@cotal-ai/core";
+import { shownTime } from "../lib/shown-time.js";
 import type { AdmittedChatSession, ChannelInfo, ConnectionReport, HistoryPage, PublishResult, Result, RosterView, SessionMessage } from "./session.js";
-import { applyEnded, applyPublishResult, applySlashResult, type ChatState, type Recipient, type SlashCommand } from "./view.js";
+import {
+  applyEnded, applyPublishResult, applySlashResult, heardFrom, personLabel, replyToLatest, sharedNames, type ChatState, type Person, type Recipient, type SlashCommand,
+} from "./view.js";
 
 export async function publish(session: AdmittedChatSession, to: Recipient, text: string): Promise<PublishResult> {
   switch (to.kind) {
     case "channel":
       return session.send(text, to.channel, []);
     case "dm":
-      return session.dm(to.to, text, to.replyTo);
+      return session.dm(to.to, text);
+    case "peer":
+      return session.dm({ principal: to.principal }, text, to.replyTo);
     case "role":
       return session.anycast(to.role, text);
   }
 }
 
-const rosterLines = (v: RosterView): string[] => [
-  ...(v.view === "current" ? [] : [`roster ${v.view}: this list may be incomplete`]),
-  ...v.rows.map((r) => `${oneLine(r.name)} · ${r.sessionKind === "chat" ? "human session" : oneLine(r.kind)}${r.role ? ` · ${oneLine(r.role)}` : ""} · ${r.status}${r.activity ? ` · ${oneLine(r.activity)}` : ""}`),
-  ...(v.rows.length === 0 && v.view === "current" ? ["no one else is present"] : []),
-];
+/** The names more than one principal carries across `people` and the transcript's senders. */
+const sharedWith = (state: ChatState, people: readonly Person[]) => sharedNames([...people, ...heardFrom(state)]);
+
+const rosterLines = (state: ChatState) => (v: RosterView): string[] => {
+  const shared = sharedWith(state, v.rows);
+  return [
+    ...(v.view === "current" ? [] : [`roster ${v.view}: this list may be incomplete`]),
+    ...v.rows.map((r) => `${oneLine(personLabel(r, shared))} · ${r.sessionKind === "chat" ? "human session" : oneLine(r.kind)}${r.role ? ` · ${oneLine(r.role)}` : ""} · ${r.status}${r.activity ? ` · ${oneLine(r.activity)}` : ""}`),
+    ...(v.rows.length === 0 && v.view === "current" ? ["no one else is present"] : []),
+  ];
+};
 
 const connectionLines = (c: ConnectionReport): string[] => [
   `${c.state} as ${oneLine(c.identity.principal)} (session …${c.identity.lifecycleUid.slice(-6)}, ${c.identity.mode})`,
@@ -36,11 +47,16 @@ const infoLines = (i: ChannelInfo): string[] => [
   ...(i.instructions ? [`notes: ${oneLine(i.instructions)}`] : []),
 ];
 
-const messageLine = (m: SessionMessage): string =>
-  `${new Date(m.ts).toISOString().slice(11, 19)} ${m.kind === "channel" ? `#${oneLine(m.channel ?? "")}` : m.kind === "dm" ? "DM" : `role ${oneLine(m.service ?? "")}`} ${oneLine(m.from.name)}: ${oneLine(m.text)}`;
+/** Message lines for a read, each sender with its principal when its name is shared across the read
+ *  and the transcript. */
+const messageLines = (state: ChatState, messages: readonly SessionMessage[]): string[] => {
+  const shared = sharedWith(state, messages.map((m) => m.from));
+  return messages.map((m) =>
+    `${shownTime(m.ts)} ${m.kind === "channel" ? `#${oneLine(m.channel ?? "")}` : m.kind === "dm" ? "DM" : `role ${oneLine(m.service ?? "")}`} ${oneLine(personLabel(m.from, shared))}: ${oneLine(m.text)}`);
+};
 
-const historyLines = (h: HistoryPage): string[] => [
-  ...h.messages.map(messageLine),
+const historyLines = (state: ChatState) => (h: HistoryPage): string[] => [
+  ...messageLines(state, h.messages),
   ...(h.messages.length === 0 ? [`no retained messages on #${oneLine(h.channel)} in this window`] : []),
   ...(h.partial ? [`partial: ${oneLine(h.note ?? "retention or bounds mean this is not the full conversation")}`] : []),
 ];
@@ -66,7 +82,7 @@ async function runSlashUnguarded(session: AdmittedChatSession, state: ChatState,
   const none = (): readonly string[] => [];
   switch (command.name) {
     case "who":
-      return fold(await session.roster(), rosterLines);
+      return fold(await session.roster(), rosterLines(state));
     case "whoami":
     case "connection":
       return fold(await session.connection(), connectionLines);
@@ -85,15 +101,18 @@ async function runSlashUnguarded(session: AdmittedChatSession, state: ChatState,
     case "history": {
       const r = state.recipient;
       if (r?.kind !== "channel") return done(applySlashResult(state, command, { outcome: "refused", code: "USAGE_INVALID", message: "choose a channel recipient first (Tab), then /history" }, none));
-      return fold(await session.history(r.channel, command.limit), historyLines);
+      return fold(await session.history(r.channel, command.limit), historyLines(state));
     }
     case "inbox": {
       const res = await session.inbox(command.peek);
-      const next = fold(res, (items) => [...items.map(messageLine), ...(items.length === 0 ? ["inbox empty"] : [])]);
+      const next = fold(res, (items) => [...messageLines(state, items), ...(items.length === 0 ? ["inbox empty"] : [])]);
       return res.outcome === "ok" && !command.peek ? { state: next.state, ack: res.value.map((m) => m.deliveryKey) } : next;
     }
     case "reconnect":
       return fold(await session.reconnect(), (v) => [oneLine(v.message)]);
+    case "reply":
+      // Local: it picks the recipient and talks to no one.
+      return done(replyToLatest(state));
     case "quit":
       // The view turns /quit into a `leave` intent; this branch serves a caller that routes the
       // parsed command directly. Either way the session is closed once and the summary shown.

@@ -20,6 +20,7 @@ import {
   type Report,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
+import { shownTime } from "../lib/shown-time.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
 
@@ -429,14 +430,6 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
 
 function where(item: HistoryItem): string {
   return item.channel !== null ? `#${item.channel}` : `DM to ${item.to ?? "?"}`;
-}
-
-/** A message's time as a person reads it: the local time of day, with the local date when it is not
- *  today. The JSON document keeps the ISO time. */
-function shownTime(iso: string, now = new Date()): string {
-  const at = new Date(iso);
-  const time = at.toLocaleTimeString();
-  return at.toDateString() === now.toDateString() ? time : `${at.toLocaleDateString()} ${time}`;
 }
 
 function itemLine(item: HistoryItem): Cell {

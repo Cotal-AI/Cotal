@@ -40,7 +40,7 @@ process.env.COTAL_HOME = home;
 // exactly as the real binary does, or the check silently has nothing to look at.
 await import("../src/index.js");
 const { createSpaceAuth, isReachable, registry } = await import("@cotal-ai/core");
-const { authDir, findMesh, getCurrent, loadMeshes, loadSpaceAuth, pruneMesh, pruneStaleMeshes, recordMesh, removeMesh, saveSpaceAuth, setCurrent } = await import("@cotal-ai/workspace");
+const { acquireMaintenanceLock, authDir, beginMaintenanceCut, findMesh, getCurrent, loadMeshes, loadSpaceAuth, pruneMesh, pruneStaleMeshes, recordMesh, releaseMaintenanceLock, removeMesh, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
 
 let pass = 0;
@@ -901,6 +901,30 @@ try {
   recordMesh({ space: "reclaimable", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   await claimSpace("reclaimable", LIVE, root);
   check("a dead `up` holder is still reclaimed (unchanged)", findMesh("reclaimable") === undefined, loadMeshes());
+  // A dead holder whose root still holds a preserved cut keeps its name: a reclaim would cut that
+  // root's recovery off from its space, as an `up` in a stray folder once did to the home stack.
+  const heldRoot = projectRoot("held"), heldStore = join(heldRoot, ".cotal", "nats");
+  mkdirSync(heldStore, { recursive: true });
+  const heldLock = acquireMaintenanceLock(heldRoot);
+  const heldResume = writeMaintenanceResumeDocument(heldLock, { version: 1, inventory: { agents: [] }, launch: { runtime: "pty" } });
+  beginMaintenanceCut(heldLock, { attemptId: "cut-held", space: "held", mode: "open", sourcePath: heldStore, resume: heldResume, launch: { server: DEAD } });
+  releaseMaintenanceLock(heldLock);
+  recordMesh({ space: "held", server: DEAD, root: heldRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  let heldError: Error | undefined;
+  await claimSpace("held", LIVE, localRoot).catch((e: Error) => void (heldError = e));
+  check("a dead holder whose root holds a maintenance journal keeps its name", heldError?.message.includes("did not take the name") === true && findMesh("held")?.root === heldRoot, heldError?.message);
+  // Without a journal the reclaim still happens, and says whose name it took.
+  const announcedRoot = projectRoot("announced");
+  recordMesh({ space: "announced", server: DEAD, root: announcedRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const announced = await capture(() => claimSpace("announced", LIVE, localRoot));
+  check("a reclaim from another root is announced with that root", findMesh("announced") === undefined && announced.err.includes(`registered to ${announcedRoot}`) && announced.err.includes("this up takes the name over"), announced);
+  // A holder root that no longer exists holds no journal, so its dead registration is still reclaimed.
+  const goneRoot = join(projectRoot("gone"), "removed");
+  recordMesh({ space: "gone", server: DEAD, root: goneRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  let goneError: Error | undefined;
+  await capture(() => claimSpace("gone", LIVE, localRoot)).catch((e: Error) => void (goneError = e));
+  check("a dead holder whose root was deleted is reclaimed", goneError === undefined && findMesh("gone") === undefined, goneError?.message ?? loadMeshes());
+  removeMesh("held");
   removeMesh("claimed");
   removeMesh("claimed-live");
   removeMesh("claimed-catalog");

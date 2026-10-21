@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { hostname } from "node:os";
-import { assertRecordIdentity, CommandFailure, homeCotalDir, identityRecord, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { assertRecordIdentity, CommandFailure, homeCotalDir, identityRecord, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { serviceSupervisorProjection } from "./service-supervision.js";
 import type { ServiceAdapterPin } from "./service-adapters.js";
 import { localRecordObject, localRecordText, ProtectedRecordStore, type LocalRecordSnapshot } from "./protected-records.js";
@@ -180,5 +180,5 @@ export function assertExtensionServiceInstancesStopped(pkg: string): void {
       if (!["gone", "previous-boot", "foreign-pid"].includes(process)) blockers.push({ space, definition: row.record.value.definition, instanceId: row.name, process });
     }
   }
-  if (blockers.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the extension still has live, foreign or unresolved service instances; stop or reconcile each full instance before removal", { target: { package: pkg, instances: blockers }, remedy: "use service status/logs and the exact owned service stop route; unresolved launch intents are not absence" });
+  if (blockers.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the extension still has live, foreign or unresolved service instances; stop or reconcile each full instance before removal", { target: { package: pkg, instances: blockers }, remedy: `use service status/logs and the exact owned service stop route for ${blockers.map((row) => `${oneLine(row.definition)} in space ${oneLine(row.space)}, instance ${row.instanceId} (${row.process})`).join("; ")}; unresolved launch intents are not absence` });
 }

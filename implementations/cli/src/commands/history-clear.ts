@@ -2,7 +2,7 @@ import * as prompts from "../lib/prompts.js";
 import { chatStream, dmStream, dialerFor, standaloneConnectOpts } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { PermissionViolationError } from "@nats-io/transport-node";
-import { CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, isConnectRefusal, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, credentialRefusalMessage, isConnectRefusal, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 
 interface Values { space?: string; server?: string; creds?: string; dms?: boolean; yes?: boolean; json?: boolean; plain?: boolean; "dry-run"?: boolean }
@@ -34,7 +34,8 @@ export async function historyClear(values: Values): Promise<void> {
   try { user = conn.bearer ? await userViewAuth(conn, "purger") : undefined; }
   catch (error) {
     if (isConnectRefusal(error)) throw error.failure();
-    throw new CommandFailure("refused", "PERMISSION_DENIED", "the existing per-action purger view was not issued; no history purge was submitted", { target });
+    const remedy = credentialRefusalMessage(error);
+    throw new CommandFailure("refused", "PERMISSION_DENIED", "the existing per-action purger view was not issued; no history purge was submitted", { target, ...(remedy ? { remedy } : {}) });
   }
   const material = user ? { bearer: user.bearer, sentinelCreds: user.sentinelCreds } : conn.creds ? { creds: conn.creds } : {};
   const nc = await dialerFor(conn.server)({ servers: conn.server, ...standaloneConnectOpts({ ...material, tls: conn.tls }), maxReconnectAttempts: 0 });

@@ -2,6 +2,7 @@ import { once } from "node:events";
 import { CommandFailure, isCommandFailure, oneLine, streamRecord, type Presentation, type RecordType } from "@cotal-ai/workspace";
 import { observeServiceProcess, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { serviceLogSlice } from "../lib/service-process.js";
+import { ownStdoutErrors } from "../lib/stdout-owner.js";
 
 /** A read-only file view. Interrupts close the view without signalling a service process. */
 export async function followServiceLog(selected: ServiceInstanceSnapshot, presentation: Presentation, tail: number): Promise<void> {
@@ -13,7 +14,8 @@ export async function followServiceLog(selected: ServiceInstanceSnapshot, presen
   const interrupt = () => { reason = "SIGINT"; process.exitCode = 130; stopped.abort(); };
   const terminate = () => { reason = "SIGTERM"; process.exitCode = 143; stopped.abort(); };
   const outputError = () => { brokenOutput = true; reason = "output-closed"; stopped.abort(); };
-  process.on("SIGINT", interrupt); process.on("SIGTERM", terminate); process.stdout.on("error", outputError);
+  process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
+  const releaseOutput = ownStdoutErrors(outputError);
   let position: { offset: number; dev: number; ino: number } | undefined;
   let decoder = new TextDecoder("utf-8", { fatal: false });
   let launchRequestId = original.launchRequestId;
@@ -71,6 +73,6 @@ export async function followServiceLog(selected: ServiceInstanceSnapshot, presen
     if (!brokenOutput) {
       try { await record("end", { reason, launchRequestId, byteOffset: position?.offset ?? null, serviceUnchangedByView: true }); } catch { /* The output pipe may close during final delivery. */ }
     }
-    stopped.abort(); process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.stdout.off("error", outputError);
+    stopped.abort(); process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); releaseOutput();
   }
 }

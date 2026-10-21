@@ -1,5 +1,6 @@
 /**
- * `cotal chat --stdio`: the versioned NDJSON participant protocol (spec "Program participants").
+ * `cotal chat --stdio`: the versioned NDJSON participant protocol, documented for programs in
+ * docs/cli.md under "The --stdio protocol".
  *
  * Pure protocol. It parses and validates one request per line, dispatches a valid request to an
  * already admitted {@link AdmittedChatSession}, and serializes responses and unsolicited records

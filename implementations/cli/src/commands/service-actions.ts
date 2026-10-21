@@ -19,6 +19,7 @@ import { followServiceLog } from "./service-log-follow.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { resolveServiceAdapter, sameServiceAdapterPin } from "../lib/service-adapters.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
+import { stackMemberFor } from "../lib/stack-journal.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, assertRestartAdmitted, prepareKernelServiceStop, prepareNativeServiceStop, prepareProcessService, readServiceLog, selectServiceInstance, startProcessService, stopProcessService } from "../lib/service-process.js";
 
@@ -108,7 +109,10 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
   const values = args.values as { instance?: string; "new-instance"?: boolean; foreground?: boolean; "with-agents"?: boolean; "dry-run"?: boolean; yes?: boolean; tail?: string; follow?: boolean; json?: boolean };
   const presentation = presentationOf(args.values);
   const store = serviceDefinitionStore(space), definition = store.read(name);
-  if (!definition) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition resolves this name in the selected space; no process or extension was started", { target: { space, name }, remedy: name === "web" ? "save the dashboard explicitly with cotal service add web --preset web and its required registered root, protected credential file and read-only intent; if its provider is absent, use cotal ext add @cotal-ai/web" : "add a supported service definition explicitly before starting it" });
+  if (!definition) {
+    const stackName = stackMemberFor(space, name);
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no saved service definition resolves this name in the selected space; no process or extension was ${mode === "stop" ? "stopped" : "started"}`, { target: { space, name }, remedy: stackName ? `this space's controller stack names it ${stackName}: use cotal ${commandName === "down" ? "down" : `${commandName} ${mode}`} ${stackName} --space ${space}${mode === "stop" ? ", or bare cotal down to stop the whole stack" : ""}` : name === "web" ? "save the dashboard explicitly with cotal service add web --preset web and its required registered root, protected credential file and read-only intent; if its provider is absent, use cotal ext add @cotal-ai/web" : mode === "stop" ? "list this space's saved definitions with cotal service" : "add a supported service definition explicitly before starting it" });
+  }
   const rows = serviceInstances(space, name);
   let id = values.instance;
   if (!id && rows.length > 1 && !values["new-instance"] && canPrompt() && presentation !== "json") {
@@ -291,7 +295,11 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
     } finally { hold.release(); }
   } else started = await startProcessService(definition, { ...(id ? { instance: id } : {}), newInstance: values["new-instance"] === true, foreground: values.foreground === true });
   const result = instanceProjection(started.instance);
-  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}) }, noOp: started.noOp }, (row) => instanceView(row, started.noOp ? "Already running; nothing was started" : row.nativeEndpoint ? "Owned process running; native adapter readiness recorded" : row.reportedListener ? "Owned broker process reported its listener" : row.readinessObservation === "http-reachable" ? "Owned process running; HTTP reachable" : "Owned service process running"));
+  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}) }, noOp: started.noOp }, (row) => {
+    const view = instanceView(row, started.noOp ? "Already running; nothing was started" : row.nativeEndpoint ? "Owned process running; native adapter readiness recorded" : row.reportedListener ? "Owned broker process reported its listener" : row.readinessObservation === "http-reachable" ? "Owned process running; HTTP reachable" : "Owned service process running");
+    // A background child reports how to reach it, such as the dashboard's bootstrap file, in its own log.
+    return values.foreground ? view : { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`, description: "Read the service's own startup output, including how to reach it when it reports that" }] }] }] };
+  });
   if (values.foreground && started.child && started.exit) {
     let signal: "SIGINT" | "SIGTERM" | undefined;
     let finishShutdown!: () => void;

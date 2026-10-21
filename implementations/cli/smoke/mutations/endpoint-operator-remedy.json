@@ -1,0 +1,47 @@
+{
+  "suite": [
+    "implementations/cli/smoke/command-kernel.smoke.ts"
+  ],
+  "guard": "a refused operator call to an endpoint other than the manager names the paired caller file that makes it, and endpoint init's Next names the contract it created, quoted for a shell",
+  "command": "pnpm smoke:cli-kernel",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/endpoint-operator-remedy.json",
+  "why": [
+    "The operator instrument holds request rows for the manager only, so the broker refuses its call to any other endpoint. A refusal with no next step leaves the operator holding a credential whose whoami reads capabilities: all.",
+    "The init scaffold knows the directory it created, so a placeholder in its Next is a step the operator has to rewrite by hand.",
+    "The suite imports the CLI source and runs endpoint init in process, so no mutation needs a build."
+  ],
+  "mutations": [
+    {
+      "name": "a refused call to another endpoint keeps no remedy",
+      "file": "implementations/cli/src/lib/endpoint-errors.ts",
+      "find": "  if (failure.code !== \"PERMISSION_DENIED\" || failure.remedy !== undefined || endpoint === BASELINE_LIFECYCLE_ENDPOINT) return failure;",
+      "replace": "  if (failure.code !== \"PERMISSION_DENIED\" || failure.remedy !== undefined || endpoint === BASELINE_LIFECYCLE_ENDPOINT || failure.outcome === \"refused\") return failure;",
+      "expectRed": "a refused call to another endpoint names the caller file that makes it",
+      "cell": "a refused call to another endpoint names the caller file that makes it"
+    },
+    {
+      "name": "a refused manager call names a caller file",
+      "file": "implementations/cli/src/lib/endpoint-errors.ts",
+      "find": "endpoint === BASELINE_LIFECYCLE_ENDPOINT) return failure;",
+      "replace": "endpoint === `${BASELINE_LIFECYCLE_ENDPOINT}.`) return failure;",
+      "expectRed": "a refused manager call names no caller file, because the operator instrument already requests the manager",
+      "cell": "a refused manager call names no caller file, because the operator instrument already requests the manager"
+    },
+    {
+      "name": "endpoint init prints the directory placeholder",
+      "file": "implementations/cli/src/commands/endpoint-authoring.ts",
+      "find": "{ command: scaffoldCheckCommand(data.directory), description",
+      "replace": "{ command: scaffoldCheckCommand(\"<directory>\"), description",
+      "expectRed": "endpoint init's Next is the check command for the contract it created",
+      "cell": "endpoint init's Next is the check command for the contract it created"
+    },
+    {
+      "name": "the scaffold path is not quoted",
+      "file": "implementations/cli/src/commands/endpoint-authoring.ts",
+      "find": "  return `cotal ep check ${/^[A-Za-z0-9_./+-]+$/.test(file) ? file : `'${file.replace(/'/g, `'\\\\''`)}'`}`;",
+      "replace": "  return `cotal ep check ${file}`;",
+      "expectRed": "a scaffold path a shell would split is quoted",
+      "cell": "a scaffold path a shell would split is quoted"
+    }
+  ]
+}

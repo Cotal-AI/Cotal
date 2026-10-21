@@ -18,6 +18,7 @@ import {
   applyKey,
   composerRows,
   headerRows,
+  heardFrom,
   initialState,
   setRecipient,
   transcriptRows,
@@ -128,7 +129,7 @@ export function ChatView({ session, initialRecipient, notice, shiftEnterDistinct
 
   const openPicker = useCallback(async () => {
     const [conn, roster] = await Promise.all([session.connection(), session.roster()]).catch(() => [undefined, undefined] as const);
-    const choices = listChoices(conn?.outcome === "ok" ? conn.value : undefined, roster?.outcome === "ok" ? roster.value : undefined, latest.current.identity.principal);
+    const choices = listChoices(conn?.outcome === "ok" ? conn.value : undefined, roster?.outcome === "ok" ? roster.value : undefined, latest.current.identity.principal, heardFrom(latest.current));
     let s = latest.current;
     if (roster && roster.outcome !== "ok") s = addNotice(s, roster.outcome === "refused" ? "failed" : "waiting", `roster ${roster.outcome}: ${roster.message}`);
     update(s);
@@ -183,7 +184,7 @@ export function ChatView({ session, initialRecipient, notice, shiftEnterDistinct
     ? [
         ...picker.choices.map((c, i): Row => ({ text: `${i + 1}. ${c.label}${c.detail ? ` · ${c.detail}` : ""}`, tone: "body" })),
         { text: `to: ${picker.typed}`, tone: "selected" } as Row,
-        { text: "number or #channel / @name / role:<role> · Enter choose · Esc back", tone: "hint" } as Row,
+        { text: "number or #channel / @name / @owner.actor / role:<role> · Enter choose · Esc back", tone: "hint" } as Row,
       ]
     : composerRows(state, size.width, shiftEnterDistinct);
   const bodyHeight = Math.max(1, size.height - header.length - composer.length - 2);

@@ -20,6 +20,42 @@ const gone = (state: string) => state === "gone" || state === "previous-boot" ||
  *  a process did. There is nothing to stop. */
 const neverLaunched = (value: ServiceInstance) => !value.process && gone(observeServiceProcess(value));
 
+/** The recorded states a crash or a failed start leaves behind. A retained `stopping` request is not
+ *  one of them: its own stop evidence decides it. */
+const UNSETTLED_RUN: readonly ServiceInstance["state"][] = ["starting", "running", "unknown"];
+
+/** Record an instance as `failed` when its exact recorded process is proven gone (its PID is dead,
+ *  names a later process, or belongs to an earlier boot) and no stop of ours explains the exit. The
+ *  caller holds the definition's writer lock, so no launch or stop of it is in flight. Nothing is
+ *  signalled, relaunched or removed. Any other record is returned unchanged. */
+export function settleExitedInstance(row: ServiceInstanceSnapshot): ServiceInstanceSnapshot {
+  const value = row.record.value;
+  if (!value.process || !UNSETTLED_RUN.includes(value.state) || !gone(observeServiceProcess(value))) return row;
+  return transition(row, { state: "failed", readiness: "not-checked" });
+}
+
+/** A record settled by {@link settleExitedInstance} or by its own failed start: its exact process
+ *  is gone and no stop receipt explains the exit. */
+export function exitedWithoutStop(value: ServiceInstance): boolean {
+  return value.state === "failed" && value.process !== undefined && gone(observeServiceProcess(value));
+}
+
+/** Nothing of this record runs and no stop of ours is retained: it never launched, or its exact
+ *  process is gone and its record is settled or a crash a stop may settle. */
+function goneWithoutStop(value: ServiceInstance): boolean {
+  if (neverLaunched(value)) return true;
+  if (!gone(observeServiceProcess(value))) return false;
+  return value.state === "failed" || value.process !== undefined && UNSETTLED_RUN.includes(value.state);
+}
+
+/** Settle every instance of one definition under its writer lock. */
+export function settleExitedInstances(definition: ServiceDefinitionSnapshot): void {
+  const space = definition.record.value.space;
+  const hold = serviceDefinitionStore(space).pin(definition);
+  try { for (const row of serviceInstances(space, definition.name)) settleExitedInstance(row); }
+  finally { hold.release(); }
+}
+
 export function selectServiceInstance(rows: ServiceInstanceSnapshot[], id: string | undefined, allowMissing = false): ServiceInstanceSnapshot | undefined {
   if (id !== undefined) {
     const found = rows.find((row) => row.name === id);
@@ -195,7 +231,9 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       if (rows.some((row) => row.name === options.brokerInstance!.instanceId)) throw new CommandFailure("refused", "CONFLICT", "the journaled broker instance already has a record; no second launch was allocated");
       if (rows.some((row) => row.record.value.state !== "stopped" || !row.record.value.kernelStop || !gone(observeServiceProcess(row.record.value)))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another record of this broker definition is not a stopped one with its own kernel-exit receipt; no new broker instance was allocated");
     }
-    const selected = options.newInstance || options.brokerInstance ? undefined : selectServiceInstance(rows, options.instance, true);
+    const chosen = options.newInstance || options.brokerInstance ? undefined : selectServiceInstance(rows, options.instance, true);
+    // A crash or failed start is settled from its own evidence before the relaunch checks below.
+    const selected = chosen && settleExitedInstance(chosen);
     if (selected && selected.record.value.definitionRevision !== definition.record.revision) throw new CommandFailure("refused", "CONFLICT", "this instance belongs to another definition revision; it was not adopted");
     if (selected && !sameServiceAdapterPin(selected.record.value.adapter, declaredAdapter?.pin)) throw new CommandFailure("refused", "CONFLICT", "the recorded instance pins a different adapter declaration or package version; stop and explicitly remove its retained records before choosing a different provider", { target: instanceProjection(selected) });
     if (selected) {
@@ -207,8 +245,11 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
         return { instance: await serviceReadiness(selected, value, adapter), noOp: true, child: undefined, exit: undefined };
       }
       if (!gone(state)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an unresolved or foreign service incarnation is retained; no second launch was allocated", { target: instanceProjection(selected), remedy: "inspect the original full instance with service status/logs; do not discard an unresolved launch receipt" });
-      if (declaredAdapter?.declaration.stop === "native" && selected.record.value.process && !(selected.record.value.state === "stopped" && selected.record.value.nativeStop)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original native service disappeared without its recorded terminal stop; no replacement was launched", { target: instanceProjection(selected) });
-      if (declaredAdapter?.declaration.stop === "kernel-exit" && selected.record.value.process && !(selected.record.value.state === "stopped" && selected.record.value.kernelStop)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original broker process disappeared without this controller's recorded exact-exit stop; no replacement listener was launched over its store", { target: instanceProjection(selected) });
+      // A settled exit (`failed` with its gone process) is relaunched; a retained `stopping`
+      // request is still decided by its own stop evidence.
+      const settledExit = exitedWithoutStop(selected.record.value);
+      if (declaredAdapter?.declaration.stop === "native" && selected.record.value.process && !settledExit && !(selected.record.value.state === "stopped" && selected.record.value.nativeStop)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original native service disappeared during its retained stop request, without its recorded terminal stop; no replacement was launched", { target: instanceProjection(selected), remedy: `inspect the original request with cotal service status ${definition.name} --instance ${selected.name} --space ${value.space}` });
+      if (declaredAdapter?.declaration.stop === "kernel-exit" && selected.record.value.process && !settledExit && !(selected.record.value.state === "stopped" && selected.record.value.kernelStop)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original broker process disappeared during its retained stop request, without this controller's recorded exact-exit stop; no replacement listener was launched over its store", { target: instanceProjection(selected), remedy: `inspect the original request with cotal service status ${definition.name} --instance ${selected.name} --space ${value.space}` });
     }
     hold.check();
     const now = new Date().toISOString(), id = options.brokerInstance?.instanceId ?? selected?.name ?? randomUUID(), launchRequestId = options.brokerInstance?.launchRequestId ?? randomUUID();
@@ -273,7 +314,15 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       throw new CommandFailure(exited ? "failed" : "unknown", exited ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", "the child could not be creation-pinned; its native child handle was asked to exit, and no replacement was launched", { target: instanceProjection(row) });
     }
     row = transition(row, { process: identity });
-    const running = await serviceReadiness(row, value, adapter);
+    let running: ServiceInstanceSnapshot;
+    try { running = await serviceReadiness(row, value, adapter); }
+    catch (error) {
+      // Only an exit of the pinned child itself is settled here, with the exit this parent observed.
+      if (!isCommandFailure(error) || error.code !== "OPERATION_FAILED") throw error;
+      await Promise.race([exit, delay(1000)]);
+      const failed = transition(row, { state: "failed", readiness: "not-checked", ...(exited ? { exit: { code: exitCode, signal: exitSignal } } : {}) });
+      throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; its log records the cause`, { target: instanceProjection(failed), remedy: `read its log with cotal service logs ${definition.name} --instance ${id} --space ${value.space}` });
+    }
     return { instance: running, noOp: false, child, exit: { done: exit, observed: () => exited, result: () => ({ code: exitCode, signal: exitSignal }) } };
   } finally { if (!held) hold.release(); }
 }
@@ -291,7 +340,8 @@ export async function prepareNativeServiceStop(definition: ServiceDefinitionSnap
   }
   if (!sameServiceAdapterPin(selected.record.value.adapter, declared.pin) || selected.record.value.definitionRevision !== definition.record.revision) throw new CommandFailure("refused", "CONFLICT", "the selected native service pins another definition or adapter revision");
   if (selected.record.value.state === "stopped" && selected.record.value.nativeStop && gone(observeServiceProcess(selected.record.value))) return undefined;
-  if (neverLaunched(selected.record.value)) return undefined;
+  // Nothing runs, so there is no impact to read; the stop records that exit under its lock.
+  if (goneWithoutStop(selected.record.value)) return undefined;
   if (observeServiceProcess(selected.record.value) !== "running" || !selected.record.value.process) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native service has no live attributable process for an impact read; no completed stop was inferred from disappearance", { target: instanceProjection(selected) });
   const provider = await loadServiceAdapter(declared, value.launch.type === "adapter" ? value.launch.options : {});
   const began = Date.now();
@@ -308,7 +358,7 @@ export async function prepareKernelServiceStop(definition: ServiceDefinitionSnap
   if (declared?.declaration.stop !== "kernel-exit") return undefined;
   if (!sameServiceAdapterPin(selected.record.value.adapter, declared.pin) || selected.record.value.definitionRevision !== definition.record.revision || selected.record.value.kernelStopRequired !== true) throw new CommandFailure("refused", "CONFLICT", "the selected broker pins another definition, adapter revision or stop policy");
   if (selected.record.value.state === "stopped" && selected.record.value.kernelStop && gone(observeServiceProcess(selected.record.value))) return undefined;
-  if (neverLaunched(selected.record.value)) return undefined;
+  if (goneWithoutStop(selected.record.value)) return undefined;
   if (selected.record.value.state === "stopping") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "an earlier broker stop request is retained without its exact-exit receipt; it was not resubmitted", { target: instanceProjection(selected) });
   if (observeServiceProcess(selected.record.value) !== "running" || !selected.record.value.process) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker has no live attributable process for a stop scope; disappearance was not treated as a completed stop", { target: instanceProjection(selected) });
   const provider = await loadServiceAdapter(declared, value.launch.type === "adapter" ? value.launch.options : {});
@@ -357,7 +407,8 @@ export async function stopProcessService(definition: ServiceDefinitionSnapshot, 
     if (declared?.declaration.stop === "native") {
       if (!sameServiceAdapterPin(row.record.value.adapter, declared.pin) || row.record.value.definitionRevision !== definition.record.revision) throw new CommandFailure("refused", "CONFLICT", "the native service incarnation pins another definition or adapter; it was not controlled");
       if (gone(initial) && row.record.value.state === "stopped" && row.record.value.nativeStop) return { instance: row, noOp: true, nativeStop: row.record.value.nativeStop };
-      if (neverLaunched(row.record.value)) return { instance: row, noOp: true };
+      // Already gone without a stop of ours: record that exit under this lock; nothing is signalled.
+      if (goneWithoutStop(row.record.value)) return { instance: settleExitedInstance(row), noOp: true };
       if (initial !== "running" || !row.record.value.process) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "native stop has no current attributable process or retained returned receipt; disappearance was not treated as completion", { target: instanceProjection(row) });
       if (!native?.plan) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "native service stop requires its current caller-scoped impact and explicit confirmation; generic signals were not used");
       const plan = serviceAdapterStopPlan(native.plan, row.record.value.process);
@@ -432,7 +483,9 @@ async function stopKernelService(definition: ServiceDefinitionSnapshot, current:
   if (native?.withAgents) throw new CommandFailure("refused", "UNSUPPORTED", "a broker kernel-exit stop has no agent policy; --with-agents belongs to the exact manager instance");
   if (!sameServiceAdapterPin(value.adapter, declared.pin) || value.definitionRevision !== definition.record.revision || value.kernelStopRequired !== true) throw new CommandFailure("refused", "CONFLICT", "the broker incarnation pins another definition, adapter or stop policy; it was not controlled", { target: instanceProjection(row) });
   if (gone(initial) && value.state === "stopped" && value.kernelStop) return { instance: row, noOp: true, kernelStop: value.kernelStop };
-  if (neverLaunched(value)) return { instance: row, noOp: true };
+  // Already gone without a stop of ours: record that exit under this lock. No exit is attributed
+  // to a signal, and no kernel-exit receipt is written.
+  if (goneWithoutStop(value)) return { instance: settleExitedInstance(row), noOp: true };
   if (value.state === "stopping") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "an earlier broker stop request is retained without its exact-exit receipt; it was not resubmitted", { target: instanceProjection(row) });
   if (initial !== "running" || !value.process) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker has no current attributable process or retained exact-exit receipt; disappearance was not treated as a completed stop", { target: instanceProjection(row) });
   if (!kernel?.plan) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a broker stop requires its current exact scope and explicit confirmation; no signal was sent");
@@ -487,8 +540,11 @@ export function removableServiceInstances(space: string, name: string): ServiceI
   const rows = serviceInstances(space, name);
   for (const row of rows) refuseRecordedSupervisor(row.record.value, "remove");
   for (const row of rows) if (!gone(observeServiceProcess(row.record.value))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "service remove requires every recorded owned instance stopped and its supervisor uninstalled", { target: instanceProjection(row), remedy: `use cotal service stop ${name} --instance ${row.name} before removing its definition` });
-  for (const row of rows) if (row.record.value.nativeStopRequired && row.record.value.process && !row.record.value.nativeStop) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native service has no confirmed terminal stop; its launch and unknown request cannot be forgotten merely because the process disappeared", { target: instanceProjection(row) });
-  for (const row of rows) if (row.record.value.kernelStopRequired && row.record.value.process && !row.record.value.kernelStop) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker has no recorded exact-exit stop from this controller; its launch cannot be forgotten merely because the process disappeared", { target: instanceProjection(row) });
+  // A settled exit is a record of evidence, not an unknown request. An unsettled one is settled by
+  // the named stop, which signals nothing when the process is already gone.
+  const settle = (row: ServiceInstanceSnapshot) => UNSETTLED_RUN.includes(row.record.value.state) ? { remedy: `record the exit with cotal service stop ${name} --instance ${row.name} --space ${space} --yes, then remove it` } : {};
+  for (const row of rows) if (row.record.value.nativeStopRequired && row.record.value.process && !row.record.value.nativeStop && !exitedWithoutStop(row.record.value)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native service has no confirmed terminal stop; its launch and unknown request cannot be forgotten merely because the process disappeared", { target: instanceProjection(row), ...settle(row) });
+  for (const row of rows) if (row.record.value.kernelStopRequired && row.record.value.process && !row.record.value.kernelStop && !exitedWithoutStop(row.record.value)) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the broker has no recorded exact-exit stop from this controller; its launch cannot be forgotten merely because the process disappeared", { target: instanceProjection(row), ...settle(row) });
   return rows;
 }
 

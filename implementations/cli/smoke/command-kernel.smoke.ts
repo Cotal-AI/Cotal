@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandUsage, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -31,6 +31,7 @@ function updateRuntime(opts: {
   npm?: (args: string[], inherit?: boolean) => { status: number | null; stdout?: string; stderr?: string; error?: string };
   spawn?: (file: string, args: string[], env: NodeJS.ProcessEnv) => { status: number | null; stdout?: string; stderr?: string; error?: string };
   reportRunningManager?: () => Promise<"none" | "legacy">;
+  checkout?: boolean;
 }) {
   const events: string[] = [];
   const rt: UpdateRuntime = {
@@ -55,6 +56,7 @@ function updateRuntime(opts: {
       return () => void events.push(`release-global:${root}`);
     },
     selfArgv: () => ["/node", "/old/cotal.js"],
+    checkout: () => opts.checkout ?? false,
     npm: (args, inherit) => {
       events.push(`npm:${args.join(" ")}${inherit ? ":inherit" : ""}`);
       const r = opts.npm?.(args, inherit) ?? { status: 0, stdout: '"0.13.1"' };
@@ -341,6 +343,47 @@ async function completionOut(positionals: string[]): Promise<string> {
   const internal = readFailure({ error: "boom", code: "internal" });
   assert.equal(`${internal.outcome}/${internal.code}`, "failed/OPERATION_FAILED", "a read that failed for an unclassified reason is failed, not unknown");
   assert.equal(readFailure({ error: "boom" }).code, "OPERATION_FAILED", "a read failure with no code is failed");
+}
+
+// --- a refused operator call to another endpoint names the paired caller file that makes it ------
+{
+  const { EpEnvelopeError } = await import("@cotal-ai/core");
+  const { endpointFailure, withPairedCallerRemedy } = await import("../src/lib/endpoint-errors.js");
+  const denied = endpointFailure(new EpEnvelopeError("permission-denied", "refused by the broker", undefined, "not-executed"), { space: "s" }, true);
+  const named = withPairedCallerRemedy(denied, "com.example.reviews");
+  assert.equal(`${named.outcome}/${named.code}`, "refused/PERMISSION_DENIED", "naming a paired caller keeps the refusal");
+  assert.equal(named.remedy, "issue a caller for com.example.reviews with cotal auth mint <name> --endpoint com.example.reviews --out <private-file>, then rerun with --creds <private-file>", "a refused call to another endpoint names the caller file that makes it");
+  assert.deepEqual([named.native, named.target], [denied.native, denied.target], "the remedy keeps the native cause and the target");
+  assert.equal(withPairedCallerRemedy(denied, "manager").remedy, undefined, "a refused manager call names no caller file, because the operator instrument already requests the manager");
+  const unknown = endpointFailure(new Error("lost"), { space: "s" }, true);
+  assert.equal(withPairedCallerRemedy(unknown, "com.example.reviews"), unknown, "only a refusal gains the caller-file remedy");
+}
+
+// --- endpoint init's Next is the check command for the contract it created ------------------------
+{
+  const { scaffoldCheckCommand } = await import("../src/commands/endpoint-authoring.js");
+  assert.equal(scaffoldCheckCommand("/run/ep/reviews"), "cotal ep check /run/ep/reviews/contract.json", "the scaffold's Next names its own contract, not a placeholder");
+  assert.equal(scaffoldCheckCommand("/run/it's here"), "cotal ep check '/run/it'\\''s here/contract.json'", "a scaffold path a shell would split is quoted");
+  const { runCli } = await import("../src/command.js");
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const scaffold = realpathSync(mkdtempSync(join(tmpdir(), "cotal-ep-init-")));
+  process.env.XDG_CONFIG_HOME = join(scaffold, "cfg");
+  const dir = join(scaffold, "it's here");
+  try {
+    let out = "";
+    const real = process.stdout.write;
+    process.stdout.write = ((chunk: string) => ((out += chunk), true)) as typeof process.stdout.write;
+    try {
+      await runCli(registry, ["endpoint", "init", "reviews", "--dir", dir, "--plain"]);
+    } finally {
+      process.stdout.write = real;
+    }
+    assert.ok(out.includes(scaffoldCheckCommand(dir)), "endpoint init's Next is the check command for the contract it created");
+  } finally {
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+    rmSync(scaffold, { recursive: true, force: true });
+  }
 }
 
 // --- up rejects pure flag conflicts before even checking a supplied project root ----------------
@@ -877,6 +920,52 @@ async function completionOut(positionals: string[]): Promise<string> {
   } finally {
     process.exitCode = priorExitCode;
   }
+}
+
+// --- the registry version read leaves nothing in npm's own cache, logs or notifier stamp ---------
+{
+  let cache: string | undefined;
+  const { rt, events } = updateRuntime({
+    npm: (args) => {
+      if (args[0] !== "view") return { status: 0 };
+      const at = args.indexOf("--cache");
+      cache = at > 0 ? args[at + 1] : undefined;
+      assert.ok(cache !== undefined && existsSync(cache), "the read runs against a throwaway cache that exists while npm runs");
+      return { status: 0, stdout: '"0.13.2"' };
+    },
+  });
+  let out = "";
+  const realWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((s: string) => ((out += s), true)) as typeof process.stdout.write;
+  try {
+    await update({ values: { check: true, json: true }, positionals: [], raw: ["--check", "--json"] }, rt);
+  } finally {
+    process.stdout.write = realWrite;
+  }
+  const view = events.find((event) => event.startsWith("npm:view"));
+  assert.ok(view?.includes(" --logs-max=0") && view.includes(" --update-notifier=false"), `the read writes no npm log and runs no npm update notifier: ${view}`);
+  assert.ok(cache !== undefined && cache.startsWith(tmpdir()) && !existsSync(cache), `the throwaway cache is under the temp directory and removed afterwards: ${cache}`);
+  assert.equal(JSON.parse(out).result.latest, "0.13.2", "the check still reports the registry version");
+}
+
+// --- from a source checkout, the --self hint says it installs a separate global copy -------------
+{
+  const npm = (args: string[]) => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "" });
+  const fromCheckout = updateRuntime({ npm, checkout: true });
+  assert.equal(await executeUpdate(false, fromCheckout.rt), 0);
+  assert.ok(fromCheckout.events.some((event) => event.startsWith("out:") && event.includes("cotal update --self") && event.replace(/\s+/g, " ").includes("separate global copy")), "the checkout hint names the separate global copy");
+  const released = updateRuntime({ npm });
+  assert.equal(await executeUpdate(false, released.rt), 0);
+  assert.ok(!released.events.some((event) => event.replace(/\s+/g, " ").includes("separate global copy")), "an installed CLI keeps the plain --self hint");
+  let out = "";
+  const realWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((s: string) => ((out += s), true)) as typeof process.stdout.write;
+  try {
+    await update({ values: { check: true, plain: true }, positionals: [], raw: ["--check", "--plain"] }, updateRuntime({ npm, checkout: true }).rt);
+  } finally {
+    process.stdout.write = realWrite;
+  }
+  assert.ok(out.includes("cotal update --self") && out.replace(/\s+/g, " ").includes("separate global copy"), `update --check from a checkout gives the same hint: ${out}`);
 }
 
 // The exact global package root is verified before re-exec; a mismatched install is refused.

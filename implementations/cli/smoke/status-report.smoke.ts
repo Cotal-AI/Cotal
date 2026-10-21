@@ -14,8 +14,9 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
-import { findMesh, recordMesh, renderReport } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, beginMaintenanceCut, findMesh, recordMesh, releaseMaintenanceLock, renderReport, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { statusView } from "../src/commands/status.js";
+import { restoreNextStep } from "../src/lib/restore.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -41,6 +42,7 @@ type Envelope = {
     folder: { auth: { state: string }; personas: { root: string; default: string; error: string | null }; processes: { name: string; state: string }[] | null };
     meshes: { current: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
     selected: { resolved: boolean; code?: string; space?: string; server?: string | null; connection?: string };
+    maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null } | null;
     hints: string[];
   } | null;
   warnings: { code: string; target: unknown; message: string }[];
@@ -139,6 +141,29 @@ if (!brokerDisplayOnly) {
   const all = run(["status", "--space", "alpha", "--all", "--json"]);
   check("--all checks every registration", byName(all.envelope).alpha === "unreachable" && byName(all.envelope).beta === "unreachable", byName(all.envelope));
   check("--all is named in the target", all.envelope?.target.scope === "all" && all.envelope.target.space === "alpha", all.envelope?.target);
+}
+
+// ── a folder's maintenance journal is shown with its full attempt and next step ──────────────────
+{
+  const { home, run } = sandbox();
+  const server = ["--server", `nats://127.0.0.1:${await freePort()}`];
+  const none = run(["status", ...server, "--json"]);
+  check("control: a folder with no maintenance journal reports none", none.envelope?.result?.maintenance === null, shown(none));
+  mkdirSync(join(home, ".cotal", "nats"));
+  const lock = acquireMaintenanceLock(home);
+  const resume = writeMaintenanceResumeDocument(lock, { version: 1, inventory: { agents: [] }, launch: { runtime: "pty" } });
+  beginMaintenanceCut(lock, { attemptId: "cut-status", space: "held", mode: "open", sourcePath: join(home, ".cotal", "nats"), resume, launch: { server: "nats://127.0.0.1:4222" } });
+  releaseMaintenanceLock(lock);
+  const json = run(["status", ...server, "--json"]);
+  const held = json.envelope?.result?.maintenance;
+  check("status --json carries the journal's state, space and attempt", held?.state === "cut-intent" && held.space === "held" && held.attemptId === "cut-status", shown(json));
+  const plain = run(["status", ...server, "--plain"]);
+  check("the report shows it under Maintenance with the attempt", titles(plain.stdout).includes("Maintenance") && /Attempt: +cut-status/.test(plain.stdout), plain.stdout);
+  // A held restore names the command that moves it on, with the full attempt id.
+  const attempt = "restore-00000000-0000-4000-8000-000000000000";
+  const restoring = { ...json.envelope!.result!, maintenance: { root: home, space: "held", state: "restore-ready", attemptId: attempt, next: restoreNextStep("restore-ready", attempt) } };
+  const report = renderReport(statusView(restoring as unknown as Parameters<typeof statusView>[0]), "plain");
+  check("a held restore names its recover command with the full attempt id", new RegExp(`Attempt: +${attempt}`).test(report) && report.includes(`cotal backup recover ${attempt} --dry-run`), report);
 }
 
 // ── a part it cannot read is named on its row, and the read is partial ───────────────────────────

@@ -1,0 +1,2 @@
+# Preset flags admit only valid values, and an absent preset refuses by name with its provider.
+smoke:service-preset-guidance

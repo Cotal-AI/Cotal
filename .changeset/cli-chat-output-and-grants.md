@@ -1,0 +1,6 @@
+---
+"cotal-ai": patch
+"@cotal-ai/cli": patch
+---
+
+When the reader of `cotal chat --plain` or `--stdio` output closes it, input ends, the session closes and the command exits with that close's status instead of the closed-pipe exit 0. `cotal watch`, `service logs --follow` and the service journal follow now run their own shutdown on a closed output before the process exits. Elsewhere a closed stdout still exits quietly, and it now keeps an exit status the command already set. `--plain` prints its close line once. A send, join or channel mode outside the session's grant refuses with `PERMISSION_DENIED` before anything reaches the broker, so a `--stdio` join outside the read list is a refusal instead of an unknown outcome, and a session opened on no channel says to open a new session on the channel instead of showing a broker subject. A channel sender now counts as a heard sender: a DM to a name only a channel sender carries reaches that principal, and a name a channel sender shares with another principal refuses and lists them. Chat message times show in local time, with the date when it is not today, as `history` shows them. The chat header opens with `Mesh:`. The `--stdio` requests and records are documented.

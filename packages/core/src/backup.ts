@@ -385,6 +385,16 @@ export function validatePersistentConsumer(space: string, stream: string, info: 
   }
 }
 
+/** True when `info` is the durable `wanted` describes, in the start-bounded shape a full restore
+ *  recreates it in ({@link consumerConfigFromCheckpoint}). A create of the canonical config meets
+ *  that durable as "consumer already exists"; any other difference stays a conflict. */
+export function isRestoredConsumer(space: string, stream: string, info: ConsumerInfo, wanted: Partial<ConsumerConfig>): boolean {
+  if (info.name !== wanted.durable_name || info.config.deliver_policy !== DeliverPolicy.StartSequence || info.config.ack_wait !== wanted.ack_wait) return false;
+  try { validatePersistentConsumer(space, stream, info); }
+  catch { return false; }
+  return true;
+}
+
 /** Validate the complete consumer inventory for all eight streams and extract conservative checkpoints. */
 export function validatePersistentConsumerInventory(
   space: string,

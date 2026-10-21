@@ -26,7 +26,7 @@ export function servicePresets(): { preset: ServicePreset; package: string | nul
 export function resolveServicePreset(name: string): ServicePreset {
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "--preset needs one declared lower-case preset name");
   const row = servicePresets().find((row) => row.preset.name === name);
-  if (!row) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no registered or installed service preset is named "${name}"; install its provider explicitly or use a supported --file definition`, { remedy: "bare cotal svc lists the installed presets; add the extension that provides this one with cotal ext add <package>" });
+  if (!row) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no registered or installed service preset is named "${name}"; install its provider explicitly or use a supported --file definition`, { remedy: name === "web" ? "bare cotal svc lists the installed presets; add the dashboard provider with cotal ext add @cotal-ai/web" : "bare cotal svc lists the installed presets; add the extension that provides this one with cotal ext add <package>" });
   if (row.package !== null) {
     const owner = loadExtensionsManifest().extensions.find((extension) => extension.pkg === row.package);
     const checked = owner && verifiedExtensionServicePresets(owner).find((preset) => preset.name === name);
@@ -54,7 +54,8 @@ export function servicePresetFlags(preset: ServicePreset): FlagSpec[] {
     if (!/^[a-z][a-z0-9-]{0,63}$/.test(name) || reserved.has(name) || schema.type === "boolean" && (reserved.has(`no-${name}`) || names.has(`no-${name}`))) throw new CommandFailure("refused", "UNSUPPORTED", "the preset option names cannot be represented without shadowing CLI flags; use a validated --file definition instead");
     const description = typeof schema.description === "string" ? schema.description : `add --preset ${preset.name}: declared ${name} option`;
     flags.push({ name, type: schema.type === "boolean" ? "boolean" : "string", ...(schema.type === "boolean" ? {} : { value: placeholder(adapter.declaration.paths?.[name], schema.type) }), description: required.has(name) && !description.includes("(required)") ? `${description} (required)` : description });
-    if (schema.type === "boolean") flags.push({ name: `no-${name}`, type: "boolean", description: `add --preset ${preset.name}: set ${name} to false` });
+    // A boolean whose schema admits only true, such as an explicit intent, has no valid negative form.
+    if (schema.type === "boolean" && schema.const !== true && !(Array.isArray(schema.enum) && !schema.enum.includes(false))) flags.push({ name: `no-${name}`, type: "boolean", description: `add --preset ${preset.name}: set ${name} to false` });
   }
   return flags;
 }

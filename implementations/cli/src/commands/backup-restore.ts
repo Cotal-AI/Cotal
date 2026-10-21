@@ -1,6 +1,8 @@
 import { resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, isCommandFailure, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
+import { cotalRoot } from "../lib/paths.js";
+import { heldRestoreAttempt } from "../lib/restore.js";
 import { startRestore, type RestoreStartupResult } from "./up.js";
 
 /** `backup restore <dir>`: the guarded native restore through `up --restore`'s own authority. It
@@ -22,18 +24,13 @@ export async function backupRestore(args: ParsedArgs): Promise<void> {
   } catch (error) {
     if (isCommandFailure(error)) throw error;
     const message = (error as Error).message;
-    // `prepareRestore` raises this before it stages or moves anything for a new attempt (a stale
-    // earlier attempt may already have been rolled back under its own guards).
-    if (/^restore requires stable ready maintenance state, found /.test(message))
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", message, {
-        target,
-        remedy: "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root",
-      });
     // Every other native restore guard throws a plain error. Its message is the operator's evidence,
-    // kept verbatim; whether the attempt advanced is the journal's to say, not this wrapper's.
+    // kept verbatim; whether the attempt advanced is the journal's to say, so it is read and named.
+    const root = cotalRoot();
+    const held = heldRestoreAttempt(root);
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", message, {
-      target,
-      remedy: "inspect the root's maintenance journal; a stale pre-commit attempt is rolled back by `cotal backup recover <attempt-id>`, and a degraded one keeps its target for forward recovery",
+      target: { ...target, root, ...(held ? { attemptId: held.attemptId, journalState: held.journalState } : {}) },
+      remedy: held?.remedy ?? "this root's maintenance journal names no restore attempt; check it with cotal status before another restore",
     });
   }
   // The native activation throws on a degraded control plane or auth service before this point, so

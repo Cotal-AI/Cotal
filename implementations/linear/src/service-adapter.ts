@@ -6,7 +6,7 @@ import {
   serviceStartupPath, validateServiceStartupPath, type LocalProcess, type ServicePreset,
 } from "@cotal-ai/workspace";
 import { assertAccountName } from "./account.js";
-import { serveLinearAccount } from "./cli.js";
+import { accountForRead, serveLinearAccount } from "./cli.js";
 import { assertLinearEndpointName } from "./serve.js";
 
 function nativeTarget(root: string, space: string, server?: string) {
@@ -46,6 +46,8 @@ export const linearService: LocalProcess = {
     if (context.credentialRef) throw new CommandFailure("refused", "UNSUPPORTED", "Linear service authority comes from its selected native static root and recorded upstream account, not a generic caller reference");
     const target = nativeTarget(String(context.options.root), context.space, context.options.server as string | undefined);
     const selected = inputs(context.options.account, context.options.endpoint);
+    // The child reads the same home this process does, so an absent account refuses here, before a launch.
+    accountForRead(selected.account);
     const [executable, ...self] = context.cliInvocation;
     return { executable: executable!, cwd: target.root, args: [...self, ...(colorEnabled() ? [] : ["--no-color"]), "__service-linear", "--root", target.root, "--space", context.space, "--server", target.server, "--account", selected.account, "--endpoint", selected.endpoint, "--service-instance", context.instanceId, "--launch-request", context.launchRequestId, "--ready-file", serviceStartupPath(context)] };
   },

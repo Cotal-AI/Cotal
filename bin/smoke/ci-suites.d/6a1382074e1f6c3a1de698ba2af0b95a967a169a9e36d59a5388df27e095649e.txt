@@ -1,0 +1,2 @@
+# A Linear account with no record refuses as not found, in account show and before a service launch.
+smoke:linear-accounts

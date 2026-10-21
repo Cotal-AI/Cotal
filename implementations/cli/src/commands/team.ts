@@ -1,6 +1,6 @@
 import { basename, join, resolve } from "node:path";
 import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, brokerAddressForDisplay, canonicalRoot, connectOrThrow, findMesh, findPreparedSpace, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, connectOrThrow, findMesh, findPreparedSpace, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manifest/ledger.js";
@@ -305,7 +305,10 @@ async function nativeRemovalImpact(root: string, ledger: MeshLedger) {
   let user: Awaited<ReturnType<typeof userViewAuth>> | undefined;
   if (conn.mode === "user") {
     try { user = await userViewAuth(conn, "deployer"); }
-    catch { throw new CommandFailure("refused", "PERMISSION_DENIED", "the selected user-auth deployer view was not issued; no other identity or root was substituted", { target: { space: ledger.space, deploymentId: ledger.runId } }); }
+    catch (error) {
+      const remedy = credentialRefusalMessage(error);
+      throw new CommandFailure("refused", "PERMISSION_DENIED", "the selected user-auth deployer view was not issued; no other identity or root was substituted", { target: { space: ledger.space, deploymentId: ledger.runId }, ...(remedy ? { remedy } : {}) });
+    }
   }
   const ep = new CotalEndpoint({ space: ledger.space, servers: conn.server, tls: conn.tls,
     ...(user ? { bearer: user.source, sentinelCreds: user.sentinelCreds, lifecycleUid: user.lifecycleUid,
