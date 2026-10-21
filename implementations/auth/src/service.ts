@@ -84,12 +84,14 @@ import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
-import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, type AuthorityClient } from "./authority-client.js";
+import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { chatAwareAclResolver, openChatSessionAuthority, type ChatAdmissionRequest, type ChatRetireRequest, type ChatRetireResult, type ChatSessionAdmitted } from "./chat-session-authority.js";
 import { makeNativeIssuanceRecorder, pruneNativeIssuance, type NativeIssuanceRecorder } from "./native-issuance.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
+import type { ServiceEndpointHost } from "./service-host-contract.js";
+import { openServiceHostEffect, openServiceHostOperations, type ServiceHostEffect, type ServiceHostEffectScope, type ServiceHostOperations, type ServiceHostOperationsOptions } from "./service-host-ops.js";
 import { openAuthLedgerScannerCandidate } from "./ledger-scanner.js";
 import { openRecordsScannerCandidate } from "./records-scanner.js";
 import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, makeDeliveryAdminPrincipalOracle, scannerDeathCopy, planeClaimRefusal, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
@@ -349,6 +351,10 @@ export interface AuthAuthorityPlane {
    *  kept minting would look healthy while a successor reclaims its scanners). Never resolves on a
    *  clean close. */
   fenced: Promise<string>;
+  /** Present only with `serviceEndpoints`: the in-process service endpoint host (decide, revoke and
+   *  the operation and proposal reads). Trusted embedder only: the caller must authenticate the
+   *  granter it passes. */
+  serviceEndpointHost?: ServiceEndpointHost;
   /** Clean close (SPEC 13.13). Rejects when the plane did not release its claim; the barrier and
    *  the remaining clients still close. */
   close(): Promise<void>;
@@ -485,6 +491,18 @@ export interface OpenAuthAuthorityPlaneOptions {
   nativeIssuancePruneMs?: number;
   /** How often one bounded chat-session sweep pass runs (default 60 s). */
   chatSweepMs?: number;
+  /** Default off. Present: the plane also opens the service endpoint host over its own plane claim
+   *  hold, account and actor ledger. `startup` is required and only `normal` is supported; a restore
+   *  or a missing startup refuses the whole open. Absent: no engine, no discovery connection and no
+   *  admission write. */
+  serviceEndpoints?: { startup: NonNullable<ServiceHostOperationsOptions["startup"]> };
+  /** SMOKE-ONLY service host hooks: the discovery registry with a kill switch for its connection,
+   *  and each effect after it opens and before the engine uses it. Production compositions never
+   *  set this. */
+  probeServiceHost?: {
+    discovery?: (d: { registry: LifecycleRegistry; kill: () => Promise<void> }) => void | Promise<void>;
+    effect?: (effect: ServiceHostEffect, scope: ServiceHostEffectScope) => void | Promise<void>;
+  };
 }
 
 /**
@@ -501,6 +519,22 @@ export interface OpenAuthAuthorityPlaneOptions {
  */
 export async function openAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions): Promise<AuthAuthorityPlane> {
   return await openAuthAuthorityPlaneWithCustody(opts);
+}
+
+/** The hosted door over a plane's service endpoint host: refused before entry unless the context is
+ *  ready, and mapped to the same engine so the internal accessor still finds it. */
+function hostedServiceEndpoints(host: ServiceEndpointHost, ready: () => void): ServiceEndpointHost {
+  const door: ServiceEndpointHost = async (request) => { ready(); return await host(request); };
+  const engine = SERVICE_HOST_ENGINES.get(host);
+  if (engine !== undefined) SERVICE_HOST_ENGINES.set(door, engine);
+  return door;
+}
+
+/** Package-internal (not exported from the package index): the engine behind a plane's service
+ *  endpoint host, whose register admission only a later owner-verifying route may call. */
+const SERVICE_HOST_ENGINES = new WeakMap<ServiceEndpointHost, ServiceHostOperations>();
+export function serviceHostEngineOf(host: ServiceEndpointHost): ServiceHostOperations | undefined {
+  return SERVICE_HOST_ENGINES.get(host);
 }
 
 /** The context's custody callback is private. Failed construction unwinds from one place. */
@@ -614,11 +648,13 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // Mid-life disconnect = the FENCING event (security req: an owned scanner that dies must not
   // leave the plane half-running). First death wins: fence the guard with the ux state-3 copy,
   // close the sibling so a successor's reclaim isn't blocked by a half-dead pair, log loud.
+  let serviceHost: ServiceHostOperations | undefined;
   const fenceOnDeath = (role: "auth-ledger" | "records", sibling: () => Promise<void>) => {
     if (closing) return;
     const copy = scannerDeathCopy(space, role);
     hold?.fence(copy);
     fatalReason = fatalReason ?? copy;
+    serviceHost?.trip(copy);
     fireFatal(copy);
     log(`auth-plane: ${copy}`);
     void sibling().catch(() => {});
@@ -723,6 +759,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         const copy = `native-issuance cleanup failed: ${e instanceof Error ? e.message : String(e)}`;
         hold?.fence(copy);
         fatalReason = fatalReason ?? copy;
+        serviceHost?.trip(copy);
         fireFatal(copy);
         log(`auth-plane: ${copy}`);
       });
@@ -731,6 +768,38 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   const stopPrune = async (): Promise<void> => { clearTimeout(pruneTimer); await pruneFlight; };
   unwind.push(async () => { closing = true; await stopPrune(); });
   schedulePrune();
+  // The service endpoint host, default off. Its discovery client only reads, on the ordinary
+  // renewing profile: a broker loss makes its reads fail until it reconnects, and a renewal failure
+  // closes it for good, after which decide and revoke answer unavailable until the plane is opened
+  // again. The engine shares this plane's hold; both fatal sites above trip it.
+  let discoveryClient: AuthorityClient | undefined;
+  if (opts.serviceEndpoints !== undefined) {
+    const label = `cotal:service-host-discovery:${space}`;
+    const d = discoveryClient = await openAuthorityClient({ onConnection, server, space, dataAccount, label, grants: (id) => serviceHostDiscoveryGrants(space, id), log,
+      onRenewalFailure: () => {
+        log(`${label}: credential renewal failed - service host discovery is closed until the auth plane is opened again`);
+        void discoveryClient?.close().catch(() => {});
+      } });
+    unwind.push(() => d.close());
+    const discovery = await openLifecycleRegistry(d.nc, space);
+    await opts.probeServiceHost?.discovery?.({ registry: discovery, kill: () => d.close() });
+    const probeEffect = opts.probeServiceHost?.effect;
+    const engine = await openServiceHostOperations({
+      discovery, hold: hold!, accountPublicKey: dataAccount.pub, ledgerDir: opts.dir, startup: opts.serviceEndpoints.startup,
+      openEffect: async (scope) => {
+        const effect = await openServiceHostEffect({ onConnection, server, space, dataAccount, log }, scope);
+        if (probeEffect !== undefined) {
+          try { await probeEffect(effect, scope); } catch (e) { await effect.close().catch(() => {}); throw e; }
+        }
+        return effect;
+      },
+    });
+    unwind.push(() => engine.close());
+    serviceHost = engine;
+    SERVICE_HOST_ENGINES.set(engine.handle, engine);
+    // A fence while the engine was opening latches it now.
+    if (fatalReason !== undefined) engine.trip(fatalReason);
+  }
   const recordsJsm = await jetstreamManager(remoteIssuer.nc);
   const authKv = await new Kvm(remoteIssuer.nc).open(epAuthBucket(space));
   const managerIssuanceGate = (instanceId: string) => serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId });
@@ -1873,6 +1942,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       return await serveIssuanceGateKv(authKv, space, { endpoint, instanceId }).observe();
     },
     fenced,
+    ...(serviceHost !== undefined ? { serviceEndpointHost: serviceHost.handle } : {}),
     close: async () => {
       // Clean-close order (SPEC 13.13): the rail stops answering first, then scan-capable
       // clients down, then `held → released` (never released while either scanner can still
@@ -1881,6 +1951,10 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       closing = true;
       await stopPrune();
       await stopChatSweep();
+      // Every service host call that entered returns, discovery and effects included, before
+      // discovery closes and before the claim is released.
+      await serviceHost?.close();
+      await discoveryClient?.close();
       const scannerFlight = closeScanners ??= (async () => {
         await authAdmin?.close();
         const results = await Promise.allSettled([reader.close(), recordsScanner.close(), scanner.close()]);
@@ -2127,6 +2201,11 @@ export interface AuthServiceHandle extends HostedServiceHandle {
   platformControlAuthority?<R extends PlatformControlInnerRequest>(
     request: PlatformControlAuthorityRequest<R>,
   ): Promise<PlatformControlAuthorityResult<R>>;
+  /** The service endpoint host (SPEC 13.1). Present only when `serviceEndpoints` was supplied to
+   *  {@link startAuthService}. In-process and typed: no route, no capability, no caller policy. The
+   *  embedder authenticates the granter it passes. Rejects `unavailable` while the context is not
+   *  ready, before the host reads or writes anything. */
+  serviceEndpointHost?: ServiceEndpointHost;
   /** The platform readiness read (SPEC 13.9). Present only with `platformControl`. Answers the
    *  `status` of the currently assigned manager instance and refuses any other instance. It reads
    *  over this context's own connection, whose grant is that instance's `describe` and `status`;
@@ -2218,6 +2297,8 @@ export async function startAuthService(inputs: HostedContextInputs & {
   standingRenewableTtlSeconds?: number;
   /** Opt-in trusted-host consent signer, with seed material already in the private store. */
   toolResultConsents?: ToolResultConsentSignerOptions;
+  /** Default off. Forwarded unchanged to {@link openAuthAuthorityPlane}. No CLI flag sets it. */
+  serviceEndpoints?: OpenAuthAuthorityPlaneOptions["serviceEndpoints"];
 }): Promise<AuthServiceHandle> {
   if (!inputs.context?.accountPublicKey || !inputs.context.lifecycleUid || !inputs.space || !inputs.servers || !inputs.stateDir)
     throw new Error("auth-service: hosted context needs an account, lifecycle, space, server and stateDir");
@@ -2257,6 +2338,7 @@ export async function startAuthService(inputs: HostedContextInputs & {
     ...(inputs.platformSupervisor !== undefined ? { platformSupervisor: inputs.platformSupervisor } : {}),
     ...(inputs.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: inputs.standingRenewableTtlSeconds } : {}),
     ...(inputs.toolResultConsents !== undefined ? { toolResultConsents: inputs.toolResultConsents } : {}),
+    ...(inputs.serviceEndpoints !== undefined ? { serviceEndpoints: inputs.serviceEndpoints } : {}),
   });
   return { ...started.handle, readiness: (): HostedServiceState => ({ ...started.status(), context: inputs.context }) };
 }
@@ -2284,6 +2366,7 @@ interface AuthContextOptions {
   platformControl?: PlatformControlInput;
   platformSupervisor?: PlatformSupervisorInput;
   standingRenewableTtlSeconds?: number;
+  serviceEndpoints?: OpenAuthAuthorityPlaneOptions["serviceEndpoints"];
 }
 
 async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<AuthServiceHandle, "readiness">; status(): AuthContextStatus; ended: Promise<AuthContextEnd> }> {
@@ -2327,6 +2410,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     log: (l) => console.error(l),
     localManager: o.localManager,
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
+    ...(o.serviceEndpoints !== undefined ? { serviceEndpoints: o.serviceEndpoints } : {}),
   }, onConnection);
   let nc: NatsConnection | undefined;
   let http: ReturnType<typeof createServer> | undefined;
@@ -2573,6 +2657,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       cap,
       closed: owned.closed,
       connections: () => owned.connections(),
+      ...(plane.serviceEndpointHost !== undefined ? { serviceEndpointHost: hostedServiceEndpoints(plane.serviceEndpointHost, refuseUnlessReady) } : {}),
       ...(o.platformSupervisor !== undefined ? {
         platformSupervisorAuthority: async (owner: string) => {
           refuseUnlessReady();

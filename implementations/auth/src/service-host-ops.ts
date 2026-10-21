@@ -522,6 +522,11 @@ export interface ServiceHostOperations {
   handle(raw: unknown): Promise<ServiceHostResult>;
   /** The engine-level fatal latch: refuses new invocations and trips every live invocation host. */
   trip(reason: string): void;
+  /** Refuses every later call with the latch's answers, then resolves once every register or handle
+   *  call that entered before it has returned, from entry: through discovery, effect open and its
+   *  writes. It trips nothing; each call already in flight ends under its own discovery and
+   *  invocation bounds. */
+  close(): Promise<void>;
 }
 
 interface Inv { host: ServiceCustodyHost; h: HostInternals; writes: ServiceWriteScope; endMs: number; operationId: string; bound: boolean; assignmentDigest?: string }
@@ -556,7 +561,14 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
   const discovery = openServiceCustodyHost({ registry: opts.discovery, hold: opts.hold, accountPublicKey: opts.accountPublicKey, writes: NO_WRITES });
   const space = discovery.host.space, accountPublicKey = opts.accountPublicKey;
   const live = new Set<(reason: string) => void>();
-  let tripped: string | undefined;
+  let tripped: string | undefined, closed = false;
+  /** Every register and handle call, from entry until it returns. */
+  const entered = new Set<Promise<unknown>>();
+  const tracked = <T>(p: Promise<T>): Promise<T> => {
+    entered.add(p);
+    p.then(() => entered.delete(p), () => entered.delete(p));
+    return p;
+  };
   const discoveryCtx = (step: string) => { const c = context(HOSTS.get(discovery.host)!, Date.now() + S2A_INVOCATION_MS); c.step = step; return c; };
 
   /** One invocation: an effect connection for the discovered scope and its original deadline, one
@@ -651,7 +663,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     const env = { v: 1 as const, kind: "service-endpoint-host" as const, operation: "register" as const, requestId: req.requestId, space, accountPublicKey };
     const out = (a: Arms | Registered) => ({ ...env, ...a }) as ServiceRegisterResult;
     // The latch comes before the ledger and every broker read; a tripped engine cannot tell a bound request.
-    if (tripped !== undefined) return out(unread(req.requestId, "readiness", "open"));
+    if (tripped !== undefined || closed) return out(unread(req.requestId, "readiness", "open"));
     const { owner: o, endpoint: e, instanceId: i, clusterDigests, commands } = req.input;
     if (req.granter.owner !== o) return out(denied("permission-denied"));                                   // never binds
     // Authorization precedes every request-key read, and its refusal is one answer whether or not the request is bound.
@@ -1321,7 +1333,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     const out = (r: object) => ({ ...env, ...r }) as ServiceHostResult;
     // The latch comes before the ledger and every broker read. A request that could bind holds under its
     // operation coordinate, with no deny-new claim because no gate was read; a read never binds.
-    if (tripped !== undefined) return out(req.operation === "decide" || req.operation === "revoke"
+    if (tripped !== undefined || closed) return out(req.operation === "decide" || req.operation === "revoke"
       ? unread(req.requestId, "readiness", "open", req.operation === "revoke" ? req.input.expectedAssignmentDigest : undefined) : denied("unavailable"));
     const authorized = req.granter.kind === "operator" || interactive(req.granter.owner);
     switch (req.operation) {
@@ -1334,7 +1346,13 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
   }
 
   return Object.freeze({
-    space, accountPublicKey, register, handle,
+    space, accountPublicKey,
+    register: (raw: unknown) => tracked(register(raw)),
+    handle: (raw: unknown) => tracked(handle(raw)),
+    async close() {
+      closed = true;
+      while (entered.size > 0) await Promise.allSettled([...entered]);
+    },
     trip(reason: string) {
       if (tripped === undefined) tripped = reason;
       discovery.trip(tripped);
