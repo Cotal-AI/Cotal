@@ -30,7 +30,7 @@ import {
   DEV_OWNER, type MembershipFeedHandle,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -187,6 +187,7 @@ try {
   }
 
   console.log(`\n${fail ? "✗" : "✓"} MEMBERSHIP-OBSERVER RENEWAL ${pass}/${pass + fail}`);
+  emitSentinel({ passed: pass, failed: fail });
 } finally {
   try { await feed?.stop(); } catch { /* draining */ }
   await Promise.allSettled(live.map((c) => c.close()));
