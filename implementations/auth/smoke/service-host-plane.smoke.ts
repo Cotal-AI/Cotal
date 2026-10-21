@@ -1,8 +1,9 @@
-/** Owned-broker suite for the service endpoint host inside the authority plane. Sections P to C open
+/** Owned-broker suite for the service endpoint host inside the authority plane. Sections P to W open
  * the real plane (`openAuthAuthorityPlane`) on one JWT-permission broker; section H starts hosted
  * contexts (`startAuthService`) on another. The service name binding, the owner's interactive actor
  * row and the one malformed issuance row are fixture simulations; the smoke-only probes pause or
- * observe the discovery registry and each effect connection, and `probePlaneDeath` kills a scanner.
+ * observe the discovery registry and each effect connection, or make an effect's close reject
+ * without closing it, `probePlaneDeath` kills a scanner, and section W pauses the owned broker.
  * Nothing here is native, Cloud or production acceptance, and nothing proves a human decision. */
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -40,6 +41,8 @@ const quiet = () => {};
 const rejects = async (fn: () => Promise<unknown>): Promise<string> => { try { await fn(); return ""; } catch (e) { return (e as Error)?.message ?? String(e); } };
 const call = (host: ServiceEndpointHost, req: object): Promise<ServiceHostResult> => host(req as ServiceHostRequest);
 const settled = <T>(p: Promise<T>) => { const s = { done: false }; p.then(() => { s.done = true; }, () => { s.done = true; }); return s; };
+/** Whether `p` settles within `ms`; unlike `within`, it tells a void resolution from a timeout. */
+const settlesWithin = (p: Promise<unknown>, ms: number) => Promise.race([p.then(() => true, () => true), wait(ms).then(() => false)]);
 /** A gate the probe awaits until the test opens it. */
 const gate = () => { let open!: () => void; const p = new Promise<void>((r) => { open = r; }); return { p, open }; };
 
@@ -313,8 +316,97 @@ try {
     await closing;
     c.check(`C-${at} close settles only after the invocation, then releases the claim`, s.done && (await claimState()) === "released");
   }
+
+  // ---- E: an effect connection whose close fails ------------------------------------------------
+  for (const at of ["before-close", "during-drain"] as const) {
+    // The probe makes the armed effect's close reject without closing it while `failing` is set.
+    const g = gate();
+    let armed = false, failing = false, paused = false, attempts = 0, target: ServiceHostEffect | undefined;
+    const o = await openPlane(enabled, {
+      effect: async (e) => {
+        if (!armed) return;
+        armed = false;
+        target = e;
+        const close = e.close;
+        e.close = async () => { attempts++; if (failing) throw new Error("fixture: injected effect close rejection"); await close(); };
+        if (at === "during-drain") { paused = true; await g.p; }
+      },
+    });
+    const host = o.plane.serviceEndpointHost!;
+    const p = await registered(host);
+    armed = true; failing = true;
+    const inflight = call(host, decide(p.proposalId, p.revision, name.revision)).then(() => "", (e: unknown) => (e as Error).message);
+    let first: Promise<string>;
+    if (at === "during-drain") {
+      for (let i = 0; i < 50 && !paused; i++) await wait(20);
+      first = rejects(() => o.plane.close());
+      await wait(200);
+      g.open();
+    } else {
+      await inflight;
+      first = rejects(() => o.plane.close());
+    }
+    const callErr = await inflight, firstErr = await first;
+    c.check(`E-${at} the call whose effect close failed rejects with that failure`, callErr.includes("injected effect close rejection"), callErr);
+    c.check(`E-${at} plane close rejects while that effect is still open`, firstErr.includes("did not close") && attempts === 2, { firstErr, attempts });
+    c.check(`E-${at} the effect connection is still open and the claim is still held`, !(await settlesWithin(target!.gone, 200)) && (await claimState()) === "held");
+    const refused = await call(host, opRead(serviceHostOperationId(space, rid())));
+    c.check(`E-${at} the host stays refused after the failed close`, refused.state === "denied" && refused.reason === "unavailable", refused);
+    failing = false;
+    const retry = await rejects(() => o.plane.close());
+    c.check(`E-${at} a retried close closes the effect, then releases the claim`, retry === "" && attempts === 3 && (await settlesWithin(target!.gone, 2000))
+      && (await claimState()) === "released", { retry, attempts });
+  }
+  {
+    // E3: ordinary request errors do not affect close.
+    const o = await openPlane(enabled);
+    const host = o.plane.serviceEndpointHost!;
+    const bad = await rejects(() => call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "decide", granter: { kind: "owner", owner }, input: {} }));
+    const wrong = await rejects(() => serviceHostEngineOf(host)!.register({ v: 1 }));
+    c.check("E3 malformed decide and register requests reject", bad !== "" && wrong !== "", { bad, wrong });
+    const closed = await rejects(() => o.plane.close());
+    c.check("E3 close after rejected requests succeeds and releases the claim", closed === "" && (await claimState()) === "released", closed);
+  }
+
+  // ---- W: refusal from the moment close begins ---------------------------------------------------
+  {
+    const o = await openPlane(enabled);
+    const host = o.plane.serviceEndpointHost!;
+    const p = await registered(host);
+    const propRev = await revision(`svcprop.${p.proposalId}`);
+    const effects = o.effects;
+    const closing = o.plane.close();
+    const d = call(host, decide(p.proposalId, p.revision, name.revision)), r = call(host, opRead(serviceHostOperationId(space, rid())));
+    const [dr, rr] = [await d, await r];
+    c.check("W1 a decide issued in the same turn as close() answers the latch", latched(dr), dr);
+    c.check("W1 a read issued in the same turn as close() answers unavailable", rr.state === "denied" && rr.reason === "unavailable", rr);
+    await closing;
+    c.check("W1 nothing was written or opened for them, and close released the claim", (await revision(`svcprop.${p.proposalId}`)) === propRev && o.effects === effects && (await claimState()) === "released");
+  }
+  {
+    // W2: close is held open by a prune pass on the paused owned broker; calls in that window refuse.
+    const o = await openPlane({ ...enabled, nativeIssuancePruneMs: 100 });
+    const host = o.plane.serviceEndpointHost!;
+    const p = await registered(host);
+    const effects = o.effects;
+    srv.kill("SIGSTOP");
+    let resumed = false;
+    try {
+      await wait(300);
+      const closing = o.plane.close(), cs = settled(closing);
+      await wait(200);
+      const d = await within(call(host, decide(p.proposalId, p.revision, name.revision)), 500);
+      const r = await within(call(host, opRead(serviceHostOperationId(space, rid()))), 500);
+      c.check("W2 while close waits on the paused broker, a decide answers the latch at once", !cs.done && d !== undefined && latched(d), { d, closeDone: cs.done });
+      c.check("W2 and a read answers unavailable at once", r !== undefined && r.state === "denied" && r.reason === "unavailable", r);
+      srv.kill("SIGCONT"); resumed = true;
+      await closing;
+      c.check("W2 after the broker resumes close releases the claim, with no effect opened for those calls", o.effects === effects && (await claimState()) === "released");
+    } finally { if (!resumed) srv.kill("SIGCONT"); }
+  }
 } finally {
   await wide.close().catch(() => {});
+  srv.kill("SIGCONT");
   srv.kill("SIGTERM");
   if (srv.exitCode === null && srv.signalCode === null) await new Promise<void>((r) => { srv.once("exit", () => r()); setTimeout(r, 3000); });
   rmSync(tmp, { recursive: true, force: true });
