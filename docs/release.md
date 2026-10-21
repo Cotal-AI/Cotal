@@ -12,6 +12,7 @@ Automatic smoke shards exclude mutation infrastructure suites and print each exc
 inventory and ordinary suite assignments stay unchanged. Build, typecheck, protocol smokes and native
 cold-setup checks still run. The Mutation reproof and Windows creation identity workflows are disabled
 because they execute mutation proofs; do not re-enable them without an explicit operator request.
+Linux CI and Windows CI use the same filtered runner. Both were paused until this policy was merged.
 
 ## 0.11 runtime migration
 
