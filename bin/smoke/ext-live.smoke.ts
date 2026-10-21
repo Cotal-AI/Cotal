@@ -252,7 +252,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   const m = JSON.parse(readFileSync(manifestPath, "utf8"));
   delete m.extensions[0].provides;
   writeFileSync(manifestPath, JSON.stringify(m, null, 2));
-  const help = cotal(["--help"]);
+  const help = cotal(["help", "--all"]);
   const completion = cotal(["__complete", "hello-ext", "--"]);
   const run = cotal(["hello-ext", "legacy"]);
   ok("legacy command-only manifest still renders, completes, and dispatches", help.status === 0 && /hello-ext/.test(help.stdout) && completion.status === 0 && /--shout/.test(completion.stdout) && run.status === 0 && /hello legacy/.test(run.stdout), help.stdout + completion.stdout + run.stdout + run.stderr);
@@ -377,7 +377,7 @@ registry.register({
   ok("an extension that declares an alias installs", added.status === 0, added.stderr.slice(-400));
   const viaAlias = cotal(["ax", "there"]);
   ok("the alias runs the extension's command", viaAlias.status === 0 && viaAlias.stdout.includes("alias-ext there"), viaAlias.stdout + viaAlias.stderr.slice(-200));
-  const help = cotal(["help"]);
+  const help = cotal(["help", "--all"]);
   ok("help lists the alias beside its command", /alias-ext, ax/.test(help.stdout), help.stdout.slice(-600));
   const builtin = cotal(["ext", "add", fixture("cotal-ext-claims-sp", aliased("other-ext", ["sp"]))]);
   ok("an alias a built-in claims fails the add", builtin.status === 1 && /cotal-ext-claims-sp/.test(builtin.stderr) && /command:sp/.test(builtin.stderr), builtin.stderr.slice(-300));
@@ -470,7 +470,7 @@ registry.register(
   const unavailableManifest = join(sandbox, "unavailable.yaml");
   writeFileSync(unavailableManifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: unavailable\nruntime: fixture-unavailable\nchannels: {}\n`);
   const unavailable = cotal(["up", "-f", unavailableManifest]);
-  ok("up -f rejects an unavailable extension runtime before starting the broker", unavailable.status === 1 && /not reachable/.test(unavailable.stderr) && !existsSync(join(sandbox, ".cotal", "nats.pid")), unavailable.stderr.slice(-400));
+  ok("up -f rejects an unavailable extension runtime before starting the broker", unavailable.status === 2 && /DEPENDENCY_UNAVAILABLE/.test(unavailable.stderr) && /not reachable/.test(unavailable.stderr) && !existsSync(join(sandbox, ".cotal", "nats.pid")), unavailable.stderr.slice(-400));
 
   mkdirSync(join(sandbox, ".cotal"), { recursive: true });
   const daemon = (childCode = "setInterval(() => {}, 1000)"): number => {
