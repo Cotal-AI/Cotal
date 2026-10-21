@@ -2367,6 +2367,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       issuer,
       authorizeActor: ledgerAuthorizeGrant(dir),
       mintConnectCredential: plane.mintConnectCredential,
+      ...(idp.dmReaderAudience !== undefined ? { dmReaderAudience: idp.dmReaderAudience } : {}),
     });
     const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
     // Set once the public face binds. An enrolled child's bearer exchanges there without the
