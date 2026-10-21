@@ -24,7 +24,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -863,28 +863,34 @@ try {
   // unreachable is not proof that mesh is gone, and the reclaim happens BEFORE the broker starts,
   // so an `up` that then fails would leave the operator with neither mesh and no way back.
   const { claimSpace } = await import("../src/commands/up.js");
+  const { isCommandFailure } = await import("@cotal-ai/workspace");
+  // Every claim refusal is typed as refused with its own code and remedy, which is what lets both
+  // `up` routes show the reason and the next step with exit 2.
+  const claimRefused = (e: Error | undefined, code: string) => isCommandFailure(e) && e.outcome === "refused" && e.code === code;
+  const remedyOf = (e: Error | undefined) => (isCommandFailure(e) ? e.remedy ?? "" : "");
+  const claimText = (e: Error | undefined) => `${e?.message ?? ""}\n${remedyOf(e)}`;
   recordMesh({ space: "claimed", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   let claimError: Error | undefined;
   await claimSpace("claimed", LIVE, localRoot).catch((e: Error) => void (claimError = e));
-  check("`up` refuses to reclaim a registered space rather than deleting it", claimError !== undefined, claimError?.message);
+  check("`up` refuses to reclaim a registered space rather than deleting it", claimRefused(claimError, "CONFLICT"), claimText(claimError));
   check("…and the registration survives the refusal", findMesh("claimed") !== undefined, loadMeshes());
-  check("…naming `cotal meshes rm` as the way through", claimError?.message.includes("cotal meshes rm claimed") === true, claimError?.message);
-  check("…and a loopback registered server does not suggest `supervise`", claimError?.message.includes("supervise") === false, claimError?.message);
+  check("…naming `cotal meshes rm` as the way through", remedyOf(claimError).includes("cotal meshes rm claimed"), claimText(claimError));
+  check("…and a loopback registered server does not suggest `supervise`", claimError !== undefined && !claimText(claimError).includes("supervise"), claimText(claimError));
   // A LIVE registered holder must reach the SAME refusal. Deciding liveness first sent the operator
   // to `cotal down`, which cannot stop a mesh this machine does not run.
   recordMesh({ space: "claimed-live", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   let liveClaimError: Error | undefined;
   await claimSpace("claimed-live", DEAD, localRoot).catch((e: Error) => void (liveClaimError = e));
   check("a LIVE registered holder gets the same refusal, not `cotal down`",
-    liveClaimError?.message.includes("cotal meshes rm claimed-live") === true && !liveClaimError.message.includes("cotal down"),
-    liveClaimError?.message);
+    claimRefused(liveClaimError, "CONFLICT") && remedyOf(liveClaimError).includes("cotal meshes rm claimed-live") && !claimText(liveClaimError).includes("cotal down"),
+    claimText(liveClaimError));
   check("…and it survives", findMesh("claimed-live") !== undefined, loadMeshes());
   recordMesh({ space: "claimed-catalog", server: DEAD, root, mode: "user", origin: "catalog", catalogOwner: "acct-a", ts: new Date(0).toISOString() });
   let catalogClaimError: Error | undefined;
   await claimSpace("claimed-catalog", LIVE, localRoot).catch((e: Error) => void (catalogClaimError = e));
   check("`up` refuses a discovered name collision and leaves the catalog record untouched",
-    catalogClaimError?.message.includes("owned by a signed-in space catalog") === true && findMesh("claimed-catalog")?.origin === "catalog",
-    catalogClaimError?.message);
+    claimRefused(catalogClaimError, "CONFLICT") && catalogClaimError?.message.includes("owned by a signed-in space catalog") === true && remedyOf(catalogClaimError).includes("cotal sync") && findMesh("claimed-catalog")?.origin === "catalog",
+    claimText(catalogClaimError));
   // A registered server that is NOT loopback names `cotal supervise`/`cotal deliver` against that
   // server, not `meshes rm` — dropping the record would break the route a live remote mesh is
   // addressed by, and a different `--space` would fork the identity.
@@ -893,11 +899,20 @@ try {
   recordMesh({ space: "claimed-remote", server: REMOTE_BROKER, root: remoteBrokerRoot, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   let remoteClaimError: Error | undefined;
   await claimSpace("claimed-remote", LIVE, localRoot).catch((e: Error) => void (remoteClaimError = e));
-  check("a non-loopback registered holder refuses, naming `cotal supervise`", remoteClaimError?.message.includes(`cotal supervise --space claimed-remote --server ${REMOTE_BROKER}`) === true, remoteClaimError?.message);
-  check("…and names `cotal deliver`", remoteClaimError?.message.includes("cotal deliver") === true, remoteClaimError?.message);
-  check("…and does not suggest `meshes rm`", remoteClaimError?.message.includes("meshes rm") === false, remoteClaimError?.message);
-  check("…and does not suggest a different `--space`", remoteClaimError?.message.includes("different `--space`") === false, remoteClaimError?.message);
+  check("a non-loopback registered holder refuses, naming `cotal supervise`", claimRefused(remoteClaimError, "CONFLICT") && remedyOf(remoteClaimError).includes(`cotal supervise --space claimed-remote --server ${REMOTE_BROKER}`), claimText(remoteClaimError));
+  check("…and names `cotal deliver`", remedyOf(remoteClaimError).includes("cotal deliver"), claimText(remoteClaimError));
+  check("…and does not suggest `meshes rm`", remoteClaimError !== undefined && !claimText(remoteClaimError).includes("meshes rm"), claimText(remoteClaimError));
+  check("…and does not suggest a different `--space`", remoteClaimError !== undefined && !claimText(remoteClaimError).includes("different `--space`"), claimText(remoteClaimError));
   check("…and the registration survives the refusal", findMesh("claimed-remote") !== undefined, loadMeshes());
+  // A live `up` holder at another root is in use: refused as a conflict, its record unchanged.
+  recordMesh({ space: "claimed-busy", server: LIVE, root, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const busyBefore = JSON.stringify(findMesh("claimed-busy"));
+  let busyError: Error | undefined;
+  await claimSpace("claimed-busy", DEAD, localRoot).catch((e: Error) => void (busyError = e));
+  check("a live holder at another root is refused as in use, naming `cotal down`",
+    claimRefused(busyError, "CONFLICT") && busyError?.message.includes(`already in use by a mesh at ${LIVE}`) === true && remedyOf(busyError).includes("`cotal down` it first") && JSON.stringify(findMesh("claimed-busy")) === busyBefore,
+    claimText(busyError));
+  removeMesh("claimed-busy");
   recordMesh({ space: "reclaimable", server: DEAD, root: localRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   await claimSpace("reclaimable", LIVE, root);
   check("a dead `up` holder is still reclaimed (unchanged)", findMesh("reclaimable") === undefined, loadMeshes());
@@ -912,7 +927,7 @@ try {
   recordMesh({ space: "held", server: DEAD, root: heldRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   let heldError: Error | undefined;
   await claimSpace("held", LIVE, localRoot).catch((e: Error) => void (heldError = e));
-  check("a dead holder whose root holds a maintenance journal keeps its name", heldError?.message.includes("did not take the name") === true && findMesh("held")?.root === heldRoot, heldError?.message);
+  check("a dead holder whose root holds a maintenance journal keeps its name", claimRefused(heldError, "LIFECYCLE_BLOCKED") && heldError?.message.includes("did not take the name") === true && remedyOf(heldError).includes(`finish that attempt from ${heldRoot}`) && findMesh("held")?.root === heldRoot, claimText(heldError));
   // Without a journal the reclaim still happens, and says whose name it took.
   const announcedRoot = projectRoot("announced");
   recordMesh({ space: "announced", server: DEAD, root: announcedRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
@@ -936,9 +951,25 @@ try {
     try { await claimSpace("vaulted", LIVE, localRoot).catch((e: Error) => void (vaultedError = e)); }
     finally { chmodSync(vault, 0o700); }
     check("a dead holder whose root cannot be read keeps its registration unchanged", JSON.stringify(findMesh("vaulted")) === vaultedBefore, loadMeshes());
-    check("…and the refusal names that root and the error", vaultedError?.message.includes(`registered to ${vaultedRoot}, which could not be resolved (EACCES)`) === true && vaultedError.message.includes("did not take the name"), vaultedError?.message);
+    check("…and the refusal names that root and the error", claimRefused(vaultedError, "PERMISSION_DENIED") && vaultedError?.message.includes(`registered to ${vaultedRoot}, which could not be resolved (EACCES)`) === true && vaultedError.message.includes("did not take the name") && remedyOf(vaultedError).includes(`restore access to ${vaultedRoot}`), claimText(vaultedError));
     removeMesh("vaulted");
-  } else console.log("  (skipped: the inaccessible-root cell needs a non-root POSIX runner)");
+    // A recorded root spelled through a link and `..` resolves lexically to the claiming root once an
+    // ancestor of the link's target cannot be read. That is no proof of the same root, so the name and
+    // its record stay. The spelling is built by hand, because `join` would drop the `..`.
+    const far = projectRoot("far"), farInner = join(far, "a", "inner"), near = realpathSync(projectRoot("near"));
+    mkdirSync(farInner, { recursive: true });
+    symlinkSync(farInner, join(near, "link"));
+    const spelled = `${near}/link/..`;
+    recordMesh({ space: "dotdot", server: DEAD, root: spelled, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+    const dotdotBefore = JSON.stringify(findMesh("dotdot"));
+    let dotdotError: Error | undefined;
+    chmodSync(far, 0o000);
+    try { await claimSpace("dotdot", LIVE, near).catch((e: Error) => void (dotdotError = e)); }
+    finally { chmodSync(far, 0o700); }
+    check("a root spelled through a link and `..` under an unreadable ancestor keeps its registration", JSON.stringify(findMesh("dotdot")) === dotdotBefore, loadMeshes());
+    check("…and the refusal names that spelling", claimRefused(dotdotError, "PERMISSION_DENIED") && dotdotError?.message.includes(`registered to ${spelled}, which could not be resolved (EACCES)`) === true && remedyOf(dotdotError).includes(`restore access to ${spelled}`), claimText(dotdotError));
+    removeMesh("dotdot");
+  } else console.log("  (skipped: the inaccessible-root cells need a non-root POSIX runner)");
   // A relative recorded root names no directory without the cwd, so it is never taken as this root.
   // From the new root, where "." resolves to it, with the recorded server and with another, and for a
   // relative root that resolves elsewhere: each keeps its registration and names its removal.
@@ -951,7 +982,7 @@ try {
       let relativeError: Error | undefined;
       await claimSpace(space, claimed, localRoot).catch((e: Error) => void (relativeError = e));
       check(`a relative recorded root "${recorded}" keeps its registration (${space})`, JSON.stringify(findMesh(space)) === before, loadMeshes());
-      check(`…and the refusal names the record's removal (${space})`, relativeError?.message.includes(`registered to ${recorded}, which is not an absolute path`) === true && relativeError.message.includes(`cotal meshes rm ${space}`), relativeError?.message);
+      check(`…and the refusal names the record's removal (${space})`, claimRefused(relativeError, "CONFLICT") && relativeError?.message.includes(`registered to ${recorded}, which is not an absolute path`) === true && remedyOf(relativeError).includes(`cotal meshes rm ${space}`), claimText(relativeError));
       removeMesh(space);
     }
   } finally { process.chdir(priorCwd); }

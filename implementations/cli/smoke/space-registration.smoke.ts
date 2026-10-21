@@ -7,7 +7,9 @@
  * stack is written as its stack journal and instance records, with nothing launched. A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider has refused and left the root as it was. Create and a later `up` write the
- * default persona when the root has none, and leave an edited one byte-identical.
+ * default persona when the root has none, and leave an edited one byte-identical. A registration
+ * whose root is not an absolute path is refused at the space claim on the controller route and on the
+ * legacy route, each with its reason, its remedy and exit 2, and the registration is kept.
  *
  * Needs `nats-server` on PATH.
  *
@@ -443,6 +445,33 @@ setCurrent("keep");
   const recreated = await json(["space", "create", "later"], later);
   check("a second create in the same root leaves an edited default persona byte-identical and lists only the prepared record",
     recreated.status === 0 && readFileSync(laterPersona, "utf8") === kept && recreated.env?.result.written?.map((w: { what: string }) => w.what).join() === "prepared space", shown(recreated));
+}
+
+// ── A space claim that refuses, on the controller and legacy routes ────────────────────────────────────
+{
+  // Recorded as ".", the root resolves the registration to itself and takes the controller route.
+  // Recorded as "../elsewhere", it does not, so the root takes the legacy route, which has no --json
+  // receipt. Each route gets its own root: a refused controller attempt leaves its stack journal.
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  for (const [space, recorded, route] of [["relhere", ".", "controller"], ["relaway", "../elsewhere", "legacy"]] as const) {
+    const claimRoot = projectRoot(`claim-${route}`);
+    recordMesh({ space, server, root: recorded, mode: "auth", origin: "up", ts: new Date(0).toISOString() });
+    const before = registryFiles();
+    const args = ["up", "--detach", "--no-manager", "--space", space, "--server", server];
+    if (route === "controller") {
+      const claimed = await json(args, claimRoot);
+      check("on the controller route, a registration with a relative root is refused at the claim: CONFLICT, exit 2, naming the root and `cotal meshes rm`, with the registration kept",
+        refused(claimed, 2, "CONFLICT") && (claimed.env?.error?.message ?? "").includes(`registered to ${recorded}, which is not an absolute path`) &&
+          (claimed.env?.error?.remedy ?? "").includes(`cotal meshes rm ${space}`) && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(claimed));
+    } else {
+      const claimed = await run(args, {}, claimRoot);
+      const text = claimed.stderr.replace(/\x1b\[[0-9;]*m/g, ""), lines = text.split("\n").map((line) => line.trim());
+      check("on the legacy route, the same refusal: refused CONFLICT, exit 2, naming the root, with `cotal meshes rm` as the next step and the registration kept",
+        claimed.status === 2 && text.includes("Request refused") && /Outcome:\s+refused/.test(text) && /Code:\s+CONFLICT/.test(text) && text.includes(`registered to ${recorded}, which is not an absolute path`) &&
+          lines.some((line) => line.startsWith(`drop that record with \`cotal meshes rm ${space}\``)) && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(claimed));
+    }
+    removeMesh(space);
+  }
 }
 
 finish();

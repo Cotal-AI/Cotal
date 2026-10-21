@@ -3502,18 +3502,23 @@ function manualClaimRemedy(space: string, server: string): string {
   return `\`cotal meshes rm ${space}\` to drop that record first, or start this one under a different \`--space\``;
 }
 
-/** Whether a prior holder's absolute root is proven gone: it does not resolve (ENOENT, ENOTDIR) or
- *  resolves to something other than a directory. Any other failure, such as EACCES, EPERM, EIO or
- *  ELOOP, proves nothing about the root or its journal, so the name is kept and the refusal says why. */
-function priorRootGone(space: string, root: string): boolean {
+/** Where a prior holder's absolute root physically resolves, or undefined when it is proven gone: it
+ *  does not resolve (ENOENT, ENOTDIR) or resolves to something other than a directory. Any other
+ *  failure, such as EACCES, EPERM, EIO or ELOOP, proves nothing about the root or its journal, so the
+ *  name is kept and the refusal says why. No lexical spelling stands in for the physical path: under
+ *  an unreadable ancestor, `<root>/link/..` resolves lexically to `<root>` while it names another. */
+function priorRootPath(space: string, root: string): string | undefined {
+  let real: string;
   let kind: Stats;
-  try { kind = statSync(realpathSync.native(root)); }
-  catch (e) {
+  try {
+    real = realpathSync.native(root);
+    kind = statSync(real);
+  } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return true;
-    throw new Error(`space "${space}" is registered to ${root}, which could not be resolved (${code ?? String(e)}) - \`cotal up\` did not take the name; restore access to ${root} and run this again, or start this stack under a different \`--space\``);
+    if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+    throw new CommandFailure("refused", code === "EACCES" || code === "EPERM" ? "PERMISSION_DENIED" : "TARGET_UNAVAILABLE", `space "${space}" is registered to ${root}, which could not be resolved (${code ?? String(e)}) - \`cotal up\` did not take the name`, { target: { space, root }, remedy: `restore access to ${root} and run this again, or start this stack under a different \`--space\`` });
   }
-  return !kind.isDirectory();
+  return kind.isDirectory() ? real : undefined;
 }
 
 /** A space name maps to one mesh in the registry (the key `--space`/`use`/`down` act on). Before
@@ -3530,29 +3535,33 @@ export async function claimSpace(space: string, server: string, root: string): P
   // taken as this root, compared with it or reclaimed. Its record stays until it is removed by hand.
   const relative = !isAbsolute(existing.root);
   if (!relative && existing.server === server && existing.root === root) return;
+  // Every refusal below is made before the registry changes, so it is typed as refused with its own
+  // remedy, and the controller and legacy routes both show the reason and exit 2.
+  const target = { space, root: existing.root, server: existing.server };
   // An OPERATOR-REGISTERED holder is decided FIRST, before liveness, because liveness changes
   // nothing about it and the two outcomes would otherwise print the wrong remedy. It is never
   // reclaimed: unreachable is not proof the mesh is gone (the record describes a broker on another
   // machine), the reclaim runs BEFORE this launch starts anything, and `cotal down` — what the
   // liveness branch below would advise — cannot stop a mesh this machine does not run.
   if (existing.origin === "manual" || existing.origin === "catalog")
-    throw new Error(`space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) - it is ${existing.origin === "catalog" ? "owned by a signed-in space catalog" : "registered by hand"}, so \`cotal up\` neither takes it over nor reclaims the name: ${existing.origin === "catalog" ? "use a different `--space`, or remove access at the IdP and run `cotal sync`" : manualClaimRemedy(space, existing.server)}`);
+    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) - it is ${existing.origin === "catalog" ? "owned by a signed-in space catalog" : "registered by hand"}, so \`cotal up\` neither takes it over nor reclaims the name`, { target, remedy: existing.origin === "catalog" ? "use a different `--space`, or remove access at the IdP and run `cotal sync`" : manualClaimRemedy(space, existing.server) });
   if (relative)
-    throw new Error(`space "${space}" is registered to ${existing.root}, which is not an absolute path - \`cotal up\` did not take the name; drop that record with \`cotal meshes rm ${space}\`, or start this stack under a different \`--space\``);
-  if (await isReachable(existing.server)) {
-    throw new Error(`space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) - pick a different \`--space\`, or \`cotal down\` it first`);
-  }
-  // A dead holder at another root keeps its name while that root holds a preserved cut or a restore:
-  // taking it would cut that root's recovery off from its space. A journal that cannot be read keeps it
-  // too. A root proven gone or not a directory has no journal to read; a readable root without one
-  // is reclaimed.
-  const otherRoot = canonicalRoot(existing.root) !== canonicalRoot(root);
-  if (otherRoot && !priorRootGone(space, existing.root)) {
+    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is registered to ${existing.root}, which is not an absolute path - \`cotal up\` did not take the name`, { target, remedy: `drop that record with \`cotal meshes rm ${space}\`, or start this stack under a different \`--space\`` });
+  if (await isReachable(existing.server))
+    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: "pick a different `--space`, or `cotal down` it first" });
+  // The recorded root is this root only where it physically resolves, so it is resolved before any
+  // comparison, and one that cannot be resolved refuses. A dead holder at another root keeps its name
+  // while that root holds a preserved cut or a restore: taking it would cut that root's recovery off
+  // from its space. A journal that cannot be read keeps it too. A root proven gone or not a directory
+  // has no journal to read; a readable root without one is reclaimed.
+  const prior = priorRootPath(space, existing.root);
+  const otherRoot = prior !== canonicalRoot(root);
+  if (otherRoot && prior !== undefined) {
     let held: string | undefined;
     try { held = readMaintenanceJournal(existing.root)?.state; }
     catch { held = "unreadable"; }
     if (held)
-      throw new Error(`space "${space}" is registered to ${existing.root}, whose maintenance journal holds a preserved cut or a restore (state ${held}) - \`cotal up\` did not take the name; finish that attempt from ${existing.root}, or start this stack under a different \`--space\``);
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `space "${space}" is registered to ${existing.root}, whose maintenance journal holds a preserved cut or a restore (state ${held}) - \`cotal up\` did not take the name`, { target, remedy: `finish that attempt from ${existing.root}, or start this stack under a different \`--space\`` });
   }
   removeMesh(space); // the prior holder's broker is gone — reclaim the name
   if (otherRoot) console.error(`• space "${space}" was registered to ${existing.root}, whose broker at ${existing.server} is not running - this up takes the name over`);

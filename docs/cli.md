@@ -517,8 +517,13 @@ it prints that root and its broker address. It refuses instead when that root ho
 preserved cut in its maintenance journal: finish that attempt from its root, or start this stack
 under another `--space`. It also keeps the name, and names that root, when the root or its journal
 cannot be read, for example when access to a parent folder is denied, or when the recorded root is
-not an absolute path. A root counts as gone only when it no longer exists or is not a directory. A
-readable root with no maintenance journal also gives up its name.
+not an absolute path. A recorded root matches this one only by the folder it resolves to on disk, so
+a path such as `<this root>/link/..` whose link leads through an unreadable folder keeps its name
+like any root that cannot be read. A root counts as gone only when it no longer exists or is not a
+directory. A readable root with no maintenance journal also gives up its name. Each of these
+refusals ends `refused` with exit 2, on a controller stack and on the retained launcher, and shows
+its reason and the next step, such as `cotal meshes rm <space>` for a root that is not an absolute
+path.
 
 A foreground `up` holds the root's maintenance lock only while it starts the stack. A bare
 `cotal down` from another terminal can then stop the stack; the foreground `up` sees the completed
