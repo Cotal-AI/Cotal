@@ -192,11 +192,12 @@ try {
     const seatCreds = agentLifecycleSecretFilePaths(root, space, "settle-seat", uid).creds;
     const foreign = roots.find((other) => other !== root);
     const foreignCreds = foreign ? readdirSync(join(foreign, ".cotal"), { recursive: true, encoding: "utf8" }).find((path) => path.endsWith(".creds")) : undefined;
+    check("another root of this suite holds a credential the seat can present", foreign !== undefined && foreignCreds !== undefined, roots);
     mkdirSync(dirname(seatCreds), { recursive: true, mode: 0o700 });
     if (foreign && foreignCreds) copyFileSync(join(foreign, ".cotal", foreignCreds), seatCreds);
     const seat = { ...env, COTAL_NAME: "settle-seat", COTAL_ID: "settle-seat", COTAL_LIFECYCLE_UID: uid, COTAL_SPACE: space, COTAL_ACCEPTED_TOKEN: "settle-token" };
     const rejected = cliAs(seat, root, "down", "--yes", "--json");
-    check("a live broker's refusal of a managed seat's credential is kept, not reported as a registry mismatch, and nothing stops", rejected.status !== 0 && /authorization/i.test(rejected.env?.error?.message ?? "") && !(rejected.env?.error?.message ?? "").includes("registry entry") && broker !== null && alive(broker) && manager !== null && alive(manager), shown(rejected));
+    check("a live broker's refusal of a managed seat's credential is kept, not reported as a registry mismatch, and nothing stops", rejected.status !== 0 && rejected.env?.error?.message === "Authorization Violation" && broker !== null && alive(broker) && manager !== null && alive(manager), shown(rejected));
     if (broker !== null) process.kill(broker, "SIGKILL");
     await until(() => gone(space, "stack-broker"), 10_000);
     const blocked = cli(root, "down", "--yes", "--json");

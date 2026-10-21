@@ -2,6 +2,7 @@
 "@cotal-ai/cli": minor
 "@cotal-ai/manager": patch
 "@cotal-ai/workspace": patch
+"@cotal-ai/core": patch
 ---
 
 Settle a crashed or failed controller stack from process evidence instead of wedging its root. A bare `up` or `down` now takes the root's maintenance lock, records a member whose pid and start time are gone as failed, settles an earlier `up` or `down` that never recorded its outcome, and continues with an `OPERATION_SETTLED` warning. A live member is kept; a member whose process cannot be established, or one with an unconfirmed stop, refuses `LIFECYCLE_BLOCKED` with the exact `service status` command. Another holder of the lock is a known refusal that names its pid.

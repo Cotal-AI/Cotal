@@ -7888,6 +7888,12 @@ function tcpDialable(server: string, timeoutMs: number): Promise<boolean> {
   });
 }
 
+/** Whether a failed connect was the server refusing these credentials: a server answered, so it is
+ *  up. The same errors {@link isReachable} reads as up after its own authenticated connect. */
+export function isAuthRejection(e: unknown): boolean {
+  return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
+}
+
 /** Whether a NATS server is *running* at `servers`. With NO creds this is a SILENT plaintext
  *  liveness check ({@link tcpInfoProbe}): it reads the server's pre-auth `INFO` greeting and closes
  *  WITHOUT authenticating, so a live broker (open OR auth — INFO precedes auth) returns true while
