@@ -275,6 +275,9 @@ export interface PinnedIdp {
   audience: string;
   /** The pinned JWKS URL keys resolve from — the ONLY key path. */
   jwksUri: string;
+  /** The dedicated `aud` of `dm-reader` proofs (#4189), set only by editing the pin deliberately.
+   *  Never derived from `audience`, and refused when equal to it. Absent: no `dm-reader` exchange. */
+  dmReaderAudience?: string;
 }
 
 interface IdpFile extends PinnedIdp {
@@ -287,7 +290,9 @@ export function loadPinnedIdp(dir: string): PinnedIdp | undefined {
   if (!f) return undefined;
   if (!f.url || !f.issuer || !f.audience || !f.jwksUri)
     throw new Error(`${join(dir, IDP_FILE)}: malformed IdP pin - re-pin with \`cotal up --user-auth --idp <url>\``);
-  return { url: f.url, issuer: f.issuer, audience: f.audience, jwksUri: f.jwksUri };
+  if (f.dmReaderAudience !== undefined && (typeof f.dmReaderAudience !== "string" || !f.dmReaderAudience || f.dmReaderAudience === f.audience))
+    throw new Error(`${join(dir, IDP_FILE)}: dmReaderAudience must be a non-empty string that differs from audience`);
+  return { url: f.url, issuer: f.issuer, audience: f.audience, jwksUri: f.jwksUri, ...(f.dmReaderAudience !== undefined ? { dmReaderAudience: f.dmReaderAudience } : {}) };
 }
 
 /** Pin-or-verify the space's IdP. First call REQUIRES a URL (there is no default IdP); later calls

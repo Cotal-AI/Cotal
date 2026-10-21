@@ -44,7 +44,7 @@ export const CLOCK_TOLERANCE_SEC = 5;
  *  instead of `agent`. A closed enum on BOTH the mint and validate side — an unknown view fails
  *  closed, never falls back to a profile. Deliberately NOT a generic `view=<profile>` passthrough:
  *  most profiles are daemon/provisioning surfaces that must never become human-requestable. */
-export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller", "session-caller", "transfer-writer", "service-endpoint"] as const;
+export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller", "session-caller", "transfer-writer", "service-endpoint", "dm-reader"] as const;
 export type UserTokenView = (typeof USER_TOKEN_VIEWS)[number];
 
 /** Views the public exchange face will mint (still ledger-gated). Every other
@@ -72,6 +72,9 @@ export const VIEW_REQUIRED_SCOPE: Record<UserTokenView, "admin" | "spawn" | "sup
   // `manager.admin` row, so writing them needs the same scope.
   "transfer-writer": "admin",
   "service-endpoint": undefined, // dedicated service authority only, never ordinary exchange
+  // #4189: no ledger scope. The authority is the purpose-bound IdP proof the exchange requires, and
+  // the profile reads only the principal's own DM durable. Loopback-only (not public).
+  "dm-reader": undefined,
 };
 
 /** The longest a bearer of `view` may live. A transfer-writer bearer is the user-mode form of the

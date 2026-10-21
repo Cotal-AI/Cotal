@@ -150,6 +150,9 @@ export type Profile =
   // The console/CLI per-session CALLER credential: rails-only for ONE §13.6 session,
   // TTL-bound to it, never standing. Static = face-minted from the seed; user mode = the callout.
   | "session-caller"
+  // A user's own-DM reader (#4189): bind, read and ack the ONE own `dm_` durable, and nothing
+  // else. User mode mints it for the `dm-reader` exchange view, bound to the bearer's expiry.
+  | "dm-reader"
   // The manager's SERVING per-session credential: the mirror of `session-caller` with
   // the directions swapped — sub the ONE session's `in` rail, pub its `out` rail, nothing else.
   // Minted at redemption, TTL-bound to the session, never renewed (SPEC 13.6: both sides hold only
@@ -293,6 +296,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "endpoint-serve": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "per-instance endpoint serve credential (SPEC 13.9); the managing authority re-mints on renewal and on takeover (new epoch), and the 13.1 barrier revokes the superseded one" },
   "goal-writer": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "self-mediated goal-writer for spawn-as-action; the manager re-mints for the SAME nkey on renewal, disjoint from the serve credential" },
   "session-caller": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session console/CLI caller cred: rails-only for ONE §13.6 session; TTL-BOUND to the session (the face mints with expiresAt = the session exp; the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred" },
+  "dm-reader": { class: "mixed", note: "user-auth own-DM reader view: one dm_ durable's INFO/NEXT/ACK, bound to the bearer expiry (which the IdP proof bounds); renewed by re-exchange, never a standing credential" },
   "session-serving": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session SERVING cred: rails-only for ONE §13.6 session, the mirror of session-caller with the directions swapped; minted at redemption and TTL-BOUND to the session (the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred, and the session's terminal revokes this one by name" },
   "session-ledger": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's session LEDGER: the dedicated sessions-bucket `session.<id>` rows and NOTHING else - no session rail of any shape. Standing because SPEC 13.6 makes it the durable revocation authority that must survive the serving endpoint; the manager re-mints for the SAME nkey on the half-TTL loop (the goal-writer precedent)" },
   "run-driver": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "one workflow run's driver, per takeover attempt (SPEC 14.6): the hosting manager mints it when it takes the run over and re-mints for the SAME nkey on renewal; a new takeover mints a new one" },
@@ -1314,6 +1318,7 @@ export function permissionsFor(
   if (profile === "control-caller-admin") return controlCallerPermissions(space, pr, "admin", opts); // any-mode stop/attach
   if (profile === "deployer") return deployerPermissions(space, pr, opts.controlTier ?? "admin", opts); // spawn -f deploy authority (user-mode view rides privileged)
   if (profile === "session-caller") return sessionCallerPermissions(space, pr, opts.sessionCaller); // one §13.6 session's caller rails
+  if (profile === "dm-reader") return dmReaderPermissions(space, pr); // one own dm_ durable, bind-only
   if (profile === "session-serving") return sessionServingPermissions(space, pr, opts.sessionServing); // one §13.6 session's SERVING rails
   if (profile === "session-ledger") return sessionLedgerPermissions(space, pr); // the dedicated session ledger, no rails
   if (profile === "run-driver") {
@@ -2558,6 +2563,21 @@ function sessionCallerPermissions(space: string, pr: MintPrincipal, pin: { endpo
   return {
     pub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, "in")] },
     sub: { allow: [epsSubject(space, pin.endpoint, pin.sessionId, pin.epoch, "out"), `_INBOX_${pr.connId}.>`] },
+  };
+}
+
+/** The own-DM reader rows (#4189): CONSUMER.INFO and MSG.NEXT on the principal's own
+ *  lifecycle-keyed `dm_` durable, its `$JS.ACK` subtree, and the connection inbox. Nothing else:
+ *  no publish of any message, no CONSUMER.CREATE (the durable is provisioned, never created), no
+ *  `$JS.API.INFO`, no STREAM.INFO, no presence, channel, CHAT or `dlv_` row. It is exactly what
+ *  `EndpointOptions.dmOnly` sends. */
+function dmReaderPermissions(space: string, pr: MintPrincipal): Record<string, unknown> {
+  if (!pr.lifecycleUid)
+    throw new Error('permissionsFor(dm-reader): a lifecycleUid is required - the dm_ durable name is lifecycle-keyed (SPEC 13.1)');
+  const DM = dmStream(space), dmD = dmDurable(pr.owner, pr.actor, assertLifecycleToken(pr.lifecycleUid));
+  return {
+    pub: { allow: [`$JS.API.CONSUMER.INFO.${DM}.${dmD}`, `$JS.API.CONSUMER.MSG.NEXT.${DM}.${dmD}`, `$JS.ACK.${DM}.${dmD}.>`] },
+    sub: { allow: [`_INBOX_${pr.connId}.>`] },
   };
 }
 

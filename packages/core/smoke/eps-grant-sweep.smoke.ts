@@ -127,6 +127,7 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   },
   "goal-writer": via("goal-writer", { goalWriter: { endpoint: EP } }),
   "session-caller": via("session-caller", { sessionCaller: { endpoint: EP, sessionId: MINE, epoch: EPOCH } }),
+  "dm-reader": via("dm-reader"),
   "session-ledger": via("session-ledger"),
   "session-serving": via("session-serving", { sessionServing: { endpoint: EP, sessionId: MINE, epoch: EPOCH } }),
   "run-driver": via("run-driver", { runDriver: { endpoint: EP, runId: "run-sweep", takeoverId: "tk000001", instanceId: IID, epoch: EPOCH } }),

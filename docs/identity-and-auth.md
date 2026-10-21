@@ -514,6 +514,21 @@ callout mints writes to that object of that instance's transfer bucket and nothi
 and with it the broker connection, lives at most five minutes, the lifetime of the static
 `transfer-writer` credential, and never past the login proof it was exchanged for.
 
+The `dm-reader` view lets an embedding read one user's own DMs while that user's app is closed,
+for example to send a content-free push. The callout mints three publish rows on the user's own
+`dm_` durable (consumer info, next message and its ack subtree) plus the connection inbox, and
+nothing else. The view needs no ledger scope and is loopback-only.
+
+It rides only a purpose-bound proof from the same IdP. Set `dmReaderAudience` in the space's IdP
+pin to an audience the IdP mints only for these proofs. It must differ from `audience`, and nothing
+derives it. The proof carries `purpose: "dm-reader"`, `actor`, `lifecycle` and `space`. The
+exchange accepts it only for `view: "dm-reader"` with the same actor, the actor's current
+lifecycle and this space. Every other door that takes a human proof refuses it, and the ordinary
+verifier now refuses any token that carries a `purpose` claim. The issue that proposed this listed
+five verifier call sites; this release has eight routes that take the proof, and all of them are
+covered. The bearer and its connection expire no later than the proof, so set the proof's lifetime
+to cover your own grant and session expiry.
+
 ### Remote manager authority
 
 A registered user remains an ordinary `agent` bearer by default. Running a detached manager

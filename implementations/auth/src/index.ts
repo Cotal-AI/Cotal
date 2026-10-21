@@ -44,6 +44,8 @@ export {
   createIdpBridge,
   verifyIdpToken,
   verifyToolResultHumanProof,
+  verifyDmReaderProof,
+  DM_READER_PURPOSE,
   type VerifiedIdpToken,
   type ToolResultHumanProof,
   type IdpConfig,
