@@ -285,9 +285,9 @@ restart, including the nats PID. Escaping that cgroup needs an explicit unit set
 `Type=oneshot` unit below is a `cotal status --components` liveness check, not a
 `--detach` launcher. Neither trade is universal from
 `Type=simple` alone; it follows from which processes the unit actually owns. `cotal service
-install` covers only the manager, so for the broker and its siblings pick the example that
-matches the ownership you want, and treat
-`systemctl is-active` as unit health, not mesh health.
+install` writes a Linux unit only for a saved direct-process service definition, so the manager
+preset, the broker and its siblings get no unit from it. Pick the example that matches the
+ownership you want, and treat `systemctl is-active` as unit health, not mesh health.
 
 A broker that crashes under that foreground `up` keeps its mesh record and exits non-zero, so the
 unit's restart takes the repair path against the recorded store rather than starting a second one.

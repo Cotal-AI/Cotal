@@ -143,7 +143,7 @@ const installedIndex = join(extDir, "node_modules", "cotal-ext-fixture", "index.
 const installedPkg = join(extDir, "node_modules", "cotal-ext-fixture", "package.json");
 
 // -- empty state ---------------------------------------------------------------------------------
-ok("ext list starts empty", /no extensions installed/.test(cotal(["ext", "list"]).stdout));
+ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list"]).stdout));
 
 // -- A: add --------------------------------------------------------------------------------------
 {
@@ -519,7 +519,7 @@ registry.register(
   ok("remove exits 0", r.status === 0, r.stderr.slice(-200));
   const gone = cotal(["hello-ext"]);
   ok("removed command is unknown again", gone.status === 1 && /unknown command: hello-ext/.test(gone.stderr), gone.stderr.slice(0, 150));
-  ok("ext list is empty again", /no extensions installed/.test(cotal(["ext", "list"]).stdout));
+  ok("ext list is empty again", /No extensions installed\./.test(cotal(["ext", "list"]).stdout));
 }
 
 console.log(`\next live e2e: ${pass} checks passed`);
