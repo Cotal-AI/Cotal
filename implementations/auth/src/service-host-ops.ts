@@ -283,6 +283,9 @@ export function parseServiceCapacityRecord(raw: unknown): Capacity {
   const pending = o.pending.map((e) => { const x = closed(e, ["proposalId", "owner", "endpoint", "instanceId", "registerRequestId", "expiresAtMs"]);
     return { proposalId: hexN(x.proposalId, 64), owner: owner(x.owner), endpoint: endpointName(x.endpoint), instanceId: token(x.instanceId, "instanceId"), registerRequestId: hexN(x.registerRequestId, 32), expiresAtMs: ms(x.expiresAtMs) }; });
   if (pending.some((e, i) => i > 0 && !(pending[i - 1].proposalId < e.proposalId))) bad("capacity entries must be unique and sorted by proposalId");
+  const perOwner = new Map<string, number>();
+  for (const e of pending) perOwner.set(e.owner, (perOwner.get(e.owner) ?? 0) + 1);
+  if ([...perOwner.values()].some((n) => n > S2A_MAX_PENDING_PER_OWNER)) bad("capacity entries exceed the per-owner bound");
   return { v: 1, kind: "service-proposal-capacity", pending };
 }
 export function parseServiceAssignmentRecord(raw: unknown): Assignment {
