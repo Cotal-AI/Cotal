@@ -361,8 +361,12 @@ try {
   check("CONTROL: the precondition passes once nothing is root-scoped",
     ((): boolean => { try { assertSpaceMaterialReapable(reaped, "alpha", "op"); return true; } catch { return false; } })());
   const reapStore = memStore({ ...seeded("alpha"), ...seeded("beta") });
+  writeRenewalRecord(reaped, "alpha", { ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [] });
+  writeRenewalRecord(reaped, "beta", { ts: "2026-01-01T00:00:00.000Z", owner: "manager", results: [] });
   const first = await noThrow(() => reapSpaceMaterial(reaped, "alpha", reapStore.store));
   check("the reap removes this space's segment", !existsSync(spaceMaterialDir(reaped, "alpha")));
+  check("...and removes this space's renewal record", !existsSync(renewalRecordPath(reaped, "alpha")), renewalRecordPath(reaped, "alpha"));
+  check("...while leaving the neighbour tenant's renewal record untouched", existsSync(renewalRecordPath(reaped, "beta")), renewalRecordPath(reaped, "beta"));
   // A reap spelled `.cotal/space.*` is the shape a reader reaches for after seeing a directory
   // removal, and on the multi-tenant root this verb runs on it takes every survivor's live material
   // and reports success. The neighbour is the only cell that catches it — which is exactly why the
