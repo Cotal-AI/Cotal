@@ -449,7 +449,7 @@ export type ServiceRegisterResult = { v: 1; kind: "service-endpoint-host"; opera
   | { state: "registered"; outcome: ServiceHostOutcome; operationId: string; proposalId: string; revision: number; expiresAtMs: number; debt?: ServiceHostDebt[] }
   | Arms);
 type Arms =
-  | { state: "pending"; operationId: string; phase: string; assignmentDigest?: string; denyNew?: ServiceDenyNew; root?: "none" | "revoked" | "retained-stamped" }
+  | { state: "pending"; operationId: string; phase: string; assignmentDigest?: string; denyNew?: ServiceDenyNew; root?: "none" | "revoked" | "retained-stamped"; debt?: ServiceHostDebt[] }
   | { state: "held"; operationId: string; reason: string; phase: string; assignmentDigest?: string; denyNew?: ServiceDenyNew; debt?: ServiceHostDebt[] }
   | { state: "refused"; operationId: string; reason: ServiceOperationRefusal; boundOperationId?: string; debt?: ServiceHostDebt[] }
   | { state: "denied"; reason: ServiceHostReason; boundOperationId?: string };
@@ -1105,7 +1105,14 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
         await updateOp(ctx, operationId, (cur) => (cur.progress.state === "custody" && cur.progress.step === phase ? undefined : { ...cur, progress: { state: "custody", step: phase } }))
           .catch((err) => { if (!(err instanceof Held)) throw err; });
       };
-      const keepDebt = async (debts: ServiceHostDebt[]) => { if (debts.length) await updateOp(ctx, operationId, (cur) => (sameDebt(cur.debt, debts) ? undefined : { ...cur, debt: debts })); };
+      /** The release debt this revoke owes: as stored until V4 observes again, then kept by a guarded
+       *  CAS whether it grows or clears. Every result reports it. */
+      let owed = op.debt;
+      const keepDebt = async (debts: ServiceHostDebt[]) => {
+        owed = debts;
+        await updateOp(ctx, operationId, (cur) => (sameDebt(cur.debt, debts) ? undefined : { ...cur, debt: debts }));
+      };
+      const owing = () => (owed.length ? { debt: owed } : {});
       for (let n = 0; ; n++) {
         if (n >= S2A_MAX_REDECIDE) held("contention", ctx.step);
         ctx.step = "V0-read";
@@ -1116,7 +1123,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
             const s = await settle(ctx, operationId, { state: "refused", reason: "conflict" }, []);
             return finalArm(operationId, outcomeOf(s.op) as Exclude<Final, { state: "complete" }>, debtOf(s.op));
           }
-          if (Date.now() >= op.notAfterMs) return { state: "held", operationId, reason: "expired", phase: "V2-fence", assignmentDigest: a };
+          if (Date.now() >= op.notAfterMs) return { state: "held", operationId, reason: "expired", phase: "V2-fence", assignmentDigest: a, ...owing() };
           ctx.step = "V2-fence";
           const fence: Assignment = { v: 1, kind: "service-assignment", state: "fenced", endpoint: e, instanceId: i, owner: prop.row.owner, proposalId: prop.row.proposalId,
             assignmentDigest: a, cancel: { operationId, requestDigest, cause } };
@@ -1129,12 +1136,11 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
           return finalArm(operationId, outcomeOf(s.op) as Exclude<Final, { state: "complete" }>, debtOf(s.op));
         }
         if (row.state === "fenced") {
-          const debts = await v4(ctx, row, undefined);
-          await keepDebt(debts); await progress("assignment-fenced");
-          return { state: "pending", operationId, phase: "assignment-fenced", assignmentDigest: a, denyNew: "landed" };
+          await keepDebt(await v4(ctx, row, undefined)); await progress("assignment-fenced");
+          return { state: "pending", operationId, phase: "assignment-fenced", assignmentDigest: a, denyNew: "landed", ...owing() };
         }
         if (row.cancel === null) {
-          if (Date.now() >= op.notAfterMs) return { state: "held", operationId, reason: "expired", phase: "V2-cancel", assignmentDigest: a };
+          if (Date.now() >= op.notAfterMs) return { state: "held", operationId, reason: "expired", phase: "V2-cancel", assignmentDigest: a, ...owing() };
           ctx.step = "V2-cancel";
           await put(ctx, assignmentKey(e, i), { ...row, cancel: { operationId, requestDigest, cause } } satisfies Assignment, parseServiceAssignmentRecord, asg);
           continue;
@@ -1144,24 +1150,23 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
           let denyNew: ServiceDenyNew = "unknown";
           try { denyNew = (await endpoint(ctx, serviceAssignmentGate(inv.host, row.reservation))).kind === "revoked" ? "landed" : "not-landed"; }
           catch (err) { if (!(err instanceof Held) && !(err instanceof EpEnvelopeError)) throw err; }
-          return { state: "held", operationId, reason: "expired", phase: "spent", assignmentDigest: a, denyNew };
+          return { state: "held", operationId, reason: "expired", phase: "spent", assignmentDigest: a, denyNew, ...owing() };
         }
         ctx.step = "V3-cancel";
         const run = await nativeCancel(inv, ctx, row, row.cancel);
-        const debts = run.denyNew === "landed" ? await v4(ctx, row, run.gate) : [];
-        await keepDebt(debts);
+        if (run.denyNew === "landed") await keepDebt(await v4(ctx, row, run.gate));
         const s1 = run.s1;
         if (s1.kind === "pending" && run.denyNew === "landed") {
           await progress("cancelled-nonterminal");
-          return { state: "pending", operationId, phase: "cancelled-nonterminal", assignmentDigest: a, denyNew: "landed", root: s1.root };
+          return { state: "pending", operationId, phase: "cancelled-nonterminal", assignmentDigest: a, denyNew: "landed", root: s1.root, ...owing() };
         }
         if (s1.kind === "uid-unconfirmed" && run.denyNew === "landed") {
           await progress("uid-unconfirmed");
-          return { state: "pending", operationId, phase: "uid-unconfirmed", assignmentDigest: a, denyNew: "landed" };
+          return { state: "pending", operationId, phase: "uid-unconfirmed", assignmentDigest: a, denyNew: "landed", ...owing() };
         }
         const reason = s1.kind === "held" ? s1.reason : s1.kind === "seal-refused" ? "cancel-intent-refused" : s1.kind === "pending" || s1.kind === "uid-unconfirmed" ? "deny-new-unconfirmed" : s1.kind;
         const phase = s1.kind === "held" ? s1.step : s1.kind === "uid-foreign" ? "U-uid" : "V3-cancel";
-        return { state: "held", operationId, reason, phase, assignmentDigest: a, denyNew: run.denyNew, ...(debts.length ? { debt: debts } : {}) };
+        return { state: "held", operationId, reason, phase, assignmentDigest: a, denyNew: run.denyNew, ...owing() };
       }
     }
   }

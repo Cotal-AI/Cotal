@@ -1050,9 +1050,11 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
       c.check("L5 (S-31 V4) an unknown V4 release is retained as capacity-release debt in the revoke op", arm.hits === 3 && r.state === "pending"
         && r.phase === "assignment-fenced" && d1?.[0]?.kind === "capacity-release", { r, d1 });
       c.check("L5 (S-31 V4, r3a §D) the revoke result carries that debt", r.debt?.[0]?.kind === "capacity-release", r);
+      parsesClosed("L5 pending with debt", r);
       const r2 = L(await e.handle(rq)), d2 = await debtAt(rq.requestId);
       c.check("L5 (S-31 V4, r3a §D) a replay that observes the release clears the revoke op's debt", r2.state === "pending" && !(await capHas(f, p.proposalId))
         && d2?.length === 0, { r2, d2 });
+      c.check("L5 (S-31 V4) that replay's result no longer carries debt", r2.debt === undefined, r2);
     });
   } finally { await f.close(); }
 }
