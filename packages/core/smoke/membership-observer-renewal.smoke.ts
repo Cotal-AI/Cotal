@@ -11,7 +11,9 @@
  *   - RECONNECT: after a broker restart conn A comes back on the proven cred and sees a new member;
  *   - WRONG ISSUER / WRONG ACCOUNT: refused before any preflight, nothing adopted;
  *   - SOURCE FAILURE: logged as a refresh failure, nothing adopted;
- *   - STOP DURING REFRESH: a source still pending at stop() leaves no observer connection behind.
+ *   - STOP DURING REFRESH: a source still pending at stop() leaves no observer connection behind;
+ *   - UNBOUNDED OBSERVER SOURCE: startup rejects before any timer is armed, so no rw connection is
+ *     revived and the rw source is never read again; a valid startup is the positive control.
  *
  * Run: pnpm smoke:membership-observer-renewal   (needs `nats-server` on PATH; auth/JetStream, local-only)
  */
@@ -27,7 +29,7 @@ import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import {
   isReachable, createSpaceAuth, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams,
   startMembershipFeed, provisionAgent, mintLifecycleUid, chatSubject, membershipBucket, membershipKey, principalKey,
-  DEV_OWNER, type MembershipFeedHandle,
+  DEV_OWNER, credsClaims, type MembershipFeedHandle,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -76,11 +78,13 @@ const probeJwt = await encodeUser("membership-connz-probe", fromPublic(probeId.i
   { pub: { allow: ["$SYS.REQ.SERVER.PING.CONNZ"] }, sub: { allow: [`_INBOX_${probeId.id}.>`] } },
   { signer: fromSeed(enc(auth.sys.signingSeed as string)) });
 const probeCreds = `-----BEGIN NATS USER JWT-----\n${probeJwt}\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n${probeId.seed}\n------END USER NKEY SEED------\n`;
-const countObserverConns = async (): Promise<number> => {
+const countObserverConns = (): Promise<number> => countConnsNamed("cotal-membership-observer");
+const countRwConns = (): Promise<number> => countConnsNamed("cotal-membership-rw");
+const countConnsNamed = async (name: string): Promise<number> => {
   const nc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(probeCreds)), inboxPrefix: `_INBOX_${probeId.id}`, maxReconnectAttempts: 0 });
   try {
     const r = await nc.request("$SYS.REQ.SERVER.PING.CONNZ", enc(JSON.stringify({ auth: true, limit: 1024 })), { timeout: 3_000 });
-    return (r.json<{ data?: { connections?: Array<{ name?: string }> } }>().data?.connections ?? []).filter((c) => c.name === "cotal-membership-observer").length;
+    return (r.json<{ data?: { connections?: Array<{ name?: string }> } }>().data?.connections ?? []).filter((c) => c.name === name).length;
   } finally { await nc.close(); }
 };
 
@@ -184,6 +188,44 @@ try {
     await stopping; feed = undefined;
     await wait(1_000);
     check("stop during refresh: no observer connection remains", (await countObserverConns()) === 0, logs);
+  }
+
+  // ---- 5: a startup that REJECTS on an unbounded observer source owns nothing afterwards (6 cells) ----
+  // The observer has no `exp`, so its renewal window cannot be computed. The rw source is bounded (4s) and
+  // serves a fresh same-nkey generation on every later read, so a leaked rw timer would revive conn B.
+  {
+    const bounded = await observer(600);
+    const obsId = newIdentity();
+    const noExpJwt = await encodeUser("membership-observer", fromPublic(obsId.id), fromPublic(auth.sys.pub),
+      (credsClaims(bounded).nats ?? {}) as Parameters<typeof encodeUser>[3], { signer: fromSeed(enc(auth.sys.signingSeed as string)) });
+    const noExpObs = `-----BEGIN NATS USER JWT-----\n${noExpJwt}\n------END NATS USER JWT------\n\n-----BEGIN USER NKEY SEED-----\n${obsId.seed}\n------END USER NKEY SEED------\n`;
+    const rwId = newIdentity();
+    const rwShort = await mintCreds(auth, rwId, "membership-rw", { expiresInSeconds: 4 });
+    let rwReads = 0;
+    const rwSource = async () => (++rwReads === 1 ? rwShort : mintCreds(auth, rwId, "membership-rw", { expiresInSeconds: 3600 }));
+    const rejected = await startMembershipFeed({ servers: SERVERS, space, accountId, intervalMs: 60_000, observerCreds: async () => noExpObs, rwCreds: rwSource, log: () => {} })
+      .then((h) => ({ ok: true, e: "", h }), (e: Error) => ({ ok: false, e: e.message, h: undefined }));
+    if (rejected.h) await rejected.h.stop();
+    const readsAtReject = rwReads;
+    check("unbounded observer source: startup rejects with the renewal-window error", !rejected.ok && /without a numeric exp/.test(rejected.e), rejected.e);
+    check("unbounded observer source: right after the reject the broker holds no observer and no rw connection",
+      (await countObserverConns()) === 0 && (await countRwConns()) === 0);
+    await wait(5_500); // past the 4s rw cred's 75% point and its expiry
+    check("unbounded observer source: after the rw 75% point no rw connection was revived", (await countRwConns()) === 0);
+    check("unbounded observer source: the rw source was not read again after the reject", rwReads === readsAtReject, { readsAtReject, rwReads });
+    console.log(`  rw source reads: at reject ${readsAtReject}, after the wait ${rwReads}`);
+
+    // POSITIVE CONTROL: the same short rw source with a bounded observer source starts and renews.
+    let okReads = 0;
+    const okRwId = newIdentity();
+    const okShort = await mintCreds(auth, okRwId, "membership-rw", { expiresInSeconds: 4 });
+    feed = await startMembershipFeed({ servers: SERVERS, space, accountId, intervalMs: 60_000,
+      observerCreds: async () => observer(3600),
+      rwCreds: async () => (++okReads === 1 ? okShort : mintCreds(auth, okRwId, "membership-rw", { expiresInSeconds: 3600 })), log: () => {} });
+    await wait(5_500);
+    check("positive control: a valid startup renews the rw cred and keeps one rw connection", okReads >= 2 && (await countRwConns()) === 1, { okReads });
+    await feed.stop(); feed = undefined;
+    check("positive control: stop leaves no rw connection", await until(async () => (await countRwConns()) === 0, 3_000, 200));
   }
 
   console.log(`\n${fail ? "✗" : "✓"} MEMBERSHIP-OBSERVER RENEWAL ${pass}/${pass + fail}`);

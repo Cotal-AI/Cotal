@@ -142,16 +142,17 @@ const MAX_PAGES = 64; // fan-out pagination guard (64 × 1024 = 65k conns/server
  *  rejection propagates.
  *
  *  Scope of the word TRANSACTIONAL, stated rather than assumed: the rollback drains CONNECTIONS, and
- *  nothing else. It does not clear the rw renewal timer, the safety interval, or the two trigger
- *  subscriptions, all of which are acquired below. What holds today is narrower than "unreachable":
- *  four operations run after the timer arm, counting the ones that can reject or acquire rather than
- *  every call expression. They are `connA.subscribe` twice, the `setInterval`, and `await poll()`. The
- *  two subject helpers passed as subscribe arguments also execute; they format a string and return.
- *  The only one of the four that awaits is `await poll()`, which swallows
+ *  nothing else. It does not clear the rw or observer renewal timers, the safety interval, or the two
+ *  trigger subscriptions, all of which are acquired below. So every check that can throw must run
+ *  before the first timer arm: the observer source's renewal window is validated as soon as it is
+ *  read, before conn A opens, which keeps the observer arm from throwing after the rw arm. What runs
+ *  after the rw arm is the observer arm (validated), `connA.subscribe` twice, the `setInterval`, and
+ *  `await poll()`. The two subject helpers passed as subscribe arguments also execute; they format a
+ *  string and return. The only one that awaits is `await poll()`, which swallows
  *  its own failures, so the ordinary startup path never rejects down here. `connA.subscribe` on an
- *  already-closed conn A is the one shape that still could, and it would leak the timer rather than a
+ *  already-closed conn A is the one shape that still could, and it would leak the timers rather than a
  *  connection. Left as a known gap rather than papered over: a step added below the arm that can
- *  reject makes this incomplete, and the rollback then has to clear the timer too. */
+ *  reject makes this incomplete, and the rollback then has to clear the timers too. */
 export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<MembershipFeedHandle> {
   const opened: NatsConnection[] = [];
   try {
@@ -177,6 +178,10 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   const readObs = obsIsSource ? (opts.observerCreds as () => string | Promise<string>) : () => opts.observerCreds as string;
   const initialObs = await Promise.resolve(readObs());
   const obsPin = observerProfile(initialObs);
+  // Validate the observer source's renewal window BEFORE any connection or timer exists. Its arm runs
+  // after the rw timer is armed, and the startup rollback drains connections only, so a throw there
+  // would leave the rw timer live with no handle to stop it. Checked here, the arm below cannot throw.
+  if (obsIsSource) credsRenewalDelayMs(initialObs);
   // A renewal keeps the issuer and the authorized profile (permissions, hence the CONNZ account). A
   // changed issuer is a system-account rotation, which this seam never adopts; a different scope
   // would widen or move the observer. Either throws, so nothing is committed.
