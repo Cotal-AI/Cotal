@@ -83,8 +83,8 @@
     {
       "name": "R9 a retirement transport failure is treated as success and the row rotates anyway",
       "file": "implementations/auth/src/commands.ts",
-      "find": "  } catch (error) {\n    // A refused connection carried no request. Any other transport failure, a timeout included, may\n    // have followed a request the service received.\n    if ((error as { cause?: { code?: unknown } } | null)?.cause?.code === \"ECONNREFUSED\")\n      throw notRun(\"DEPENDENCY_UNAVAILABLE\", `the auth service at ${service.url} refused the connection`, \"restart the stack with `cotal up`, then retry\");\n    throw mayHaveRun(`its lifecycle retirement request failed (${error instanceof Error ? error.message : String(error)})`);\n  }",
-      "replace": "  } catch {\n    return false;\n  }",
+      "find": "    if ((error as { cause?: { code?: unknown } } | null)?.cause?.code === \"ECONNREFUSED\")\n      throw notRun(\"DEPENDENCY_UNAVAILABLE\", `the auth service at ${service.url} refused the connection`, \"restart the stack with `cotal up`, then retry\");\n    throw mayHaveRun(`its lifecycle retirement request failed (${error instanceof Error ? error.message : String(error)})`);\n  }",
+      "replace": "    return false;\n  }",
       "expectRed": "re-grant with a dead auth service is refused before changing the row",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
     },
