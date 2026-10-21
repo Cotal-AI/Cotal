@@ -200,6 +200,7 @@ function isArgError(e: unknown): boolean {
  * Those commands then let a terminal choose between running spaces (see {@link chooseMeshTarget});
  * `status` reports an ambiguous target instead. */
 async function prepareCatalogForCommand(cmd: Command, args: ReturnType<typeof parseCommandArgs>): Promise<void> {
+  if ((cmd.name === "supervise" || cmd.name === "__daemon-manager") && args.values.execution === "none") return;
   if (args.values["dry-run"] === true) return; // preview handlers own read-only resolution; no catalog refresh or picker
   if (findSubcommand(cmd, args.positionals[0])?.prepareMeshTarget === false) return;
   if (cmd.name === "update" && args.values.check === true) return;
@@ -409,7 +410,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // ---- Effects: only a validated invocation reaches this line. ----
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
-  if (opts.extensions && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd)) {
+  const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
+  if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd)) {
     try {
       await reconcileSeededConnectors();
     } catch (e) {

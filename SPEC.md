@@ -772,6 +772,26 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 | `transfer-reader` | the stock delete marker on its own transfer bucket's meta subjects | its own `OBJ_cotal_xfer_<space>_<instanceId>` stream: info, message get, its push consumer, purge | one-shot per `transcript-receive` or sweep; no other instance's bucket |
 | scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Appendix B summarizes them; the concrete grant lists are **generated from the §13.9 ownership matrix** into `provision.ts` (the matrix is the single oracle; `provision.ts` is its artifact, Appendix B its summary). |
 
+A Manager with explicit `execution: "none"` MUST construct no Runtime or connector workload.
+It MAY use the existing genuine auth-local authority path, or the existing pooled signerless
+remote authority path. These authority paths MUST NOT be mixed. A local NONE instance MUST
+require its hosting user-auth marker, signing trust and user-mode mesh record before binding.
+Its persisted native instance, serve principal, owner checks and registration gates are unchanged.
+Execution capability MUST be immutable per instance; an existing unclassified local identity or
+retained seat/turn inventory MUST refuse NONE admission. Startup MUST NOT silently convert a
+runtime instance or adopt a sibling's workload.
+
+NONE status MUST report no runtime, custody, class spawn, workflow hosting or terminal sessions.
+Launch and workflow requests MUST refuse before allocation or workload effects. Launch reads
+MUST refuse before resolving a Runtime, connector or host path. Targeted requests retain normal
+lifecycle-mapping validation; an instance with no managed mapping does not fabricate a target.
+NONE MUST refuse model inspection before connector or harness resolution. Caller-driven persona,
+history purge, transcript transfer, preservation, resume, turn-yield, cancellation and self-stop
+writes MUST refuse before their effects. NONE MUST NOT start a transcript receiver or sweep.
+Native registration, lease, credential renewal, session-ledger and goal maintenance MAY still
+write their own control state autonomously; NONE is not a read-only broker or filesystem mode.
+Native ps remains this instance's managed map, not a presence or HTTP-session inventory.
+
 The `resolve-cwd` launch read is limited by execution mode. A manager whose runtime delegates
 seats outside its host MUST refuse it with `failed-precondition` before any filesystem lookup.
 The refusal MUST be independent of the requested path's existence, type and symlink target,
@@ -928,10 +948,15 @@ every manager request to one exact live registered instance and is valid with no
 exchange selects from read-only observations of manager issuance gates and service registrations.
 It refuses zero or ambiguous candidates and refuses an unavailable owner-specific remote manager
 rather than falling through to a co-located manager. An explicit selector must name a live candidate.
+A trusted host composition MAY instead select its genuine local Manager up front for an unpinned
+interactive human exchange. It MUST apply the same native local identity, open gate, serve principal,
+registration revision and epoch checks, and MUST refuse an absent, unreadable or noncandidate local
+Manager without reading or substituting remote candidates. This policy MUST NOT be request-selectable,
+change explicit selectors, rebind managed or issued callers, or add command authority. Without the
+host opt-in the default selection above is unchanged.
 The auth service lists the same observations to a signed-in human at `POST /manager-instances` on
 both faces: it verifies the same IdP proof, derives the owner the same way, and answers every manager
-gate of that owner with the verdict selection reads. Selection reads that list, so the two cannot
-disagree. A listed candidate is registration evidence, not proof that the instance answers, and a
+gate of that owner using the same candidate checks as selection. A listed candidate is registration evidence, not proof that the instance answers, and a
 failed read is unavailable, never an empty list.
 The `session-caller` view carries a required `act.session` claim `{endpoint, sessionId, epoch, exp}`
 (exp in unix seconds) and is valid with no other view; `act.session` is valid only with it. It needs no
