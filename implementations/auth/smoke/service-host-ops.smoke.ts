@@ -711,8 +711,12 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
       } });
       const rx = L(await e.handle(x)), t = await tomb(p.proposalId), g = await gateOf(f, p.instanceId);
       c.check("I9 (S-16) an approval CAS that lands before deny-new is applied", arm.hits === 1 && rx.state === "approved" && rx.outcome === "applied", rx);
-      c.check("I9 (§F) its approvedGateRevision is the revision of my CAS, whose success reply was observed", rx.approval?.approvedGateRevision === mineRev,
-        { approvedGateRevision: rx.approval?.approvedGateRevision, mineRev });
+      // The shared writer confirms a CAS by reading the key back. The revoke moved the gate first, so
+      // the write is classified moved and the landing is then read from the gate (row 3). §F records
+      // null there; it never takes the revision from the later revoked row. I5, I6 and O keep
+      // the exact revision whenever the writer observes my CAS.
+      c.check("I9 (§F, shared writer) an approval CAS whose key moves before the writer's confirm read is recorded with approvedGateRevision null, never a later revision",
+        mineRev > 0 && rx.approval?.approvedGateRevision === null, { approvedGateRevision: rx.approval?.approvedGateRevision, mineRev });
       c.check("I9 (S-16) the revoke lands deny-new and V4 closes the proposal approved{me} from the gate", rv?.state === "pending" && rv.denyNew === "landed"
         && t?.state === "approved" && t?.operationId === opIdOf(f, x) && g?.state === "revoked" && g.approvalDigest === rx.approval?.approvalDigest, { rv, t, g });
     });
