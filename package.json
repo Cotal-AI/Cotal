@@ -35,6 +35,7 @@
     "smoke:broker-migration": "tsx packages/smoke-kit/smoke/broker-migration.smoke.ts",
     "mutation-proof:selftest": "node scripts/mutation-proof.selftest.mjs",
     "smoke:attribution-seat-names": "node scripts/check-attribution.seatnames.smoke.mjs",
+    "smoke:ci-policy": "node --test --test-reporter=tap scripts/ci-no-mutations.test.mjs",
     "smoke:mutation-proof": "node scripts/mutation-proof.selftest.mjs",
     "mutation-coverage:selftest": "node scripts/mutation-coverage.selftest.mjs",
     "smoke:mutation-coverage": "node scripts/mutation-coverage.selftest.mjs",
