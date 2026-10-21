@@ -51,10 +51,13 @@ export interface MembershipFeedOpts {
   space: string;
   /** DATA account public key — the CONNZ request + CONNECT/DISCONNECT event subjects pin this account. */
   accountId: string;
-  /** Scoped SYSTEM-account observer creds (conn A — CONNZ reader). Always a static string: it is
-   *  `rotation-renewed` ($SYS seed dies at `up`), so its only renewal is a system-account rotation +
-   *  broker restart — a new process, never a live reload. */
-  observerCreds: string;
+  /** Scoped SYSTEM-account observer creds (conn A — CONNZ reader): a literal string, or a SOURCE
+   *  shaped like `rwCreds`. A literal has no renewal (a workstation drops the $SYS seed at `up`, so
+   *  its renewal is a rotation + restart). A source is for a host that keeps a registered system
+   *  signer and re-mints the observer into its store: each candidate is renewed on the same 75% timer
+   *  and preflight-proven before conn A presents it. A candidate is refused unless it keeps the first
+   *  read's issuer and its exact permission block (so its account scope); the user nkey may change. */
+  observerCreds: string | (() => string | Promise<string>);
   /** Scoped DATA-account read/write creds (conn B — members read + feed write): a literal string, or
    *  a SOURCE (D5 slice 5 class 2) that reads them through the {@link SecretStore} seam — the manager
    *  re-signs the SAME nkey into the store and the feed adopts it. May be async (a hosted `store.get`)
@@ -139,16 +142,17 @@ const MAX_PAGES = 64; // fan-out pagination guard (64 × 1024 = 65k conns/server
  *  rejection propagates.
  *
  *  Scope of the word TRANSACTIONAL, stated rather than assumed: the rollback drains CONNECTIONS, and
- *  nothing else. It does not clear the rw renewal timer, the safety interval, or the two trigger
- *  subscriptions, all of which are acquired below. What holds today is narrower than "unreachable":
- *  four operations run after the timer arm, counting the ones that can reject or acquire rather than
- *  every call expression. They are `connA.subscribe` twice, the `setInterval`, and `await poll()`. The
- *  two subject helpers passed as subscribe arguments also execute; they format a string and return.
- *  The only one of the four that awaits is `await poll()`, which swallows
+ *  nothing else. It does not clear the rw or observer renewal timers, the safety interval, or the two
+ *  trigger subscriptions, all of which are acquired below. So every check that can throw must run
+ *  before the first timer arm: the observer source's renewal window is validated as soon as it is
+ *  read, before conn A opens, which keeps the observer arm from throwing after the rw arm. What runs
+ *  after the rw arm is the observer arm (validated), `connA.subscribe` twice, the `setInterval`, and
+ *  `await poll()`. The two subject helpers passed as subscribe arguments also execute; they format a
+ *  string and return. The only one that awaits is `await poll()`, which swallows
  *  its own failures, so the ordinary startup path never rejects down here. `connA.subscribe` on an
- *  already-closed conn A is the one shape that still could, and it would leak the timer rather than a
+ *  already-closed conn A is the one shape that still could, and it would leak the timers rather than a
  *  connection. Left as a known gap rather than papered over: a step added below the arm that can
- *  reject makes this incomplete, and the rollback then has to clear the timer too. */
+ *  reject makes this incomplete, and the rollback then has to clear the timers too. */
 export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<MembershipFeedHandle> {
   const opened: NatsConnection[] = [];
   try {
@@ -169,13 +173,42 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   const pageLimit = opts.pageLimit ?? 1024;
   const { space, accountId } = opts;
 
-  const connA = await connect({
+  // ---- conn A (observer) credential: the last BROKER-PROVEN cache, renewed like conn B's ----
+  const obsIsSource = typeof opts.observerCreds === "function";
+  const readObs = obsIsSource ? (opts.observerCreds as () => string | Promise<string>) : () => opts.observerCreds as string;
+  const initialObs = await Promise.resolve(readObs());
+  const obsPin = observerProfile(initialObs);
+  // Validate the observer source's renewal window BEFORE any connection or timer exists. Its arm runs
+  // after the rw timer is armed, and the startup rollback drains connections only, so a throw there
+  // would leave the rw timer live with no handle to stop it. Checked here, the arm below cannot throw.
+  if (obsIsSource) credsRenewalDelayMs(initialObs);
+  // A renewal keeps the issuer and the authorized profile (permissions, hence the CONNZ account). A
+  // changed issuer is a system-account rotation, which this seam never adopts; a different scope
+  // would widen or move the observer. Either throws, so nothing is committed.
+  const pinObsProfile = (creds: string): string => {
+    const p = observerProfile(creds);
+    if (p.iss !== obsPin.iss) throw new Error("observer creds re-read returned a different issuer - a renewal may not rotate the system signer; nothing adopted");
+    if (p.perms !== obsPin.perms) throw new Error("observer creds re-read returned a different permission scope - a renewal may not change the observer's account or rights; nothing adopted");
+    return creds;
+  };
+  let currentObsCreds = initialObs;
+  const refuseExpiredObsCreds = (): void => {
+    const exp = credsClaims(currentObsCreds).exp;
+    if (typeof exp !== "number" || exp * 1000 > Date.now()) return;
+    const why = obsIsSource
+      ? "the membership feed's observer creds have expired and renewal is failing - not presenting the expired credential to the broker"
+      : "the membership feed's observer creds have expired and the feed holds no observer creds source to renew them - replace the credential and restart the feed";
+    log(why);
+    throw new Error(why);
+  };
+  const connectObs = () => connect({
     servers: opts.servers,
-    authenticator: credsAuthenticator(enc(opts.observerCreds)),
+    authenticator: (nonce?: string) => { refuseExpiredObsCreds(); return credsAuthenticator(enc(currentObsCreds))(nonce); },
     name: "cotal-membership-observer",
     inboxPrefix: MEMBERSHIP_INBOX_PREFIX, // scoped reply inboxes — the cred only allows `<prefix>.>`
     maxReconnectAttempts: -1,
   });
+  let connA = await connectObs();
   opened.push(connA); // the transactional record — `startMembershipFeed` drains this if anything below throws
   connA.closed().then((err) => { if (err) log(`conn A (system) closed: ${err.message}`); });
 
@@ -357,6 +390,72 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   // seam (nothing re-reads it). A source-fed cred must be bounded (credsRenewalDelayMs is fail-loud on a
   // missing `exp`), which surfaces a misconfigured source at startup rather than silently never renewing.
   if (rwIsSource) armRwRefresh(credsRenewalDelayMs(currentRwCreds));
+
+  // ---- conn A standing renewal: the same prove-then-adopt transaction, for a source-fed observer ----
+  // A separate single-flight from conn B's: the two creds have different signers and owners, and a
+  // slow store for one must not delay the other. Trigger subscriptions are rebound on a revived conn A.
+  let obsTimer: ReturnType<typeof setTimeout> | undefined;
+  const armObsRefresh = (delayMs: number): void => {
+    if (rwStopped) return;
+    if (obsTimer) clearTimeout(obsTimer);
+    obsTimer = setTimeout(() => void renewObsOnTimer(), Math.max(1_000, delayMs));
+    obsTimer.unref?.();
+  };
+  let obsTxn: Promise<unknown> = Promise.resolve();
+  const runObsTxn = <T,>(fn: () => Promise<T>): Promise<T> => {
+    const next = obsTxn.then(fn, fn);
+    obsTxn = next.then(() => undefined, () => undefined);
+    return next;
+  };
+  const adoptObsCreds = async (deadline: number): Promise<void> => {
+    if (rwStopped) throw new Error("observer creds refresh: the feed stopped; nothing adopted");
+    const candidate = pinObsProfile(await withDeadline(Promise.resolve(readObs()), deadline - Date.now(), () => new Error("observer creds refresh: the source did not return before the deadline; nothing adopted")));
+    const delay = credsRenewalDelayMs(candidate);
+    if (credsFingerprint(candidate) === credsFingerprint(currentObsCreds) && delay <= 0)
+      throw new Error("observer creds refresh: the source still holds the previous generation past its renewal point (the signer owner has not re-minted it); nothing adopted");
+    if (!(await brokerAcceptsCreds(opts.servers, candidate, Math.max(500, Math.min(MEMBERSHIP_PREFLIGHT_MS, deadline - Date.now())))))
+      throw new Error("observer creds refresh: the broker did not accept the candidate; nothing adopted");
+    if (Date.now() > deadline) throw new Error("observer creds refresh: the proof exceeded the deadline; nothing adopted");
+    if (rwStopped) throw new Error("observer creds refresh: the feed stopped during the proof; nothing adopted");
+    currentObsCreds = candidate;
+    armObsRefresh(delay);
+  };
+  // Present the proven observer cache on conn A: reconnect in place when open, else open a fresh
+  // conn A and rebind the two trigger subscriptions. A revive that cannot land throws.
+  const presentObsCreds = async (): Promise<void> => {
+    if (rwStopped) return;
+    if (!connA.isClosed()) {
+      await connA.reconnect().catch(() => {});
+      return;
+    }
+    let next: NatsConnection;
+    try {
+      next = await connectObs();
+    } catch (e) {
+      throw new Error(`observer creds refresh: could not open a fresh observer connection on the proven credential: ${(e as Error).message}`);
+    }
+    connA = next;
+    connA.closed().then((err) => { if (err) log(`conn A (system) closed: ${err.message}`); });
+    if (rwStopped) {
+      await connA.drain().catch(() => {});
+      return;
+    }
+    bindTriggers();
+  };
+  async function renewObsOnTimer(): Promise<void> {
+    const deadline = Date.now() + MEMBERSHIP_RELOAD_DEADLINE_MS;
+    try {
+      await runObsTxn(async () => {
+        await adoptObsCreds(deadline);
+        await presentObsCreds();
+      });
+    } catch (e) {
+      if (rwStopped) return;
+      log(`observer creds refresh failed (graph membership; delivery unaffected): ${(e as Error).message} - retrying; conn A dies at the current JWT's expiry if renewal keeps failing`);
+      armObsRefresh(MEMBERSHIP_CREDS_RETRY_MS);
+    }
+  }
+  if (obsIsSource) armObsRefresh(credsRenewalDelayMs(currentObsCreds));
 
   let stopped = false;
   let polling = false;
@@ -542,8 +641,13 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     if (debounce) clearTimeout(debounce);
     debounce = setTimeout(() => void poll(), debounceMs);
   };
-  const subConnect = connA.subscribe(accountConnectSubject(accountId), { callback: () => trigger() });
-  const subDisconnect = connA.subscribe(accountDisconnectSubject(accountId), { callback: () => trigger() });
+  let subConnect: ReturnType<NatsConnection["subscribe"]>;
+  let subDisconnect: ReturnType<NatsConnection["subscribe"]>;
+  function bindTriggers(): void {
+    subConnect = connA.subscribe(accountConnectSubject(accountId), { callback: () => trigger() });
+    subDisconnect = connA.subscribe(accountDisconnectSubject(accountId), { callback: () => trigger() });
+  }
+  bindTriggers();
 
   const timer = setInterval(() => void poll(), intervalMs);
   await poll(); // first reconcile now
@@ -569,6 +673,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       rwStopped = true;
       clearInterval(timer);
       if (rwTimer) clearTimeout(rwTimer);
+      if (obsTimer) clearTimeout(obsTimer);
       if (debounce) clearTimeout(debounce);
       try { subConnect.unsubscribe(); subDisconnect.unsubscribe(); } catch { /* draining */ }
       // WAIT FOR THE POLL ALREADY RUNNING, BEFORE THE DRAIN. `stopped` is set above, so the do/while
@@ -585,6 +690,9 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       // the behaviour being removed. `inFlight` never rejects (the poll catches internally), so no
       // `.catch` is needed to keep `stop()` from throwing.
       await inFlight;
+      // A refresh already past its stop fence may be opening a replacement conn A or conn B; wait it
+      // out so the drain below sees the connection that is actually live. Both chains never reject.
+      await Promise.allSettled([obsTxn, rwTxn]);
       await Promise.allSettled([connA.drain(), connB.drain()]);
       // A disconnected drain can reject without closing its reconnect loop. Stop owns both
       // connections even when the broker is gone; neither may reappear after stop resolves.
@@ -594,6 +702,16 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
 }
 
 // ---- internals ----
+
+/** The parts of an observer cred a renewal must keep: its issuer and its whole permission block
+ *  (which names the CONNZ account). Unverified claims; the broker preflight is the acceptance proof. */
+function observerProfile(creds: string): { iss: string; perms: string } {
+  const c = credsClaims(creds);
+  if (typeof c.iss !== "string" || c.iss === "") throw new Error("observer creds carry no issuer");
+  const p = c.nats ?? {};
+  const norm = (x?: { allow?: string[]; deny?: string[] }) => ({ allow: [...(x?.allow ?? [])].sort(), deny: [...(x?.deny ?? [])].sort() });
+  return { iss: c.iss, perms: JSON.stringify({ pub: norm(p.pub), sub: norm(p.sub), issuer_account: p.issuer_account ?? null }) };
+}
 
 interface ConnzConnection {
   authorized_user?: string;
