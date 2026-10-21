@@ -11,7 +11,7 @@
  *  D. `COTAL_DEFAULT_PERSONA` supplies the persona for a bare `spawn --detach`.
  *  G. a persona the manager cannot find is refused (exit 2) with the manager's reason, and nothing launches.
  *  E. the `start` tombstone errors, naming `spawn --detach` (subprocess through bin/cotal.ts).
- *  F. foreground `--creds` (no --detach) fails loud (subprocess).
+ *  F. `--foreground --creds` fails loud (subprocess).
  *
  * COTAL_HOME is sandboxed; kills ONLY the PIDs it spawns. Needs nats-server on PATH.
  * Run: pnpm smoke:spawn-detach:live   (build first — bin/cotal.ts subprocess checks run dist)
@@ -50,6 +50,12 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** True when a receipt carries `heading` and names `name` on its own `Agent:` row. */
+const receiptFor = (out: string, heading: string, name: string): boolean =>
+  out.includes(heading) && out.split("\n").some((line) => /^Agent:\s/.test(line.trim()) && line.trim().slice(6).trim() === name);
+const joinedAs = (out: string, name: string): boolean => receiptFor(out, "Agent joined", name);
+const stopped = (out: string, name: string): boolean => receiptFor(out, "Agent stop acknowledged", name);
+const NO_AGENTS = /^\s*No managed agents\.$/m;
 
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -164,7 +170,7 @@ try {
     ]),
   );
   ok("detached spawn reached the connector", lastOpts !== undefined);
-  ok("identity override joined as bard, not the file's poet", /spawned .*bard/.test(spawnOut) && lastOpts?.name === "bard", { spawnOut, name: lastOpts?.name });
+  ok("identity override joined as bard, not the file's poet", joinedAs(spawnOut, "bard") && lastOpts?.name === "bard", { spawnOut, name: lastOpts?.name });
   ok("prompt rode the control plane", lastOpts?.prompt === "compose", lastOpts?.prompt);
   ok("subscribe override beat the persona file", JSON.stringify(lastOpts?.subscribe) === JSON.stringify(["ops", "ops.x"]), lastOpts?.subscribe);
   ok("allow-subscribe override arrived", JSON.stringify(lastOpts?.allowSubscribe) === JSON.stringify(["ops", "ops.>"]), lastOpts?.allowSubscribe);
@@ -198,7 +204,8 @@ try {
   // uid/instance/host attribute the seat. JSON is one envelope whose items are the manager's rows
   // verbatim, fields equal to what the launch sent.
   const psBare2 = await capture(() => run("ps", ["--space", SPACE]));
-  const bareLines = psBare2.trim().split("\n");
+  // The table is the block under the Agents heading, up to the blank line before Next.
+  const bareLines = (psBare2.split("\nAgents\n")[1] ?? "").split("\n\n")[0]!.split("\n").map((line) => line.trim());
   ok("bare ps stays compact and includes model plus requested variant identity",
     bareLines.length === 2 && /^NAME\s+AGENT\s+PROCESS\s+MESH/.test(bareLines[0] ?? "") && /e2e · fancy \(high\) · pty/.test(bareLines[1] ?? ""), psBare2);
   const psWide = await capture(() => run("ps", ["--space", SPACE, "--wide"]));
@@ -289,9 +296,9 @@ try {
   await rnc.drain().catch(() => rnc.close());
 
   const stopOut = await capture(() => run("stop", ["--name", "bard", "--space", SPACE]));
-  ok("stop reports ✓", /stopped bard/.test(stopOut), stopOut);
+  ok("stop reports the acknowledged stop", stopped(stopOut, "bard"), stopOut);
   const psAfter = await capture(() => run("ps", ["--space", SPACE]));
-  ok("ps is empty after stop", /no managed agents/.test(psAfter), psAfter);
+  ok("ps is empty after stop", NO_AGENTS.test(psAfter), psAfter);
 
   // D — COTAL_DEFAULT_PERSONA supplies the persona for a bare detached spawn. The identity still
   // comes from --name, so this proves persona selection and identity override stay separate.
@@ -304,11 +311,11 @@ try {
       ok("COTAL_DEFAULT_PERSONA bare detached spawn reached the connector", lastOpts !== undefined);
       ok(
         "COTAL_DEFAULT_PERSONA picked poet while --name set identity",
-        /spawned .*envbard/.test(envOut) && lastOpts?.name === "envbard" && lastOpts?.role === "writer",
+        joinedAs(envOut, "envbard") && lastOpts?.name === "envbard" && lastOpts?.role === "writer",
         { envOut, name: lastOpts?.name, role: lastOpts?.role },
       );
       const envStop = await capture(() => run("stop", ["--name", "envbard", "--space", SPACE]));
-      ok("COTAL_DEFAULT_PERSONA spawned agent stops", /stopped envbard/.test(envStop), envStop);
+      ok("COTAL_DEFAULT_PERSONA spawned agent stops", stopped(envStop, "envbard"), envStop);
     } finally {
       if (prev === undefined) delete process.env.COTAL_DEFAULT_PERSONA;
       else process.env.COTAL_DEFAULT_PERSONA = prev;
@@ -334,7 +341,7 @@ try {
       isCommandFailure(failure) && failure.message.includes('no persona "ghost"') && failure.message.includes(missing) && !failure.message.includes("\n"), seen);
     ok("...and nothing launched", lastOpts === undefined, lastOpts?.name);
     const psRefused = await capture(() => run("ps", ["--space", SPACE]));
-    ok("...and ps is still empty", /no managed agents/.test(psRefused), psRefused);
+    ok("...and ps is still empty", NO_AGENTS.test(psRefused), psRefused);
   }
 
   // E/F run TRUE subprocesses through bin/cotal.ts with `extensions: true`, so the sandbox must
@@ -355,7 +362,7 @@ try {
   ok("tombstone exits non-zero", tomb.status === 1, tomb.status);
   ok("tombstone names spawn --detach", /spawn --detach/.test(tomb.stderr), tomb.stderr.slice(0, 200));
 
-  // F — foreground --creds fails loud. A foreground spawn REQUIRES its connector materialized
+  // F — direct foreground (`--foreground`) with --creds fails loud. A foreground spawn REQUIRES its connector materialized
   // pre-dispatch (spawnRequiredExtensions), so first `ext add` THIS WORKTREE's claude connector
   // into the sandbox prefix (the real local-path install + core peer-link path) — never the
   // operator's global store.
@@ -363,12 +370,12 @@ try {
     { encoding: "utf8", env: subEnv },
   );
   ok("sandbox ext add of the worktree claude connector succeeds", extAdd.status === 0, (extAdd.stderr + extAdd.stdout).slice(0, 300));
-  const fg = spawnSync(TSX, [join(import.meta.dirname, "..", "cotal.ts"), "spawn", "poet", "--creds", "/tmp/x.creds"], {
+  const fg = spawnSync(TSX, [join(import.meta.dirname, "..", "cotal.ts"), "spawn", "poet", "--foreground", "--creds", "/tmp/x.creds"], {
     encoding: "utf8",
     env: subEnv,
   });
   ok("foreground --creds exits non-zero", fg.status === 1, fg.status);
-  ok("foreground --creds names --detach", /only valid with --detach/.test(fg.stderr), fg.stderr.slice(0, 200));
+  ok("foreground --creds is refused as a manager credential", /direct --foreground execution takes no .*manager credential/.test(fg.stderr), fg.stderr.slice(0, 200));
 
   console.log(`\nspawn-detach live e2e: ${pass} checks passed`);
 } finally {
