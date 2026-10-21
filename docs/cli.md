@@ -2575,9 +2575,14 @@ Enter is pressed by default, since a command typed but never submitted has not b
 `--no-enter` types the text and leaves it sitting at the prompt, which is how you stage a line and
 send it later.
 
-Nothing comes back but a delivery receipt (`✓ sent 9 bytes to reviewer`, counting the trailing
-carriage return). Whatever the agent does next shows up where its output already goes: the mesh, its
-transcript, or an `attach`.
+Nothing comes back but a `Terminal input written` receipt. It names the agent, space and manager,
+the bytes the manager reported writing (counting the trailing carriage return) and whether Enter was
+requested. It confirms the write to the terminal only. Whatever the agent does next shows up where
+its output already goes: the mesh, its transcript, or an `attach`.
+
+A write the manager cannot confirm, such as a terminal write that failed partway, exits 3 with
+`Outcome unconfirmed` and is not typed again. Part of the text may already be at the prompt, so check
+the seat before you send it again.
 
 **This one is operator-only, and more narrowly than `stop` or `attach`.** Those two are granted to
 anything holding `spawn`, so an agent can stop and attach to seats under its own owner. `input` is
