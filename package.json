@@ -170,6 +170,7 @@
     "smoke:membership-feed:auth": "tsx packages/core/smoke/membership-feed.smoke.ts",
     "smoke:membership-feed-confinement:auth": "tsx packages/core/smoke/membership-feed-confinement.smoke.ts",
     "smoke:membership-rw-renewal": "tsx packages/core/smoke/membership-rw-renewal.smoke.ts",
+    "smoke:membership-observer-renewal": "tsx packages/core/smoke/membership-observer-renewal.smoke.ts",
     "smoke:channels": "tsx packages/core/smoke/channels.smoke.ts",
     "smoke:wildcard-backfill": "tsx packages/core/smoke/wildcard-backfill.smoke.ts",
     "smoke:channels:auth": "tsx packages/core/smoke/channels-auth.smoke.ts",
