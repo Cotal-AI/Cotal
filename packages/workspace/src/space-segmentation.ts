@@ -20,10 +20,11 @@
  * directory differs, because §3 places P7's segment under `.cotal/` and P1's under `.cotal/auth/creds/`.
  */
 import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { mkSecretDir, type SecretStore } from "@cotal-ai/core";
 import { accountInventory, authDir, spaceSegment } from "./auth-paths.js";
 import { CommandFailure } from "./output.js";
+import { renewalRecordPath } from "./renewal-path.js";
 
 /** `<root>/.cotal` — the dir whose children the segment must never collide with. */
 export function cotalDir(root: string): string {
@@ -451,8 +452,9 @@ export function assertSpaceMaterialReapable(root: string, space: string, operati
 }
 
 /**
- * `cotal space rm` STEP 7 (`per-space-lifecycle.md` §2.2): reap ONE tenant's segmented material — the
- * `$SYS` pair that step names, plus the rest of that tenant's segment, which P7 keyed alongside it.
+ * `cotal space rm` STEP 7 (`per-space-lifecycle.md` §2.2): reap ONE tenant's material — its
+ * root-level renewal audit record and segmented `$SYS` pair, plus the rest of that tenant's segment,
+ * which P7 keyed alongside it.
  *
  * IT CANNOT REFUSE, and that is a contract, not an omission. It runs past step 5's point of no
  * return, where a throw would strand the journal entry that gates every other verb on the root; §2.2
@@ -468,9 +470,11 @@ export function assertSpaceMaterialReapable(root: string, space: string, operati
  * a raw sweep of `.cotal/` to fall back on and this is not: for an INJECTED store the segment removal
  * below reaches nothing, so a kind missing from the seam loop would outlive its tenant.
  *
- * It removes only THIS space's segment. A reap spelled `.cotal/space.*` is the shape a reader reaches
- * for after seeing a directory removal, and on the multi-tenant root that is the only root this verb
- * runs on it would take every surviving tenant's live material and report success.
+ * It removes only THIS space's segment and renewal record. A reap spelled `.cotal/space.*` is the
+ * shape a reader reaches for after seeing a directory removal, and on the multi-tenant root that is
+ * the only root this verb runs on it would take every surviving tenant's live material and report
+ * success. The renewal filename is obtained from the same dependency-neutral path primitive as its
+ * writer and readers, never reconstructed here.
  */
 export async function reapSpaceMaterial(
   root: string,
@@ -491,6 +495,14 @@ export async function reapSpaceMaterial(
     } catch (e) {
       failed.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+  const renewal = renewalRecordPath(root, space);
+  try {
+    rmSync(renewal);
+    removed.push(`.cotal/${basename(renewal)}`);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT")
+      failed.push(`${basename(renewal)}: ${e instanceof Error ? e.message : String(e)}`);
   }
   const dir = spaceMaterialDir(root, space);
   try {
