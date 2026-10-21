@@ -1,0 +1,3 @@
+# actor and auth grant usage refuses with exit 1 before any target or authority is read and names
+# every missing input; complete flags then meet the capability refusal. Broker-free.
+smoke:grant-usage

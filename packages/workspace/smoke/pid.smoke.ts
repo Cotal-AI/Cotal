@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalLocalProcessPath } from "../src/local-process.js";
 import {
-  commandIsCotalDelivery, commandIsCotalSupervisor, livenessFromErrno, parsePid, probeLiveness, readProcessCommand,
+  commandIsCotalDelivery, commandIsCotalServiceManager, commandIsCotalSupervisor, livenessFromErrno, parsePid, probeLiveness, readProcessCommand,
 } from "../src/pid.js";
 
 let pass = 0;
@@ -69,6 +69,9 @@ check("...at the end of the line too (no trailing flags)", commandIsCotalSupervi
 check("...and through a dev tsx invocation", commandIsCotalSupervisor("node --import tsx bin/cotal.ts supervise --runtime pty"));
 for (const other of ["vim SPEC.md", "node server.js", "/usr/bin/supervised-thing --x", "cotal up", ""])
   check(`an unrelated command line is NOT a manager (${JSON.stringify(other)})`, !commandIsCotalSupervisor(other), other);
+// `up` launches the hidden `__daemon-manager` twin of `supervise`, so its own record carries that token.
+check("the manager twin `up` launches is recognised", commandIsCotalSupervisor("node bin/cotal.ts __daemon-manager --space main --server nats://x"));
+check("...and is not the native service child", !commandIsCotalServiceManager("node bin/cotal.ts __daemon-manager --space main"));
 // THE DELIVERY DAEMON'S OWN TOKEN (#1528), the same rule one component over: `deliver` is the
 // daemon's subcommand and is present however it was started.
 check("a deliver argv is recognised", commandIsCotalDelivery("node /usr/local/bin/cotal deliver --space main"));
@@ -79,6 +82,8 @@ for (const other of ["vim SPEC.md", "node server.js", "cotal up", "cotal supervi
 // A `--creds …/delivery.creds` path must not read as the daemon: that string appears in the argv of
 // anything handed the cred, and a substring test would attribute a stranger to us.
 check("a path mentioning delivery is NOT the token", !commandIsCotalDelivery("node x.js --creds /root/.cotal/delivery.creds"));
+check("the delivery twin `up` launches is recognised", commandIsCotalDelivery("node bin/cotal.ts __daemon-deliver --space main --server nats://x"));
+check("...and is not a manager", !commandIsCotalSupervisor("node bin/cotal.ts __daemon-deliver --space main"));
 // SUBSTRING IS NOT ENOUGH, and this is the cell that says so: the token test is what keeps
 // `supervised-thing` above from reading as a manager, so a rewrite to `includes("supervise")`
 // resolves a stranger to ours and the attribution stops attributing.

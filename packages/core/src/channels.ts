@@ -162,6 +162,24 @@ async function decode(kv: KV, key: string): Promise<ChannelConfig | ChannelDefau
   }
 }
 
+export type ChannelRegistrySeedEntry =
+  | { kind: "defaults"; key: string; patch: ChannelDefaults }
+  | { kind: "channel"; key: string; patch: ChannelConfig };
+
+/** Native seed ordering and patch inputs. This performs no read, validation, merge or write;
+ *  patch text is application data and must not be copied into public operation diagnostics. */
+export function channelRegistrySeedEntries(file: ChannelRegistryFile): ChannelRegistrySeedEntry[] {
+  return [
+    ...(file.defaults ? [{ kind: "defaults" as const, key: CHANNEL_DEFAULTS_KEY, patch: file.defaults }] : []),
+    ...Object.entries(file.channels ?? {}).map(([key, patch]) => ({ kind: "channel" as const, key, patch })),
+  ];
+}
+
+/** The native profile-default patch; existing explicit registry values still take precedence. */
+export function channelDeliveryDefaultPatch(deliveryClass: DeliveryClass): ChannelDefaults {
+  return { deliveryClass };
+}
+
 /** Connect (with the given privileged creds, or open if none), seed the registry from a
  *  declarative {@link ChannelRegistryFile} (defaults + per-channel config, merged), disconnect.
  *  Used by `cotal up` to seed once at setup, and by `cotal channels` for runtime writes.
@@ -181,9 +199,10 @@ export async function seedChannelRegistry(opts: {
     // makes `cotal channels` work on a space whose bucket wasn't pre-created (e.g. one set up
     // before this feature). Idempotent when `cotal up` already created it.
     const kv = await openChannelRegistry(nc, opts.space, { create: true });
-    if (opts.file.defaults) await writeChannelDefaults(kv, opts.file.defaults);
-    for (const [channel, cfg] of Object.entries(opts.file.channels ?? {}))
-      await writeChannelConfig(kv, channel, cfg);
+    for (const entry of channelRegistrySeedEntries(opts.file)) {
+      if (entry.kind === "defaults") await writeChannelDefaults(kv, entry.patch);
+      else await writeChannelConfig(kv, entry.key, entry.patch);
+    }
   } finally {
     await nc.drain();
   }
@@ -205,7 +224,7 @@ export async function ensureDefaultDeliveryClass(opts: {
   try {
     const kv = await openChannelRegistry(nc, opts.space, { create: true });
     if ((await readChannelDefaults(kv))?.deliveryClass !== undefined) return false;
-    await writeChannelDefaults(kv, { deliveryClass: opts.deliveryClass });
+    await writeChannelDefaults(kv, channelDeliveryDefaultPatch(opts.deliveryClass));
     return true;
   } finally {
     await nc.drain();

@@ -1,0 +1,217 @@
+{
+  "suite": [
+    "implementations/cli/smoke/who-roster.smoke.ts",
+    "implementations/cli/smoke/fixtures/who-watch-fault.mjs"
+  ],
+  "guard": "who lists agents with their presence metadata, hides infrastructure endpoints unless --all, keeps condition rows under --waiting, reports managed only from a manager's answer, a census it could not read as partial and a scoped answer as a label, refuses a roster it may not read, and whoami reports each grant state with a ledger elsewhere as partial",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm exec tsx implementations/cli/smoke/who-roster.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/who-roster.json",
+  "why": [
+    "The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back.",
+    "The managed decision and the user-auth grant states are imported from source in process, so those mutations are read without the build.",
+    "The remote-login cells drive the built binary with a real remote registration and cached login through the native auth provider. They do not invent an owner field the provider does not return.",
+    "The live roster-gap cells preload only a bounded KV-iterator fault into the real built CLI. They hold real replay entries or fail the real watcher; core computes presenceView and getRoster itself. No endpoint reply, presence state, clock or report result is supplied by the fixture.",
+    "Build the complete exact-source dependency closure first. All mutations in this config change only the CLI package; each mutant and restore rebuild that package instead of unchanged connectors and documentation."
+  ],
+  "mutations": [
+    {
+      "name": "infrastructure endpoints are listed by default",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "const listed = roster.filter((p) => v.all || p.card.kind !== \"endpoint\");",
+      "replace": "const listed = roster.filter((p) => true || p.card.kind !== \"endpoint\");",
+      "expectRed": "every agent is listed and the infrastructure endpoint is not",
+      "cell": "every agent is listed and the infrastructure endpoint is not",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "--waiting drops a row that reports a condition",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": ".filter((p) => !v.waiting || p.status === \"waiting\" || p.condition !== undefined)",
+      "replace": ".filter((p) => !v.waiting || p.status === \"waiting\")",
+      "expectRed": "--waiting keeps the waiting row and the row with a condition",
+      "cell": "--waiting keeps the waiting row and the row with a condition",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the harness is read from a key presence does not carry",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "harness: metaText(p, \"connector\"),",
+      "replace": "harness: metaText(p, \"harness\"),",
+      "expectRed": "harness, model and host come from the presence metadata",
+      "cell": "harness, model and host come from the presence metadata",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a census that could not be read says no seat is managed",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "      runs = () => null;\n",
+      "replace": "      runs = () => false;\n",
+      "expectRed": "the warning names the unread census and every agent's managed is unknown",
+      "cell": "the warning names the unread census and every agent's managed is unknown",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a census that could not be read is not a warning",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "        warnings.push({ code: \"MANAGERS_UNREAD\", target, message: `could not ask the managers which seats they run: ${failure.message}` });\n",
+      "replace": "\n",
+      "expectRed": "a manager that does not answer makes who partial with exit 4",
+      "cell": "a manager that does not answer makes who partial with exit 4",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a roster the identity may not read is not classified as denied",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "    if (/permission/i.test(message))\n",
+      "replace": "    if (false)\n",
+      "expectRed": "a credential that may not read presence is a PERMISSION_DENIED refusal, exit 2, not an empty roster",
+      "cell": "a credential that may not read presence is a PERMISSION_DENIED refusal, exit 2, not an empty roster",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "an incomplete census says an unlisted seat is not managed",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "uids.has(p.lifecycleUid) ? true : everyManager ? false : null),",
+      "replace": "uids.has(p.lifecycleUid) ? true : false),",
+      "expectRed": "an incomplete census can only say a listed seat is managed",
+      "cell": "an incomplete census can only say a listed seat is managed",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "one manager's answer is not labeled as covering only its own seats",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "  if (!everyManager && !census.partial)\n",
+      "replace": "  if (false)\n",
+      "expectRed": "one manager's answer leaves other seats unknown and says so",
+      "cell": "one manager's answer leaves other seats unknown and says so",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a grant ledger on another machine reads as complete",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "      warnings.push({ code: \"GRANT_NOT_LOCAL\", target,",
+      "replace": "      void ({ code: \"GRANT_NOT_LOCAL\", target,",
+      "expectRed": "a grant ledger on another machine is a partial read, exit 4",
+      "cell": "a grant ledger on another machine is a partial read, exit 4",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a signed-in user without a grant is read as a remote ledger",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "if (grant === null || grant === \"not-granted\") result =",
+      "replace": "if (grant === null) result =",
+      "expectRed": "a signed-in user without a grant reads and posts nothing",
+      "cell": "a signed-in user without a grant reads and posts nothing",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a signer's identity is reported as an open mesh",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "? { ...base, identity: { kind: \"space-signer\", ...none },",
+      "replace": "? { ...base, identity: { kind: \"open\", ...none },",
+      "expectRed": "whoami on a signer's mesh is one complete envelope naming the signer",
+      "cell": "whoami on a signer's mesh is one complete envelope naming the signer",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a scoped census answer is counted as a part left unread",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "    labels.push({ code: \"MANAGED_SCOPE\", target: census.target,",
+      "replace": "    census.warnings.push({ code: \"MANAGED_SCOPE\", target: census.target,",
+      "expectRed": "that answer is a label, not a part left unread",
+      "cell": "that answer is a label, not a part left unread",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a cached remote login needs a locally derivable owner to count as signed in",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "    const signedIn = st.login !== undefined;\n",
+      "replace": "    const signedIn = st.login !== undefined && st.owner !== undefined;\n",
+      "expectRed": "the native remote provider leaves a logged-in user's grant unknown, not empty",
+      "cell": "the native remote provider leaves a logged-in user's grant unknown, not empty",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "an unsigned user identity is called a cached login",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "    [\"identity\", id.kind === \"user\" && !id.subject ? \"not signed in\" : KIND_TEXT[id.kind]],",
+      "replace": "    [\"identity\", KIND_TEXT[id.kind]],",
+      "expectRed": "a remote registration without a cached login says not signed in",
+      "cell": "a remote registration without a cached login says not signed in",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a remote login with an unknown principal is called signed out",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "text: id.subject ? \"not known on this machine\" : \"not signed in\",",
+      "replace": "text: \"not signed in\",",
+      "expectRed": "a cached remote login with no locally derivable principal is not called signed out",
+      "cell": "a cached remote login with no locally derivable principal is not called signed out",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a remote login with an unknown principal is told to sign in again",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "if (id.kind === \"user\" && !id.subject) hints.push",
+      "replace": "if (id.kind === \"user\" && !id.principal) hints.push",
+      "expectRed": "a cached remote login with no locally derivable principal is not called signed out",
+      "cell": "a cached remote login with no locally derivable principal is not called signed out",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "whoami refreshes a remote catalog before its offline read",
+      "file": "implementations/cli/src/index.ts",
+      "find": "    flags: whoamiFlags,\n    prepareMeshTarget: false,\n",
+      "replace": "    flags: whoamiFlags,\n",
+      "expectRed": "whoami stays offline with a cached login and an uncached catalog",
+      "cell": "whoami stays offline with a cached login and an uncached catalog",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "open mesh identity claims that DM history needs a credential",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "result = { ...base, identity: { kind: \"open\", ...none }, read: \"all\", post: \"all\", dms: true, capabilities: \"all\" };",
+      "replace": "result = { ...base, identity: { kind: \"open\", ...none }, read: \"all\", post: \"all\", dms: false, capabilities: \"all\" };",
+      "expectRed": "whoami on an open mesh reports DM history as readable without a credential",
+      "cell": "whoami on an open mesh reports DM history as readable without a credential",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "unfinished snapshot is reported as complete",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "    if (pv.state === \"unpopulated\")\n      warnings.push({ code: \"ROSTER_INCOMPLETE\", target, message: `the roster snapshot did not finish within ${SNAPSHOT_MS / 1000}s, so rows may be missing` });\n",
+      "replace": "",
+      "expectRed": "a live unpopulated roster is partial with ROSTER_INCOMPLETE and exit 4",
+      "cell": "a live unpopulated roster is partial with ROSTER_INCOMPLETE and exit 4",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "stale watch is reported as current",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "    if (pv.state === \"stale\")\n      warnings.push({ code: \"ROSTER_STALE\", target, message: `no presence update arrived within the liveness window, so rows are last-known as of ${iso(pv.staleSince)}` });\n",
+      "replace": "",
+      "expectRed": "a live stale roster is partial with ROSTER_STALE and exit 4",
+      "cell": "a live stale roster is partial with ROSTER_STALE and exit 4",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "watch errors are not reported as unread",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "    for (const message of errors) warnings.push({ code: \"ROSTER_ERROR\", target, message });\n",
+      "replace": "",
+      "expectRed": "a live error roster is partial with ROSTER_ERROR and exit 4",
+      "cell": "a live error roster is partial with ROSTER_ERROR and exit 4",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "who reads the roster once instead of watching it",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "    watch: true,\n",
+      "replace": "",
+      "expectRed": "a live unpopulated roster is partial with ROSTER_INCOMPLETE and exit 4",
+      "cell": "a live unpopulated roster is partial with ROSTER_INCOMPLETE and exit 4",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}

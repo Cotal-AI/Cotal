@@ -23,8 +23,8 @@
     {
       "name": "S2 restore unscoped .agents skills remedy",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "return c.yellow(`${label} · ${displayCmd()} setup --skills`);",
-      "replace": "return c.yellow(`${label} · ${displayCmd()} setup`);",
+      "find": "  return cell(`${s.retired ? `${s.behind} to reconcile (${s.retired} retired)` : `${s.behind}/${s.total} out of date`} · ${remedy}`, \"waiting\");",
+      "replace": "  return cell(`${s.retired ? `${s.behind} to reconcile (${s.retired} retired)` : `${s.behind}/${s.total} out of date`} · ${displayCmd()} setup`, \"waiting\");",
       "expectRed": "stale .agents skills recommend setup --skills",
       "cell": "stale .agents skills recommend setup --skills",
       "note": "Restores the issue's Skills (.agents) row while leaving the Claude row scoped.",

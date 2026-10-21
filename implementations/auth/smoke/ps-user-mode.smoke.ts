@@ -292,6 +292,10 @@ try {
   if (up.status !== 0) { process.exitCode = 1; throw new Error("fixture"); }
   await wait(3000);
 
+  /** Whether output carries credential material: a JWT (bearer or user JWT), a NATS creds block or an
+   *  nkey seed. */
+  const leaksCredential = (out: string): boolean =>
+    /eyJ[A-Za-z0-9_-]{8,}\.eyJ/.test(out) || /BEGIN (NATS|USER NKEY)/.test(out) || /\bS[AUON][A-Z2-7]{56}\b/.test(out);
   console.log("2) device login + admin grant");
   const { sub } = await establishIdpSession({
     dir: home, idpUrl: base, clientId: CLIENT_ID,
@@ -306,6 +310,129 @@ try {
   check("user-mode ps exits 0 (C: ep.one path)", ps.status === 0, ps.status);
   check("user-mode ps does not die on STREAM.INFO (would mean it still scattered)",
     !/STREAM\.INFO/.test(ps.out), ps.out.slice(-200));
+  const psJson = await cotal(["ps", "--json", "--space", SPACE], 20_000);
+  const psEnvelope = (() => { try { return JSON.parse(psJson.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { outcome: string; target: { scope: string; managerInstanceId: string | null } }; } catch { return undefined; } })();
+  check("user-mode ps --json targets the one authorized manager by its instance id",
+    psJson.status === 0 && psEnvelope?.outcome === "ok" && psEnvelope.target.scope === "manager" && /^[a-z0-9]{26,32}$/.test(psEnvelope.target.managerInstanceId ?? ""),
+    psJson.out.slice(-600));
+  check("user-mode ps --json carries no bearer, sentinel or nkey seed", !leaksCredential(psJson.out), psJson.out.slice(-600));
+
+  console.log("3a) cotal who under the same bearer: the one manager answers for this user's own seats");
+  const whoJson = await cotal(["who", "--json", "--space", SPACE], 20_000);
+  const whoEnvelope = (() => { try { return JSON.parse(whoJson.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { outcome: string; completeness: string; result: { managers: string } | null; warnings: { code: string }[] }; } catch { return undefined; } })();
+  check("user-mode who labels the manager's answer as covering this user's own seats",
+    whoEnvelope?.result?.managers === "partial" && whoEnvelope.warnings.some((w) => w.code === "MANAGED_SCOPE"), whoJson.out.slice(-600));
+  check("that label is not a part left unread: user-mode who exits 0, ok and complete",
+    whoJson.status === 0 && whoEnvelope?.outcome === "ok" && whoEnvelope.completeness === "complete", whoJson.out.slice(-600));
+
+  console.log("3a history) native user-auth reads through its channel grant");
+  const historyText = `native history ${Date.now()}`;
+  const sentHistory = await cotal(["send", "msg", "general", historyText, "--space", SPACE], 20_000);
+  check("the native history fixture sends a channel message through the CLI", sentHistory.status === 0, sentHistory.out.slice(-500));
+  const nativeHistory = await cotal(["history", "general", "--json", "--space", SPACE], 20_000);
+  const historyEnvelope = (() => { try { return JSON.parse(nativeHistory.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { result: { kind: string; items: { channel: string | null; text: string; seq: number | null }[] } | null }; } catch { return undefined; } })();
+  check("native user-auth history reads the sent channel message with no stream sequence",
+    nativeHistory.status === 0 && historyEnvelope?.result?.kind === "history" && historyEnvelope.result.items.some((row) => row.channel === "general" && row.text === historyText && row.seq === null), nativeHistory.out.slice(-1200));
+  const readHistoryError = (r: Run): string | undefined => { try { return (JSON.parse(r.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { error?: { code: string } }).error?.code; } catch { return undefined; } };
+  const nativeDms = await cotal(["history", "--dms", "--json", "--space", SPACE], 20_000);
+  check("native user-auth history refuses DMs without an audit credential",
+    nativeDms.status === 2 && readHistoryError(nativeDms) === "PERMISSION_DENIED", nativeDms.out.slice(-600));
+  const nativeSequence = await cotal(["history", "general", "--since", "1", "--json", "--space", SPACE], 20_000);
+  check("native user-auth history refuses a stream-sequence read as unsupported",
+    nativeSequence.status === 2 && readHistoryError(nativeSequence) === "UNSUPPORTED", nativeSequence.out.slice(-600));
+
+  console.log("3a retirement) an in-flight history read cannot cross a real human re-grant");
+  {
+    const { connectOrThrow, endpointAuth } = await import("@cotal-ai/workspace");
+    const { CotalEndpoint } = await import("@cotal-ai/core");
+    const connection = await connectOrThrow({ space: SPACE }, "observer");
+    const held = new CotalEndpoint({ space: SPACE, servers: SERVER, ...endpointAuth(connection),
+      lifecycleUid: connection.epCaller!.uid, channels: [], consume: false, registerPresence: false,
+      watchPresence: false, card: { name: "held-history", kind: "endpoint" } });
+    held.on("error", () => {});
+    let rotated = false;
+    let releasePull: (() => void) | undefined;
+    try {
+      await held.start();
+      const firstPage = await held.channelHistoryPage("general");
+      check("the predecessor connection can read before retirement",
+        firstPage.items.some((m) => m.parts.some((p) => p.kind === "text" && p.text === historyText)));
+      const internals = held as unknown as { nc: import("@nats-io/transport-node").NatsConnection; js: import("@nats-io/jetstream").JetStreamClient };
+      const predecessor = internals.nc;
+      const get = internals.js.consumers.get.bind(internals.js.consumers);
+      let enteredPull!: () => void;
+      const entered = new Promise<void>((resolve) => { enteredPull = resolve; });
+      const release = new Promise<void>((resolve) => { releasePull = resolve; });
+      internals.js.consumers.get = async (...args) => {
+        const consumer = await get(...args);
+        enteredPull();
+        await release;
+        return consumer;
+      };
+      const pending = held.channelHistoryPage("general").then(
+        () => ({ error: "returned a page" }), (e: Error) => ({ error: `${e.name}: ${e.message}` }));
+      const began = await Promise.race([entered.then(() => true), pending.then(() => false)]);
+      check("a real predecessor history consumer is paused before its pull", began);
+      if (!began) throw new Error("history retirement fixture never reached its live pull checkpoint");
+      const nextGrant = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "",
+        "--allow-subscribe", "history.next", "--allow-publish", "history.next"], 60_000);
+      mustHaveRun(nextGrant, "the native history re-grant");
+      rotated = nextGrant.status === 0;
+      check("the real actor re-grant retires the predecessor before granting a different channel", rotated, nextGrant.out.slice(-500));
+      releasePull!();
+      const interrupted = await pending;
+      check("retirement closes the predecessor connection and prevents its paused pull from returning a page",
+        rotated && predecessor.isClosed() && /closed|disconnect|not started|cut short|permission|authoriz/i.test(interrupted.error), interrupted);
+      const copied = new CotalEndpoint({ space: SPACE, servers: SERVER, ...endpointAuth(connection),
+        lifecycleUid: connection.epCaller!.uid, channels: [], consume: false, registerPresence: false,
+        watchPresence: false, card: { name: "copied-history", kind: "endpoint" } });
+      copied.on("error", () => {});
+      let copiedError = "connected";
+      try { await copied.start(); } catch (e) { copiedError = (e as Error).message; }
+      finally { await copied.stop(); }
+      check("a copied predecessor bearer cannot reconnect after the native re-grant",
+        /authoriz|authentic|denied|revok|retir/i.test(copiedError), copiedError);
+      const nextText = `successor history ${Date.now()}`;
+      const nextSent = await cotal(["send", "msg", "history.next", nextText, "--space", SPACE], 20_000);
+      const nextHistory = await cotal(["history", "history.next", "--json", "--space", SPACE], 20_000);
+      check("the successor reads only its newly granted channel through the real CLI",
+        nextSent.status === 0 && nextHistory.status === 0 && nextHistory.out.includes(nextText) && !nextHistory.out.includes(historyText), nextHistory.out.slice(-800));
+      const priorChannel = await cotal(["history", "general", "--json", "--space", SPACE], 20_000);
+      check("the successor cannot read the predecessor's channel",
+        priorChannel.status === 2 && readHistoryError(priorChannel) === "PERMISSION_DENIED", priorChannel.out.slice(-500));
+      // A real occupied reader exercises the command's timeout outcome, not a thrown stub page.
+      const current = await connectOrThrow({ space: SPACE }, "observer");
+      const busy = new CotalEndpoint({ space: SPACE, servers: SERVER, ...endpointAuth(current),
+        lifecycleUid: current.epCaller!.uid, channels: [], consume: false, registerPresence: false,
+        watchPresence: false, card: { name: "busy-history", kind: "endpoint" } });
+      busy.on("error", () => {});
+      await busy.start();
+      const { jetstreamManager } = await import("@nats-io/jetstream");
+      const { chatStream, chatHistDurable, chatSubject } = await import("@cotal-ai/core");
+      const api = await jetstreamManager((busy as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc);
+      const name = chatHistDurable(current.epCaller!.owner, current.epCaller!.actor, current.epCaller!.uid);
+      try {
+        await api.consumers.add(chatStream(SPACE), { name, description: "fixture-busy-owner",
+          filter_subject: chatSubject(SPACE, "*", "*", "history.next"), ack_policy: "none",
+          deliver_policy: "all", mem_storage: true, inactive_threshold: 30_000_000_000 });
+        const unread = await cotal(["history", "history.next", "--json", "--space", SPACE], 20_000);
+        check("a busy native history read reports a known failed read, not an unknown operation",
+          unread.status === 5 && readHistoryError(unread) === "OPERATION_FAILED", unread.out.slice(-700));
+      } finally {
+        await api.consumers.delete(chatStream(SPACE), name).catch(() => {}); // fixture-owned consumer
+        await busy.stop();
+      }
+
+    } finally {
+      releasePull?.();
+      await held.stop();
+      if (rotated) {
+        const restore = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "ps human"], 60_000);
+        mustHaveRun(restore, "restoring the fixture's admin grant");
+        check("the later ps checks receive a fresh restored admin grant", restore.status === 0, restore.out.slice(-500));
+      }
+    }
+  }
 
   console.log("3b) empty registry discovers the user-mode space, then ps/status resolve it");
   const { prepareCatalogTargets, validateCatalogSnapshot } = await import("../../cli/src/commands/sync.js");
@@ -404,6 +531,12 @@ try {
   check("discovered space: bare status names the grant as not checkable (no local ledger) rather than demanding a login",
     discoveredStatus.out.includes("grant not checkable on this machine (no local ledger)") && !discoveredStatus.out.includes("no user-auth material"),
    discoveredStatus.out.slice(-600));
+  const discoveredHistory = await cotal(["history", "general", "--json", "--space", SPACE], 20_000);
+  check("the native remote-catalog history path reads the same message without local grant lookup",
+    findMesh(SPACE)?.userAuth?.remote === true && discoveredHistory.status === 0 && discoveredHistory.out.includes(historyText),
+    discoveredHistory.out.slice(-1000));
+  check("native local and remote history outputs contain no credential material",
+    !leaksCredential(nativeHistory.out) && !leaksCredential(discoveredHistory.out), discoveredHistory.out.slice(-500));
   const discoveredComponents = await cotal(["status", "--space", SPACE, "--components"], 30_000);
   console.log(`   #1832 status --components on the discovered space (exit=${discoveredComponents.status}):\n` +
     discoveredComponents.out.split("\n").filter((l) => /Component Health|^  (manager|delivery|web|broker) /.test(l.replace(/\x1b\[[0-9;]*m/g, ""))).map((l) => `   | ${l}`).join("\n").slice(0, 1200));
@@ -444,6 +577,11 @@ try {
         signedOutStatus.out.includes(`login --idp ${base}`) &&
         !signedOutStatus.out.includes("no user-auth material"),
       signedOutStatus.out.slice(-600));
+    const signedOutPs = await cotal(["ps", "--json", "--space", signedOutSpace], 30_000);
+    check("signed out: ps --json is one AUTH_REQUIRED envelope that names the login, exit 2",
+      signedOutPs.status === 2 && /"code":"AUTH_REQUIRED"/.test(signedOutPs.out) && signedOutPs.out.includes(`login --idp ${base}`),
+      signedOutPs.out.slice(-600));
+    check("signed out: the refusal carries no credential material", !leaksCredential(signedOutPs.out), signedOutPs.out.slice(-600));
   } finally {
     if (sessionsBytes !== undefined) writeFileSync(sessionsFile, sessionsBytes);
     removeMesh(signedOutSpace);
@@ -486,7 +624,10 @@ try {
     { out: localRm.out, catalogRequests, beforeLocalRm });
   const expired = await cotal(["ps", "--space", SPACE], 20_000);
   check("an expired discovered target refuses ps when its required refresh fails",
-    expired.status === 1 && expired.out.includes("space catalog") && catalogRequests >= 3, { out: expired.out.slice(-400), catalogRequests, cache: readFileSync(join(home, "space-catalogs.json"), "utf8") });
+    expired.status === 2 && expired.out.includes("space catalog") && catalogRequests >= 3, { out: expired.out.slice(-400), catalogRequests, cache: readFileSync(join(home, "space-catalogs.json"), "utf8") });
+  const expiredJson = await cotal(["ps", "--json", "--space", SPACE], 20_000);
+  check("under --json that refusal is one DEPENDENCY_UNAVAILABLE envelope",
+    expiredJson.status === 2 && /"code":"DEPENDENCY_UNAVAILABLE"/.test(expiredJson.out) && /"outcome":"refused"/.test(expiredJson.out), expiredJson.out.slice(-400));
 
   console.log("4) kill manager — ps must fail loud, not empty-success");
   // The mesh can only root somewhere else if a `.cotal` appeared above the scratch mid-run; witness

@@ -1,5 +1,6 @@
 import * as p from "@clack/prompts";
 import type { ConnectorAssist } from "@cotal-ai/core";
+import { inputDisabledByFlag } from "@cotal-ai/workspace";
 import { dim } from "./theme.js";
 import { abortIfCancel } from "./cancel.js";
 import { assistAllowed, noAssistLine, runHandoff } from "./assist.js";
@@ -36,7 +37,7 @@ export type AssistSource = () => Promise<readonly ConnectorAssist[]>;
  *  without prompting (so e.g. demo agents are written), and a failure aborts with the
  *  log path instead of opening the recovery menu/handoff, even on a TTY. */
 export async function runSteps(steps: Step[], log: SetupLog, opts: { yes?: boolean; assists?: AssistSource } = {}): Promise<boolean> {
-  const interactive = process.stdin.isTTY && !opts.yes;
+  const interactive = process.stdin.isTTY && !opts.yes && !inputDisabledByFlag();
   for (const step of steps) {
     if (step.optional && !opts.yes && (!interactive || !(await ask(`${step.title}?`)))) {
       p.log.info(dim(`skipped: ${step.title}`));

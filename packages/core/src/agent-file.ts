@@ -25,11 +25,12 @@
  * session reads its own card from it. Part of the wire contract's onboarding
  * half, alongside the join link.
  */
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
+import { writePrivateRecord } from "./secret-fs.js";
 import { assertValidChannel, assertValidOwnerToken, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 
 export interface AgentDef {
@@ -267,7 +268,8 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 /** Write an agent definition back to disk in the form {@link loadAgentFile} reads:
  *  the set frontmatter fields followed by the persona body. Round-trips through the
  *  parser; creates parent dirs. The runtime persona-definition path uses this to
- *  persist a peer-defined agent as config. */
+ *  persist a peer-defined agent as config. The file is written 0o600 and never through a
+ *  symlink ({@link writePrivateRecord}). */
 export function saveAgentFile(path: string, def: AgentDef): void {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
@@ -316,7 +318,7 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   const frontmatter = stringifyYaml(fm, { lineWidth: 0 }).trimEnd();
   const body = def.persona ? `${def.persona.trim()}\n` : "";
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `---\n${frontmatter}\n---\n\n${body}`);
+  writePrivateRecord(path, `---\n${frontmatter}\n---\n\n${body}`);
 }
 
 /** Content a peer may name on `define-persona`. Policy (`capabilities`, `owner`) has no slot. */

@@ -2,7 +2,7 @@
   "suite": [
     "implementations/cli/smoke/send.smoke.ts"
   ],
-  "guard": "a one-shot `cotal send` or `cotal channels list` leaves no consumer on the presence or channel-registry stream (#4091)",
+  "guard": "a one-shot `cotal send` or `cotal channel` leaves no consumer on the presence or channel-registry stream (#4091)",
   "command": "pnpm --filter @cotal-ai/cli... build && pnpm smoke:send",
   "completionMarker": "send smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/send-watch-leak.json",
@@ -14,8 +14,10 @@
     "",
     "The first mutation drops the one-time read from the transient endpoint, which is the shipped",
     "behavior. The other two keep it and put back one watch each in core, so the proof shows the",
-    "check sees a leak on either bucket alone. The CLI runs as a subprocess and resolves every",
-    "package from `dist/`, so each mutation builds first and rebuilds in `afterRestore`."
+    "check sees a leak on either bucket alone. The last one keeps the endpoint's one-time read and",
+    "puts back the scan in the channel send's own policy read, which leaked one registry consumer per",
+    "channel send. The CLI runs as a subprocess and resolves every package from `dist/`, so each",
+    "mutation builds first and rebuilds in `afterRestore`."
   ],
   "mutations": [
     {
@@ -49,14 +51,24 @@
       "note": "Only the channel-registry stream leaks."
     },
     {
-      "name": "`cotal channels list` scans the registry with a consumer again",
+      "name": "`cotal channel` scans the registry with a consumer again",
       "file": "implementations/cli/src/commands/channels.ts",
-      "find": "...auth, directGet: !conn.bearer }",
-      "replace": "...auth, directGet: false }",
+      "find": "{ ...options, directGet: !connection.bearer }",
+      "replace": "{ ...options, directGet: false }",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build",
-      "expectRed": "`cotal channels list` leaves no consumer on the channel-registry stream (#4091)",
-      "cell": "`cotal channels list` leaves no consumer on the channel-registry stream (#4091)",
+      "expectRed": "`cotal channel` leaves no consumer on the channel-registry stream (#4091)",
+      "cell": "`cotal channel` leaves no consumer on the channel-registry stream (#4091)",
       "note": "The pre-fix read: liveKvEntries binds a scan consumer whose delete the operator profile is refused."
+    },
+    {
+      "name": "a channel send's policy read scans the registry with a consumer again",
+      "file": "implementations/cli/src/commands/send.ts",
+      "find": "{ creds: connection.creds }), directGet: !connection.bearer });",
+      "replace": "{ creds: connection.creds }), directGet: false });",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build",
+      "expectRed": "three one-shot sends leave no consumer on the presence or channel-registry stream (#4091)",
+      "cell": "three one-shot sends leave no consumer on the presence or channel-registry stream (#4091)",
+      "note": "The release's send: the endpoint read once, but the `-c` send's policy read left one registry consumer."
     }
   ]
 }

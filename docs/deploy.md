@@ -34,7 +34,7 @@ The container's command picks the shape:
 | command | shape |
 |---|---|
 | `supervise --space <s> --roster /workspace/roster.yaml` | a manager that boots every agent in the roster (all in one container, pty runtime) |
-| `spawn <name>` | one foreground agent, loading `.cotal/agents/<name>.md` |
+| `spawn <name> --foreground` | one foreground agent, loading `.cotal/agents/<name>.md` |
 
 Mix connector types freely within a roster (`agent: claude` / `agent: opencode` per entry). See
 [Roster files](define-a-team.md#roster-files) for the roster format and [Agent files](agent-files.md)
@@ -49,7 +49,7 @@ for personas.
   `tls://broker.host:4222` for a hosted one. The deploy tree never runs the broker. The broker
   must be nats-server 2.12 or newer (the v0.4 control surface floor); agents fail loud at connect
   against an older one.
-- **The account signer:** on the host beside your broker, `cotal mint --signer` writes
+- **The account signer:** on the host beside your broker, `cotal auth signer --out signer.json` writes
   `signer.json`: account signing material with no operator key.
 - **A model credential per connector type** (see below).
 
@@ -105,7 +105,7 @@ because the Claude connector lists it, not because every `CLAUDE_CODE_*` name is
 
 Every var set on a team container reaches every agent in it; **the container is the team's trust
 boundary**, so secrets are not isolated *between* agents in the same container. For hard per-agent
-isolation, run one agent per container (the `solo` service: same image, `spawn <name>`).
+isolation, run one agent per container (the `solo` service: same image, `spawn <name> --foreground`).
 
 ## Container layout
 

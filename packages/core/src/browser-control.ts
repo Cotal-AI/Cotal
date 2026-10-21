@@ -41,7 +41,7 @@ export type BrowserValidator = ((data: unknown) => boolean) & { errors?: Array<{
 export interface BrowserCluster {
   readonly urn: string;
   readonly revision: number;
-  readonly commands: ReadonlyArray<{ name: string; class: string; targeted: boolean; modes?: readonly string[]; capability: string; inputDigest: string; outputDigest: string }>;
+  readonly commands: ReadonlyArray<{ name: string; class: string; targeted: boolean; modes?: readonly string[]; capability: string; inputDigest: string; outputDigest: string; action?: true }>;
 }
 
 /** The generated module's export: validators by closure digest, cluster documents by cluster digest. */
@@ -114,7 +114,8 @@ export function browserServiceSurface(descriptor: { clusters: ReadonlyArray<{ di
         command: cmd.name,
         contract: { input: contractOf(set, cmd.inputDigest), output: contractOf(set, cmd.outputDigest) },
         class: cmd.class, targeted: cmd.targeted, modes: [...(cmd.modes ?? [])], capability: cmd.capability,
-      } as ResolvedCommand);
+        ...(cmd.action ? { action: true as const } : {}),
+      });
     }
   }
   return surface;

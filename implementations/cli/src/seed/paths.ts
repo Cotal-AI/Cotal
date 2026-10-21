@@ -179,7 +179,7 @@ export function cliPackageRoot(): string {
 /**
  * This `cotal-ai` binary's published version — the nearest `package.json` above the {@link entryScript}
  * (`cotal-ai` published, or `bin/package.json` in a dev `tsx bin/cotal.ts` run). Surfaced by
- * `cotal --version` / `cotal -v` and `cotal status`. Fails loud if unreadable.
+ * `cotal version` and `cotal status`. Fails loud if unreadable.
  */
 export function cliVersion(): string {
   const root = cliPackageRoot();

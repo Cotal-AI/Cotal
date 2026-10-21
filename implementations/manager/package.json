@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/manager",
   "description": "Cotal agent supervisor: spawns and manages mesh nodes via a pluggable runtime (pty/tmux/cmux/orca/herdr).",
-  "version": "0.90.0",
+  "version": "0.90.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -25,6 +25,7 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
+    "@clack/prompts": "^1.0.0",
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/seat": "workspace:*",
     "@cotal-ai/workspace": "workspace:*",

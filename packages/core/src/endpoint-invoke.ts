@@ -118,6 +118,13 @@ async function recompileClosure(store: ContractStoreContext, closureDigest: stri
   return compiled;
 }
 
+/** Fetch and recompile ONE schema closure at its registered digest, outside a describe. The same
+ *  digest-equality tamper boundary applies: a store that served other bytes never compiles. Used
+ *  by a caller that has to prove which contract a pinned instance serves before acting. */
+export async function recompileContractClosure(store: ContractStoreContext, closureDigest: string, opts: { walkBudgetMs?: number; signal?: AbortSignal } = {}): Promise<CompiledContract> {
+  return recompileClosure(store, closureDigest, { artifactMemo: new Map(), walkBudgetMs: opts.walkBudgetMs ?? 10_000, ...(opts.signal ? { signal: opts.signal } : {}) });
+}
+
 /** The by-digest references a stored schema artifact makes: every string value anywhere in the
  *  document of the profile's `cotal:sha256:<hex>` `$ref` form, returned as bare `sha256:<hex>`
  *  refs for the closure walk. A schema with no refs (the common case) returns none. */
@@ -229,6 +236,7 @@ export async function resolveService(
       targeted: cmd.targeted,
       modes: cmd.modes ?? [],
       capability: cmd.capability,
+      ...(cmd.action ? { action: true as const } : {}),
     };
   });
   opts.signal?.throwIfAborted();

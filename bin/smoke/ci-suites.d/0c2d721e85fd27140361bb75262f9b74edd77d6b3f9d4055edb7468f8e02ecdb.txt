@@ -1,0 +1,3 @@
+# The protected-path rule: a proven user private group may hold group write; world write, foreign
+# owners, symlinks and group-writable credential files still refuse.
+smoke:protected-paths

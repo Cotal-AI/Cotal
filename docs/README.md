@@ -25,14 +25,14 @@ Task dispatch:
 
 | Task | Page | First command / tool |
 |---|---|---|
-| Install + start a local mesh, non-interactive | [Quickstart](getting-started.md) | `npx cotal-ai setup --yes && npx cotal-ai up --detach` |
+| Install + start a local mesh, non-interactive | [Quickstart](getting-started.md) | `npx cotal-ai setup --destination local --harness claude --project . --space main --no-input && npx cotal-ai up --detach` |
 | Put an agent on the mesh | [Quickstart](getting-started.md) | `cotal spawn` |
 | Message peers from inside a session | [MCP tool catalog](mcp-tools.md) | `cotal_send` · `cotal_dm` · `cotal_anycast` |
 | Spawn / define / list a teammate at runtime | [MCP tool catalog](mcp-tools.md) | `cotal_spawn` · `cotal_persona` · `cotal_personas` |
 | Declare a team + channels in one file | [Define a team](define-a-team.md) | `cotal up -f cotal.yaml` |
 | Grant or audit channel access | [Channels & permissions](channels-and-permissions.md) | agent-file `allowPublish:` / `allowSubscribe:` |
-| Watch a live mesh | [Watch a mesh](watch-a-mesh.md) | `cotal web` / `cotal console` |
-| Mint credentials (static mesh) | [Identity & auth](identity-and-auth.md) | `cotal mint <name> --profile agent` |
+| Watch a live mesh | [Watch a mesh](watch-a-mesh.md) | configured `service` dashboard / `cotal console` |
+| Mint credentials (static mesh) | [Identity & auth](identity-and-auth.md) | `cotal auth mint <name> --profile agent` |
 | Sign in / grant a user's agents (user-auth mesh) | [Identity & auth](identity-and-auth.md) | `cotal login --idp <url>` · `cotal actor grant` |
 | Implement the wire in another language | [Build a client](build-a-client.md) | validate against [`cotal.schema.json`](../spec/cotal.schema.json) |
 | Write or host a durable workflow | [Workflow runs](workflows.md) | `cotal_run` / `cotal run start --file <program>` |

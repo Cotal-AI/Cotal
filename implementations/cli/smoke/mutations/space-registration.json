@@ -1,0 +1,194 @@
+{
+  "suite": [
+    "implementations/cli/smoke/space-registration.smoke.ts"
+  ],
+  "guard": "space add checks the address, the trust, the broker's enforcement and the credentials before it writes, refuses each failure with its code, keeps the selection, space forget removes only a registration this machine owns and is not running, and up refuses a runtime with no installed provider before it writes",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/space-registration.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/space-registration.json",
+  "why": [
+    "Each mutation removes one check space add, space forget or up makes before it writes, or one code a refusal carries. The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back."
+  ],
+  "mutations": [
+    {
+      "name": "a --server space is added without checking its broker",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  const verified = v.force !== true;\n",
+      "replace": "  const verified = false;\n",
+      "expectRed": "a broker that does not answer is TARGET_UNAVAILABLE, exit 2",
+      "cell": "a broker that does not answer is TARGET_UNAVAILABLE, exit 2",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the broker's enforcement is not compared with the mode",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "    take(checkEnforcement(mode, await probeEnforcement(server), server, name, root), target);\n",
+      "replace": "",
+      "expectRed": "an open claim on a broker that requires auth is CONFLICT",
+      "cell": "an open claim on a broker that requires auth is CONFLICT",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a registered name is replaced without --force",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  if (!force) throw refuse(\"CONFLICT\"",
+      "replace": "  if (!force && name === \"\") throw refuse(\"CONFLICT\"",
+      "expectRed": "adding a registered name is CONFLICT, exit 2, naming forget and --force",
+      "cell": "adding a registered name is CONFLICT, exit 2, naming forget and --force",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--force replaces a space this machine started",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  if (existing.origin !== \"manual\")\n",
+      "replace": "  if (name === \"\")\n",
+      "expectRed": "--force does not replace a space this machine started",
+      "cell": "--force does not replace a space this machine started",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a refusal loses the rule's code",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  throw new CommandFailure(\"refused\", check.code, check.message.replace(/^\u2717 /, \"\"), { target });\n",
+      "replace": "  throw new CommandFailure(\"refused\", \"CONFLICT\", check.message.replace(/^\u2717 /, \"\"), { target });\n",
+      "expectRed": "a broker that does not answer is TARGET_UNAVAILABLE, exit 2",
+      "cell": "a broker that does not answer is TARGET_UNAVAILABLE, exit 2",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--file and --from are both accepted",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  if (v.file !== undefined && v.from !== undefined) throw usage(",
+      "replace": "  if (false) throw usage(",
+      "expectRed": "--file with --from is USAGE_INVALID",
+      "cell": "--file with --from is USAGE_INVALID",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a bundle takes --mode open",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  if (bundled && v.mode !== undefined && v.mode !== \"user\") throw usage(",
+      "replace": "  if (false) throw usage(",
+      "expectRed": "--file with --mode open is USAGE_INVALID",
+      "cell": "--file with --mode open is USAGE_INVALID",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a bundle for another space is added under the name given",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  if (name !== undefined && bundle.space !== name) throw refuse(",
+      "replace": "  if (false) throw refuse(",
+      "expectRed": "a bundle for another space is CONFLICT",
+      "cell": "a bundle for another space is CONFLICT",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the pinned exchange is not checked",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  take(await verifyUserExchange(bundle.userAuth.endpoints!.url!, userExchangeIssuer(bundle.space)), spaceTarget);\n",
+      "replace": "",
+      "expectRed": "an exchange that answers as another issuer is CONFLICT",
+      "cell": "an exchange that answers as another issuer is CONFLICT",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a user-auth broker's refusal is not checked",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  take(checkEnforcement(\"user\", await probeEnforcement(server), server, space, root), spaceTarget);\n",
+      "replace": "",
+      "expectRed": "a bundle whose broker accepts a bare connect is CONFLICT",
+      "cell": "a bundle whose broker accepts a bare connect is CONFLICT",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a discovered space is forgotten",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  if (m.origin === \"catalog\")\n",
+      "replace": "  if (false)\n",
+      "expectRed": "a discovered space is not forgotten: CONFLICT, and its record stays",
+      "cell": "a discovered space is not forgotten: CONFLICT, and its record stays",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a running space is forgotten",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "    if (running) throw refuse(\"LIFECYCLE_BLOCKED\"",
+      "replace": "    if (running && name === \"\") throw refuse(\"LIFECYCLE_BLOCKED\"",
+      "expectRed": "a space this machine is running is LIFECYCLE_BLOCKED, naming cotal down",
+      "cell": "a space this machine is running is LIFECYCLE_BLOCKED, naming cotal down",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a running controller stack does not make its space running",
+      "file": "implementations/cli/src/commands/clean.ts",
+      "find": "  return liveStackMembers(root, context.space, false)[0];\n",
+      "replace": "  return undefined;\n",
+      "expectRed": "a space whose controller stack still runs is LIFECYCLE_BLOCKED, naming the member and cotal down",
+      "cell": "a space whose controller stack still runs is LIFECYCLE_BLOCKED, naming the member and cotal down",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "forget blocks on a member proven gone without its stop receipt",
+      "file": "implementations/cli/src/commands/clean.ts",
+      "find": "liveStackMembers(root, context.space, false)",
+      "replace": "liveStackMembers(root, context.space)",
+      "expectRed": "a member proven gone with no stop receipt does not block forget, and the output warns",
+      "cell": "a member proven gone with no stop receipt does not block forget, and the output warns",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "forget does not warn about a member gone without its stop receipt",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "      unsettled = unsettledStackMembers(m.root, m.space);\n",
+      "replace": "",
+      "expectRed": "a member proven gone with no stop receipt does not block forget, and the output warns",
+      "cell": "a member proven gone with no stop receipt does not block forget, and the output warns",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "up starts without checking that its runtime has an installed provider",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    if (values.runtime) {\n      try { await preflightRuntime(values.runtime); }\n",
+      "replace": "    if (false) {\n      try { await preflightRuntime(values.runtime); }\n",
+      "expectRed": "up with a runtime no installed extension provides is DEPENDENCY_UNAVAILABLE, exit 2, naming cotal ext add, and leaves the root and registrations unchanged",
+      "cell": "up with a runtime no installed extension provides is DEPENDENCY_UNAVAILABLE, exit 2, naming cotal ext add, and leaves the root and registrations unchanged",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "forgetting the selected space keeps the selection",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "  if (selectionCleared) clearCurrent();\n",
+      "replace": "",
+      "expectRed": "forgetting the selected space clears the selection and says so",
+      "cell": "forgetting the selected space clears the selection and says so",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an add flag is accepted by another form",
+      "file": "implementations/cli/src/commands/space.ts",
+      "find": "  if (addOnly) throw usage(",
+      "replace": "  if (false) throw usage(",
+      "expectRed": "an add flag on another form is USAGE_INVALID",
+      "cell": "an add flag on another form is USAGE_INVALID",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a malformed bundle is not a schema refusal",
+      "file": "packages/workspace/src/registration-policy.ts",
+      "find": "const bad = (message: string, code: RefusalCode = \"SCHEMA_INVALID\"): Check<never> => ({ ok: false, message, code });\n",
+      "replace": "const bad = (message: string, code: RefusalCode = \"CONFLICT\"): Check<never> => ({ ok: false, message, code });\n",
+      "expectRed": "a bundle that is not JSON is SCHEMA_INVALID, exit 1",
+      "cell": "a bundle that is not JSON is SCHEMA_INVALID, exit 1",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the home check compares the spelling, not the canonical path",
+      "file": "implementations/cli/src/commands/meshes-add.ts",
+      "find": "canonicalRoot(join(root, \".cotal\")) === canonicalRoot(homeCotalDir())",
+      "replace": "join(root, \".cotal\") === homeCotalDir()",
+      "expectRed": "nor is a home reached through a symlink",
+      "cell": "nor is a home reached through a symlink",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

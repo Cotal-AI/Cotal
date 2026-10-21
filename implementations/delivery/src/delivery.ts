@@ -349,7 +349,7 @@ export function recordDeliveryPid(root: string, space: string): () => void {
  * `ManagerOptions.secretStore` too, so a hosted composition renews both daemon kinds end-to-end when
  * the manager and this daemon are handed the SAME store.
  */
-export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promise<void> {
+export async function runDelivery(args: ParsedArgs, store?: SecretStore, onStarted?: (started: { status(): DeliveryStatus; close(): Promise<void> }) => Promise<void> | void): Promise<void> {
   // A START-UP FAILURE AFTER THE ACQUIRE MUST GIVE THE SHARD BACK, INCLUDING WHEN THE CALLER
   // CATCHES IT. `runDelivery` is awaited inside the CLI dispatcher's own try/catch, so a rejection
   // out of start-up is an ordinary handled error: the process prints one line and exits 1 while the
@@ -365,7 +365,8 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // of this. Cleaning up a lease must not turn a start-up failure into a quiet one.
   let releaseOnStartupFailure: (() => Promise<void>) | undefined;
   try {
-    await runStartedDelivery(args, store, (r) => { releaseOnStartupFailure = r; });
+    const started = await runStartedDelivery(args, store, (r) => { releaseOnStartupFailure = r; });
+    if (onStarted) await onStarted(started);
   } catch (e) {
     if (releaseOnStartupFailure !== undefined) {
       console.error(`\u2717 delivery: start-up failed - releasing the shard before exiting`);

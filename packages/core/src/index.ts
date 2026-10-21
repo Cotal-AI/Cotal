@@ -15,6 +15,16 @@ export * from "./native-uid-custody.js";
 export * from "./endpoint-cluster.js";
 export * from "./endpoint-journal.js";
 export * from "./endpoint-binding.js";
+export * from "./endpoint-schema-diff.js";
+export * from "./space-resource-definitions.js";
+export * from "./space-deletion-targets.js";
+export * from "./authority-store-config.js";
+export * from "./broker-identity.js";
+export * from "./space-schema-observation.js";
+export * from "./space-initialization-observation.js";
+export * from "./space-initialization-diff.js";
+export * from "./stream-schema-diff.js";
+export * from "./space-schema-diff.js";
 export * from "./endpoint-service.js";
 export * from "./endpoint-serve.js";
 export * from "./endpoint-describe-observation.js";
@@ -69,8 +79,11 @@ export * from "./fs-safe.js";
 // publish primitive of the code that writes secrets. Everything a consumer legitimately needs is
 // named here; the seam stays reachable from the suite via a deep import of the module itself.
 export {
+  createPrivateRecord,
   hardenPrivate,
   mkSecretDir,
+  openPrivateAppend,
+  writePrivateRecord,
   writeSecretFile,
   writeSecretFileAtomic,
   writeSecretFileCreateOnly,
@@ -114,6 +127,7 @@ export * from "./run-program.js";
 export * from "./run-driver-grants.js";
 export * from "./turn-contract.js";
 export * from "./private-tool-results.js";
+export * from "./sealed-reply.js";
 export * from "./run-host.js";
 export * from "./issued-authority.js";
 export * from "./run-admission.js";

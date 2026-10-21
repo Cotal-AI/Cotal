@@ -311,7 +311,7 @@ try {
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "role:worker"], allowSubscribe: [">"], allowPublish: [">"], label: "smoke operator" });
   const secret = newActorToken();
   const agentLifecycleUid = mintLifecycleUid();
-  grantManagedActor(dir, {
+  grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor: AGENT, scope: ["role:worker"], allowSubscribe: ["general"], allowPublish: ["general"],
     parent: `${OWNER}.cli`, tokenHash: secret.tokenHash, lifecycleUid: agentLifecycleUid,
   });
@@ -356,7 +356,7 @@ try {
   const unavailableOwner = "u_" + "z".repeat(26);
   const unavailableActor = "unavailable";
   const unavailableSecret = newActorToken();
-  grantManagedActor(dir, { owner: unavailableOwner, actor: unavailableActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: unavailableSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
+  grantManagedActor(dir, { custody: { kind: "foreground" }, owner: unavailableOwner, actor: unavailableActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: unavailableSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
   const unavailableId = mintLifecycleUid();
   await putManager({ instanceId: unavailableId, principal: `${unavailableOwner}.${remoteManagerActors(unavailableId).serve}`, owner: unavailableOwner, state: "frozen" });
   const unavailable = await post(`${PUBLIC}/exchange`, { owner: unavailableOwner, actor: unavailableActor, actorToken: unavailableSecret.actorToken, view: "manager-caller" });
@@ -368,7 +368,7 @@ try {
   const wrongLocalOwner = "u_" + "y".repeat(26);
   const wrongLocalActor = "wronglocal";
   const wrongLocalSecret = newActorToken();
-  grantManagedActor(dir, { owner: wrongLocalOwner, actor: wrongLocalActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: wrongLocalSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
+  grantManagedActor(dir, { custody: { kind: "foreground" }, owner: wrongLocalOwner, actor: wrongLocalActor, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: wrongLocalSecret.tokenHash, lifecycleUid: mintLifecycleUid() });
   const wrongLocalId = mintLifecycleUid();
   await putManager({ instanceId: wrongLocalId, principal: `local.${newIdentity().id}`, owner: "local" });
   const wrongLocal = await post(`${PUBLIC}/exchange`, { owner: wrongLocalOwner, actor: wrongLocalActor, actorToken: wrongLocalSecret.actorToken, view: "manager-caller", managerInstanceId: wrongLocalId });
@@ -424,7 +424,7 @@ try {
   check("a revoked row's actorToken is refused at the NEXT public exchange", afterRevoke.status === 401, afterRevoke.body);
   // Restore the row for the cells below (a fresh secret, as a real respawn would).
   const secret2 = newActorToken();
-  grantManagedActor(dir, {
+  grantManagedActor(dir, { custody: { kind: "foreground" },
     owner: OWNER, actor: AGENT, scope: ["role:worker"], allowSubscribe: ["general"], allowPublish: ["general"],
     parent: `${OWNER}.cli`, tokenHash: secret2.tokenHash, lifecycleUid: agentLifecycleUid,
   });
@@ -745,6 +745,29 @@ try {
     { status: failedWhileFull.status, body: failedWhileFull.body },
   );
 
+  // An unpinned manager-caller exchange for an owner with several live remote managers is refused
+  // only after its credential verified, so it is not probing (#4213). A session that no manager
+  // launched has no pin and polls turn-pending this way every 15 s, so a host with a handful of
+  // such sessions kept its shared bucket full and every other refusal from that host read 429.
+  const ambiguousFromFull = await post(`${PUBLIC}/exchange`, { ...agentBody2, view: "manager-caller" }, victim);
+  check(
+    "an ambiguous manager selection from a throttled key keeps its own reason, not 429",
+    ambiguousFromFull.status === 401 && /live remote manager candidates/.test(String(ambiguousFromFull.body.error)),
+    { status: ambiguousFromFull.status, body: ambiguousFromFull.body },
+  );
+  const poller = asPeer("203.0.113.61");
+  let ambiguousRefusals = 0;
+  for (let i = 0; i < 40; i++) {
+    const r = await post(`${PUBLIC}/exchange`, { ...agentBody2, view: "manager-caller" }, poller);
+    if (r.status === 401 && /live remote manager candidates/.test(String(r.body.error))) ambiguousRefusals++;
+  }
+  const afterPolls = await post(`${PUBLIC}/exchange`, { ...agentBody2, actorToken: newActorToken().actorToken }, poller);
+  check(
+    "40 ambiguous selections leave the peer's refused-exchange budget untouched",
+    ambiguousRefusals === 40 && afterPolls.status === 401 && afterPolls.body.error === wrongSecret.body.error,
+    { ambiguousRefusals, status: afterPolls.status, body: afterPolls.body },
+  );
+
   // ---------- H. refresh across expiry ----------
   console.log("H) agent-bearer-style refresh yields a fresh, later-expiring bearer");
   const first = await post(`${PUBLIC}/exchange`, { ...agentBody2, ttlSec: 1 });
@@ -766,7 +789,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 115;
+const EXPECTED = 117;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);

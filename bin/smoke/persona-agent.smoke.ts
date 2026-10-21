@@ -21,6 +21,9 @@
  *   E. `spawnRequiredExtensions` stays root-free; persona connector materialization occurs only
  *      after the target workspace is authoritative.
  *   F. A divergent-root foreground spawn refuses with the TARGET persona's connector name.
+ *   G. Saved preferences: a harness saved for the user or the space is the caller default on both
+ *      paths, below COTAL_DEFAULT_AGENT and a persona pin, and a saved persona preference picks the
+ *      persona of a bare spawn.
  *
  * Throwaway everything: own nats-server on an OS-assigned free port with a scratch store dir, a
  * sandboxed COTAL_HOME, a scratch workspace root, kills only the PIDs it spawns. No live stack is
@@ -193,6 +196,89 @@ try {
   ok("C: detached caller COTAL_DEFAULT_AGENT reached the manager for an unpinned persona", builds.other.length === 1 && builds.pin.length === 0, { pin: builds.pin.length, other: builds.other.length, out: child.out });
   const stopUnpinned = await (mgr as unknown as { opStop: (a: Record<string, unknown>, c: string, ad: boolean) => Promise<{ ok: boolean; error?: string }> }).opStop({ name: "unpinned" }, "smoke", true);
   if (!stopUnpinned.ok) console.log(`  · note: stop unpinned replied ${JSON.stringify(stopUnpinned)}`);
+
+  // G — saved preferences, from a real child CLI so only the caller holds them. The harness
+  // preference is a caller default like COTAL_DEFAULT_AGENT: the space's value beats the user's, the
+  // variable beats both, and a persona pin beats all three. A saved persona preference picks the
+  // persona of a bare spawn.
+  {
+    const { readPreferences, writePreference } = await import("@cotal-ai/workspace");
+    const save = (key: string, value: string | undefined, space?: string) => writePreference(space ? { space } : {}, key, value, readPreferences().revision);
+    const childSpawn = (args: string[], extraEnv: NodeJS.ProcessEnv = {}) =>
+      captureProcess("pnpm", ["exec", "tsx", "bin/cotal.ts", "spawn", ...args, "--detach", "--no-events", "--space", SPACE], {
+        ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv,
+      });
+    const stopSeat = async (n: string) => {
+      const r = await (mgr as unknown as { opStop: (a: Record<string, unknown>, c: string, ad: boolean) => Promise<{ ok: boolean; error?: string }> }).opStop({ name: n }, "smoke", true);
+      if (!r.ok) console.log(`  · note: stop ${n} replied ${JSON.stringify(r)}`);
+    };
+    const counts = () => ({ pin: builds.pin.length, other: builds.other.length });
+    const reset = () => { builds.pin = []; builds.other = []; };
+    // A foreground spawn that refuses calls process.exit(1). Intercept it so a refusal grades the
+    // cell red instead of ending the suite, and keep what the spawn printed.
+    const foreground = async (args: string[]): Promise<string> => {
+      const realExit = process.exit.bind(process);
+      (process as unknown as { exit: (c?: number) => never }).exit = ((code?: number) => {
+        throw new Error(`process.exit(${code ?? 0})`);
+      }) as typeof process.exit;
+      try {
+        return await capture(async () => {
+          try {
+            await run("spawn", args);
+          } catch (e) {
+            console.log((e as Error).message);
+          }
+        });
+      } finally {
+        (process as unknown as { exit: typeof process.exit }).exit = realExit;
+      }
+    };
+
+    save("harness", "other");
+    reset();
+    const g1 = await childSpawn(["unpinned", "--name", "g1"]);
+    ok("G1: a saved user harness reaches the manager as the caller default for an unpinned persona", g1.code === 0 && builds.other.length === 1 && builds.pin.length === 0, { ...counts(), out: g1.out });
+    await stopSeat("g1");
+
+    save("harness", "pin");
+    save("harness", "other", SPACE);
+    reset();
+    const g2 = await childSpawn(["unpinned", "--name", "g2"]);
+    ok("G2: the space's saved harness beats the user's", g2.code === 0 && builds.other.length === 1 && builds.pin.length === 0, { ...counts(), out: g2.out });
+    await stopSeat("g2");
+
+    reset();
+    const g3 = await childSpawn(["unpinned", "--name", "g3"], { COTAL_DEFAULT_AGENT: "pin" });
+    ok("G3: COTAL_DEFAULT_AGENT beats both saved values", g3.code === 0 && builds.pin.length === 1 && builds.other.length === 0, { ...counts(), out: g3.out });
+    await stopSeat("g3");
+
+    save("harness", "other");
+    save("harness", undefined, SPACE);
+    reset();
+    const g4 = await childSpawn(["pinned", "--name", "g4"]);
+    ok("G4: a persona's agent: pin beats a saved harness", g4.code === 0 && builds.pin.length === 1 && builds.other.length === 0, { ...counts(), out: g4.out });
+    await stopSeat("g4");
+
+    save("harness", undefined);
+    save("persona", "unpinned", SPACE);
+    reset();
+    const g5 = await childSpawn(["--name", "g5"], { COTAL_DEFAULT_AGENT: "other" });
+    ok("G5: a saved persona preference picks the persona of a bare detached spawn", g5.code === 0 && /spawned .*g5/.test(g5.out) && builds.other.length === 1 && builds.pin.length === 0, { ...counts(), out: g5.out });
+    await stopSeat("g5");
+
+    save("persona", "pinned", SPACE);
+    process.env.COTAL_DEFAULT_AGENT = "other";
+    reset();
+    const g6 = await foreground(["--no-events", "--space", SPACE, "--name", "g6"]);
+    ok("G6: foreground, the saved persona preference picks the persona and its pin builds the launch", /spawning g6/.test(g6) && builds.pin.length === 1 && builds.other.length === 0, { ...counts(), out: g6 });
+    delete process.env.COTAL_DEFAULT_AGENT;
+    save("persona", undefined, SPACE);
+    save("harness", "other");
+    reset();
+    const g7 = await foreground(["unpinned", "--no-events", "--space", SPACE, "--name", "g7"]);
+    ok("G7: foreground, a saved user harness builds the launch of an unpinned persona", /spawning g7/.test(g7) && builds.other.length === 1 && builds.pin.length === 0, { ...counts(), out: g7 });
+    save("harness", undefined);
+  }
 
   // D — FOREGROUND: same pinned persona, no --agent, env pointing at `other`. The child is
   // one-shot, so the run resolves. The PINNED connector must build the launch.

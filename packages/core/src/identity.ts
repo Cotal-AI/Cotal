@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { fmtCreds } from "@nats-io/jwt";
+import { decode, fmtCreds, Types } from "@nats-io/jwt";
 import { createUser, fromSeed } from "@nats-io/nkeys";
 
 /**
@@ -159,6 +159,25 @@ export function credsClaims(creds: string): { sub?: string; iat?: number; exp?: 
   } catch {
     throw new Error("creds: undecodable user JWT payload");
   }
+}
+
+/** Verify the native NATS signature, current window and matching user seed under supplied
+ *  public account/signing pins. The caller must obtain those pins from trusted space authority.
+ *  This does not prove revocation, broker admission or a lifecycle/generation's current state. */
+export function verifyStaticUserCredential(creds: string, expected: { accountPub: string; signingPub: string }) {
+  try {
+    if (typeof creds !== "string" || Buffer.byteLength(creds, "utf8") > 1_048_576 || !expected.accountPub.startsWith("A") || !expected.signingPub.startsWith("A")) throw new Error();
+    const jwt = jwtFromCreds(creds);
+    if (!jwt) throw new Error();
+    // decode verifies the nkey signature; it is not exhaustive NATS policy validation.
+    const claims = decode<Record<string, unknown>>(jwt), identity = identityFromCreds(creds).id;
+    const nats = claims.nats, now = Math.floor(Date.now() / 1000);
+    if (!nats || typeof nats !== "object" || Array.isArray(nats) || nats.type !== Types.User || !isUserNkey(identity) || claims.sub !== identity || claims.iss !== expected.signingPub) throw new Error();
+    if (expected.signingPub === expected.accountPub ? nats.issuer_account !== undefined && nats.issuer_account !== expected.accountPub : nats.issuer_account !== expected.accountPub) throw new Error();
+    if (claims.aud !== undefined && claims.aud !== "NATS" || !Number.isSafeInteger(claims.iat) || claims.iat < 0) throw new Error();
+    if (claims.exp !== undefined && (!Number.isSafeInteger(claims.exp) || claims.exp <= now) || claims.nbf !== undefined && (!Number.isSafeInteger(claims.nbf) || claims.nbf > now)) throw new Error();
+    return { identity, accountPub: expected.accountPub, expiresAt: claims.exp ?? null, permissionFields: { pub: nats.pub ?? null, sub: nats.sub ?? null, resp: nats.resp ?? null }, principalTags: nats.tags ?? [], brokerAdmitted: false as const };
+  } catch { throw new Error("verifyStaticUserCredential: no currently valid matching native user credential under the supplied account/signing pins"); }
 }
 
 /** Ms until a source-fed cred's RENEWAL point — 75% of its iat→exp lifetime (the cert-manager-style

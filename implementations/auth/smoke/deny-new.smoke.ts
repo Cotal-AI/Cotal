@@ -114,7 +114,7 @@ try {
 
   // ---- the file grant + the exchange arm's root-credential ensure ----
   const uid1 = mintLifecycleUid();
-  grantManagedActor(dir, { owner: OWNER, actor: "worker", scope: ["spawn"], allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uid1 });
+  grantManagedActor(dir, { custody: { kind: "foreground" }, owner: OWNER, actor: "worker", scope: ["spawn"], allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uid1 });
   const credid1 = await plane.mintConnectCredential({ owner: OWNER, actor: "worker", lifecycleUid: uid1 });
   check("first exchange mints the incarnation's root credential", typeof credid1 === "string" && credid1.length > 0, credid1);
   check("the ensure is idempotent (a re-exchange stamps the SAME credential)", (await plane.mintConnectCredential({ owner: OWNER, actor: "worker", lifecycleUid: uid1 })) === credid1);
@@ -198,13 +198,13 @@ try {
 
   // ---- the R1 takeover gap: a same-alias re-grant at a NEW uid refuses the exchange loudly ----
   const uid2 = mintLifecycleUid();
-  grantManagedActor(dir, { owner: OWNER, actor: "worker", scope: [], allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uid2 });
+  grantManagedActor(dir, { custody: { kind: "foreground" }, owner: OWNER, actor: "worker", scope: [], allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uid2 });
   await rejects("UID TRANSITION: re-granting a live alias refuses the exchange naming the takeover barrier",
     () => plane!.mintConnectCredential({ owner: OWNER, actor: "worker", lifecycleUid: uid2 }), "takeover");
 
   // ---- reader down => deny (fail-closed; no file-only fallback) ----
   const uidB = mintLifecycleUid();
-  grantManagedActor(dir, { owner: OWNER, actor: "backup", scope: [], allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uidB });
+  grantManagedActor(dir, { custody: { kind: "foreground" }, owner: OWNER, actor: "backup", scope: [], allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: uidB });
   const credidB = await plane.mintConnectCredential({ owner: OWNER, actor: "backup", lifecycleUid: uidB });
   const bearerB = await issuer.issue({ owner: OWNER, space, actor: "backup", scope: [], lifecycleUid: uidB, credentialId: credidB });
   check("control: the fresh actor's bearer CONNECTS while the plane is up", (await tryConnect(bearerB)) === "connected");

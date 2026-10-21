@@ -1,0 +1,3 @@
+# A read installs nothing: reads run past the seed gate and write no seed store or manifest, a
+# command that is not a read still meets the gate, and a read never loads a built-in at another version.
+smoke:read-no-seed

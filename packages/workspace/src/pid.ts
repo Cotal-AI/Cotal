@@ -21,7 +21,8 @@
 import { spawnSync } from "node:child_process";
 import { nativeWin32CreationToken } from "./win32-process.js";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { createPrivateRecord, writePrivateRecord } from "@cotal-ai/core";
 import { acquireLock, processStartToken as posixStartToken } from "./advisory-lock.js";
 
 /** A Node/POSIX-signalable pid: a positive INTEGER within the signed 32-bit range `process.kill`
@@ -141,7 +142,7 @@ export function readProcessCommand(pid: number): ProcessCommand {
 /**
  * Does this command line belong to a Cotal manager?
  *
- * The test is the `supervise` ARGV TOKEN, which is the manager daemon's own subcommand and is
+ * The test is the `supervise`, hidden `__daemon-manager` or hidden `__service-manager` ARGV TOKEN, which is the manager daemon's own subcommand and is
  * present however it was started — by `cotal up`'s detached re-exec, by a container entrypoint, by
  * cron, or typed by hand. Matching the token rather than a path keeps it true across a global
  * install, a `tsx bin/cotal.ts` dev run, and a bundled binary, none of which agree on argv[0].
@@ -152,15 +153,21 @@ export function readProcessCommand(pid: number): ProcessCommand {
  * direction is the safe one and is chosen deliberately.
  */
 export function commandIsCotalSupervisor(command: string): boolean {
-  return /(^|\s)supervise(\s|$)/.test(command);
+  return /(^|\s)(?:supervise|__daemon-manager|__service-manager)(\s|$)/.test(command);
 }
+
+/** The controller-owned manager child must never take a legacy signal/escalation path. */
+export function commandIsCotalServiceManager(command: string): boolean {
+  return /(^|\s)__service-manager(\s|$)/.test(command);
+}
+
 
 /**
  * Does this command line belong to a Cotal delivery daemon?
  *
  * Same rule and same direction as {@link commandIsCotalSupervisor}, one component over: the test is
- * the `deliver` ARGV TOKEN, which is the daemon's own subcommand and is present however it was
- * started — `cotal up`'s detached re-exec, a container entrypoint, systemd, or an operator typing
+ * the `deliver`, hidden `__daemon-deliver` or hidden `__service-delivery` ARGV TOKEN, which is the daemon's own entry and
+ * is present however it was started — `cotal up`'s detached re-exec, a container entrypoint, systemd, or an operator typing
  * `cotal deliver --space …`. A token, not a substring, so `delivery-thing` and a `--creds
  * .../delivery.creds` path are not mistaken for the daemon.
  *
@@ -169,7 +176,7 @@ export function commandIsCotalSupervisor(command: string): boolean {
  * affirmative evidence that the live process is something else may downgrade a record.
  */
 export function commandIsCotalDelivery(command: string): boolean {
-  return /(^|\s)deliver(\s|$)/.test(command);
+  return /(^|\s)(deliver|__daemon-deliver|__service-delivery)(\s|$)/.test(command);
 }
 
 /** A process record's state. THREE-VALUED liveness plus absent, because both ways of collapsing it
@@ -408,7 +415,7 @@ export function identityPinPath(pidfilePath: string): string {
 export function writeIdentityPin(pidfilePath: string, pid: number, tokenAt: ProcessStartTokenReader = defaultStartToken): void {
   const rec = identityRecord(pid, tokenAt);
   if (!("token" in rec)) return; // no start could be established: leave the legacy bare-pid shape, loud
-  writeFileSync(identityPinPath(pidfilePath), formatRecord(rec));
+  writePrivateRecord(identityPinPath(pidfilePath), formatRecord(rec));
 }
 
 /** One step of {@link writePidPair}'s publish, passed to `onStep` right after it completes. Production
@@ -555,13 +562,21 @@ export function writePidPair(
   const rec = identityRecord(pid, tokenAt);
   const line: ProcessIdentityRecord = "token" in rec ? rec : { pid, token: NO_START_TOKEN };
   const replace = publishRenamer(opts.replaceIo);
+  // Each temporary is created owner-private and exclusively, never through a symlink, then renamed
+  // onto a record under `.cotal`. Only the names this call created are removed afterwards: an EEXIST
+  // means the name belongs to someone else.
+  const created: string[] = [];
+  const create = (path: string, data: string): void => {
+    createPrivateRecord(path, data);
+    created.push(path);
+  };
   try {
-    writeFileSync(pidTemp, String(pid));
-    if ("token" in rec) writeFileSync(pinTemp, formatRecord(rec));
+    create(pidTemp, String(pid));
+    if ("token" in rec) create(pinTemp, formatRecord(rec));
     const held = lockPidRecord(pidfilePath);
     try {
       const old = currentPinLine(pidfilePath);
-      writeFileSync(bridgeTemp, (old !== undefined && old.pid !== pid ? [old, line] : [line]).map(formatRecord).join("\n"));
+      create(bridgeTemp, (old !== undefined && old.pid !== pid ? [old, line] : [line]).map(formatRecord).join("\n"));
       onStep("temporaries");
       replace(bridgeTemp, pinPath);
       onStep("bridge-pin");
@@ -574,9 +589,7 @@ export function writePidPair(
       held.release();
     }
   } finally {
-    rmSync(pidTemp, { force: true });
-    rmSync(pinTemp, { force: true });
-    rmSync(bridgeTemp, { force: true });
+    for (const path of created) rmSync(path, { force: true });
   }
 }
 

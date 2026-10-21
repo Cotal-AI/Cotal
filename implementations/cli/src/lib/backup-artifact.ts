@@ -17,14 +17,15 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import {
   hardenPrivate,
   type BackupStreamState,
   type PersistentConsumerCheckpoint,
   type SpaceBackupSelection,
+  realDirNoSymlink,
 } from "@cotal-ai/core";
-import type { MaintenanceAuthMode, StoreIdentity } from "@cotal-ai/workspace";
+import { readLocalRecordSource, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
 import type { AuthorityFingerprint } from "./maintenance-files.js";
 
 export const BACKUP_MANIFEST_FORMAT = "cotal-space-backup/v1" as const;
@@ -193,11 +194,11 @@ export function createArtifactWriter(destination: string): ArtifactWriter {
   };
 }
 
-function parseManifest(path: string): BackupManifest {
+function parseManifest(path: string, pinnedBytes?: Buffer): BackupManifest {
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_MANIFEST_BYTES)
     throw new Error(`backup manifest is not a bounded regular file: ${path}`);
-  const value = JSON.parse(readFileSync(path, "utf8")) as BackupManifest;
+  const value = JSON.parse(pinnedBytes === undefined ? readFileSync(path, "utf8") : new TextDecoder("utf-8", { fatal: true }).decode(pinnedBytes)) as BackupManifest;
   if (value.format !== BACKUP_MANIFEST_FORMAT) throw new Error(`unsupported backup format ${JSON.stringify(value.format)}`);
   if (!value.space || !["full", "registry"].includes(value.selection) || !["auth", "open", "user"].includes(value.mode))
     throw new Error("backup manifest has invalid space, selection, or mode");
@@ -221,24 +222,25 @@ function parseManifest(path: string): BackupManifest {
   return value;
 }
 
-function copyPinnedFile(source: string, destination: string, expected: BackupFileRecord): void {
+function copyPinnedFile(source: string, destination: string | undefined, expected: BackupFileRecord): void {
   const pathStat = lstatSync(source);
   if (!pathStat.isFile() || pathStat.isSymbolicLink()) throw new Error(`backup input is not a real file: ${source}`);
   const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
-  const sourceFd = openSync(source, constants.O_RDONLY | noFollow);
+  const sourceFd = openSync(source, constants.O_RDONLY | noFollow | (destination === undefined ? constants.O_NONBLOCK : 0));
   let destinationFd: number | undefined;
   const hash = createHash("sha256");
   let size = 0;
   try {
     const before = fstatSync(sourceFd, { bigint: true });
     if (!before.isFile()) throw new Error(`backup input is not a regular file: ${source}`);
-    destinationFd = openSync(destination, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+    if (destination === undefined && (before.dev !== BigInt(pathStat.dev) || before.ino !== BigInt(pathStat.ino))) throw new Error("backup input changed before verification");
+    if (destination !== undefined) destinationFd = openSync(destination, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
     const buffer = Buffer.allocUnsafe(COPY_BUFFER_BYTES);
     for (;;) {
       const count = readSync(sourceFd, buffer, 0, buffer.length, null);
       if (count === 0) break;
       const chunk = buffer.subarray(0, count);
-      writeAll(destinationFd, chunk);
+      if (destinationFd !== undefined) writeAll(destinationFd, chunk);
       hash.update(chunk);
       size += count;
       if (size > expected.size) throw new Error(`backup input grew while staging: ${source}`);
@@ -248,27 +250,18 @@ function copyPinnedFile(source: string, destination: string, expected: BackupFil
       throw new Error(`backup input changed while staging: ${source}`);
     if (size !== expected.size || hash.digest("hex") !== expected.sha256)
       throw new Error(`backup input size or SHA-256 mismatch: ${source}`);
-    fsyncSync(destinationFd);
-    if (fstatSync(destinationFd).size !== size)
-      throw new Error(`staged backup size mismatch after writing ${destination}`);
+    if (destinationFd !== undefined) {
+      fsyncSync(destinationFd);
+      if (fstatSync(destinationFd).size !== size) throw new Error(`staged backup size mismatch after writing ${destination}`);
+    }
   } finally {
     if (destinationFd !== undefined) closeSync(destinationFd);
     closeSync(sourceFd);
   }
 }
 
-export interface StagedArtifact {
-  manifest: BackupManifest;
-  directory: string;
-  cleanup(): void;
-}
-
-/** Validate exact names and pin verified bytes into a private attempt directory before any mutation. */
-export function stageArtifact(artifactPath: string, parent: string): StagedArtifact {
-  const artifact = resolve(artifactPath);
-  const artifactStat = lstatSync(artifact);
-  if (!artifactStat.isDirectory() || artifactStat.isSymbolicLink()) throw new Error(`backup artifact is not a real directory: ${artifact}`);
-  const manifest = parseManifest(join(artifact, "manifest.json"));
+/** The existing exact-name/metadata checks shared by staging and read-only inspection. */
+function validateArtifactInventory(artifact: string, manifest: BackupManifest): void {
   const expected = new Set(["manifest.json", ...manifest.files.map((file) => file.path)]);
   const actual = readdirSync(artifact);
   if (new Set(actual).size !== actual.length || actual.some((name) => !expected.has(name)) || actual.length !== expected.size)
@@ -290,6 +283,54 @@ export function stageArtifact(artifactPath: string, parent: string): StagedArtif
   const snapshotFiles = new Map(manifest.files.filter((file) => file.kind === "snapshot").map((file) => [file.path, file.stream]));
   if (snapshotFiles.size !== manifest.streams.length || manifest.streams.some((stream) => snapshotFiles.get(stream.snapshot) !== stream.stream))
     throw new Error("backup stream records do not match snapshot file metadata");
+}
+
+/** Inspect manifest bytes, or hash every named file, without staging, starting a broker or restoring. */
+export function inspectBackupArtifact(artifactPath: string, verify: boolean) {
+  const artifact = resolve(artifactPath);
+  const volume = parse(artifact).root;
+  if (!realDirNoSymlink(volume, ...artifact.slice(volume.length).split(sep).filter(Boolean))) throw new Error("backup artifact is not a physical directory");
+  const before = lstatSync(artifact, { bigint: true });
+  if (!before.isDirectory() || before.isSymbolicLink()) throw new Error("backup artifact directory changed before inspection");
+  const path = join(artifact, "manifest.json");
+  const bytes = readLocalRecordSource(path, MAX_MANIFEST_BYTES, false);
+  if (!bytes) throw new Error("backup manifest is absent");
+  const manifest = parseManifest(path, bytes);
+  if (typeof manifest.space !== "string" || manifest.space.length > 200) throw new Error("backup space is invalid");
+  validateArtifactInventory(artifact, manifest);
+  if (verify) for (const file of manifest.files) copyPinnedFile(join(artifact, file.path), undefined, file);
+  const after = lstatSync(artifact, { bigint: true });
+  const current = readLocalRecordSource(path, MAX_MANIFEST_BYTES, false);
+  if (before.dev !== after.dev || before.ino !== after.ino || !current?.equals(bytes)) throw new Error("backup artifact changed during inspection");
+  validateArtifactInventory(artifact, manifest);
+  return {
+    kind: verify ? "backup-integrity" as const : "backup-inspection" as const,
+    directory: artifact, format: manifest.format, createdAt: manifest.createdAt,
+    space: manifest.space, selection: manifest.selection, mode: manifest.mode,
+    sourcePath: manifest.source.path, sourceGeneration: manifest.source.generation,
+    authorityRecorded: manifest.authority !== undefined, authorityValidated: false,
+    integrity: verify ? "matched-declared-sizes-and-sha256" as const : "not-checked" as const,
+    manifestSha256: createHash("sha256").update(bytes).digest("hex"),
+    fileCount: manifest.files.length, bytesDeclared: manifest.files.reduce((total, file) => total + BigInt(file.size), 0n).toString(),
+    files: manifest.files.map((file) => ({ path: file.path, kind: file.kind, stream: file.stream ?? null, size: file.size, sha256: file.sha256 })),
+    streams: manifest.streams.map((stream) => ({ stream: stream.stream, snapshot: stream.snapshot })),
+    brokerStarted: false, staged: false, restored: false, restorationProven: false,
+  };
+}
+
+export interface StagedArtifact {
+  manifest: BackupManifest;
+  directory: string;
+  cleanup(): void;
+}
+
+/** Validate exact names and pin verified bytes into a private attempt directory before any mutation. */
+export function stageArtifact(artifactPath: string, parent: string): StagedArtifact {
+  const artifact = resolve(artifactPath);
+  const artifactStat = lstatSync(artifact);
+  if (!artifactStat.isDirectory() || artifactStat.isSymbolicLink()) throw new Error(`backup artifact is not a real directory: ${artifact}`);
+  const manifest = parseManifest(join(artifact, "manifest.json"));
+  validateArtifactInventory(artifact, manifest);
   const parentPath = realpathSync.native(resolve(parent));
   const parentStat = lstatSync(parentPath, { bigint: true });
   if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) throw new Error(`restore staging parent is not a real directory: ${parentPath}`);

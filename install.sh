@@ -1126,6 +1126,9 @@ dry_run_report() {
 ELAPSED=0
 
 main() {
+  # Nothing this installer creates is writable by group or others, even under a umask of 0002.
+  # Without a user private group, a group-writable install tree is one other accounts can change.
+  umask 022
   init_term
   parse_args "$@"
   trap 'cleanup' EXIT

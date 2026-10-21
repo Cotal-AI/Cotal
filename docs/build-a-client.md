@@ -30,16 +30,17 @@ receive-side authenticity checks, and the presence/channel loops. See
 
   ```bash
   cotal up                                   # broker + auth + control plane on 127.0.0.1:4222
-  cotal mint <name> --profile agent          # write an agent creds file to join with
+  cotal auth mint <name> --profile agent       # write an agent creds file to join with
   ```
 
-  `cotal mint <name> --profile agent` also takes `--allow-subscribe a,b` and
+  `cotal auth mint <name> --profile agent` also takes `--allow-subscribe a,b` and
   `--allow-publish a,b` to scope the read/post ACLs, and `--out <path>`. Those two flags apply to
   the **agent** profile only: `observer` and `admin` carry a fixed read set (`observer` reads the
   whole chat plane) and `mint` refuses both flags there, so scope a reader with the agent profile.
   Without a lifetime flag the credential is unbounded; `--expires-in <seconds>` bounds it (a
   standing-renewal consumer requires an `exp`), and `--identity <creds>` re-mints for the nkey an
-  existing creds file carries, keeping the principal (see [`mint`](cli.md#mint)). The creds file
+  existing creds file carries, keeping the principal but allocating a new agent lifecycle.
+  Use the resulting UID, not an old inbox coordinate (see [`auth mint`](cli.md#auth-mint)). The creds file
   binds your principal (`owner.actor`, [SPEC §2](../SPEC.md#2-identity)) and your channel
   grants; see
   [identity-and-auth.md](identity-and-auth.md) and [run-a-mesh.md](run-a-mesh.md).

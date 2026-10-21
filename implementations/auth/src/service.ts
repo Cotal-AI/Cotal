@@ -62,7 +62,7 @@ import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { CotalEndpoint, deprovisionAgent, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, epgateKey, isCasLoss } from "@cotal-ai/core";
+import { CotalEndpoint, deprovisionAgent, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, epgateKey, isCasLoss, sameManagedGrantCustody } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
@@ -86,6 +86,7 @@ import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, type AuthorityClient } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
+import { chatAwareAclResolver, openChatSessionAuthority, type ChatAdmissionRequest, type ChatRetireRequest, type ChatRetireResult, type ChatSessionAdmitted } from "./chat-session-authority.js";
 import { makeNativeIssuanceRecorder, pruneNativeIssuance, type NativeIssuanceRecorder } from "./native-issuance.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
@@ -108,13 +109,13 @@ import {
   findInteractiveActor,
   findManagedActor,
   findActorUnified,
-  grantManagedActor,
   ledgerAclResolver,
   ledgerActorSourceIsLive,
   ledgerAuthorizeAgentExchange,
   ledgerAuthorizeConnect,
   ledgerAuthorizeGrant,
-  revokeManagedActorAt,
+  revokeManagedActorIf,
+  withManagedGrantTransaction,
 } from "./ledger.js";
 import {
   AUTH_PROVIDER_NAME,
@@ -136,6 +137,10 @@ export const JWKS_MAX_AGE_SEC = 300;
 
 /** Loopback-only operator route used by `cotal actor grant/revoke` before rotating or deleting an interactive lifecycle. */
 export const INTERACTIVE_RETIRE_PATH = "/interactive-lifecycle/retire";
+
+/** The user-mode chat-session routes, on the loopback face (capability-gated) and the public face.
+ *  Each takes a fresh IdP proof; `bearer` and `retire` also take the session's holder proof. */
+export const CHAT_SESSION_PATHS = Object.freeze({ open: "/chat-session/open", bearer: "/chat-session/bearer", retire: "/chat-session/retire" } as const);
 
 /** Loopback-only host route that finishes a managed lifecycle's terminal retirement after the host
  *  revoked its grant, when the remote manager that should have requested it is gone (#2070). */
@@ -192,6 +197,11 @@ const MANAGER_PIN_REMEDY: Record<ManagerCaller | "wire", string> = {
   wire: "name one as managerInstanceId",
 };
 
+/** An unpinned manager-caller selection that found no single live manager. It is raised only after
+ *  the exchange's credential verified, and it describes the caller's own owner, so it is not probing:
+ *  the exchange arms neither count it against the refused-exchange budget nor hide it behind 429. */
+class ManagerSelectionRefusal extends Error {}
+
 /** One Manager instance of an owner, as `/manager-instances` lists it. `state` is the verdict
  *  selection reads: `candidate` is an open gate of this owner whose current service registration and
  *  status match the gate's registration revision and process epoch. That is registration evidence,
@@ -222,6 +232,15 @@ export interface AuthAuthorityPlane {
   recordIssuance: NativeIssuanceRecorder;
   recordToolResultConsent: ToolResultConsentRecorder;
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
+  /** Admit one user-mode chat session for an owner the route derived from a verified IdP proof
+   *  (the chat-only minting authority, SPEC 13.1). Same-holder retries converge on one session. */
+  openChatSession: (args: ChatAdmissionRequest) => Promise<ChatSessionAdmitted>;
+  /** Exchange a holder proof for one short bearer of an ACTIVE chat session; the parent pin and the
+   *  holder index are re-checked before and after signing, and a mismatch discards the bytes. */
+  chatSessionBearer: (args: { owner: string; actor: string; holderProof: string; idpExp: number; issuer: UserTokenIssuer }) => Promise<{ token: string; exp: number }>;
+  /** Retire a chat session through the retirement barrier; a blocked barrier is `failed` with its
+   *  pending reason, never success. */
+  retireChatSession: (args: ChatRetireRequest) => Promise<ChatRetireResult>;
   /** `caller` picks the remedy an ambiguity refusal names: `--on` for the human (CLI) arm,
    *  `cotal agent-bearer`'s `--manager-instance` for the agent arm, the wire field otherwise. */
   selectManagerInstance: (owner: string, requested?: string, caller?: ManagerCaller) => Promise<string>;
@@ -461,6 +480,8 @@ export interface OpenAuthAuthorityPlaneOptions {
   standingRenewableTtlSeconds?: number;
   /** How often expired native-issuance evidence is removed after the boot pass (default 60 s). */
   nativeIssuancePruneMs?: number;
+  /** How often one bounded chat-session sweep pass runs (default 60 s). */
+  chatSweepMs?: number;
 }
 
 /**
@@ -669,11 +690,18 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   unwind.push(() => authAdmin.close());
   const recordToolResultConsent = makeToolResultConsentRecorder(registryStores(registry).authKv, () => refuseIfFenced(), space);
   const fileArm = ledgerAuthorizeConnect(opts.dir);
+  // A chat principal (its alias is in the chat row space) is checked by the chat arm: its active
+  // row, its parent pin and its holder index. Every other principal by the grant-file arm.
+  const connectArm = async (t: ValidatedUserToken): Promise<void> => {
+    if (chat.isChatPrincipal(t.owner, t.act.actor)) await chat.authorizeConnect(t);
+    else fileArm(t);
+  };
   // The callout's issuance evidence: create-only natkey row, then the connect authority re-read
-  // in the same stream before the minted JWT may leave.
+  // in the same stream before the minted JWT may leave. For a chat session this re-read is the
+  // post-sign fence: its own head and root credential, its parent pin and its holder index.
   const recordIssuance = makeNativeIssuanceRecorder(registry, async (t) => {
     refuseIfFenced();
-    fileArm(t);
+    await connectArm(t);
     await authorizeConnectCredential(reader.current(), t, Date.now);
   });
   // Expired evidence goes at boot (a failure refuses the open) and then on the plane's own timer;
@@ -788,11 +816,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     remoteLive.sort();
     if (remoteLive.length === 1) return remoteLive[0];
     if (remoteLive.length > 1)
-      throw new Error(`manager-caller selection found ${remoteLive.length} live remote manager candidates for owner ${owner} (${remoteLive.join(", ")}); exactly one is required, so ${MANAGER_PIN_REMEDY[caller ?? "wire"]}`);
+      throw new ManagerSelectionRefusal(`manager-caller selection found ${remoteLive.length} live remote manager candidates for owner ${owner} (${remoteLive.join(", ")}); exactly one is required, so ${MANAGER_PIN_REMEDY[caller ?? "wire"]}`);
     if (remoteInstances.length > 0)
-      throw new Error(`the remote manager for owner ${owner} is unavailable (${remoteInstances.length} gate${remoteInstances.length === 1 ? "" : "s"}, none live); start one with \`cotal supervise\` and retry, as this call is never routed to the local manager`);
+      throw new ManagerSelectionRefusal(`the remote manager for owner ${owner} is unavailable (${remoteInstances.length} gate${remoteInstances.length === 1 ? "" : "s"}, none live); start one with \`cotal supervise\` and retry, as this call is never routed to the local manager`);
     if (localCandidate !== undefined) return localCandidate;
-    throw new Error(`manager-caller selection found no manager candidate for owner ${owner}`);
+    throw new ManagerSelectionRefusal(`manager-caller selection found no manager candidate for owner ${owner}`);
   };
   // Every authority operation refuses once the plane is fenced: a half-dead plane keeps NO face up.
   // AUDIENCE SPLIT (ux): these refusals reach a CONNECTING AGENT during the brief fence→exit
@@ -844,11 +872,88 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     const creds = await mintCreds(issuerAuth(), newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid, memberChannels } });
     await deprovisionAgent({ servers: server, space, targetId, lifecycleUid, memberChannels, creds });
   };
+  // A chat session's footprint (admission a7): its own bind-only DM and DELIVER durables and the
+  // read-ACL row the delivery daemon authorizes its history and durable joins from, written by a
+  // short-lived provisioner and read back on that same connection (part of a8).
+  const provisionChatFootprint = async ({ owner, actor, lifecycleUid, read }: { owner: string; actor: string; lifecycleUid: string; read: string[] }): Promise<void> => {
+    const identity = newIdentity();
+    let conn: NatsConnection | undefined;
+    const provisioner = new CotalEndpoint({
+      space,
+      servers: server,
+      onConnection: (nc) => { conn = nc; onConnection?.(nc, `cotal:chat-provisioner:${space}`); },
+      channels: [],
+      creds: await mintCreds(issuerAuth(), identity, "provisioner"),
+      card: { id: identity.id, name: "provisioner", role: "provisioner", kind: "endpoint" },
+      registerPresence: false,
+      watchPresence: false,
+      watchChannels: false,
+      consume: false,
+    });
+    await provisioner.start();
+    try {
+      await provisionAgentDurables(provisioner, { owner, actor, lifecycleUid }, { subscribe: [], allowSubscribe: read });
+      if (conn === undefined) throw new EpEnvelopeError("unavailable", "the chat provisioner connection is unavailable for the read-back", undefined, "unknown");
+      const jsm = await jetstreamManager(conn);
+      await jsm.consumers.info(dmStream(space), dmDurable(owner, actor, lifecycleUid));
+      await jsm.consumers.info(dlvStream(space), dlvDurable(owner, actor, lifecycleUid));
+      const acl = await provisioner.aclForOwner(principalKey(owner, actor).key, lifecycleUid);
+      if (acl === undefined || JSON.stringify(acl) !== JSON.stringify(read))
+        throw new EpEnvelopeError("unavailable", `the chat session's read-ACL row did not read back for ${lifecycleUid}`, undefined, "unknown");
+    } finally {
+      await provisioner.stop();
+    }
+  };
+  const chat = openChatSessionAuthority({
+    space,
+    dir: opts.dir,
+    registry,
+    managerInstance: `auth-service:${space}`,
+    retireLifecycle: async ({ owner, actor, lifecycleUid, opId }) => {
+      const flight = joinOrStartRetirement(retirementFlights, barrierReg, { owner, actor, lifecycleUid, opId, frontierStreams: retirementFrontierStreams(space) }, retirement);
+      if (flight === undefined) throw new EpEnvelopeError("conflict", `chat retirement operation ${opId} is already in flight for different coordinates`);
+      await flight;
+    },
+    provisionFootprint: provisionChatFootprint,
+    deprovisionFootprint: ({ owner, actor, lifecycleUid, memberChannels }) => deprovisionManagedFootprint(owner, actor, lifecycleUid, memberChannels),
+    now: Date.now,
+    log,
+  });
+  // One bounded chat sweep pass per interval. A failed pass is logged and the next one retries; it
+  // never fences the plane, because every chat authority decision re-reads its own records.
+  const chatSweepMs = opts.chatSweepMs ?? 60_000;
+  if (!Number.isSafeInteger(chatSweepMs) || chatSweepMs < 100 || chatSweepMs > 3_600_000)
+    throw new Error(`chatSweepMs must be an integer between 100 and 3600000 (got ${chatSweepMs})`);
+  let chatSweepTimer: ReturnType<typeof setTimeout> | undefined;
+  let chatSweepFlight: Promise<void> = Promise.resolve();
+  const scheduleChatSweep = (): void => {
+    if (closing || fatalReason !== undefined) return;
+    chatSweepTimer = setTimeout(() => {
+      chatSweepFlight = chat.sweepPass().catch((e: unknown) => {
+        if (!closing) log(`auth-plane: chat sweep pass failed: ${e instanceof Error ? e.message : String(e)}`);
+      }).then(scheduleChatSweep);
+    }, chatSweepMs);
+  };
+  const stopChatSweep = async (): Promise<void> => { clearTimeout(chatSweepTimer); await chatSweepFlight; };
+  unwind.push(async () => { closing = true; await stopChatSweep(); });
+  scheduleChatSweep();
   return {
     authorizeConnect: async (t) => {
       refuseIfFenced();
-      fileArm(t);
+      await connectArm(t);
       await authorizeConnectCredential(reader.current(), t, Date.now);
+    },
+    openChatSession: async (args) => {
+      refuseIfFenced();
+      return chat.admit(args);
+    },
+    chatSessionBearer: async (args) => {
+      refuseIfFenced();
+      return chat.exchange(args);
+    },
+    retireChatSession: async (args) => {
+      refuseIfFenced();
+      return chat.retire(args);
     },
     recordIssuance: (i) => {
       refuseIfFenced();
@@ -1395,30 +1500,48 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       const t = r.target;
       const subscribe = t.subscribe ?? [];
       const { lifecycleUid, row } = await serializedForAlias(opts.dir, owner, t.actor, async () => {
-        // The token digest names one enrollment. A held row with this request's digest is that
-        // enrollment retried, so it answers the same uid; any other held row is a lifecycle that
-        // still runs, and taking its grant would strand it.
-        const held = findManagedActor(opts.dir, owner, t.actor);
-        if (held !== undefined && held.tokenHash !== t.tokenHash)
-          throw new EpEnvelopeError("conflict", `managed agent "${t.actor}" is enrolled at lifecycle ${held.lifecycleUid}; prepare that lifecycle's retirement before enrolling a successor`);
-        // A fresh uid is never one a retirement tombstoned, and only the host can make that promise.
-        const lifecycleUid = held?.lifecycleUid ?? mintLifecycleUid();
-        // The grant first: its envelope walk against the supervising actor refuses an over-wide
-        // request before any durable exists. A retry walks the held grant again: its spawner chain
-        // may have narrowed since the first answer, and provisioning would restore what it took away.
-        if (held !== undefined) assertWithinSpawnerGrant(opts.dir, held, "spawn");
-        const row = held ?? grantManagedActor(opts.dir, {
-          owner,
-          actor: t.actor,
-          scope: t.capabilities ?? [],
-          allowSubscribe: t.allowSubscribe ?? [],
-          allowPublish: t.allowPublish ?? [],
-          ...(t.role !== undefined ? { role: t.role } : {}),
-          ...(t.label !== undefined ? { label: t.label } : {}),
-          parent: principalKey(owner, r.actor).key,
-          lifecycleUid,
-          tokenHash: t.tokenHash,
+        // The custody this enrollment attests: the instance the authorized request names, checked
+        // against its current registration above. Never a field of the participant's target.
+        const custody = { kind: "remote-manager" as const, instanceId: r.instanceId };
+        // ONE synchronous transaction for the read, the decision and the write, so an
+        // enrollment in another process (or a provider grant) cannot land between them.
+        const decided = withManagedGrantTransaction(opts.dir, (tx) => {
+          const current = tx.read(owner, t.actor);
+          const held = current?.kind === "managed-agent" ? current : undefined;
+          // The token digest names one enrollment. A held row with this request's digest is that
+          // enrollment retried, so it answers the same uid; any other held row is a lifecycle that
+          // still runs, and taking its grant would strand it.
+          if (held !== undefined && held.tokenHash !== t.tokenHash)
+            throw new EpEnvelopeError("conflict", `managed agent "${t.actor}" is enrolled at lifecycle ${held.lifecycleUid}; prepare that lifecycle's retirement before enrolling a successor`);
+          // A retry is this enrollment only if the held row records this exact custody. A row with
+          // none, or with another, is never upgraded or adopted here.
+          if (held !== undefined && (held.custody === undefined || !sameManagedGrantCustody(held.custody, custody)))
+            throw new EpEnvelopeError("conflict", `managed agent "${t.actor}" is held at lifecycle ${held.lifecycleUid} under another custody; it was not adopted by this enrollment`);
+          // A retry walks the held grant again: its spawner chain may have narrowed since the
+          // first answer, and provisioning would restore what it took away.
+          if (held !== undefined) {
+            assertWithinSpawnerGrant(opts.dir, held, "spawn");
+            return { lifecycleUid: held.lifecycleUid!, row: held, wrote: false };
+          }
+          // A fresh uid is never one a retirement tombstoned, and only the host can make that
+          // promise. The grant's envelope walk refuses an over-wide request before any durable exists.
+          const lifecycleUid = mintLifecycleUid();
+          const row = tx.grantManaged({
+            owner,
+            actor: t.actor,
+            scope: t.capabilities ?? [],
+            allowSubscribe: t.allowSubscribe ?? [],
+            allowPublish: t.allowPublish ?? [],
+            ...(t.role !== undefined ? { role: t.role } : {}),
+            ...(t.label !== undefined ? { label: t.label } : {}),
+            parent: principalKey(owner, r.actor).key,
+            lifecycleUid,
+            tokenHash: t.tokenHash,
+            custody,
+          });
+          return { lifecycleUid, row, wrote: true };
         });
+        const { lifecycleUid, row } = decided;
         try {
           const identity = newIdentity();
           const provisioner = new CotalEndpoint({
@@ -1442,9 +1565,10 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         } catch (e) {
           // A retried enrollment's first answer may already have reached the participant, so its
           // grant stays. A grant this call wrote gave the participant no uid, so it can never be
-          // retired: it and any durable it got must go now.
-          if (held === undefined) {
-            revokeManagedActorAt(opts.dir, owner, t.actor, lifecycleUid);
+          // retired: it and any durable it got must go now. The revoke removes only the row this
+          // call wrote: same uid AND same custody, read under the grant lock.
+          if (decided.wrote) {
+            revokeManagedActorIf(opts.dir, owner, t.actor, { lifecycleUid, custody });
             await deprovisionManagedFootprint(owner, t.actor, lifecycleUid, []).catch((err) =>
               opts.log(`auth-service: refused enrollment of ${owner}/${t.actor} left durables at ${lifecycleUid}: ${err instanceof Error ? err.message : String(err)}`));
           }
@@ -1485,8 +1609,15 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         const row = findManagedActor(opts.dir, owner, actor);
         if (row?.lifecycleUid === lifecycleUid) {
           // Footprint before grant: while the row stands, a retry still knows which channels to purge.
+          // The footprint work is async, so it runs outside the grant lock.
           await deprovisionManagedFootprint(owner, actor, lifecycleUid, row.allowSubscribe.filter(isConcreteChannel));
-          revokeManagedActorAt(opts.dir, owner, actor, lifecycleUid);
+          // The decision and the write are one transaction: the row removed is the one read above
+          // only if it still names this uid and the custody it carried then. A row written before
+          // custody existed is removed by uid alone, as before.
+          withManagedGrantTransaction(opts.dir, (tx) => {
+            if (row.custody !== undefined) tx.revokeManagedIf(owner, actor, { lifecycleUid, custody: row.custody });
+            else tx.revokeManagedAt(owner, actor, lifecycleUid);
+          });
         }
       });
       return {
@@ -1740,6 +1871,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       // for a later close retry; successful scanner teardown is not run a second time.
       closing = true;
       await stopPrune();
+      await stopChatSweep();
       const scannerFlight = closeScanners ??= (async () => {
         await authAdmin?.close();
         const results = await Promise.allSettled([reader.close(), recordsScanner.close(), scanner.close()]);
@@ -1825,19 +1957,8 @@ async function resumeOpenOperations(reg: LifecycleRegistry, evictPrincipal: Evic
   }
 }
 
-/** Run the auth service. Flags: `--space` (required), `--server` (broker URL, required), `--port`
- *  (loopback HTTP port; default ephemeral). All persisted material must already exist (the
- *  provider's `prepareServer` ran at `cotal up`) — a missing piece is a fail-loud config error
- *  naming the fix, never a silent partial service; this daemon LOADS the four secret kinds and
- *  never generates them.
- *
- *  `store` is the hosted composition's injection point for the space's SECRET material (callout
- *  account, issuer keys, owner secret, service key projection) — when given, it is those kinds'
- *  ONLY source (no flag or path can point this daemon at other secret material; an absent key is
- *  the hard error below). Absent, the daemon composes the local workspace store over `.cotal/`.
- *  NON-SEAM state (the actor ledger, the IdP pin, the discovery file) still lives in the local
- *  state dir either way — hosting those is a later, separate seam. */
-export async function runAuthService(args: ParsedArgs, store?: SecretStore): Promise<void> {
+/** Pure native daemon input validation, shared with its explicit service launch plan. */
+export function authServiceConfiguration(args: ParsedArgs) {
   const v = args.values as Values;
   const space = v.space;
   if (!space) throw new Error("auth-service: --space is required");
@@ -1866,9 +1987,34 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   const badFace = publicFace && checkPublicFace(publicFace);
   if (badFace) throw new Error(badFace);
 
+  return { space, server, port, publicFace };
+}
+
+/** Trusted local embedding hooks. They carry no prepared key material or loopback capability. */
+export interface AuthDaemonLifecycle {
+  readonly root: string;
+  readonly onReady: () => void | Promise<void>;
+  readonly onClosed: () => void | Promise<void>;
+  readonly quiet?: true;
+}
+
+/** Run the auth service. Flags: `--space` (required), `--server` (broker URL, required), `--port`
+ *  (loopback HTTP port; default ephemeral). All persisted material must already exist (the
+ *  provider's `prepareServer` ran at `cotal up`) — a missing piece is a fail-loud config error
+ *  naming the fix, never a silent partial service; this daemon LOADS the four secret kinds and
+ *  never generates them.
+ *
+ *  `store` is the hosted composition's injection point for the space's SECRET material (callout
+ *  account, issuer keys, owner secret, service key projection) — when given, it is those kinds'
+ *  ONLY source (no flag or path can point this daemon at other secret material; an absent key is
+ *  the hard error below). Absent, the daemon composes the local workspace store over `.cotal/`.
+ *  NON-SEAM state (the actor ledger, the IdP pin, the discovery file) still lives in the local
+ *  state dir either way — hosting those is a later, separate seam. */
+export async function runAuthService(args: ParsedArgs, store?: SecretStore, lifecycle?: AuthDaemonLifecycle): Promise<void> {
+  const { space, server, port, publicFace } = authServiceConfiguration(args);
   // The provider's space-scoped state dir for NON-SEAM material (ledger, IdP pin, discovery). The
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
-  const root = findCotalRoot();
+  const root = lifecycle?.root ?? findCotalRoot();
   const dir = userAuthStateDir(root, space);
   const secrets = store ?? workspaceSecretStore(root);
   // Scrub any stale discovery file FIRST — a dead prior daemon's entry must never satisfy a
@@ -1905,23 +2051,33 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   // All planes bound — NOW write the discovery file (its existence is the readiness signal).
   const { url, publicUrl, cap } = started.handle;
   saveAuthServiceInfo(dir, { url, pid: process.pid, cap, ...(publicUrl !== undefined ? { publicUrl } : {}) });
-  console.log(
+  if (!lifecycle?.quiet) console.log(
     `✓ auth service up (space ${space}) - callout on ${server}, exchange/JWKS at ${url}${publicUrl !== undefined ? `, public exchange at ${publicUrl}` : ""}`,
   );
 
   // The CLI wrapper, not the context, owns process signals and exit codes.
-  const stop = async () => {
+  let stopping: Promise<void> | undefined;
+  const stop = () => stopping ??= (async () => {
     clearAuthServiceInfo(dir); // a dead service must not satisfy the next start's readiness poll
     try {
       await started.handle.close();
+      await lifecycle?.onClosed();
     } catch (e) {
-      console.error(`✗ auth-service: ${(e as Error).message} - exiting`);
+      console.error(lifecycle ? "✗ native auth-service shutdown did not confirm completion; custody was retained" : `✗ auth-service: ${(e as Error).message} - exiting`);
       process.exit(1);
     }
     process.exit(0);
-  };
+  })();
   process.on("SIGINT", () => void stop());
   process.on("SIGTERM", () => void stop());
+  if (lifecycle) {
+    try { await lifecycle.onReady(); }
+    catch {
+      clearAuthServiceInfo(dir);
+      try { await started.handle.close(); await lifecycle.onClosed(); } catch { /* Unknown close keeps custody. */ }
+      throw new Error("the native auth-service startup receipt was not published; no new launch was retried");
+    }
+  }
 
   // A dropped broker connection is fatal-loud, not a zombie: the supervising `up`/`down` lifecycle
   // owns restarts, and a callout that silently stopped answering would hang every user connect.
@@ -1931,13 +2087,14 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
   const ended = await started.ended;
   clearAuthServiceInfo(dir);
   if (ended.kind === "fenced") {
-    console.error(`✗ auth-service: ${ended.cause} - exiting`);
+    console.error(lifecycle ? "✗ native auth-service authority was fenced; custody was retained" : `✗ auth-service: ${ended.cause} - exiting`);
     process.exit(1);
   }
   if (ended.cause !== undefined) {
-    console.error(`✗ auth-service: broker connection closed (${ended.cause}) - exiting`);
+    console.error(lifecycle ? "✗ native auth-service broker connection closed; custody was retained" : `✗ auth-service: broker connection closed (${ended.cause}) - exiting`);
     process.exit(1);
   }
+  await lifecycle?.onClosed();
   process.exit(0);
 }
 
@@ -2192,7 +2349,9 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       token: { key: issuer.localKeySet(), issuer: issuer.issuer },
       authorizeActor: plane.authorizeConnect,
       recordIssuance: plane.recordIssuance,
-      permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller, plane.verifySession, plane.issueUserCaller),
+      // A chat principal resolves from its closed row (the agent leaf, no role); every other
+      // principal from the grant ledger.
+      permissionsFor: calloutPermissions(chatAwareAclResolver(dir, ledgerAclResolver(dir)), plane.authorizeManagerCaller, plane.verifySession, plane.issueUserCaller),
       log: (l) => console.error(l),
     });
     // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a
@@ -2254,6 +2413,9 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       selectManagerInstance: plane.selectManagerInstance,
       listManagerInstances: plane.listManagerInstances,
       verifySession: plane.verifySession,
+      openChatSession: plane.openChatSession,
+      chatSessionBearer: plane.chatSessionBearer,
+      retireChatSession: plane.retireChatSession,
     };
     const loopback = createServer((req, res) => void handle(req, res, ctx));
     http = loopback;
@@ -2522,6 +2684,9 @@ interface HandlerCtx {
   selectManagerInstance: AuthAuthorityPlane["selectManagerInstance"];
   listManagerInstances: AuthAuthorityPlane["listManagerInstances"];
   verifySession: AuthAuthorityPlane["verifySession"];
+  openChatSession: AuthAuthorityPlane["openChatSession"];
+  chatSessionBearer: AuthAuthorityPlane["chatSessionBearer"];
+  retireChatSession: AuthAuthorityPlane["retireChatSession"];
 }
 
 type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun">;
@@ -2704,13 +2869,16 @@ const ROUTES = new Map<string, RouteHandler>([
   [VERIFY_ENROLLMENT_PATH, handleVerifyManagedAgentEnrollment],
   [TOOL_RESULT_HUMAN_PROOF_PATH, handleToolResultHumanProof],
   [TOOL_RESULT_CONSENT_PATH, handleToolResultConsent],
+  [CHAT_SESSION_PATHS.open, (req, res, ctx) => handleChatSession(req, res, ctx, LOOPBACK_POLICY, "open")],
+  [CHAT_SESSION_PATHS.bearer, (req, res, ctx) => handleChatSession(req, res, ctx, LOOPBACK_POLICY, "bearer")],
+  [CHAT_SESSION_PATHS.retire, (req, res, ctx) => handleChatSession(req, res, ctx, LOOPBACK_POLICY, "retire")],
 ]);
 
 /** Route one HTTP request against the loopback route table. Errors are JSON `{ error }`. */
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
   try {
     const route = ROUTES.get(req.url ?? "");
-    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /manager-instances, /manager-service-authority/verify-enrollment, /interactive-lifecycle/retire, /managed-lifecycle/retire" });
+    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /manager-instances, /manager-service-authority/verify-enrollment, /interactive-lifecycle/retire, /managed-lifecycle/retire, /chat-session/open, /chat-session/bearer, /chat-session/retire" });
     await route(req, res, ctx);
   } catch (e) {
     sendRequestError(res, e);
@@ -2888,14 +3056,14 @@ async function handleVerifyManagedAgentEnrollment(
 
 /** Refuse a missing/invalid loopback capability, audited and counted in its own window (see
  *  BAD_CAP_PER_MIN): 401 with `reason` until the window is full, then 429. */
-function refuseCapability(res: ServerResponse, ctx: Pick<HandlerCtx, "badCaps">, reason: string): void {
+function refuseCapability(res: ServerResponse, ctx: Pick<HandlerCtx, "badCaps">, reason: string, extra: { code?: string; outcome?: string } = {}): void {
   const now = Date.now();
   while (ctx.badCaps.length && now - ctx.badCaps[0] > 60_000) ctx.badCaps.shift();
   ctx.badCaps.push(now);
   console.error("auth-service: rejected an exchange with a missing/invalid capability");
   if (ctx.badCaps.length > BAD_CAP_PER_MIN)
-    return send(res, 429, { error: "too many invalid-capability attempts - wait a minute and retry" });
-  send(res, 401, { error: reason });
+    return send(res, 429, { error: "too many invalid-capability attempts - wait a minute and retry", ...extra });
+  send(res, 401, { error: reason, ...extra });
 }
 
 /** The exchange body, shared by every face; `policy` says how this face proves and attributes the
@@ -3003,9 +3171,10 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
       const { exp } = decodeJwt(token);
       return send(res, 200, { token, owner, exp, ...(selectedManagerInstanceId ? { managerInstanceId: selectedManagerInstanceId } : {}) });
     } catch (e) {
-      policy.recordFailure(ctx, peer);
       const reason = e instanceof Error ? e.message : String(e);
       console.error(`auth-service: refused an agent exchange: ${reason}`);
+      if (e instanceof ManagerSelectionRefusal) return send(res, 401, { error: reason });
+      policy.recordFailure(ctx, peer);
       if (peerThrottled)
         return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
       return send(res, 401, { error: reason });
@@ -3040,12 +3209,93 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   } catch (e) {
     // A refused exchange (bad IdP token, ungranted actor, expired proof) is an AUTHENTICATED
     // denial with the reason — the client shows it to the operator verbatim.
-    policy.recordFailure(ctx, peer);
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`auth-service: refused an exchange: ${reason}`);
+    if (e instanceof ManagerSelectionRefusal) return send(res, 401, { error: reason });
+    policy.recordFailure(ctx, peer);
     if (peerThrottled)
       return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
     return send(res, 401, { error: reason });
+  }
+}
+
+/** Each chat-session route's CLOSED body: an unknown or missing field refuses before any read. */
+const CHAT_SESSION_FIELDS: Readonly<Record<"open" | "bearer" | "retire", { required: readonly string[]; optional: readonly string[] }>> = {
+  open: { required: ["idpToken", "holderHash", "read", "post", "ttlSec"], optional: ["label"] },
+  bearer: { required: ["idpToken", "actor", "holderProof"], optional: [] },
+  retire: { required: ["idpToken", "actor", "lifecycleUid", "holderProof"], optional: [] },
+};
+
+/** HTTP status for a chat-session refusal's native code; the body carries the code itself. */
+const CHAT_SESSION_STATUS: Readonly<Record<string, number>> = {
+  "bad-request": 400, unauthenticated: 401, "permission-denied": 403, "not-found": 404, conflict: 409,
+  "failed-precondition": 412, "resource-exhausted": 429, unimplemented: 501, unavailable: 503,
+};
+
+/**
+ * The chat-session routes, on both faces. The owner is derived from a fresh IdP proof exactly as
+ * `/exchange` derives it; the body never names one. `open` admits, `bearer` exchanges the holder
+ * proof for one short bearer, `retire` retires. Every refusal answers `{ error, code, outcome }`:
+ * `not-executed` when nothing was written, `executed` when this request wrote before refusing, and
+ * `unknown` when a write may have landed (a retry with the SAME holder resolves it). The holder proof
+ * and the bearer never reach a log line.
+ */
+async function handleChatSession(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy, op: "open" | "bearer" | "retire"): Promise<void> {
+  // Every answer before the dispatch is refused with nothing read or written.
+  const before = { outcome: "not-executed" } as const;
+  if (req.method !== "POST") return send(res, 405, { error: "POST only", code: "bad-request", ...before });
+  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here", code: "permission-denied", ...before });
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
+    return send(res, 415, { error: "content-type must be application/json", code: "bad-request", ...before });
+  if (policy.requireCapability && (req.headers.authorization ?? "") !== `Bearer ${ctx.cap}`)
+    return refuseCapability(res, ctx, "missing/invalid exchange capability - read it from the space's auth-service.json", { code: "unauthenticated", ...before });
+  const peer = policy.peerKey(req);
+  const peerThrottled = policy.throttled(ctx, peer);
+  const body = await readJsonBody(req);
+  const malformed = (why: string) => send(res, 400, { error: `chat-session ${op}: ${why}`, code: "bad-request", ...before });
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return malformed("the body must be a JSON object");
+  const b = body as Record<string, unknown>;
+  const fields = CHAT_SESSION_FIELDS[op];
+  const extra = Object.keys(b).find((k) => !fields.required.includes(k) && !fields.optional.includes(k));
+  if (extra !== undefined) return malformed(`unknown field "${extra}"`);
+  const missing = fields.required.find((k) => !Object.hasOwn(b, k));
+  if (missing !== undefined) return malformed(`missing field "${missing}"`);
+  if (typeof b.idpToken !== "string" || b.idpToken === "") return malformed("idpToken must be a non-empty string");
+  if (op === "open" && (typeof b.holderHash !== "string" || !Array.isArray(b.read) || !Array.isArray(b.post) || typeof b.ttlSec !== "number" || (b.label !== undefined && typeof b.label !== "string")))
+    return malformed("open takes { idpToken, holderHash: string, read: string[], post: string[], ttlSec: number, label?: string }");
+  if (op !== "open" && (typeof b.actor !== "string" || typeof b.holderProof !== "string" || (op === "retire" && typeof b.lifecycleUid !== "string")))
+    return malformed(op === "bearer" ? "bearer takes { idpToken, actor: string, holderProof: string }" : "retire takes { idpToken, actor: string, lifecycleUid: string, holderProof: string }");
+  // A refusal keeps the effect outcome its source stated; one that states none is unknown.
+  const refuse = (status: number, message: string, code: string, outcome: string = "unknown") => {
+    policy.recordFailure(ctx, peer);
+    console.error(`auth-service: refused a chat-session ${op}: ${message}`);
+    if (peerThrottled) return send(res, 429, { error: "too many refused exchanges - wait a minute and retry", code: "resource-exhausted", outcome });
+    return send(res, status, { error: message, code, outcome });
+  };
+  let owner: string;
+  let idpExp: number;
+  try {
+    const verified = await verifyIdpToken(b.idpToken, ctx.bridgeIdp);
+    owner = deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, verified.sub);
+    idpExp = verified.exp;
+  } catch (e) {
+    return refuse(401, e instanceof Error ? e.message : String(e), "unauthenticated", "not-executed");
+  }
+  try {
+    if (op === "open")
+      return send(res, 200, await ctx.openChatSession({
+        owner, holderHash: b.holderHash as string, read: b.read as string[], post: b.post as string[], ttlSec: b.ttlSec as number,
+        ...(typeof b.label === "string" ? { label: b.label } : {}),
+      }));
+    if (op === "bearer") {
+      const minted = await ctx.chatSessionBearer({ owner, actor: b.actor as string, holderProof: b.holderProof as string, idpExp, issuer: ctx.issuer });
+      return send(res, 200, { token: minted.token, owner, exp: minted.exp });
+    }
+    return send(res, 200, await ctx.retireChatSession({ owner, actor: b.actor as string, lifecycleUid: b.lifecycleUid as string, holderProof: b.holderProof as string }));
+  } catch (e) {
+    if (e instanceof EpEnvelopeError) return refuse(CHAT_SESSION_STATUS[e.code] ?? 500, e.message, e.code, e.outcome ?? "unknown");
+    // Anything else came from a store, broker or file read partway through: its effect is unknown.
+    return refuse(503, e instanceof Error ? e.message : String(e), "unavailable", "unknown");
   }
 }
 
@@ -3297,6 +3547,9 @@ function makePublicHandler(
     ["/exchange", (req, res, c) => handleExchange(req, res, c, policy)],
     ["/manager-service-authority", (req, res, c) => handleManagerServiceAuthority(req, res, c, policy)],
     ["/manager-instances", (req, res, c) => handleManagerInstances(req, res, c, policy)],
+    [CHAT_SESSION_PATHS.open, (req, res, c) => handleChatSession(req, res, c, policy, "open")],
+    [CHAT_SESSION_PATHS.bearer, (req, res, c) => handleChatSession(req, res, c, policy, "bearer")],
+    [CHAT_SESSION_PATHS.retire, (req, res, c) => handleChatSession(req, res, c, policy, "retire")],
     [
       "/.well-known/cotal-mesh",
       (req, res) => {
@@ -3325,7 +3578,7 @@ function makePublicHandler(
     void (async () => {
       try {
         const route = routes.get(req.url ?? "");
-        if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /manager-instances, /.well-known/cotal-mesh" });
+        if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange, /manager-service-authority, /manager-instances, /chat-session/open, /chat-session/bearer, /chat-session/retire, /.well-known/cotal-mesh" });
         await route(req, res, ctx);
       } catch (e) {
         if (!res.headersSent) sendRequestError(res, e);

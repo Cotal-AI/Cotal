@@ -27,14 +27,34 @@ export const OFFICIAL_CONNECTORS: Readonly<Record<string, string>> = {
 export interface SeededExtension {
   readonly pkg: string;
   readonly srcDir: string;
+  /** Every word the package's commands claim, names and aliases. The dispatcher resolves these words
+   *  before the first seed installs the package, and the seed refuses a package that claims a
+   *  different set. */
+  readonly commands: readonly string[];
 }
 
 export const SEEDED_EXTENSIONS: Readonly<Record<string, SeededExtension>> = {
   ...(Object.fromEntries(
-    Object.entries(OFFICIAL_CONNECTORS).map(([name, pkg]) => [name, { pkg, srcDir: `extensions/${pkg.split("/")[1]}` }]),
+    Object.entries(OFFICIAL_CONNECTORS).map(([name, pkg]) => [name, { pkg, srcDir: `extensions/${pkg.split("/")[1]}`, commands: [] }]),
   ) as Record<string, SeededExtension>),
-  web: { pkg: "@cotal-ai/web", srcDir: "implementations/web" },
+  web: { pkg: "@cotal-ai/web", srcDir: "implementations/web", commands: ["__service-web"] },
 };
+
+/** Whether `word` names a command a seeded package registers. */
+export function isSeededCommand(word: string): boolean {
+  return Object.values(SEEDED_EXTENSIONS).some((ext) => ext.commands.includes(word));
+}
+
+/** Why the commands a seeded package registers disagree with the words its seed entry declares, or
+ *  undefined when they agree or `pkg` is not seeded. A name or alias the entry does not declare
+ *  would be an unknown command until the first seed installed the package. */
+export function seededCommandsMismatch(pkg: string, commands: readonly { name: string; aliases?: readonly string[] }[]): string | undefined {
+  const declared = Object.values(SEEDED_EXTENSIONS).find((seeded) => seeded.pkg === pkg)?.commands;
+  if (!declared) return undefined;
+  const claimed = commands.flatMap((cmd) => [cmd.name, ...(cmd.aliases ?? [])]);
+  if ([...claimed].sort().join(" ") === [...declared].sort().join(" ")) return undefined;
+  return `registers commands claiming [${claimed.join(", ")}], but its seed entry declares [${declared.join(", ")}] - the binary and this package disagree`;
+}
 
 /** The default connector/agent type when `COTAL_DEFAULT_AGENT` is unset (David's locked decision). */
 export const DEFAULT_CONNECTOR = "claude";

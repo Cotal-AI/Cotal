@@ -92,7 +92,7 @@ try {
     allowPublish: ["ops", "general"],
     label: "first label",
   });
-  const retained = await cotalAuthProvider.grantAgent({
+  const retained = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" },
     store,
     dir,
     space: SPACE,
@@ -283,7 +283,7 @@ try {
   console.log("F. direct ledger lookup binding");
   const workerPath = join(managedDir, managedName);
   const workerJson = readFileSync(workerPath, "utf8");
-  const retainedB = await cotalAuthProvider.grantAgent({
+  const retainedB = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" },
     store,
     dir,
     space: SPACE,

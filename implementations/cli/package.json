@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/cli",
   "description": "Cotal mesh CLI: up, join, watch, console, spawn, mint, channels, history, ext.",
-  "version": "0.90.0",
+  "version": "0.90.1",
   "homepage": "https://cotal.ai",
   "license": "Apache-2.0",
   "repository": {
@@ -20,7 +20,10 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
-    "test": "tsx smoke/manifest.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/sparkline.smoke.ts && tsx smoke/topo-membership.smoke.ts && tsx smoke/console-status-row.smoke.ts && tsx smoke/console-managed-rows.smoke.ts && tsx smoke/console-render.smoke.tsx",
+    "test": "tsx smoke/manifest.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/sparkline.smoke.ts && tsx smoke/topo-membership.smoke.ts && tsx smoke/console-status-row.smoke.ts && tsx smoke/console-managed-rows.smoke.ts && tsx smoke/console-render.smoke.tsx && tsx smoke/cli-pty.smoke.ts && tsx smoke/chat-pure.smoke.ts && tsx smoke/chat-user-session.smoke.ts",
+    "smoke:chat-pure": "tsx smoke/chat-pure.smoke.ts",
+    "smoke:chat-user-session": "tsx smoke/chat-user-session.smoke.ts",
+    "smoke:cli-pty": "tsx smoke/cli-pty.smoke.ts",
     "smoke:console-attach": "tsx smoke/console-attach.smoke.ts",
     "smoke:console-gaps": "tsx smoke/console-gaps.smoke.ts",
     "smoke:console-control": "tsx smoke/console-control.smoke.ts",

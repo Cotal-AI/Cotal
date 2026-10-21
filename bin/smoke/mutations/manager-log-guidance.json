@@ -49,8 +49,8 @@
     {
       "name": "the logfile sink bypasses logPath and opens an independently-derived filename",
       "file": "implementations/cli/src/lib/manager-proc.ts",
-      "find": "  const fd = openSync(logPath, \"a\", 0o600);",
-      "replace": "  const fd = openSync(canonicalLocalProcessPath(\"manager.log\", ctx(space)), \"a\", 0o600);",
+      "find": "  const fd = openPrivateAppend(logPath);",
+      "replace": "  const fd = openPrivateAppend(canonicalLocalProcessPath(\"manager.log\", ctx(space)));",
       "expectRed": "the detached manager opens its logfile descriptor on the managerLogPath value",
       "cell": "the detached manager opens its logfile descriptor on the managerLogPath value"
     },

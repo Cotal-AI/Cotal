@@ -1,0 +1,3 @@
+# A controller-owned stack refuses down --preserve-state, backup create, backup restore and
+# up --restore as UNSUPPORTED before any effect, in each stack mode, and leaves its root unchanged.
+smoke:controller-cut-withheld

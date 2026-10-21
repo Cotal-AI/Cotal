@@ -13,7 +13,7 @@ import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
-import { MeshTargetError } from "@cotal-ai/workspace";
+import { isCommandFailure, MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
 import { executeUpdate, parseNpmVersion, reportRunningManagers, update, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
@@ -171,25 +171,194 @@ async function completionOut(positionals: string[]): Promise<string> {
   } finally {
     console.log = realLog;
   }
-  assert.ok(out.includes("usage:"), "feedback --help prints its usage");
+  assert.match(out, /\bUsage\b/u, "feedback --help prints its usage heading");
+  assert.match(out, /cotal feedback\b/u, "feedback --help prints its command usage");
   assert.ok(!out.includes("Unknown option"), "no usage error above the help");
 }
 
-// --- `-v` / `--version` print `cotal-ai <semver>` (+ any extensions) and short-circuit dispatch --
+// --- `version`, `--version` and `-V` print `cotal-ai <semver>` (+ any extensions) -----------------
+// (`-v` is refused; the entry smoke covers that, since a refusal exits the process.)
 {
   const { runCli } = await import("../src/command.js");
-  for (const flag of ["-v", "--version"]) {
+  for (const argv of [["version"], ["--version"], ["-V"]]) {
     let out = "";
     const realLog = console.log;
     console.log = (s?: unknown) => void (out += `${s}\n`);
     try {
-      await runCli(registry, [flag]);
+      await runCli(registry, argv);
     } finally {
       console.log = realLog;
     }
     // First line is always `cotal-ai <semver>`; any installed extensions follow indented (none in
-    // a bare unit env). Reaching here at all proves it short-circuited before command dispatch.
-    assert.match(out.split("\n")[0], /^cotal-ai \d+\.\d+\.\d+/, `${flag} prints the binary version`);
+    // a bare unit env).
+    assert.match(out.split("\n")[0], /^cotal-ai \d+\.\d+\.\d+/, `${argv.join(" ")} prints the binary version`);
+  }
+}
+
+// --- version --json is one envelope; an unreadable extensions manifest makes its list partial -----
+// The binary's overlay refuses a corrupt manifest before version runs; a composition root without
+// extensions reaches version's own read.
+{
+  const { runCli } = await import("../src/command.js");
+  const { extensionsManifestPath } = await import("@cotal-ai/workspace");
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const xdg = mkdtempSync(join(tmpdir(), "cotal-version-json-"));
+  process.env.XDG_CONFIG_HOME = xdg;
+  const capture = async (argv: string[]) => {
+    let out = "";
+    const real = process.stdout.write;
+    process.stdout.write = ((chunk: string) => ((out += chunk), true)) as typeof process.stdout.write;
+    try {
+      await runCli(registry, argv);
+    } finally {
+      process.stdout.write = real;
+    }
+    return out;
+  };
+  try {
+    const clean = JSON.parse(await capture(["version", "--json"]));
+    assert.equal(clean.completeness, "complete", "version --json with a readable manifest is complete");
+    assert.deepEqual(clean.warnings, [], "version --json with a readable manifest has no warnings");
+    mkdirSync(join(extensionsManifestPath(), ".."), { recursive: true });
+    writeFileSync(extensionsManifestPath(), "{ not json");
+    const corrupt = JSON.parse(await capture(["version", "--json"]));
+    const partialExit = process.exitCode;
+    process.exitCode = 0;
+    assert.equal(corrupt.result?.version, clean.result.version, "version --json still reports the binary's version");
+    assert.equal(corrupt.outcome, "partial", "an unreadable manifest makes the read partial, not empty and complete");
+    assert.equal(corrupt.completeness, "partial", "an unreadable manifest makes the extension list partial");
+    assert.equal(corrupt.error?.code, "OPERATION_PARTIAL", "a partial read carries OPERATION_PARTIAL");
+    assert.equal(partialExit, 4, "a partial read exits 4");
+    assert.equal(corrupt.warnings[0]?.code, "EXTENSIONS_UNREADABLE", "an unreadable manifest is named in a warning");
+  } finally {
+    rmSync(xdg, { recursive: true, force: true });
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
+}
+
+// --- A classified failure sets the exit code its outcome names, with its envelope on --json -------
+// The kernel ends the process, so it runs in a child over probe commands: `probe` declares a JSON
+// output, `legacy` declares none, and `shadow` declares a global flag's name.
+{
+  const fixture = join(import.meta.dirname, "output-exit.fixture.ts");
+  const sandbox = mkdtempSync(join(tmpdir(), "cotal-output-exit-"));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")));
+  const run = (...words: string[]) => runWith({}, ...words);
+  const runWith = (extra: Record<string, string>, ...words: string[]) => {
+    const r = spawnSync(process.execPath, [...process.execArgv, fixture, ...words], {
+      encoding: "utf8",
+      env: { ...env, COTAL_HOME: join(sandbox, "home"), XDG_CONFIG_HOME: join(sandbox, "cfg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", ...extra },
+    });
+    const lines = r.stdout.split("\n").filter(Boolean);
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr, envelope: lines.length === 1 && lines[0]!.startsWith("{") ? JSON.parse(lines[0]!) : undefined };
+  };
+  try {
+    const ok = run("probe", "--json");
+    assert.equal(ok.status, 0, "probe --json exits 0");
+    assert.equal(ok.envelope?.outcome, "ok", "probe --json writes one ok envelope");
+    assert.equal(ok.envelope?.result?.input, false, "--json implies --no-input");
+    assert.equal(run("probe").stdout, "ran input:true\n", "control: without --json or --no-input, input is allowed");
+    assert.equal(run("probe", "--no-input").stdout, "ran input:false\n", "--no-input after the command's words disables input");
+
+    const conflict = run("probe", "--json", "--fail", "conflict");
+    assert.equal(conflict.status, 2, "a boundary refusal exits 2");
+    assert.equal(conflict.envelope?.error?.code, "CONFLICT", "a refusal's envelope carries its stable code");
+    assert.deepEqual(conflict.envelope?.error?.cause, { code: "E_LEASE", outcome: "not-executed" }, "a refusal's envelope keeps the native cause");
+    assert.deepEqual(conflict.envelope?.target, { space: "s1" }, "a refusal's envelope names its target");
+    assert.match(conflict.stderr, /the lease is held[\s\S]*wait for the holder to release it/u, "a refusal prints its message and remedy on stderr");
+
+    const human = run("probe", "--fail", "conflict");
+    assert.equal(human.status, 2, "a refusal without --json exits 2 as well");
+    assert.equal(human.stdout, "", "a refusal without --json writes nothing on stdout");
+
+    const usage = run("probe", "--json", "--fail", "usage");
+    assert.equal(usage.status, 1, "a usage refusal raised by the command exits 1");
+    assert.equal(usage.envelope?.error?.code, "USAGE_INVALID", "a command's usage refusal keeps its code");
+
+    const partial = run("probe", "-j", "--fail", "partial");
+    assert.equal(partial.status, 4, "a partial outcome exits 4");
+    assert.deepEqual(partial.envelope?.changed, [{ seat: "a" }], "a partial outcome reports what it changed");
+
+    const failed = run("probe", "--json", "--fail", "failed");
+    assert.equal(failed.status, 5, "a failed outcome exits 5");
+    assert.equal(failed.envelope?.outcome, "failed", "a failed outcome writes its envelope");
+
+    const plain = run("probe", "--json", "--fail", "plain");
+    assert.equal(plain.status, 3, "an unclassified error from a structured command exits 3");
+    assert.equal(plain.envelope?.error?.code, "OPERATION_UNKNOWN", "an unclassified error from a structured command is unknown");
+    assert.equal(plain.envelope?.error?.message, "socket closed mid-request", "the unknown envelope keeps the error's message");
+
+    // A target the command could not resolve or reach is refused under the refusal's own code, not
+    // reported as an unknown outcome.
+    const refusal = run("probe", "--json", "--fail", "refusal");
+    assert.equal(refusal.status, 2, "a connect refusal from a structured command exits 2");
+    assert.equal(refusal.envelope?.error?.code, "TARGET_UNAVAILABLE", "a connect refusal keeps its code");
+    assert.equal(refusal.envelope?.error?.message, "can't reach a broker at nats://127.0.0.1:1", "a connect refusal's message drops the mark");
+    assert.equal(refusal.envelope?.error?.remedy, "start it with `cotal up`", "a connect refusal's hint is its remedy");
+    const target = run("probe", "--json", "--fail", "target");
+    assert.equal(target.status, 2, "an unresolvable target exits 2");
+    assert.equal(target.envelope?.error?.code, "TARGET_AMBIGUOUS", "an ambiguous target is TARGET_AMBIGUOUS");
+    assert.equal(target.envelope?.error?.message, "multiple meshes running: a (/a), b (/b)", "an unresolvable target's message says what was found");
+    assert.equal(target.envelope?.error?.remedy, "pick one with `--space <name>` or set a default with `cotal use <name>`", "an unresolvable target's remedy is apart from its message");
+    const catalog = run("probe", "--json", "--fail", "catalog");
+    assert.equal(catalog.status, 2, "a space catalog that stopped the command exits 2");
+    assert.equal(catalog.envelope?.error?.code, "DEPENDENCY_UNAVAILABLE", "a failed catalog refresh is DEPENDENCY_UNAVAILABLE");
+
+    const bogus = run("probe", "--json", "--bogus");
+    assert.equal(bogus.status, 1, "a usage error under --json exits 1");
+    assert.equal(bogus.envelope?.error?.code, "USAGE_INVALID", "a usage error under --json is one USAGE_INVALID envelope");
+    assert.doesNotMatch(bogus.stdout, /usage:/, "a usage error under --json keeps the help text off stdout");
+    assert.equal(run("probe", "-aj", "--bogus").envelope?.error?.code, "USAGE_INVALID", "-j inside a group of short flags asks for the usage envelope");
+
+    // A command that declares a global flag's name could receive it only as `--no-color=<value>`.
+    const shadowed = runWith({ OUTPUT_EXIT_SHADOW: "1" }, "shadow", "--no-color=red");
+    assert.equal(shadowed.status, 1, "a command that declares a global flag is an internal error that exits 1");
+    assert.match(shadowed.stderr, /internal error: command "shadow" declares --no-color, which is a global flag/, "the internal error names the command and the flag");
+    assert.doesNotMatch(shadowed.stdout, /ran/, "a command that declares a global flag never runs");
+    assert.doesNotMatch(runWith({ OUTPUT_EXIT_SHADOW: "1" }, "probe").stdout, /ran/, "a declared global flag stops every command, not only its own");
+
+    const legacy = run("legacy", "--fail", "plain");
+    assert.equal(legacy.status, 1, "an unclassified error from a command with no structured output still exits 1");
+    assert.equal(run("legacy", "--fail", "failed").status, 5, "a classified failure from a command with no structured output exits by its outcome");
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+}
+
+// --- a refused manager read becomes the failure its catalog code names -----------------------------
+{
+  const { readFailure } = await import("../src/lib/control.js");
+  // The reply a request nobody answered carries: the deadline the caller waited out.
+  const silent = readFailure({ error: "no describe reply from cotal.manager within 3000ms on the ep rail", code: "deadline-exceeded" }, { space: "s" });
+  assert.equal(`${silent.outcome}/${silent.code}`, "refused/TARGET_UNAVAILABLE", "an unanswered read is an unavailable target");
+  assert.deepEqual(silent.target, { space: "s" }, "a refused read names its target");
+  const denied = readFailure({ error: "not permitted", code: "permission-denied" });
+  assert.equal(`${denied.outcome}/${denied.code}`, "refused/PERMISSION_DENIED", "a denied read is PERMISSION_DENIED");
+  assert.deepEqual(denied.native, { code: "permission-denied" }, "a refused read keeps the endpoint's code as its cause");
+  assert.equal(readFailure({ error: "x", code: "unauthenticated" }).code, "AUTH_REQUIRED", "an unauthenticated read needs a sign-in");
+  assert.equal(readFailure({ error: "x", code: "contract-mismatch" }).code, "UNSUPPORTED", "a read the manager's contract does not serve is UNSUPPORTED");
+  const internal = readFailure({ error: "boom", code: "internal" });
+  assert.equal(`${internal.outcome}/${internal.code}`, "failed/OPERATION_FAILED", "a read that failed for an unclassified reason is failed, not unknown");
+  assert.equal(readFailure({ error: "boom" }).code, "OPERATION_FAILED", "a read failure with no code is failed");
+}
+
+// --- up rejects pure flag conflicts before even checking a supplied project root ----------------
+{
+  const cmd = registry.resolve<Command>("command", "up");
+  assert.ok(cmd?.validate, "up declares pre-effect argument validation");
+  const missingRoot = join(tmpdir(), "cotal-up-usage-no-project", `${process.pid}-${Date.now()}`);
+  for (const flags of [
+    ["--json", "--plain"],
+    ["--no-manager", "--runtime", "pty", "--json"],
+    ["--no-manager", "--max-sessions", "2", "--json"],
+    ["--user-auth", "--open", "--json"],
+    ["--open", "--idp", "http://127.0.0.1:1", "--json"],
+  ]) {
+    const parsed = parseCommandArgs(cmd, [...flags, "--root", missingRoot]);
+    assert.throws(() => cmd.validate!(parsed), (error: unknown) =>
+      isCommandFailure(error) && error.outcome === "refused" && error.code === "USAGE_INVALID" && Boolean(error.remedy),
+    `${flags.join(" ")} is classified usage with a remedy before project lookup or preparation`);
   }
 }
 
@@ -203,14 +372,57 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(out.trimEnd().endsWith(":nofiles"), "directive is nofiles");
 }
 
+// --- an alias completes as its command does; a subcommand alias reaches the completer canonical --
+{
+  assert.equal(await completionOut(["sp", "--"]), await completionOut(["spawn", "--"]), "sp completes as spawn");
+  assert.ok((await completionOut(["sp"])).includes("spawn\t"), "a lone alias is still a word being typed: it offers command names");
+  const prefix = await completionOut(["spa"]);
+  assert.ok(prefix.includes("spawn\t") && prefix.includes("status\t"), "a prefix offers command names, it never selects one");
+}
+
+// --- the cursor's -- prefix differs from a committed end-of-options separator --------------------
+{
+  for (const words of [["spawn"], ["sp"], ["up"], ["attach"], ["service"], ["service", "stop"], ["service", "status"], ["endpoint"], ["endpoint", "invoke"]]) {
+    assert.match(await completionOut([...words, "--"]), /^--space(?:\t|$)/mu, `${words.join(" ")} completes the unfinished -- word as flags`);
+    const committed = await completionOut([...words, "--", ""]);
+    assert.ok(!/^--/mu.test(committed), `${words.join(" ")} does not offer options after a committed --`);
+    assert.ok(committed.trimEnd().endsWith(":nofiles"), `${words.join(" ")} preserves its positional completion directive`);
+  }
+  const stop = await completionOut(["service", "stop", "--"]);
+  const status = await completionOut(["service", "status", "--"]);
+  assert.match(stop, /^--with-agents\t/mu, "service stop offers its own flag");
+  assert.ok(!/^--with-agents\t/mu.test(status), "service status does not offer stop-only flags");
+  assert.match(await completionOut(["up", "--runtime", ""]), /^pty$/mu, "runtime value completion remains available before the separator");
+  assert.ok(!/^pty$/mu.test(await completionOut(["up", "--", "--runtime", ""])), "literal words after the separator are not option values");
+  assert.match(await completionOut(["up", "--file", "--", "--"]), /^--space\t/mu, "a separator-shaped option value does not end options");
+  for (const words of [["up", "--server", ""], ["endpoint", "invoke", "--args", ""]]) {
+    const values = await completionOut(words);
+    assert.ok(!/^--/mu.test(values), `${words.join(" ")} does not offer option names as a string value`);
+    assert.ok(values.trimEnd().endsWith(":nofiles"), "non-file values suppress filename fallback");
+  }
+}
+
+// --- a seeded package must claim the words its seed entry declares, aliases included -------------
+{
+  assert.equal(seededCommandsMismatch("@cotal-ai/web", [{ name: "__service-web" }]), undefined, "the web package's hidden service child matches its seed declaration");
+  assert.match(seededCommandsMismatch("@cotal-ai/web", [{ name: "__service-web", aliases: ["w"] }]) ?? "", /claiming \[__service-web, w\].*declares \[__service-web\]/, "an undeclared alias of a seeded command passed the seed check");
+  assert.match(seededCommandsMismatch("@cotal-ai/web", [{ name: "__service-web" }, { name: "dash" }]) ?? "", /declares \[__service-web\]/, "an undeclared seeded command passed the seed check");
+  assert.match(seededCommandsMismatch("@cotal-ai/web", []) ?? "", /declares \[__service-web\]/, "a seeded package that dropped its command passed the seed check");
+  assert.equal(seededCommandsMismatch("@example/not-seeded", [{ name: "x", aliases: ["y"] }]), undefined, "a package that is not seeded has no declared words");
+}
+
 // --- exact commands and flags-before-positionals stay inside the command grammar -----------------
 {
   const exactSend = await completionOut(["send"]);
-  assert.ok(exactSend.includes("dm\tunicast to a peer"), "exact send completes send subcommands");
+  assert.equal(registry.all<Command>("command").find((cmd) => cmd.name === "send")?.subcommands?.length ?? 0, 0, "send selects its destination with flags, not legacy dm/msg subcommands");
+  assert.ok(exactSend.trimEnd().endsWith(":nofiles"), "send has no positional body candidates or filename fallback");
   assert.ok(!exactSend.includes("spawn\t"), "exact send does not fall back to top-level commands");
 
   const flaggedSend = await completionOut(["send", "--space", "demo", ""]);
-  assert.ok(flaggedSend.includes("msg\tbroadcast to a channel"), "flags before send subcommands are ignored");
+  assert.ok(flaggedSend.trimEnd().endsWith(":nofiles"), "target flags do not turn the message body into legacy subcommands or filenames");
+  for (const value of [exactSend, flaggedSend]) assert.ok(!/^(?:dm|msg)\t/mu.test(value), "send does not offer removed subcommands");
+  const send = registry.all<Command>("command").find((cmd) => cmd.name === "send")!;
+  for (const name of ["to", "channel", "role"]) assert.ok(send.flags?.some((flag) => flag.name === name), `send declares the ${name} destination flag`);
   assert.ok(!flaggedSend.includes("spawn\t"), "flagged send does not fall back to top-level commands");
 
   const flaggedPersonas = await completionOut(["personas", "--space", "demo", ""]);
@@ -228,11 +440,24 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(attachName.trimEnd().endsWith(":nofiles"), "attach --name suppresses filename fallback");
 }
 
+// --- endpoint describe has no contract cache, so --refresh refuses before any request ------------
+{
+  const endpoint = registry.all<Command>("command").find((cmd) => cmd.name === "endpoint")!;
+  let refused: unknown;
+  try { endpoint.validate?.(parseCommandArgs(endpoint, ["describe", "manager", "--refresh"])); } catch (e) { refused = e; }
+  assert.ok(isCommandFailure(refused) && refused.code === "UNSUPPORTED", "endpoint describe --refresh refuses as UNSUPPORTED instead of being accepted and ignored");
+  endpoint.validate?.(parseCommandArgs(endpoint, ["describe", "manager"]));
+  for (const name of ["spawn", "status"]) {
+    const usage = registry.all<Command>("command").find((cmd) => cmd.name === name)?.usage ?? "";
+    assert.doesNotMatch(usage, /\[(?:persona|agent)\]/u, `${name} writes its optional name as a <placeholder>, never a bare word the census reads as a mode`);
+  }
+}
+
 // --- update grammar: registered in Setup with target selection -----------------------------------
 {
   const cmd = registry.all<Command>("command").find((candidate) => candidate.name === "update");
   assert.equal(cmd?.group, "Setup");
-  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["self", "space", "server", "creds"]);
+  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["self", "check", "json", "plain", "space", "server", "creds"]);
   assert.equal(parseCommandArgs(cmd!, ["--self"]).values.self, true);
   assert.throws(
     () => parseCommandArgs(cmd!, ["--unknown"]),
@@ -317,7 +542,7 @@ async function completionOut(positionals: string[]): Promise<string> {
   const line = refused.events.find((event) => event.includes("running manager continuity check"));
   assert.ok(line, "the refusal is printed under the continuity-check marker");
   assert.ok(
-    line.includes("Pick one with `--space <name>` or set a default with `cotal use <name>`"),
+    line.includes("pick one with `--space <name>` or set a default with `cotal use <name>`"),
     "the standing refusal carries the workspace renderer's remedy sentence",
   );
   assert.ok(!refused.events.includes("reconcile"), "a standing refusal still writes nothing");

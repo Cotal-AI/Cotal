@@ -1,15 +1,16 @@
 import { spawn } from "node:child_process";
-import { existsSync, openSync, closeSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, closeSync, writeFileSync, readFileSync } from "node:fs";
 import {
   DEFAULT_SERVER,
   LEASE_TTL_MS,
   awaitDeadDeliveryLease,
   mintCreds,
   newIdentity,
+  openPrivateAppend,
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
+import { DELIVERY_PROCESS, DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type CommandReader, type LivenessProbe, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
 import { selfArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
@@ -43,7 +44,7 @@ const deliveryCredsKeysToClear = (space: string) => [segmentedKey(DELIVERY_CREDS
  *  exits non-zero before reaching here), so this side never silently KEEPS or STOPS one either.
  *  `onDeliveryExit` hears the exit of a daemon this process launches; only a caller that outlives
  *  the launch (foreground `up`) can act on it. */
-type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number; maxSessions?: number; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
+type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommit?: { path: string; sha256: string }; wsPort?: number; maxSessions?: number; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
 
 /** The recorded daemon, attributed by {@link readProcessRecord} to a `cotal deliver` process. */
 function deliveryRecordState(
@@ -157,9 +158,9 @@ export async function stopOldHostingManagerIfPresent(
 }
 
 /** Start the delivery daemon detached (pid in `.cotal/delivery.<spaceKey>.pid`, output to
- *  `.cotal/delivery.<spaceKey>.log`), stopped by `cotal down`. Re-execs this CLI's `deliver` command;
- *  the daemon loads the pre-minted scoped `delivery.creds` (written by {@link ensureDelivery}) — it
- *  never sees the signer. */
+ *  `.cotal/delivery.<spaceKey>.log`), stopped by `cotal down`. Re-execs this CLI's hidden
+ *  `__daemon-deliver`, the `deliver` entry without its deprecation warning; the daemon loads the
+ *  pre-minted scoped `delivery.creds` (written by {@link ensureDelivery}) — it never sees the signer. */
 export function startDeliveryDetached(o: Opts = {}): number {
   const space = o.space ?? folderSpace();
   // First, for the reason startManagerDetached states: a `selfArgv` refusal (#1629) must not reclaim a
@@ -168,10 +169,10 @@ export function startDeliveryDetached(o: Opts = {}): number {
   // than start a second daemon beside a live one.
   const [node, ...self] = selfArgv();
   reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx(space));
-  const fd = openSync(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)), "a");
+  const fd = openPrivateAppend(canonicalLocalProcessPath(DELIVERY_LOGFILE, ctx(space)));
   const args = [
     ...self,
-    "deliver",
+    "__daemon-deliver",
     "--space",
     space,
     "--server",
@@ -337,17 +338,7 @@ export async function ensureDelivery(
   return { running: true, started: launched !== undefined, ...(launched !== undefined ? { pid: launched } : {}), responderBound: ready };
 }
 
-/** The delivery daemon as a local process: `cotal down` and `up`'s teardown stop it through this one
- *  descriptor, so both take the same reservation, identity check and SIGKILL escalation. */
-export const DELIVERY_PROCESS: LocalProcess = {
-  kind: "local-process",
-  name: "delivery",
-  label: "delivery daemon",
-  order: 20,
-  pidFile: DELIVERY_PIDFILE,
-  cooperativeStop: true,
-  isOwnCommand: commandIsCotalDelivery,
-};
+export { DELIVERY_PROCESS } from "@cotal-ai/workspace";
 
 /** Remove this space's delivery credentials after its required process stops have succeeded. */
 export async function removeDeliveryCredentials(space: string): Promise<void> {

@@ -958,6 +958,33 @@ managed-agent secret exchange MUST refuse every view other than `manager-caller`
 The service-only `service-endpoint` view (§13.1) is not selectable on either ordinary exchange
 face. Its dedicated authority path checks native service custody rather than an enrolled actor row.
 
+**User-mode chat sessions.** The auth service is a minting authority for chat sessions only
+(§13.1). A signed-in human opens one with a fresh IdP proof and the SHA-256 of a holder secret the
+client keeps in memory. The service derives the owner, draws the actor `chat_<26 base32>` and a
+fresh lifecycle UID, and pins the human's own `cli` grant: its lifecycle UID, head revision and the
+RFC 8785 digest of its row. The session's read and post lists MUST be contained in that grant, and
+its lifetime is at most 8 hours and never extended. A request that names an owner, actor, UID,
+scope, view or profile refuses. The holder index `chatholder.<owner>.<holderHash>` is created
+before any lifecycle write and only advanced by revision-pinned CAS (`reserved`, `provisioning`,
+`active`, `retired`), so a retry with the same holder hash converges on the same session and a
+retired hash never admits again. A `pending` session row authorizes nothing. Each bearer exchange
+presents the holder secret. Its TTL is at most the least of 900 s, the IdP proof's remaining life
+and the session's remaining life. The bearer is released only after the session row, the holder
+index, the parent pin and the session's own lifecycle head and root credential are read current
+both before and after signing. The callout mints a chat principal as the `agent` profile with the
+session's lists and no role, capability, endpoint capability or view. It refuses a chat bearer
+that carries a view or a scope, or whose row is not `active`, names another lifecycle, holds a
+moved parent pin or has a holder index that is not `active`. Retirement settles the session's
+lifecycle through the §13.1 barrier before the per-owner quota row `chatowner.<owner>` releases its
+slot. The auth service's sweep retires expired sessions the same way. It acts on an unfinished
+admission only after a 60 s quiet period, which is never the evidence: it fences the holder index
+first, drives the bound UID to a terminal gate, and releases the slot last. A pass makes at most 256
+of its own reads, runs at most 4 retirements at once and never waits for one. A retired row is
+compacted 24 hours after its expiry, once the UID's footprint is removed again. The routes are
+`POST /chat-session/open`, `/chat-session/bearer` and `/chat-session/retire`, on both exchange
+faces, with the same IdP proof check and the same capability rule as `/exchange`. Every refusal on
+them carries its effect outcome: `not-executed`, `executed` or `unknown`.
+
 ---
 
 ## 11. Versioning and extensibility
@@ -1180,7 +1207,8 @@ sufficient *authority* identity on this surface. Two further identity components
   identifier of one managed lifecycle under a principal. The UID is entropy, never order:
   no allocator counter exists, and what is durable and monotonic is only the never-used
   set. Before anything else, the minting authority (the manager for managed agents; the
-  provisioner for endpoint daemons and operator credentials) **reserves the candidate UID
+  provisioner for endpoint daemons and operator credentials; the auth service for user-mode chat
+  sessions only, §10) **reserves the candidate UID
   space-globally**: a create-only write of the reservation key `uid.<lifecycleUid>`
   (§13.7), never deleted for the life of the space. A create conflict burns the candidate
   and draws a fresh one (the alias head alone cannot reject the same UID under a different
@@ -1320,6 +1348,20 @@ sufficient *authority* identity on this surface. Two further identity components
   barrier's job is that no such process remains once the successor answers.) Where
   revocation or verified eviction is unavailable (e.g. static credential material
   pre-rotation, Appendix B), takeover MUST fail loud rather than proceed.
+
+**Retirement-only composition.** A manager instance MAY run as a retirement-only composition of
+its own commit path. Its first durable act MUST be to acquire the per-instance liveness lease of
+its own persisted logical `instanceId`; it MUST NOT read a lifecycle, slot or gate row before
+that lease is held, and it MUST exit without effect if the lease is held by another process. It
+MUST NOT register or serve the endpoint, hold the renewal lease, accept spawn or launch, adopt or
+restart a seat, or run the resume path. It drives only the terminal retirement of non-retired
+lifecycles whose slot names its own logical `instanceId` as owner, through the same operation
+identity an ordinary instance would use, then releases the lease and exits. For every slot it
+reads it records one outcome: `retired`, `already-retired`, `skipped-not-owned` (the slot names
+another owner or none), or `held` (the slot or its head could not be read or parsed, or the
+terminal did not complete). A `skipped-not-owned` or `held` slot is never counted as retired.
+It is the minting manager's commit path for the purposes of the §13.9 lifecycle-mapping writer
+row; no other principal, credential profile or grant is introduced.
 
 **Credential ledger (normative).** Ingress has no epoch fence, so revocation is only as
 complete as the set of credentials it covers, and the lifecycle's `currentCredentialId` is
@@ -3270,6 +3312,15 @@ session.
 - `events`, name + payload schema; events ride the journal contract on the event plane
   (`epe….ev.<cluster>.<event>`), read-contained by event-topic grants.
 
+**Manager presence reads.** The reference manager's `ps` and `inspect` rows may carry
+`presenceIdentityVerified` and `presenceObservedAt`. A true identity flag means the
+name-matched roster card also matched the managed seat's principal and lifecycle UID.
+The timestamp is the manager's snapshot time and appears only when its presence view
+is current and identity is verified; it is not a heartbeat from the seat. A client
+requires both a current `meshView` and a true identity flag before presenting the
+row's roster status or `activeAt` as this lifecycle's observation. A false or absent
+flag is not proof that the seat is absent, and older managers may omit both fields.
+
 **Effect.** A command declaration carries `effect`, one of `read` or `write`.
 
 **Reachability.** `effect` is reachable only under `protocol.v: 2` (*Version*, below). A responder
@@ -4193,6 +4244,7 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 
 | Transition | Writer profile | Exact namespace (per space/endpoint) | Class |
 | --- | --- | --- | --- |
+| Native current-connection identity | one-shot `provisioner` | publish only `$SYS.REQ.USER.INFO`, subscribe its existing connection-scoped inbox. The configured NATS system account imports/maps this service to the requesting connection's own account and user; no arbitrary-account/user variant or system credential is granted. Clients compare the response's user/account and serving server with their pinned connection. Response permissions, expiry and metadata are not an issued ceiling, lifecycle or apply authority | native NATS read; own connection only |
 | Request publish | capability holder (agent, per capability) | per §13.2 form: `ep.{one,all}.<endpoint>.<command>[.<mode>[.<target tokens per mode>]].<cO>.<cA>.<cUid>.*` and `ep.inst.<endpoint>.<instanceId>.<command>[.<mode>[.<target tokens per mode>]].<cO>.<cA>.<cUid>.*`, mode/target tokens literal per the minted capability (`handle`: the full redemption-pinned triple) | direct, untrusted input, broker-confined |
 | Reply subscribe (caller) | capability holder | `ep.reply.*.*.*.<cO>.<cA>.<cUid>.*` (exact arity) | direct read; own rail only |
 | Serve subscribe | the endpoint's serve credential | per registered command: `"ep.one.<endpoint>.<command>.> <endpoint>"` (queue-qualified ONLY), `ep.all.<endpoint>.<command>.>` plain, `ep.inst.<endpoint>.<instanceId>.<command>.>` exact (never a cross-command `>` | direct) name/instance/command-pinned; epoch deliberately absent (§13.1 barrier is the fence) |
@@ -4226,6 +4278,7 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Session `.in` subscribe | the serving instance (per-session credential) | `eps.<endpoint>.<sessionId>.<epoch>.in` exact | direct read |
 | Session `.out` publish | the serving instance (per-session credential) | `eps.<endpoint>.<sessionId>.<epoch>.out` exact | direct |
 | Session `.out` subscribe | the session's caller (per-session credential) | `eps.<endpoint>.<sessionId>.<epoch>.out` exact | direct read |
+| Chat-session admission index, owner quota and sweep cursor (§10) | the trusted auth path (§9/§10), admission and its sweep only | `$KV.cotal_auth_<space>.chatholder.<owner>.<holderHash>` (create-only, then revision-pinned CAS, never deleted), `….chatowner.<owner>` (create-only when absent, then revision-pinned CAS), `….chatsweep.cursor` (revision-pinned CAS); exact arity on each, never a `chat…>` wildcard. The chat principal's own leaf holds none of them | mediated |
 | Session ledger (one-use redemption, credential ids, revocation state, authenticated close) | the trusted auth path (§9/§10) | `$KV.cotal_auth_<space>.session.<sessionId>`, create-only CAS per `sessionId`, monotonic state (§13.6) | mediated |
 | Credential ledger (issuance gate, descendant enumeration, lineage index, revocation) | the trusted auth path (§9/§10) | writes: `$KV.cotal_auth_<space>.cred.<lifecycleUid>.<credentialId>` + `….gate.<lifecycleUid>` (the issuance gate, revision-pinned CAS is the mint fence, §13.1) + `….epgate.<endpoint>.<instanceId>` + `….epcred.<endpoint>.<instanceId>.<credentialId>` + the exact `….eprepair.<endpoint>.<instanceId>` interrupted-repair cursor (the disjoint endpoint families, §13.1: same protocol, explicit prefixes, never arity; the repair executor is pinned to one exact cursor key) + `….stage.>` (implementation staging/tombstone fences; NEVER under `cred.`/`epcred.`, §13.1) + `….natkey.<userNkey>` (create-only native-key issuance evidence, §13.1) + `….srcgate.<issuerKeyId>.<id>` (per-handle source gate, §13.1) + `….bysrc.<issuerKeyId>.<id>.<lifecycleUid>.<credentialId>` (the per-ancestor lineage index) + `….session.<sessionId>` (create-CAS `issuing`, finalize-CAS `active`, §13.6) + `….plane` (the ONE plane-ownership claim row, §13.13: create/revision-CAS by the barrier profile only, exact arity, never `plane.>`); reads: **leader-served `$JS.API.STREAM.MSG.GET.KV_cotal_auth_<space>`** (with `allow_direct=false` a KV get is exactly this body-selected `last_by_subj` call against the stream LEADER; read-your-writes, not a follower-served `DIRECT.GET`; the body-selection trades broker confinement for trusted profile custody; the separate tool-result snapshot reader below holds the same leader-read verb without ledger write authority) for gate/session/row state, which is why the mint and session fences are revision-pinned CAS *writes* rather than reads (a read is never a fence, §13.1); and **fence-free prefix enumeration through the SEALED auth-ledger scanner, never a runtime consumer create**: no standing or runtime-reachable auth credential (the takeover/retirement/handle-revocation barrier, the session sweep, any replayable executor) holds `$JS.API.CONSUMER.CREATE` on `cotal_auth_<space>`, because a consumer-create request BODY is not subject-ACL confinable: an extended `CONSUMER.CREATE.<stream>.<name>.<filter>` grant still admits a body with `durable_name` (equal to the subject name token) and a push `deliver_subject`, a DURABLE exporter of every current and future row that SURVIVES the credential's connection close and revocation; a subject ACL cannot constrain that body, so the only safe runtime grant is none. The dynamic-enumeration `CONSUMER.CREATE` lives in exactly ONE profile, a SEALED scanner the trusted auth process opens for itself and NEVER hands out: its credential, connection, and identity seed reach no caller, child, log, or persistence (a process-memory compromise reaches it, the SAME residual class as the account signing seed the process already holds; never broker confinement, never a network-reachable JWT). The scanner is pinned to ONE literal consumer name under a FORCED config: pull (no `deliver_subject`), ephemeral (no `durable_name`), `AckPolicy.None`, `DeliverPolicy.LastPerSubject`, memory storage, bounded inactivity; re-read and bind-verified before use and unconditionally deleted after, with every scan over the stream serialized on that one name, and the injected scanner bonded to its exact space so a hand-assembled or foreign-space scanner never enumerates. The scan is FENCE-FREE by construction: under the history=1 store a same-subject `active→revoked` overwrite EVICTS the pre-scan revision, so a sequence/`STREAM.INFO` cutoff would DROP that subject and leave its holder un-revoked; a LastPerSubject read carries no upper cutoff and, draining to a freshly re-observed zero pending (never a stale local count), returns each subject's CURRENT last, so a concurrent overwrite is SEEN, never dropped. It enumerates exactly `cred.<lifecycleUid>.>`, `bysrc.<issuerKeyId>.<id>.>`, `stage.>` (operation-intent discovery), or `session.>`. The barrier's family enumeration and the expiry sweep are executable reads, not prose. The tool-result profiles below add only their listed auth-store verbs and families; no untrusted profile gains an auth-store grant | mediated |
 | Tool-result consent record (§13.19) | the trusted auth mint writer, never its derived host writers | `$KV.cotal_auth_<space>.consent.*` publish; retained auth leader-read authority checks the recorded consent. The revocation writer has no consent write grant | mediated; consent schema, authenticated holder/target and expiry checks |
@@ -5859,7 +5912,10 @@ single-function profiles, each granting only the verbs its function needs and no
   the §13.9 matrix; `poolD`, `effD`, and the read mediator's reader durables
   (`decD`/`goalD`/`eveD-n`/`recD-n`, owned by the mediator, never by callers, §13.9
   "Mediated reads"), all PULL with exact full-tail filters; and mints scoped credentials;
-  ephemeral onboarding authority.
+  ephemeral onboarding authority. It also publishes `$SYS.REQ.USER.INFO` to observe its own
+  native connection identity through the configured system account's import, with replies on
+  its existing scoped inbox. It holds no arbitrary-user/account query or system credential;
+  the response is not a permission ceiling, lifecycle or authorization to apply changes.
 - `deprovisioner`: target-pinned teardown of ONE retired lifecycle's footprint, minted per
   teardown with the target's `(principal, lifecycleUid)` in every exact-name grant; it can
   delete only lifecycle-keyed names, so it structurally cannot reach a same-name successor
@@ -5931,7 +5987,8 @@ single-function profiles, each granting only the verbs its function needs and no
 - `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe`: the
   human-CLI and maintenance surfaces, each scoped to its verbs. `teardown` also lists stream names,
   so space deletion finds the transfer buckets (§8), and holds `STREAM.INFO` and `STREAM.DELETE` on
-  each transfer stream named at its mint.
+  each transfer stream named at its mint. The ephemeral teardown connection may read only its own
+  broker user/account identity before native impact or deletion; this grants no other principal lookup.
 - `issuer`: one issuance window (§13.15), minted per mint or per lifecycle terminal by the party
   holding the space signer; the issued and accepted stores plus one auth-store liveness read.
 - `run-admitter`: one run's admission record or revocation marker (§14.8), minted per run for
@@ -6006,6 +6063,8 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 | Date | Revision |
 | --- | --- |
 | 2026-10-21 | **Own-DM-only reader (§8), additive.** A client may read its DM inbox holding only its own `dm_` durable: it binds an existing durable, never creates one, refuses when it is missing, keeps the §5 sender check, and issues only CONSUMER.INFO, MSG.NEXT and ack requests on that durable. No credential profile is added. |
+| 2026-10-21 | **User-mode chat sessions (§10, §13.1, §13.9), additive.** The auth service becomes a minting authority for chat sessions only. It admits one session per holder hash under the human's own `cli` grant, pins that grant, issues bearers of at most 900 s that it re-checks before and after signing, and mints the plain `agent` leaf with the session's lists. Three auth-bucket writer families (`chatholder`, `chatowner`, `chatsweep.cursor`) join the trusted auth path. |
+| 2026-10-21 | **Retirement-only manager composition (§13.1), additive.** An optional composition takes its own per-instance liveness lease before reading any lifecycle, slot or gate row. It records each slot as retired, already-retired, skipped-not-owned or held, never counts the latter two as retired, and introduces no new principal, credential profile or grant. |
 | 2026-10-19 | **A spawn-scoped `manager-caller` view reads its launch options (§9, §10), additive.** A person who may spawn on their own Manager could not read what a launch there needs: `status`, `models` and `resolve-cwd` were not in the view unless the actor held `admin`, and `resolve-cwd` was in no view at all. A view whose actor holds `spawn` now carries those three on its one pinned instance. A `run`-only or no-scope view gains nothing, `ps` and `slots` stay with `admin`, and no class, scatter or other-instance row is added. The standing `spawn` set is unchanged. |
 | 2026-10-19 | **Observer and admin history readers are deletable (Appendix B), breaking.** Each history read on these profiles left its consumers to the broker's five-minute inactive threshold, because the profiles held no `CONSUMER.DELETE` (#691). A dashboard polling history filled the stream's consumer limit, and every later read was refused with "maximum consumers limit reached". The observer now holds `CONSUMER.DELETE` on `CHAT` for `hist_<readerId>_<n>`, `n` in `0..7`, and admin holds the same names on `DM`. These are the connection's own history-reader names and no other consumer's: `readerId` is a static credential's nkey, or under the auth callout the server's id and the client id it assigned the connection, never the inbox nonce a client chooses. A history read uses them, deletes each reader when its step ends, and never deletes a consumer it finds under one of them. A credential minted without these rows cannot clean up, so a current client fails its history read and says to remint the credential. |
 | 2026-10-19 | **Private tool results (§13.19), additive; accepted, not implemented or enabled.** Defines the consent anchor role, managed-child serving request, consent and revocation record families, canonical START frontier, fixed audiences, exact-instance binding and bounded inert result journal. Revocation depends on a separately reviewed complete leader snapshot and an established enforced clock-skew bound; absent prerequisites answer `unavailable`. Activation requires every owner's qualified part and a stock release. Public tool arguments and results remain withheld. `protocolVersion` is unchanged. |

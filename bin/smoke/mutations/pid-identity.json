@@ -52,7 +52,7 @@
     {
       "name": "M4 writeIdentityPin never writes a sibling (the #1437 pin-absent defect)",
       "file": "packages/workspace/src/pid.ts",
-      "find": "  writeFileSync(identityPinPath(pidfilePath), formatRecord(rec));",
+      "find": "  writePrivateRecord(identityPinPath(pidfilePath), formatRecord(rec));",
       "replace": "  return;",
       "expectRed": "F2 a win32 launch WRITES the sibling pin (the #1437 defect is writing none)",
       "cell": "F2 a win32 launch WRITES the sibling pin (the #1437 defect is writing none)",
@@ -82,8 +82,8 @@
     {
       "name": "M7 the pidfile is written in place during temporaries, never to a temporary (#1238)",
       "file": "packages/workspace/src/pid.ts",
-      "find": "    writeFileSync(pidTemp, String(pid));\n",
-      "replace": "    writeFileSync(pidfilePath, String(pid));\n",
+      "find": "    create(pidTemp, String(pid));\n",
+      "replace": "    writePrivateRecord(pidfilePath, String(pid));\n",
       "expectRed": "G0 a first publish with no injection leaves a complete, matching record",
       "cell": "G0 a first publish with no injection leaves a complete, matching record",
       "note": "Hand-confirmed: G0 is the FIRST writePidPair call ever made against a fresh pidfile path, so it is the call that hits the mutant first (not G1): the pidfile is written directly, then the pidfile rename (replace(pidTemp, pidfilePath)) throws ENOENT, which it never retries, since pidTemp was never created. G0 is try/catch-wrapped so this is now a clean, named red rather than an uncaught crash.",

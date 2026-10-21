@@ -15,8 +15,8 @@
     {
       "name": "the Machine row drops the artifact identity",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "  row(\"cotal-ai\", `${c.green(`v${cliVersion()}`)} ${c.dim(cliProvenanceLabel())}`);",
-      "replace": "  row(\"cotal-ai\", c.green(`v${cliVersion()}`));",
+      "find": "    [\"cotal-ai\", cell(`v${m.version} (${m.install.kind === \"source\" ? \"source checkout\" : m.install.kind}: ${m.install.root})`, \"ok\")],",
+      "replace": "    [\"cotal-ai\", cell(`v${m.version}`, \"ok\")],",
       "expectRed": "source status names the source checkout root",
       "cell": "source status names the source checkout root"
     },

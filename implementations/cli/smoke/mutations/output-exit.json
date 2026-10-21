@@ -1,0 +1,126 @@
+{
+  "suite": [
+    "implementations/cli/smoke/command-kernel.smoke.ts",
+    "implementations/cli/smoke/output-exit.fixture.ts"
+  ],
+  "guard": "the kernel exits a classified failure by its outcome and writes its envelope on --json, reports an unclassified error from a structured command as unknown, keeps a usage error under --json to one envelope, makes --json imply --no-input, version --json labels an unreadable extension list partial, and no command may declare a global flag's name",
+  "command": "pnpm smoke:cli-kernel",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/output-exit.json",
+  "why": [
+    "The kernel is where a command's failure becomes an exit code and a document. Each mutation restores one way that mapping can drift, and must redden the assertion that names it. The suite imports the CLI source directly, so no rebuild is needed."
+  ],
+  "mutations": [
+    {
+      "name": "every classified failure exits 1",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  process.exit(exitCode(failure.outcome, failure.code));\n",
+      "replace": "  process.exit(1);\n",
+      "expectRed": "a boundary refusal exits 2",
+      "cell": "a boundary refusal exits 2"
+    },
+    {
+      "name": "an unclassified error from a structured command exits 1",
+      "file": "implementations/cli/src/command.ts",
+      "find": "    if (structured(cmd, mode)) {\n",
+      "replace": "    if (false && structured(cmd, mode)) {\n",
+      "expectRed": "an unclassified error from a structured command exits 3",
+      "cell": "an unclassified error from a structured command exits 3"
+    },
+    {
+      "name": "--json does not imply --no-input",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  if (structured(cmd, first) && parsed.values.json === true) disableInput();\n",
+      "replace": "",
+      "expectRed": "--json implies --no-input",
+      "cell": "--json implies --no-input"
+    },
+    {
+      "name": "a usage error under --json prints help instead of an envelope",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  if (cmd && json) failureExit(",
+      "replace": "  if (false && cmd && json) failureExit(",
+      "expectRed": "a usage error under --json is one USAGE_INVALID envelope",
+      "cell": "a usage error under --json is one USAGE_INVALID envelope"
+    },
+    {
+      "name": "-j in a group of short flags is not read",
+      "file": "implementations/cli/src/command.ts",
+      "find": "(word) => word === \"--json\" || word === \"-j\" || (/^-[A-Za-z]{2,}$/.test(word) && word.includes(\"j\") && [...word.slice(1)].every((ch) => booleans.has(ch))),",
+      "replace": "(word) => word === \"--json\" || word === \"-j\",",
+      "expectRed": "-j inside a group of short flags asks for the usage envelope",
+      "cell": "-j inside a group of short flags asks for the usage envelope"
+    },
+    {
+      "name": "global flags after the command word reach its parser",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  return cmd && (cmd.rawArgs || cmd.name.startsWith(\"__\")) ? [...words] : stripGlobalFlags(words);\n",
+      "replace": "  return [...words];\n",
+      "expectRed": "--no-input after the command's words disables input",
+      "cell": "--no-input after the command's words disables input"
+    },
+    {
+      "name": "an unreadable manifest is reported complete",
+      "file": "implementations/cli/src/commands/help.ts",
+      "find": "        ...(unreadable === undefined\n          ? {}\n",
+      "replace": "        ...(true\n          ? {}\n",
+      "expectRed": "an unreadable manifest makes the read partial, not empty and complete",
+      "cell": "an unreadable manifest makes the read partial, not empty and complete"
+    },
+    {
+      "name": "a connect refusal from a structured command is reported unknown",
+      "file": "implementations/cli/src/command.ts",
+      "find": "      if (isConnectRefusal(e)) failureExit(cmd, e.failure(), json);\n",
+      "replace": "",
+      "expectRed": "a connect refusal from a structured command exits 2",
+      "cell": "a connect refusal from a structured command exits 2"
+    },
+    {
+      "name": "an unresolvable target from a structured command is reported unknown",
+      "file": "implementations/cli/src/command.ts",
+      "find": "      if (isWorkspaceTargetError(e)) {\n        const { message, remedy } = workspaceErrorParts({ kind: \"target\", error: e });",
+      "replace": "      if (isWorkspaceTargetError(e) && String(e.code) === \"\\u0000never\") {\n        const { message, remedy } = workspaceErrorParts({ kind: \"target\", error: e });",
+      "expectRed": "an unresolvable target exits 2",
+      "cell": "an unresolvable target exits 2"
+    },
+    {
+      "name": "a space catalog that stopped a structured command is reported unknown",
+      "file": "implementations/cli/src/command.ts",
+      "find": "      if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure(\"refused\", e.code, e.message), json);\n",
+      "replace": "",
+      "expectRed": "a space catalog that stopped the command exits 2",
+      "cell": "a space catalog that stopped the command exits 2"
+    },
+    {
+      "name": "an unanswered read is not classified",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "  \"deadline-exceeded\": \"TARGET_UNAVAILABLE\",\n",
+      "replace": "",
+      "expectRed": "an unanswered read is an unavailable target",
+      "cell": "an unanswered read is an unavailable target"
+    },
+    {
+      "name": "a denied read is not classified",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "  \"permission-denied\": \"PERMISSION_DENIED\",\n",
+      "replace": "",
+      "expectRed": "a denied read is PERMISSION_DENIED",
+      "cell": "a denied read is PERMISSION_DENIED"
+    },
+    {
+      "name": "a read failure nothing classifies is unknown",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "  return code ? new CommandFailure(\"refused\", code, message, opts) : new CommandFailure(\"failed\", \"OPERATION_FAILED\", message, opts);\n",
+      "replace": "  return code ? new CommandFailure(\"refused\", code, message, opts) : new CommandFailure(\"unknown\", \"OPERATION_UNKNOWN\", message, opts);\n",
+      "expectRed": "a read that failed for an unclassified reason is failed, not unknown",
+      "cell": "a read that failed for an unclassified reason is failed, not unknown"
+    },
+    {
+      "name": "a command may declare a global flag",
+      "file": "implementations/cli/src/command.ts",
+      "find": "        ...globalFlagDeclarationProblems(cmd),\n",
+      "replace": "",
+      "expectRed": "a command that declares a global flag is an internal error that exits 1",
+      "cell": "a command that declares a global flag is an internal error that exits 1"
+    }
+  ]
+}

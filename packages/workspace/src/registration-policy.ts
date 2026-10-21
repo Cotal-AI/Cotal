@@ -1,9 +1,12 @@
 import { assertUserAuthInfo, findMesh, recordMesh, type MeshEntry, type UserAuthInfo } from "./mesh-registry.js";
 import { isLoopbackHost } from "./join-target.js";
+import type { RefusalCode } from "./output.js";
 
-/** A rule's verdict: the value it produced, or the operator-facing sentence explaining the refusal. */
-export type Check<T> = { ok: true; value: T } | { ok: false; message: string };
-const bad = (message: string): Check<never> => ({ ok: false, message });
+/** A rule's verdict: the value it produced, or the operator-facing sentence explaining the refusal
+ *  and, where the rule knows it, the stable code a structured refusal carries. */
+export type Check<T> = { ok: true; value: T } | { ok: false; message: string; code?: RefusalCode };
+/** A bundle that fails a rule here is invalid input, unless the rule says otherwise. */
+const bad = (message: string, code: RefusalCode = "SCHEMA_INVALID"): Check<never> => ({ ok: false, message, code });
 const good = <T>(value: T): Check<T> => ({ ok: true, value });
 
 export interface UserBundle {
@@ -43,7 +46,7 @@ export async function checkDiscoveryDocument(res: Response): Promise<Check<UserB
   try {
     doc = JSON.parse(raw);
   } catch {
-    return bad(`✗ ${res.url} answered ${res.status} with ${res.headers.get("content-type") ?? "no content type"}, not the JSON discovery document`);
+    return bad(`✗ ${res.url} answered ${res.status} with ${res.headers.get("content-type") ?? "no content type"}, not the JSON discovery document`, "TARGET_UNAVAILABLE");
   }
   return checkBundleDocument(doc);
 }
@@ -84,7 +87,7 @@ function checkBundleDocument(parsed: unknown): Check<UserBundle> {
       return bad("✗ the user-auth bundle's agent-provisioning endpoint (userAuth.endpoints.agentProvisioningUrl) is not a URL");
     }
     const refusal = assertPinnedFetchUrl(pu, "the bundle's agent-provisioning endpoint (userAuth.endpoints.agentProvisioningUrl)");
-    if (refusal) return bad(refusal);
+    if (refusal) return bad(refusal, "UNSUPPORTED");
   }
   if (typeof doc.sentinelCreds !== "string" || !doc.sentinelCreds)
     return bad("✗ the user-auth bundle carries no sentinelCreds - the sentinel identity is part of the export");

@@ -35,9 +35,11 @@
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
+  acquireLock,
   assertDerivedOwnerToken,
+  assertManagedGrantCustody,
   assertValidChannel,
   assertValidOwnerToken,
   mintLifecycleUid,
@@ -45,10 +47,13 @@ import {
   parseActorLedgerSource,
   parsePrincipalKey,
   patternInAllow,
+  sameManagedGrantCustody,
   writeSecretFile,
   type IssuedSourceRef,
+  type ManagedGrantCustody,
 } from "@cotal-ai/core";
 import { grantCommandLine } from "./grant-command.js";
+import { chatSessionAliasPresent } from "./chat-session-row.js";
 import type { ActorGrant } from "./idp.js";
 import type { ValidatedUserToken } from "./token.js";
 import type { AclResolver } from "./permissions.js";
@@ -106,6 +111,13 @@ export interface ActorRow {
    *  next mint can never name the successor's broker resources. Absent on legacy/interactive rows:
    *  the callout refuses to mint agent creds without one (the v0.4 hard cut). */
   lifecycleUid?: string;
+  /** Who holds this managed lifecycle, recorded by the writer that granted it: a manager on this
+   *  host attesting its own logical instance id, the auth service enrolling for an authenticated
+   *  remote manager, or a foreground spawn with no manager. REQUIRED on every managed row written
+   *  by this version, REFUSED on an interactive row. A managed row written before this field
+   *  existed reads with it absent; a reader that needs the binding must refuse such a row rather
+   *  than infer one. */
+  custody?: ManagedGrantCustody;
   /** ISO timestamp of the grant (audit). */
   grantedAt: string;
 }
@@ -162,6 +174,12 @@ function readRow(path: string, kind: ActorKind): ActorRow {
     throw new Error(`${path}: an interactive grant must not carry an agent token hash - it was written by the wrong path; remove the row and re-grant (\`cotal actor grant\`)`);
   if (kind === "managed-agent" && !(typeof parsed.tokenHash === "string" && /^[0-9a-f]{64}$/.test(parsed.tokenHash)))
     throw new Error(`${path}: managed-agent grant has a missing/corrupted secret hash - respawn the agent (\`cotal spawn\`) to rewrite it`);
+  if (kind === "interactive" && parsed.custody !== undefined)
+    throw new Error(`${path}: an interactive grant must not carry managed custody - it was written by the wrong path; remove the row and re-grant (\`cotal actor grant\`)`);
+  if (kind === "managed-agent" && parsed.custody !== undefined) {
+    try { assertManagedGrantCustody(parsed.custody); }
+    catch (e) { throw new Error(`${path}: managed-agent grant has a malformed custody record (${e instanceof Error ? e.message : String(e)}) - respawn the agent to rewrite it`); }
+  }
   const { ver: _ver, ...row } = parsed;
   return row;
 }
@@ -218,6 +236,13 @@ export function findManagedActor(dir: string, owner: string, actor: string): Act
 export function findActorUnified(dir: string, owner: string, actor: string): (ActorRow & { kind: ActorKind }) | undefined {
   const interactive = findIn(dir, "interactive", owner, actor);
   const managed = findIn(dir, "managed-agent", owner, actor);
+  // THE THIRD SPACE: a principal present in `chat-sessions/` AND in either grant space is a
+  // broken ledger and denies. A chat row is never returned here: it is not an actor grant, and its
+  // connect authority is the chat arm's closed reader plus the holder index (chat-session-row.ts).
+  if ((interactive || managed) && chatSessionAliasPresent(dir, owner, actor))
+    throw new Error(
+      `actor "${actor}" is present in BOTH the chat-session row space and a grant row space - a broken ledger denies; a chat alias is never an interactive or managed grant`,
+    );
   if (interactive && managed)
     throw new Error(
       `actor "${actor}" is granted in BOTH the interactive and managed row spaces - a broken ledger denies; remove one of ${rowPath(dir, "interactive", owner, actor)} / ${rowPath(dir, "managed-agent", owner, actor)}`,
@@ -234,6 +259,14 @@ function writeRow(dir: string, kind: ActorKind, row: ActorRow): void {
   const tmp = `${path}.${process.pid}.tmp`;
   writeSecretFile(tmp, JSON.stringify({ ver: LEDGER_VER, ...row } satisfies RowFile, null, 2));
   renameSync(tmp, path);
+}
+
+/** An alias present in the chat-session row space is never written as an interactive or managed
+ *  grant. (The ordinary-name `chat_` prefix reservation lives at the static manager's admission
+ *  boundary, not here.) */
+function assertNotChatAlias(dir: string, owner: string, actor: string, writer: string): void {
+  if (chatSessionAliasPresent(dir, owner, actor))
+    throw new Error(`${writer}: actor "${actor}" is a chat session - a chat session is admitted only by the auth service, never granted; pick another actor name`);
 }
 
 function assertRowInputs(row: Omit<ActorRow, "grantedAt">): void {
@@ -273,9 +306,16 @@ function assertRowInputs(row: Omit<ActorRow, "grantedAt">): void {
  *  the envelope (an interactive row that carries a parent still gets link-checked when a managed
  *  chain passes THROUGH it). */
 export function grantActor(dir: string, row: Omit<ActorRow, "grantedAt">): ActorRow {
+  return withManagedGrantTransaction(dir, (tx) => tx.grantInteractive(row));
+}
+
+function rawGrantInteractive(dir: string, row: Omit<ActorRow, "grantedAt">): ActorRow {
   assertRowInputs(row);
+  assertNotChatAlias(dir, row.owner, row.actor, "grantActor");
   if (row.tokenHash !== undefined)
     throw new Error("grantActor: an interactive grant cannot carry an agent token hash - managed-agent rows are written by the spawn path only");
+  if (row.custody !== undefined)
+    throw new Error("grantActor: an interactive grant cannot carry managed custody - only a managed-agent row records who holds its lifecycle");
   const managedRefusal = () =>
     new Error(`actor "${row.actor}" is a managed agent - its grant is owned by the spawn lifecycle (respawn rewrites it, despawn revokes it); pick another actor name for an interactive grant`);
   if (findIn(dir, "managed-agent", row.owner, row.actor)) throw managedRefusal();
@@ -394,12 +434,25 @@ function widenGrantCommand(
   });
 }
 
+/** The managed-row input: every grant field plus the REQUIRED secret hash and custody. */
+export type ManagedGrantInput = Omit<ActorRow, "grantedAt" | "custody"> & { tokenHash: string; custody: ManagedGrantCustody };
+
 /** Author a MANAGED-AGENT row (spawn path only): the same upsert semantics, in the managed space,
- *  with the secret hash REQUIRED — and never shadowing an interactive row. */
-export function grantManagedActor(dir: string, row: Omit<ActorRow, "grantedAt"> & { tokenHash: string }): ActorRow {
+ *  with the secret hash and custody REQUIRED — and never shadowing an interactive row. Takes the
+ *  managed-grant lock for this one write; a caller that must decide on a read first uses
+ *  {@link withManagedGrantTransaction} instead. */
+export function grantManagedActor(dir: string, row: ManagedGrantInput): ActorRow {
+  return withManagedGrantTransaction(dir, (tx) => tx.grantManaged(row));
+}
+
+function rawGrantManaged(dir: string, row: ManagedGrantInput): ActorRow {
   assertRowInputs(row);
+  assertNotChatAlias(dir, row.owner, row.actor, "grantManagedActor");
   if (!/^[0-9a-f]{64}$/.test(row.tokenHash))
     throw new Error("grantManagedActor: tokenHash must be a sha256 hex digest");
+  // Custody is checked at runtime as well as by type: an untyped caller must not write a managed
+  // row that cannot say who holds its lifecycle.
+  assertManagedGrantCustody(row.custody);
   assertWithinSpawnerGrant(dir, row, "spawn");
   const shadowRefusal = () =>
     new Error(`actor "${row.actor}" already has an interactive grant - a managed agent cannot shadow it; revoke it first (\`cotal actor revoke ${row.actor}\`) or spawn under another name`);
@@ -409,7 +462,7 @@ export function grantManagedActor(dir: string, row: Omit<ActorRow, "grantedAt"> 
   // name a lifecycle nobody runs. Only the interactive grantActor mints its own.
   if (row.lifecycleUid === undefined || row.lifecycleUid === "")
     throw new Error("grantManagedActor: a managed grant must carry the lifecycle uid the spawn path provisioned under; the ledger never mints one");
-  const full: ActorRow = { ...row, lifecycleUid: row.lifecycleUid, grantedAt: new Date().toISOString() };
+  const full: ActorRow = { ...row, lifecycleUid: row.lifecycleUid, custody: row.custody, grantedAt: new Date().toISOString() };
   writeRow(dir, "managed-agent", full);
   // Symmetric post-write compensation (see grantActor) — at most one surviving row per principal.
   if (findIn(dir, "interactive", row.owner, row.actor)) {
@@ -423,18 +476,41 @@ export function grantManagedActor(dir: string, row: Omit<ActorRow, "grantedAt"> 
  *  bearer mints and NEW connects immediately (both boundaries read fresh); an ALREADY-LIVE
  *  connection dies at its bearer-bound JWT expiry — live eviction is the D5 lever, not the ledger's. */
 export function revokeActor(dir: string, owner: string, actor: string): boolean {
-  return revokeIn(dir, "interactive", owner, actor);
+  return withManagedGrantTransaction(dir, (tx) => tx.revokeInteractive(owner, actor));
 }
 
 export function revokeManagedActor(dir: string, owner: string, actor: string): boolean {
-  return revokeIn(dir, "managed-agent", owner, actor);
+  return withManagedGrantTransaction(dir, (tx) => tx.revokeManaged(owner, actor));
 }
 
 /** Revoke a managed row only while it still names `lifecycleUid`: a caller releasing one lifecycle
  *  must never remove the grant a same-name successor holds. */
 export function revokeManagedActorAt(dir: string, owner: string, actor: string, lifecycleUid: string): boolean {
+  return withManagedGrantTransaction(dir, (tx) => tx.revokeManagedAt(owner, actor, lifecycleUid));
+}
+
+/** The outcome of a custody-pinned revoke. Only `revoked` removed a row. */
+export type ManagedRevokeIfResult = "revoked" | "absent" | "superseded" | "custody-mismatch";
+
+/** Revoke a managed row only while it still names BOTH `lifecycleUid` and exactly `custody`, read
+ *  under the managed-grant lock. A row at another uid is a successor (`superseded`); a row at the
+ *  same uid with another custody, or with none, is not this caller's (`custody-mismatch`). */
+export function revokeManagedActorIf(dir: string, owner: string, actor: string, expected: { lifecycleUid: string; custody: ManagedGrantCustody }): ManagedRevokeIfResult {
+  return withManagedGrantTransaction(dir, (tx) => tx.revokeManagedIf(owner, actor, expected));
+}
+
+function rawRevokeManagedAt(dir: string, owner: string, actor: string, lifecycleUid: string): boolean {
   if (findIn(dir, "managed-agent", owner, actor)?.lifecycleUid !== lifecycleUid) return false;
   return revokeIn(dir, "managed-agent", owner, actor);
+}
+
+function rawRevokeManagedIf(dir: string, owner: string, actor: string, expected: { lifecycleUid: string; custody: ManagedGrantCustody }): ManagedRevokeIfResult {
+  assertManagedGrantCustody(expected.custody);
+  const row = findIn(dir, "managed-agent", owner, actor);
+  if (row === undefined) return "absent";
+  if (row.lifecycleUid !== expected.lifecycleUid) return "superseded";
+  if (row.custody === undefined || !sameManagedGrantCustody(row.custody, expected.custody)) return "custody-mismatch";
+  return revokeIn(dir, "managed-agent", owner, actor) ? "revoked" : "absent";
 }
 
 function revokeIn(dir: string, kind: ActorKind, owner: string, actor: string): boolean {
@@ -444,11 +520,86 @@ function revokeIn(dir: string, kind: ActorKind, owner: string, actor: string): b
   return true;
 }
 
+// ---- the managed-grant transaction -------------------------------------------------------------
+
+/** The file every grant-row writer serializes on, across processes. The path and label are the
+ *  ones the provider used before this lock moved into the ledger. */
+const MANAGED_GRANT_LOCK = "managed-grant.lock";
+
+/** The ledger operations a transaction body may perform. Every one runs under the lock the
+ *  transaction holds. The object is valid only while its body runs: once the body returns or
+ *  throws, every method refuses. It cannot be constructed outside {@link withManagedGrantTransaction}. */
+export interface ManagedGrantTransaction {
+  /** The unified fresh read: interactive or managed row, or undefined. Same fail-closed rules as
+   *  {@link findActorUnified}. */
+  read(owner: string, actor: string): (ActorRow & { kind: ActorKind }) | undefined;
+  grantManaged(row: ManagedGrantInput): ActorRow;
+  grantInteractive(row: Omit<ActorRow, "grantedAt">): ActorRow;
+  revokeInteractive(owner: string, actor: string): boolean;
+  revokeManaged(owner: string, actor: string): boolean;
+  revokeManagedAt(owner: string, actor: string, lifecycleUid: string): boolean;
+  revokeManagedIf(owner: string, actor: string, expected: { lifecycleUid: string; custody: ManagedGrantCustody }): ManagedRevokeIfResult;
+}
+
+/** The ledger directories this process currently holds the lock for. It only REFUSES a second
+ *  acquisition: nothing reads it to skip a lock, and it grants no reentry. */
+const HELD_GRANT_LOCKS = new Set<string>();
+
+/**
+ * Run one synchronous read-decide-write over the actor ledger under the managed-grant lock,
+ * taken exactly once. This is a CALLER CONTRACT, not a sandbox:
+ *
+ *  - The body MUST be synchronous: ledger reads, the decision, and ledger writes only. Async work
+ *    (callout loading, broker provisioning, footprint removal) runs before or after it.
+ *  - A body that returns a thenable is refused once it returns: the lock is released and the
+ *    transaction is closed. That cannot undo or cancel anything the body already started, so it is
+ *    a refusal, never a rollback.
+ *  - A second transaction on the same `dir` from inside a body, in this process, throws instead of
+ *    waiting on its own lock. There is no reentry and no "already locked" option.
+ */
+export function withManagedGrantTransaction<T>(dir: string, body: (tx: ManagedGrantTransaction) => T): T {
+  const key = resolve(dir);
+  if (HELD_GRANT_LOCKS.has(key))
+    throw new Error(`managed-grant transaction: this process already holds the grant lock for ${key}; a transaction is never nested and the public grant/revoke wrappers are never called from inside one`);
+  // The lock file lives in the ledger directory. Create that directory private first, so a
+  // revoke-only transaction never leaves it at the process umask (`acquireLock` would mkdir it).
+  mkSecretDir(dir);
+  const claim = acquireLock(join(dir, MANAGED_GRANT_LOCK), { label: "managed grant mutation" });
+  HELD_GRANT_LOCKS.add(key);
+  let open = true;
+  const live = <A extends unknown[], R>(fn: (...args: A) => R) => (...args: A): R => {
+    if (!open) throw new Error("managed-grant transaction: this transaction has ended; its operations are no longer valid");
+    return fn(...args);
+  };
+  const tx: ManagedGrantTransaction = Object.freeze({
+    read: live((owner: string, actor: string) => findActorUnified(dir, owner, actor)),
+    grantManaged: live((row: ManagedGrantInput) => rawGrantManaged(dir, row)),
+    grantInteractive: live((row: Omit<ActorRow, "grantedAt">) => rawGrantInteractive(dir, row)),
+    revokeInteractive: live((owner: string, actor: string) => revokeIn(dir, "interactive", owner, actor)),
+    revokeManaged: live((owner: string, actor: string) => revokeIn(dir, "managed-agent", owner, actor)),
+    revokeManagedAt: live((owner: string, actor: string, lifecycleUid: string) => rawRevokeManagedAt(dir, owner, actor, lifecycleUid)),
+    revokeManagedIf: live((owner: string, actor: string, expected: { lifecycleUid: string; custody: ManagedGrantCustody }) => rawRevokeManagedIf(dir, owner, actor, expected)),
+  });
+  try {
+    const result = body(tx);
+    if (result !== null && (typeof result === "object" || typeof result === "function") && typeof (result as { then?: unknown }).then === "function")
+      throw new Error("managed-grant transaction: the body returned a promise; a transaction body is synchronous, and its lock was released without waiting for it");
+    return result;
+  } finally {
+    open = false;
+    HELD_GRANT_LOCKS.delete(key);
+    claim.release();
+  }
+}
+
 /** The IdP bridge's `authorizeActor` hook (bearer-MINT boundary) — INTERACTIVE rows only, by
  *  construction. A name that exists only as a managed agent gets the exact managed-path answer
  *  (never "not granted", which would read as a permissions problem, and never a mint). */
 export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string) => ActorGrant {
   return (owner, actor) => {
+    // Reader isolation: a chat alias never exchanges as an interactive human bearer.
+    if (chatSessionAliasPresent(dir, owner, actor))
+      throw new Error(`actor "${actor}" is a chat session - it exchanges only through the chat bearer exchange with its holder proof, never as an interactive grant`);
     const row = findInteractiveActor(dir, owner, actor);
     if (!row) {
       if (findManagedActor(dir, owner, actor))
@@ -615,6 +766,9 @@ export function ledgerAuthorizeAgentExchange(
     new Error("agent exchange refused: unknown agent or wrong secret - if this agent should exist, respawn it (`cotal spawn`) to rotate its grant");
   let row: ActorRow | undefined;
   try {
+    // Reader isolation: a chat alias is refused with the SAME sentence as every other
+    // failure here, so this unauthenticated surface never reveals that a chat session exists.
+    if (chatSessionAliasPresent(dir, owner, actor)) throw deny();
     row = findManagedActor(dir, owner, actor);
   } catch {
     throw deny(); // a corrupt row denies exactly like a missing one on this unauthenticated surface

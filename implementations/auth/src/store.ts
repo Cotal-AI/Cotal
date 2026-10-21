@@ -297,13 +297,7 @@ export function loadPinnedIdp(dir: string): PinnedIdp | undefined {
 export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
   const existing = loadPinnedIdp(dir);
   if (existing) return verifyPinnedIdp(dir, existing, idpUrl);
-  if (!idpUrl)
-    throw new Error("user auth needs an IdP on first enable - run with --idp <auth base URL> (Better Auth: <origin>/api/auth)");
-  // Same normalization + scheme guard as `cotal login` (https, or http on a loopback IP literal; no
-  // query/hash/userinfo) — the pin and the login cache must key on the SAME canonical URL.
-  const url = normalizeIdpUrl(idpUrl);
-  const origin = new URL(url).origin;
-  const pin: PinnedIdp = { url, issuer: origin, audience: origin, jwksUri: `${url}/jwks` };
+  const pin = derivePinnedIdp(idpUrl);
   mkSecretDir(dir);
   try {
     writeSecretFileCreateOnly(join(dir, IDP_FILE), JSON.stringify({ ver: STORE_VER, ...pin } satisfies IdpFile, null, 2));
@@ -315,6 +309,28 @@ export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
     return verifyPinnedIdp(dir, winner, idpUrl);
   }
   return pin;
+}
+
+/** The pin a first enable would write, derived without touching disk. Shared by
+ *  {@link ensurePinnedIdp} and {@link checkPinnedIdp} so the pre-effect check and the real pin can
+ *  never disagree on the required URL, its normalization or its error text. */
+function derivePinnedIdp(idpUrl: string | undefined): PinnedIdp {
+  if (!idpUrl)
+    throw new Error("user auth needs an IdP on first enable - run with --idp <auth base URL> (Better Auth: <origin>/api/auth)");
+  // Same normalization + scheme guard as `cotal login` (https, or http on a loopback IP literal; no
+  // query/hash/userinfo) — the pin and the login cache must key on the SAME canonical URL.
+  const url = normalizeIdpUrl(idpUrl);
+  const origin = new URL(url).origin;
+  return { url, issuer: origin, audience: origin, jwksUri: `${url}/jwks` };
+}
+
+/** Read-only form of {@link ensurePinnedIdp}: the same refusals for a missing, malformed or
+ *  conflicting `--idp`, with no directory, pin or other write. `fresh` is true when no pin exists
+ *  yet, which is when a first enable must also prove the IdP serves a JWKS. */
+export function checkPinnedIdp(dir: string, idpUrl?: string): { pin: PinnedIdp; fresh: boolean } {
+  const existing = loadPinnedIdp(dir);
+  if (existing) return { pin: verifyPinnedIdp(dir, existing, idpUrl), fresh: false };
+  return { pin: derivePinnedIdp(idpUrl), fresh: true };
 }
 
 function verifyPinnedIdp(dir: string, pinned: PinnedIdp, idpUrl: string | undefined): PinnedIdp {

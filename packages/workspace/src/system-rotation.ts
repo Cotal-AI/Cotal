@@ -11,12 +11,13 @@ import {
 } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, authDir, getSpaceAuth, putSpaceAuth } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
+import { readLocalRecordSource } from "./protected-records.js";
 import {
   connectionEvictorCredsKey,
   CONNECTION_EVICTOR_CREDS_KIND,
   membershipObserverCredsKey,
   MEMBERSHIP_OBSERVER_CREDS_KIND,
-  migrateLegacyCotalMaterial,
+  migrateLegacyCotalMaterial, type MaterialPathOptions,
 } from "./space-segmentation.js";
 
 /**
@@ -165,10 +166,10 @@ export interface StaleSystemCred {
  * this state healthy. The delivery daemon is deliberately NOT a caller: it never loads the signer.
  *
  * Absent files are not stale (an unprovisioned space is a different, separately reported state), and
- * an unreadable file is reported with no `iss` rather than throwing, because a diagnosis surface must not
- * crash on the corruption it exists to describe.
+ * the mutating/default path reports an unreadable file with no `iss`. A read-only observation
+ * refuses a required migration or an unreadable protected input instead of guessing issuer state.
  */
-export function staleSystemCreds(root: string, sysPub: string, space: string): StaleSystemCred[] {
+export function staleSystemCreds(root: string, sysPub: string, space: string, options: MaterialPathOptions = {}): StaleSystemCred[] {
   const stale: StaleSystemCred[] = [];
   for (const file of SYSTEM_CREDS_FILES) {
     // The CHOKE POINT, called for its path (P7 §2 rule 1). A reader, not a writer — but it must not
@@ -177,12 +178,17 @@ export function staleSystemCreds(root: string, sysPub: string, space: string): S
     // this function exists to catch, and both surfaces that call it (the boot path, `doctor auth`)
     // are the first thing to touch these creds on a root `up` has not re-provisioned. A §2 rule 3/4
     // refusal propagates, loudly, rather than being swallowed into a healthy-looking answer.
-    const path = migrateLegacyCotalMaterial(root, space, file);
+    const path = migrateLegacyCotalMaterial(root, space, file, options);
     if (!existsSync(path)) continue;
     let iss: string | undefined;
     try {
-      iss = credsClaims(readFileSync(path, "utf8")).iss;
-    } catch {
+      if (options.readOnly) {
+        const bytes = readLocalRecordSource(path, 1024 * 1024, true);
+        if (!bytes) continue;
+        iss = credsClaims(new TextDecoder("utf-8", { fatal: true }).decode(bytes)).iss;
+      } else iss = credsClaims(readFileSync(path, "utf8")).iss;
+    } catch (error) {
+      if (options.readOnly) throw error;
       stale.push({ file }); // unreadable: cannot be shown to match, so it is not assumed to
       continue;
     }

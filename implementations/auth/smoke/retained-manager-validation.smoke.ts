@@ -138,7 +138,7 @@ await cell("actual host dispatcher runs the fixed provider validation and return
       account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     });
     grantActor(dir, { owner, actor: "cli", scope: ["spawn", "supervise", "role:worker"], allowSubscribe: [">"], allowPublish: [">"] });
-    const retained = await cotalAuthProvider.grantAgent({
+    const retained = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" },
       store, dir, space, owner, actor: target.actor, lifecycleUid: target.lifecycleUid,
       scope: authority.scope, allowSubscribe: authority.allowSubscribe, allowPublish: authority.allowPublish,
       role: authority.role, parent: authority.parent,

@@ -32,7 +32,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeJwt } from "jose";
 import { isLoopbackLiteral, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
-import { acquireLock } from "@cotal-ai/workspace";
+import { CommandFailure, acquireLock, credentialFailure } from "@cotal-ai/workspace";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
  *  opaque revocable handle, never a JWT. `expiresAt` (unix seconds) is advisory for messages;
@@ -139,6 +139,9 @@ function idpTimeoutMs(): number {
   return n;
 }
 
+/** An IdP request that got no answer: the transport failed or the per-request timeout fired. */
+export class IdpUnreachableError extends Error {}
+
 /** `fetch` with a hard per-request timeout, so a hung IdP connection can never stall the client
  *  (Node's global fetch has no default timeout). A timeout or transport failure surfaces as a
  *  legible sentence rather than a raw DOMException/TypeError. */
@@ -148,8 +151,8 @@ async function idpFetch(url: string, init?: RequestInit): Promise<Response> {
     return await fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
   } catch (e) {
     if (e instanceof DOMException && e.name === "TimeoutError")
-      throw new Error(`idp request to ${url} timed out after ${ms}ms - the IdP is unreachable or not responding`);
-    throw new Error(`idp request to ${url} failed: ${e instanceof Error ? e.message : String(e)}`);
+      throw new IdpUnreachableError(`idp request to ${url} timed out after ${ms}ms - the IdP is unreachable or not responding`);
+    throw new IdpUnreachableError(`idp request to ${url} failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -162,7 +165,7 @@ async function idpJson<T>(url: string, res: Response): Promise<T> {
     return (await res.json()) as T;
   } catch (e) {
     if (e instanceof DOMException && e.name === "TimeoutError")
-      throw new Error(`idp request to ${url} timed out reading the response body - the IdP flushed headers then stalled`);
+      throw new IdpUnreachableError(`idp request to ${url} timed out reading the response body - the IdP flushed headers then stalled`);
     throw new Error(`idp request to ${url} returned an unreadable response body: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
@@ -452,6 +455,24 @@ interface PrepareCatalogOpts {
   apply(result: AuthSpaceCatalogResult): void;
 }
 
+function readCatalogPreparationState(dir: string) {
+  let sessions: SessionsFile["sessions"];
+  let file: CatalogsFile;
+  try { sessions = readSessionsFile(dir).sessions; }
+  catch {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local sign-in cache could not be read; no catalog refresh or registry application was attempted", {
+      target: { path: join(dir, SESSIONS_FILE) }, remedy: "inspect and restore the sign-in cache before retrying; its contents were not printed or replaced",
+    });
+  }
+  try { file = readCatalogsFile(dir); }
+  catch {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local space catalog cache could not be read; no catalog refresh or registry application was attempted", {
+      target: { path: join(dir, CATALOG_FILE) }, remedy: "inspect and restore the catalog cache before retrying; its contents were not printed or replaced",
+    });
+  }
+  return { sessions, file };
+}
+
 const catalogPreparations = new Map<string, Promise<AuthSpaceCatalogResult[]>>();
 
 export function prepareIdpSpaceCatalogs(opts: PrepareCatalogOpts): Promise<AuthSpaceCatalogResult[]> {
@@ -465,13 +486,23 @@ export function prepareIdpSpaceCatalogs(opts: PrepareCatalogOpts): Promise<AuthS
 
 async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<AuthSpaceCatalogResult[]> {
   const requested = opts.idpUrl ? normalizeIdpUrl(opts.idpUrl) : undefined;
+  // No account means no catalog work. Do not create a control directory just to lock an empty
+  // observation. Active accounts are read again under the lock before any refresh or application.
+  const initial = readCatalogPreparationState(opts.dir);
+  const signedOut = () => new CommandFailure("refused", "AUTH_REQUIRED", "the requested IdP has no cached sign-in; no catalog refresh or registry application was attempted", {
+    target: { idp: requested }, remedy: `run \`cotal login --idp ${requested}\` before syncing this account`,
+  });
+  if (!Object.keys(initial.sessions).some((idp) => !requested || idp === requested)) {
+    if (requested) throw signedOut();
+    return [];
+  }
   const lock = acquireLock(join(opts.dir, CATALOG_LOCK), { label: "space catalog sync", waitMs: 30_000 });
   try {
-    const sessions = readSessionsFile(opts.dir).sessions;
-    let file = readCatalogsFile(opts.dir);
+    const current = readCatalogPreparationState(opts.dir);
+    const sessions = current.sessions;
+    let file = current.file;
     const idps = Object.keys(sessions).filter((idp) => !requested || idp === requested).sort();
-    if (requested && idps.length === 0)
-      throw new Error(`not logged in to ${requested} - run \`cotal login --idp ${requested}\``);
+    if (requested && idps.length === 0) throw signedOut();
     const results: AuthSpaceCatalogResult[] = [];
     let changed = false;
     for (const idpUrl of idps) {
@@ -640,6 +671,16 @@ function readSessionsFile(dir: string): SessionsFile {
   return parsed;
 }
 
+/** Account-picker metadata only. Session tokens never leave this helper. */
+export function listIdpAccounts(dir: string): { idp: string; sub?: string; expiresAt: number }[] {
+  return Object.entries(readSessionsFile(dir).sessions).map(([idp, session]) => {
+    const normalized = normalizeIdpUrl(idp);
+    if (normalized !== idp || !session || typeof session.expiresAt !== "number" || !Number.isFinite(session.expiresAt))
+      throw new Error("the cached account metadata is invalid");
+    return { idp, expiresAt: session.expiresAt, ...(typeof session.sub === "string" ? { sub: session.sub } : {}) };
+  });
+}
+
 export function loadIdpSession(dir: string, idpUrl: string): IdpSession | undefined {
   const key = normalizeIdpUrl(idpUrl);
   const s = readSessionsFile(dir).sessions[key];
@@ -687,7 +728,8 @@ export function requireIdpSession(dir: string, idpUrl: string): IdpSession {
   const key = normalizeIdpUrl(idpUrl);
   const s = loadIdpSession(dir, key);
   if (!s)
-    throw new Error(
+    throw credentialFailure(
+      "signed-out",
       `not logged in to ${key} - this space requires a user identity and there is no anonymous fallback; run \`cotal login --idp ${key}\``,
     );
   return s;

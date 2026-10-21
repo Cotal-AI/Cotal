@@ -8,10 +8,10 @@
  *   B. gate-4 surface checks: JWKS served with the explicit cache contract; /exchange rejects
  *      browser-origin requests and requests without the file-ACL capability.
  *   C. a real device-code login (auto-approved) + `cotal actor grant cli --sub …` → a plain
- *      `cotal send msg` connects USER-MODE (login → exchange → bearer → callout) and the message
+ *      `cotal send -c` connects USER-MODE (login → exchange → bearer → callout) and the message
  *      lands on the wire as the derived `u_….cli` principal (witnessed on a static admin tap);
- *      the ported operator surfaces: `channels list` on the plain grant, `history clear` refused
- *      without scope "admin" (naming the purger view + the ADD re-grant) then passing after it.
+ *      the ported operator surfaces: `channel` on the plain grant, `history clear --yes`
+ *      refused without scope "admin" (the purger view is not issued) then passing after it.
  *   D. the deny matrix at the operator surface: revoked actor → refused exchange with the reason;
  *      logged-out machine → the exact `cotal login --idp …` line. No fallback anywhere.
  *   E. recovery: a crashed (SIGKILLed) auth service surfaces the exact `cotal up` recovery on a
@@ -70,6 +70,9 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
+/** Whether a report's `<label>: <value>` row reads exactly `value`. Field labels are padded to one column. */
+const field = (out: string, label: string, value: string) =>
+  plain(out).split("\n").some((line) => line.trim().startsWith(`${label}:`) && line.trim().slice(label.length + 1).trim() === value);
 const until = async (cond: () => boolean, ms = 8000): Promise<boolean> => {
   const end = Date.now() + ms;
   while (!cond() && Date.now() < end) await wait(100);
@@ -213,7 +216,7 @@ try {
   });
   check("device login established (sub = the signed-up user)", sub === userId, { sub, userId });
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--label", "smoke human"]);
-  check("actor grant cli succeeds", grant.status === 0 && grant.out.includes("granted"), grant.out);
+  check("actor grant cli succeeds", grant.status === 0 && grant.out.includes("Actor grant stored"), grant.out);
   const cliRow = loadActorLedger(stateDir).find((row) => row.kind === "interactive" && row.actor === "cli");
   const wrongLifecycleUid = cliRow?.lifecycleUid === "a".repeat(26) ? "b".repeat(26) : "a".repeat(26);
   const retireWrongUid = await fetch(`${info.url}${INTERACTIVE_RETIRE_PATH}`, {
@@ -224,14 +227,15 @@ try {
   check("interactive lifecycle retirement refuses a UID other than the current actor row", retireWrongUid.status === 409, await retireWrongUid.text());
   // The --full grant is the whole envelope: all channels + spawn + the stock role (the golden path —
   // login, grant --full, spawn just works; narrowing is the operator's explicit act).
-  check("--full grant takes the full envelope, scope spawn and role:default",grant.out.includes("read [>]") && grant.out.includes("post [>]") && grant.out.includes("scope [spawn, role:default]"), grant.out);
+  check("--full grant takes the full envelope, scope spawn and role:default",
+    field(grant.out, "May read", ">") && field(grant.out, "May post", ">") && field(grant.out, "Capabilities", "spawn, role:default"), grant.out);
 
   // The ENVELOPE rule on the foreground CLI spawn path: NARROW the cli grant explicitly, then an
   // over-ask beyond it is refused at the grant write — before any broker footprint — and the
   // refusal names the exact widening re-grant for the operator. (`up` seeds no persona, so the
   // pin brings its own role-less probe — the refusal must be purely the read over-ask.)
   const narrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
-  check("explicit narrow re-grant (upsert) succeeds", narrow.status === 0 && narrow.out.includes("read [general]"), narrow.out);
+  check("explicit narrow re-grant (upsert) succeeds", narrow.status === 0 && field(narrow.out, "May read", "general"), narrow.out);
   // The MECHANISM, executed rather than described: the upsert replaces the WHOLE row, so a re-grant
   // that names only --scope would reset the ACLs a narrow row just set back to the wide default.
   // Two refusals used to print exactly this command as their remedy. Without --full the CLI now
@@ -241,15 +245,15 @@ try {
   // views later in this suite hold bearers minted against `cli`'s. Demonstrating a footgun must not
   // fire it into the rest of the run.
   const wNarrow = await cotal(["actor", "grant", "widenprobe", "--sub", sub, "--scope", "spawn", "--allow-subscribe", "general", "--allow-publish", "general"]);
-  check("a probe actor is granted narrow, both ACL flags named", wNarrow.status === 0 && wNarrow.out.includes("read [general]") && wNarrow.out.includes("post [general]"), wNarrow.out);
+  check("a probe actor is granted narrow, both ACL flags named", wNarrow.status === 0 && field(wNarrow.out, "May read", "general") && field(wNarrow.out, "May post", "general"), wNarrow.out);
   const wWide = await cotal(["actor", "grant", "widenprobe", "--sub", sub, "--scope", "spawn"]);
   check("a re-grant naming ONLY --scope is refused, naming the flags it left off",
     wWide.status !== 0 && wWide.out.includes("--allow-subscribe, --allow-publish left off"), wWide.out);
   const wList = await cotal(["actor", "list"]);
-  check("…and the narrow row is unchanged", /widenprobe .*read=\[general\]\s+post=\[general\]/.test(wList.out), wList.out);
+  check("…and the narrow row is unchanged", wList.status === 0 && /\.widenprobe\s+interactive\s+spawn\s+general\s+general$/m.test(plain(wList.out)), wList.out);
   const wBack = await cotal(["actor", "grant", "widenprobe", "--sub", sub, "--scope", "spawn", "--allow-subscribe", "general", "--allow-publish", "general"]);
   check("re-granting with every field named still succeeds",
-    wBack.status === 0 && wBack.out.includes("read [general]"), wBack.out);
+    wBack.status === 0 && field(wBack.out, "May read", "general") && field(wBack.out, "May post", "general"), wBack.out);
   await cotal(["actor", "revoke", "widenprobe", "--sub", sub]);
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nsubscribe: [general]\nallowPublish: [general]\n---\nprobe persona.\n");
@@ -260,7 +264,9 @@ try {
   check("sandbox ext add of the worktree claude connector succeeds", extAdd.status === 0, extAdd.out);
   // The read list keeps the persona's own `general` (a spawn whose list omits a channel its persona
   // subscribes to is refused on that alone), so `ops.wide` is the only ask beyond the cli grant.
-  const overSpawn = await cotal(["spawn", "probe", "--allow-subscribe", "general,ops.wide", "--space", SPACE]);
+  // `--foreground`: a bare spawn is a managed launch, which needs a terminal to attach and refuses
+  // before any grant is read.
+  const overSpawn = await cotal(["spawn", "probe", "--foreground", "--allow-subscribe", "general,ops.wide", "--space", SPACE]);
   check("the envelope: a foreground spawn beyond the cli grant is refused (delegation only narrows)",
     overSpawn.status !== 0 && overSpawn.out.includes("delegation only narrows"), overSpawn.out);
   check("…naming the exact widening re-grant", overSpawn.out.includes("cotal actor grant cli --owner"), overSpawn.out);
@@ -274,7 +280,7 @@ try {
   });
   await witnessNc.flush();
 
-  const send = await cotal(["send", "msg", "general", "hello from user mode", "--space", SPACE]);
+  const send = await cotal(["send", "-c", "general", "hello from user mode", "--space", SPACE]);
   check("user-mode send exits 0 (login → exchange → bearer → callout)", send.status === 0, send.out);
   const hasText = (g: CotalMessage, text: string) => g.parts?.some((pt) => (pt as { text?: string }).text === text);
   const arrived = await until(() => got.some((g) => hasText(g, "hello from user mode")));
@@ -290,24 +296,24 @@ try {
   const ghostAttach = await cotal(["attach", "--name", "ghost", "--space", SPACE]);
   check("spawn-scoped `cotal attach` reaches the manager the same way", ghostAttach.status !== 0 && ghostAttach.out.includes('no agent "ghost"'), ghostAttach.out);
 
-  // PORTED OPERATOR SURFACES (elevated views): `channels list` rides the operator's OWN agent
+  // PORTED OPERATOR SURFACES (elevated views): `channel` rides the operator's OWN agent
   // bearer, so the plain grant is enough — no view, no extra scope. `history clear` is
   // destructive, so it asks the exchange for the one-shot "purger" view, which only mints
-  // against a FRESH ledger row carrying scope "admin": the refusal names the view, the missing
-  // scope, and the ADD-to-current re-grant — never static mint repair.
-  const chList = await cotal(["channels", "list", "--space", SPACE]);
-  // A fresh mesh has no registry ENTRIES (only `channels set` writes one), so the proof of the
-  // read is the space-default line, not a channel row.
-  check("`channels list` works user-mode on the plain grant (own agent bearer, no view)", chList.status === 0 && chList.out.includes("default replay"), chList.out);
-  const clearNoAdmin = await cotal(["history", "clear", "--force", "--space", SPACE]);
+  // against a FRESH ledger row carrying scope "admin". Without it the classified refusal says the
+  // purger view was not issued and nothing was purged, and it never suggests static mint repair.
+  const chList = await cotal(["channel", "--space", SPACE]);
+  // A fresh mesh has no registry ENTRIES (only `channel set` writes one), so the proof of the
+  // read is the list's title for this space, which prints only after the registry read returned.
+  check("`channel` lists user-mode on the plain grant (own agent bearer, no view)", chList.status === 0 && plain(chList.out).includes(`Channels · ${SPACE}`), chList.out);
+  const clearNoAdmin = await cotal(["history", "clear", "--yes", "--space", SPACE]);
   check(
-    '`history clear` without scope "admin" is refused, naming the purger view + the scope',
-    clearNoAdmin.status !== 0 && clearNoAdmin.out.includes('view "purger"') && clearNoAdmin.out.includes('needs scope "admin"'),
+    '`history clear --yes` without scope "admin" is refused as PERMISSION_DENIED, naming the purger view',
+    clearNoAdmin.status === 2 && clearNoAdmin.out.includes("PERMISSION_DENIED") && clearNoAdmin.out.includes("purger view was not issued"),
     clearNoAdmin.out,
   );
   check(
-    "…and the ADD-to-current re-grant (never static mint repair), on the WHOLE row",
-    clearNoAdmin.out.includes("ADDED") && !clearNoAdmin.out.includes("cotal mint") && clearNoAdmin.out.includes("WHOLE ROW"),
+    "…submits no purge and never suggests static mint repair",
+    clearNoAdmin.out.includes("no history purge was submitted") && !clearNoAdmin.out.includes("cotal mint"),
     clearNoAdmin.out,
   );
   // Every field named, deliberately: this is a re-grant of a row that was narrowed above, and
@@ -372,8 +378,8 @@ try {
   // active lifecycle. The second rotation must therefore succeed without manufacturing a bearer.
   const rerotateUnused = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
   check("an unused successor can be re-granted again after its predecessor retired", rerotateUnused.status === 0 && rerotateUnused.out.includes("admin"), rerotateUnused.out);
-  const cleared = await cotal(["history", "clear", "--force", "--space", SPACE]);
-  check("`history clear --force` passes over the one-shot purger view", cleared.status === 0 && cleared.out.includes("cleared"), cleared.out);
+  const cleared = await cotal(["history", "clear", "--yes", "--space", SPACE]);
+  check("`history clear --yes` passes over the one-shot purger view", cleared.status === 0 && cleared.out.includes("History purge acknowledged"), cleared.out);
 
   // ---------- D. the deny matrix at the operator surface ----------
   console.log("D) revoke → refused; logout → the exact login line");
@@ -383,12 +389,14 @@ try {
   // outcome honestly (closed-and-verified here, since no connection is open; or a LOUD skip
   // naming why + the bearer-expiry consequence), never silently leave the window unmentioned.
   check("revoke reports the live-connection outcome (evict wired)", /verified gone|live-connection eviction/i.test(revoke.out), revoke.out);
-  const denied = await cotal(["send", "msg", "general", "should be refused", "--space", SPACE]);
-  check("revoked actor's send is refused with the ledger reason", denied.status !== 0 && /refused|not granted/i.test(denied.out), denied.out);
+  const denied = await cotal(["send", "-c", "general", "should be refused", "--space", SPACE]);
+  // The ledger's own reason. Every refusal's report is titled "Request refused", so "refused" alone
+  // would pass for any refusal, a grammar error included.
+  check("revoked actor's send is refused with the ledger reason", denied.status !== 0 && denied.out.includes('actor "cli" is not granted'), denied.out);
   const regrant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full"]);
   check("re-grant succeeds (upsert)", regrant.status === 0);
   deleteIdpSession(home, base);
-  const loggedOut = await cotal(["send", "msg", "general", "no session", "--space", SPACE]);
+  const loggedOut = await cotal(["send", "-c", "general", "no session", "--space", SPACE]);
   check("logged-out send prints the exact login action", loggedOut.status !== 0 && loggedOut.out.includes(`cotal login --idp ${base}`), loggedOut.out);
 
   // ---------- E. crash → refresh heal + cross-mode refusal ----------
@@ -398,20 +406,23 @@ try {
   await establishIdpSession({ dir: home, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode) });
   const openUp = await cotal(["up", "--open", "--server", SERVER, "--space", SPACE]);
   check("up --open on the running user mesh is refused (names cotal down)", openUp.status !== 0 && openUp.out.includes("cotal down"), openUp.out);
-  // THE FLIP: user-facing static creds are retired on user-auth spaces — `cotal mint` must
-  // refuse with user-mode recourse, never write a working `local.<nkey>` identity file.
-  const staticMint = await cotal(["mint", "flip-probe", "--profile", "agent"]);
-  check("the flip: `cotal mint` on a user mesh is refused, naming user-mode recourse", staticMint.status !== 0 && staticMint.out.includes("retired") && staticMint.out.includes("cotal spawn"), staticMint.out);
+  // THE FLIP: user-facing static creds are retired on user-auth spaces — `cotal auth mint` must
+  // refuse with the login/enrollment recourse, never write a working `local.<nkey>` identity file.
+  const staticMint = await cotal(["auth", "mint", "flip-probe", "--profile", "agent"]);
+  check(
+    "the flip: `cotal auth mint` on a user mesh is refused UNSUPPORTED, naming the login/enrollment recourse",
+    staticMint.status === 2 && staticMint.out.includes("UNSUPPORTED") && staticMint.out.includes("static credentials are not issued for open or per-user-auth spaces") && staticMint.out.includes("login/enrollment path"),
+    staticMint.out,
+  );
   // Asserted at the segment `mint` would actually have written to (P1). The flat level is where a
   // pre-segment mint wrote, so checking it now would read absent whatever the refused mint did.
   check("the flip: no creds file was written by the refused mint",
     !existsSync(join(root, ".cotal", "auth", "creds", spaceSegment(SPACE), "flip-probe.creds")));
-  // observer/admin are retired too, as explicit POLICY (no static dashboard/audit creds on a
-  // user-auth mesh) — the copy says so instead of misdirecting to the agent recourse.
-  const observerMint = await cotal(["mint", "flip-observer", "--profile", "observer"]);
+  // observer/admin are retired too: the refusal covers every fixed profile, not only the agent one.
+  const observerMint = await cotal(["auth", "mint", "flip-observer", "--profile", "observer"]);
   check(
-    "the flip: `mint --profile observer` is refused naming the dashboard/audit policy",
-    observerMint.status !== 0 && observerMint.out.includes("static dashboard/audit creds are not supported"),
+    "the flip: `auth mint --profile observer` is refused the same way",
+    observerMint.status === 2 && observerMint.out.includes("UNSUPPORTED") && observerMint.out.includes("static credentials are not issued for open or per-user-auth spaces"),
     observerMint.out,
   );
   const oldCredsDir = join(root, ".cotal", "auth", "creds");
@@ -439,7 +450,7 @@ try {
     joinUnpaired.status !== 0 && joinUnpaired.out.includes("lifecycle-paired"), joinUnpaired.out);
   const joinOldStatic = await cotal(["join", "--creds", oldStaticCreds, "--lifecycle-uid", oldStaticUid, "--server", SERVER, "--space", SPACE], { timeoutMs: 15_000 });
   check("the flip: `join --creds` with an old static cred is refused on a known user mesh", joinOldStatic.status !== 0 && joinOldStatic.out.includes("per-user-auth") && joinOldStatic.out.includes("cotal spawn"), joinOldStatic.out);
-  const sendOldStatic = await cotal(["send", "msg", "general", "old static", "--creds", oldStaticCreds, "--server", SERVER, "--space", SPACE], { timeoutMs: 15_000 });
+  const sendOldStatic = await cotal(["send", "-c", "general", "old static", "--creds", oldStaticCreds, "--server", SERVER, "--space", SPACE], { timeoutMs: 15_000 });
   check("the flip: raw `--creds` send is refused on a known user mesh", sendOldStatic.status !== 0 && sendOldStatic.out.includes("per-user-auth"), sendOldStatic.out);
   // Crash the daemon (SIGKILL — no clean exit, so its stale discovery file survives too).
   const svcPidPath = join(root, ".cotal", `auth-service.${spaceKey(SPACE)}.pid`);
@@ -459,13 +470,13 @@ try {
     JSON.stringify(rowAfterFailedRegrant) === JSON.stringify(rowBeforeFailedRegrant),
     { before: rowBeforeFailedRegrant, after: rowAfterFailedRegrant },
   );
-  const deadSend = await cotal(["send", "msg", "general", "service is dead", "--space", SPACE]);
+  const deadSend = await cotal(["send", "-c", "general", "service is dead", "--space", SPACE]);
   check("send with a dead auth service names the `cotal up` recovery", deadSend.status !== 0 && deadSend.out.includes("restart it with `cotal up`"), deadSend.out);
   const heal = await cotal(["up", "--server", SERVER, "--space", SPACE]);
   check("refresh `cotal up` on the running broker heals the auth service", heal.status === 0 && heal.out.includes("already running") && heal.out.includes("user-auth service up"), heal.out);
   const renewal = readRenewalRecord(root, SPACE);
   check("refresh `cotal up` also ensures the manager renewal owner", renewal?.owner === "manager", renewal);
-  const healedSend = await cotal(["send", "msg", "general", "healed", "--space", SPACE]);
+  const healedSend = await cotal(["send", "-c", "general", "healed", "--space", SPACE]);
   check("user-mode send works again after the heal", healedSend.status === 0, healedSend.out);
 
   // ---------- E2. the readiness window (#1931): the refresh's wait is bound to the daemon pid ----------

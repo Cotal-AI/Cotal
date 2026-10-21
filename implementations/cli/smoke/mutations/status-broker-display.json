@@ -1,0 +1,50 @@
+{
+  "suite": [
+    "implementations/cli/smoke/status-report.smoke.ts"
+  ],
+  "guard": "status projects broker display copies without secrets, represents unsafe saved addresses as unknown, and never rewrites dial input",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm exec tsx implementations/cli/smoke/status-report.smoke.ts --broker-display-only",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/status-broker-display.json",
+  "mutations": [
+    {
+      "name": "recorded status rows expose raw broker URLs",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "server: displayStatusBroker(m.server, m.space, gaps),",
+      "replace": "server: m.server,",
+      "expectRed": "status redacts recorded broker address for password",
+      "cell": "status redacts recorded broker address for password",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "selected status row exposes the raw broker URL",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "server: displayStatusBroker(target.server, target.space, gaps),",
+      "replace": "server: target.server,",
+      "expectRed": "status redacts selected broker address for password",
+      "cell": "status redacts selected broker address for password",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "legacy component facts expose the raw broker URL",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "const address = brokerAddressForDisplay(target.server);",
+      "replace": "const address = target.server;",
+      "expectRed": "status component facts omit broker secrets for password",
+      "cell": "status component facts omit broker secrets for password",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "unsafe saved addresses pretend to be known display strings",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "  gaps.add(\"BROKER_ADDRESS_INVALID\", `broker address for '${space}' cannot be displayed`, { space });\n  return null;",
+      "replace": "  gaps.add(\"BROKER_ADDRESS_INVALID\", `broker address for '${space}' cannot be displayed`, { space });\n  return \"unavailable\";",
+      "expectRed": "status reports an invalid stored address as unknown",
+      "cell": "status reports an invalid stored address as unknown",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ],
+  "why": [
+    "The focused profile keeps all real built-CLI broker-display cells and positive controls; the ordinary root suite still runs every status case."
+  ]
+}

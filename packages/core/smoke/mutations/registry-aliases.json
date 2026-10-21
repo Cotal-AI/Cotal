@@ -1,0 +1,77 @@
+{
+  "suite": [
+    "packages/core/smoke/registry-aliases.smoke.ts"
+  ],
+  "guard": "an alias resolves to its extension within its kind, a name or alias already claimed by a name or alias is refused at registration, live, staged and at commit, unregistering frees the aliases, and a command's own declarations refuse an alias equal to its name and two subcommands sharing a word",
+  "command": "pnpm exec tsx packages/core/smoke/registry-aliases.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/registry-aliases.json",
+  "why": [
+    "Which extension a word resolves to must never depend on load order, so the registry refuses a second claim on a word whatever the claim is. Each mutation drops one leg of that rule and must redden the assertion that names it."
+  ],
+  "mutations": [
+    {
+      "name": "an alias is not claimed at registration",
+      "file": "packages/core/src/registry.ts",
+      "find": "      for (const key of claims(ext)) {\n",
+      "replace": "      for (const key of claims(ext).slice(0, 1)) {\n",
+      "expectRed": "an alias equal to a live name registered",
+      "cell": "an alias equal to a live name registered"
+    },
+    {
+      "name": "a stage's own claims do not block a later staged registration",
+      "file": "packages/core/src/registry.ts",
+      "find": "    for (const staged of stage?.values() ?? []) for (const key of claims(staged)) taken.add(key);\n",
+      "replace": "",
+      "expectRed": "a staged alias did not block a name staged after it",
+      "cell": "a staged alias did not block a name staged after it"
+    },
+    {
+      "name": "a commit does not re-check what went live after staging",
+      "file": "packages/core/src/registry.ts",
+      "find": "    for (const ext of staged) for (const key of claims(ext)) if (taken.has(key)) throw new Error(`extension already registered: ${key}`);\n",
+      "replace": "",
+      "expectRed": "a commit published an alias claimed after staging",
+      "cell": "a commit published an alias claimed after staging"
+    },
+    {
+      "name": "unregistering keeps the aliases",
+      "file": "packages/core/src/registry.ts",
+      "find": "    for (const alias of claims(ext).slice(1)) this.#aliases.delete(alias);\n",
+      "replace": "",
+      "expectRed": "an unregistered command's alias was still claimed",
+      "cell": "an unregistered command's alias was still claimed"
+    },
+    {
+      "name": "resolution ignores aliases",
+      "file": "packages/core/src/registry.ts",
+      "find": "    return this.#aliases.get(key) ?? key;\n",
+      "replace": "    return key;\n",
+      "expectRed": "has() did not see an alias",
+      "cell": "has() did not see an alias"
+    },
+    {
+      "name": "an alias equal to the command's name is accepted",
+      "file": "packages/core/src/command.ts",
+      "find": "  if ((cmd.aliases ?? []).includes(cmd.name)) problems.push(`command \"${cmd.name}\" lists its own name as an alias`);\n",
+      "replace": "",
+      "expectRed": "an alias equal to its command's name was accepted",
+      "cell": "an alias equal to its command's name was accepted"
+    },
+    {
+      "name": "two subcommands may share a word",
+      "file": "packages/core/src/command.ts",
+      "find": "      if (holder !== undefined) problems.push(`command \"${cmd.name}\": \"${word}\" names both subcommand ${holder} and ${sub.name}`);\n      else seen.set(word, sub.name);\n",
+      "replace": "      seen.set(word, holder ?? sub.name);\n",
+      "expectRed": "two subcommands sharing a word were accepted",
+      "cell": "two subcommands sharing a word were accepted"
+    },
+    {
+      "name": "a command resolves by prefix",
+      "file": "packages/core/src/command.ts",
+      "find": "  return commands.find((cmd) => cmd.name === word || (cmd.aliases ?? []).includes(word));\n",
+      "replace": "  return commands.find((cmd) => cmd.name === word || (cmd.aliases ?? []).includes(word)) ?? commands.find((cmd) => cmd.name.startsWith(word));\n",
+      "expectRed": "a prefix selected a command",
+      "cell": "a prefix selected a command"
+    }
+  ]
+}

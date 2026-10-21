@@ -32,7 +32,7 @@ await a.store.create(`auth/${spaceSegment(a.space)}/tool-result-consent-key.json
 const anchor: SignerAnchor = { keyId, publicKey: signer.getPublicKey(), owner: "ai.cotal", roles: ["consents"], scope: { consents: ["tool-results"] }, validFrom: 0, validTo: Number.MAX_SAFE_INTEGER };
 const uid = mintLifecycleUid(), holderUid = mintLifecycleUid();
 grantActor(a.stateDir, { owner, actor: "web", lifecycleUid: holderUid, scope: [], allowSubscribe: [], allowPublish: [] });
-grantManagedActor(a.stateDir, { owner, actor: "worker", lifecycleUid: uid, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: "a".repeat(64) });
+grantManagedActor(a.stateDir, { custody: { kind: "foreground" }, owner, actor: "worker", lifecycleUid: uid, scope: [], allowSubscribe: [], allowPublish: [], tokenHash: "a".repeat(64) });
 let service: AuthServiceHandle | undefined;
 let resolvedAnchor: SignerAnchor | undefined = anchor;
 let reader: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;

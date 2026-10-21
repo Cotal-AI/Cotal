@@ -12,13 +12,14 @@
  * restores itself, so nothing else in the process is affected.
  */
 const fs = require("node:fs");
+const { basename, dirname } = require("node:path");
 
 const target = process.env.COTAL_SECRETFS_INTERLEAVE_TARGET;
 if (target) {
   const realOpen = fs.openSync;
   let armed = true;
   fs.openSync = function patched(path, flags, mode) {
-    if (armed && (path === target || (typeof path === "string" && path.startsWith(target) && path.endsWith(".tmp")))) {
+    if (armed && (path === target || (typeof path === "string" && dirname(path) === dirname(target) && basename(path).startsWith(".cotal-create.") && path.endsWith(".tmp")))) {
       armed = false;
       fs.openSync = realOpen; // one shot: the rest of the process sees the real function
       // The competitor wins the name in the window a check-then-write has already walked past.

@@ -27,23 +27,43 @@ export interface SmokeCommandOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+/** Every flag the CLI's `down` command declares, with the same type, short form and repeatability,
+ *  so the guard parses a call the way the CLI does. A flag missing here makes the guard refuse a
+ *  call the CLI accepts, never the reverse. */
 const downOptions: ParseArgsOptionsConfig = {
   file: { type: "string", short: "f" },
   run: { type: "string" },
-  space: { type: "string" },
+  space: { type: "string", short: "s" },
+  json: { type: "boolean", short: "j" },
+  plain: { type: "boolean" },
+  instance: { type: "string" },
+  yes: { type: "boolean", short: "y" },
   "dry-run": { type: "boolean" },
   "preserve-state": { type: "boolean" },
   "with-agents": { type: "boolean" },
   "store-dir": { type: "string" },
+  "session-store": { type: "string", multiple: true },
 };
+
+/** The kernel's own flags. It takes them from the words before any `--`, wherever they sit, before
+ *  the command parses the rest. */
+const GLOBAL_WORDS: ReadonlySet<string> = new Set(["--no-color", "--no-input"]);
+
+function withoutGlobalFlags(args: readonly string[]): string[] {
+  const end = args.indexOf("--");
+  const head = (end === -1 ? args : args.slice(0, end)).filter((word) => !GLOBAL_WORDS.has(word));
+  return end === -1 ? head : [...head, ...args.slice(end)];
+}
 
 interface ParsedSmokeDown {
   readonly positionals: string[];
-  readonly values: Record<string, string | boolean | undefined>;
+  readonly values: Record<string, string | boolean | (string | boolean)[] | undefined>;
 }
 
 function parseSmokeDown(args: readonly string[]): ParsedSmokeDown | undefined {
-  if (args[0] !== "down") return undefined;
+  // A global flag before the command word still makes this a down, so it is stripped first.
+  const words = withoutGlobalFlags(args);
+  if (words[0] !== "down") return undefined;
   try {
     // Calling the same Node parser as the CLI's parseCommandArgs is necessary. Applying the same
     // acceptance test makes the guard agree on which parsed value the CLI will honor. This is a
@@ -52,7 +72,7 @@ function parseSmokeDown(args: readonly string[]): ParsedSmokeDown | undefined {
     // valid. A repeated non-multiple flag reads last-wins here, but parseCommandArgs refuses it as a
     // usage error, so accepting one never lets the CLI act on a space this guard did not check.
     const { positionals, values } = parseArgs({
-      args: args.slice(1),
+      args: words.slice(1),
       options: downOptions,
       allowPositionals: true,
       strict: true,

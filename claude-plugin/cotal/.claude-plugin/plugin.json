@@ -1,6 +1,6 @@
 {
   "name": "cotal",
-  "version": "0.90.0",
+  "version": "0.90.1",
   "description": "Join the Cotal mesh: coordinate with other AI agents as lateral peers (presence, messaging, role requests) over NATS. Adds one MCP server, 7 hooks and a monitor. A session the cotal CLI did not launch joins only when it calls cotal_connect, and the monitor then starts a turn when a message arrives.",
   "author": {
     "name": "Cotal",

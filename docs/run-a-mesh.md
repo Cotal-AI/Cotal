@@ -95,7 +95,7 @@ cotal up --detach --host 0.0.0.0 --space main --no-manager
 # `.cotal/manager.<spaceKey>.log` to wait for on this host
 
 # manager host (registered remote mesh, same space)
-cotal meshes add --server nats://broker.example:4222 --root ~/meshes/main
+cotal space add main --server nats://broker.example:4222 --root ~/meshes/main
 cotal supervise --space main --server nats://broker.example:4222
 ```
 
@@ -194,8 +194,7 @@ connector declares in `requires` are on PATH. Status, setup and the manager's pr
 the same way: an entry written as a path is checked as given, and a directory never counts as the
 executable. A connector whose setup provider reports health adds its
 own rows above those. The Claude Code connector reports its plugin and its skills plugin, and a stale
-skills row names the installed and CLI versions it compared. `cotal
-setup` (after the first run) prints the compact card.
+skills row names the installed and CLI versions it compared.
 
 Before reporting ready, the manager resolves every installed connector's declared harness
 binaries against its own environment. A missing binary does not stop unrelated manager work: boot
@@ -233,31 +232,31 @@ reconciliation sweep, then clears. This component reports reconciliation outcome
 whether footprint cleanup completed independently of the terminal result; that separate durable
 projection remains tracked by #1274.
 
-`cotal service install` is the supported way to run the manager as a user service
-([CLI reference](cli.md#service)): a systemd user unit on Linux, a launchd agent on macOS, one
-per mesh, surviving logout and reboot. On Linux that needs user lingering: install refuses while
-it is off and prints the root command that enables it. It installs only
-the manager; the units below remain the process models for every other component, and they are
-still **examples of process models** for those: copy them only after you decide which processes
-the unit should own.
+`cotal service install <name>` writes an owned systemd user unit for a saved direct-process
+service definition ([CLI reference](cli.md#service)). It is Linux only, and a preset such as the
+manager is not installed as a unit in this release. The units below remain the process models for
+the stack's components, and they are still **examples of process models**: copy them only after
+you decide which processes the unit should own.
 
 ### Supervising the detached stack
 
-`cotal up --detach` is a launcher: it starts the broker, delivery daemon, and manager, reports what
-started, then exits. Do not wrap it in a systemd service with `Type=oneshot` and
+`cotal up` runs in the background by default; `cotal up --detach` names the same mode. It is a
+launcher: it starts the broker, delivery daemon, and manager, reports what started, then exits. Do not wrap it in a systemd service with `Type=oneshot` and
 `RemainAfterExit=yes` and treat `systemctl is-active` as stack health. That unit becomes `active
 (exited)` when the launcher exits successfully and stays active even if every detached process dies.
-When `up --detach` can identify that exact unit shape, it prints a warning but keeps the requested
-startup behavior.
+When background `up` can identify itself as the unit's main process under the current native
+invocation, it prints a warning naming the unit and the `--foreground` remedy. The advisory does
+not change startup or rewrite a unit. Inherited terminal/scope metadata is not enough to claim
+that `up` is the unit's main process.
 
-For a single-host stack, keep `cotal up` itself in the foreground so systemd tracks a long-running
+For a single-host stack, use `cotal up --foreground` so systemd tracks a long-running
 process and restarts the stack if that process fails:
 
 ```ini
 [Service]
 Type=simple
 WorkingDirectory=/srv/cotal-mesh
-ExecStart=/usr/bin/cotal up --space main --host 0.0.0.0
+ExecStart=/usr/bin/cotal up --foreground --space main --host 0.0.0.0
 Restart=on-failure
 RestartSec=5s
 ```
@@ -462,9 +461,15 @@ running mesh with the right credentials instead of mistaking the cwd for a space
   requirement, is kept as the record stands when the refresh writes it, so a change another
   command made during the refresh survives. If the record was removed during the refresh, `up`
   fails instead of writing it back.
-- With no live selected default, a project with its own `.cotal/` resolves to that project's
-  mesh; otherwise one running mesh is used automatically and several are an error.
+- A selected space stays the target when its broker is down, so the command reports it not up,
+  and a selection that names a space no longer registered is refused with `TARGET_NOT_FOUND`.
+  Neither reaches another mesh.
+- With nothing selected, a project with its own `.cotal/` resolves to that project's mesh;
+  otherwise one running mesh is used automatically and several are an error.
 - `cotal meshes` lists them (a `*` marks the default); `cotal down` removes the entry.
+- `cotal space create <name> [--root <dir>]` names a space before it runs. It records the name
+  and root apart from the registry and makes `<root>/.cotal/`, and `cotal up` in that root starts
+  the space under that name. Until then a command that targets it refuses, naming the root.
 
 The registry stores a *path*, never a secret; trust material stays in each project's
 `.cotal/auth`. If the mesh is down or won't take your creds, spawn fails with one
@@ -475,13 +480,14 @@ sentence, never a raw NATS trace.
 A mesh running on another machine has no `cotal up` on this one, so register it by hand:
 
 ```bash
-cotal meshes add            # guided: asks for the broker, probes it, offers what it finds
-cotal meshes add optiplex --server nats://100.90.12.34:4222 --root ~/meshes/optiplex \
+cotal space add optiplex --server nats://100.90.12.34:4222 --root ~/meshes/optiplex \
   --allow-unencrypted-overlay      # see below: an overlay address needs this
-cotal meshes rm optiplex
+cotal space forget optiplex
+cotal meshes add            # guided: asks for the broker, probes it, offers what it finds
 ```
 
-On a terminal, a bare `cotal meshes add` walks you through it: it probes the broker you name and
+`space add` checks the broker and the trust before it writes, and on a terminal shows what it will
+trust and asks first. On a terminal, a bare `cotal meshes add` walks you through it: it probes the broker you name and
 reports whether it is open or requires credentials, offers the spaces the folder already holds
 credentials for, and shows the record before writing it. Scripts and agents keep the flag form -
 without a terminal nothing prompts.
@@ -505,7 +511,7 @@ is a certificate authority for the mesh rather than a client of it: anyone who r
 impersonate any agent, read every retained channel and DM, change ACLs, and keep issuing
 themselves credentials. There is no per-machine revocation; undoing it means rotating the signing
 key and re-minting every credential in the space. Copy it only to machines you would trust with
-the whole mesh. `cotal mint` on its own does not substitute here: registering an `auth` mesh needs
+the whole mesh. `cotal auth mint` on its own does not substitute here: registering an `auth` mesh needs
 signing material that composes, which a minted user credential is not. The
 broker is probed before the record is written, so a bad address or a credential that mesh will not
 accept fails at registration rather than at your first `spawn` (`--force` records it without verifying,
@@ -592,8 +598,8 @@ mesh. To stop one running here, use `cotal down`.
 ## Watching
 
 `cotal console` is the terminal view (TUI on a real terminal, plain line stream when
-piped); `cotal web` is the browser dashboard. Both are read-only observers; the
-walkthrough is [Watch a mesh](watch-a-mesh.md).
+piped); the separately configured web service is the browser dashboard. Both observe without
+implicitly starting dependencies; the walkthrough is [Watch a mesh](watch-a-mesh.md).
 
 ## History
 
@@ -621,6 +627,11 @@ cotal up --restore ./space-backup --detach
 A refused cut leaves the mesh running and unfenced: fix what the refusal names and run
 `cotal down --preserve-state` again.
 
+A controller-owned stack, one whose root holds `.cotal/stack-controller.json`, cannot be preserved
+in this release. There, preserve, backup and restore refuse before any effect. Plain `cotal down`
+and `cotal up` keep that stack's store, channels and history
+([CLI reference](cli.md#backups)).
+
 Use `--store-dir` on both preservation and backup for a custom JetStream store. A store cap set
 with `cotal up --max-file-store <bytes>` travels with the preserved state, and the resume renders it
 again. nats-server reads the cap once at start and refuses a config reload that changes it, so a new
@@ -644,7 +655,8 @@ match the fsynced proof. A provably dead uncommitted owner is retired under lock
 fresh attempt-bound listener; an occupied foreign listener or ambiguous owner is never adopted. The
 manager commit validates while retained cleanup is still suppressed; the CLI durably records its
 attempt-bound 64-hex token in `manager-committed` / `resume-committed` before `finalizeResume` can
-release suppression. A retry from either committed state goes straight to exact-token finalization;
+release suppression. A new manager launch receives that token as a protected one-read file named by
+path and digest, never on its command line. A retry from either committed state goes straight to exact-token finalization;
 failure preserves the committed gate and retained cleanup suppression. Missing commit evidence,
 interrupted finalization, a live recorded endpoint despite missing pidfiles, or ambiguous proof fails closed. See the [CLI
 backup and restore contract](cli.md#backups) for artifact, checkpoint, fallback,
@@ -652,10 +664,13 @@ disaster-consent, and degraded-recovery details.
 
 ## Personas from the CLI
 
-`cotal personas` manages the local catalog offline: `list` (`--running` overlays live
-markers), `show <name>`, `edit <name>` (re-validates on save), `new <name>`, `rm <name>
---force`. The runtime write is `cotal_persona`; the runtime read is `cotal_personas`
-(list / show), both over the wire with the manager's ownership checks. Fields: [agent files](agent-files.md).
+`cotal persona` manages the selected local catalog offline: bare list, `show <name>`,
+`create <name> --file <persona.md>`, `edit <name>` and `remove <name> --yes`.
+Edits validate a private draft and refuse a changed source before promotion. Prepared spaces
+have a catalog before startup. `--json` and `--plain` are supported for finite reports.
+The legacy `personas` parser remains available during migration; its `--running` overlay is live.
+The runtime write is `cotal_persona`; the runtime read is `cotal_personas`, both over the wire
+with the manager's ownership checks. Fields: [agent files](agent-files.md).
 
 ## Gate recovery
 

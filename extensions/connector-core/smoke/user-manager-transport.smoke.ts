@@ -476,7 +476,7 @@ try {
   // Grants for Owner A
   grantActor(serverDir, { owner: OWNER_A, actor: "cli", scope: ["spawn", "role:worker", "role:reviewer"], allowSubscribe: [">"], allowPublish: [">"], lifecycleUid: ownerAUid });
   const ownerASecret = newActorToken();
-  grantManagedActor(serverDir, { owner: OWNER_A, actor: AGENT_ACTOR, scope: ["spawn", "role:worker", "role:reviewer"], allowSubscribe: [">"],
+  grantManagedActor(serverDir, { custody: { kind: "foreground" }, owner: OWNER_A, actor: AGENT_ACTOR, scope: ["spawn", "role:worker", "role:reviewer"], allowSubscribe: [">"],
     allowPublish: [">"], parent: `${OWNER_A}.cli`, tokenHash: ownerASecret.tokenHash, lifecycleUid: ownerAUid });
   mkdirSync(clientDir, { recursive: true });
   writeFileSync(tokenPath, ownerASecret.actorToken, { mode: 0o600 });

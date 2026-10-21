@@ -1,9 +1,21 @@
 import { formatAge, presenceAges, presenceText, type PresenceStamps, type PresenceStatus } from "@cotal-ai/core";
-import { c } from "@cotal-ai/workspace";
+import { c, terminalWidth, wrapWords } from "@cotal-ai/workspace";
 
 // The ANSI helpers moved into `@cotal-ai/workspace` (stage 4), shared with @cotal-ai/web.
 // Re-exported so the CLI's many importers keep resolving them from here.
 export { c, color256 } from "@cotal-ai/workspace";
+
+/** `prefix` then `text` wrapped to `width`, each continuation line indented under the text, each
+ *  piece painted on its own. */
+export function hang(prefix: string, text: string | readonly string[], width: number, paint: (s: string) => string = (s) => s): string[] {
+  return wrapWords(text, width - prefix.length).map((piece, i) => (i === 0 ? prefix : " ".repeat(prefix.length)) + paint(piece));
+}
+
+/** A `✗` failure or `↳` hint on stderr, wrapped at spaces to the terminal, each continuation line
+ *  under the text. */
+export function stderrLine(prefix: string, text: string, paint: (s: string) => string): void {
+  for (const line of hang(prefix, text, terminalWidth(process.stderr))) console.error(paint(line));
+}
 
 export function statusBadge(status: PresenceStatus): string {
   switch (status) {

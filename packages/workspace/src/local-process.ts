@@ -2,7 +2,8 @@ import { readdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, normalize, dirname, basename } from "node:path";
 import type { Extension } from "@cotal-ai/core";
 import { spaceFromKey, spaceKey } from "./auth-paths.js";
-import { parsePid, probeLiveness, readPidfile } from "./pid.js";
+import { commandIsCotalDelivery, parsePid, probeLiveness, readPidfile } from "./pid.js";
+import type { ServiceAdapterDeclaration, ServiceAdapterHooks } from "./service-adapter.js";
 
 /** Context supplied to local process providers by workstation commands such as `down` and `status`. */
 export interface LocalProcessContext {
@@ -11,15 +12,19 @@ export interface LocalProcessContext {
   readonly userAuth?: boolean;
 }
 
-/** A workstation-owned process recorded by a pidfile under a mesh root. Optional packages register
- *  these beside their commands so lifecycle commands stay ignorant of package-specific processes.
- *  Metadata is declarative and cached at install time: status/down never import package code. An
- *  extension-provided process must claim its pidfile with an exclusive create and refuse an existing
- *  file; extension removal reserves the same path so startup and uninstall cannot cross. */
-export interface LocalProcess extends Extension {
+/** A workstation process provider. Legacy providers record custody under a mesh root; a
+ *  controllerOnly service uses the protected service instance store instead. Metadata is cached
+ *  at install time, without executable hooks. Legacy status/down never import package code. A
+ *  legacy extension process claims its pidfile with exclusive create; removal reserves that path.
+ *  Controller-only providers use service launch intents and instance-based removal guards. */
+export interface LocalProcess extends Extension, ServiceAdapterHooks {
   readonly kind: "local-process";
   readonly name: string;
   readonly label: string;
+  /** Optional service ABI. Cached declarations contain no executable hooks or native grants. */
+  readonly service?: ServiceAdapterDeclaration;
+  /** Controller records only. Legacy PID inventory/down must not interpret pidFile as custody. */
+  readonly controllerOnly?: true;
   /** Lower orders stop first; the broker should remain last so dependants can shut down cleanly. */
   readonly order?: number;
   /** Path relative to `<root>/.cotal`; `{space}` expands to the injective hex space key
@@ -61,6 +66,9 @@ export interface LocalProcess extends Extension {
  *  about the wrong process. `auth-service.{space}.pid` was already templated; these were not. */
 export const MANAGER_PIDFILE = "manager.{space}.pid";
 
+/** The native user-auth daemon custody slot, per space. */
+export const AUTH_PIDFILE = "auth-service.{space}.pid";
+
 /** The stop reservation beside a resolved pidfile: whoever holds it is the one process stopping that
  *  record, and a manager reads it to bind a `--with-agents` intent to the exact stop attempt. */
 export const stopReservationPath = (pidPath: string): string => `${pidPath}.stopping`;
@@ -80,6 +88,10 @@ export const MANAGER_DELIVERY_AWARE_MARKER = "manager.{space}.delivery-aware";
 /** `.cotal/delivery.<spaceKey>.pid` — the Plane-3 delivery daemon's record. Per-space: the daemon is
  *  minted a space-scoped cred and binds that space's durables, so two spaces need two daemons. */
 export const DELIVERY_PIDFILE = "delivery.{space}.pid";
+
+/** Shared legacy custody metadata. The delivery implementation registers its live service adapter
+ *  over this descriptor; CLI stop clients need no import from that implementation. */
+export const DELIVERY_PROCESS: LocalProcess = { kind: "local-process", name: "delivery", label: "delivery daemon", order: 20, pidFile: DELIVERY_PIDFILE, cooperativeStop: true, isOwnCommand: commandIsCotalDelivery };
 
 /** `.cotal/delivery.<spaceKey>.log` — the delivery daemon's output. See {@link MANAGER_LOGFILE}. */
 export const DELIVERY_LOGFILE = "delivery.{space}.log";
@@ -291,5 +303,5 @@ function existsByteExact(p: string): boolean {
 }
 
 export function localProcessVisible(process: LocalProcess, context: LocalProcessContext): boolean {
-  return process.visibleWhen !== "user-auth" || context.userAuth === true;
+  return process.controllerOnly !== true && (process.visibleWhen !== "user-auth" || context.userAuth === true);
 }

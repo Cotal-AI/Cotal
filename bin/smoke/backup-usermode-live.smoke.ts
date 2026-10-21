@@ -195,7 +195,7 @@ try {
   // The uid is minted into a NAMED value rather than inline, because the assertion below compares
   // against it. See the comment on that cell for why nothing weaker works.
   const RETAINED_UID = mintLifecycleUid();
-  const retained = await cotalAuthProvider.grantAgent({
+  const retained = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" },
     store: workspaceSecretStore(root), dir: stateDir, space: SPACE, owner: OWNER, actor: "worker",
     scope: [], allowSubscribe: [CHANNEL], allowPublish: [CHANNEL], role: "worker", parent: `${OWNER}.cli`,
     lifecycleUid: RETAINED_UID,

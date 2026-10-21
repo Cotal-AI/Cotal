@@ -10,8 +10,8 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, linkSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import { type AuthPrepared } from "@cotal-ai/core";
-import { spaceKey } from "@cotal-ai/workspace";
+import { openPrivateAppend, type AuthPrepared } from "@cotal-ai/core";
+import { AUTH_PIDFILE, spaceKey } from "@cotal-ai/workspace";
 import { parsePid, probeLiveness, readPidfile, writePidPair, type LocalProcess } from "@cotal-ai/workspace";
 import { stopLocalProcess } from "./local-process-stop.js";
 
@@ -116,7 +116,7 @@ export function claimAuthPidSlot(space: string): { fd: number } | { livePid: num
     const temp = `${target}.claim.${process.pid}.${randomBytes(4).toString("hex")}`;
     let fd: number | undefined;
     try {
-      fd = openSync(temp, "wx");
+      fd = openSync(temp, "wx", 0o600);
       writeSync(fd, String(process.pid), 0);
       linkSync(temp, target); // the atomic no-overwrite publish: EEXIST = the slot is held
       rmSync(temp); // the published name and the held fd both keep the inode alive
@@ -165,7 +165,7 @@ function startAuthServiceDetached(space: string, server: string, command: string
   if (slot === undefined) return 0;
   if ("livePid" in slot) return slot.livePid;
   try {
-    const fd = openSync(LOG_PATH(space), "a");
+    const fd = openPrivateAppend(LOG_PATH(space));
     // Internal child re-exec (the `up` that reached here already seeded); the auth service does not
     // launch agents, so it skips the connector seed on boot (a direct `cotal auth-service` still seeds).
     const child = spawn(node, [...self, command, "--space", space, "--server", server, ...extraArgs], {
@@ -234,7 +234,7 @@ export const AUTH_PROCESS: LocalProcess = {
   name: "auth",
   label: "user-auth service",
   order: 30,
-  pidFile: "auth-service.{space}.pid",
+  pidFile: AUTH_PIDFILE,
   visibleWhen: "user-auth",
 };
 

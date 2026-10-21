@@ -1,4 +1,7 @@
+import { oneLine } from "@cotal-ai/workspace";
+
 export interface DetachedStatus {
+  root?: string;
   pid: number;
   delivery: boolean;
   authService: boolean;
@@ -11,5 +14,5 @@ export function renderDetachedSummary(status: DetachedStatus): string {
   if (status.delivery) components.push("delivery daemon");
   if (status.authService) components.push("user-auth service");
   if (status.manager) components.push("manager");
-  return `✓ running in the background: ${components.join(", ")} - stop with: cotal down`;
+  return `✓ running in the background: ${components.join(", ")} - ${status.root ? `from ${oneLine(status.root)}, stop with: cotal down` : "stop with: cotal down"}`;
 }
