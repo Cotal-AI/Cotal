@@ -1,6 +1,6 @@
 /** Additional-only keyed failure schedules. Owned real immutable KV and child crashes, not
  * native-manager takeover or scheduler integration. Prior completed cells are not repeated. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +12,9 @@ import { Kvm } from "@nats-io/kv";
 import { ensureAdmissionStore, admissionBucket, admissionKey, bindAndAdmitRunSubmission, readRunSubmission,
   newSubmissionRunId, mintLifecycleUid, mintGeneration, contractDigest, canonicalJson,
   type RunAdmission, type EpCaller } from "@cotal-ai/core";
-import { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal, awaitBrokerReady, killAndAwaitExit } from "@cotal-ai/smoke-kit";
+import { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal, awaitBrokerReady, killAndAwaitExit, countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const enc = new TextEncoder(), space = "keyed-failures", endpoint = "manager";
 // The crash child inherits this environment, so no ambient COTAL_ identity reaches it.
@@ -132,3 +134,4 @@ try {
   console.log(JSON.stringify({ ownedBrokerExit: broker.exitCode, signal: broker.signalCode, port, retainedScratch: dir,
     scope: "real store and actual process crash cells, not native takeover or scheduler" }));
 }
+emitSentinel({ passed: counted.cells(), failed: 0 });

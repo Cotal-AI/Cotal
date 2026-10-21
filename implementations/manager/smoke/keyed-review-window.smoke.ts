@@ -1,11 +1,13 @@
 /** Keyed static-auth native manager acceptance. Owned broker and harmless seatless runs only. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { freePort, SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { freePort, SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal, countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const home = mkdtempSync(join(tmpdir(), "cotal-submission-home-"));
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
@@ -36,7 +38,9 @@ let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 let nc: Awaited<ReturnType<typeof connect>> | undefined;
 let longNc: Awaited<ReturnType<typeof connect>> | undefined;
 const failures: string[] = [];
+let checked = 0;
 const check = (name: string, ok: boolean) => {
+  checked++;
   console.log(`${ok ? "PASS" : "FAIL"} ${name}`);
   if (!ok) failures.push(name);
 };
@@ -163,3 +167,4 @@ try {
   if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "owned fixture cleanup failed");
 }
 if (failures.length) process.exitCode = 1;
+emitSentinel({ passed: counted.cells() + checked - failures.length, failed: failures.length });

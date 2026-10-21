@@ -1,16 +1,18 @@
 /** Additional-only M09-M11: actual broker denial for legacy-only issued rights, exported pinned
  * helper error preservation, and provider HTTP transport. No real login/operational profile. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { connect } from "@nats-io/transport-node";
-import { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit, awaitBrokerReady } from "@cotal-ai/smoke-kit";
+import { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit, awaitBrokerReady, countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import type { ResolvedService, RemoteRunSubmissionRequest } from "@cotal-ai/core";
 import { encodeUser } from "@nats-io/jwt";
 import { fromSeed, fromPublic } from "@nats-io/nkeys";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const home = mkdtempSync(join(tmpdir(), "keyed-client-home-"));
 process.env.COTAL_HOME = home;
@@ -86,3 +88,4 @@ try {
   console.log(JSON.stringify({ brokerExit: broker.exitCode, signal: broker.signalCode, port, retainedScratch: [home, dir],
     scope: "new provider transport/old ceiling and structural helper only, not new auth profiles or live login" }));
 }
+emitSentinel({ passed: counted.cells(), failed: 0 });

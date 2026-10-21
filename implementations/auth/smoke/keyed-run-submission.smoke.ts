@@ -1,6 +1,6 @@
 /** Real broker observation+issued/admission stores, actual signerless issuer handler.
  * Not HTTP/whole-manager/signerless driver acceptance. No model or operational account. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,9 +11,11 @@ import { Kvm } from "@nats-io/kv";
 import { ensureIssuedStores, openIssuedStore, issuedBucket, ensureAdmissionStore, admissionBucket,
   epRequestSubject, mintLifecycleUid, mintGeneration, newIdentity, remoteManagerActors, contractDigest,
   type EndpointRequest, type IssuedSourceRef } from "@cotal-ai/core";
-import { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit, awaitBrokerReady } from "@cotal-ai/smoke-kit";
+import { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit, awaitBrokerReady, countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { handleRemoteRunSubmission, observedRunRequest, type ObservedRunRequest } from "../src/manager-authority.js";
 import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 const port = process.env.KEYED_BROKER_PORT ? Number(process.env.KEYED_BROKER_PORT) : await freePort();
 assert.ok(Number.isInteger(port) && port > 1024 && port < 65536, "owned loopback broker port");
 const servers = `nats://127.0.0.1:${port}`;
@@ -76,3 +78,4 @@ try {
   await nc?.close(); await killAndAwaitExit(broker); rmSync(dir, { recursive: true, force: true }); release();
   console.log(JSON.stringify({ ownedBrokerExit: broker.exitCode, signal: broker.signalCode, wholeSignerlessManagerAcceptance: false }));
 }
+emitSentinel({ passed: counted.cells(), failed: 0 });

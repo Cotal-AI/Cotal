@@ -12,7 +12,8 @@ if (process.argv[2] === "agent-bearer") {
   await registry.resolve<import("@cotal-ai/core").Command>("command", "agent-bearer").run({ values, positionals: [], raw });
   process.exit(0);
 }
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -30,6 +31,8 @@ import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 import { nativeRemoteManager } from "../../manager/smoke/_native-remote-manager.js";
 import { bootDeliveryDaemon } from "../../manager/smoke/_boot-delivery.js";
 import "../../runtime/src/index.js";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const fx = await startHostedAuthFixture("keyed-native", 1), a = fx.accounts[0]!;
 const { publicKey, privateKey } = await generateKeyPair("EdDSA");
@@ -120,3 +123,4 @@ try {
   console.log(JSON.stringify({ cleanup: errors.length ? "failed" : "complete", retainedScratch: fx.dir, scope: "owned signerless fixture only" }));
   if (errors.length) throw new AggregateError(errors, "owned signerless fixture cleanup failed");
 }
+emitSentinel({ passed: counted.cells(), failed: 0 });

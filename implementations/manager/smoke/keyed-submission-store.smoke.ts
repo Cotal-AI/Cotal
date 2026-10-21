@@ -1,5 +1,5 @@
 /** Owned loopback immutable admission-store cells. No manager/model/operational account. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +12,9 @@ import {
   runSubmissionKey, contractDigest, mintGeneration, mintLifecycleUid, newSubmissionRunId, DEV_OWNER,
   type RunAdmission, type EpCaller,
 } from "@cotal-ai/core";
-import { freePort, awaitBrokerReady, killAndAwaitExit, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
+import { freePort, awaitBrokerReady, killAndAwaitExit, teardownOnSignal, SMOKE_BROKER_TOKEN, countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 const port = process.env.KEYED_BROKER_PORT ? Number(process.env.KEYED_BROKER_PORT) : await freePort();
 assert.ok(Number.isInteger(port) && port > 1024 && port < 65536, "owned loopback broker port");
 const servers = `nats://127.0.0.1:${port}`;
@@ -171,3 +173,4 @@ try {
   await nc?.close(); await killAndAwaitExit(broker); rmSync(dir, { recursive: true, force: true }); release();
   console.log(JSON.stringify({ ownedBrokerExit: broker.exitCode, signal: broker.signalCode }));
 }
+emitSentinel({ passed: counted.cells(), failed: 0 });

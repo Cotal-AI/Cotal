@@ -1,11 +1,13 @@
 /** Keyed static-auth native manager acceptance. Owned broker and harmless seatless runs only. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { freePort, SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { freePort, SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal, countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const home = mkdtempSync(join(tmpdir(), "cotal-submission-home-"));
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
@@ -35,7 +37,11 @@ let manager: InstanceType<typeof Manager> | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 let nc: Awaited<ReturnType<typeof connect>> | undefined;
 const failures: string[] = [];
+// A label names a cell whose assertions ran just above it, so it adds no count of its own.
+const label = (name: string) => console.log(`PASS ${name}`);
+let checked = 0;
 const check = (name: string, ok: boolean) => {
+  checked++;
   console.log(`${ok ? "PASS" : "FAIL"} ${name}`);
   if (!ok) failures.push(name);
 };
@@ -96,18 +102,18 @@ try {
   const first = races[0]!.runId!, second = races.at(-1)!.runId!;
   check("same-key native concurrent duplicate binds exactly one run", new Set(races.map(r => r.runId)).size === 1);
   assert.equal((await core.readKeyedRunSubmission(nc, space, submission, { deadlineMs: 5000 })).runId, first);
-  check("native exact caller submission read retains original binding", true);
+  label("native exact caller submission read retains original binding");
   const conflict = await core.invokeCommand(nc, space, service, "run-start-keyed", { ...args, source: 'log("changed");' }, { id: submission.submissionId, deadlineMs: 5000 });
   check("native same-key changed fingerprint refused", conflict.reply.ok === false && conflict.reply.error?.code === "conflict");
   const old = { ...service, commands: new Map(service.commands) }; old.commands.delete("run-start-keyed");
   assert.throws(() => core.prepareKeyedRunSubmission(space, old, core.mintLifecycleUid(), args), /distinct contracts/);
-  check("unsupported old described surface refuses before keyed publish, no legacy fallback", true);
+  label("unsupported old described surface refuses before keyed publish, no legacy fallback");
   const wrongEpoch = { ...service, responder: { ...service.responder, epoch: service.responder.epoch + 1 } };
   const epochSubmission = prepare();
   await assert.rejects(core.invokeCommand(nc, space, wrongEpoch, "run-start-keyed", args, { id: epochSubmission.submissionId, deadlineMs: 5000 }),
     error => core.respondedButUnbound(error));
   assert.equal((await core.readKeyedRunSubmission(nc, space, epochSubmission, { deadlineMs: 5000 })).state, "unbound");
-  check("wrong epoch reply rejected, exact healthy-epoch read independently observes unbound", true);
+  label("wrong epoch reply rejected, exact healthy-epoch read independently observes unbound");
   // Drop one actual native reply at the caller subscription, after broker delivery. Preserve its
   // decoded payload only as the oracle. This is local transport injection, not a network outage.
   const lost = prepare(), subscribe = nc.subscribe;
@@ -146,3 +152,4 @@ try {
   if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "owned fixture cleanup failed");
 }
 if (failures.length) process.exitCode = 1;
+emitSentinel({ passed: counted.cells() + checked - failures.length, failed: failures.length });
