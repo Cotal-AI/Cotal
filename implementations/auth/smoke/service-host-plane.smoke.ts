@@ -1,4 +1,4 @@
-/** Owned-broker suite for the service endpoint host inside the authority plane. Sections P to W open
+/** Owned-broker suite for the service endpoint host inside the authority plane. Sections P to Z open
  * the real plane (`openAuthAuthorityPlane`) on one JWT-permission broker; section H starts hosted
  * contexts (`startAuthService`) on another. The service name binding, the owner's interactive actor
  * row and the one malformed issuance row are fixture simulations; the smoke-only probes pause or
@@ -403,6 +403,37 @@ try {
       await closing;
       c.check("W2 after the broker resumes close releases the claim, with no effect opened for those calls", o.effects === effects && (await claimState()) === "released");
     } finally { if (!resumed) srv.kill("SIGCONT"); }
+  }
+
+  // ---- Z: a scanner death while close drains a call ----------------------------------------------
+  {
+    const g = gate();
+    let armed = false, paused = false;
+    const o = await openPlane(enabled, { effect: async () => { if (armed) { armed = false; paused = true; await g.p; } } });
+    const host = o.plane.serviceEndpointHost!;
+    const p = await registered(host);
+    const propRev = await revision(`svcprop.${p.proposalId}`);
+    armed = true;
+    const req = decide(p.proposalId, p.revision, name.revision);
+    const inflight = call(host, req);
+    for (let i = 0; i < 50 && !paused; i++) await wait(20);
+    const closing = o.plane.close();
+    await wait(200);
+    await o.kills!.ledger(); await o.kills!.records();
+    await wait(300);
+    g.open();
+    const r = await inflight;
+    c.check("Z1 a scanner death while close drains holds the paused decide under its operation", r.state === "held" && r.operationId === serviceHostOperationId(space, req.requestId) && r.reason === "readiness", r);
+    c.check("Z1 nothing was written after the death", (await wideKv.get(`svcop.${serviceHostOperationId(space, req.requestId)}`)) === null && (await revision(`svcprop.${p.proposalId}`)) === propRev);
+    const closed = await rejects(() => closing);
+    c.check("Z2 the closing plane did not go fatal and its close released the claim", closed === "" && (await within(o.plane.fenced, 300)) === undefined
+      && !o.logs.some((l) => l.includes("STOPPED scanning")) && (await claimState()) === "released", closed);
+  }
+  {
+    const o = await openPlane(enabled);
+    await o.plane.close();
+    c.check("Z3 an ordinary close stays clean: no fatal, no scanner-death copy, the claim released",
+      (await within(o.plane.fenced, 300)) === undefined && !o.logs.some((l) => l.includes("STOPPED scanning")) && (await claimState()) === "released");
   }
 } finally {
   await wide.close().catch(() => {});

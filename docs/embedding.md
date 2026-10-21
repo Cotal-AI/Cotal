@@ -1317,7 +1317,8 @@ actor ledger directory. A restore or missing startup refuses the plane open, whi
 releases the claim. Its discovery connection is an ordinary renewing read-only client: a broker loss
 fails its reads until the stock client reconnects, and those calls answer `unavailable` with nothing
 written. A renewal failure closes it permanently, and the host stays unavailable until the plane is
-opened again. Both plane fatal paths trip the host. Plane close refuses new host calls from the
+opened again. Both plane fatal paths trip the host, and a scanner death trips it even while the
+plane closes, without making the plane fatal. Plane close refuses new host calls from the
 moment it is called, waits for every call that already entered, from entry through discovery and
 effect open, closes discovery and then releases the claim. An effect connection that failed to
 close stays owned past its call: close closes it again first, and rejects with the claim still held

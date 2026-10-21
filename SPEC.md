@@ -1602,7 +1602,9 @@ broker loss makes its reads fail until the stock client reconnects; a read that 
 `unavailable` within its invocation's own limit, with nothing written. A renewal failure closes it
 for good, and every later read through it fails until the plane is opened again; nothing reopens it.
 Both plane fatal paths, a scanner death and a failed native-issuance cleanup, trip the host's fatal
-latch, and a fence that lands while the host is opening latches it once it exists. From the moment
+latch, and a fence that lands while the host is opening latches it once it exists. A scanner death
+while the plane closes still trips the host, so a call close is draining stops at its next step, but
+it does not make the plane fatal. From the moment
 plane close is called it refuses every host call, before it waits for anything. It then waits until
 every call that entered before it has returned, including one still reading discovery or opening its
 effect connection. An effect connection whose close failed stays owned by the plane after its call

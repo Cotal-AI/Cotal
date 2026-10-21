@@ -650,8 +650,9 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // close the sibling so a successor's reclaim isn't blocked by a half-dead pair, log loud.
   let serviceHost: ServiceHostOperations | undefined;
   const fenceOnDeath = (role: "auth-ledger" | "records", sibling: () => Promise<void>) => {
-    if (closing) return;
     const copy = scannerDeathCopy(space, role);
+    // A closing plane does not go fatal, but a service host call it is still draining stops here.
+    if (closing) { serviceHost?.trip(copy); return; }
     hold?.fence(copy);
     fatalReason = fatalReason ?? copy;
     serviceHost?.trip(copy);
