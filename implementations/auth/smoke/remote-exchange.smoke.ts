@@ -745,6 +745,29 @@ try {
     { status: failedWhileFull.status, body: failedWhileFull.body },
   );
 
+  // An unpinned manager-caller exchange for an owner with several live remote managers is refused
+  // only after its credential verified, so it is not probing (#4213). A session that no manager
+  // launched has no pin and polls turn-pending this way every 15 s, so a host with a handful of
+  // such sessions kept its shared bucket full and every other refusal from that host read 429.
+  const ambiguousFromFull = await post(`${PUBLIC}/exchange`, { ...agentBody2, view: "manager-caller" }, victim);
+  check(
+    "an ambiguous manager selection from a throttled key keeps its own reason, not 429",
+    ambiguousFromFull.status === 401 && /live remote manager candidates/.test(String(ambiguousFromFull.body.error)),
+    { status: ambiguousFromFull.status, body: ambiguousFromFull.body },
+  );
+  const poller = asPeer("203.0.113.61");
+  let ambiguousRefusals = 0;
+  for (let i = 0; i < 40; i++) {
+    const r = await post(`${PUBLIC}/exchange`, { ...agentBody2, view: "manager-caller" }, poller);
+    if (r.status === 401 && /live remote manager candidates/.test(String(r.body.error))) ambiguousRefusals++;
+  }
+  const afterPolls = await post(`${PUBLIC}/exchange`, { ...agentBody2, actorToken: newActorToken().actorToken }, poller);
+  check(
+    "40 ambiguous selections leave the peer's refused-exchange budget untouched",
+    ambiguousRefusals === 40 && afterPolls.status === 401 && afterPolls.body.error === wrongSecret.body.error,
+    { ambiguousRefusals, status: afterPolls.status, body: afterPolls.body },
+  );
+
   // ---------- H. refresh across expiry ----------
   console.log("H) agent-bearer-style refresh yields a fresh, later-expiring bearer");
   const first = await post(`${PUBLIC}/exchange`, { ...agentBody2, ttlSec: 1 });
@@ -766,7 +789,7 @@ try {
 }
 
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 115;
+const EXPECTED = 117;
 console.log(`\nremote-exchange smoke: ${pass} passed, ${fail} failed`);
 if (pass + fail !== EXPECTED) {
   console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail} - a cell was added or silently skipped`);
