@@ -66,6 +66,9 @@ import { isReachable, setupSpaceStreams } from "@cotal-ai/core";
 import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { quoteForOperator } from "../src/web.js";
 
+// The web child must not inherit a managed session's mesh identity from whatever runs this suite.
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+
 let cells = 0, failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
   cells++;
