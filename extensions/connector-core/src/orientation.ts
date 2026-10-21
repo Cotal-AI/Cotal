@@ -40,6 +40,14 @@ export const WORKFLOW_STEER =
   "`cotal run start`, resumable on any host from its step journal. Read the `workflows` page via " +
   "cotal_docs before improvising such a loop in your own context.";
 
+/** Where to talk, folded in beside {@link ORIENTATION_BOOTSTRAP} for every connector. A fresh seat
+ *  may start on no channel, so it is told how to find its team's channel and which surface fits
+ *  which kind of message. Guidance only: it grants nothing and changes no subscription. */
+export const CHANNEL_GUIDANCE =
+  "To work with your team, find its channel with cotal_channels and join it with cotal_join, then " +
+  "post team work there with cotal_send. Use cotal_dm for one specific peer and cotal_anycast to ask " +
+  "whoever holds a role. Post on #announce only for a deliberate notice to the whole space.";
+
 /** A tool the agent can actually call (already gated), as it appears in the card. */
 export interface OrientationTool {
   name: string;

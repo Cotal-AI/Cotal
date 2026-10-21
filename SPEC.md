@@ -772,6 +772,26 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 | `transfer-reader` | the stock delete marker on its own transfer bucket's meta subjects | its own `OBJ_cotal_xfer_<space>_<instanceId>` stream: info, message get, its push consumer, purge | one-shot per `transcript-receive` or sweep; no other instance's bucket |
 | scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Appendix B summarizes them; the concrete grant lists are **generated from the §13.9 ownership matrix** into `provision.ts` (the matrix is the single oracle; `provision.ts` is its artifact, Appendix B its summary). |
 
+A Manager with explicit `execution: "none"` MUST construct no Runtime or connector workload.
+It MAY use the existing genuine auth-local authority path, or the existing pooled signerless
+remote authority path. These authority paths MUST NOT be mixed. A local NONE instance MUST
+require its hosting user-auth marker, signing trust and user-mode mesh record before binding.
+Its persisted native instance, serve principal, owner checks and registration gates are unchanged.
+Execution capability MUST be immutable per instance; an existing unclassified local identity or
+retained seat/turn inventory MUST refuse NONE admission. Startup MUST NOT silently convert a
+runtime instance or adopt a sibling's workload.
+
+NONE status MUST report no runtime, custody, class spawn, workflow hosting or terminal sessions.
+Launch and workflow requests MUST refuse before allocation or workload effects. Launch reads
+MUST refuse before resolving a Runtime, connector or host path. Targeted requests retain normal
+lifecycle-mapping validation; an instance with no managed mapping does not fabricate a target.
+NONE MUST refuse model inspection before connector or harness resolution. Caller-driven persona,
+history purge, transcript transfer, preservation, resume, turn-yield, cancellation and self-stop
+writes MUST refuse before their effects. NONE MUST NOT start a transcript receiver or sweep.
+Native registration, lease, credential renewal, session-ledger and goal maintenance MAY still
+write their own control state autonomously; NONE is not a read-only broker or filesystem mode.
+Native ps remains this instance's managed map, not a presence or HTTP-session inventory.
+
 The `resolve-cwd` launch read is limited by execution mode. A manager whose runtime delegates
 seats outside its host MUST refuse it with `failed-precondition` before any filesystem lookup.
 The refusal MUST be independent of the requested path's existence, type and symlink target,
@@ -928,10 +948,15 @@ every manager request to one exact live registered instance and is valid with no
 exchange selects from read-only observations of manager issuance gates and service registrations.
 It refuses zero or ambiguous candidates and refuses an unavailable owner-specific remote manager
 rather than falling through to a co-located manager. An explicit selector must name a live candidate.
+A trusted host composition MAY instead select its genuine local Manager up front for an unpinned
+interactive human exchange. It MUST apply the same native local identity, open gate, serve principal,
+registration revision and epoch checks, and MUST refuse an absent, unreadable or noncandidate local
+Manager without reading or substituting remote candidates. This policy MUST NOT be request-selectable,
+change explicit selectors, rebind managed or issued callers, or add command authority. Without the
+host opt-in the default selection above is unchanged.
 The auth service lists the same observations to a signed-in human at `POST /manager-instances` on
 both faces: it verifies the same IdP proof, derives the owner the same way, and answers every manager
-gate of that owner with the verdict selection reads. Selection reads that list, so the two cannot
-disagree. A listed candidate is registration evidence, not proof that the instance answers, and a
+gate of that owner using the same candidate checks as selection. A listed candidate is registration evidence, not proof that the instance answers, and a
 failed read is unavailable, never an empty list.
 The `session-caller` view carries a required `act.session` claim `{endpoint, sessionId, epoch, exp}`
 (exp in unix seconds) and is valid with no other view; `act.session` is valid only with it. It needs no
@@ -4871,7 +4896,8 @@ a client that bypasses stock registration can still rewrite that one row. Live e
 host's retirement barrier.
 
 **Compatibility.** A command whose semantics require the binding (this revision: `run-start`,
-§14.8) MUST refuse a legacy-rail request with `permission-denied` carrying the detail kind
+§14.8, and `run-start-keyed` and `run-submission-status`, §14) MUST refuse a legacy-rail request
+with `permission-denied` carrying the detail kind
 `ai.cotal.ep.unbound-caller-authority` naming the caller triple, never route it through the
 host's own authority. Every other command serves both rails unchanged. Origin (that a request on
 a generation-pinned subject was published by the grant holder) is a property of the grant set,
@@ -5367,6 +5393,60 @@ retain each for at most one hour and MUST NOT store arguments.
 
 ## 14. Workflow runs (v0.5)
 
+### Keyed submission prerequisite
+
+`run-start-keyed` is a distinct registered command. Its envelope ID is the immutable submission
+identity. `run-submission-status` accepts only a submission ID and derives its namespace from
+the authenticated caller owner, actor and lifecycle UID. Both require issued reach, pinned
+contracts and an exact-instance/epoch bind. Old credentials gain no reach by reconnecting.
+Legacy `run-start` remains unchanged and is never an automatic fallback.
+A keyed request's `deadlineMs` is at most 30000. A host refuses a larger value as `bad-request`
+before any read or binding. This maximum is a request budget. It does not show that a publish
+has settled or that a credential is still valid. The process that receives the request measures
+the budget on its own monotonic clock from its own receive sample; that reading is never
+persisted, sent or compared with another process's clock. The caller's authority expiry is
+checked separately on the wall clock. A request that outlives a credential still has an unknown
+outcome.
+
+The admission authority writes one `submission.v1.<endpointToken>.<callerDigest>.<id>` binding
+in the existing write-once admission store. `callerDigest` is the canonical SHA-256 digest of
+`[owner,actor,lifecycleUid]` without its `sha256:` prefix. The closed value records the caller
+generation, semantic fingerprint, accepting instance/epoch, host-minted run ID, frozen
+admission digest and original callback deadline. That deadline is a wall-clock projection of the
+callback's window, rounded down. It is a record only: no host enforces or recovers from it. Bindings are permanent, including terminal
+runs. Capacity exhaustion refuses new submissions rather than deleting authority history.
+The manager takes its stopping and launch-capacity refusals, and reserves the launch, before it
+reads or writes the binding, so such a refusal writes nothing. It says nothing about an earlier
+attempt under the same key, which may already be bound, admitted or activated;
+`run-submission-status` takes no launch reservation and reads it. A launch that still fails after admission
+leaves `admitted` with no run, and nothing in this prerequisite launches or repairs it.
+
+Initial authorization and evidence validation precedes the binding CAS. Before each admission
+attempt, the original binding winner rechecks that same authority. These fallible freshness
+reads may leave permanent binding-only reconciliation debt after the binding exists. They
+never replace its frozen admission. Only that winner may create its admission, with at most
+three classified transient attempts in the original callback deadline and authority window.
+The admission bytes, timestamp, ceiling and
+provenance remain fixed. A failed create is classified by a leader read of that exact admission
+key. Matching bytes recover success, authoritative absence permits another same-callback
+attempt, and unreadable or conflicting state holds. The timer bounds waiting and starting
+further attempts, not broker acceptance of an already-issued publish. Such a publish may land
+later with the original frozen bytes. No new admission attempt starts after the request budget
+or authority window ends. After admission, the activation check uses only the manager's remaining
+monotonic request budget, without rechecking the caller's wall-clock expiry. Earlier admission
+absence never proves that this pending effect cannot land.
+No later callback, duplicate, restart,
+operator or read repairs a binding-only submission.
+
+Status reports `unbound`, `binding-only`, `admitted`, `activated` or `indeterminate`, with the
+original bound run and callback deadline when available. Absence is observation-time only.
+`activated` means a run status record was observed, including a completed or failed run. It
+does not mean currently running or occupying an active lane. Read native `run-status` for
+lifecycle state. Terminal bindings remain permanent and duplicates never launch them again.
+The scheduler preserves its original reservation and never allocates a replacement run or
+adopts another instance/epoch from these reads. A later repair protocol requires its own fence
+and review. This prerequisite introduces no second scheduler or generic cancellation.
+
 A **workflow run** is one execution of a program in the Cotal workflow language, hosted by a
 **driver** (an endpoint, in the reference deployment the manager daemon) that performs the
 program's effects against the mesh and records every one of them in a per-run **step journal**.
@@ -5694,7 +5774,8 @@ forwards the request subject it served with the attempt or operator issuance it 
 issuing host re-parses that subject, requires a user caller's owner to be the run's admitted owner
 for a resume and the registered owner for an answer, resolves the caller's own issuance as live, and
 requires its publish ceiling to permit that subject. The issuing host subscribes to the run-start,
-resume and answer request subjects itself and never replies on them. It admits a forwarded run-start,
+resume and answer request subjects itself, and to the keyed `run-start-keyed` and
+`run-submission-status` request subjects (§14), and never replies on any of them. It admits a forwarded run-start,
 and issues for a forwarded resume or answer, only when it observed a caller publish that request and
 has not admitted or issued for it before, so a manager cannot forward a request its caller never
 sent. For a resume or answer it reads what that request's envelope asked for and issues only that: a

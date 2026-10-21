@@ -153,12 +153,25 @@ export function remoteRunHosting(args: {
   accountPublicKey: string;
   processEpoch: number;
   requestRunAdmission: (request: RemoteRunAdmissionRequest) => Promise<RemoteRunAdmissionResult>;
+  requestRunSubmission?: (request: import("@cotal-ai/core").RemoteRunSubmissionRequest) => Promise<import("@cotal-ai/core").RemoteRunSubmissionResult>;
   requestRunAttempt: (request: RemoteRunAttemptRequest) => Promise<RemoteRunAttemptResult>;
   requestRunRevoke?: (request: RemoteRunRevokeRequest) => Promise<RemoteRunRevokeResult>;
   call: (request: RemoteManagerAuthorityRequest) => Promise<RemoteManagerAuthorityMaterial>;
-}): Required<Pick<RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">> {
+}): Required<Pick<RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">> & Pick<RunHostingContext, "submitRun"> {
   const { state, owner, registrationProof, accountPublicKey, processEpoch } = args;
   return {
+    submitRun: async ({ subject }) => {
+      if (!args.requestRunSubmission) throw new Error("issuing host does not implement keyed submissions");
+      const request: import("@cotal-ai/core").RemoteRunSubmissionRequest = {
+        ...runRequestBase(state, registrationProof, accountPublicKey, processEpoch), kind: "manager-run-submission", subject,
+      };
+      const r = await args.requestRunSubmission(request);
+      const allowed = ["v", "kind", "requestId", "winner", "view", "admission"];
+      if (!r || Object.keys(r).some(k => !allowed.includes(k)) || r.v !== 1 || r.kind !== request.kind
+        || r.requestId !== request.requestId || typeof r.winner !== "boolean" || !r.view)
+        throw new Error("invalid keyed submission issuer response");
+      return { ...r, ...(r.admission ? { admission: admissionSnapshot(r.admission) } : {}) };
+    },
     revokeRun: async (revoke) => {
       if (args.requestRunRevoke === undefined) throw new Error("the issuing host supplies no closed run revoke request");
       const request: RemoteRunRevokeRequest = { ...runRequestBase(state, registrationProof, accountPublicKey, processEpoch), kind: "manager-run-revoke", revoke };

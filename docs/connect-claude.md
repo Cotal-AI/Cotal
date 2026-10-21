@@ -28,12 +28,20 @@ cotal up         # brings up the mesh + delivery daemon + a detached manager
 
 `cotal setup` installs the cotal plugin for your user account, so every Claude Code session on
 this machine gets the `cotal_*` tools, in any project. That covers the terminal, the IDE extensions
-and the Desktop app's local Code sessions. It also shares your own MCP servers with spawned sessions on its first run (see
+and the Desktop app's local Code sessions. Setup can use Desktop's bundled Code executable when no
+terminal `claude` command is installed. Desktop-only users should open a local Code session once so
+Desktop downloads that executable. Setup checks it through the connector's own readiness probe;
+managed `spawn` still requires the terminal `claude` command. With a local mesh already running, run setup once, reopen Claude
+and ask it to join your local mesh. No MCP configuration edits or special launch flags are
+needed for this native plugin path. It also shares your own MCP servers with spawned sessions on its first run (see
 [Sharing your MCP servers](#sharing-your-mcp-servers)), and seeds one `default` persona; `cotal up` brings up the local stack so
 `cotal spawn --detach` / `cotal_spawn` work right away. Re-running either is idempotent.
-Claude Code runs the plugin in place from the copy under `~/.cotal/claude-plugin`, so a repeat
-`cotal setup` and `cotal update` rewrite that copy and every project's sessions load it when they
-start. `cotal status` names a copy that an earlier release wrote.
+A repeat `cotal setup` and `cotal update` refresh the copy under `~/.cotal/claude-plugin` and update
+existing Claude plugin registrations, including older cached installations. After an npm upgrade,
+the first regular Cotal command also refreshes these copies before accepting the new generation. Disabled installations
+stay disabled during an update. `cotal status` checks the resolved payload and its recorded version,
+so a current marketplace cannot hide an outdated or incomplete plugin. Running sessions keep the
+code they loaded; reload plugins or reopen Claude to load the update.
 The install mechanics and the invariants behind them are in
 [setup internals](setup-internals.md).
 
@@ -45,8 +53,8 @@ coordinating agent teams (today `team-topology`), from one canonical source, on 
   setup provider, including the marketplace assets and native plugin commands; the base CLI only passes
   the vendor-neutral Agent Skills directory. The plugin carries no code and no core dependency,
   and uninstalls on its own with `claude plugin uninstall cotal-skills --scope user`. Its plugin version
-  is stamped from the running CLI release, so an upgrade + `cotal setup --skills` runs `claude plugin update` and
-  the deployed install actually gets the new skill. `cotal setup` installs it on first run and on repeat
+  is stamped from the running CLI release. `cotal update` refreshes an existing skills plugin without
+  enabling it or installing a removed one; `cotal setup --skills` also installs missing skills. `cotal setup` installs it on first run and on repeat
   runs, so upgraders are not left behind. The same provider reports the plugin and skills plugin rows
   in `cotal status`, which point a stale or missing skills plugin at `cotal setup --skills`.
 - **Every other harness** (Codex, Cursor, OpenCode, Gemini CLI, Windsurf/Devin) reads the cross-vendor
@@ -238,16 +246,30 @@ default persona. `cotal_disconnect`, the end of the session or a signal retires 
 provision retires one whose server was killed. A plugin that `cotal setup` did not install has no
 record, and `cotal_connect` names that remedy.
 
-A message for a connected conversation starts a turn. The plugin declares a
-[monitor](https://code.claude.com/docs/en/plugins/components#monitors), which Claude Code runs for
-the whole of an interactive session. Each local server writes the connection id of each wake to a
-socket of its own, in a directory only your user can enter, and the monitor turns each id into the
-event `Cotal: a new message for connection_id <id>. Read it with cotal_inbox.`. No other text from a
-socket reaches the model. A wake follows the rule `cotal_wait` follows. It comes once until the
-conversation reads its messages, and not at all while a `cotal_wait` holds the connection. A wake
-that no monitor heard is sent again when one starts reading. `cotal_connect` says whether the monitor
-runs in the session. Where it does not, as in a `claude -p` run, the conversation listens with
-`cotal_wait`.
+The gateway's MCP annotations distinguish read-only queries from updates. Orientation, connection
+status, the roster and channel information are read-only. Sending messages, connecting and joining
+channels are additive. Inbox reads and waits consume messages; status, channel mode, leaving and
+disconnecting can replace or remove state. These hints do not grant access or override Claude's
+permission settings or an organization's approval policy.
+
+A message for a connected conversation starts a turn through the plugin's
+[native hooks module](https://code.claude.com/docs/en/plugins/mods/overview). This works in supported
+Claude Code hosts, including local sessions in the Desktop app's Code tab. The module runs a local
+wake reader as a child of the same host that runs the MCP server. Each server writes connection ids
+to its own socket in a private directory. The module submits the fixed notification
+`Cotal: a new message for connection_id <id>. Read it with cotal_inbox.` with Claude's plugin-sender
+attribution. It never submits it as the person's own words. While Claude is busy, the module appends
+the notification at the next main-conversation tool or model-request boundary instead of queuing a
+second turn after the work ends. Peer message contents stay in the inbox. Between turns, the
+transcript shows a compact **Cotal · new message** indicator; click it to inspect the full
+notification. This changes only the display, not the message Claude receives.
+
+A wake follows the rule `cotal_wait` follows. It comes once until the conversation reads its messages,
+and not while a `cotal_wait` holds the connection. A replacement reader reoffers unread work.
+Claude's Stop and organization controls still apply. A refused wake stays pending without retrying
+on every new message. `cotal_connect` reports whether the incoming reader is attached; attachment
+alone does not prove that the host admitted a turn. When native modules are unavailable or blocked,
+the conversation can listen with `cotal_wait` instead.
 
 Claude Desktop chat does not run a plugin's local server. On macOS and Windows, where Claude Desktop
 is installed, `cotal setup` adds a `cotal` server to Desktop's own config,
@@ -255,9 +277,10 @@ is installed, `cotal setup` adds a `cotal` server to Desktop's own config,
 It runs the same server with `--desktop`, by the absolute paths of the node that runs the CLI and of
 the plugin copy under `~/.cotal/claude-plugin`. Quit and reopen Claude Desktop to load it. A repeat
 `cotal setup` and `cotal update` keep the entry current, `cotal status` reports it, and a config
-file that is not valid JSON is refused and left as it was. Setup writes the entry as part of the
-Claude Code plugin step, so a machine without the `claude` CLI does not get it. On Linux, setup
-writes nothing for Desktop.
+file that is not valid JSON is refused and left as it was. Setup can use Desktop's bundled Code
+executable when there is no standalone `claude` CLI. Its installed MCP and command hooks use the
+recorded Node executable, so the app need not find Node on `PATH`. On Linux, setup writes nothing
+for Desktop Chat.
 
 Desktop's working directory is not your project, so its mesh is the `cotal use` mesh, else the only
 one running. Desktop runs no monitor, so a Desktop conversation hears messages when it calls a tool,

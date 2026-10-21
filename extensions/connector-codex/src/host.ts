@@ -63,6 +63,7 @@ import {
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
   WORKFLOW_STEER,
+  CHANNEL_GUIDANCE,
   AguiEmitter,
   AguiEmitterHolder,
   eventPlaneStopped,
@@ -150,6 +151,7 @@ function developerInstructions(config: ReturnType<typeof configFromEnv>, persona
     feedbackLine(config) +
     `${MESH_FIRST_STEER} ` +
     `${WORKFLOW_STEER} ` +
+    `${CHANNEL_GUIDANCE} ` +
     `Peer messages are delivered into your turns as blocks marked 📨. Reply with cotal_dm ` +
     `(privately, to the sender), cotal_send (to a channel), or cotal_anycast (to a role); ` +
     `use cotal_roster to see who is present and cotal_status to report what you are doing. ` +

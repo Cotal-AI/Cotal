@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { hostname } from "node:os";
-import { assertRecordIdentity, CommandFailure, homeCotalDir, identityRecord, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { assertRecordIdentity, CommandFailure, homeCotalDir, identityRecord, localRecordAccess, oneLine, protectedLocalDirectory, serviceAdapterKernelStopResult, serviceAdapterReadiness, serviceAdapterStopResult, type ServiceAdapterKernelStopResult, type ServiceAdapterStopResult, serviceOperationId, spaceFromSegment, type ServiceAdapterReadiness, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { serviceSupervisorProjection } from "./service-supervision.js";
 import type { ServiceAdapterPin } from "./service-adapters.js";
 import { localRecordObject, localRecordText, ProtectedRecordStore, type LocalRecordSnapshot } from "./protected-records.js";
@@ -168,7 +168,8 @@ export function assertExtensionServiceInstancesStopped(pkg: string): void {
   try { directory = lstatSync(root); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
   protectedLocalDirectory(root);
-  if (!directory.isDirectory() || directory.isSymbolicLink() || process.getuid === undefined || directory.uid !== process.getuid() || (directory.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the service instance namespace is not an owned private directory; extension removal did not assume an empty inventory");
+  // Owner and mode are POSIX checks; the Windows record model has neither.
+  if (!directory.isDirectory() || directory.isSymbolicLink() || (localRecordAccess() === "posix" && (directory.uid !== process.getuid!() || (directory.mode & 0o077) !== 0))) throw new CommandFailure("refused", "PERMISSION_DENIED", "the service instance namespace is not an owned private directory; extension removal did not assume an empty inventory");
   const blockers: { space: string; definition: string; instanceId: string; process: ServiceProcessState }[] = [];
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const space = spaceFromSegment(`space.${entry.name}`);

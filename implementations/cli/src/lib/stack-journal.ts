@@ -3,9 +3,9 @@
  *  `<root>/.cotal/stack-controller.json`. It is not a service record, unit receipt or team ledger,
  *  and it grants no stop authority by itself: every effect still rechecks the instance records. */
 import { createHash, randomUUID } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isMaintenanceError, loadMeshes, localProcessPath, localRecordObject, maintenancePaths, parsePid, probeLiveness, readLocalRecordSource, readMaintenanceJournal, readPidfile, serviceOperationId, type ControllerStackView, type MaintenanceLock, stackJournalPath } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, decodeLocalJson, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, type MaintenanceLock, stackJournalPath } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance } from "./service-instances.js";
@@ -343,6 +343,50 @@ export function foreignLocalProcesses(root: string, space: string): string[] {
     if (pid === undefined || probeLiveness(pid) !== "dead") foreign.push(`${component.name}${pid === undefined ? " (unattributable record)" : ` (pid ${pid})`}`);
   }
   return foreign;
+}
+
+/** A record under a root that may still front a process: whose descriptor names it, its path
+ *  relative to the root, the pid it holds when one parses, and why it counts. */
+export interface RecordedProcess { readonly name: string; readonly path: string; readonly pid?: number; readonly note: string }
+
+/** How a refusal lists one record: `<name> at <path> (<note>)`. */
+export const recordedProcessLine = (row: RecordedProcess): string => `${row.name} at ${row.path} (${row.note})`;
+
+/** Every local-process record under the root that may still front a process. Each descriptor's
+ *  candidates are read for `spaces`, and a `{space}` template's records for any other space are
+ *  found by listing what it names under `.cotal`. Nothing is read outside `<root>/.cotal`: a link on
+ *  a record's path is listed at the link, unread. A live or unanswered pid, an unattributable,
+ *  unreadable or oversized record, one that is not a regular file or changed while it was read, a
+ *  record whose space segment decodes to no space and a directory that cannot be listed all count;
+ *  only an empty or ESRCH-proven dead record of a known space does not. Each path is read once and
+ *  each unread one listed once, where reading stopped, whichever descriptor reached it first. Read
+ *  only: nothing is stopped, adopted or removed. */
+export function recordedProcessesUnder(root: string, spaces: readonly string[]): RecordedProcess[] {
+  const found: RecordedProcess[] = [], attempted = new Set<string>(), reported = new Set<string>();
+  const unread = (name: string, at: string, why: string): void => {
+    if (reported.has(at)) return;
+    reported.add(at);
+    found.push({ name, path: relative(root, at), note: why });
+  };
+  const read = (name: string, path: string, attributed: boolean): void => {
+    if (attempted.has(path)) return;
+    attempted.add(path);
+    const record = readContainedRecord(root, path);
+    if (record.state === "absent") return;
+    if (record.state === "unread") return unread(name, record.at, record.why);
+    const { raw } = record, at = { name, path: relative(root, path) };
+    const pid = raw ? parsePid(raw) : undefined;
+    if (!attributed) found.push({ ...at, ...(pid === undefined ? {} : { pid }), note: pid === undefined ? "unattributable record name" : `unattributable record name, pid ${pid}` });
+    else if (raw && pid === undefined) found.push({ ...at, note: "unattributable record" });
+    else if (pid !== undefined && probeLiveness(pid) !== "dead") found.push({ ...at, pid, note: `pid ${pid}` });
+  };
+  for (const component of localProcessSurface()) {
+    for (const space of spaces) for (const path of localProcessPathCandidates(component.pidFile, { root, space })) read(component.name, path, true);
+    for (const match of recordedLocalProcessPaths(component.pidFile, root))
+      if (match.unread === undefined) read(component.name, match.path, match.space !== undefined);
+      else unread(component.name, match.path, match.unread);
+  }
+  return found;
 }
 
 /** An observed process state that counts as stopped for a whole-stack stop. */

@@ -57,7 +57,7 @@ var SCAN_MS = 1e3;
 var wakeEvent = (id) => `Cotal: a new message for connection_id ${id}. Read it with cotal_inbox.`;
 function main() {
   if (hasIdentity()) return;
-  const claude = Number(process.env.CLAUDE_PID);
+  const claude = process.argv.includes("--native") ? process.ppid : Number(process.env.CLAUDE_PID);
   if (!Number.isInteger(claude) || claude <= 0) {
     process.stderr.write("[cotal-monitor] no CLAUDE_PID, so this is not a Claude Code session\n");
     process.exitCode = 1;

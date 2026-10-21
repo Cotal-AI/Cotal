@@ -120,9 +120,10 @@ lifecycle terminal that retires that family retires its issuances with it.
 The manager, `cotal spawn`, and the CLI's control-caller instruments all mint through an `issuer`
 session. The deployer instrument does not: it is the one instrument with no default expiry, and an
 issuance with no lifecycle gate must carry one, so a deploy rides the legacy rail under its own
-lifecycle uid. Only workflow `run-start` requires the binding today: a request for it on the legacy
-rail is refused with `permission-denied` and the detail `ai.cotal.ep.unbound-caller-authority`
-naming the caller. Every other command serves both rails.
+lifecycle uid. Only workflow `run-start` and the keyed `run-start-keyed` and `run-submission-status`
+require the binding today: a request for one of them on the legacy rail is refused with
+`permission-denied` and the detail `ai.cotal.ep.unbound-caller-authority` naming the caller.
+Every other command serves both rails.
 
 A user-auth `manager-caller` view is issued at the auth callout for an interactive row, or for a
 managed seat whose current persona-derived scope contains `run` and whose direct parent's fresh

@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-claude-code",
   "description": "Cotal connector for Claude Code: an installed plugin that joins a session to the mesh.",
-  "version": "0.90.1",
+  "version": "0.91.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -22,7 +22,9 @@
     }
   },
   "scripts": {
-    "test": "tsx smoke/launch-env.smoke.ts",
+    "test": "tsx smoke/launch-env.smoke.ts && tsx smoke/native-wake.smoke.ts",
+    "test:desktop-setup": "tsx smoke/desktop-only-setup-live.smoke.ts",
+    "test:upgrade": "tsx smoke/plugin-upgrade-live.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && node -e \"require('node:fs').copyFileSync('dist/mcp.d.ts','dist/mcp.d.cts')\" && pnpm run bundle",
     "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/mcp.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/mcp.cjs --footer:js=\"module.exports = { serveClaudeSession: module.exports.serveClaudeSession };\" && esbuild src/hook.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/hook.cjs && esbuild src/monitor.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/monitor.cjs",

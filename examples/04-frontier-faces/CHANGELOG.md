@@ -1,5 +1,62 @@
 # @cotal-ai/example-04-frontier-faces
 
+## 0.0.136
+
+### Patch Changes
+
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [d079080]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [3deea9d]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [0e40d19]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5d5a2ab]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [ef78ab0]
+- Updated dependencies [a263632]
+- Updated dependencies [5c85ef3]
+- Updated dependencies [28ae779]
+- Updated dependencies [bb14d28]
+- Updated dependencies [15c96da]
+- Updated dependencies [964aaea]
+- Updated dependencies [c550cf3]
+- Updated dependencies [1eacf50]
+- Updated dependencies [5c85ef3]
+  - @cotal-ai/core@0.91.0
+  - @cotal-ai/workspace@0.91.0
+
 ## 0.0.135
 
 ### Patch Changes

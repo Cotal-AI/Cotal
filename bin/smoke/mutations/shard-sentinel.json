@@ -32,16 +32,16 @@
     {
       "name": "the green banner reports suites only",
       "file": "bin/smoke/shard.mjs",
-      "find": "  console.log(`\\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes, ${totalCells} cells${skips})`);",
-      "replace": "  console.log(`\\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes${skips})`);",
+      "find": "    console.log(`\\n✓ smoke:ci shard ${shard}/${count} passed (${planned.length} smokes, ${totalCells} cells${skips}${policySkips})`);",
+      "replace": "    console.log(`\\n✓ smoke:ci shard ${shard}/${count} passed (${planned.length} smokes${skips}${policySkips})`);",
       "expectRed": "a sentinel-emitting suite greens the shard with the cell count",
       "cell": "a sentinel-emitting suite greens the shard with the cell count"
     },
     {
       "name": "--offline stops excluding the live-shaped suites it classified",
       "file": "bin/smoke/shard.mjs",
-      "find": "const planned = offline ? mine.filter((cmd) => !excluded.some((e) => e.cmd === cmd)) : mine;",
-      "replace": "const planned = mine;",
+      "find": "const planned = mine.filter((cmd) => !mutationExcluded.includes(cmd) && !excluded.some((e) => e.cmd === cmd));",
+      "replace": "const planned = mine.filter((cmd) => !mutationExcluded.includes(cmd));",
       "expectRed": "an offline run never executed the live suite",
       "cell": "an offline run never executed the live suite"
     },

@@ -73,7 +73,8 @@ process.stdin.on("data", (b) => {
   if (b.includes(4)) process.exit(0);
 });`;
 
-// A report fitted to the terminal it is written to: the table needs 27 columns.
+// A report fitted to the terminal it is written to: the table needs 27 columns. Narrower, each row
+// is a record whose labels take their own lines, so a 20-column terminal shows every value whole.
 const REPORT = `
 const { writeResult } = await import(${JSON.stringify(pathToFileURL(join(repoRoot, "packages", "workspace", "dist", "index.js")).href)});
 const table = { kind: "table", columns: [{ key: "name", label: "NAME" }, { key: "state", label: "STATE" }], rows: [{ name: "古い席-long-name", state: { text: "working", tone: "ok", mark: "*" } }] };
@@ -116,15 +117,21 @@ try {
     const text = await screen(r.raw, cols, 20);
     check(
       `a report on a ${cols}-column terminal is ${records ? "one labeled record" : "a table"}`,
-      r.exitCode === 0 && text.includes("古い席-long-name") && (records ? /name: +古い席-long-name/.test(text) && /state: +\* working/.test(text) : /NAME +STATE/.test(text)),
+      r.exitCode === 0 && text.includes("古い席-long-name") && (records ? text === "name\n  古い席-long-name\nstate\n  * working" : /NAME +STATE/.test(text)),
       text,
     );
   }
 
-  // Help fits the terminal: no line is wider than it, a usage option keeps its value, and a flag
-  // column too wide to leave its descriptions 30 columns puts each description under its flag.
+  // Help fits the terminal: no line is wider than it, the usage breaks only between options, and a
+  // flag column too wide to leave its descriptions 30 columns puts each description under its flag.
   const lines = (text: string) => text.split(/\r?\n/).filter((line) => line.trim() !== "");
   const fit = (text: string, cols: number) => lines(text).filter((line) => [...line].length > cols);
+  // A help's usage is the section under the `Usage` title, up to the next title.
+  const usageOf = (all: string[]) => {
+    const at = all.indexOf("Usage");
+    const end = all.findIndex((line, i) => i > at && /^\S/.test(line));
+    return at === -1 ? [] : all.slice(at + 1, end === -1 ? undefined : end);
+  };
   for (const cols of [80, 60]) {
     for (const argv of [[], ["help"], ["help", "spawn"]]) {
       const pty = cotalPty(argv, { cwd: home, env, cols, rows: 200 });
@@ -134,18 +141,82 @@ try {
       check(`${["cotal", ...argv].join(" ")} on a ${cols}-column terminal fits every line`, s.exitCode === 0 && fit(s.text(), cols).length === 0 && lines(s.text()).length > 10, fit(s.text(), cols));
       if (argv[1] !== "spawn") continue;
       const all = lines(s.text());
-      const usage = all.slice(all.findIndex((line) => line.startsWith("usage: ")), all.findIndex((line) => line.startsWith("aliases: ")));
-      check(`on ${cols} columns its usage wraps only between options`, usage.length > 1 && usage.every((line) => line.split("[").length === line.split("]").length && (line.startsWith("usage: ") || line.startsWith("       ["))), usage);
-      const space = all.findIndex((line) => line.trimStart().startsWith("--space <s>"));
+      const usage = usageOf(all);
+      check(`on ${cols} columns its usage wraps only between options`, usage.length > 1 && usage.every((line, i) => line.split("[").length === line.split("]").length && (i === 0 ? /^ {2}\S/.test(line) : line.startsWith("  ["))), usage);
+      const space = all.findIndex((line) => line.trimStart().startsWith("-s, --space <s>"));
       check(
         cols === 60 ? "on 60 columns a flag description goes under its flag" : "on 80 columns a flag description sits beside its flag",
-        cols === 60 ? all[space] === "      --space <s>" && /^ {10}target space/.test(all[space + 1] ?? "") : /^ {6}--space <s> +target space/.test(all[space] ?? ""),
+        space !== -1 && (cols === 60 ? all[space] === "  -s, --space <s>" && /^ {4}target space/.test(all[space + 1] ?? "") : /^ {2}-s, --space <s> {2,}target space/.test(all[space] ?? "")),
         all.slice(space, space + 2),
       );
     }
   }
 
-  // A structured failure wraps the remedy under its own text.
+  // A usage too wide for its line breaks after its own ` | ` alternatives first, and a group too wide
+  // takes lines of its own and breaks the same way inside. A word never leaves its argument.
+  // Examples are never wrapped, so each stays one line to copy, and setup's fit stops before them.
+  const helpAt = async (argv: string[], cols: number) => {
+    const pty = cotalPty(argv, { cwd: home, env, cols, rows: 200 });
+    ptys.push(pty);
+    const s = session(pty);
+    await until(() => s.exitCode !== undefined);
+    const all = lines(s.text());
+    const examples = all.indexOf("Examples");
+    return { exitCode: s.exitCode, all, shown: (examples === -1 ? all : all.slice(0, examples)).join("\n") };
+  };
+  const send = await helpAt(["help", "send"], 60);
+  check("cotal help send on a 60-column terminal fits every line", send.exitCode === 0 && fit(send.all.join("\n"), 60).length === 0 && send.all.length > 10, fit(send.all.join("\n"), 60));
+  check(
+    "on 60 columns cotal help send breaks its destination group after its alternatives",
+    usageOf(send.all).join("\n") === [
+      "  cotal send", "  (--to/-t <agent> | --channel/-c <channel> |", "  --role/-r <role>)",
+      '  ["<message>" | --file/-f <path> | --stdin]', "  [--json|--plain]",
+    ].join("\n"),
+    usageOf(send.all),
+  );
+  const setup = await helpAt(["help", "setup"], 40);
+  check("cotal help setup on a 40-column terminal fits every line before its examples", setup.exitCode === 0 && fit(setup.shown, 40).length === 0 && lines(setup.shown).length > 10, fit(setup.shown, 40));
+  check(
+    "on 40 columns cotal help setup breaks a nested group after its own alternative",
+    usageOf(setup.all).join("\n") === [
+      "  cotal setup", "  [--destination <local|self-hosted>]", "  [-H|--harness <connector>]", "  [--runtime <name>]...",
+      "  [--project <dir>] [--space <name>]", "  [--connection-file <bundle.json>]", "  [--configure-only |",
+      "  --start [-d|--detach]]", "  [--demo|--full] [-y|--yes]", "  [--json|--plain] |", "  setup --skills",
+    ].join("\n"),
+    usageOf(setup.all),
+  );
+  const script = await helpAt(["help", "completion", "script"], 40);
+  check(
+    "on 40 columns cotal help completion script keeps script with its argument",
+    script.exitCode === 0 && fit(script.shown, 40).length === 0 && usageOf(script.all).join("\n") === ["  cotal completion", "  script <bash|zsh|fish|powershell>"].join("\n"),
+    script.all,
+  );
+  // A compact `|`, as in `<persona.md>|--prompt`, is a break point too: the line ends right after it
+  // and the next starts with the following option, with no space added or lost.
+  const persona = await helpAt(["help", "persona"], 40);
+  check("cotal help persona on a 40-column terminal fits every line", persona.exitCode === 0 && fit(persona.all.join("\n"), 40).length === 0 && persona.all.length > 10, fit(persona.all.join("\n"), 40));
+  check(
+    "on 40 columns cotal help persona breaks a compact group after its own |",
+    usageOf(persona.all).join("\n") === [
+      "  cotal persona [--json|--plain] |", "  persona show <name> |", "  persona create <name>",
+      "  (--file <persona.md>|--prompt <text>|", "  --from <path>) |", "  persona edit <name> |", "  persona remove <name>",
+      "  [--yes]; list/show/create support", "  --on <manager-instance>",
+    ].join("\n"),
+    usageOf(persona.all),
+  );
+  const serviceAdd = await helpAt(["help", "service", "add"], 60);
+  check("cotal help service add on a 60-column terminal fits every line", serviceAdd.exitCode === 0 && fit(serviceAdd.all.join("\n"), 60).length === 0, fit(serviceAdd.all.join("\n"), 60));
+  check(
+    "on 60 columns cotal help service add breaks a compact group after its own |",
+    usageOf(serviceAdd.all).join("\n") === ["  cotal service add [name]", "  [--file <definition.json>|", "  --preset <name> <declared-options>]"].join("\n"),
+    usageOf(serviceAdd.all),
+  );
+  const listing = await helpAt(["help", "--all"], 40);
+  check("cotal help --all on a 40-column terminal fits every line", listing.exitCode === 0 && fit(listing.shown, 40).length === 0 && listing.all.length > 10, fit(listing.shown, 40));
+  check("on 40 columns cotal help --all wraps its title", listing.all[0] === "cotal - lateral agent coordination over" && listing.all[1] === "NATS", listing.all.slice(0, 2));
+
+  // A classified failure is a report: its message, a labeled record of outcome and code, and the
+  // remedy under `Next`, which wraps at spaces with its continuation under its text.
   const failPty = cotalPty(["ps"], { cwd: home, env, cols: 40, rows: 20 });
   ptys.push(failPty);
   const f = session(failPty);
@@ -153,10 +224,11 @@ try {
   const failLines = lines(f.text());
   check(
     "a failure on a 40-column terminal wraps under its text",
-    f.exitCode === 2 && failLines.length > 2 && fit(f.text(), 40).length === 0 &&
-      failLines[0] === "✗ no mesh running" && /^ {2}↳ \S/.test(failLines[1] ?? "") &&
-      failLines.slice(2).every((line) => /^ {4}\S/.test(line)) &&
-      failLines.slice(1).map((line) => line.trim().replace(/^↳ /, "")).join(" ") === "run `cotal up` in a project, or pass `--server`",
+    f.exitCode === 2 && fit(f.text(), 40).length === 0 &&
+      failLines.join("\n") === [
+        "Request refused", "  no mesh running", "  Outcome", "    refused", "  Code", "    TARGET_NOT_FOUND",
+        "Next", "  run `cotal up` in a project, or pass", "  `--server`",
+      ].join("\n"),
     failLines,
   );
 

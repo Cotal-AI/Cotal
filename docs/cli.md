@@ -163,9 +163,22 @@ output scrolls.
 
 On a terminal, a long value, line, warning or failure wraps at spaces, and each continuation line
 starts under the text it continues. A word wider than the line, such as a path, keeps a line of its
-own and is never split. Help wraps the same way: a usage line breaks only between options, and when
-the flag names leave their descriptions fewer than 30 columns, each description goes on the lines
-under its flag. Output to a pipe or a file is never wrapped.
+own and is never split. Help wraps the same way, including the title of `cotal help --all`.
+
+A usage line breaks only between options, never between an option and its argument. A ` | ` stays
+on the line before it whenever it fits there. A compact `|`, such as the one in
+`<persona.md>|--prompt`, is a break point too: the line ends right after it, the next line starts
+with the following option, and no space is added or lost. A usage too wide for the line breaks after
+its own ` | ` or compact `|` alternatives first. A group too wide for the line, such as
+`(--to/-t <agent> | --channel/-c <channel> | --role/-r <role>)`, takes lines of its own and breaks
+the same way inside, and so does a group nested in it. A group that fits, such as
+`[--json|--plain]`, stays whole. Only a single option with its argument that is wider than the line
+breaks at its spaces. Examples are not wrapped, so each stays one line to copy.
+
+When the flag names leave their descriptions fewer than 30 columns, each description goes on the
+lines under its flag. A report's list of commands follows the same 30-column rule. Below 48 columns,
+a record puts each label on a line of its own with its value under it. Output to a pipe or a file is
+never wrapped.
 
 A read that could not read part of what it was asked for is `partial`: `result` holds what it read,
 `completeness` is `partial`, each part it could not read is a warning, and it exits 4. A list is
@@ -548,7 +561,13 @@ through its path, which follows a symlink; this step does not refuse a symlinked
 `.cotal`.
 On Windows the owner and symlink checks do not
 apply, because POSIX modes are not that platform's protection model; the file is opened with mode
-`0600` and private secrets are locked down by their access list. When a service path check refuses a path, the refusal names the option,
+`0600` and private secrets are locked down by their access list. Local records under `~/.cotal`
+and a project's `.cotal`, such as the stack journal, service records and deployment attempts, use
+the same model there. A store directory Cotal creates gets the private access list, and a record is
+written like a private secret. Reading a record or checking its path does not check an owner, a mode
+or an access list, and does not refuse a link: a symlink or junction is followed. Size limits, the
+record schema, the regular-file check and the refusal of a link inside a record store's own
+directories still apply. When a service path check refuses a path, the refusal names the option,
 the path that failed, and its owner and mode. A whole-stack failure shows that sentence as its
 native detail.
 
@@ -786,7 +805,8 @@ queries. Duplicate names and `--instance` with multiple names are usage errors. 
 
 Bare `down --dry-run` reads local process records for one registered space at the current
 project root. A root with no `.cotal/` directory, or with no stack registered at it, refuses
-`TARGET_NOT_FOUND`, exit 2, because there is no stack there to preview. Add `--space <name>` to
+`TARGET_NOT_FOUND`, exit 2, because there is no stack there to preview. A root whose stack is
+already stopped shows the no-op described below instead. Add `--space <name>` to
 confirm that exact space belongs to this root;
 `--json` and `--plain` produce a partial, finite inspection receipt. It lists pidfile
 liveness, readable additive deployment IDs, retained additive attempts and
@@ -802,9 +822,7 @@ address aliases, remote tenants or live attachments. The preview does not establ
 ownership, the complete service set, exclusive broker use or agent impact.
 `--with-agents` only marks the requested policy. It does not reserve or signal
 a process, and the receipt is not an authorized stop plan. A fresh `team show`
-summary points to this read-only command from the recorded root. This preview
-refuses on Windows while protected workstation-record reads remain unsupported;
-it does not replace them with a weaker file reader.
+summary points to this read-only command from the recorded root.
 
 On a root with a controller journal, bare `down` reads only its recorded full instance IDs. It
 shows the member set and the live manager's native agent impact before confirmation, then stops
@@ -821,10 +839,41 @@ or credential, so a second `down --yes` stops nothing and is a no-op. When the m
 live but the broker is not, `down` cannot read the manager's agent impact and refuses before any
 stop, from a managed seat's shell too. Run `cotal up --space <space>` to restart the broker from its recorded inputs while the
 manager keeps running, then run `cotal down`. Controller roots refuse
-preservation and manifest flags rather than switching to the legacy launcher.
+preservation and manifest flags rather than switching to the legacy launcher. Outside a terminal,
+a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that
+line and its remedy without the command help.
+
+A bare `down` in a folder whose stack is already stopped stops nothing. It reports that the stack
+in that folder is not running and names `cotal up`, outcome `no-op`, exit 0, and writes nothing,
+so it needs no `--yes`. `--dry-run`, `--json` and `--plain` show the same. A controller stack
+counts as stopped when its last whole-stack operation was a completed `down` and no member and no
+other service instance of its space runs. That check reads no process record under the root; those
+are read only as described below. A stack that stopped any other way takes the full stop, which
+also finishes its cleanup. A legacy root counts as
+stopped when no registration names it and no `*.pid` record remains at the top of its `.cotal`,
+and the root still holds the broker configuration a start rendered there or a space prepared there.
+Without that evidence a legacy root still refuses, with one next step: `TARGET_NOT_FOUND` when
+nothing shows a stack there, and `CONFLICT` when several registrations name the root or a process
+record remains that no registration explains. Before either kind of root reports the no-op, `down`
+reads every record a local-process descriptor names under the root, an installed extension's
+included, at any path and name under `.cotal`. A descriptor whose record name holds a space is read
+for every space its files under the root name, as well as the stack's own. A record whose process
+runs, whose liveness the kernel does not answer, or that cannot be read or attributed refuses
+`LIFECYCLE_BLOCKED`, and so does a file whose space part decodes to no space. Nothing outside the
+root's `.cotal` is read: a link anywhere on a record's path refuses at the link, unread, as does a
+record that is not a regular file, is larger than a process record, cannot be opened, or changes
+while it is read. Each is named once, at the path where reading stopped. A `.cotal` that is itself
+a link never gives the no-op: on a stopped controller stack `down` refuses at `.cotal`, and on a
+legacy root it refuses `CONFLICT` before any record is read. A template whose `{space}`
+normalizes away names one path for every space and is read as that path. The refusal lists each
+record by name, path under the root and pid, and its next step names the pids and paths to check.
+It stops, adopts and removes nothing. `--with-agents` on a stopped stack refuses
+`LIFECYCLE_BLOCKED`, because no running manager can stop the agents; start the stack first. Its
+preview, `cotal down --dry-run --with-agents`, shows the no-op.
 
 The legacy bare-stack and manifest apply paths described below are retained. They do not
-accept the new named-service JSON/plain/yes apply receipt flags. A bare stop of such a root needs
+accept the new named-service JSON/plain/yes apply receipt flags, except that `--json` and
+`--plain` show the no-op of a stack that is already stopped. A bare stop of such a root needs
 no `--yes`, so `cotal down --yes` there is refused and stops nothing; run `cotal down` without it.
 Before a retained bare apply
 reaches its pidfile sweep, it now requires one locally started registration under
@@ -1704,8 +1753,7 @@ readable coordinates in JSON.
 It appears only when there is something to inspect. A missing fresh summary
 does not prove the original broker never started; an additive intent does not
 prove which resources changed. This read grants neither retry nor stop
-authority. Windows reports this protected-file inventory as not checked, because
-native access is not supported there. If the folder inherits
+authority. If the folder inherits
 the machine's home `.cotal`, status warns that unqualified `up` refuses instead of starting
 there. Prepare the intended folder first with
 `space create <space> --root .`; `up --root .` then names it.
@@ -2582,8 +2630,15 @@ run from a managed seat's shell selects the manager that launched the seat (`COT
 and any other caller's selection must be unique. Discovery and the command use that instance route.
 The caller gains no registry read or scatter permission. An absent, ambiguous or unauthorized
 selection refuses before sending the command. With several of your managers live, the refusal lists
-their instance ids so you can pass one to `--on`. When every manager you registered has exited, the
-refusal says to start one with [`supervise`](#supervise); the command is not sent to the local manager.
+their instance ids so you can pass one to `--on`. By default, when every manager you registered has
+exited, the refusal says to start one with [`supervise`](#supervise); the command is not sent to the local manager.
+
+A trusted hosted composition may opt into an [interactive local primary](embedding.md#interactive-manager-primary).
+Under that policy, unpinned human control selects the genuine local Manager up front, even when your
+own remote Manager is live; an unavailable local Manager refuses without remote substitution. This
+affects all interactive Manager verbs, not only `ps`. Select your remote Manager explicitly for its
+spawn, run or terminal operations. Explicit pins and managed-seat launching bindings keep their rules.
+There is no user flag for the policy, and stock `up` and recovery defaults do not enable it.
 
 A seat is reported as **not found** only when every reachable instance answered for itself. An
 instance that stayed silent past the deadline, or that refused the read rather than answering, said
@@ -2814,7 +2869,7 @@ draft validation and commit fence. Only its explicit `--running` overlay connect
 ## supervise
 
 ```bash
-cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <names>]
+cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--server <url>] [--spawn <names>]
 ```
 
 `supervise` is a deprecated entry kept for existing units, scripts and containers, and help and
@@ -2828,6 +2883,7 @@ starts runs the same code through a hidden entry and prints no warning.
 | `--space <s>` | this folder's auth space | Space to supervise. On a root that hosts several spaces, name one of them here |
 | `--server <url>` | hosting mesh, or matching registered mesh | Broker URL. A registered mesh supplies it when omitted; a different explicit value is refused before anything is dialed. |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
+| `--execution runtime|none` | `runtime` | NONE is a genuine hosting user-auth control instance with no Runtime, connector inspection, workload or terminal execution |
 | `--console-port <n>` | none | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
 | `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair or `spawn -f` keeps it |
@@ -2850,6 +2906,25 @@ if every declared connector is unavailable, those commands stay on this instance
 unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. A partial
 inventory keeps the class rail and names `--on` on a harness refusal, because sibling
 inventories are not readable from the serve credential. See [control surface](control-surface.md#instance-routing).
+
+Use `--execution none` only for a fresh control instance in an existing hosting user-auth root.
+It requires that space's signing trust, provider pin and user-mode mesh record, without remote
+manager authority. It rejects `--runtime`, startup workload flags and participant registrations
+before resolving a Runtime or connector. The mode needs no connector seeding. An existing
+unclassified identity or retained workload refuses admission; a recorded NONE instance cannot
+restart as runtime. Do not delete identity or capability files to change modes.
+
+NONE retains native registration, status and the selected Manager's empty managed-seat ps.
+It does not adopt foreground agents, roster peers or HTTP-hosted sessions. Workload operations
+still need an explicitly selected execution-owning participant Manager and its existing authority.
+Starting a control instance does not enable an auth service's interactive local-primary policy.
+NONE also refuses model inspection and caller-driven persona, purge, transcript, preservation,
+resume, cancellation, turn-yield and self-stop writes. It starts no transcript receiver or sweep.
+Its native registration, lease, renewal, session-ledger and goal maintenance can still write.
+
+Local runtime startup now records identity and execution mode during admission. A later failed
+authentication or registration can leave those files classified as runtime. Invalid supervise
+arguments refuse before connector seeding, with one error line rather than seeding first.
 
 On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the selected runtime to
 prove the seat is gone before it releases the manager lease or service registration. A stop that
@@ -2981,7 +3056,7 @@ loopback health URL answers 200:
   "launch": { "type": "process", "executable": "/usr/bin/node", "args": ["/srv/reviews/server.mjs"], "cwd": "/srv/reviews" },
   "readiness": { "type": "http", "url": "http://127.0.0.1:8080/health", "expectedStatus": 200, "timeoutMs": 10000 },
   "envRefs": { "REVIEWS_TOKEN": "REVIEWS_TOKEN" },
-  "credentialRef": { "kind": "file", "path": "/home/me/.cotal-creds/reviews.creds" }
+  "credentialRef": { "kind": "file", "path": "/srv/reviews/reviews.creds" }
 }
 ```
 
@@ -4820,8 +4895,7 @@ not proof that a later boot may replace it. For a concrete candidate broker
 address, the preview also lists other local registrations with that exact
 address. A match blocks fresh apply; no match does not prove exclusivity against
 aliases or remote tenants. A host-derived candidate leaves this comparison not
-checked. This preview refuses on Windows until protected workstation-record
-reads are supported there.
+checked.
 Where the manifest supplies a broker URL or uses the default without a host override,
 it makes a credless reachability probe. A failed probe is not proof of absence on a
 TLS-first listener. The result is partial: port binding, exclusive local ownership,
@@ -4874,7 +4948,7 @@ explicitly grant the invoking user with `cotal auth grant cli --sub <subject>`, 
 before `cotal team boot <file>`. Do not start the manager between preparation and that stop. A
 static-auth or open preparation uses `cotal up --no-manager` before `cotal down`. No implicit owner
 grant or borrowed caller is substituted. A previously attempted manager is never adopted.
-Windows apply refuses, because protected service-record reads are not supported there.
+Windows cannot apply, because the stack's process services need Linux machine and boot identity.
 
 `--space` must agree with the manifest. Hand-registered and discovered spaces are not local boot
 targets. Public broker addresses and fresh-attempt views omit URL user info, queries and fragments;
@@ -5151,8 +5225,9 @@ Existing names are not silently overwritten.
 compares the held revision and content under the private writer lock before forgetting metadata.
 It never deregisters a native endpoint, stops a process, removes credential files or revokes grants.
 
-Protected no-follow/nonblocking file access supports POSIX hosts. Windows refuses as Unsupported,
-because it has no protected file-access adapter. Saved references do not provide native live
+Protected no-follow/nonblocking file access supports POSIX hosts. Windows uses its access-list
+model for local records instead: a credential reference there must be a regular file, and its
+owner, mode and links are not checked. Saved references do not provide native live
 inventory, invocation resolution or the remaining endpoint verbs.
 
 
@@ -5197,10 +5272,10 @@ owned direct incarnation is gone and that no OS supervisor is installed before r
 unchanged instance records and definition. Logs are retained. No process or OS unit is removed
 by this operation. The presets are described below. A preset is not installed under an OS
 supervisor.
-Protected local records currently refuse on Windows; no weaker file-access path is substituted.
-There, `cotal ext add` and the setup seed still add an extension that declares service adapters or
-presets, record no service receipt and say that its services cannot run on this platform; any use of
-them refuses Unsupported.
+On Windows, local records use the access-list model described under `up`. There, `cotal ext add`
+and the setup seed record a service receipt for an extension that declares service adapters or
+presets, and starting one of its process services refuses Unsupported, because the process driver
+needs Linux machine and boot identity.
 
 ### Service presets
 
@@ -5524,7 +5599,8 @@ model-policy and live authority checks are labeled not performed.
 foreground enrollment path. The file is opened with protected ownership/mode and bounded input
 checks; its URL is not printed, copied into the child environment or persisted by this input
 adapter. It does not supply a managed enrollment authority path. Dry-run does not read or redeem
-the enrollment file. Protected file access is not supported on Windows.
+the enrollment file. On Windows the file must be a regular file; its owner, mode and links are not
+checked.
 
 ### Owned process services
 

@@ -303,7 +303,6 @@ function readMaintenance(root: string, gaps: Gaps): NonNullable<StatusResult["ma
 /** Local boot and additive intents are recovery coordinates, not evidence of native state. */
 function readBootAttempts(root: string, gaps: Gaps): NonNullable<StatusResult["bootAttempts"]> {
   const result: NonNullable<StatusResult["bootAttempts"]> = { root, state: "not-checked", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [] };
-  if (process.platform === "win32") return result;
   try {
     if (!realDirNoSymlink(root, ".cotal")) return result;
     const attempts = listFreshTeamAttempts(root), summaries = listFreshTeamSummaries(root);

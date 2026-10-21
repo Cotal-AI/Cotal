@@ -57,6 +57,10 @@ export interface EpServeContext {
   identity: EpServeIdentity;
   subject: ParsedEpRequest;
   request: EndpointRequest;
+  /** This process's `performance.now()` when the request arrived, taken before validation. A
+   *  host measures a request budget against it in this process only: it is never persisted, sent,
+   *  or compared with another process's clock. */
+  receivedAtMonotonicMs?: number;
   obligations?: readonly GuardObligation[];
   /** Measure the complete success reply against this connection and a handler's byte ceiling. */
   replyFits?: (data: unknown, ceiling: number) => boolean;
@@ -524,7 +528,7 @@ function encodeReply(reply: EndpointReply): Uint8Array {
       }
       const requestId = env.id;
       const ctx: EpServeContext = {
-        identity, subject: parsed, request: env,
+        identity, subject: parsed, request: env, receivedAtMonotonicMs,
         ...(obligations !== undefined ? { obligations } : {}),
         replyFits: (data, ceiling) => {
           const maxPayload = nc.info?.max_payload;

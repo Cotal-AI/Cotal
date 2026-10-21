@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
@@ -22,6 +22,8 @@ import {
   brokerAddressForDisplay,
   findMesh,
   localMeshesForRoot,
+  preparedSpaceAt,
+  soleSpaceOf,
   writeResult,
   type Report,
   readMaintenanceJournal,
@@ -90,7 +92,7 @@ import { captureSeatCheckpoint } from "../lib/seat-capture.js";
 import { processRecorded, stopLocalProcess } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
-import { controllerStackRecorded, stackDown, validateStackDownArguments } from "./stack-down.js";
+import { controllerStackRecorded, nothingRunning, stackDown, validateStackDownArguments } from "./stack-down.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
  *  `ManagerResumeAgent`; the CLI never imports it, because implementations do not depend on each
@@ -139,7 +141,7 @@ export function validateDownArguments(args: ParsedArgs): void {
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
   if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.file === undefined && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined) return;
   if (args.values.yes !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--yes applies only to a controller stack, and this root has none; a bare stop here needs no --yes, and nothing was stopped", { remedy: "run `cotal down` from this root without --yes" });
-  if (args.values.json !== undefined || args.values.plain !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack or a --dry-run preview; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
+  if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && stoppedLegacyStack())) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview or a stack that is already stopped; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
 }
 
 /** The one route that stops the stack `up` starts from the machine home. */
@@ -219,6 +221,54 @@ function previewWholeStack(args: ParsedArgs): void {
   ] }));
 }
 
+/** A bare stop, its preview included: no flag beyond --dry-run, --with-agents and the presentation
+ *  flags. */
+function bareStop(values: ParsedArgs["values"]): boolean {
+  return Object.entries(values).every(([name, value]) => ["dry-run", "with-agents", "json", "plain"].includes(name) || value === undefined || Array.isArray(value) && value.length === 0);
+}
+
+/** Whether any process record (`*.pid`) remains in `<root>/.cotal`. */
+const pidRecordsUnder = (root: string): boolean => readdirSync(join(root, ".cotal")).some((name) => name.endsWith(".pid"));
+
+/** A legacy root whose stack is not running, told apart from a folder that never had one. No
+ *  registration names the root, because its own down removed the last one, and no `*.pid` record
+ *  remains at the top of its `.cotal`. The root still holds the broker configuration a start rendered
+ *  there (`server-open.conf`, or `auth/server.conf` in auth mode) or a space prepared there. When the
+ *  root names its space, none of that space's saved services runs either. Undefined when any of that
+ *  is missing, so bare down refuses rather than guess. `nothingRunning` reads every other record a
+ *  local-process descriptor names under the root, for any space, before it answers. */
+function stoppedLegacyStack(): { root: string; space?: string } | undefined {
+  const root = canonicalRoot(cotalRoot());
+  if (root === canonicalRoot(homedir()) || !realDirNoSymlink(root, ".cotal") || meshesForRoot(root).length || pidRecordsUnder(root)) return undefined;
+  let space: string | undefined;
+  try { space = soleSpaceOf(authDir(root)); } catch { return undefined; }
+  const prepared = preparedSpaceAt(root);
+  if (!prepared && !existsSync(join(root, ".cotal", "server-open.conf")) && !existsSync(join(authDir(root), "server.conf"))) return undefined;
+  space ??= prepared?.space;
+  if (space !== undefined && planBareDownServices(space).some((row) => row.action !== "already-stopped")) return undefined;
+  return { root, ...(space === undefined ? {} : { space }) };
+}
+
+/** Why bare down found no stack of its own at this root, with the one step that moves it on. */
+function noOwnedStack(root: string): CommandFailure {
+  const target = { root };
+  const absent = new CommandFailure("refused", "TARGET_NOT_FOUND", "there is no stack at this folder's root, so there is nothing to stop", { target, remedy: "run `cotal down` from the folder where `cotal up` started the stack" });
+  const unclassified = new CommandFailure("refused", "CONFLICT", "the local root has no unique owned stack registration and real control directory; no whole-stack stop target was inferred", { target, remedy: "run `cotal status` here to see what this folder records" });
+  if (!existsSync(join(root, ".cotal"))) return absent;
+  if (!realDirNoSymlink(root, ".cotal")) return unclassified;
+  let local: ReturnType<typeof localMeshesForRoot>, registered: number;
+  try { local = localMeshesForRoot(root); registered = meshesForRoot(root).length; } catch { return unclassified; }
+  if (local.length > 1)
+    return new CommandFailure("refused", "CONFLICT", `${local.length} registrations name this root (${local.map((mesh) => `"${mesh.space}"`).join(", ")}); bare down did not pick one to stop`, {
+      target: { root, spaces: local.map((mesh) => mesh.space) },
+      remedy: "remove the one that does not run here with `cotal space forget <name>`",
+    });
+  // A registration of any kind, or a process record no registration explains, is a stack this
+  // cannot classify.
+  if (registered || pidRecordsUnder(root)) return unclassified;
+  return absent;
+}
+
 /** Keep the retained pidfile sweep from crossing an exact recorded broker-sharing boundary, and
  *  return the space's service instances it stops first, each one verified. This is not a complete
  *  live ownership or agent-impact proof. */
@@ -237,7 +287,7 @@ function guardLegacyBareDown(): { space: string; services: BareDownService[] } {
     mesh = sole;
   } catch (error) {
     if (error instanceof CommandFailure) throw error;
-    throw new CommandFailure("refused", "CONFLICT", "the local root has no unique owned stack registration and real control directory; no whole-stack stop target was inferred", { target });
+    throw noOwnedStack(root);
   }
   const scoped = { root, space: mesh.space };
   const maintenance = readMaintenanceJournal(root);
@@ -277,6 +327,11 @@ export async function down(args: ParsedArgs): Promise<void> {
   // A root whose stack the service controller owns stops only through its recorded members.
   if (controllerStackRecorded(cotalRoot())) return stackDown(cotalRoot(), args.values);
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
+  // A legacy root whose stack is already stopped: a bare down and its preview stop nothing.
+  if (bareStop(args.values)) {
+    const stopped = stoppedLegacyStack();
+    if (stopped) return nothingRunning(presentationOf(args.values), stopped, values["with-agents"] === true && values["dry-run"] !== true);
+  }
   if (values["dry-run"] && !values.file && !values.run && !values["preserve-state"] && !values["store-dir"] && !values["session-store"]?.length) return previewWholeStack(args);
   if (values["preserve-state"] && values["with-agents"])
     throw new CommandFailure("refused", "USAGE_INVALID", "--preserve-state cannot be combined with --with-agents");

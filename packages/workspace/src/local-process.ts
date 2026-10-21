@@ -1,5 +1,5 @@
-import { readdirSync, rmSync } from "node:fs";
-import { isAbsolute, join, normalize, dirname, basename } from "node:path";
+import { closeSync, fstatSync, lstatSync, openSync, readdirSync, readSync, rmSync, type Dirent, type Stats } from "node:fs";
+import { isAbsolute, join, normalize, dirname, basename, relative, sep } from "node:path";
 import type { Extension } from "@cotal-ai/core";
 import { spaceFromKey, spaceKey } from "./auth-paths.js";
 import { commandIsCotalDelivery, parsePid, probeLiveness, readPidfile } from "./pid.js";
@@ -147,6 +147,164 @@ export function localProcessPathCandidates(template: string, context: LocalProce
   const preSegmentation = PRE_SEGMENTATION_RUNTIME_RECORDS.get(template);
   if (preSegmentation !== undefined) add(preSegmentation);
   return paths;
+}
+
+/** A record {@link recordedLocalProcessPaths} found, with the space its `{space}` segment decodes to. */
+export interface SpacedRecordPath {
+  readonly path: string;
+  /** Absent when the segment decodes through neither spelling a writer used. */
+  readonly space?: string;
+  /** Why nothing at `path` was read: a link, which is never followed, or a directory that could not
+   *  be listed. Either may hide a record. */
+  readonly unread?: string;
+}
+
+/**
+ * Every record under `<root>/.cotal` that a `{space}` template names for ANY space: the inverse of
+ * {@link localProcessPathCandidates}. It lists the directories the template's parts reach, byte-exact,
+ * instead of expanding a space already known, so a record of a space nothing else names is found.
+ * A segment decodes through the hex key first, then the pre-hex `encodeURIComponent` spelling; one
+ * that decodes through neither is still returned, with no space. The pre-segmentation root-scoped
+ * spelling names no space, and the candidates of any space already name it.
+ *
+ * The template is classified as the writer expands it, after normalization: one whose `{space}`
+ * normalizes away (`daemon/{space}/../worker.pid`) names one path for every space, which the
+ * candidates already name, so it returns none. It never follows a link: `.cotal` or a matching entry
+ * that is a link is returned unread, and nothing behind it is listed. Read only.
+ */
+export function recordedLocalProcessPaths(template: string, root: string): SpacedRecordPath[] {
+  const contained = normalize(template);
+  if (isAbsolute(template) || contained === ".." || contained.startsWith(`..${sep}`))
+    throw new Error(`local-process path must stay under .cotal: ${JSON.stringify(template)}`);
+  if (!contained.includes("{space}")) return [];
+  const parts = contained.split(sep);
+  const found: SpacedRecordPath[] = [];
+  const walk = (dir: string, at: number, segment: string | undefined): void => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") found.push({ path: dir, unread: "directory could not be listed" });
+      return;
+    }
+    for (const entry of entries) {
+      let bound = segment;
+      if (!parts[at].includes("{space}")) {
+        if (entry.name !== parts[at]) continue;
+      } else {
+        bound = segmentIn(parts[at], entry.name);
+        if (bound === undefined || (segment !== undefined && bound !== segment)) continue;
+      }
+      const path = join(dir, entry.name);
+      if (entry.isSymbolicLink()) found.push({ path, unread: "link, not followed" });
+      else if (at < parts.length - 1) {
+        if (entry.isDirectory()) walk(path, at + 1, bound);
+      } else if (bound === undefined) throw new Error(`internal error: ${JSON.stringify(template)} matched ${path} without binding {space}`);
+      else found.push({ path, ...spaceOfSegment(bound) });
+    }
+  };
+  const base = join(root, ".cotal");
+  try {
+    if (lstatSync(base).isSymbolicLink()) return [{ path: base, unread: "link, not followed" }];
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    return [{ path: base, unread: "directory could not be listed" }];
+  }
+  walk(base, 0, undefined);
+  return found;
+}
+
+/** The most bytes a process record holds. A larger file is not one, and its content is not used. */
+const RECORD_BYTES = 4096;
+
+/** What {@link readContainedRecord} found at a record path. `unread` means nothing was read, and `at`
+ *  (the record, or a part of its path) may hide a record for the reason `why` gives. */
+export type ContainedRecord =
+  | { readonly state: "absent" }
+  | { readonly state: "content"; readonly raw: string }
+  | { readonly state: "unread"; readonly at: string; readonly why: string };
+
+/**
+ * A record under `<root>/.cotal`, read without leaving it. Every part of the path, `.cotal` included,
+ * is checked with `lstat`: a link anywhere on the way is returned unread at the link, and nothing
+ * behind it is read. A part that is missing, or a directory part that is not a directory, means no
+ * record. The record must be a regular file of at most {@link RECORD_BYTES}, read to its end. The file
+ * opened must be the one checked, and its size and modification time must not change while it is read.
+ * Read only. Throws for a path outside `<root>/.cotal`.
+ */
+export function readContainedRecord(root: string, path: string): ContainedRecord {
+  const parts = relative(root, path).split(sep);
+  if (parts.length < 2 || parts[0] !== ".cotal" || parts.includes("..") || isAbsolute(relative(root, path)))
+    throw new Error(`internal error: ${path} is not a record path under ${join(root, ".cotal")}`);
+  let at = root;
+  for (const part of parts.slice(0, -1)) {
+    at = join(at, part);
+    const stat = lstatRecordPart(at);
+    if ("state" in stat) return stat;
+    if (!stat.isDirectory()) return { state: "absent" };
+  }
+  const leaf = lstatRecordPart(path);
+  if ("state" in leaf) return leaf;
+  if (!leaf.isFile()) return { state: "unread", at: path, why: "not a regular file, not read" };
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ENOENT" ? { state: "absent" } : { state: "unread", at: path, why: "unreadable record" };
+  }
+  try {
+    const opened = fstatSync(fd);
+    if (opened.dev !== leaf.dev || opened.ino !== leaf.ino) return { state: "unread", at: path, why: "changed while it was read" };
+    const buffer = Buffer.alloc(RECORD_BYTES + 1);
+    let length = 0, chunk: number;
+    do {
+      chunk = readSync(fd, buffer, length, buffer.length - length, length);
+      length += chunk;
+    } while (chunk > 0 && length < buffer.length);
+    if (length > RECORD_BYTES) return { state: "unread", at: path, why: "larger than a process record" };
+    const after = fstatSync(fd);
+    if (length !== opened.size || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs) return { state: "unread", at: path, why: "changed while it was read" };
+    return { state: "content", raw: buffer.toString("utf8", 0, length).trim() };
+  } catch {
+    return { state: "unread", at: path, why: "unreadable record" };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** One part of a record path, never followed: its `lstat`, or what that part means for the record. */
+function lstatRecordPart(at: string): Stats | ContainedRecord {
+  try {
+    const stat = lstatSync(at);
+    return stat.isSymbolicLink() ? { state: "unread", at, why: "link, not followed" } : stat;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? { state: "absent" } : { state: "unread", at, why: "unreadable record" };
+  }
+}
+
+/** The segment `name` binds to every `{space}` in one path part, or undefined when it does not fit. */
+function segmentIn(part: string, name: string): string | undefined {
+  const fixed = part.split("{space}");
+  const length = (name.length - fixed.join("").length) / (fixed.length - 1);
+  if (!Number.isInteger(length) || length < 0) return undefined;
+  const segment = name.slice(fixed[0].length, fixed[0].length + length);
+  return fixed.join(segment) === name ? segment : undefined;
+}
+
+/** The space a writer spelled as `segment`: the hex key, else the pre-hex encoding, else none. */
+function spaceOfSegment(segment: string): { space?: string } {
+  const space = spaceFromKey(segment);
+  if (space !== undefined) return { space };
+  try {
+    const decoded = decodeURIComponent(segment);
+    if (encodeURIComponent(decoded) !== segment) return {};
+    spaceKey(decoded); // throws for a name no space can have
+    return { space: decoded };
+  } catch {
+    return {}; // not a pre-hex spelling either
+  }
 }
 
 /**
