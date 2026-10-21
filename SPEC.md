@@ -1666,8 +1666,10 @@ canonical digest, which excludes the proof: a changed public body under the same
 answers from the proposal as it is now: `approval-required` while it is live and unexpired, `pending`
 at phase `approved-unregistered` while its approval stands, and `denied` once the proposal is refused
 or expired or its approval revoked. An undecided proposal reads as expired once the whole second of
-its expiry has passed, before any tombstone closes it, so the door never offers approval the host
-would refuse. Register runs no registration barrier and never answers
+its expiry has passed, before any tombstone closes it. The door never answers expired before the host
+would refuse its approval, but for up to one second after the expiry it can still answer
+`approval-required` or `proposed` while the host already refuses. Register runs no registration
+barrier and never answers
 `registered` or a credential.
 
 Status admits only `target:{kind:"operation", requestId}`, for the caller's own register; another
