@@ -228,11 +228,12 @@ function bareStop(values: ParsedArgs["values"]): boolean {
 const pidRecordsUnder = (root: string): boolean => readdirSync(join(root, ".cotal")).some((name) => name.endsWith(".pid"));
 
 /** A legacy root whose stack is not running, told apart from a folder that never had one. No
- *  registration names the root, because its own down removed the last one, and no process record
- *  remains under its `.cotal`. The root still holds the broker configuration a start rendered there
- *  (`server-open.conf`, or `auth/server.conf` in auth mode) or a space prepared there. When the root
- *  names its space, none of that space's saved services runs either. Undefined when any of that is
- *  missing, so bare down refuses rather than guess. */
+ *  registration names the root, because its own down removed the last one, and no `*.pid` record
+ *  remains at the top of its `.cotal`. The root still holds the broker configuration a start rendered
+ *  there (`server-open.conf`, or `auth/server.conf` in auth mode) or a space prepared there. When the
+ *  root names its space, none of that space's saved services runs either. Undefined when any of that
+ *  is missing, so bare down refuses rather than guess. `nothingRunning` reads every other process
+ *  record under the root before it answers. */
 function stoppedLegacyStack(): { root: string; space?: string } | undefined {
   const root = canonicalRoot(cotalRoot());
   if (root === canonicalRoot(homedir()) || !realDirNoSymlink(root, ".cotal") || meshesForRoot(root).length || pidRecordsUnder(root)) return undefined;

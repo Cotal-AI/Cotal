@@ -15,7 +15,7 @@ import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
 import {
   canonicalLocalProcessPath,
@@ -44,16 +44,19 @@ let findCotalRoot!: typeof import("@cotal-ai/workspace").findCotalRoot;
 let meshesForRoot!: typeof import("@cotal-ai/workspace").meshesForRoot;
 let recordMesh!: typeof import("@cotal-ai/workspace").recordMesh;
 let removeMesh!: typeof import("@cotal-ai/workspace").removeMesh;
+let saveExtensionsManifest!: typeof import("@cotal-ai/workspace").saveExtensionsManifest;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let down!: typeof import("../src/commands/down.js").down;
+let setInstalledExtensionsEnabled!: typeof import("../src/ext-loader.js").setInstalledExtensionsEnabled;
 let stopLocalProcess!: typeof import("../src/lib/local-process-stop.js").stopLocalProcess;
 let webProcess!: typeof import("../../web/src/web.js").webProcess;
 try {
   home = mkdtempSync(join(scratch, "home-"));
   process.env.COTAL_HOME = home;
   ({ registry } = await import("@cotal-ai/core"));
-  ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, meshesForRoot, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace"));
+  ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, meshesForRoot, recordMesh, removeMesh, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace"));
   ({ down } = await import("../src/commands/down.js"));
+  ({ setInstalledExtensionsEnabled } = await import("../src/ext-loader.js"));
   ({ stopLocalProcess } = await import("../src/lib/local-process-stop.js"));
   ({ webProcess } = await import("../../web/src/web.js"));
 } catch (e) { cleanScratch(e); }
@@ -621,6 +624,38 @@ try {
   removeMesh("twin-b");
   check("two registrations for the root refuse CONFLICT, naming both, and point at space forget",
     twins.error?.code === "CONFLICT" && /"twin-a"/.test(twins.error.message ?? "") && /"twin-b"/.test(twins.error.message ?? "") && /cotal space forget/.test(twins.error.remedy ?? ""), twins);
+  // An installed extension may record its process deeper in `.cotal` or under another suffix. While
+  // either still runs, bare down does not call the stack stopped, and it leaves both as they were.
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = mkdtempSync(join(scratch, "xdg-"));
+  setInstalledExtensionsEnabled(true);
+  try {
+    const nested: LocalProcess = { kind: "local-process", name: "nested-worker", label: "nested worker", pidFile: "daemon/worker.pid" };
+    const suffixed: LocalProcess = { kind: "local-process", name: "record-worker", label: "record worker", pidFile: "worker.record" };
+    saveExtensionsManifest({ extensions: [{ pkg: "@example/workers", version: "0.0.0", spec: "@example/workers", commands: [], localProcesses: [cacheLocalProcess(nested), cacheLocalProcess(suffixed)] }] });
+    const workers = [nested, suffixed].map((descriptor) => {
+      const child = spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000);"], { detached: true, stdio: "ignore" });
+      spawnedChildren.push(child);   // <- before the record write, as in meshWithDashboard
+      child.unref();
+      const record = join(stoppedRoot, ".cotal", descriptor.pidFile);
+      mkdirSync(dirname(record), { recursive: true });
+      writeFileSync(record, String(child.pid), { mode: 0o600 });
+      return { child, record };
+    });
+    const recorded = await bareDownIn(stoppedRoot);
+    const listed = (recorded.error as { target?: { processes?: string[] } } | undefined)?.target?.processes ?? [];
+    check("a live process an installed extension records at a nested path or a non-.pid name keeps bare down from a no-op, points at cotal status, and stays running with its record",
+      recorded.error?.code === "LIFECYCLE_BLOCKED" && /cotal status/.test(recorded.error.remedy ?? "") && !/is not running/.test(recorded.out) &&
+        listed.some((row) => row.startsWith("nested-worker at .cotal/daemon/worker.pid")) && listed.some((row) => row.startsWith("record-worker at .cotal/worker.record")) &&
+        workers.every(({ child, record }) => alive(child.pid!) && existsSync(record)),
+      { ...recorded, listed });
+    for (const { child } of workers) try { process.kill(child.pid!, "SIGTERM"); } catch { /* already gone */ }
+    for (let i = 0; i < 100 && workers.some(({ child }) => alive(child.pid!)); i++) await sleep(50);
+  } finally {
+    setInstalledExtensionsEnabled(false);
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
   rmSync(stoppedRoot, { recursive: true, force: true });
   rmSync(neverRoot, { recursive: true, force: true });
 

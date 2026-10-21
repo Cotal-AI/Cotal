@@ -5,7 +5,7 @@
  *  recomputed only after every earlier member is confirmed gone. Shared registry and credential cleanup follow
  *  only a complete confirmed stop. Nothing outside the recorded members is touched. */
 import * as prompts from "../lib/prompts.js";
-import type { ParsedArgs } from "@cotal-ai/core";
+import { DEFAULT_SPACE, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, canonicalRoot, deliveryCredsKey, isCommandFailure, oneLine, presentationOf,
   removeMeshesByRoot, recordPreparedSpace, renderReport, terminalWidth, workspaceSecretStore, writeResult,
@@ -18,7 +18,7 @@ import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, stopProcessService } from "../lib/service-process.js";
-import { foreignLocalProcesses, newStackOperation, processGone, readStackJournal, refuseControllerCut, stackMaintenanceFence, stackScopeRefusals, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, newStackOperation, processGone, readStackJournal, recordedProcessesUnder, refuseControllerCut, stackMaintenanceFence, stackScopeRefusals, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -65,9 +65,9 @@ function scopeRefusals(journal: StackJournal): string | undefined {
 }
 
 /** A stack its own down stopped completely, with no recorded member, no other service instance of
- *  its space and no legacy process under its root running since. Stopping it again would stop
+ *  its space and no legacy process of its space running since. Stopping it again would stop
  *  nothing. A stack that stopped any other way still takes the full stop, which also finishes its
- *  registration and credential cleanup. */
+ *  registration and credential cleanup. {@link nothingRunning} reads the rest of the root. */
 function alreadyStopped(journal: StackJournal, members: readonly Member[]): boolean {
   if (journal.operation.kind !== "down" || journal.operation.phase !== "completed" || members.some((member) => member.live)) return false;
   const running = serviceInstances(journal.space).some((row) => !processGone(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state));
@@ -75,9 +75,15 @@ function alreadyStopped(journal: StackJournal, members: readonly Member[]): bool
 }
 
 /** A bare down of a stack that is not running stops nothing. It answers with a no-op and writes
- *  nothing, so it needs no --yes, and its preview shows the same. --with-agents refuses there,
- *  because no running manager can stop the agents. The legacy route answers the same way. */
+ *  nothing, so it needs no --yes, and its preview shows the same. Before it says so it reads every
+ *  process record under the root, for every space and extension. One that may still front a process
+ *  refuses instead, and nothing is stopped, adopted or removed. A real --with-agents refuses too,
+ *  because no running manager can stop the agents; its preview shows the no-op. The legacy route
+ *  answers the same way. */
 export function nothingRunning(presentation: Presentation, target: { root: string; space?: string; server?: string }, withAgents: boolean): void {
+  // A root that names no space resolves to the default one, as `resolveSpace` answers.
+  const remaining = recordedProcessesUnder(target.root, [target.space ?? DEFAULT_SPACE]);
+  if (remaining.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a process recorded under this root may still run, so bare down did not report the stack stopped; nothing was stopped, adopted or removed", { target: { ...target, processes: remaining }, remedy: "run `cotal status` here to see what this folder records" });
   if (withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's running manager, and this folder's stack is not running; nothing was stopped", { target, remedy: "start it with `cotal up`, then run `cotal down --with-agents`" });
   writeResult(presentation, { command: "down", target, result: { kind: "stack-not-running", ...target }, noOp: true }, () => ({ sections: [
     { title: `The stack in ${target.root} is not running`, blocks: [{ kind: "lines", lines: ["Nothing was stopped."] }] },

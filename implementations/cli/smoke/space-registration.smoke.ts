@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -30,7 +30,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { clearCurrent, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, canonicalLocalProcessPath, clearCurrent, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { stackJournalPath, writeStackJournal } = await import("../src/lib/stack-journal.js");
@@ -456,6 +456,22 @@ setCurrent("keep");
   const plainAgain = await run(["down", "--plain"], {}, fresh);
   check("--plain of the stopped stack shows the same no-op", plainAgain.status === 0 && /is not running/.test(plainAgain.stdout), shown(plainAgain));
   check("none of them wrote: the stack journal is byte-identical", journalBytes() === stoppedJournal);
+  // A manager another space recorded under the same root still runs, so the stopped stack's second
+  // down does not call the root's stack stopped. A process of this suite stands in for it, and the
+  // down leaves it, its record and the journal as they were.
+  const otherManager = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  standIns.push(otherManager);
+  const otherRecord = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: fresh, space: "other" });
+  writeFileSync(otherRecord, String(otherManager.pid), { mode: 0o600 });
+  assertSmokeSandboxDown(sandbox, ["down", "--json"], { cwd: fresh, env: runEnv });
+  const otherSpace = await json(["down"], fresh);
+  const recorded: string[] = otherSpace.env?.target?.processes ?? [];
+  check("a live manager recorded for another space under the root keeps a second bare down from a no-op, points at cotal status, and stays running with its record",
+    refused(otherSpace, 2, "LIFECYCLE_BLOCKED") && (otherSpace.env?.error?.remedy ?? "").includes("cotal status") &&
+      recorded.includes(`manager at ${join(".cotal", basename(otherRecord))} (pid ${otherManager.pid})`) &&
+      otherManager.exitCode === null && otherManager.signalCode === null && existsSync(otherRecord) && journalBytes() === stoppedJournal, shown(otherSpace));
+  if (otherManager.exitCode === null && otherManager.signalCode === null) await new Promise((done) => { otherManager.once("exit", done); otherManager.kill("SIGKILL"); });
+  rmSync(otherRecord);
 
   const later = join(home, "later");
   mkdirSync(later);

@@ -2,12 +2,13 @@
   "suite": [
     "implementations/cli/smoke/space-registration.smoke.ts"
   ],
-  "guard": "a second bare down of a controller stack its own down stopped is a no-op without --yes that writes nothing, in every presentation, and a running stack's missing --yes refusal is one line and its remedy",
+  "guard": "a second bare down of a controller stack its own down stopped is a no-op without --yes that writes nothing, in every presentation, unless a process recorded under its root for another space may still run, and a running stack's missing --yes refusal is one line and its remedy",
   "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/space-registration.smoke.ts",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-stopped-controller.json",
   "why": [
-    "A second bare down of a stopped controller stack used to refuse for --yes and print the whole usage text, although nothing would stop. The suite drives the built binary through a prepared root's up, down and second down, so each mutation rebuilds it and the restore rebuilds it back."
+    "A second bare down of a stopped controller stack used to refuse for --yes and print the whole usage text, although nothing would stop. The suite drives the built binary through a prepared root's up, down and second down, so each mutation rebuilds it and the restore rebuilds it back.",
+    "The no-op reads every process record under the root, so a live manager another space recorded there refuses it. The suite plants that record over a process of its own."
   ],
   "mutations": [
     {
@@ -26,6 +27,15 @@
       "replace": "if (failure) printCommandHelp(",
       "expectRed": "a bare down of the running stack outside a terminal refuses for --yes, with its remedy and without the command help",
       "cell": "a bare down of the running stack outside a terminal refuses for --yes, with its remedy and without the command help",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the no-op reads only the stack's own space",
+      "file": "implementations/cli/src/lib/stack-journal.ts",
+      "find": "  try { recorded = recordedRuntimeSpaces(root).map((row) => row.space); }\n",
+      "replace": "  try { recorded = []; }\n",
+      "expectRed": "a live manager recorded for another space under the root keeps a second bare down from a no-op, points at cotal status, and stays running with its record",
+      "cell": "a live manager recorded for another space under the root keeps a second bare down from a no-op, points at cotal status, and stays running with its record",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]

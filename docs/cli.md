@@ -742,14 +742,20 @@ A bare `down` in a folder whose stack is already stopped stops nothing. It repor
 in that folder is not running and names `cotal up`, outcome `no-op`, exit 0, and writes nothing,
 so it needs no `--yes`. `--dry-run`, `--json` and `--plain` show the same. A controller stack
 counts as stopped when its last whole-stack operation was a completed `down` and no member, no
-other service instance of its space and no legacy process under its root runs. A stack that
+other service instance of its space and no legacy process of its space runs. A stack that
 stopped any other way takes the full stop, which also finishes its cleanup. A legacy root counts as
-stopped when no registration names it and no process record remains in its `.cotal`, and the root
-still holds the broker configuration a start rendered there or a space prepared there. Without
-that evidence a legacy root still refuses, with one next step: `TARGET_NOT_FOUND` when nothing
-shows a stack there, and `CONFLICT` when several registrations name the root or a process record
-remains that no registration explains. `--with-agents` on a stopped stack refuses
-`LIFECYCLE_BLOCKED`, because no running manager can stop the agents; start the stack first.
+stopped when no registration names it and no `*.pid` record remains at the top of its `.cotal`,
+and the root still holds the broker configuration a start rendered there or a space prepared there.
+Without that evidence a legacy root still refuses, with one next step: `TARGET_NOT_FOUND` when
+nothing shows a stack there, and `CONFLICT` when several registrations name the root or a process
+record remains that no registration explains. Before either kind of root reports the no-op, `down`
+reads every local-process record under the root, for the stack's space and for every space the
+root's manager and delivery records name. That includes an installed extension's records, at any
+path and name under `.cotal`. A record whose process runs, whose liveness the kernel does not
+answer, or that cannot be read or attributed refuses `LIFECYCLE_BLOCKED` and names `cotal status`.
+That refusal stops, adopts and removes nothing. `--with-agents` on a stopped stack refuses
+`LIFECYCLE_BLOCKED`, because no running manager can stop the agents; start the stack first. Its
+preview, `cotal down --dry-run --with-agents`, shows the no-op.
 
 The legacy bare-stack and manifest apply paths described below are retained. They do not
 accept the new named-service JSON/plain/yes apply receipt flags, except that `--json` and

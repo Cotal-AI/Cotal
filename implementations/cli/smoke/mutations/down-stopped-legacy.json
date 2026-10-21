@@ -3,12 +3,13 @@
   "suite": [
     "implementations/cli/smoke/down-target.smoke.ts"
   ],
-  "guard": "a bare down of a legacy root whose stack is already stopped is a no-op in every presentation, and a root with no such evidence, a leftover process record or two registrations still refuses with one next step",
+  "guard": "a bare down of a legacy root whose stack is already stopped is a no-op in every presentation, and a root with no such evidence, a leftover process record, a live process an installed extension records deeper in .cotal or under another suffix, or two registrations still refuses with one next step",
   "command": "pnpm --filter @cotal-ai/cli... build > /dev/null && pnpm smoke:down-target",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-stopped-legacy.json",
   "why": [
     "A legacy root's own down removes its registration, so a second bare down used to refuse CONFLICT with no next step. The evidence that it is stopped is the broker configuration a start rendered there, or a space prepared there, with no registration and no process record left. Each mutation drops one part of that evidence or one answer, and the suite drives the in-process down from a planted root.",
-    "Every build is scoped to the @cotal-ai/cli dependency closure, as in down-unowned-broker.json."
+    "Every build is scoped to the @cotal-ai/cli dependency closure, as in down-unowned-broker.json.",
+    "The no-op reads every installed local-process record, wherever under .cotal its descriptor puts it, so a process recorded at a nested path or under another suffix refuses it."
   ],
   "mutations": [
     {
@@ -63,6 +64,15 @@
       "replace": "  if (local.length > 99)\n",
       "expectRed": "two registrations for the root refuse CONFLICT, naming both, and point at space forget",
       "cell": "two registrations for the root refuse CONFLICT, naming both, and point at space forget",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "the no-op reads only top-level .pid records",
+      "file": "implementations/cli/src/lib/stack-journal.ts",
+      "find": "  const surface = localProcessSurface(), seen = new Set<string>();\n",
+      "replace": "  const surface = localProcessSurface().filter((component) => component.pidFile.endsWith(\".pid\") && !component.pidFile.includes(\"/\")), seen = new Set<string>();\n",
+      "expectRed": "a live process an installed extension records at a nested path or a non-.pid name keeps bare down from a no-op, points at cotal status, and stays running with its record",
+      "cell": "a live process an installed extension records at a nested path or a non-.pid name keeps bare down from a no-op, points at cotal status, and stays running with its record",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
     }
   ]

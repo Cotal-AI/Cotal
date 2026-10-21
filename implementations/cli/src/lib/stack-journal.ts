@@ -3,9 +3,9 @@
  *  `<root>/.cotal/stack-controller.json`. It is not a service record, unit receipt or team ledger,
  *  and it grants no stop authority by itself: every effect still rechecks the instance records. */
 import { createHash, randomUUID } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, admittedControllerRestore, canonicalRoot, decodeLocalJson, loadMeshes, localProcessPath, localRecordObject, parsePid, probeLiveness, readLocalRecordSource, readMaintenanceJournal, readPidfile, serviceOperationId, type ControllerStackView, stackJournalPath } from "@cotal-ai/workspace";
+import { CommandFailure, admittedControllerRestore, canonicalRoot, decodeLocalJson, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, parsePid, probeLiveness, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedRuntimeSpaces, serviceOperationId, type ControllerStackView, stackJournalPath } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 
@@ -190,6 +190,33 @@ export function foreignLocalProcesses(root: string, space: string): string[] {
     if (pid === undefined || probeLiveness(pid) !== "dead") foreign.push(`${component.name}${pid === undefined ? " (unattributable record)" : ` (pid ${pid})`}`);
   }
   return foreign;
+}
+
+/** Every local-process record under the root that may still front a process, whichever space or
+ *  extension wrote it: each descriptor's every spelling, nested paths and other suffixes included,
+ *  expanded for `spaces` and for every space the root's runtime records name. A live or unanswered
+ *  pid, an unattributable record and one that cannot be read all count; only an empty or ESRCH-proven
+ *  dead record does not. Read only: nothing is stopped, adopted or removed. */
+export function recordedProcessesUnder(root: string, spaces: readonly string[]): string[] {
+  const found: string[] = [];
+  let recorded: string[] = [];
+  try { recorded = recordedRuntimeSpaces(root).map((row) => row.space); }
+  catch { found.push(".cotal runtime records (unreadable)"); }
+  const surface = localProcessSurface(), seen = new Set<string>();
+  for (const space of new Set([...spaces, ...recorded]))
+    for (const component of surface)
+      for (const path of localProcessPathCandidates(component.pidFile, { root, space })) {
+        if (seen.has(path)) continue;
+        seen.add(path);
+        const at = `${component.name} at ${relative(root, path)}`;
+        let raw: string | undefined;
+        try { raw = readPidfile(path); } catch { found.push(`${at} (unreadable record)`); continue; }
+        if (!raw) continue;
+        const pid = parsePid(raw);
+        if (pid === undefined) found.push(`${at} (unattributable record)`);
+        else if (probeLiveness(pid) !== "dead") found.push(`${at} (pid ${pid})`);
+      }
+  return found;
 }
 
 /** An observed process state that counts as stopped for a whole-stack stop. */
