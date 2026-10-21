@@ -183,11 +183,11 @@ try {
     rmSync(planted);
     planted = undefined;
     const down = cotal(["down"]);
-    const text = out(down);
+    const downOut = out(down);
     stackUp = down.status !== 0;
     check("bare down stops the running service through the controller, then the broker",
-      down.status === 0 && liveState() === "stopped" && text.includes("Service stopped") && text.indexOf("Service stopped") < text.indexOf("✓ stopped nats-server")
-        && !(await isReachable(SERVER)) && findMesh(SPACE) === undefined, text);
+      down.status === 0 && liveState() === "stopped" && downOut.includes("Service stopped") && downOut.indexOf("Service stopped") < downOut.indexOf("✓ stopped nats-server")
+        && !(await isReachable(SERVER)) && findMesh(SPACE) === undefined, downOut);
     check("  and keeps the saved definition", serviceDefinitionStore(SPACE).read("mgr") !== undefined);
     const again = cotal(["up", "--detach", "--open", "--no-manager", "--space", SPACE, "--server", SERVER]);
     stackUp = again.status === 0;
