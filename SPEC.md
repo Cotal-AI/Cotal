@@ -1602,11 +1602,15 @@ broker loss makes its reads fail until the stock client reconnects; a read that 
 `unavailable` within its invocation's own limit, with nothing written. A renewal failure closes it
 for good, and every later read through it fails until the plane is opened again; nothing reopens it.
 Both plane fatal paths, a scanner death and a failed native-issuance cleanup, trip the host's fatal
-latch, and a fence that lands while the host is opening latches it once it exists. Plane close
-refuses every later host call, waits until every call that entered before it has returned, including
-one still reading discovery or opening its effect connection, then closes discovery, and only then
-releases the claim. Close trips nothing; a call in flight ends under its own discovery-read bound
-and invocation deadline, each at most 60 s.
+latch, and a fence that lands while the host is opening latches it once it exists. From the moment
+plane close is called it refuses every host call, before it waits for anything. It then waits until
+every call that entered before it has returned, including one still reading discovery or opening its
+effect connection. An effect connection whose close failed stays owned by the plane after its call
+has settled, and that call rejects with the failure. Close closes every such connection again and,
+while one remains open, rejects with the claim still held, so a later close retries it; a request
+that was only rejected does not hold close. Only then does close close discovery, and only after
+that does it release the claim. Close trips nothing; a call in flight ends under its own
+discovery-read bound and invocation deadline, each at most 60 s.
 
 The plane and a hosted context expose only `decide`, `revoke`, `operation-read` and `proposal-read`,
 as one in-process function; a hosted context refuses it as `unavailable` while it is not ready.
