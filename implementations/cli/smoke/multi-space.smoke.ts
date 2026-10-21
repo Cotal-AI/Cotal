@@ -738,22 +738,20 @@ try {
   check("mayBeRunning: empty husk ⇒ false", mayBeRunning(authComp as never, guardCtx as never) === false);
   writeFileSync(authPidAt, String(process.pid));
   check("mayBeRunning: a LIVE pid ⇒ true", mayBeRunning(authComp as never, guardCtx as never) === true);
-  // The REAL command path: `cotal down nats` with an unattributable live-ish auth dependant must
-  // REFUSE (stop-last guard) and stop nothing.
-  // The REAL command path: `cotal down nats` with an unattributable auth dependant must throw the
-  // stop-last guard (before any teardown) and stop nothing. (The over-refusal negative - a dead/empty
-  // dependant does NOT block - is covered by the mayBeRunning-direct checks above, which is the exact
-  // predicate the guard filters on; driving the full `down` past the guard would hit its unrelated
-  // "nothing running" teardown path.)
+  // The REAL command path: `cotal down nats` is a named down, so a service stop. It resolves a saved
+  // service definition and never a component's pidfile (docs/cli.md, `down`), so with none saved it
+  // refuses before any teardown and leaves the unattributable auth record as it was. The stop-last
+  // guard's predicate is the mayBeRunning contract checked directly above.
   const prevCwd26 = process.cwd();
   const prevExit = process.exitCode;
   process.chdir(guardRoot);
   try {
     for (const bad of ["not-a-pid", "1.5", "2147483648"]) {
       writeFileSync(authPidAt, bad);
-      const msg = await refusal(() => downCmd({ positionals: ["nats"], values: {} } as never));
-      check(`real \`cotal down nats\` REFUSES while the auth dependant is unattributable ${JSON.stringify(bad)} (guard throws before any teardown; record preserved)`,
-        msg.includes("still running") && existsSync(authPidAt), { msg, kept: existsSync(authPidAt) });
+      let refused: { code?: string; message?: string } | undefined;
+      try { await downCmd({ positionals: ["nats"], values: {} } as never); } catch (e) { refused = e as { code?: string; message?: string }; }
+      check(`real \`cotal down nats\` is a service stop: TARGET_NOT_FOUND, and the unattributable auth record ${JSON.stringify(bad)} is kept`,
+        refused?.code === "TARGET_NOT_FOUND" && existsSync(authPidAt) && readFileSync(authPidAt, "utf8") === bad, { msg: refused?.message, kept: existsSync(authPidAt) });
     }
   } finally {
     process.chdir(prevCwd26);

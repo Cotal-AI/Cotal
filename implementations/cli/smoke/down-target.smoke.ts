@@ -1,14 +1,14 @@
 /**
- * `cotal down web` from any directory — a target-addressed component (`rootedAt: "target"`) is
- * stopped under the SAME mesh root its start side resolved (registry current mesh first,
- * `--space` to name one), not the cwd's `.cotal`. Regression for the start/stop asymmetry where
- * `cotal web` (target-resolved) claimed `<mesh-root>/.cotal/web.pid` but `cotal down web` only
- * looked under the folder it ran in and reported "Nothing running for web".
+ * `cotal down <name>` is a service stop: it resolves a saved service definition in the selected
+ * space (registry current mesh first, `--space` to name one) and never falls back to a component's
+ * pidfile (docs/cli.md, `down`). A legacy web dashboard recorded in a mesh root's web.pid is
+ * therefore refused as not found and left running, from any directory and with `--space`.
  *
  * Hermetic (no broker): COTAL_HOME and the temp root are sandboxed, meshes are recorded straight
  * into the registry, and the dashboard is a real SIGTERM-able child whose pid sits in the mesh
  * root's web.pid. The same public `down()` surface also proves both no-token manager policy branches
- * and the pinned-mismatch refusal. This existing CI-selected suite remains the integration owner.
+ * and the pinned-mismatch refusal on a bare down of a stack `cotal up` recorded at its root. This
+ * existing CI-selected suite remains the integration owner.
  * Run: pnpm smoke:down-target
  */
 import { strict as assert } from "node:assert";
@@ -43,6 +43,7 @@ let extensionLocalProcesses!: typeof import("@cotal-ai/workspace").extensionLoca
 let findCotalRoot!: typeof import("@cotal-ai/workspace").findCotalRoot;
 let meshesForRoot!: typeof import("@cotal-ai/workspace").meshesForRoot;
 let recordMesh!: typeof import("@cotal-ai/workspace").recordMesh;
+let removeMesh!: typeof import("@cotal-ai/workspace").removeMesh;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let down!: typeof import("../src/commands/down.js").down;
 let stopLocalProcess!: typeof import("../src/lib/local-process-stop.js").stopLocalProcess;
@@ -51,7 +52,7 @@ try {
   home = mkdtempSync(join(scratch, "home-"));
   process.env.COTAL_HOME = home;
   ({ registry } = await import("@cotal-ai/core"));
-  ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, meshesForRoot, recordMesh, setCurrent } = await import("@cotal-ai/workspace"));
+  ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, meshesForRoot, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace"));
   ({ down } = await import("../src/commands/down.js"));
   ({ stopLocalProcess } = await import("../src/lib/local-process-stop.js"));
   ({ webProcess } = await import("../../web/src/web.js"));
@@ -97,6 +98,16 @@ function meshWithDashboard(label: string): { root: string; child: ChildProcess; 
 
 const run = (positionals: string[], values: Record<string, string | boolean> = {}) =>
   down({ values, positionals, raw: [] });
+
+/** The refusal a call rejects with, or undefined when it resolves. */
+async function rejection(call: Promise<unknown>): Promise<{ code?: string; message?: string; remedy?: string } | undefined> {
+  try {
+    await call;
+    return undefined;
+  } catch (error) {
+    return error as { code?: string; message?: string; remedy?: string };
+  }
+}
 
 type LegacyManagerStop = {
   managerAlive: boolean;
@@ -174,6 +185,10 @@ async function stopPlantedManager(
   else if (pin === "match") writeIdentityPin(pidPath, child.pid);
   else writeIdentityPin(pidPath, child.pid, () => undefined); // Windows/ps-less host: honest no-pin shape
 
+  // Bare down sweeps only a stack `cotal up` recorded at this root (docs/cli.md, `down`), so the root
+  // is registered that way, on a closed loopback port no other registration names.
+  if (target === "stack") recordMesh({ space: "main", server: "nats://127.0.0.1:1", root, mode: "open", origin: "up", ts: "2026-07-27T00:00:00.000Z" });
+
   let warning = "";
   let output = "";
   const originalError = console.error;
@@ -221,6 +236,7 @@ async function stopPlantedManager(
       if (owned !== -1) spawnedChildren.splice(owned, 1);
     }
   }
+  removeMesh("main"); // a refused stop keeps the registration
   rmSync(root, { recursive: true, force: true });
   return result;
 }
@@ -263,41 +279,50 @@ try {
 
   process.chdir(neutral);
 
-  // No meshes recorded anywhere → a target-addressed stop fails loud, it does not probe the cwd.
-  await assert.rejects(run(["web"]), /no mesh running/);
-  check("no meshes: `down web` fails loud with 'no mesh running'", true);
+  // No meshes recorded anywhere and nothing saved → `down web` refuses as not found.
+  const noMesh = await rejection(run(["web"]));
+  check("no meshes: `down web` refuses TARGET_NOT_FOUND, naming no saved definition",
+    noMesh?.code === "TARGET_NOT_FOUND" && /no saved service definition resolves this name/.test(noMesh.message ?? ""), noMesh?.message);
 
-  // Current mesh set → `down web` from an unrelated directory stops THAT mesh's dashboard.
+  // Current mesh set → `down web` from an unrelated directory looks in THAT mesh's saved services.
+  // The legacy dashboard in its root is not one, so nothing is signalled and its record stays.
   recordMesh(entry("teamA", meshA.root));
   recordMesh(entry("teamB", meshB.root));
   setCurrent("teamA");
-  await run(["web"]);
-  for (let i = 0; i < 100 && alive(meshA.child.pid!); i++) await sleep(50);
-  check("current mesh: `down web` from elsewhere stops the dashboard", !alive(meshA.child.pid!));
-  check("current mesh: the mesh root's web.pid is removed", !existsSync(meshA.pidPath));
-  check("current mesh: the OTHER mesh's dashboard is untouched", alive(meshB.child.pid!));
+  const current = await rejection(run(["web"]));
+  await sleep(200); // a SIGTERM sent before the refusal would have ended the child by now
+  check("current mesh: `down web` refuses TARGET_NOT_FOUND and names the web service preset",
+    current?.code === "TARGET_NOT_FOUND" && /cotal service add web --preset web/.test(current.remedy ?? ""), current?.message);
+  check("current mesh: the legacy dashboard is not signalled and keeps its web.pid", alive(meshA.child.pid!) && existsSync(meshA.pidPath));
+  check("current mesh: the OTHER mesh's dashboard is untouched", alive(meshB.child.pid!) && existsSync(meshB.pidPath));
 
-  // `--space` names the mesh explicitly, exactly like `cotal web --space`.
-  await run(["web"], { space: "teamB" });
-  for (let i = 0; i < 100 && alive(meshB.child.pid!); i++) await sleep(50);
-  check("--space: `down web --space teamB` stops that mesh's dashboard", !alive(meshB.child.pid!));
-  check("--space: teamB's web.pid is removed", !existsSync(meshB.pidPath));
+  // `--space` names the space explicitly, exactly like `cotal web --space`.
+  const named = await rejection(run(["web"], { space: "teamB" }));
+  await sleep(200);
+  check("--space: `down web --space teamB` refuses TARGET_NOT_FOUND in that space", named?.code === "TARGET_NOT_FOUND", named?.message);
+  check("--space: teamB's legacy dashboard is not signalled and keeps its web.pid", alive(meshB.child.pid!) && existsSync(meshB.pidPath));
 
-  // Guardrails: --space never applies to folder-rooted components or bare `down`.
-  await assert.rejects(run(["fixtured"], { space: "teamA" }), /--space only applies to target-addressed components/);
-  check("--space with a folder-rooted component is refused", true);
+  // Guardrails: a registered local-process name is not a saved service either, and --space never
+  // applies to bare `down`.
+  const component = await rejection(run(["fixtured"], { space: "teamA" }));
+  check("a local-process component name with --space refuses TARGET_NOT_FOUND",
+    component?.code === "TARGET_NOT_FOUND" && /no saved service definition resolves this name/.test(component.message ?? ""), component?.message);
   await assert.rejects(run([], { space: "teamA" }), /bare `cotal down` always stops this folder's stack/);
   check("--space without components is refused", true);
-  await assert.rejects(run(["web"], { space: "nosuch" }), /no mesh named/);
-  check("--space with an unknown mesh fails loud", true);
+  const unknown = await rejection(run(["web"], { space: "nosuch" }));
+  check("--space with an unknown space refuses TARGET_NOT_FOUND",
+    unknown?.code === "TARGET_NOT_FOUND" && /no space named "nosuch" is registered here/.test(unknown.message ?? ""), unknown?.message);
 
   await assert.rejects(
     run([], { "preserve-state": true, "with-agents": true }),
     /--preserve-state cannot be combined with --with-agents/,
   );
   check("--preserve-state with --with-agents is refused", true);
-  await assert.rejects(run(["web"], { "with-agents": true }), /--with-agents is bare-whole-stack only/);
-  check("--with-agents with a component is refused", true);
+  const namedAgents = await rejection(run(["web"], { "with-agents": true }));
+  check("--with-agents with a component is refused and points at the service stop",
+    namedAgents?.code === "USAGE_INVALID" && /named down does not accept --with-agents/.test(namedAgents.message ?? "") &&
+      /cotal service stop <manager-name> --instance <full-id> --with-agents/.test(namedAgents.remedy ?? ""),
+    namedAgents?.message);
   await assert.rejects(run([], { "with-agents": true, file: "cotal.yaml" }), /--with-agents is bare-whole-stack only/);
   check("--with-agents with --file is refused", true);
   await assert.rejects(run([], { "with-agents": true, run: "abc" }), /--with-agents is bare-whole-stack only/);
@@ -335,7 +360,7 @@ try {
       !/agents will still be spared/.test(`${historicalBare.warning}\n${historicalBare.output}`),
     historicalBare,
   );
-  const pinnedNoCapability = await stopPlantedManager(false, "match", "intent-aware", "manager");
+  const pinnedNoCapability = await stopPlantedManager(false, "match");
   check(
     "a pinned manager without a capability prints the legacy-safe route and is not signalled",
     pinnedNoCapability.managerAlive && pinnedNoCapability.agentAlive && pinnedNoCapability.pidfilePreserved &&
@@ -352,6 +377,15 @@ try {
     mismatched.managerAlive && mismatched.agentAlive && mismatched.pidfilePreserved && mismatched.pinPreserved === true &&
       /pid has been reused/.test(mismatched.warning),
     mismatched,
+  );
+  // `down manager` is a named down, so a service stop: the planted manager is not a saved definition,
+  // and it is neither signalled nor stripped of its records.
+  const namedManager = await stopPlantedManager(false, "match", "intent-aware", "manager");
+  check(
+    "a named down of the manager refuses TARGET_NOT_FOUND and leaves it running with its records",
+    namedManager.managerAlive && namedManager.agentAlive && namedManager.pidfilePreserved && namedManager.pinPreserved === true &&
+      /no saved service definition resolves this name/.test(namedManager.warning),
+    namedManager,
   );
 
   // A pinned record can become ESRCH-dead before the manager policy hook runs. That path performs
@@ -375,8 +409,9 @@ try {
   check("a dead pinned manager record clears both pid and identity files", !existsSync(deadPidPath) && !existsSync(`${deadPidPath}.identity`));
   rmSync(deadRoot, { recursive: true, force: true });
 
-  // A broker this stack did not start has no nats.pid. When the folder's registered broker answers,
-  // bare down must name that and refuse to stop it, not claim nothing is running.
+  // A broker with no nats.pid was not started by this stack. When the folder's registered broker
+  // answers, bare down must name that and refuse to stop it, not claim nothing is running. The
+  // registration is `up`'s, because bare down sweeps only a stack `cotal up` recorded at its root.
   const unownedRoot = mkdtempSync(join(scratch, "unowned-broker-"));
   mkdirSync(join(unownedRoot, ".cotal"), { recursive: true });
   const unownedPort = await new Promise<number>((resolve, reject) => {
@@ -405,7 +440,7 @@ try {
       break;
     } catch { await sleep(100); }
   }
-  recordMesh({ space: "unowned", server: `nats://127.0.0.1:${unownedPort}`, root: unownedRoot, mode: "open", ts: "2026-07-27T00:00:00.000Z" });
+  recordMesh({ space: "unowned", server: `nats://127.0.0.1:${unownedPort}`, root: unownedRoot, mode: "open", origin: "up", ts: "2026-07-27T00:00:00.000Z" });
   process.chdir(unownedRoot);
   let unownedErr = "";
   const unownedExit = process.exit;
@@ -440,7 +475,7 @@ try {
   // Round 2 (issue #1698 follow-up): the probe must not be gated on "!any". With an owned component
   // pidfile present (a detached web) AND a registered live broker with no nats.pid, the old guard
   // stopped the web, exited 0, and never named the broker: a false success. The owned component
-  // still stops, its artifacts still clear, the broker is still named and left running, the manual
+  // still stops, its artifacts still clear, the broker is still named and left running, the `up`
   // registration survives, and the command exits 1. Only the wording is captured loosely here; the
   // exact-diagnosis cell above pins the message.
   const mixedRoot = mkdtempSync(join(scratch, "mixed-"));
@@ -470,7 +505,7 @@ try {
       break;
     } catch { await sleep(100); }
   }
-  recordMesh({ space: "mixed", server: `nats://127.0.0.1:${mixedPort}`, root: mixedRoot, mode: "open", ts: "2026-07-27T00:00:00.000Z" });
+  recordMesh({ space: "mixed", server: `nats://127.0.0.1:${mixedPort}`, root: mixedRoot, mode: "open", origin: "up", ts: "2026-07-27T00:00:00.000Z" });
   const mixedWeb = spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000);"], { detached: true, stdio: "ignore" });
   spawnedChildren.push(mixedWeb);
   mixedWeb.unref();
@@ -517,7 +552,7 @@ try {
   for (let i = 0; i < 50 && alive(mixedBroker.pid); i++) await sleep(50);
   rmSync(mixedRoot, { recursive: true, force: true });
 
-  console.log(`\ndown target-addressed smoke: ${pass} checks passed`);
+  console.log(`\ndown-target smoke: ${pass} checks passed`);
 } finally {
   process.chdir(prevCwd);
   // Only the ones that were actually created — a throw partway through leaves the rest undefined,

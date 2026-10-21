@@ -179,9 +179,10 @@ try {
     config: { ...watcher.config, inactive_threshold: 1 },
   }), false);
 
+  // A named down is a service stop, which takes no whole-stack flag and drops none.
   await assert.rejects(
     () => down({ positionals: ["nats"], values: { "preserve-state": true }, raw: [] }),
-    /bare-whole-stack only/,
+    { code: "USAGE_INVALID", message: /named down accepts only space, instance, confirmation, preview and presentation flags/ },
   );
   await assert.rejects(
     () => down({ positionals: [], values: { "store-dir": root }, raw: [] }),

@@ -216,10 +216,12 @@ function guardLegacyBareDown(): void {
   let mesh: NonNullable<ReturnType<typeof findMesh>>;
   try {
     if (!realDirNoSymlink(root, ".cotal")) throw new Error("missing project control directory");
+    // A root that hosts several spaces refuses before the registration lookup, naming them.
+    try { assertSingleSpaceBroker(authDir(root), "bare down"); }
+    catch (error) { throw new CommandFailure("refused", "CONFLICT", (error as Error).message, { target }); }
     const local = localMeshesForRoot(root), sole = local[0];
     if (local.length !== 1 || sole?.origin !== "up") throw new Error("no unique locally started stack at this root");
     mesh = sole;
-    assertSingleSpaceBroker(authDir(root), "bare down");
   } catch (error) {
     if (error instanceof CommandFailure) throw error;
     throw new CommandFailure("refused", "CONFLICT", "the local root has no unique owned stack registration and real control directory; no whole-stack stop target was inferred", { target });
