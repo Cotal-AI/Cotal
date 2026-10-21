@@ -198,7 +198,11 @@ async function registered(f: Fixture, e: ServiceHostOperations, instanceId = rid
     const a1 = await e1.handle(req);
     sub.unsubscribe();
     c.check("C1 (S-22) an approve fenced at A2 reports held under its operation", a1.state === "held" && a1.operationId === serviceHostOperationId(f.space, req.requestId), a1);
-    c.check("C1 the tripped engine refuses new invocations", (await e1.handle(req)).state === "denied");
+    const s0 = await lastSeqs(f), t1 = (await e1.handle(req)) as { state: string; reason?: string; phase?: string; operationId?: string; denyNew?: string }, s1 = await lastSeqs(f);
+    // A tripped engine reads nothing, so a bound request holds under its operation coordinate.
+    c.check("C1 the tripped engine refuses new invocations: the bound replay holds readiness under its operation, with no write", t1.state === "held"
+      && t1.reason === "readiness" && t1.phase === "open" && t1.operationId === serviceHostOperationId(f.space, req.requestId) && t1.denyNew === undefined
+      && s1.auth === s0.auth && s1.records === s0.records, t1);
     const digest = ((await f.value(f.auth, asg(f, p.instanceId)))?.assignmentDigest as string) ?? "";
     const rv = await e2.handle(revoke(f.endpoint, p.instanceId, digest, "owner-request", ownerOf(f)));
     parsesClosed("C1", rv);
@@ -540,6 +544,10 @@ async function lastSeqs(f: Fixture) {
 }
 /** Stored writes in both buckets since `b`. A create or CAS the stream refused is never stored. */
 const writesSince = async (f: Fixture, b: { auth: number; records: number }) => { const n = await lastSeqs(f); return n.auth - b.auth + n.records - b.records; };
+/** Read arms that only count leader reads of `keys`. */
+const countReads = (f: Fixture, keys: string[]) => { const arms = [...new Set(keys)].map((k) => f.faults.onRead("auth", k, async () => {}, Number.MAX_SAFE_INTEGER));
+  return { get hits() { return arms.reduce((n, a) => n + a.hits, 0); }, disarm: () => arms.forEach((a) => a.disarm()) }; };
+const shape = (r: Loose) => `${r.state}/${r.reason ?? ""}/${r.phase ?? ""}`;
 /** One schedule cell: an unexpected error is a named failure, and no fault arm outlives it. */
 async function cell(f: Fixture, label: string, run: () => Promise<void>) {
   try { await run(); }
@@ -1100,10 +1108,17 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
       await denial("their reuse of my register requestId as granter of my body", () => e.register({ ...rq, granter: them }), ["permission-denied"]);
     });
     await cell(f, "M3", async () => {
-      // r3a §E: authorization runs before disclosure on every replay (core review F-2).
-      await denial("an owner with no current interactive row reusing a bound approve requestId", () => e.handle({ ...ax, granter: outsider }), ["permission-denied"]);
-      await denial("an owner with no current interactive row reusing a bound revoke requestId", () => e.handle({ ...rvO, granter: outsider }), ["permission-denied"]);
-      await denial("an owner with no current interactive row reusing a bound register requestId", () => e.register({ ...rq, granter: outsider, input: { ...rq.input, owner: third } }), ["permission-denied"]);
+      // Authorization runs before any request-key read, with one held answer whether or not the request is bound,
+      // so the refusal discloses no binding.
+      const refusedFirst = async (label: string, r0: { requestId: string }, run: () => Promise<unknown>) => {
+        const reads = countReads(f, [opKeyOf(f, r0.requestId)]), b0 = await lastSeqs(f), r = L(await run());
+        reads.disarm();
+        c.check(`M (S-30, §E) ${label}: held{permission-denied, authorize} under the request's coordinate before any read, zero writes`, r.state === "held"
+          && r.reason === "permission-denied" && r.phase === "authorize" && r.operationId === opIdOf(f, r0) && reads.hits === 0 && (await writesSince(f, b0)) === 0, r);
+      };
+      await refusedFirst("an owner with no current interactive row reusing a bound approve requestId", ax, () => e.handle({ ...ax, granter: outsider }));
+      await refusedFirst("an owner with no current interactive row reusing a bound revoke requestId", rvO, () => e.handle({ ...rvO, granter: outsider }));
+      await refusedFirst("an owner with no current interactive row reusing a bound register requestId", rq, () => e.register({ ...rq, granter: outsider, input: { ...rq.input, owner: third } }));
       await denial("my own reuse of my bound approve requestId with another body", () => e.handle({ ...ax, input: { ...ax.input, expectedProposalRevision: ax.input.expectedProposalRevision + 1 } }), ["conflict"]);
       await denial("my own reuse of my bound revoke requestId with another body", () => e.handle({ ...rvO, input: { ...rvO.input, expectedAssignmentDigest: D("another") } }), ["conflict"]);
     });
@@ -1379,6 +1394,167 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
         traits: Array.from({ length: 32 }, (_, t) => `t${t}`.padEnd(200, "x")) }));
       const b0 = await lastSeqs(f), rb = L(await e.register(big));
       c.check("P4 (V-SH) a proposal over 256 KiB is refused at R1 with zero writes", rb.state === "denied" && rb.reason === "bad-request" && (await writesSince(f, b0)) === 0, rb);
+    });
+  } finally { await f.close(); }
+}
+
+// ---- Q: a tripped engine's entry, failed binding reads, and R-bound against a concurrent A1 ------
+{
+  const f = await openFixture("s2a-next-tripped");
+  try {
+    const dir = ledger(f.owner), e = await engine(f, dir);
+    await registered(f, e);                                                                   // the capacity row exists
+    type Bound = { go: (x: ServiceHostOperations) => Promise<unknown>; requestId: string; keys: string[]; done: () => Promise<boolean> };
+    /** A request whose binding create landed and stays live: the latch trips right after that create. */
+    const bound: Array<[string, () => Promise<Bound>]> = [
+      ["register", async () => { const rq = reg(f); await stopAfter(f, dir, W.binding(f, rq.requestId), (x) => x.register(rq));
+        return { go: (x) => x.register(rq), requestId: rq.requestId, keys: [], done: async () => L(await e.register(rq)).state === "registered" }; }],
+      ["approve", async () => { const p = await registered(f, e), x = approveReq(f, p); await stopAfter(f, dir, W.binding(f, x.requestId), (z) => z.handle(x));
+        return { go: (z) => z.handle(x), requestId: x.requestId, keys: [`svcprop.${p.proposalId}`], done: async () => L(await e.handle(x)).state === "approved" }; }],
+      ["revoke", async () => { const p = await registered(f, e), a = L(await e.handle(approveReq(f, p)));
+        const rq = revoke(f.endpoint, p.instanceId, a.approval!.assignment.assignmentDigest, "owner-request", ownerOf(f));
+        await stopAfter(f, dir, W.binding(f, rq.requestId), (z) => z.handle(rq));
+        return { go: (z) => z.handle(rq), requestId: rq.requestId, keys: [asg(f, p.instanceId)], done: async () => L(await e.handle(rq)).state === "pending" }; }],
+    ];
+    const tripped = async () => { const x = await engine(f, dir); x.trip("fixture: the engine latch tripped before the request arrived"); return x; };
+    /** Simulation: the nth leader read of `key` fails after the broker answered it. */
+    const failRead = (key: string, nth: number) => { let n = 0;
+      return f.faults.onRead("auth", key, async () => { if (++n === nth) throw new Error("fixture: simulated leader read failure"); }, nth); };
+    const counting = (keys: string[]) => countReads(f, keys);
+    for (const [label, prep] of bound) await cell(f, `Q1 ${label}`, async () => {
+      const s = await prep(), live = await opRecord(f, s.requestId), x = await tripped();
+      const reads = counting([opKeyOf(f, s.requestId), ...s.keys]), b0 = await lastSeqs(f), r = L(await s.go(x));
+      reads.disarm();
+      if (label !== "register") parsesClosed(`Q1 ${label}`, r);
+      c.check(`Q1 (F-1 residual, latch) a tripped engine reads none of a bound ${label}'s keys and writes nothing`, live?.kind === "service-host-operation" && reads.hits === 0
+        && (await writesSince(f, b0)) === 0, { live: live?.kind, reads: reads.hits });
+      c.check(`Q1 (F-1 residual, contract denied) a bound ${label} on a tripped engine is never a zero-write denial: held under its operation`, r.state === "held"
+        && r.operationId === opIdOf(f, s), r);
+      c.check(`Q1 after the trip, a fresh engine completes the bound ${label}`, await s.done());
+    });
+    await cell(f, "Q1 uniform", async () => {
+      const p = await registered(f, e), xb = approveReq(f, p);
+      await stopAfter(f, dir, W.binding(f, xb.requestId), (z) => z.handle(xb));
+      const q = await registered(f, e), x = await tripped();
+      const rs = [L(await x.handle(xb)), L(await x.handle(approveReq(f, q))), L(await x.handle(approveReq(f, q, { kind: "owner", owner: other }))),
+        L(await x.register(reg(f))), L(await x.register(reg(f, other)))];
+      c.check("Q1 (F-1 residual) the tripped answer is one arm for bound and unbound requests and for authorized and unauthorized granters: it implies neither binding nor authorization",
+        new Set(rs.map(shape)).size === 1, rs.map(shape));
+      const reads = counting([opKeyOf(f, xb.requestId)]);
+      const ro = L(await x.handle({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "operation-read", granter: ownerOf(f), input: { operationId: opIdOf(f, xb) } }));
+      reads.disarm();
+      c.check("Q1 (latch) an operation read on a tripped engine stays a zero-write denial and reads nothing", ro.state === "denied" && ro.reason === "unavailable" && reads.hits === 0, ro);
+    });
+    const q2: Record<string, Loose> = {};
+    for (const [label, prep] of bound) await cell(f, `Q2 ${label}`, async () => {
+      const s = await prep(), y = await engine(f, dir);
+      const nth = label === "register" ? 1 : 2;                                                // decide and revoke discovery read the binding first
+      const arm = failRead(opKeyOf(f, s.requestId), nth), b0 = await lastSeqs(f), r = q2[label] = L(await s.go(y));
+      c.check(`Q2 (F-1 family, sim read failure) a bound ${label} whose binding read fails inside its invocation holds under its operation, never a zero-write denial`,
+        arm.hits === nth && r.state === "held" && r.operationId === opIdOf(f, s) && (await writesSince(f, b0)) === 0, r);
+      c.check(`Q2 after the failed read, a fresh engine completes the bound ${label}`, await s.done());
+    });
+    await cell(f, "Q2 uniform", async () => {
+      const rq = reg(f), arm = failRead(opKeyOf(f, rq.requestId), 1), r = L(await e.register(rq));
+      c.check("Q2 (F-1 family, sim read failure) a never-bound register whose binding read fails gets the same arm as a bound one: the failure discloses no binding",
+        arm.hits === 1 && q2.register !== undefined && shape(r) === shape(q2.register), { r: shape(r), bound: q2.register && shape(q2.register) });
+    });
+    await cell(f, "Q3", async () => {
+      const tomb = (pid: string) => f.value(f.auth, `svcprop.${pid}`);
+      const p = await registered(f, e), x0 = approveReq(f, p);
+      const late = paused(f, W.assign(f, p.instanceId));
+      await e.handle(x0);                                                                     // x0 holds unknown at A2; the fixture keeps its original
+      f.faults.clear();
+      await pastDeadline(f, x0.requestId);
+      await e.handle(x0);                                                                     // x0 settles refused{expired}, proposal-first
+      const p2 = await registered(f, e, p.instanceId), y = approveReq(f, p2), xr = approveReq(f, p2), xOp = opIdOf(f, xr), yOp = opIdOf(f, y);
+      let atClose!: () => void, a1Landed!: () => void, xRun: Promise<Loose> | undefined, yA1!: { hits: number }, xClose!: { hits: number };
+      const xAtClose = new Promise<void>((r) => { atClose = r; }), yLanded = new Promise<void>((r) => { a1Landed = r; });
+      const run = await writing(f, async () => {
+        // Y has read the selector free when its A1 is issued. Before that A1 goes out, the late A2 lands and X, admitted at the same
+        // proposal revision, runs into R-bound; X's pinned target close is issued only after Y's A1 has landed at that revision.
+        yA1 = f.faults.onWrite(W.approving(p2.proposalId), {
+          before: async () => { await late.issue!(); xRun = e.handle(xr).then(L); await Promise.race([xAtClose, xRun]); },
+          after: async () => { a1Landed(); } });
+        xClose = f.faults.onWrite((w) => W.closing(p2.proposalId)(w) && w.value?.operationId === xOp, { before: async () => { atClose(); await Promise.race([yLanded, pause(10_000)]); } });
+        const ry = L(await e.handle(y));
+        return { ry, rx: await xRun };
+      });
+      const { ry, rx } = run.r, w = run.writes, t = await tomb(p2.proposalId);
+      const closedAt = w.findIndex((v) => W.closing(p2.proposalId)(v) && v.value?.operationId === yOp);
+      const releasedAt = w.findIndex((v) => v.key === "svccap.space" && !JSON.stringify(v.value?.pending ?? []).includes(p2.proposalId));
+      c.check("Q3 (D-B race) the R-bound target close pinned to the admitted revision is issued after a concurrent A1 landed at that revision, and loses",
+        yA1.hits === 1 && xClose.hits === 1 && t?.kind === "service-proposal-terminal" && t?.operationId === yOp, { t, hits: [yA1.hits, xClose.hits] });
+      c.check("Q3 (D-B race) the losing approver records refused{conflict} and issues no authority-increasing write", rx?.state === "refused" && rx.reason === "conflict"
+        && !w.some((v) => authorityWrite(f, p.instanceId)(v) && JSON.stringify(v.value).includes(xOp)), { rx, keys: w.map((v) => v.key) });
+      c.check("Q3 (D-B race) the A1 winner then meets R-bound itself: it closes the proposal refused{selector-bound} before the release and ends refused{conflict}",
+        ry.state === "refused" && ry.reason === "conflict" && t?.reason === "selector-bound" && closedAt >= 0 && releasedAt > closedAt && !(await capHas(f, p2.proposalId)),
+        { ry, t, closedAt, releasedAt });
+      const outcome = (o: Record<string, unknown> | null) => (o?.kind === "service-host-operation-terminal" ? o.outcome : o?.progress) as { state: string; reason?: string } | undefined;
+      const ox = outcome(await opRecord(f, xr.requestId)), oy = outcome(await opRecord(f, y.requestId));
+      c.check("Q3 (D-B race) no approving proposal is left behind and both bindings record refused{conflict}", ox?.state === "refused" && ox.reason === "conflict"
+        && oy?.state === "refused" && oy.reason === "conflict", { ox, oy });
+    });
+    await cell(f, "Q4", async () => {
+      const d4 = ledger(f.owner), e4 = await engine(f, d4), rq = reg(f), fresh = reg(f);
+      await stopAfter(f, d4, W.binding(f, rq.requestId), (x) => x.register(rq));
+      revokeActor(d4, f.owner, "cli");
+      const b0 = await lastSeqs(f), r = L(await e4.register(rq));
+      c.check("Q4 (F-2 family, r3a §E) a bound register replayed after its owner lost the interactive row holds permission-denied under its operation, as decide and revoke do",
+        r.state === "held" && r.reason === "permission-denied" && r.operationId === opIdOf(f, rq) && (await writesSince(f, b0)) === 0, r);
+      const rf = L(await e4.register(fresh));
+      // The unbound request gets the bound one's answer, so the refusal is no existence oracle.
+      c.check("Q4 (§E) an unbound register from that owner gets the same held{permission-denied, authorize} answer under its own coordinate, and stays unbound",
+        rf.state === "held" && shape(rf) === shape(r) && rf.operationId === opIdOf(f, fresh) && (await opRecord(f, fresh.requestId)) === null, rf);
+      grantActor(d4, { owner: f.owner, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
+      c.check("Q4 once the row is back, the bound register completes", L(await e4.register(rq)).state === "registered");
+    });
+  } finally { await f.close(); }
+}
+
+// ---- U: a granter without a current interactive row is refused before any request-key read (r3a §E)
+{
+  const f = await openFixture("s2a-next-authorize");
+  try {
+    const dir = ledger(f.owner), e = await engine(f, dir);
+    const p1 = await registered(f, e), p2 = await registered(f, e), p3 = await registered(f, e);
+    const ax = approveReq(f, p1), d1 = L(await e.handle(ax)).approval!.assignment.assignmentDigest;
+    const d3 = L(await e.handle(approveReq(f, p3))).approval!.assignment.assignmentDigest;
+    const rv = revoke(f.endpoint, p1.instanceId, d1, "owner-request", ownerOf(f)), rq = reg(f);
+    await e.handle(rv); await e.register(rq);
+    revokeActor(dir, f.owner, "cli");
+    // Each kind: the bound request, a fresh one, and the bound requestId with another body.
+    const kinds: Array<[string, Array<{ requestId: string; input: object }>, (r: { input: object }) => string[]]> = [
+      ["register", [rq, reg(f), { ...rq, input: { ...rq.input, instanceId: rid() } }], (r) => [asg(f, (r.input as { instanceId: string }).instanceId), "svccap.space"]],
+      ["decide", [ax, approveReq(f, p2), { ...ax, input: { ...ax.input, expectedProposalRevision: ax.input.expectedProposalRevision + 1 } }],
+        (r) => [`svcprop.${(r.input as { proposalId: string }).proposalId}`]],
+      ["revoke", [rv, revoke(f.endpoint, p3.instanceId, d3, "owner-request", ownerOf(f)), { ...rv, input: { ...rv.input, expectedAssignmentDigest: D("another") } }],
+        (r) => [asg(f, (r.input as { instanceId: string }).instanceId), "svccap.space"]],
+    ];
+    for (const [kind, rqs, keysOf] of kinds) await cell(f, `U ${kind}`, async () => {
+      const reads = countReads(f, rqs.flatMap((r) => [opKeyOf(f, r.requestId), ...keysOf(r)])), b0 = await lastSeqs(f), raws: unknown[] = [];
+      for (const r of rqs) raws.push(kind === "register" ? await e.register(r) : await e.handle(r));
+      reads.disarm();
+      const rs = raws.map(L), names = ["bound", "unbound", "alternate-body"];
+      if (kind !== "register") raws.forEach((r, k) => parsesClosed(`U ${kind} ${names[k]}`, r));
+      c.check(`U (§E) one answer, field for field, for a bound, an unbound and an alternate-body ${kind} whose granter has no interactive row`,
+        new Set(rs.map(shape)).size === 1 && new Set(raws.map((r) => Object.keys(r as object).sort().join())).size === 1, rs.map(shape));
+      c.check(`U (§E) that ${kind} answer is held{permission-denied, authorize} under each request's own operation coordinate`, rs.every((r, k) => r.state === "held"
+        && r.reason === "permission-denied" && r.phase === "authorize" && r.operationId === opIdOf(f, rqs[k])), rs);
+      c.check(`U (§E) the ${kind} refusals read none of the requests' keys and write nothing`, reads.hits === 0 && (await writesSince(f, b0)) === 0, { reads: reads.hits });
+    });
+    await cell(f, "U structural", async () => {
+      const b0 = await lastSeqs(f);
+      const r1 = L(await e.register({ ...reg(f), granter: { kind: "owner", owner: other } }));
+      const r2 = L(await e.handle(revoke(f.endpoint, p3.instanceId, d3, "operator-request", ownerOf(f))));
+      c.check("U (structural) a request that can never bind (granter not the input owner; an owner granter on an operator cause) stays a zero-write permission-denied denial",
+        r1.state === "denied" && r1.reason === "permission-denied" && r2.state === "denied" && r2.reason === "permission-denied" && (await writesSince(f, b0)) === 0, { r1, r2 });
+    });
+    await cell(f, "U restored", async () => {
+      grantActor(dir, { owner: f.owner, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
+      const ra = L(await e.handle(ax)), rg = L(await e.register(rq));
+      c.check("U once the row is back, the bound requests replay their stored results", ra.state === "approved" && ra.outcome === "recorded"
+        && rg.state === "registered" && rg.outcome === "recorded", { ra, rg });
     });
   } finally { await f.close(); }
 }
