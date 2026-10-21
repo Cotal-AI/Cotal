@@ -182,6 +182,40 @@ try {
     /cannot classify arguments.*strict down parser/,
     "generic guard fails closed when down arguments cannot be classified",
   );
+  // The guard parses every flag the CLI's down declares, and the kernel's global flags, so a suite
+  // can pass --yes, --json or --plain and still get the same identity check.
+  permits(
+    "down with --yes and --json keeps the sandbox identity guard",
+    () => assertSmokeSandboxDown(anchor, ["down", "--yes", "--json"], { cwd: root, env }),
+  );
+  permits(
+    "a named down with -y, --plain, --instance and -s is classified",
+    () => assertSmokeSandboxDown(anchor, ["down", "stack-manager", "-y", "--plain", "--instance", "full-id", "-s", space], { cwd: root, env }),
+  );
+  permits(
+    "global flags are taken from a down as the kernel takes them",
+    () => assertSmokeSandboxDown(anchor, ["down", "--no-input", "--yes", "--no-color"], { cwd: root, env }),
+  );
+  refuses(
+    "down --yes --json still refuses a foreign sandbox root",
+    () => assertSmokeSandboxDown(anchor, ["down", "--yes", "--json"], { cwd: foreign, env }),
+    /refused cotal down: observed root/,
+  );
+  refuses(
+    "a global flag before the down word still reaches the sandbox guard",
+    () => assertSmokeSandboxDown(anchor, ["--no-input", "down", "--yes"], { cwd: foreign, env }),
+    /refused cotal down: observed root/,
+  );
+  assert.throws(
+    () => assertSmokeSandboxDown(anchor, ["down", "--yes", "--unrecognized"], { cwd: root, env }),
+    /cannot classify arguments.*strict down parser/,
+    "the guard still fails closed on a flag down does not declare",
+  );
+  assert.throws(
+    () => assertSmokeSandboxDown(anchor, ["down", "-s", space, "web"], { cwd: root, env }),
+    /requires assertSmokeSandboxTargetDown/,
+    "-s is the space flag, so down web still needs the target guard",
+  );
 
   const rootPackage = JSON.parse(readFileSync(join(repo, "package.json"), "utf8")) as {
     scripts?: { check?: string };
