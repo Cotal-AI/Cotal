@@ -30,8 +30,8 @@
     {
       "name": "describe drops the --on flag: unknown option, not a malformed-id refusal (#554)",
       "file": "implementations/cli/src/commands/describe.ts",
-      "find": "export const describeFlags = [...targetFlags, onFlag] as const satisfies readonly FlagSpec[];",
-      "replace": "export const describeFlags = [...targetFlags] as const satisfies readonly FlagSpec[];",
+      "find": "export const describeFlags = [...endpointTargetFlags, onFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];",
+      "replace": "export const describeFlags = [...endpointTargetFlags, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];",
       "expectRed": "a malformed instance id on describe is REFUSED, not silently widened (#554)",
       "cell": "a malformed instance id on describe is REFUSED, not silently widened (#554)",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -39,8 +39,8 @@
     {
       "name": "describe's pin reaches the mint but not the describe subject: the unpinned describe is refused by the broker (#554)",
       "file": "implementations/cli/src/commands/describe.ts",
-      "find": "    const instanceId = on ?? auth.managerInstanceId;\n    const service = await resolveService(nc, space, endpoint, auth.epCaller!, {\n      deadlineMs: 10_000,\n      ...(instanceId !== undefined ? { instanceId } : {}),\n    });",
-      "replace": "    const service = await resolveService(nc, space, endpoint, auth.epCaller!, {\n      deadlineMs: 10_000,\n      ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),\n    });",
+      "find": "    const instanceId = on ?? auth.managerInstanceId;\n    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: 10_000, ...(instanceId === undefined ? {} : { instanceId }) });",
+      "replace": "    const service = await resolveService(nc, space, endpoint, auth.epCaller!, { deadlineMs: 10_000, ...(auth.managerInstanceId === undefined ? {} : { instanceId: auth.managerInstanceId }) });",
       "expectRed": "describe HONOURS --on: it deadlines on the pinned rail instead of asking the class queue",
       "cell": "describe HONOURS --on: it deadlines on the pinned rail instead of asking the class queue",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"

@@ -4,7 +4,7 @@
  *  broker, whose kernel-exit scope is
  *  recomputed only after every earlier member is confirmed gone. Shared registry and credential cleanup follow
  *  only a complete confirmed stop. Nothing outside the recorded members is touched. */
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import type { ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, canonicalRoot, deliveryCredsKey, isCommandFailure, oneLine, presentationOf,
@@ -18,7 +18,6 @@ import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/s
 import { instanceProjection, observeServiceProcess, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, stopProcessService } from "../lib/service-process.js";
 import { newStackOperation, processGone, readStackJournal, refuseControllerCut, stackMaintenanceFence, stackScopeRefusals, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole } from "../lib/stack-journal.js";
-import { untilInputEnds } from "../lib/prompt-input.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -117,7 +116,7 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
     if (manager?.native) console.log(renderReport(nativeImpactView(manager.native), presentation, terminalWidth(process.stdout)));
   }
   if (!values.yes) {
-    const answer = await untilInputEnds((signal) => prompts.confirm({ message: `Stop every displayed member of ${oneLine(journal0.space)}'s controller stack with only the displayed native impact?`, initialValue: false, signal }));
+    const answer = await prompts.confirm({ message: `Stop every displayed member of ${oneLine(journal0.space)}'s controller stack with only the displayed native impact?`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) {
       writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, cancelled: true, members: journal0.members }, noOp: true, warnings: [{ code: "USER_CANCELLED", target, message: "no member was stopped" }] }, () => planView(journal0, members, withAgents));
       return;

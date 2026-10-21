@@ -50,8 +50,8 @@
     "",
     "THE ACKNOWLEDGED RECEIPT is the issue #1333 honesty boundary. The dropped-write cell replaces",
     "the live handle write with a resolved no-op carrying no accepted-byte count. The real CLI must",
-    "exit non-zero, name the seat and the acknowledgement failure, print no `sent` receipt, and the",
-    "child must receive nothing. Its mutation restores the old intended-buffer arithmetic, which",
+    "exit 3 as an unconfirmed outcome, print no written receipt, and the child must receive nothing.",
+    "Its mutation restores the old intended-buffer arithmetic, which",
     "turns that same cell back into the exact false success reported by triage.",
     "",
     "NOT GRADED HERE, and named rather than implied: the refusal for a runtime with no `write` on",
@@ -81,11 +81,11 @@
     {
       "name": "the manager restores an intended-buffer receipt and ignores the runtime's accepted-byte count",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      let accepted: number;\n      try {\n        accepted = await write(part.data);\n      } catch (error) {\n        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n      }\n",
-      "replace": "      let accepted = Buffer.byteLength(part.data, \"utf8\");\n      try {\n        await write(part.data);\n      } catch (error) {\n        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${(error as Error).message}`);\n      }\n",
-      "expectRed": "a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
-      "cell": "a dropped PTY write exits NON-ZERO, names the seat and the acknowledgement failure, and prints NO `sent` receipt",
-      "note": "This restores the pre-fix receipt source while preserving the surrounding rejection path: the manager awaits the runtime call but ignores its accepted-byte result and counts what it INTENDED to write. The dropped-write control then exits 0 and prints `sent 9 bytes` even though its child sink remains empty, so this exact regression cannot pass as a hedge or wording change. RE-ANCHORED for the bracketed-paste delivery: the loop now writes `part.data` and each write is length-checked, so the pre-paste anchor no longer matches."
+      "find": "      let accepted: number;\n      try {\n        accepted = await write(part.data);\n      } catch (error) {\n        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${rejectionText(error)}`);\n      }\n",
+      "replace": "      let accepted = Buffer.byteLength(part.data, \"utf8\");\n      try {\n        await write(part.data);\n      } catch (error) {\n        throw new EpEnvelopeError(\"unavailable\", `input for seat \"${a.name}\" failed: ${rejectionText(error)}`);\n      }\n",
+      "expectRed": "a dropped PTY write exits 3 as an unconfirmed outcome, is not sent again, and prints NO written receipt",
+      "cell": "a dropped PTY write exits 3 as an unconfirmed outcome, is not sent again, and prints NO written receipt",
+      "note": "This restores the pre-fix receipt source while preserving the surrounding rejection path: the manager awaits the runtime call but ignores its accepted-byte result and counts what it INTENDED to write. The dropped-write control then exits 0 and prints a `Terminal input written` receipt reporting 9 bytes even though its child sink remains empty, so this exact regression cannot pass as a hedge or wording change. RE-ANCHORED for the bracketed-paste delivery: the loop now writes `part.data` and each write is length-checked, so the pre-paste anchor no longer matches."
     },
     {
       "name": "the return is fused back onto the text, so a seat submits one call behind (issue #1649)",

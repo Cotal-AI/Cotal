@@ -23,15 +23,15 @@
     {
       "name": "a stub reads as wired in whatever the rc file says",
       "file": "implementations/cli/src/commands/completion.ts",
-      "find": "wiredIn: rc && holdsSourceLine(rc, paths.stub) ? paths.rc : null };",
-      "replace": "wiredIn: rc !== null && content !== undefined ? paths.rc : null };",
+      "find": "wiredIn: rc && holdsSourceLine(rc, paths.stub, shell) ? paths.rc : null, ownership, legacyWiring };",
+      "replace": "wiredIn: rc !== null && content !== undefined ? paths.rc : null, ownership, legacyWiring };",
       "expectRed": "a stub whose rc lost the install line is wired in nowhere",
       "cell": "a stub whose rc lost the install line is wired in nowhere",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
       "name": "zsh's rc ignores $ZDOTDIR",
-      "file": "implementations/cli/src/commands/completion.ts",
+      "file": "implementations/cli/src/lib/completion-install.ts",
       "find": "rc: resolve(process.env.ZDOTDIR || homedir(), \".zshrc\") };",
       "replace": "rc: resolve(homedir(), \".zshrc\") };",
       "expectRed": "zsh's rc is read from $ZDOTDIR",
@@ -41,19 +41,10 @@
     {
       "name": "completion <shell> still prints the stub",
       "file": "implementations/cli/src/commands/completion.ts",
-      "find": "  throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `\\`cotal completion ${sub}\\` is now ",
-      "replace": "  if (SCRIPTS[sub]) return void process.stdout.write(SCRIPTS[sub]);\n  throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `\\`cotal completion ${sub}\\` is now ",
+      "find": "  if (Object.hasOwn(SCRIPTS, sub)) throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `cotal completion ${sub} is now cotal completion script ${sub}`",
+      "replace": "  if (Object.hasOwn(SCRIPTS, sub)) { process.stdout.write(SCRIPTS[sub]!); process.exit(0); }\n  if (false) throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `cotal completion ${sub} is now cotal completion script ${sub}`",
       "expectRed": "completion bash exits 1 and writes nothing on stdout",
       "cell": "completion bash exits 1 and writes nothing on stdout",
-      "afterRestore": "pnpm --filter cotal-ai... build"
-    },
-    {
-      "name": "a subcommand takes --json",
-      "file": "implementations/cli/src/commands/completion.ts",
-      "find": "  if (values.json || values.plain)\n",
-      "replace": "  if (sub === \"\\u0000never\" && (values.json || values.plain))\n",
-      "expectRed": "completion install takes no --json and installs nothing",
-      "cell": "completion install takes no --json and installs nothing",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
@@ -69,8 +60,8 @@
       "afterRestore": "pnpm --filter cotal-ai... build",
       "name": "a commented-out install line counts",
       "file": "implementations/cli/src/commands/completion.ts",
-      "find": "rc.split(\"\\n\").some((line) => line.replace(/^[ \\t]+|[ \\t]+$/g, \"\") === sourceLine(stub))",
-      "replace": "rc.includes(sourceLine(stub))",
+      "find": "rc.split(\"\\n\").some((line) => line.replace(/^[ \\t]+|[ \\t]+$/g, \"\") === sourceLine(stub, shell) || shell !== \"powershell\" && line.replace(/^[ \\t]+|[ \\t]+$/g, \"\") === `source \"${stub}\"`)",
+      "replace": "rc.includes(sourceLine(stub, shell)) || shell !== \"powershell\" && rc.includes(`source \"${stub}\"`)",
       "expectRed": "a commented-out install line wires nothing in",
       "cell": "a commented-out install line wires nothing in"
     },
@@ -95,7 +86,7 @@
     {
       "afterRestore": "pnpm --filter cotal-ai... build",
       "name": "a relative XDG_CONFIG_HOME is used",
-      "file": "implementations/cli/src/commands/completion.ts",
+      "file": "implementations/cli/src/lib/completion-install.ts",
       "find": "const config = xdg && isAbsolute(xdg) ? xdg : join(homedir(), \".config\");",
       "replace": "const config = xdg || join(homedir(), \".config\");",
       "expectRed": "install ignores a relative XDG_CONFIG_HOME",
@@ -104,46 +95,28 @@
     {
       "afterRestore": "pnpm --filter cotal-ai... build",
       "name": "install writes the stub before it checks the rc's directory",
-      "file": "implementations/cli/src/commands/completion.ts",
-      "find": "    if (current === undefined && !existsSync(dirname(rc)))\n",
-      "replace": "    if (current === \"\\u0000never\")\n",
+      "file": "implementations/cli/src/lib/completion-install.ts",
+      "find": "    try { lstatSync(dirname(paths.rc)); }\n    catch { throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\"",
+      "replace": "    try { lstatSync(dirname(paths.rc)); }\n    catch { if (false) throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\"",
       "expectRed": "install refuses a ZDOTDIR that does not exist, exit 2, with nothing written",
       "cell": "install refuses a ZDOTDIR that does not exist, exit 2, with nothing written"
     },
     {
       "name": "a CRLF install line counts as wired in",
       "file": "implementations/cli/src/commands/completion.ts",
-      "find": "line.replace(/^[ \\t]+|[ \\t]+$/g, \"\") === sourceLine(stub)",
-      "replace": "line.trim() === sourceLine(stub)",
+      "find": "line.replace(/^[ \\t]+|[ \\t]+$/g, \"\") === `source \"${stub}\"`",
+      "replace": "line.trim() === `source \"${stub}\"`",
       "expectRed": "an install line that ends in a carriage return wires nothing in",
       "cell": "an install line that ends in a carriage return wires nothing in",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
       "name": "the status reports a relative ZDOTDIR as a relative path",
-      "file": "implementations/cli/src/commands/completion.ts",
+      "file": "implementations/cli/src/lib/completion-install.ts",
       "find": "rc: resolve(process.env.ZDOTDIR || homedir(), \".zshrc\") };",
       "replace": "rc: join(process.env.ZDOTDIR || homedir(), \".zshrc\") };",
       "expectRed": "the status reads a relative ZDOTDIR from its working directory and names the absolute file",
       "cell": "the status reads a relative ZDOTDIR from its working directory and names the absolute file",
-      "afterRestore": "pnpm --filter cotal-ai... build"
-    },
-    {
-      "name": "a shell with no wiring has a blank cell",
-      "file": "implementations/cli/src/commands/completion.ts",
-      "find": "              wired: s.wiredIn ?? { text: s.state === \"current\" || s.state === \"differs\" ? \"no install line\" : \"not wired in\", tone: \"hint\" },\n",
-      "replace": "              wired: s.wiredIn ?? (s.state === \"current\" || s.state === \"differs\" ? { text: \"no install line\", tone: \"hint\" } : \"\"),\n",
-      "expectRed": "a shell with no wiring says not wired in, and PowerShell's file says none",
-      "cell": "a shell with no wiring says not wired in, and PowerShell's file says none",
-      "afterRestore": "pnpm --filter cotal-ai... build"
-    },
-    {
-      "name": "a shell with no file has a blank cell",
-      "file": "implementations/cli/src/commands/completion.ts",
-      "find": "              stub: s.stub ?? { text: \"none\", tone: \"hint\" },\n",
-      "replace": "              stub: s.stub ?? \"\",\n",
-      "expectRed": "a shell with no wiring says not wired in, and PowerShell's file says none",
-      "cell": "a shell with no wiring says not wired in, and PowerShell's file says none",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]

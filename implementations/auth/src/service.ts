@@ -62,7 +62,7 @@ import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { CotalEndpoint, deprovisionAgent, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, epgateKey, isCasLoss, sameManagedGrantCustody } from "@cotal-ai/core";
+import { CotalEndpoint, deprovisionAgent, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, epgateKey, isCasLoss, sameManagedGrantCustody } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
@@ -257,6 +257,9 @@ export interface AuthAuthorityPlane {
     principal: { owner: string; actor: string; lifecycleUid?: string },
     claim: { endpoint: string; sessionId: string; epoch: number; grantSig?: string },
   ) => Promise<UserTokenSession>;
+  /** Retire one interactive lifecycle through the retirement barrier. A refusal raised before the
+   *  barrier starts carries `outcome: "not-executed"` (SPEC 13.3); a failure inside the barrier
+   *  carries none, because the retirement may have begun. */
   retireInteractiveLifecycle: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<{
     retired: boolean;
     lifecycleUid: string;
@@ -1018,11 +1021,17 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       }, principal, claim);
     },
     retireInteractiveLifecycle: async (args) => {
-      refuseIfFenced();
-      const owner = assertDerivedOwnerToken(args.owner);
-      const actor = assertValidOwnerToken(args.actor);
-      const lifecycleUid = assertLifecycleToken(args.lifecycleUid);
-      const head = await readLifecycleHeadForOperation(barrierReg, owner, actor);
+      // Everything before the barrier only reads, so a refusal there retired nothing.
+      let owner: string, actor: string, lifecycleUid: string;
+      try {
+        refuseIfFenced();
+        owner = assertDerivedOwnerToken(args.owner);
+        actor = assertValidOwnerToken(args.actor);
+        lifecycleUid = assertLifecycleToken(args.lifecycleUid);
+      } catch (e) {
+        throw notExecuted(e, "bad-request");
+      }
+      const head = await readLifecycleHeadForOperation(barrierReg, owner, actor).catch((e: unknown) => { throw notExecuted(e, "unavailable"); });
       if (head === undefined)
         return { retired: false, lifecycleUid, notStarted: true };
       if (head.mapping.lifecycleUid !== lifecycleUid) {
@@ -1031,7 +1040,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         // An active/retiring foreign uid is different: the ledger and authority disagree, so fail.
         if (head.mapping.state === "retired")
           return { retired: false, lifecycleUid, notStarted: true };
-        throw new EpEnvelopeError("conflict", `interactive lifecycle retirement for "${owner}/${actor}" names ${lifecycleUid}, but the authority head is ${head.mapping.state} at ${head.mapping.lifecycleUid}`);
+        throw new EpEnvelopeError("conflict", `interactive lifecycle retirement for "${owner}/${actor}" names ${lifecycleUid}, but the authority head is ${head.mapping.state} at ${head.mapping.lifecycleUid}`, undefined, "not-executed");
       }
       if (head.mapping.state === "retired")
         return { retired: true, lifecycleUid, alreadyRetired: true };
@@ -2840,6 +2849,14 @@ class RequestBodyError extends Error {
   }
 }
 
+/** `e`, raised before any write, as a refusal that states so (SPEC 13.3). An envelope error keeps
+ *  its code; any other error takes `code`. */
+function notExecuted(e: unknown, code: EpErrorCode): EpEnvelopeError {
+  return e instanceof EpEnvelopeError
+    ? new EpEnvelopeError(e.code, e.message, e.details, "not-executed")
+    : new EpEnvelopeError(code, e instanceof Error ? e.message : String(e), undefined, "not-executed");
+}
+
 function sendRequestError(res: ServerResponse, e: unknown): void {
   if (e instanceof RequestBodyError) return send(res, e.status, { error: e.message });
   send(res, 400, { error: e instanceof Error ? e.message : String(e) });
@@ -2887,35 +2904,49 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx
 
 const INTERACTIVE_RETIRE_KEYS = new Set(["owner", "actor", "lifecycleUid"]);
 
+/** The interactive retirement door. Every refusal before the barrier starts retired nothing and
+ *  answers `outcome: "not-executed"` (SPEC 13.3), with the plane's native `code` when the plane
+ *  raised it. A failure inside the barrier answers 400 with no outcome, which reads as unknown. */
 async function handleInteractiveLifecycleRetirement(
   req: IncomingMessage,
   res: ServerResponse,
   ctx: HandlerCtx,
 ): Promise<void> {
-  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
-  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
+  const before = { outcome: "not-executed" } as const;
+  if (req.method !== "POST") return send(res, 405, { error: "POST only", ...before });
+  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here", ...before });
   if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
-    return send(res, 415, { error: "content-type must be application/json" });
+    return send(res, 415, { error: "content-type must be application/json", ...before });
   if (req.headers.authorization !== `Bearer ${ctx.cap}`)
-    return send(res, 401, { error: "missing/invalid exchange capability - interactive lifecycle retirement is a loopback operator action" });
+    return send(res, 401, { error: "missing/invalid exchange capability - interactive lifecycle retirement is a loopback operator action", ...before });
   const body = await readJsonBody(req);
   if (body === null || typeof body !== "object" || Array.isArray(body))
-    return send(res, 400, { error: "interactive lifecycle retirement needs { owner, actor, lifecycleUid }" });
+    return send(res, 400, { error: "interactive lifecycle retirement needs { owner, actor, lifecycleUid }", ...before });
   for (const key of Object.keys(body))
     if (!INTERACTIVE_RETIRE_KEYS.has(key))
-      return send(res, 400, { error: `interactive lifecycle retirement carries the unknown field "${key}"` });
+      return send(res, 400, { error: `interactive lifecycle retirement carries the unknown field "${key}"`, ...before });
   const raw = body as { owner?: unknown; actor?: unknown; lifecycleUid?: unknown };
   if (typeof raw.owner !== "string" || typeof raw.actor !== "string" || typeof raw.lifecycleUid !== "string")
-    return send(res, 400, { error: "interactive lifecycle retirement needs string { owner, actor, lifecycleUid }" });
-  const owner = assertDerivedOwnerToken(raw.owner);
-  const actor = assertValidOwnerToken(raw.actor);
-  const lifecycleUid = assertLifecycleToken(raw.lifecycleUid);
+    return send(res, 400, { error: "interactive lifecycle retirement needs string { owner, actor, lifecycleUid }", ...before });
+  let owner: string, actor: string, lifecycleUid: string;
+  try {
+    owner = assertDerivedOwnerToken(raw.owner);
+    actor = assertValidOwnerToken(raw.actor);
+    lifecycleUid = assertLifecycleToken(raw.lifecycleUid);
+  } catch (e) {
+    return send(res, 400, { error: e instanceof Error ? e.message : String(e), ...before });
+  }
   const row = findInteractiveActor(ctx.dir, owner, actor);
-  if (!row) return send(res, 404, { error: `interactive actor "${owner}/${actor}" is not granted` });
+  if (!row) return send(res, 404, { error: `interactive actor "${owner}/${actor}" is not granted`, ...before });
   if (row.lifecycleUid !== lifecycleUid)
-    return send(res, 409, { error: `interactive actor "${owner}/${actor}" is current at lifecycle ${row.lifecycleUid ?? "<missing>"}, not ${lifecycleUid}` });
-  const result = await ctx.retireInteractiveLifecycle({ owner, actor, lifecycleUid });
-  return send(res, 200, result);
+    return send(res, 409, { error: `interactive actor "${owner}/${actor}" is current at lifecycle ${row.lifecycleUid ?? "<missing>"}, not ${lifecycleUid}`, ...before });
+  try {
+    return send(res, 200, await ctx.retireInteractiveLifecycle({ owner, actor, lifecycleUid }));
+  } catch (e) {
+    if (e instanceof EpEnvelopeError && e.outcome === "not-executed")
+      return send(res, REFUSAL_STATUS[e.code] ?? 500, { error: e.message, code: e.code, outcome: e.outcome });
+    throw e;
+  }
 }
 
 /** The host's terminal step for a managed lifecycle whose remote manager is gone: the same request
@@ -3226,8 +3257,8 @@ const CHAT_SESSION_FIELDS: Readonly<Record<"open" | "bearer" | "retire", { requi
   retire: { required: ["idpToken", "actor", "lifecycleUid", "holderProof"], optional: [] },
 };
 
-/** HTTP status for a chat-session refusal's native code; the body carries the code itself. */
-const CHAT_SESSION_STATUS: Readonly<Record<string, number>> = {
+/** HTTP status for a door refusal's native code; the body carries the code itself. */
+const REFUSAL_STATUS: Readonly<Record<string, number>> = {
   "bad-request": 400, unauthenticated: 401, "permission-denied": 403, "not-found": 404, conflict: 409,
   "failed-precondition": 412, "resource-exhausted": 429, unimplemented: 501, unavailable: 503,
 };
@@ -3293,7 +3324,7 @@ async function handleChatSession(req: IncomingMessage, res: ServerResponse, ctx:
     }
     return send(res, 200, await ctx.retireChatSession({ owner, actor: b.actor as string, lifecycleUid: b.lifecycleUid as string, holderProof: b.holderProof as string }));
   } catch (e) {
-    if (e instanceof EpEnvelopeError) return refuse(CHAT_SESSION_STATUS[e.code] ?? 500, e.message, e.code, e.outcome ?? "unknown");
+    if (e instanceof EpEnvelopeError) return refuse(REFUSAL_STATUS[e.code] ?? 500, e.message, e.code, e.outcome ?? "unknown");
     // Anything else came from a store, broker or file read partway through: its effect is unknown.
     return refuse(503, e instanceof Error ? e.message : String(e), "unavailable", "unknown");
   }

@@ -112,8 +112,8 @@
     {
       "name": "a target refusal in the kernel folds its remedy into the message",
       "file": "implementations/cli/src/command.ts",
-      "find": "        failureExit(cmd, new CommandFailure(\"refused\", targetErrorCode(e.code), message, remedy ? { remedy } : {}), json);",
-      "replace": "        failureExit(cmd, new CommandFailure(\"refused\", targetErrorCode(e.code), message), json);",
+      "find": "        failureExit(cmd, new CommandFailure(\"refused\", targetErrorCode(e.code), message, remedy ? { remedy } : {}), json, parsed.values.plain === true);",
+      "replace": "        failureExit(cmd, new CommandFailure(\"refused\", targetErrorCode(e.code), message), json, parsed.values.plain === true);",
       "expectRed": "a command that resolves its own target refuses the same way, its remedy apart from its message",
       "cell": "a command that resolves its own target refuses the same way, its remedy apart from its message",
       "afterRestore": "pnpm --filter cotal-ai... build"

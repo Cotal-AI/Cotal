@@ -1,4 +1,4 @@
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import { lstatSync } from "node:fs";
 import type { ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, commandFailureReport, isCommandFailure, oneLine, presentationOf, protectedLocalDirectory, renderReport, terminalWidth, writeResult, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan } from "@cotal-ai/workspace";
@@ -21,7 +21,6 @@ import { resolveServiceAdapter, sameServiceAdapterPin } from "../lib/service-ada
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, assertRestartAdmitted, prepareKernelServiceStop, prepareNativeServiceStop, prepareProcessService, readServiceLog, selectServiceInstance, startProcessService, stopProcessService } from "../lib/service-process.js";
-import { untilInputEnds } from "../lib/prompt-input.js";
 
 function instanceView(row: ReturnType<typeof instanceProjection>, title: string): Report {
   return { sections: [{ title, blocks: [{ kind: "fields", rows: [["Definition", row.definition], ["Space", row.space], ["Instance", row.instanceId], ["Execution host", row.executionHost], ["Recorded state", row.recordedState], ["Process observation", row.observedProcess], ["PID", row.pid === null ? "not established" : String(row.pid)], ["Readiness observation", row.readinessObservation], ["Readiness as of", row.readinessAsOf], ["Stop policy", row.stopPolicy], ["Serving endpoint", !row.nativeEndpoint ? "not checked" : row.nativeEvidence === "local-process-receipt" ? "child-reported local receipt; not an attributed endpoint response" : "adapter-checked observation; not a fresh status query"], ["Adapter", row.adapter ? `${row.adapter.name} · ${row.adapter.package ?? "composition root"}@${row.adapter.version}` : "generic process"], ...(row.nativeEndpoint ? [["Endpoint class", row.nativeEndpoint.endpoint], ["Native instance", row.nativeEndpoint.instanceId], ["Native principal", `${row.nativeEndpoint.owner}.${row.nativeEndpoint.actor}`], ["Native lifecycle", row.nativeEndpoint.lifecycleUid], ["Native epoch", String(row.nativeEndpoint.epoch)], ["Adapter observed at", row.adapterObservedAt ?? "not recorded"]] as const : []), ...(row.nativeStop ? [["Native stop", "returned for the original request"], ["Native stop request", row.nativeStop.requestId], ["Native cleanup", row.nativeStop.cleanup]] as const : []), ...(row.stopPolicy === "process" ? row.processStop ? [["Process stop evidence", "recorded signal and original process exit"], ["Recorded stop signal", row.processStop.signal], ["Recorded stop request", row.processStop.requestId], ["Exit observed at", row.processStop.observedAt]] as const : [["Process stop evidence", "not recorded"]] as const : []), ...(row.reportedListener ? [["Reported listener", row.reportedListener.nats.join(", ")], ["Listener evidence", "the pinned child's own launch-bound ports file; not JetStream, trust or endpoint readiness"]] as const : []), ...(row.kernelStop ? [["Broker stop", "exact process exit observed"], ["Broker stop request", row.kernelStop.requestId], ["Broker shutdown trace", row.kernelStop.brokerShutdownTrace], ["Broker cleanup", row.kernelStop.cleanup]] as const : []), ["Recorded supervisor", row.supervisor], ["Supervisor discovery", row.supervisorObservation], ["Recorded unit", row.supervisorRecord.unit ?? "none recorded"], ["Unit file", row.supervisorRecord.fileObservation], ["OS unit state", row.supervisorRecord.osState], ["Autostart", row.supervisorRecord.autostart], ...(row.supervisorRecord.seededGeneration ? [["Private store generation", row.supervisorRecord.seededGeneration]] as const : []), ["Request", row.requestId], ["Original launch", row.launchRequestId]] }, { kind: "lines", lines: ["A process proof is not a serving endpoint. HTTP readiness proves reachability, not listener ownership. An adapter observation names only its checked native lifecycle as of the recorded time. Only the creation-pinned direct process is controlled; this is not a process sandbox or a claim that arbitrary descendants are gone. No recorded supervisor means none assigned by this controller, not a verified absence of external OS supervision. Matching recorded unit bytes prove neither active supervision nor enabled autostart; missing or modified files do not authorize direct-process fallback."] }] }] };
@@ -113,7 +112,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
   const rows = serviceInstances(space, name);
   let id = values.instance;
   if (!id && rows.length > 1 && !values["new-instance"] && canPrompt() && presentation !== "json") {
-    const selected = await untilInputEnds((signal) => prompts.select({ message: `Choose the full owned instance of ${oneLine(name)}`, options: rows.map((row) => ({ value: row.name, label: row.name, hint: `${row.record.value.host.name} · ${observeServiceProcess(row.record.value)}` })), signal }));
+    const selected = await prompts.select({ message: `Choose the full owned instance of ${oneLine(name)}`, options: rows.map((row) => ({ value: row.name, label: row.name, hint: `${row.record.value.host.name} · ${observeServiceProcess(row.record.value)}` })) });
     if (prompts.isCancel(selected)) return cancelled();
     id = selected;
   }
@@ -150,7 +149,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
     if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "native service removal currently needs the supported Linux user manager; no unit or private store was touched", { target });
     if (!values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", "native uninstall requires --yes outside an interactive terminal", { target });
     if (!values.yes) {
-      const answer = await untilInputEnds((signal) => prompts.confirm({ message: `Disable and remove the exact owned unit for ${oneLine(name)} instance ${selected!.name}? The saved definition remains.`, initialValue: false, signal }));
+      const answer = await prompts.confirm({ message: `Disable and remove the exact owned unit for ${oneLine(name)} instance ${selected!.name}? The saved definition remains.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
     }
     const removed = uninstallSystemdService(definition, selected!);
@@ -219,7 +218,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
     }
     if ((mode === "stop" || mode === "restart") && !values.yes && (!canPrompt() || presentation === "json")) throw new CommandFailure("refused", "USAGE_INVALID", `${mode} requires --yes outside an interactive terminal`, { target });
     if ((mode === "stop" || mode === "restart") && !values.yes) {
-      const answer = await untilInputEnds((signal) => prompts.confirm({ message: `${mode === "stop" ? "Stop" : "Restart"} the exact owned unit ${supervisor.unit} for ${oneLine(name)} instance ${selected!.name}?`, initialValue: false, signal }));
+      const answer = await prompts.confirm({ message: `${mode === "stop" ? "Stop" : "Restart"} the exact owned unit ${supervisor.unit} for ${oneLine(name)} instance ${selected!.name}?`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
     }
     let stopped: Awaited<ReturnType<typeof controlSystemdService>> | undefined;
@@ -263,7 +262,7 @@ export async function serviceAction(args: ParsedArgs, space: string, commandName
   const impact = [...(nativePlan ? nativeImpactView(nativePlan).sections : []), ...(kernelPlan ? kernelImpactView(kernelPlan).sections : [])];
   if (impact.length && presentation !== "json") console.log(renderReport({ space, sections: impact }, presentation, terminalWidth(process.stdout)));
   if (confirmStop && !values.yes) {
-    const answer = await untilInputEnds((signal) => prompts.confirm({ message: `${mode === "stop" ? "Stop" : "Restart"} ${oneLine(name)} instance ${selected!.name} on ${oneLine(selected!.record.value.host.name)}? ${nativePlan ? "Apply the displayed native seat policy only if its full scope is unchanged." : kernelPlan ? "Signal only the displayed broker process, only if its scope is unchanged." : "Only its pinned direct process is controlled."}`, initialValue: false, signal }));
+    const answer = await prompts.confirm({ message: `${mode === "stop" ? "Stop" : "Restart"} ${oneLine(name)} instance ${selected!.name} on ${oneLine(selected!.record.value.host.name)}? ${nativePlan ? "Apply the displayed native seat policy only if its full scope is unchanged." : kernelPlan ? "Signal only the displayed broker process, only if its scope is unchanged." : "Only its pinned direct process is controlled."}`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) return cancelled();
   }
   if (mode === "stop") {

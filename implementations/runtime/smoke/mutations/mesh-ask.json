@@ -71,21 +71,25 @@
     },
     {
       "name": "the run driver's answer door refuses ask entries",
-      "file": "implementations/runtime/src/resolve-checkpoint.ts",
-      "find": "  if (entry.kind !== \"checkpoint\" && entry.kind !== \"ask\") throw new CheckpointNotOpen(runId, stepKey, \"not-a-checkpoint\");",
-      "replace": "  if (entry.kind !== \"checkpoint\") throw new CheckpointNotOpen(runId, stepKey, \"not-a-checkpoint\");",
+      "file": "packages/lang/src/pause-token.ts",
+      "find": "  if (!records.some((e) => e.hold !== undefined) && entry.kind !== \"checkpoint\" && entry.kind !== \"ask\")\n    throw new CheckpointNotOpen(runId, stepKey, \"not-a-checkpoint\");",
+      "replace": "  if (!records.some((e) => e.hold !== undefined) && entry.kind !== \"checkpoint\")\n    throw new CheckpointNotOpen(runId, stepKey, \"not-a-checkpoint\");",
       "expectRed": "the run completes",
       "cell": "the run completes",
-      "note": "The one door an answer has, closed to ask: nothing on the mesh can ever answer one. Measured 2026-09-02: thirteen reds — every driven block's answer is refused and its run parks to the block deadline; 15 passed, 13 failed, the suite reaching its own exit."
+      "note": "The one door an answer has, closed to ask: nothing on the mesh can ever answer one. Measured 2026-09-02: thirteen reds — every driven block's answer is refused and its run parks to the block deadline; 15 passed, 13 failed, the suite reaching its own exit.",
+      "command": "pnpm --filter @cotal-ai/lang build && pnpm smoke:runtime-mesh-ask",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
     },
     {
       "name": "the answer lands on attempt 1's token whatever attempt is open",
-      "file": "implementations/runtime/src/resolve-checkpoint.ts",
-      "find": "  if (entry.kind === \"ask\" && typeof entry.external?.askToken === \"string\") return entry.external.askToken;\n  return entry.requestId;",
-      "replace": "  return entry.requestId;",
+      "file": "packages/lang/src/pause-token.ts",
+      "find": "  const askToken = records.findLast((e) => typeof e.external?.askToken === \"string\")?.external?.askToken;\n  return typeof askToken === \"string\" ? askToken : last.requestId;",
+      "replace": "  return last.requestId;",
       "expectRed": "the conforming second answer completes the run",
       "cell": "the conforming second answer completes the run",
-      "note": "The current-attempt selection dropped: a second answer presents attempt 1's already-settled token (a one-use conflict) and the re-asked run parks forever. Measured 2026-09-02: three reds in the re-ask block; 22 passed."
+      "note": "The current-attempt selection dropped: a second answer presents attempt 1's already-settled token (a one-use conflict) and the re-asked run parks forever. Measured 2026-09-02: three reds in the re-ask block; 22 passed.",
+      "command": "pnpm --filter @cotal-ai/lang build && pnpm smoke:runtime-mesh-ask",
+      "afterRestore": "pnpm --filter @cotal-ai/lang build"
     },
     {
       "name": "the discharge ends attempt 1's pause, not the one actually armed",
@@ -180,8 +184,8 @@
     {
       "name": "a checkpoint binds nothing, so nothing records what it asks",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    if (ctx.resume?.asks === undefined)\n      await ctx.bind({ asks: req.prompt, deadlineAt: deadline, onExpiry: req.onExpiry ?? \"fail\", ...(req.to !== undefined ? { addressee: req.to } : {}) });",
-      "replace": "    if (false)\n      await ctx.bind({ asks: req.prompt, deadlineAt: deadline, onExpiry: req.onExpiry ?? \"fail\", ...(req.to !== undefined ? { addressee: req.to } : {}) });",
+      "find": "    if (bound?.asks === undefined)\n      await ctx.bind({ attempt: ctx.attempt, asks: req.prompt, deadlineAt: deadline,",
+      "replace": "    if (false)\n      await ctx.bind({ attempt: ctx.attempt, asks: req.prompt, deadlineAt: deadline,",
       "expectRed": "and the entry itself records what it asks, so the operator surface can show it",
       "cell": "and the entry itself records what it asks, so the operator surface can show it",
       "note": "The entry is what `cotal run journal` reads to print the question under the step key an answer is addressed by."
@@ -216,7 +220,7 @@
     {
       "name": "a resumed checkpoint attempt recomputes its deadline instead of reading the bound one",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    const recorded = ctx.resume?.deadlineAt;\n    const deadline = typeof recorded === \"number\"\n      ? recorded\n      : this.now() + parseDuration(req.timeout ?? this.binding.defaultCheckpointTimeout);",
+      "find": "    const recorded = bound?.deadlineAt;\n    const deadline = typeof recorded === \"number\"\n      ? recorded\n      : this.now() + parseDuration(req.timeout ?? this.binding.defaultCheckpointTimeout);",
       "replace": "    const deadline = this.now() + parseDuration(req.timeout ?? this.binding.defaultCheckpointTimeout);",
       "expectRed": "a resumed escalation relays the RECORDED deadline, so the seat's hold and the pause deny at one instant",
       "cell": "a resumed escalation relays the RECORDED deadline, so the seat's hold and the pause deny at one instant",

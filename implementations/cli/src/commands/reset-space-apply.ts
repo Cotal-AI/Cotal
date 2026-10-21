@@ -1,4 +1,4 @@
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import { lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";

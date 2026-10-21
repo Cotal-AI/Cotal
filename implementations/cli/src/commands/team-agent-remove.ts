@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import * as prompts from "@clack/prompts";
+import * as prompts from "../lib/prompts.js";
 import { DEV_OWNER, contractDigest } from "@cotal-ai/core";
 import { acquireMaintenanceLock, canonicalRoot, CommandFailure, findMesh, oneLine, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
 import { askManager, managerFailure, resolveControlTarget } from "../lib/control.js";

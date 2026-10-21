@@ -26,7 +26,7 @@
     {
       "name": "C3 accept an arbitrary caller owner",
       "file": "packages/core/src/run-driver-grants.ts",
-      "find": "  assertPrincipalOwnerToken(owner, { allowLocal: true });",
+      "find": "  assertPrincipalOwnerToken(owner, { allowLocal: true, allowPlatform: true });",
       "replace": "  void owner;",
       "expectRed": "run caller refuses arbitrary owner tokens"
     }

@@ -26,12 +26,12 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, isCommandFailure, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
+import { accountInventory, authDir, isCommandFailure, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, findPreparedSpace, hasUserAuthState, homeCotalDir, cachedPreferences, resolvePreference, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, probeWebReadiness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, type HarnessStatus, type MachineStatus } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
@@ -358,7 +358,7 @@ async function readMachine(selected: Selected, gaps: Gaps): Promise<StatusResult
   try {
     url = (selected.ok ? recordedWebUrl({ root: selected.target.root, space: selected.target.space }) : undefined) ?? null;
   } catch (e) {
-    // An unreadable `web.pid` or `web.session` is named on the row, like the folder's process rows,
+    // An unreadable `web.pid` or session record is named on the row, like the folder's process rows,
     // so the rest of status still prints.
     urlError = (e as Error).message;
     gaps.add("WEB_UNREADABLE", `the dashboard's records could not be read: ${urlError}`);
@@ -1704,11 +1704,18 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
   // control surface cannot be located, which is a probe refusal rather than a not-serving answer.
   if (record.kind !== "live") throw new Error("web component record lost its live pid after classification");
   const pid = record.pid;
+  let source: ReturnType<typeof webSessionSource>;
+  try {
+    source = webSessionSource(context, pid);
+  } catch (e) {
+    return { name: "web", verdict: "refused", facts: [...facts, `service instance records unreadable: ${(e as Error).message}`] };
+  }
+  if (source.instance !== undefined) facts.push(`service instance ${source.instance}`);
   let bound: ReturnType<typeof webBoundAddress>;
   try {
-    bound = webBoundAddress(localProcessPath(WEB_SESSION_FILE, context));
+    bound = webBoundAddress(source.path);
   } catch (e) {
-    return { name: "web", verdict: "refused", facts: [...facts, `${WEB_SESSION_FILE} unreadable: ${(e as Error).message}`] };
+    return { name: "web", verdict: "refused", facts: [...facts, `${source.label} unreadable: ${(e as Error).message}`] };
   }
   if (!bound) return { name: "web", verdict: "refused", facts: [...facts, "probe refused (no bound address recorded)"] };
   try {

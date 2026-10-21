@@ -73,8 +73,10 @@ publication can proceed.
 
 An undeclared flag is a usage error, and so is a flag given more than once unless it is
 repeatable, as `--opt` and `down --session-store` are. So is an unknown command, and a first word
-that is not one of the command's subcommands when it declares them. The command prints the error and
-its help on stderr, writes nothing on stdout, exits 1, and does not run. A usage error is found before any effect, so it never seeds
+that is not one of the command's subcommands when it declares them. So is input a command checks
+before it acts, such as a missing argument, an invalid flag value or two flags that conflict, and
+`cotal help` with a subcommand that does not exist. The command prints the error, then any remedy,
+then its help on stderr, writes nothing on stdout, exits 1, and does not run. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 
 Command output, including error lines on stderr, the guided `setup` and `meshes add` prompts and
@@ -84,11 +86,18 @@ piped, unless it is `0` or `false`, and it takes precedence over `NO_COLOR`. `--
 color off for that run, whatever the environment says. It sets no `NO_COLOR` for the programs the
 run starts, but they are no longer forced into color by `FORCE_COLOR`.
 
+At any question the CLI asks, Ctrl-D on an empty line or an input that closes cancels the question
+as Ctrl-C does, so the command reports its own cancelled outcome.
 `--no-input` means the run never prompts, opens an editor or opens a browser. A command that would
 prompt behaves as it does without a terminal, `web` prints its link without opening it, and
-`personas edit` is refused. `--json` implies `--no-input`. Both flags work before the command word
-on every command, and after it on every command except one that takes its words raw. After `--`
-they are ordinary words. No command may declare a flag with either name. An installed extension
+`personas edit` is refused. `--json` implies `--no-input`. `--no-color` and `--no-input` work before
+the command word on every command, and after it on every command except one that takes its words
+raw. After `--` they are ordinary words. No command may declare a flag with either name. The output
+flags `--json` (`-j`) and `--plain` may also come before the command word, as in
+`cotal --json status`; they are read as the command's own flags, so a command without that output
+refuses them as it does after the command word. A command that takes its words raw, such as the
+hidden completion entry, has no flags to read them as and refuses them before its word with a usage
+error. A `--` before the command word ends these leading flags. An installed extension
 whose command declares one is an internal error, and `cotal` exits 1 before running any command.
 Shell completion treats the current `--` word as a flag prefix until it is committed. After `-- `,
 it completes positional values without offering options. A string option's value is completed
@@ -221,7 +230,7 @@ failure.
 | Messaging & watching | [`history`](#history) | Read retained messages, or clear them |
 | Messaging & watching | [`pending`](#pending) | Inspect one DM durable's native counts and bounded candidate IDs |
 | Messaging & watching | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
-| Messaging & watching | [`web`](#web) | Browser dashboard (installed as the `@cotal-ai/web` extension) |
+| Messaging & watching | [Web dashboard](#web) | Browser dashboard, run as the `web` service preset (installed as the `@cotal-ai/web` extension) |
 | Extensions & misc | [`linear`](#linear) | Serve the official Linear MCP server as an endpoint agents can call (installed as the `@cotal-ai/linear` extension) |
 | Auth & meshes | [`mint`](#mint) | Mint a creds file for a space (static auth mode) |
 | Auth & meshes | [`login`](#login) | Sign in to a per-user-auth mesh's IdP (once per machine) |
@@ -1448,7 +1457,10 @@ entries in the presence bucket. Both static connections must confirm their own
 identity and the same broker server ID. A failed or incomplete native read refuses
 instead of showing missing resources as absent. The snapshot is non-atomic and presence is not an
 authoritative liveness or membership check. User-auth deletion inventory and apply
-are not supported. The dry-run removes no live or local state.
+are not supported. The dry-run removes no live or local state, and a read that covers its whole scope
+exits 0. A space that is prepared and not running, including one stopped with `cotal down`, has no
+live broker to read or delete from: `space delete` refuses it with `TARGET_UNAVAILABLE`, exit 2,
+naming the root to start it in, and `space forget` removes only its local record.
 
 Bare `space delete <name>` displays that impact on an interactive terminal and requires
 typing the exact space name. A script supplies the exact positional name with `--yes`;
@@ -1739,14 +1751,18 @@ A process row whose PID record exists but cannot be read, or exists under both i
 pre-upgrade name, reads `pidfile unreadable` with the error, and the other rows still print. A live
 manager whose delivery-aware marker cannot be read keeps its row and names the failure as
 `delivery-aware marker unreadable` with the error. The `Web process` row
-prints the address the selected mesh's dashboard recorded in `web.session` once it was listening,
-while the PID in its `web.pid` is alive. A `web.pid` or `web.session` that exists but cannot be read
-is named on the row with the error. Otherwise it reads `down`, or `not installed` without the web
+prints the address the selected mesh's dashboard recorded once it was listening, while the PID in
+its `web.pid` is alive. The dashboard that holds `web.pid` picks the record. A dashboard started with
+`cotal service start` writes its session record beside its service startup receipt, and status finds
+that record through the web service instance whose recorded process is that PID. Any other holder is
+read from `web.session`. Neither record is read in place of the other. A `web.pid`, session record or
+service instance record that exists but cannot be read is named on the row with the error.
+Otherwise it reads `down`, or `not installed` without the web
 extension. Status and the `cotal setup` card count the web extension as installed only when a
 package in the extensions manifest provides `web` and that package is on disk. A web package record
 that cannot be read, is not JSON or has no `version` is named on the `Web extension` row and on the
 card's web row, after the dashboard's address when it is listening and beside an unreadable
-`web.pid` or `web.session`. The `Web process` row still prints, and reads `down` unless the
+`web.pid` or session record. The `Web process` row still prints, and reads `down` unless the
 dashboard is listening.
 
 If a refresh fails, `status` may still show the kept catalog bytes for diagnosis. It labels them
@@ -1784,14 +1800,17 @@ state wins). That exit replaces the report's own, so a partial report followed b
   command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
   broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
   names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
-- **web**: local PID record, then the `/api/meta` response at the address the dashboard recorded in
-  `web.session` once it was listening, which must name the same PID. The probe presents the
-  readiness nonce recorded beside that address, the one credential the dashboard accepts on
-  `/api/meta`. The probe follows no redirect. An answer with a status outside 2xx, a 3xx included,
-  is `not-serving`, and the row names that status, such as `HTTP 401`. A live PID with no recorded
-  address (the dashboard is still writing it, or an earlier build started it), or an unrecognizable
-  process record, is `refused`, not a green default-port guess. A `web.session` that exists but
-  cannot be read is also `refused`, and the row names the read error.
+- **web**: local PID record, then the `/api/meta` response at the address the dashboard recorded
+  once it was listening, which must name the same PID. The holder of `web.pid` picks the record, as
+  on the `Web process` row: a service-run dashboard's own session record, found through its web
+  service instance and named on the row as `service instance <id>`, or `web.session` for any other
+  holder. The probe presents the readiness nonce recorded beside that address, the one credential
+  the dashboard accepts on `/api/meta`. The probe follows no redirect. An answer with a status
+  outside 2xx, a 3xx included, is `not-serving`, and the row names that status, such as `HTTP 401`.
+  A live PID with no recorded address (the dashboard is still writing it, or an earlier build
+  started it), or an unrecognizable process record, is `refused`, not a green default-port guess. A
+  session record or service instance record that exists but cannot be read is also `refused`, and
+  the row names the read error.
 - **broker**: the registered mesh URL dialed from this host with its recorded TLS requirement.
 
 `absent` means Cotal has no live local component record (or has a stale record); `not-serving`
@@ -2556,9 +2575,14 @@ Enter is pressed by default, since a command typed but never submitted has not b
 `--no-enter` types the text and leaves it sitting at the prompt, which is how you stage a line and
 send it later.
 
-Nothing comes back but a delivery receipt (`✓ sent 9 bytes to reviewer`, counting the trailing
-carriage return). Whatever the agent does next shows up where its output already goes: the mesh, its
-transcript, or an `attach`.
+Nothing comes back but a `Terminal input written` receipt. It names the agent, space and manager,
+the bytes the manager reported writing (counting the trailing carriage return) and whether Enter was
+requested. It confirms the write to the terminal only. Whatever the agent does next shows up where
+its output already goes: the mesh, its transcript, or an `attach`.
+
+A write the manager cannot confirm, such as a terminal write that failed partway, exits 3 with
+`Outcome unconfirmed` and is not typed again. Part of the text may already be at the prompt, so check
+the seat before you send it again.
 
 **This one is operator-only, and more narrowly than `stop` or `attach`.** Those two are granted to
 anything holding `spawn`, so an agent can stop and attach to seats under its own owner. `input` is
@@ -4780,7 +4804,10 @@ Choose `--sub` or `--owner`, never both. Grant requires explicit scope/read/post
 `--full` deliberately selects the native wide defaults. These usage errors refuse with exit 1 before
 the space or its authority is read, and one refusal names every missing input. Re-grant/revoke
 retain predecessor lifecycle retirement and concurrent-row checks before replacing or deleting
-authority. Grant
+authority. A retirement that did not run, because the auth service is not running, refused the
+connection or answered that the retirement did not run, is refused (exit 2) with the actor row
+unchanged and the recovery named, usually `cotal up`. Any other failed retirement request may have
+started the retirement, so it is unknown (exit 3) and is not retried. Grant
 rows in reports contain scope and ACL metadata, not token hashes or secret material.
 
 Revocation receipts separate committed deny-new from the delivery daemon's live-eviction notice.

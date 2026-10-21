@@ -76,7 +76,7 @@
     {
       "name": "the plain listing calls every entry added",
       "file": "implementations/cli/src/commands/ext.ts",
-      "find": "source: row.seeded ? \"built in\" : \"added\"",
+      "find": "source: row.seeded ? \"included\" : \"added\"",
       "replace": "source: \"added\"",
       "expectRed": "the plain listing is a table with the source of each",
       "cell": "the plain listing is a table with the source of each",
@@ -103,8 +103,8 @@
     {
       "name": "help shows the command's outputs on every subcommand",
       "file": "implementations/cli/src/help.ts",
-      "find": "  const outputs = (sub ?? cmd).outputs ?? [];\n",
-      "replace": "  const outputs = cmd.outputs ?? [];\n",
+      "find": "  const outputs = selected.outputs ?? [];",
+      "replace": "  const outputs = cmd.outputs ?? [];",
       "expectRed": "help names the listing's structured output and no other mode's",
       "cell": "help names the listing's structured output and no other mode's",
       "afterRestore": "pnpm --filter cotal-ai... build"

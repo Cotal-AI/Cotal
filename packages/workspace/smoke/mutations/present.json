@@ -233,8 +233,8 @@
     {
       "name": "plain marks a partial result with a glyph",
       "file": "packages/workspace/src/present.ts",
-      "find": "      say({ text: `${presentation === \"plain\" ? \"!\" : \"\u2717\"} ${out.partial.message}`, tone: \"failed\" }, 2);\n",
-      "replace": "      say({ text: `\u2717 ${out.partial.message}`, tone: \"failed\" }, 2);\n",
+      "find": "      say({ text: `${presentation === \"plain\" ? \"!\" : \"\u2717\"} ${error.message}`, tone: outcome === \"partial\" || outcome === \"unknown\" ? \"waiting\" : \"failed\" }, 2);\n",
+      "replace": "      say({ text: `\u2717 ${error.message}`, tone: outcome === \"partial\" || outcome === \"unknown\" ? \"waiting\" : \"failed\" }, 2);\n",
       "expectRed": "plain writes a partial result's line and remedy in ASCII",
       "cell": "plain writes a partial result's line and remedy in ASCII",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",

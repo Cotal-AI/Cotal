@@ -58,8 +58,8 @@
     {
       "name": "the hints print before the selected mesh",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "  const sections: Section[] = [machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected)];\n  if (r.hints.length) sections.push(",
-      "replace": "  const sections: Section[] = [machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected)];\n  if (r.hints.length) sections.splice(4, 0, ",
+      "find": "  sections.push(nextActions(r));\n  return { sections };\n",
+      "replace": "  sections.unshift(nextActions(r));\n  return { sections };\n",
       "expectRed": "the sections keep the infrastructure order and end with the hints",
       "cell": "the sections keep the infrastructure order and end with the hints",
       "afterRestore": "pnpm --filter cotal-ai... build"

@@ -76,8 +76,8 @@
     {
       "name": "a runtime that is not installed hides its package",
       "file": "implementations/cli/src/commands/runtimes.ts",
-      "find": "package: row.package ? { text: row.package, tone: \"hint\" } : \"\"",
-      "replace": "package: row.state === \"installed\" && row.package ? { text: row.package, tone: \"hint\" } : \"\"",
+      "find": "package: { text: row.package ?? \"included with Cotal\", tone: \"hint\" }",
+      "replace": "package: { text: row.state === \"not-installed\" ? \"\" : row.package ?? \"included with Cotal\", tone: \"hint\" }",
       "expectRed": "runtimes draws a colored table with its state words",
       "cell": "runtimes draws a colored table with its state words",
       "afterRestore": "pnpm --filter cotal-ai... build"

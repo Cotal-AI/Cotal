@@ -65,9 +65,9 @@
   "mutations": [
     {
       "name": "the table stops overriding the record's state, so a revoked run keeps printing running",
-      "file": "implementations/runtime/src/run-command.ts",
-      "find": "    r.revoked !== undefined ? \"revoked\" : r.revocationUnreadable",
-      "replace": "    r.revocationUnreadable",
+      "file": "implementations/runtime/src/workflow-views.ts",
+      "find": "state: row.revoked ? { text: \"admission revoked\", tone: \"failed\" } : ",
+      "replace": "state: ",
       "cell": "ps prints revoked for it afterwards, whatever the record says",
       "expectRed": "ps prints revoked for it afterwards, whatever the record says",
       "note": "This is the shipped state before the fix, and it is what 08cff353, the base this PR was first measured on, printed: the row reads `running`, the local holder id, journal 0, with the marker sitting unread beside it."
@@ -84,15 +84,6 @@
       "note": "Measured rather than predicted: the admission record fails `revocationSnapshot`, so this does not report a live admission as a revocation, it makes the read throw. `ps` then prints the row as `unchecked`, which reddens the same cell for a different reason. It does so for EVERY row, so it is not the only red: measured by hand at 2243f4f0 it reddens eight cells. The first is block 2's `with its state`, and block 9's before-revoke control is among them. The named cell is the claim it breaks, not the first line it breaks. The anchor spans two lines because the host read beside it is byte-identical on its first line; a single-line target matched both and was refused as ambiguous."
     },
     {
-      "name": "the revoker and the reason stop being printed under the table",
-      "file": "implementations/runtime/src/run-command.ts",
-      "find": "    if (r.revoked !== undefined)\n      console.log(",
-      "replace": "    if (false)\n      console.log(",
-      "cell": "...with the revoker and the reason under the table, since the columns carry neither",
-      "expectRed": "...with the revoker and the reason under the table, since the columns carry neither",
-      "note": "A state of `revoked` with no attribution anywhere sends the operator to a second command to learn who revoked it and why; the marker carries both and the columns carry neither."
-    },
-    {
       "name": "revoke stops saying what the table will show",
       "file": "implementations/runtime/src/run-command.ts",
       "find": "    console.log(`run ps now lists ${runId} as revoked; the status record is left as its driver last wrote it`);",
@@ -103,47 +94,38 @@
     },
     {
       "name": "an unreadable marker leaves the record's own state in the STATE column",
-      "file": "implementations/runtime/src/run-command.ts",
-      "find": "r.revocationUnreadable !== undefined ? \"unchecked\" : r.state",
-      "replace": "r.state",
+      "file": "implementations/runtime/src/workflow-views.ts",
+      "find": "row.revocationUnreadable !== undefined ? { text: \"revocation not checked\", tone: \"waiting\" } : recordedState(row.state)",
+      "replace": "recordedState(row.state)",
       "cell": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
       "expectRed": "ps prints unchecked in the STATE column of a held run whose marker it could not read, never its record's running",
       "note": "The shape the panel measured at 1d3b9099: the row keeps `running` for a run whose marker nobody read, so `awk '{print $3}'` reads the word #1621 was filed about."
     },
     {
-      "name": "the failed read goes to stdout, where grep counts the record's running",
-      "file": "implementations/runtime/src/run-command.ts",
-      "find": "      console.error(`${r.endpoint}/${r.runId}: revocation marker could not be read",
-      "replace": "      console.log(`${r.endpoint}/${r.runId}: revocation marker could not be read",
-      "cell": "...and no stdout line names that run beside running, so `grep running` does not count it as live",
-      "expectRed": "...and no stdout line names that run beside running, so `grep running` does not count it as live",
-      "note": "The line carries the record's own word on purpose, for the operator. On stdout it puts that run's id beside `running` again, so `grep running` counts it as live even though the column says `unchecked`."
-    },
-    {
       "name": "the failed read is not reported at all",
-      "file": "implementations/runtime/src/run-command.ts",
-      "find": "    for (const r of unchecked)\n      console.error(",
-      "replace": "    for (const r of [] as typeof unchecked)\n      console.error(",
-      "cell": "...gives the failed read and the record's own state on stderr",
-      "expectRed": "...gives the failed read and the record's own state on stderr",
+      "file": "implementations/runtime/src/workflow-views.ts",
+      "find": "    warnings: unread.map((row) => ({ code: \"REVOCATION_NOT_CHECKED\"",
+      "replace": "    warnings: ([] as typeof unread).map((row) => ({ code: \"REVOCATION_NOT_CHECKED\"",
+      "cell": "...warns on stderr, and the JSON names that run, the failed read and the record's own state",
+      "expectRed": "...warns on stderr, and the JSON names that run, the failed read and the record's own state",
       "note": "A bare `unchecked` with no reason sends the operator elsewhere to learn whether the store is down or the marker is newer than this build."
     },
     {
       "name": "a listing with an unchecked row exits 0",
-      "file": "implementations/runtime/src/run-command.ts",
-      "find": "    if (unchecked.length > 0) process.exitCode = 1;",
-      "replace": "    void unchecked;",
-      "cell": "...and exits 1, because the listing is incomplete",
-      "expectRed": "...and exits 1, because the listing is incomplete",
+      "file": "implementations/runtime/src/workflow-views.ts",
+      "find": "    ...(unread.length ? { completeness: \"partial\" as const",
+      "replace": "    ...(false ? { completeness: \"partial\" as const",
+      "cell": "...and exits 4, because the listing is partial",
+      "expectRed": "...and exits 4, because the listing is partial",
       "note": "The panel measured exit 0 through the real binary. A caller that tests the status is then told the listing is complete."
     },
     {
       "name": "POSITIVE CONTROL for the exit-status control: every listing exits 1",
-      "file": "implementations/runtime/src/run-command.ts",
-      "find": "    if (unchecked.length > 0) process.exitCode = 1;",
-      "replace": "    process.exitCode = 1;",
-      "cell": "a listing whose every marker was read leaves the exit code alone",
-      "expectRed": "a listing whose every marker was read leaves the exit code alone",
+      "file": "implementations/runtime/src/workflow-views.ts",
+      "find": "    ...(unread.length ? { completeness: \"partial\" as const",
+      "replace": "    ...(true ? { completeness: \"partial\" as const",
+      "cell": "a listing whose every marker was read exits 0",
+      "expectRed": "a listing whose every marker was read exits 0",
       "note": "Block 9's control asserts a complete listing leaves the exit code alone. This mutant shows the control can see the wrong answer, so its pass in the green run is a measurement."
     },
     {

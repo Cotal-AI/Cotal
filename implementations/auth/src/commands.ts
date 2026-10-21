@@ -9,7 +9,7 @@ import { authServiceFlags } from "./daemon-flags.js";
 import { readFileSync } from "node:fs";
 import * as prompts from "@clack/prompts";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, isLoopbackLiteral, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, writePrivateRecord, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CommandFailure, credentialMintFlags, validateCredentialMintArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, userAuthStateDir, deprecatedDaemonEntry, workspaceSecretStore, type AgentAuthHealth, type CredentialAction } from "@cotal-ai/workspace";
+import { CommandFailure, credentialMintFlags, validateCredentialMintArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, jsonFlag, plainFlag, presentationOf, renderReport, terminalWidth, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceSecretStore, type AgentAuthHealth, type CredentialAction, type RefusalCode } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
   deleteIdpSpaceCatalog,
@@ -44,18 +44,33 @@ async function legibly(fn: () => Promise<void>, failure?: () => CommandFailure):
   }
 }
 
+/** The refusal each status of the retirement route is, once the service states the retirement did
+ *  not run (`outcome: "not-executed"`). */
+const RETIREMENT_REFUSAL: Readonly<Partial<Record<number, RefusalCode>>> = {
+  400: "UNSUPPORTED", 401: "PERMISSION_DENIED", 403: "PERMISSION_DENIED", 404: "CONFLICT", 405: "UNSUPPORTED",
+  409: "CONFLICT", 412: "CONFLICT", 415: "UNSUPPORTED", 503: "DEPENDENCY_UNAVAILABLE",
+};
+
 /** Retire the row's interactive lifecycle through the auth service. True only when this call
  *  retired it: a row with no lifecycle, a lifecycle the service reports never started
- *  (`retired: false`) and one that was already retired change nothing here. */
+ *  (`retired: false`) and one that was already retired change nothing here. A retirement whose
+ *  request never reached the service, or that the service states did not run, refuses, naming the
+ *  unchanged row; any other failure is unknown. Neither writes the row. */
 async function retireInteractiveActorLifecycle(
   dir: string,
+  space: string,
   row: ActorRow,
   operation: "re-grant" | "revoke",
 ): Promise<boolean> {
   if (!row.lifecycleUid) return false;
+  const target = { space, owner: row.owner, actor: row.actor };
+  const subject = `cannot ${operation} "${row.owner}/${row.actor}"`;
+  const notRun = (code: RefusalCode, why: string, remedy: string) =>
+    new CommandFailure("refused", code, `${subject}: ${why}; its lifecycle was not retired and the actor row was not changed`, { target, remedy });
+  const mayHaveRun = (why: string) =>
+    new CommandFailure("unknown", "OPERATION_UNKNOWN", `${subject}: ${why}; its lifecycle may have been retired, and the actor row was not changed`, { target, remedy: "read the authoritative grant ledger before another mutation" });
   const service = loadAuthServiceInfo(dir);
-  if (!service)
-    throw new Error(`cannot ${operation} "${row.owner}/${row.actor}": the auth service is not running, so its current lifecycle cannot be retired safely. Restart the stack with \`cotal up\`, then retry; the actor row was not changed.`);
+  if (!service) throw notRun("DEPENDENCY_UNAVAILABLE", "the auth service is not running", "restart the stack with `cotal up`, then retry");
   let response: Response;
   try {
     response = await fetch(`${service.url}${INTERACTIVE_RETIRE_PATH}`, {
@@ -68,13 +83,23 @@ async function retireInteractiveActorLifecycle(
       signal: AbortSignal.timeout(30_000),
     });
   } catch (error) {
-    throw new Error(`cannot ${operation} "${row.owner}/${row.actor}": its lifecycle retirement could not reach the auth service (${error instanceof Error ? error.message : String(error)}). The actor row was not changed; recover with \`cotal up\`, then retry.`);
+    // A refused connection carried no request. Any other transport failure, a timeout included, may
+    // have followed a request the service received.
+    if ((error as { cause?: { code?: unknown } } | null)?.cause?.code === "ECONNREFUSED")
+      throw notRun("DEPENDENCY_UNAVAILABLE", `the auth service at ${service.url} refused the connection`, "restart the stack with `cotal up`, then retry");
+    throw mayHaveRun(`its lifecycle retirement request failed (${error instanceof Error ? error.message : String(error)})`);
   }
-  const body = await response.json().catch(() => ({})) as { error?: string; retired?: unknown; lifecycleUid?: unknown; alreadyRetired?: unknown };
-  if (!response.ok)
-    throw new Error(`cannot ${operation} "${row.owner}/${row.actor}": the auth service refused lifecycle retirement (${body.error ?? `HTTP ${response.status}`}). The actor row was not changed; repair the stack, then retry.`);
+  const body = await response.json().catch(() => ({})) as { error?: string; outcome?: unknown; retired?: unknown; lifecycleUid?: unknown; alreadyRetired?: unknown };
+  if (!response.ok) {
+    const answer = body.error ?? `HTTP ${response.status}`;
+    // Only the service knows whether the retirement began, and an error without its outcome may
+    // have followed a barrier that had (SPEC 13.3).
+    if (body.outcome !== "not-executed") throw mayHaveRun(`the auth service answered lifecycle retirement with an error (${answer})`);
+    const code = RETIREMENT_REFUSAL[response.status] ?? "DEPENDENCY_UNAVAILABLE";
+    throw notRun(code, `the auth service refused lifecycle retirement (${answer})`, code === "CONFLICT" ? "re-read `cotal actor list`, then decide whether to grant or revoke again" : "restart the stack with `cotal up`, then retry");
+  }
   if (typeof body.retired !== "boolean" || body.lifecycleUid !== row.lifecycleUid)
-    throw new Error(`cannot ${operation} "${row.owner}/${row.actor}": the auth service answered lifecycle retirement for ${row.lifecycleUid} without a readable result.`);
+    throw mayHaveRun(`the auth service answered lifecycle retirement for ${row.lifecycleUid} without a readable result`);
   return body.retired && body.alreadyRetired !== true;
 }
 
@@ -104,13 +129,13 @@ async function chooseAccount(args: ParsedArgs, mode: "login" | "logout"): Promis
   if (mode === "logout" && providers.size === 0) return undefined;
   if (!canChooseAccount() || presentationOf(args.values) === "json") throw new CommandFailure("refused", "USAGE_INVALID", "select the provider explicitly with --idp outside an interactive terminal");
   if (providers.size) {
-    const chosen = await prompts.select({ message: mode === "login" ? "Choose a sign-in provider" : "Choose the account to sign out", options: [...providers].map(([idp, sub]) => ({ value: idp, label: oneLine(idp), ...(sub ? { hint: oneLine(sub) } : {}) })) });
+    const chosen = await untilInputEnds((signal) => prompts.select({ message: mode === "login" ? "Choose a sign-in provider" : "Choose the account to sign out", options: [...providers].map(([idp, sub]) => ({ value: idp, label: oneLine(idp), ...(sub ? { hint: oneLine(sub) } : {}) })), signal }));
     return prompts.isCancel(chosen) ? undefined : chosen;
   }
-  const answer = await prompts.text({ message: "Sign-in provider auth URL", placeholder: "https://example.org/api/auth", validate: (value) => {
+  const answer = await untilInputEnds((signal) => prompts.text({ message: "Sign-in provider auth URL", placeholder: "https://example.org/api/auth", signal, validate: (value) => {
     try { normalizeIdpUrl(value ?? ""); }
     catch { return "Enter the HTTPS auth base URL without a query, fragment or embedded credentials."; }
-  } });
+  } }));
   return prompts.isCancel(answer) ? undefined : normalizeIdpUrl(answer);
 }
 
@@ -312,7 +337,7 @@ async function runActor(args: ParsedArgs, target: { root: string; space: string 
       if (current?.lifecycleUid) {
         mutationAttempted = true;
         // Async retirement runs before the transaction, never inside it.
-        retired = await retireInteractiveActorLifecycle(dir, current, "re-grant");
+        retired = await retireInteractiveActorLifecycle(dir, space, current, "re-grant");
       }
       mutationAttempted = true;
       const grantRow = {
@@ -357,7 +382,7 @@ async function runActor(args: ParsedArgs, target: { root: string; space: string 
         return;
       }
       mutationAttempted = true;
-      const retired = await retireInteractiveActorLifecycle(dir, current, "revoke");
+      const retired = await retireInteractiveActorLifecycle(dir, space, current, "revoke");
       // The post-retirement re-read, the decision and the removal are one transaction.
       withManagedGrantTransaction(dir, (tx) => {
         const read = tx.read(owner, actor);

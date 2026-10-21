@@ -33,6 +33,7 @@
       "file": "implementations/cli/src/commands/setup.ts",
       "find": "  if (values.destination !== undefined) destinationOf(values.destination);\n",
       "replace": "",
+      "allowMultiple": true,
       "expectRed": "--destination cloud is refused as UNSUPPORTED before any missing input",
       "cell": "--destination cloud is refused as UNSUPPORTED before any missing input",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -94,7 +95,7 @@
     {
       "name": "a rerun that writes nothing is not a no-op",
       "file": "implementations/cli/src/commands/setup.ts",
-      "find": "noOp: written.length === 0 && actions.ran.length === 0",
+      "find": "noOp: !startup.requested && written.length === 0 && actions.ran.length === 0",
       "replace": "noOp: false",
       "expectRed": "a rerun with the same answers is a no-op, exit 0, and writes nothing",
       "cell": "a rerun with the same answers is a no-op, exit 0, and writes nothing",

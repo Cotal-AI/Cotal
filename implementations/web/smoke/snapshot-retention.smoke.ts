@@ -418,11 +418,13 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     ok("5.7 carrying the server's own reason", stale[0]?.reason?.includes("the space could not be read"), stale[0]?.reason);
   }
   {
-    const { ctx, c } = mk(async () => ({ ok: true, status: 200, json: async () => ({ space: "cotal-next", pid: 1 }) }));
+    // The body the `web` service preset serves: it never supports channel delete, so the page marks
+    // the space read-only.
+    const { ctx, c } = mk(async () => ({ ok: true, status: 200, json: async () => ({ space: "cotal-next", pid: 1, channelDeleteSupported: false }) }));
     runInContext("__p = window.COTAL_SNAPSHOT.refreshAll([__src]);", c);
     const stale = await (ctx.__p as Promise<unknown[]>);
     ok("5.8 CONTROL: a read that LANDS replaces the name, so 5.4 is retention and not a stub",
-      header.textContent === "· cotal-next" && doc.title === "Cotal · cotal-next" && stale.length === 0,
+      header.textContent === "· cotal-next · read-only" && doc.title === "Cotal · cotal-next" && stale.length === 0,
       { header: header.textContent, title: doc.title, stale });
   }
 }

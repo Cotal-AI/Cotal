@@ -49,8 +49,8 @@
     {
       "name": "the report shows a load failure as a missing catalog",
       "file": "implementations/cli/src/commands/models.ts",
-      "find": "  if (row.error) blocks.push({ kind: \"lines\", lines: [{ text: row.error, tone: \"failed\" }] });",
-      "replace": "  if (row.error && row.supported) blocks.push({ kind: \"lines\", lines: [{ text: row.error, tone: \"failed\" }] });",
+      "find": "  if (row.error) blocks.push({ kind: \"lines\", lines: [{ text: \"Catalog unreadable; the warning below names the cause.\", tone: \"waiting\" }] });",
+      "replace": "  if (row.error && row.supported) blocks.push({ kind: \"lines\", lines: [{ text: \"Catalog unreadable; the warning below names the cause.\", tone: \"waiting\" }] });",
       "expectRed": "the report names the load failure under that connector, not a missing catalog",
       "cell": "the report names the load failure under that connector, not a missing catalog",
       "afterRestore": "pnpm --filter cotal-ai... build"

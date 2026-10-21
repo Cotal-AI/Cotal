@@ -18,8 +18,8 @@
     {
       "name": "PREDICTED KILLED (3 red) - the wrapped refusal falls into the unmarked re-resolve below and makes a THIRD attempt",
       "file": "packages/core/src/endpoint.ts",
-      "find": "        if (e.code !== \"failed-precondition\" || replyRefusedBeforeEffect(e.toEpError())) throw e;",
-      "replace": "        if (e.code !== \"failed-precondition\") throw e;",
+      "find": "        if (respondedButUnbound(e)) {",
+      "replace": "        if (respondedButUnbound(e) || (e instanceof EpEnvelopeError && e.code === \"failed-precondition\")) {",
       "expectRed": "it still states the command was not run"
     },
     {

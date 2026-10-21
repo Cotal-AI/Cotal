@@ -86,8 +86,8 @@
     {
       "name": "a selected space whose broker is down is skipped",
       "file": "packages/workspace/src/mesh-target.ts",
-      "find": "return targetFromEntry(cur, cur.server, \"current\");",
-      "replace": "if (!offline.has(cur.space)) return targetFromEntry(cur, cur.server, \"current\");",
+      "find": "return targetFromEntry(cur, cur.server, \"current\", flags.readOnly);",
+      "replace": "if (!offline.has(cur.space)) return targetFromEntry(cur, cur.server, \"current\", flags.readOnly);",
       "expectRed": "a command run with the selected space down refuses with TARGET_UNAVAILABLE naming its broker",
       "cell": "a command run with the selected space down refuses with TARGET_UNAVAILABLE naming its broker",
       "afterRestore": "pnpm --filter cotal-ai... build"

@@ -1,4 +1,4 @@
-import * as p from "@clack/prompts";
+import * as p from "./prompts.js";
 
 /** Treat a clack cancel (Ctrl-C / Esc) as quitting setup, cleanly. clack traps SIGINT
  *  inside a prompt and returns its cancel symbol instead of exiting; route those here so

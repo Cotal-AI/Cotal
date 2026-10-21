@@ -431,6 +431,9 @@ const RUNTIMES = "Which runtimes do your agents run in?";
 const PROJECT = "Project folder";
 const SPACE_NAME = "Space name";
 const SAVE = "Save it?";
+// After a successful save the terminal offers startup separately, with No selected.
+const START_LOCAL = "Start this local space and open the default agent?";
+const START_HOSTED = "Launch the default agent on the registered space's manager?";
 
 if (process.platform !== "win32") {
   {
@@ -462,6 +465,9 @@ if (process.platform !== "win32") {
       (await t.at(SAVE)) && t.s.text().includes(`project      ${dir}`) && /space\s+pty-local/.test(t.s.text()) && /application\s+codex/.test(t.s.text()) && /runtimes\s+pty, tmux/.test(t.s.text()), t.s.text().slice(-900));
     check("nothing is written before the save", findPreparedSpace("pty-local") === undefined);
     await t.answer(SAVE, ENTER);
+    check("after the save the terminal offers to start, with No selected",
+      (await t.at(START_LOCAL, t.cursor())) && /○ Yes \/ ● No/.test(t.s.text().slice(t.cursor())), t.s.text().slice(-600));
+    await t.answer(START_LOCAL, ENTER);
     check("saving prepares the space and records the application", (await t.exited()) && t.s.code === 0 && findPreparedSpace("pty-local")?.root === dir && harnessOf("pty-local") === "codex" && existsSync(join(dir, ".cotal", "agents", "default.md")), { code: t.s.code, out: t.s.text().slice(-900) });
   }
   {
@@ -494,6 +500,7 @@ if (process.platform !== "win32") {
     await t.answer(SPACE_NAME, ENTER);
     check("the review says it is created on save", (await t.at(SAVE)) && /\(created on save\)/.test(t.s.text()) && !existsSync(fresh), t.s.text().slice(-600));
     await t.answer(SAVE, ENTER);
+    await t.answer(START_LOCAL, ENTER);
     check("saving creates it and prepares the space there", (await t.exited()) && t.s.code === 0 && statSync(fresh).isDirectory() && findPreparedSpace("pty-fresh")?.root === fresh, { code: t.s.code, out: t.s.text().slice(-600) });
   }
   {
@@ -506,6 +513,7 @@ if (process.platform !== "win32") {
     await t.answer("Which space?", DOWN.repeat(registered.indexOf("team")) + ENTER);
     check("a registered space takes its root as the project, unasked", (await t.at(SAVE, t.cursor())) && t.s.text().includes(`project      ${join(home, "team")}`) && !t.s.text().includes(PROJECT), t.s.text().slice(-700));
     await t.answer(SAVE, ENTER);
+    await t.answer(START_HOSTED, ENTER);
     check("and saving sets it up", (await t.exited()) && t.s.code === 0, { code: t.s.code, out: t.s.text().slice(-500) });
   }
   {

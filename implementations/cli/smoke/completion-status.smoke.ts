@@ -54,6 +54,15 @@ const codeOf = (stdout: string): unknown => {
     return undefined;
   }
 };
+/** The outcome of the envelope on stdout, or undefined when stdout is not one. */
+const outcomeOf = (stdout: string): unknown => {
+  try {
+    return JSON.parse(stdout).outcome;
+  } catch {
+    return undefined;
+  }
+};
+const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 // ── Status on a fresh machine ─────────────────────────────────────────────────────────────────────
 {
@@ -96,10 +105,17 @@ const codeOf = (stdout: string): unknown => {
   s.run(["completion", "install", "zsh"], { ZDOTDIR: zdot });
   check("zsh's rc is read from $ZDOTDIR", s.shellOf(s.json({ ZDOTDIR: zdot }).env, "zsh")?.wiredIn === join(zdot, ".zshrc"), s.shellOf(s.json({ ZDOTDIR: zdot }).env, "zsh"));
 
-  const rich = s.run(["completion"], { FORCE_COLOR: "1" });
-  const plain = s.run(["completion", "--plain"], { FORCE_COLOR: "1" });
-  check("the status report names each shell and its state", rich.status === 0 && /bash \(this shell\)/.test(rich.stdout.replace(/\x1b\[[0-9;]*m/g, "")) && /differs from this version/.test(rich.stdout), shown(rich));
-  check("--plain writes the report with no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout.includes("differs from this version"), shown(plain));
+  // The zsh record names $ZDOTDIR's rc, so the report reads it with the same ZDOTDIR. The edited
+  // bash stub no longer matches its ownership record, which the report puts before its version.
+  const rich = s.run(["completion"], { FORCE_COLOR: "1", ZDOTDIR: zdot });
+  const plain = s.run(["completion", "--plain"], { FORCE_COLOR: "1", ZDOTDIR: zdot });
+  const richText = strip(rich.stdout);
+  check(
+    "the status report names each shell and its state",
+    rich.status === 0 && /^ {2}Shell: +bash$/m.test(richText) && /^ {2}bash +● modified owned integration$/m.test(richText) && ["zsh", "fish"].every((shell) => new RegExp(`^ {2}${shell} +● installed · startup reference found$`, "m").test(richText)) && /^ {2}powershell +○ not installed by cotal$/m.test(richText),
+    shown(rich),
+  );
+  check("--plain writes the report with no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout.includes("modified owned integration"), shown(plain));
   const both = s.run(["completion", "--json", "--plain"]);
   check("--json with --plain is a USAGE_INVALID refusal", both.status === 1 && codeOf(both.stdout) === "USAGE_INVALID", shown(both));
 }
@@ -107,10 +123,9 @@ const codeOf = (stdout: string): unknown => {
 // ── A machine with no completion installed: every cell says something ──────────────────────────────
 {
   const fresh = sandbox().run(["completion", "--plain"]);
-  const row = (shell: string) => fresh.stdout.split("\n").find((line) => line.trimStart().startsWith(`${shell} `)) ?? "";
   check(
-    "a shell with no wiring says not wired in, and PowerShell's file says none",
-    fresh.status === 0 && ["bash", "zsh", "fish"].every((shell) => /not installed +not wired in +\S/.test(row(shell))) && /not installed by cotal +not wired in +none$/.test(row("powershell")),
+    "a shell with nothing installed says not installed, and PowerShell says not installed by cotal",
+    fresh.status === 0 && ["bash", "zsh", "fish"].every((shell) => new RegExp(`^ {2}${shell} +not installed$`, "m").test(fresh.stdout)) && /^ {2}powershell +not installed by cotal$/m.test(fresh.stdout),
     { status: fresh.status, stdout: fresh.stdout },
   );
 }
@@ -123,17 +138,18 @@ const codeOf = (stdout: string): unknown => {
   const stub = join(s.xdg, "cotal", "completion.bash");
   writeFileSync(rc, `# source "${stub}"\n`);
   check("a commented-out install line wires nothing in", s.shellOf(s.json().env, "bash")?.wiredIn === null, s.shellOf(s.json().env, "bash"));
+  // The rc still names the stub outside the recorded block, so install refuses to rewrite it.
   const reinstall = s.run(["completion", "install", "bash"]);
-  check("install adds the line when the rc only has it commented out", reinstall.status === 0 && readFileSync(rc, "utf8").split("\n").includes(`source "${stub}"`), { ...shown(reinstall), rc: readFileSync(rc, "utf8") });
+  check("install refuses an rc that only has the line commented out, exit 2, and leaves it unchanged", reinstall.status === 2 && /recorded startup block is modified or ambiguous/.test(reinstall.stderr) && readFileSync(rc, "utf8") === `# source "${stub}"\n`, { ...shown(reinstall), rc: readFileSync(rc, "utf8") });
   writeFileSync(rc, `d="${s.xdg}"\nsource "$d/cotal/completion.bash"\n`);
   const viaVariable = s.json();
   check("a line that sources the stub some other way is not taken for the install line", s.shellOf(viaVariable.env, "bash")?.wiredIn === null, s.shellOf(viaVariable.env, "bash"));
   const report = s.run(["completion", "--plain"]);
-  check("the report says no install line, not that nothing loads the stub", report.status === 0 && /no install line/.test(report.stdout) && !/\bnothing\b/.test(report.stdout), shown(report));
+  check("the report says no managed startup reference, not that nothing loads the stub", report.status === 0 && /no managed startup reference/.test(report.stdout) && !/\bnothing\b/.test(report.stdout), shown(report));
   writeFileSync(rc, `source "${stub}"\r\n`);
   check("an install line that ends in a carriage return wires nothing in", s.shellOf(s.json().env, "bash")?.wiredIn === null, s.shellOf(s.json().env, "bash"));
   const afterCrlf = s.run(["completion", "install", "bash"]);
-  check("install adds a line bash can run after a CRLF copy of it", afterCrlf.status === 0 && readFileSync(rc, "utf8").split("\n").includes(`source "${stub}"`), { ...shown(afterCrlf), rc: JSON.stringify(readFileSync(rc, "utf8")) });
+  check("install refuses an rc with a CRLF copy of the line, exit 2, and leaves it unchanged", afterCrlf.status === 2 && /recorded startup block is modified or ambiguous/.test(afterCrlf.stderr) && readFileSync(rc, "utf8") === `source "${stub}"\r\n`, { ...shown(afterCrlf), rc: JSON.stringify(readFileSync(rc, "utf8")) });
   writeFileSync(rc, ` \tsource "${stub}"\t \n`);
   check("spaces and tabs around the install line still count", s.shellOf(s.json().env, "bash")?.wiredIn === rc, s.shellOf(s.json().env, "bash"));
   writeFileSync(rc, `source "${stub}"\n`);
@@ -156,7 +172,7 @@ const codeOf = (stdout: string): unknown => {
   check("that stub is reported unreadable with a COMPLETION_UNREADABLE warning for its shell", bash?.state === "unreadable" && env?.warnings.some((w: { code: string; target: { shell?: string } }) => w.code === "COMPLETION_UNREADABLE" && w.target.shell === "bash") === true, env);
   check("the other shells are still reported", s.shellOf(env, "zsh")?.state === "current" && s.shellOf(env, "fish")?.state === "missing", env?.result);
   const human = s.run(["completion", "--plain"]);
-  check("the report still prints, exit 4, with the warning on stderr", human.status === 4 && /bash \(this shell\)\s+unreadable/.test(human.stdout) && /could not be read/.test(human.stderr), shown(human));
+  check("the report still prints, exit 4, with the warning on stderr", human.status === 4 && /^ {2}bash +unreadable$/m.test(human.stdout) && /could not be read/.test(human.stderr), shown(human));
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const rc = join(s.home, ".zshrc");
     chmodSync(rc, 0o000);
@@ -172,15 +188,15 @@ const codeOf = (stdout: string): unknown => {
   const s = sandbox("/bin/zsh");
   const stub = join(s.xdg, "cotal", "completion.zsh");
   const missingDir = s.run(["completion", "install", "zsh"], { ZDOTDIR: join(s.home, "nowhere") });
-  check("install refuses a ZDOTDIR that does not exist, exit 2, with nothing written", missingDir.status === 2 && missingDir.stdout === "" && /does not exist, so install cannot create/.test(missingDir.stderr) && !existsSync(stub), shown(missingDir));
+  check("install refuses a ZDOTDIR that does not exist, exit 2, with nothing written", missingDir.status === 2 && missingDir.stdout === "" && /the shell startup directory must exist/.test(missingDir.stderr) && !existsSync(stub), shown(missingDir));
   const relative = s.run(["completion", "install", "zsh"], { ZDOTDIR: "zdot" });
-  check("install refuses a relative ZDOTDIR, exit 1, with nothing written", relative.status === 1 && /ZDOTDIR is relative/.test(relative.stderr) && !existsSync(stub) && !existsSync(join(s.home, "zdot")), shown(relative));
+  check("install refuses a relative ZDOTDIR, exit 1, with nothing written", relative.status === 1 && /relative ZDOTDIR/.test(relative.stderr) && !existsSync(stub) && !existsSync(join(s.home, "zdot")), shown(relative));
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const rc = join(s.home, ".zshrc");
     writeFileSync(rc, "# mine\n");
     chmodSync(rc, 0o000);
     const unreadable = s.run(["completion", "install", "zsh"]);
-    check("install refuses an rc it cannot read, exit 2, with nothing written", unreadable.status === 2 && /could not be read: EACCES/.test(unreadable.stderr) && !existsSync(stub), shown(unreadable));
+    check("install refuses an rc it cannot read, exit 2, with nothing written", unreadable.status === 2 && /could not be opened safely/.test(unreadable.stderr) && !existsSync(stub), shown(unreadable));
     chmodSync(rc, 0o400);
     const readOnly = s.run(["completion", "install", "zsh"]);
     chmodSync(rc, 0o600);
@@ -227,25 +243,27 @@ const codeOf = (stdout: string): unknown => {
   }
   const oldJson = s.run(["completion", "bash", "--json"]);
   // A mode that declares no structured output refuses --json without an envelope, so stdout stays empty.
-  check("completion bash --json is refused with nothing on stdout", oldJson.status === 1 && oldJson.stdout === "" && /takes no --json/.test(oldJson.stderr), shown(oldJson));
+  check("completion bash --json is refused with nothing on stdout", oldJson.status === 1 && oldJson.stdout === "" && oldJson.stderr.includes("cotal completion script bash"), shown(oldJson));
   const missing = s.run(["completion", "script"]);
-  check("completion script without a shell is refused", missing.status === 1 && missing.stdout === "" && /needs a shell/.test(missing.stderr), shown(missing));
+  check("completion script without a shell is refused", missing.status === 1 && missing.stdout === "" && /choose a supported shell/.test(missing.stderr), shown(missing));
   for (const word of ["tcsh", "bsah"]) {
     const other = s.run(["completion", word]);
-    check(`completion ${word} exits 1, writes nothing on stdout, and puts the help on stderr`, other.status === 1 && other.stdout === "" && new RegExp(`no subcommand "${word}"`).test(other.stderr) && /usage: /.test(other.stderr), shown(other));
+    check(`completion ${word} exits 1, writes nothing on stdout, and puts the help on stderr`, other.status === 1 && other.stdout === "" && new RegExp(`no subcommand "${word}"`).test(other.stderr) && /^Usage$/m.test(other.stderr), shown(other));
   }
   const extra = s.run(["completion", "script", "bash", "extra"]);
-  check("completion script with a second word is refused", extra.status === 1 && extra.stdout === "" && /takes one shell/.test(extra.stderr), shown(extra));
+  check("completion script with a second word is refused", extra.status === 1 && extra.stdout === "" && /takes one operation and one shell/.test(extra.stderr), shown(extra));
   const unknown = s.run(["completion", "script", "tcsh"]);
-  check("completion script for an unknown shell is refused", unknown.status === 1 && unknown.stdout === "" && /no shell "tcsh"/.test(unknown.stderr), shown(unknown));
+  check("completion script for an unknown shell is refused", unknown.status === 1 && unknown.stdout === "" && /choose a supported shell/.test(unknown.stderr), shown(unknown));
   const scriptJson = s.run(["completion", "script", "bash", "--json"]);
-  check("completion script takes no --json and writes nothing on stdout", scriptJson.status === 1 && scriptJson.stdout === "" && /takes no --json/.test(scriptJson.stderr), shown(scriptJson));
+  check("completion script takes no --json and writes nothing on stdout", scriptJson.status === 1 && scriptJson.stdout === "" && /without --json or --plain/.test(scriptJson.stderr), shown(scriptJson));
   const installJson = s.run(["completion", "install", "bash", "--json"]);
-  check("completion install takes no --json and installs nothing", installJson.status === 1 && !existsSync(join(s.home, ".bashrc")), shown(installJson));
+  const bashrc = join(s.home, ".bashrc");
+  check("completion install --json is one ok envelope and writes the managed block", installJson.status === 0 && outcomeOf(installJson.stdout) === "ok" && existsSync(bashrc) && readFileSync(bashrc, "utf8").includes(`# >>> cotal completion >>>\nsource '${join(s.xdg, "cotal", "completion.bash")}'\n# <<< cotal completion <<<\n`), shown(installJson));
+  // With no pwsh on PATH there is no profile to wire, so install refuses without guessing one.
   const pwsh = s.run(["completion", "install", "powershell"]);
-  check("completion install powershell is refused, naming the $PROFILE line", pwsh.status === 1 && pwsh.stdout === "" && /\$PROFILE: cotal completion script powershell/.test(pwsh.stderr), shown(pwsh));
+  check("completion install powershell is refused, naming the supported loading command", pwsh.status === 2 && pwsh.stdout === "" && pwsh.stderr.includes("the supported loading command is: cotal completion script powershell | Out-String | Invoke-Expression"), shown(pwsh));
   const installTcsh = s.run(["completion", "install", "tcsh"]);
-  check("completion install for an unknown shell is refused", installTcsh.status === 1 && installTcsh.stdout === "" && /can't install for "tcsh"/.test(installTcsh.stderr) && /pass one of: bash, zsh, fish/.test(installTcsh.stderr), shown(installTcsh));
+  check("completion install for an unknown shell is refused", installTcsh.status === 1 && installTcsh.stdout === "" && /choose a supported shell/.test(installTcsh.stderr) && /pass one of: bash, zsh, fish, powershell/.test(installTcsh.stderr), shown(installTcsh));
 
   const help = s.run(["help", "completion"]);
   check("help lists script and install", /^\s+script\s/m.test(help.stdout) && /^\s+install\s/m.test(help.stdout), shown(help));

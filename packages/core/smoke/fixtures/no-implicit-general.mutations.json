@@ -60,8 +60,8 @@
     {
       "name": "the agent-file loader defaults an omitted read set back to general",
       "file": "packages/core/src/agent-file.ts",
-      "find": "  const effSubscribe = subscribe ?? [];",
-      "replace": "  const effSubscribe = subscribe?.length ? subscribe : [\"general\"];",
+      "find": "    effAllow = resolveReadAcl(subscribe ?? [], allowSubscribe);",
+      "replace": "    effAllow = resolveReadAcl(subscribe?.length ? subscribe : [\"general\"], allowSubscribe);",
       "expectRed": "a persona with a read ACL and no subscribe loads (an omitted read set is empty, not general)",
       "cell": "a persona with a read ACL and no subscribe loads (an omitted read set is empty, not general)",
       "note": "The shipped state before this change. It is not a silent regression at the loader, it is a LOUD one in the wrong direction: a persona scoped to `ops` and naming no boot channel is rejected for reading `general`, a channel it never wrote down. Every other consequence of the old default is silent, so this is the one place the behaviour argues with itself in the operator's face."

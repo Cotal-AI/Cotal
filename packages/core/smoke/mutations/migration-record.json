@@ -10,8 +10,8 @@
     {
       "name": "the id ignores what the check found, so two decisions share one identity",
       "file": "packages/core/src/run-migration.ts",
-      "find": "  return digestId(canonicalJson(value));",
-      "replace": "  return digestId(canonicalJson({ v: value.v, run: value.run, toHash: value.toHash }));",
+      "find": "  return digestIdToken(canonicalJson(value));",
+      "replace": "  return digestIdToken(canonicalJson({ v: value.v, run: value.run, toHash: value.toHash }));",
       "expectRed": "and so is a different orphan table, which is the thing a person authorised",
       "cell": "and so is a different orphan table, which is the thing a person authorised"
     },

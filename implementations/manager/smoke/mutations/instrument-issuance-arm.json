@@ -18,8 +18,8 @@
     {
       "name": "the deployer is minted as an issuance again",
       "file": "packages/workspace/src/connect.ts",
-      "find": "      if (role === \"deployer\") {",
-      "replace": "      if (role === \"deployer\" && opts.instanceId === \"never\") {",
+      "find": "    if (role === \"deployer\") {",
+      "replace": "    if (role === \"deployer\" && opts.instanceId === \"never\") {",
       "expectRed": "deployer mints through the shipped connect path",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:instrument-instance-pin",

@@ -83,6 +83,7 @@ one shared flag grammar and public-only JSON/plain receipts. Keep source-root au
 checks, native provisioning and expiry metadata, use create-only default labels and explicitly
 report a reused nkey's new out-of-band lifecycle instead of claiming its old inbox was retained.
 Reject the top-level mint spelling before effects and keep explicit exports out of managed state.
+Name both roots when the selected root and current folder disagree about the signing authority.
 
 Expose one-shot native endpoint class scatter with frozen-set reconciliation, attributed member
 results and every native anomaly bucket. Keep pinned/targeted/journaled calls off this route,

@@ -56,6 +56,33 @@
       "expectRed": "bare status says not serving for a live pid whose rail does not answer (#2073)",
       "cell": "bare status says not serving for a live pid whose rail does not answer (#2073)",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a service-held web.pid is read through the legacy web.session",
+      "file": "implementations/cli/src/lib/status.ts",
+      "find": "    value.adapter?.name === WEB_SERVICE_ADAPTER && value.process !== undefined && value.process.pid === pid && assertRecordIdentity(value.process).kind === \"match\");",
+      "replace": "    false && value.adapter?.name === WEB_SERVICE_ADAPTER && value.process !== undefined && value.process.pid === pid && assertRecordIdentity(value.process).kind === \"match\");",
+      "expectRed": "the live dashboard at its recorded address grades web serving",
+      "cell": "the live dashboard at its recorded address grades web serving",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a stale legacy web.session is read in place of the service instance's own record",
+      "file": "implementations/cli/src/lib/status.ts",
+      "find": "  if (!instance) return { path: localProcessPath(WEB_SESSION_FILE, context), label: WEB_SESSION_FILE };",
+      "replace": "  if (!instance || readWebSession(localProcessPath(WEB_SESSION_FILE, context)) !== undefined) return { path: localProcessPath(WEB_SESSION_FILE, context), label: WEB_SESSION_FILE };",
+      "expectRed": "a stale web.session beside a service-held web.pid is not read",
+      "cell": "a stale web.session beside a service-held web.pid is not read",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the web row does not name the service instance whose record it read",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "  if (source.instance !== undefined) facts.push(`service instance ${source.instance}`);",
+      "replace": "",
+      "expectRed": "a service-run dashboard is graded from its own instance's session record",
+      "cell": "a service-run dashboard is graded from its own instance's session record",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ],
   "suite": [
