@@ -798,7 +798,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     return prop.row.kind === "service-proposal-terminal" ? releaseFor(ctx, prop.row) : [];
   }
 
-  /** Deny-new from one read of this assignment's endpoint gate, on every revoke path. Another
+  /** Deny-new from one read of this assignment's endpoint gate, on every revoke path that reads it. Another
    *  assignment's row at the key is no evidence about this one's deny-new: `unknown`, as a failed read. */
   const denyNewOf = (gate: EndpointClass): ServiceDenyNew => (gate.kind === "revoked" ? "landed" : gate.kind === "foreign" ? "unknown" : "not-landed");
   type CancelRun = { s1: ServiceCancelResult | { kind: "seal-refused"; detail: string }; denyNew: ServiceDenyNew; gate?: EndpointClass };
