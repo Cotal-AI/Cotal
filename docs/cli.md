@@ -493,10 +493,13 @@ broker-only. For a split topology with a manager, wait for `.cotal/manager.<spac
 host and run [`supervise`](#supervise) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
-only what actually started. Ctrl-C on a foreground `up` stops the manager through the same stop as
-bare `cotal down` (see [`down`](#down)), then the rest of the stack, and reports managed agents
-under the same rule: when the manager stop is refused, Ctrl-C prints the refusal with the reap route
-and leaves the stack running. The `-f` form is a
+only what actually started. On POSIX, a foreground broker has its own session and process group.
+Terminal Ctrl-C reaches the CLI owner, which stops the manager through the same stop as bare
+`cotal down` (see [`down`](#down)), then the rest of the stack, and reports managed agents under
+the same rule. When the manager stop is refused, Ctrl-C prints the refusal with the reap route and
+leaves the stack running, including the manager, broker, delivery and any auth service. A second
+interrupt during teardown does not start another stop. Windows keeps its existing console signal
+behavior. The `-f` form is a
 [manifest deploy](#manifest-deploys).
 
 An `up` that starts or refreshes a space on this machine writes the `default` persona into
