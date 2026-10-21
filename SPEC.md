@@ -1667,9 +1667,11 @@ answers from the proposal as it is now: `approval-required` while it is live and
 at phase `approved-unregistered` while its approval stands, and `denied` once the proposal is refused
 or expired or its approval revoked. An undecided proposal reads as expired once the whole second of
 its expiry has passed, before any tombstone closes it. The door never answers expired before the host
-would refuse its approval, but for up to one second after the expiry it can still answer
-`approval-required` or `proposed` while the host already refuses. Register runs no registration
-barrier and never answers
+would refuse its approval, but its other answers can trail the expiry: an undecided proposal can still
+read `approval-required` or `proposed` for up to one second after it, a proposal whose approval is in
+progress reads `proposed` until that decision settles, and a first admission's `approval-required` is
+computed when the proposal is created, so a late reply can arrive after the expiry. Register runs no
+registration barrier and never answers
 `registered` or a credential.
 
 Status admits only `target:{kind:"operation", requestId}`, for the caller's own register; another
