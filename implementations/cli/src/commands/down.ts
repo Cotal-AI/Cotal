@@ -272,20 +272,20 @@ export async function down(args: ParsedArgs): Promise<void> {
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
   if (values["dry-run"] && !values.file && !values.run && !values["preserve-state"] && !values["store-dir"] && !values["session-store"]?.length) return previewWholeStack(args);
   if (values["preserve-state"] && values["with-agents"])
-    throw new Error("--preserve-state cannot be combined with --with-agents");
+    throw new CommandFailure("refused", "USAGE_INVALID", "--preserve-state cannot be combined with --with-agents");
   if (values["with-agents"] && (values.file || values.run || values.space))
-    throw new Error("--with-agents is bare-whole-stack only and cannot be combined with components, --space, --file, or --run");
+    throw new CommandFailure("refused", "USAGE_INVALID", "--with-agents is bare-whole-stack only and cannot be combined with components, --space, --file, or --run");
   if (values["preserve-state"]) {
     if (values.file || values.run || values["dry-run"] || values.space)
-      throw new Error("--preserve-state is bare-whole-stack only and cannot be combined with components, --space, --file, --run, or --dry-run");
+      throw new CommandFailure("refused", "USAGE_INVALID", "--preserve-state is bare-whole-stack only and cannot be combined with components, --space, --file, --run, or --dry-run");
     assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
     await preserveStateDown(values["store-dir"], assertSessionStores(values["session-store"] ?? []));
     return;
   }
-  if (values["store-dir"]) throw new Error("--store-dir is only valid with down --preserve-state");
-  if (values["session-store"]?.length) throw new Error("--session-store is only valid with down --preserve-state");
+  if (values["store-dir"]) throw new CommandFailure("refused", "USAGE_INVALID", "--store-dir is only valid with down --preserve-state");
+  if (values["session-store"]?.length) throw new CommandFailure("refused", "USAGE_INVALID", "--session-store is only valid with down --preserve-state");
   if ((values.file || values.run) && values.space) {
-    throw new Error("component names and --space cannot be combined with --file or --run");
+    throw new CommandFailure("refused", "USAGE_INVALID", "component names and --space cannot be combined with --file or --run");
   }
   if (values.file || values.run) {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
