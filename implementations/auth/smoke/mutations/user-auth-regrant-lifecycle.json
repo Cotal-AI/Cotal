@@ -18,8 +18,8 @@
     {
       "name": "R1 interactive re-grant preserves the predecessor UID instead of retiring and rotating it",
       "file": "implementations/auth/src/commands.ts",
-      "find": "      if (current?.lifecycleUid) {\n        await retireInteractiveActorLifecycle(dir, current, \"re-grant\");\n        const refreshed = findInteractiveActor(dir, owner, actor);\n        if (refreshed?.lifecycleUid !== current.lifecycleUid)\n          throw new Error(`cannot re-grant \"${owner}/${actor}\": the actor row changed while its predecessor retired. Nothing was overwritten; re-read \\`cotal actor list\\` and retry.`);\n      }\n      const row = grantActor(dir, {\n        owner,\n        actor,",
-      "replace": "      const row = grantActor(dir, {\n        owner,\n        actor,\n        lifecycleUid: current?.lifecycleUid,",
+      "find": "      if (current?.lifecycleUid) {\n        mutationAttempted = true;\n        // Async retirement runs before the transaction, never inside it.\n        retired = await retireInteractiveActorLifecycle(dir, current, \"re-grant\");\n      }\n      mutationAttempted = true;\n      const grantRow = {\n        owner,\n        actor,\n",
+      "replace": "      mutationAttempted = true;\n      const grantRow = {\n        owner,\n        actor,\n        lifecycleUid: current?.lifecycleUid,\n",
       "expectRed": "copied elevated bearer is refused after re-grant rotates its lifecycle",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
     },
