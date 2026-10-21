@@ -73,7 +73,8 @@ process.stdin.on("data", (b) => {
   if (b.includes(4)) process.exit(0);
 });`;
 
-// A report fitted to the terminal it is written to: the table needs 27 columns.
+// A report fitted to the terminal it is written to: the table needs 27 columns. Narrower, each row
+// is a record whose labels take their own lines, so a 20-column terminal shows every value whole.
 const REPORT = `
 const { writeResult } = await import(${JSON.stringify(pathToFileURL(join(repoRoot, "packages", "workspace", "dist", "index.js")).href)});
 const table = { kind: "table", columns: [{ key: "name", label: "NAME" }, { key: "state", label: "STATE" }], rows: [{ name: "古い席-long-name", state: { text: "working", tone: "ok", mark: "*" } }] };
@@ -116,13 +117,13 @@ try {
     const text = await screen(r.raw, cols, 20);
     check(
       `a report on a ${cols}-column terminal is ${records ? "one labeled record" : "a table"}`,
-      r.exitCode === 0 && text.includes("古い席-long-name") && (records ? /name: +古い席-long-name/.test(text) && /state: +\* working/.test(text) : /NAME +STATE/.test(text)),
+      r.exitCode === 0 && text.includes("古い席-long-name") && (records ? text === "name\n  古い席-long-name\nstate\n  * working" : /NAME +STATE/.test(text)),
       text,
     );
   }
 
-  // Help fits the terminal: no line is wider than it, a usage option keeps its value, and a flag
-  // column too wide to leave its descriptions 30 columns puts each description under its flag.
+  // Help fits the terminal: no line is wider than it, the usage breaks only between options, and a
+  // flag column too wide to leave its descriptions 30 columns puts each description under its flag.
   const lines = (text: string) => text.split(/\r?\n/).filter((line) => line.trim() !== "");
   const fit = (text: string, cols: number) => lines(text).filter((line) => [...line].length > cols);
   for (const cols of [80, 60]) {
@@ -134,18 +135,22 @@ try {
       check(`${["cotal", ...argv].join(" ")} on a ${cols}-column terminal fits every line`, s.exitCode === 0 && fit(s.text(), cols).length === 0 && lines(s.text()).length > 10, fit(s.text(), cols));
       if (argv[1] !== "spawn") continue;
       const all = lines(s.text());
-      const usage = all.slice(all.findIndex((line) => line.startsWith("usage: ")), all.findIndex((line) => line.startsWith("aliases: ")));
-      check(`on ${cols} columns its usage wraps only between options`, usage.length > 1 && usage.every((line) => line.split("[").length === line.split("]").length && (line.startsWith("usage: ") || line.startsWith("       ["))), usage);
-      const space = all.findIndex((line) => line.trimStart().startsWith("--space <s>"));
+      // The usage is the section under the `Usage` title, up to the next title.
+      const at = all.indexOf("Usage");
+      const end = all.findIndex((line, i) => i > at && /^\S/.test(line));
+      const usage = at === -1 ? [] : all.slice(at + 1, end === -1 ? undefined : end);
+      check(`on ${cols} columns its usage wraps only between options`, usage.length > 1 && usage.every((line, i) => line.split("[").length === line.split("]").length && (i === 0 ? /^ {2}\S/.test(line) : line.startsWith("  ["))), usage);
+      const space = all.findIndex((line) => line.trimStart().startsWith("-s, --space <s>"));
       check(
         cols === 60 ? "on 60 columns a flag description goes under its flag" : "on 80 columns a flag description sits beside its flag",
-        cols === 60 ? all[space] === "      --space <s>" && /^ {10}target space/.test(all[space + 1] ?? "") : /^ {6}--space <s> +target space/.test(all[space] ?? ""),
+        space !== -1 && (cols === 60 ? all[space] === "  -s, --space <s>" && /^ {4}target space/.test(all[space + 1] ?? "") : /^ {2}-s, --space <s> {2,}target space/.test(all[space] ?? "")),
         all.slice(space, space + 2),
       );
     }
   }
 
-  // A structured failure wraps the remedy under its own text.
+  // A classified failure is a report: its message, a labeled record of outcome and code, and the
+  // remedy under `Next`, which wraps at spaces with its continuation under its text.
   const failPty = cotalPty(["ps"], { cwd: home, env, cols: 40, rows: 20 });
   ptys.push(failPty);
   const f = session(failPty);
@@ -153,10 +158,11 @@ try {
   const failLines = lines(f.text());
   check(
     "a failure on a 40-column terminal wraps under its text",
-    f.exitCode === 2 && failLines.length > 2 && fit(f.text(), 40).length === 0 &&
-      failLines[0] === "✗ no mesh running" && /^ {2}↳ \S/.test(failLines[1] ?? "") &&
-      failLines.slice(2).every((line) => /^ {4}\S/.test(line)) &&
-      failLines.slice(1).map((line) => line.trim().replace(/^↳ /, "")).join(" ") === "run `cotal up` in a project, or pass `--server`",
+    f.exitCode === 2 && fit(f.text(), 40).length === 0 &&
+      failLines.join("\n") === [
+        "Request refused", "  no mesh running", "  Outcome", "    refused", "  Code", "    TARGET_NOT_FOUND",
+        "Next", "  run `cotal up` in a project, or pass", "  `--server`",
+      ].join("\n"),
     failLines,
   );
 

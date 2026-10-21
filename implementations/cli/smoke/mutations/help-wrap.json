@@ -2,53 +2,63 @@
   "suite": [
     "implementations/cli/smoke/cli-pty.smoke.ts"
   ],
-  "guard": "help, the entry screen and a failure written to a real terminal fit its width: lines wrap at spaces with each continuation under its text, a usage option keeps its value, and a flag column too wide for its descriptions puts each description under its flag",
+  "guard": "help, the entry screen and a failure written to a real terminal fit its width: lines wrap at spaces with each continuation under its text, a usage breaks only between options, and a flag column too wide for its descriptions puts each description under its flag",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/help-wrap.json",
   "why": [
-    "Only a real terminal reports a width, so only the pty suite can show help and failures read it. The binary imports the CLI package through its build, so each mutation rebuilds it and the restore rebuilds it back."
+    "Only a real terminal reports a width, so only the pty suite can show help and failures read it. The binary imports the CLI and workspace packages through their builds, so each mutation rebuilds the package it changes and the restore rebuilds it back."
   ],
   "mutations": [
     {
-      "name": "help keeps a description beside a flag column too wide for it",
-      "file": "implementations/cli/src/help.ts",
-      "find": "  if (width - pad - 4 >= 30) return names.flatMap",
-      "replace": "  if (width - pad - 4 >= 0) return names.flatMap",
+      "name": "help keeps a description beside a flag column that leaves it fewer than 30 columns",
+      "file": "packages/workspace/src/present.ts",
+      "find": "  const stacked = width - indent.length - pad - 2 < 30;\n",
+      "replace": "  const stacked = width - indent.length - pad < 24;\n",
       "expectRed": "on 60 columns a flag description goes under its flag",
       "cell": "on 60 columns a flag description goes under its flag",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:cli-pty",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "help wraps its usage at any space",
+      "file": "implementations/cli/src/help.ts",
+      "find": "wrapWords(usageGroups(usage), width - 2)",
+      "replace": "wrapWords(usage, width - 2)",
+      "expectRed": "on 60 columns its usage wraps only between options",
+      "cell": "on 60 columns its usage wraps only between options",
       "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
-      "name": "the help footer is not wrapped",
+      "name": "the entry screen ignores the terminal's width",
       "file": "implementations/cli/src/help.ts",
-      "find": "  for (const note of notes) out += `\\n${hang(\"\", note, width, c.dim).join(\"\\n\")}`;\n",
-      "replace": "  for (const note of notes) out += `\\n${c.dim(note)}`;\n",
-      "expectRed": "cotal help on a 80-column terminal fits every line",
-      "cell": "cotal help on a 80-column terminal fits every line",
+      "find": "  console.log(renderReport({ sections }, \"rich\", width));\n",
+      "replace": "  console.log(renderReport({ sections }, \"rich\"));\n",
+      "expectRed": "cotal help on a 60-column terminal fits every line",
+      "cell": "cotal help on a 60-column terminal fits every line",
       "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "help ignores the terminal's width",
-      "file": "implementations/cli/src/ui.ts",
-      "find": "  return wrapWords(text, width - prefix.length).map(",
-      "replace": "  return wrapWords(text, Number.POSITIVE_INFINITY).map(",
+      "file": "implementations/cli/src/help.ts",
+      "find": "  out(renderReport({ sections }, \"rich\", width));\n",
+      "replace": "  out(renderReport({ sections }, \"rich\"));\n",
       "expectRed": "cotal help spawn on a 80-column terminal fits every line",
       "cell": "cotal help spawn on a 80-column terminal fits every line",
       "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
-      "name": "a failure line is written unwrapped",
-      "file": "implementations/cli/src/ui.ts",
-      "find": "  for (const line of hang(prefix, text, terminalWidth(process.stderr))) console.error(paint(line));\n",
-      "replace": "  console.error(paint(prefix + text));\n",
+      "name": "a failure report's lines are written unwrapped",
+      "file": "packages/workspace/src/present.ts",
+      "find": "      else out.push(...block.lines.flatMap((line) => drawWrapped(line, style, width - indent.length).map((shown) => indent + shown)));\n",
+      "replace": "      else out.push(...block.lines.map((line) => indent + draw(line, style).shown));\n",
       "expectRed": "a failure on a 40-column terminal wraps under its text",
       "cell": "a failure on a 40-column terminal wraps under its text",
-      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:cli-pty",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     }
   ]
 }

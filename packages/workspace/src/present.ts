@@ -178,7 +178,8 @@ function renderTable(table: Table, style: Style, width: number, indent: string):
   return records.flatMap((record, i) => (i === 0 ? record : ["", ...record]));
 }
 
-/** Each value starts after its padded label; a value too long for the line continues under itself. */
+/** Each value starts after its padded label; a value too long for the line continues under itself.
+ *  Below 48 columns each label takes a line of its own, with its value on the lines under it. */
 function renderFields(fields: Fields, style: Style, indent: string, width: number): string[] {
   if (width < 48) {
     return fields.rows.flatMap(([name, value]) => [
@@ -197,7 +198,8 @@ function renderFields(fields: Fields, style: Style, indent: string, width: numbe
 function renderCommands(block: Commands, style: Style, width: number, indent: string): string[] {
   const commands = block.items.map((item) => ({ text: item.command, tone: "command" as const }));
   const pad = Math.max(0, ...commands.map((command) => draw(command, style).width));
-  const stacked = width - indent.length - pad < 24;
+  // A description that would have fewer than 30 columns beside its command goes on the lines under it.
+  const stacked = width - indent.length - pad - 2 < 30;
   return block.items.flatMap((item, index) => {
     const description: Cell = { text: item.description, tone: "hint" };
     if (stacked) return [

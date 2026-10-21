@@ -4,7 +4,7 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, findPreparedSpace, getCurrent, readMesh, renderReport, resolvePreference, terminalWidth, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, findPreparedSpace, getCurrent, readMesh, renderReport, resolvePreference, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
 import { c, hang } from "./ui.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
@@ -22,6 +22,19 @@ function describe(names: readonly string[], texts: readonly string[], width: num
   const pad = Math.max(...names.map((name) => name.length));
   if (width - pad - 4 >= 30) return names.flatMap((name, i) => hang(`  ${name.padEnd(pad)}  `, texts[i]!, width, c.dim));
   return names.flatMap((name, i) => [`  ${name.trimEnd()}`, ...hang(" ".repeat(10), texts[i]!, width, c.dim)]);
+}
+
+/** A usage line's words, grouped so a wrap falls only between options: a bracketed or angled group
+ *  such as `[--file <persona-file>]`, `[-d | --foreground]` or `<auth base URL>` stays whole. */
+function usageGroups(usage: string): string[] {
+  const groups: string[] = [];
+  let depth = 0;
+  for (const word of usage.split(" ")) {
+    if (depth > 0) groups[groups.length - 1] += ` ${word}`;
+    else groups.push(word);
+    depth = Math.max(0, depth + (word.match(/[[(<]/g)?.length ?? 0) - (word.match(/[\])>]/g)?.length ?? 0));
+  }
+  return groups;
 }
 
 /** A command's name with its aliases, as help lists it. */
@@ -116,14 +129,16 @@ export function printEntry(commands: readonly Command[]): void {
 
 /** One command's help, or one subcommand's when `sub` is given: summary, usage, aliases,
  *  subcommands, flags, structured outputs and examples, all from the declared specs. Each line goes
- *  to `out`, which a usage refusal points at stderr, wrapped to `width`; examples are never wrapped,
- *  so each stays one line to copy. */
+ *  to `out`, which a usage refusal points at stderr, wrapped to `width`; the usage breaks only
+ *  between options, and examples are never wrapped, so each stays one line to copy. */
 export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: string) => void = console.log, width = terminalWidth(process.stdout)): void {
   const path = sub ? `${cmd.name} ${sub.name}` : cmd.name;
   const selected = sub ?? cmd;
+  const usage = sub ? sub.usage ?? `cotal ${path}` : commandUsage(cmd);
   const sections: Section[] = [
     { title: `cotal ${path}`, blocks: [{ kind: "lines", lines: [selected.summary] }] },
-    { title: "Usage", blocks: [{ kind: "lines", lines: [{ text: sub ? sub.usage ?? `cotal ${path}` : commandUsage(cmd), tone: "command" }] }] },
+    // A titled section indents its lines two columns, so the usage wraps to what is left.
+    { title: "Usage", blocks: [{ kind: "lines", lines: wrapWords(usageGroups(usage), width - 2).map((text) => ({ text, tone: "command" as const })) }] },
   ];
   if (selected.aliases?.length) sections.push({ title: "Shorthands", blocks: [{ kind: "lines", lines: [{ text: selected.aliases.map((alias) => `cotal ${sub ? `${cmd.name} ${sub.name.split(" ").slice(0, -1).map((word) => word + " ").join("")}` : ""}${alias}`).join(" · "), tone: "command" }] }] });
   const subs = (sub ? sub.subcommands ?? [] : cmd.subcommands ?? []).filter((item) => !item.hidden);
