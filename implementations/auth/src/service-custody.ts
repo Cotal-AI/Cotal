@@ -163,12 +163,6 @@ async function bounded<T>(ctx: Ctx, start: () => Promise<T>): Promise<Bounded<T>
   return r;
 }
 
-async function read<T>(ctx: Ctx, start: () => Promise<T>): Promise<T> {
-  const r = await bounded(ctx, start);
-  if (r.ok) return r.value;
-  return "timedOut" in r ? held("unavailable", ctx.step, "a read timed out") : held("unavailable", ctx.step, message(r.error));
-}
-
 function checkSync(ctx: Ctx): void {
   if (ctx.h.tripped !== undefined) held("readiness", ctx.step, `the host is fenced: ${ctx.h.tripped}`);
 }
