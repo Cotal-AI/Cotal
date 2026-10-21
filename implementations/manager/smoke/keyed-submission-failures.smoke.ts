@@ -15,6 +15,8 @@ import { ensureAdmissionStore, admissionBucket, admissionKey, bindAndAdmitRunSub
 import { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal, awaitBrokerReady, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 
 const enc = new TextEncoder(), space = "keyed-failures", endpoint = "manager";
+// The crash child inherits this environment, so no ambient COTAL_ identity reaches it.
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 if (process.argv[2] === "owned-crash-child") {
   const p = JSON.parse(process.env.AGENT41_OWNED_CRASH_PAYLOAD!);
   const nc = await connect({ servers: p.servers, reconnect: false }), jsm = await jetstreamManager(nc);
