@@ -5383,11 +5383,13 @@ still has an unknown outcome.
 The admission authority writes one `submission.v1.<endpointToken>.<callerDigest>.<id>` binding
 in the existing write-once admission store. `callerDigest` is the canonical SHA-256 digest of
 `[owner,actor,lifecycleUid]` without its `sha256:` prefix. The closed value records the caller
-generation, semantic fingerprint, accepting instance/epoch, manager-minted run ID, frozen
+generation, semantic fingerprint, accepting instance/epoch, host-minted run ID, frozen
 admission digest and original callback deadline. Bindings are permanent, including terminal
 runs. Capacity exhaustion refuses new submissions rather than deleting authority history.
-The manager takes its stopping and launch-capacity refusals, and reserves the launch, before the
-binding, so those refusals leave a submission unbound. A launch that still fails after admission
+The manager takes its stopping and launch-capacity refusals, and reserves the launch, before it
+reads or writes the binding, so such a refusal writes nothing. It says nothing about an earlier
+attempt under the same key, which may already be bound, admitted or activated;
+`run-submission-status` takes no launch reservation and reads it. A launch that still fails after admission
 leaves `admitted` with no run, and nothing in this prerequisite launches or repairs it.
 
 Initial authorization and evidence validation precedes the binding CAS. Before each admission

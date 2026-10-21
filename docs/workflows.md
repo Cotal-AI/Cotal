@@ -2,7 +2,7 @@
 
 ## Keyed submission
 
-The new `run-start-keyed` command binds an envelope submission ID to one manager-minted run.
+The new `run-start-keyed` command binds an envelope submission ID to one host-minted run.
 `run-submission-status` reads that binding for the authenticated caller incarnation. Both need
 fresh issued reach and a digest-verified description pinned to one manager instance and epoch.
 Legacy `run-start` is unchanged. An unsupported keyed command never falls back to it.
@@ -21,7 +21,9 @@ The binding winner may make at most three admission-create attempts in its origi
 deadline, with the same admission bytes and authority. Initial authorization precedes binding,
 but fresh authority rechecks before each admission attempt can fail after binding and retain
 binding-only debt. The manager refuses a start while it is stopping or already at its launch
-limit before any binding, so that refusal leaves nothing bound. A launch that fails after
+limit before it reads or writes a binding, so that refusal writes nothing. It says nothing about
+an earlier attempt under the same key, which may already be bound or running.
+`run-submission-status` takes no launch slot, so read the outcome there. A launch that fails after
 admission leaves `admitted` with no run, and no later call launches it. Later duplicates only
 read. A `binding-only` result is a visible reconciliation hold, not a queue or permission to repair.
 An absent admission is an observation at read time, not proof that the original callback cannot
