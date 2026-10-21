@@ -1751,14 +1751,18 @@ A process row whose PID record exists but cannot be read, or exists under both i
 pre-upgrade name, reads `pidfile unreadable` with the error, and the other rows still print. A live
 manager whose delivery-aware marker cannot be read keeps its row and names the failure as
 `delivery-aware marker unreadable` with the error. The `Web process` row
-prints the address the selected mesh's dashboard recorded in `web.session` once it was listening,
-while the PID in its `web.pid` is alive. A `web.pid` or `web.session` that exists but cannot be read
-is named on the row with the error. Otherwise it reads `down`, or `not installed` without the web
+prints the address the selected mesh's dashboard recorded once it was listening, while the PID in
+its `web.pid` is alive. The dashboard that holds `web.pid` picks the record. A dashboard started with
+`cotal service start` writes its session record beside its service startup receipt, and status finds
+that record through the web service instance whose recorded process is that PID. Any other holder is
+read from `web.session`. Neither record is read in place of the other. A `web.pid`, session record or
+service instance record that exists but cannot be read is named on the row with the error.
+Otherwise it reads `down`, or `not installed` without the web
 extension. Status and the `cotal setup` card count the web extension as installed only when a
 package in the extensions manifest provides `web` and that package is on disk. A web package record
 that cannot be read, is not JSON or has no `version` is named on the `Web extension` row and on the
 card's web row, after the dashboard's address when it is listening and beside an unreadable
-`web.pid` or `web.session`. The `Web process` row still prints, and reads `down` unless the
+`web.pid` or session record. The `Web process` row still prints, and reads `down` unless the
 dashboard is listening.
 
 If a refresh fails, `status` may still show the kept catalog bytes for diagnosis. It labels them
@@ -1796,14 +1800,17 @@ state wins). That exit replaces the report's own, so a partial report followed b
   command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
   broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
   names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
-- **web**: local PID record, then the `/api/meta` response at the address the dashboard recorded in
-  `web.session` once it was listening, which must name the same PID. The probe presents the
-  readiness nonce recorded beside that address, the one credential the dashboard accepts on
-  `/api/meta`. The probe follows no redirect. An answer with a status outside 2xx, a 3xx included,
-  is `not-serving`, and the row names that status, such as `HTTP 401`. A live PID with no recorded
-  address (the dashboard is still writing it, or an earlier build started it), or an unrecognizable
-  process record, is `refused`, not a green default-port guess. A `web.session` that exists but
-  cannot be read is also `refused`, and the row names the read error.
+- **web**: local PID record, then the `/api/meta` response at the address the dashboard recorded
+  once it was listening, which must name the same PID. The holder of `web.pid` picks the record, as
+  on the `Web process` row: a service-run dashboard's own session record, found through its web
+  service instance and named on the row as `service instance <id>`, or `web.session` for any other
+  holder. The probe presents the readiness nonce recorded beside that address, the one credential
+  the dashboard accepts on `/api/meta`. The probe follows no redirect. An answer with a status
+  outside 2xx, a 3xx included, is `not-serving`, and the row names that status, such as `HTTP 401`.
+  A live PID with no recorded address (the dashboard is still writing it, or an earlier build
+  started it), or an unrecognizable process record, is `refused`, not a green default-port guess. A
+  session record or service instance record that exists but cannot be read is also `refused`, and
+  the row names the read error.
 - **broker**: the registered mesh URL dialed from this host with its recorded TLS requirement.
 
 `absent` means Cotal has no live local component record (or has a stale record); `not-serving`

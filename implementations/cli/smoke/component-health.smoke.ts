@@ -14,6 +14,10 @@
  * verdict regression cell separately registers a real status endpoint and serves a manager-shaped
  * foreign-owner reconciliation payload; the manager suite owns reconciliation-state generation.
  *
+ * The dashboard cells are the exception. The shipped `web` service preset serves only a static-auth
+ * target with a protected credential file, so those cells run on their own static-auth stack in a
+ * second sandbox root and stop it before the open-mesh cells continue.
+ *
  * Run: pnpm smoke:component-health
  */
 import assert from "node:assert/strict";
@@ -46,7 +50,7 @@ import {
   serveIssuanceGateKv,
   writeServiceStatus,
 } from "@cotal-ai/core";
-import { MANAGER_PIDFILE, canonicalLocalProcessPath, renewalRecordPath, writeRenewalRecord } from "@cotal-ai/workspace";
+import { MANAGER_PIDFILE, WEB_PIDFILE, WEB_SESSION_FILE, canonicalLocalProcessPath, renewalRecordPath, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -59,9 +63,16 @@ const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-health-r
 const home = mkdtempSync(join(tmpdir(), "cotal-component-health-home-"));
 const xdgConfigHome = join(home, "xdg");
 const store = join(root, "jetstream");
-// `cotal web --detach` below leaves the dashboard in `root` but outside the runner's process group,
-// and a killed run never reaches `finally`, so the watchdog that recording starts is what stops it.
+// The dashboard's static-auth stack and its credential file. The credential stays outside both
+// managed `.cotal` directories and COTAL_HOME, where an explicit credential export is refused.
+const WEB_SPACE = "component-health-web";
+const webRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-health-web-root-`));
+const credsDir = mkdtempSync(join(tmpdir(), "cotal-component-health-creds-"));
+// `cotal up` and `cotal service start` below leave the stack and the dashboard in `webRoot` but
+// outside the runner's process group, and a killed run never reaches `finally`, so the watchdog that
+// recording starts is what stops them.
 recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome });
+recordSmokeSandbox({ root: webRoot, cotalHome: home, xdgConfigHome });
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -87,7 +98,11 @@ async function portOpen(port: number): Promise<boolean> {
 }
 
 function cli(...args: string[]) {
-  return spawnSync(TSX, [CLI, ...args], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+  return cliIn(root, args);
+}
+
+function cliIn(cwd: string, args: string[], timeout = 30_000) {
+  return spawnSync(TSX, [CLI, ...args], { cwd, env, encoding: "utf8", timeout });
 }
 
 async function cliAsync(...args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
@@ -124,9 +139,8 @@ async function waitForFile(path: string): Promise<void> {
   assert.ok(existsSync(path), `fixture never wrote ${path}`);
 }
 
-/** Takes a bare PID for the detached dashboard, which `cotal web --detach` leaves parented elsewhere. */
-async function stop(target: ChildProcess | number | undefined): Promise<void> {
-  const pid = typeof target === "number" ? target : target?.pid;
+async function stop(target: ChildProcess | undefined): Promise<void> {
+  const pid = target?.pid;
   if (!pid) return;
   try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
   for (let i = 0; i < 30; i++) {
@@ -307,7 +321,8 @@ const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 let broker: ChildProcess | undefined;
 let holder: ChildProcess | undefined;
-let web: number | undefined;
+let webStack = false;
+let webService = false;
 let delivery: ChildProcess | undefined;
 let servingManager: { close(): Promise<void> } | undefined;
 try {
@@ -401,22 +416,57 @@ try {
   try { foreignWeb.kill("SIGTERM"); } catch { /* fixture is already gone */ }
   rmSync(join(root, ".cotal", "web.pid"), { force: true });
 
-  // The shipped dashboard, installed and launched as an operator does, so this cell grades the
-  // probe against the dashboard's own `web.session` and auth gate rather than a copy of either. It
-  // keeps serving for the cells below.
+  // The shipped dashboard, installed and started as an owned service as an operator does, so these
+  // cells grade the probe against the dashboard's own session record and auth gate rather than a copy
+  // of either. The `web` preset serves only a static-auth target with a protected credential file, so
+  // it runs on its own stack in `webRoot`, which these cells stop before the open-mesh cells below.
   const extAdd = cli("ext", "add", join(WT, "implementations", "web"));
   check("the web extension installs into this isolated config", extAdd.status === 0, `${extAdd.stdout}${extAdd.stderr}`);
+  const webUp = cliIn(webRoot, ["up", "--detach", "--no-manager", "--space", WEB_SPACE, "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
+  webStack = webUp.status === 0;
+  check("the dashboard's static-auth stack starts", webStack, `${webUp.stdout}${webUp.stderr}`);
+  const creds = join(credsDir, "dashboard.creds");
+  // The admin profile is the one the dashboard connected with before it became a service.
+  const minted = cliIn(webRoot, ["auth", "mint", "dashboard", "--profile", "admin", "--out", creds, "--space", WEB_SPACE]);
+  check("the dashboard's protected credential file is minted", minted.status === 0 && existsSync(creds), `${minted.stdout}${minted.stderr}`);
   const webPort = await freePort();
-  const webUp = cli("web", "--detach", "--no-open", "--port", String(webPort), "--space", SPACE, "--server", server);
-  const webUpText = `${webUp.stdout}${webUp.stderr}`;
-  web = Number(/\(pid (\d+)\)/.exec(webUpText)?.[1]) || undefined;
-  check("the dashboard starts detached", webUp.status === 0 && web !== undefined, webUpText);
+  const added = cliIn(webRoot, ["service", "add", "web", "--preset", "web", "--space", WEB_SPACE, "--root", webRoot, "--creds", creds, "--read-only", "--port", String(webPort)]);
+  webService = added.status === 0;
+  check("service add saves the web preset for this stack", webService, `${added.stdout}${added.stderr}`);
+  const webStart = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--json"], 120_000);
+  const instance = webStart.status === 0 ? (JSON.parse(webStart.stdout) as { result?: { instanceId?: string; pid?: number } }).result : undefined;
+  const webPid = canonicalLocalProcessPath(WEB_PIDFILE, { root: webRoot, space: WEB_SPACE });
+  const web = existsSync(webPid) ? Number(readFileSync(webPid, "utf8").trim()) || undefined : undefined;
+  check("the dashboard starts as a service whose process holds web.pid",
+    webStart.status === 0 && web !== undefined && instance?.pid === web, `${webStart.stdout}${webStart.stderr}`);
   const anonymousMeta = await fetch(`http://127.0.0.1:${webPort}/api/meta`);
   check("the dashboard refuses an anonymous /api/meta", anonymousMeta.status === 401, anonymousMeta.status);
-  const webServing = cli("status", "--components", "--space", SPACE, "--server", server);
+  const webServing = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
   const webServingText = `${webServing.stdout}${webServing.stderr}`;
   check("the live dashboard at its recorded address grades web serving",
     /web\s+serving/.test(webServingText) && webServingText.includes(`pid ${web}`) && webServingText.includes(`port ${webPort}`) && webServingText.includes("http reachable"), webServingText);
+  check("a service-run dashboard is graded from its own instance's session record",
+    instance?.instanceId !== undefined && webServingText.includes(`service instance ${instance.instanceId}`), webServingText);
+  // The pidfile's holder picks the session record. A stale `web.session` beside a service-held
+  // web.pid names a port nothing listens on, so reading it would grade the live dashboard not-serving.
+  const legacySession = canonicalLocalProcessPath(WEB_SESSION_FILE, { root: webRoot, space: WEB_SPACE });
+  writeFileSync(legacySession, JSON.stringify({ launchUrl: "http://127.0.0.1:1/", readiness: "stale", host: "127.0.0.1", port: await freePort() }), { mode: 0o600 });
+  const staleLegacy = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+  const staleLegacyText = `${staleLegacy.stdout}${staleLegacy.stderr}`;
+  rmSync(legacySession, { force: true });
+  check("a stale web.session beside a service-held web.pid is not read",
+    /web\s+serving/.test(staleLegacyText) && staleLegacyText.includes(`port ${webPort}`), staleLegacyText);
+
+  // The service's own stop and removal, then the stack's, checked here so a passing run leaves
+  // nothing behind. `finally` repeats them only when a failure skipped them.
+  const webStop = cliIn(webRoot, ["service", "stop", "web", "--space", WEB_SPACE, "--yes"], 60_000);
+  check("service stop stops the dashboard and its close releases web.pid", webStop.status === 0 && !existsSync(webPid), `${webStop.stdout}${webStop.stderr}`);
+  const webRemove = cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
+  webService = webRemove.status !== 0;
+  check("service remove forgets the stopped dashboard", webRemove.status === 0, `${webRemove.stdout}${webRemove.stderr}`);
+  const webDown = cliIn(webRoot, ["down"], 120_000);
+  webStack = webDown.status !== 0;
+  check("cotal down stops the dashboard's static-auth stack", webDown.status === 0, `${webDown.stdout}${webDown.stderr}`);
 
   // The delivery daemon owns its ready lease and records its last adoption proof in its renewal
   // record. Put a holder in the pre-ready state, then flip the record to a refused adoption: neither
@@ -440,8 +490,13 @@ try {
   servingManager = await serveManagerWithForeignRefusal();
   const benignRefusal = await cliAsync("status", "--components", "--space", SPACE, "--server", server);
   const benignRefusalText = `${benignRefusal.stdout}${benignRefusal.stderr}`;
+  // No dashboard can run on this open mesh, because the `web` preset refuses an open target, so the
+  // web row is `absent` and sets exit 1. Every other component must still be serving.
   check("benign foreign-owned reconciliation stays serving with exact failure facts",
-    benignRefusal.status === 0 &&
+    benignRefusal.status === 1 &&
+      /web\s+absent/.test(benignRefusalText) &&
+      /delivery\s+serving/.test(benignRefusalText) &&
+      /broker\s+serving/.test(benignRefusalText) &&
       /manager\s+serving/.test(benignRefusalText) &&
       !/manager\s+not-serving/.test(benignRefusalText) &&
       benignRefusalText.includes("static reconciliation failed") &&
@@ -453,9 +508,15 @@ try {
 } finally {
   await servingManager?.close();
   await stop(delivery);
-  await stop(web);
+  if (webService) {
+    cliIn(webRoot, ["service", "stop", "web", "--space", WEB_SPACE, "--yes"], 60_000);
+    cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
+  }
+  if (webStack) cliIn(webRoot, ["down"], 120_000);
   await stop(holder);
   await stop(broker);
   rmSync(home, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
+  rmSync(webRoot, { recursive: true, force: true });
+  rmSync(credsDir, { recursive: true, force: true });
 }
