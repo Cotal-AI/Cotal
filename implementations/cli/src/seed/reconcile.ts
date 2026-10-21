@@ -161,9 +161,20 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
     // ext` op holds it past the wait), the reconcile lock is still released, not leaked. The reconcile
     // takes a modest bounded wait (a brief operator op shouldn't fail the boot-gate); operators
     // themselves fail fast.
-    const releaseMutation = claimExtensionMutation({ waitMs: 30000 });
+    let releaseMutation = claimExtensionMutation({ waitMs: 30000 });
     try {
-      return await runUnderLocks(mode, generation, lock.nonce);
+      return await runUnderLocks(mode, generation, lock.nonce, async () => {
+        // Provider imports take their own extension lock. Keep the reconcile lock and unfinished
+        // cursor, but release our writer while the harness refresh uses the normal loader.
+        const before = JSON.stringify(loadExtensionsManifest());
+        releaseMutation();
+        releaseMutation = () => {};
+        const { refreshConnectorInstalls } = await import("../commands/setup.js");
+        for (const line of await refreshConnectorInstalls()) console.error(c.dim(`→ ${line}`));
+        releaseMutation = claimExtensionMutation({ waitMs: 30000 });
+        if (JSON.stringify(loadExtensionsManifest()) !== before)
+          throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");
+      });
     } finally {
       releaseMutation();
     }
@@ -222,7 +233,7 @@ function builtinsMetadataCurrent(): boolean {
   return true;
 }
 
-async function runUnderLocks(mode: Mode, generation: string, nonce: string): Promise<ReconcileResult> {
+async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>): Promise<ReconcileResult> {
   // Refuse to touch the prefix while an orphaned seed child (a crashed parent's still-running
   // installer) is mutating it — reclaiming the lock does not stop that process. An ambiguous marker
   // (pending with a dead parent, or corrupt) is fail-loud: we cannot prove no installer is running.
@@ -366,6 +377,10 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
       removedKept.push(name); // seeded before, deliberately removed (or absent on disk) → leave removed
     }
   }
+
+  // An npm upgrade reaches this path before the command runs. Refresh harness-owned copies before
+  // stamping the generation: a failed refresh must remain an incomplete upgrade on the next boot.
+  if (migrationFrom) await refreshInstalls();
 
   // Commit: authority (+ backup) → witness → stamp (LAST); THEN drop the cursor + recovery obligation
   // and GC old stores. The cursor and recovery marker are cleared only here, so an interruption

@@ -406,8 +406,10 @@ async function reconcileConnectorSkills(): Promise<void> {
 export async function refreshConnectorInstalls(): Promise<string[]> {
   const lines: string[] = [];
   for (const connector of await setupConnectorSurface()) {
-    const refresh = (await availableSetupProvider(connector))?.refresh;
-    if (refresh) lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv() })}`);
+    // Refresh owns installed state even when a harness executable disappeared. Its provider must
+    // distinguish an absent integration from one it cannot update; availability must not hide it.
+    const refresh = (await connectorSetupProvider(connector))?.refresh;
+    if (refresh) lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
   }
   return lines;
 }

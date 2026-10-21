@@ -18,6 +18,8 @@ export interface ConnectorSetupInput {
   /** The argv that runs this Cotal CLI, `[node, ...loaderFlags, entry]` by absolute path, so an asset
    *  the action installs can run the CLI without `cotal` on its PATH. */
   readonly cotal: readonly string[];
+  /** Current authored skills for refreshing an already installed skills integration. */
+  readonly skills?: ConnectorSkillsSetupInput;
 }
 
 /** Inputs shared by connector-specific skills installers. The authored skills themselves use the

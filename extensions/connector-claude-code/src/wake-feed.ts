@@ -1,9 +1,9 @@
 /**
  * How a plain Claude Code session's local server wakes the session. The server writes the
- * connection id of each wake to a socket of its own, and the plugin's monitor (`monitor.ts`) turns
- * each one into a fixed line, so Claude Code starts a turn. Nothing read from a socket reaches the
- * model as text. Both are children of one Claude Code process, and its pid names the session's
- * sockets: the server knows it as its parent, the monitor from the `CLAUDE_PID` Claude Code gives it.
+ * connection id of each wake to a socket of its own, and the native reader (`monitor.ts`) turns
+ * each one into a fixed line for the hooks module to submit. Nothing read from a socket reaches the
+ * model as text. The server and native reader are children of the same Claude Code host process,
+ * whose pid names the session's sockets. Classic monitors instead receive that pid in CLAUDE_PID.
  * Each server's own pid completes its socket's name, so a restarted or second server never takes
  * another's.
  */

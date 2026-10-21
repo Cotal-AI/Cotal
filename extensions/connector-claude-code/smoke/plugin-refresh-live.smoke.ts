@@ -125,11 +125,14 @@ try {
   ok("refresh rewrites the copy every project runs, and installs nothing new", () => {
     assert.notEqual(folderVersion(), first);
     assert.deepEqual(folderCli(), cli("two"));
-    assert.equal(text, `cotal@cotal-mesh ${folderVersion()}; each Claude Code session loads it when it starts`);
+    assert.equal(text, `cotal@cotal-mesh ${folderVersion()}; reload plugins or reopen Claude to load it in running sessions`);
     assert.deepEqual(installs(), ["user"]);
   });
-  ok("after the refresh both projects start the rewritten copy", () => {
+  ok("after the refresh both projects start the rewritten copy and record its version", () => {
     for (const dir of [PROJECT_A, PROJECT_B]) assert.ok(startedIn(dir).includes(join(FOLDER, "dist", "mcp.cjs")));
+    const out = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8", maxBuffer: BIG });
+    const entry = (JSON.parse(out.stdout) as { id: string; version: string }[]).find((e) => e.id === "cotal@cotal-mesh");
+    assert.equal(entry?.version, folderVersion());
   });
   ok("a second refresh with the same CLI writes the same version", () => {
     const before = folderVersion();
