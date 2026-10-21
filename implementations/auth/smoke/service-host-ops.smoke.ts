@@ -3,7 +3,9 @@
  * name and fault hooks), in operator mode: discovery reads over the product discovery grant, which
  * publishes nothing, and each invocation's effect connection is the product effect credential,
  * which may publish exactly its scope's keys until its original deadline, so a write outside an
- * invocation's scope would be refused by the broker as well as by the engine. Records a test writes directly are labelled as simulations; nothing here is
+ * invocation's scope would be refused by the broker as well as by the engine. The broker confines
+ * publish subjects only, not what a publish on a granted subject does; this suite shows only the
+ * engine's own creates and CASes. Records a test writes directly are labelled as simulations; nothing here is
  * native, Cloud or production acceptance, and nothing proves a human decision. */
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";

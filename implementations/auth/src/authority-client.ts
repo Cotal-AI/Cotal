@@ -397,8 +397,12 @@ function scopeKey(pattern: RegExp, key: string, what: string): string {
 
 /** One service host invocation's EFFECT credential: the discovery reads, plus a `$KV` publish on
  *  exactly each key of `keys` and on exactly one more token under each auth family (a root
- *  credential id minted during the write). No key carries a wildcard, so the grant can never be
- *  wider than the scope the engine guards every write with. */
+ *  credential id minted during the write). No key carries a wildcard, so the grant's subjects can
+ *  never be wider than the scope the engine guards every write with.
+ *
+ *  Named residual: this is publish-subject confinement only. Broker permissions do not restrict
+ *  what a publish on a granted subject does; the engine's own writes are only creates and
+ *  exact-revision CASes. */
 export function serviceHostEffectGrants(space: string, connId: string, keys: ServiceWriteScope): { publish: string[]; subscribe: string[] } {
   const base = serviceHostDiscoveryGrants(space, connId);
   const auth = epAuthBucket(space);

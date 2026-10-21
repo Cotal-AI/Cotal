@@ -1549,7 +1549,9 @@ A replay of the same request discovers the stored binding and assignment and sco
 Each invocation's effect connection is a fresh self-minted data-account identity named
 `cotal:service-host-effect:<space>`. Its credential publishes exactly the scope's keys as `$KV`
 subjects, and one more token under each auth family, beside the leader reads both stores need;
-discovery's credential publishes no `$KV` subject at all. Reads are not confined: the leader reads
+discovery's credential publishes no `$KV` subject at all. That grant confines publish subjects only;
+it does not restrict what a publish on a granted subject does, and the engine's own writes are only
+creates and exact-revision CASes on those keys. Reads are not confined: the leader reads
 are stream-wide on both stores. The effect credential never renews or reconnects. Its one expiry is
 the invocation's original deadline, at most 60 s ahead, rounded up to the whole second. The broker
 checks expiry in whole seconds against its own clock: it admits no connect once its current second

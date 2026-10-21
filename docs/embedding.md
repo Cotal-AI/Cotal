@@ -1281,8 +1281,9 @@ custody host over a per-invocation effect registry. That host writes only the in
 the exact keys discovery located before the effect registry opened, and the effect registry is
 handed the same key set so a broker grant can match it. A step that needs a key outside the scope
 holds as `scope-mismatch` before anything is issued; replaying the same request discovers what is
-stored and scopes it. Each effect registry rides its own connection, whose credential publishes
-only that key set, never renews or reconnects, and expires at the invocation's original deadline
+stored and scopes it. Each effect registry rides its own connection, whose credential may publish
+only on that key set's subjects (subject confinement, not operation confinement; the engine itself
+only creates and CASes those keys), never renews or reconnects, and expires at the invocation's original deadline
 rounded up to the whole second. With agreeing clocks and timely scheduling the broker's
 whole-second timer closes it within about 1999 ms after that deadline; that is granularity, not a
 guaranteed close time, and no close proves an earlier write cannot still settle. Losing the
