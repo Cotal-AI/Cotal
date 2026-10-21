@@ -46,7 +46,7 @@ import {
   serveIssuanceGateKv,
   writeServiceStatus,
 } from "@cotal-ai/core";
-import { renewalRecordPath, writeRenewalRecord } from "@cotal-ai/workspace";
+import { MANAGER_PIDFILE, canonicalLocalProcessPath, renewalRecordPath, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -327,7 +327,9 @@ try {
   });
   await waitForFile(ready);
   const held = JSON.parse(readFileSync(ready, "utf8")) as { pid: number };
-  writeFileSync(join(root, ".cotal", "manager.pid"), String(held.pid));
+  // The space-keyed record a current start writes, so the folder's process scope is this space.
+  const managerRecord = canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space: SPACE });
+  writeFileSync(managerRecord, String(held.pid));
 
   // RED FIRST — the old surface has no component distinction. It only sees the absent manager
   // service registry, the same answer it will give when no manager process/lease exists at all.
@@ -356,12 +358,12 @@ try {
   const bare = cli("status", "--space", SPACE, "--server", server);
   const bareText = `${bare.stdout}${bare.stderr}`.replace(/\x1b\[[0-9;]*m/g, "");
   check("bare status says not serving for a live pid whose rail does not answer (#2073)",
-    /manager:\s+not serving \(pid \d+\)/.test(bareText) && bareText.includes("service endpoint not answering") && !/manager:\s+running \(pid/.test(bareText), bareText);
+    /Manager\s+not serving \(pid \d+\)/.test(bareText) && bareText.includes("service endpoint not answering") && !/Manager\s+running \(pid/.test(bareText), bareText);
   check("bare status keeps exit 0 when the manager is not serving (#2073)", bare.status === 0, bareText);
 
   await stop(holder);
   holder = undefined;
-  rmSync(join(root, ".cotal", "manager.pid"), { force: true });
+  rmSync(managerRecord, { force: true });
   // The manager lease has a 10s TTL. The absent control must wait for its real expiry: deleting
   // the PID record alone would still be a present lease-holder case, not an absent component.
   await sleep(10_500);

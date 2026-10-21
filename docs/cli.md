@@ -3669,6 +3669,9 @@ cannot receive a static-signer repair fallback. No system account is rotated and
 respawned or silently given a new identity.
 
 A local re-sign does not erase a recorded broker refusal or claim that a daemon adopted it.
+A recorded refusal names the space's manager, the renewal owner, as the next step. A pre-per-space
+`.cotal/renewal.json` names no space, so it is reported as a leftover and never read as the space's
+verdict.
 Remaining findings, incomplete audit reads and partial/unknown repair outcomes keep classified
 finite receipts. Inspect the original renewal owner and lifecycle rather than repeating a mutation
 or creating replacement agents merely to obtain a different report.
@@ -3787,7 +3790,8 @@ the binary. They are seeded on first run through the **same** `ext add` path a t
 appear in `cotal ext list` like any other extension. So you can remove one you do not want
 (`cotal ext remove @cotal-ai/connector-hermes`), and a deliberately-removed connector STAYS removed
 across upgrades. `cotal ext add <your-package>` adds a third-party connector the same way. The web
-dashboard (`@cotal-ai/web`, providing `command:web`) is the seventh built-in seeded on the same path.
+dashboard (`@cotal-ai/web`, providing `service-preset:web`) is the seventh built-in seeded on the
+same path.
 
 `cotal ext seed` is the maintenance entry for that seeding (it runs automatically before the first
 command of each boot that is not a read, so you rarely call it). A read, such as `status`, `ps`,

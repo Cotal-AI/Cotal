@@ -1,7 +1,7 @@
 # @cotal-ai/web
 
-The browser dashboard, as an extension package that adds the `cotal web` command. It ships inside
-`cotal-ai` and is seeded automatically on first run.
+The browser dashboard, as an extension package that adds the `web` service preset
+(`cotal service start web`). It ships inside `cotal-ai` and is seeded automatically on first run.
 
 **Tier:** `implementations/`. Peer-depends [`@cotal-ai/core`](../../packages/core) and
 [`@cotal-ai/workspace`](../../packages/workspace); self-registers on import.
