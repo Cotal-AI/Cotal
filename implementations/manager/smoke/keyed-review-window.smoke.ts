@@ -22,7 +22,7 @@ const auth = await core.createSpaceAuth(space);
 const root = mkdtempSync(join(tmpdir(), "cotal-submission-project-"));
 mkdirSync(join(root, ".cotal"));
 workspace.saveSpaceAuth(workspace.authDir(root), auth);
-const port = process.env.AGENT41_BROKER_PORT ? Number(process.env.AGENT41_BROKER_PORT) : await freePort();
+const port = process.env.KEYED_BROKER_PORT ? Number(process.env.KEYED_BROKER_PORT) : await freePort();
 assert.ok(Number.isInteger(port) && port > 1024 && port < 65536, "owned loopback broker port");
 const servers = `nats://127.0.0.1:${port}`;
 const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));

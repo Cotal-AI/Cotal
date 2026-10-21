@@ -13,7 +13,7 @@ import {
   type RunAdmission, type EpCaller,
 } from "@cotal-ai/core";
 import { freePort, awaitBrokerReady, killAndAwaitExit, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
-const port = process.env.AGENT41_BROKER_PORT ? Number(process.env.AGENT41_BROKER_PORT) : await freePort();
+const port = process.env.KEYED_BROKER_PORT ? Number(process.env.KEYED_BROKER_PORT) : await freePort();
 assert.ok(Number.isInteger(port) && port > 1024 && port < 65536, "owned loopback broker port");
 const servers = `nats://127.0.0.1:${port}`;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));

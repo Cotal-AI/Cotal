@@ -14,7 +14,7 @@ import { ensureIssuedStores, openIssuedStore, issuedBucket, ensureAdmissionStore
 import { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit, awaitBrokerReady } from "@cotal-ai/smoke-kit";
 import { handleRemoteRunSubmission, observedRunRequest, type ObservedRunRequest } from "../src/manager-authority.js";
 import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
-const port = process.env.AGENT41_BROKER_PORT ? Number(process.env.AGENT41_BROKER_PORT) : await freePort();
+const port = process.env.KEYED_BROKER_PORT ? Number(process.env.KEYED_BROKER_PORT) : await freePort();
 assert.ok(Number.isInteger(port) && port > 1024 && port < 65536, "owned loopback broker port");
 const servers = `nats://127.0.0.1:${port}`;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));

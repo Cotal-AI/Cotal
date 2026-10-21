@@ -18,7 +18,7 @@ const enc = new TextEncoder(), space = "keyed-failures", endpoint = "manager";
 // The crash child inherits this environment, so no ambient COTAL_ identity reaches it.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 if (process.argv[2] === "owned-crash-child") {
-  const p = JSON.parse(process.env.AGENT41_OWNED_CRASH_PAYLOAD!);
+  const p = JSON.parse(process.env.KEYED_OWNED_CRASH_PAYLOAD!);
   const nc = await connect({ servers: p.servers, reconnect: false }), jsm = await jetstreamManager(nc);
   const kv = await new Kvm(nc).open(admissionBucket(space)), put = kv.put;
   let checks = 0;
@@ -59,7 +59,7 @@ try {
   for (const mode of ["before-binding", "after-binding", "after-admission"] as const) {
     const id = mintLifecycleUid(), admission = make();
     const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "owned-crash-child"], {
-      env: { ...process.env, AGENT41_OWNED_CRASH_PAYLOAD: JSON.stringify({ mode, id, admission, fingerprint, servers, budgetMs: 10_000 }) },
+      env: { ...process.env, KEYED_OWNED_CRASH_PAYLOAD: JSON.stringify({ mode, id, admission, fingerprint, servers, budgetMs: 10_000 }) },
       stdio: ["ignore", "inherit", "inherit"],
     });
     const pid = child.pid;

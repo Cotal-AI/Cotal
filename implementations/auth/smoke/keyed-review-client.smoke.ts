@@ -31,7 +31,7 @@ const service = { endpoint: "manager", caller, responder: { endpoint: "manager",
   pinnedInstanceId: instanceId, commands: new Map(["run-start-keyed", "run-submission-status"].map(name => [name, { name, class: "ephemeral", contract }]))
 } as unknown as ResolvedService;
 const prepared = core.prepareKeyedRunSubmission("client-cells", service, core.mintLifecycleUid(), { source: "log(1);" });
-if (!process.env.AGENT41_REMAINING_EDGES_ONLY) {
+if (!process.env.KEYED_REMAINING_EDGES_ONLY) {
 await assert.rejects(core.invokeKeyedRunSubmission({} as never, "client-cells", JSON.parse(JSON.stringify(prepared)), { deadlineMs: 50 }), /prepared/);
 await assert.rejects(core.readKeyedRunSubmission({} as never, "client-cells", JSON.parse(JSON.stringify(prepared)), { deadlineMs: 50 }), /pinned support/);
 console.log("PASS exported helper rejects serialized structural handle before any broker access, no persisted restart recovery implied");
