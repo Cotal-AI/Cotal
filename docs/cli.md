@@ -707,7 +707,9 @@ implied. A dry run reads records only and does not establish native impact. Cont
 preservation and manifest flags rather than switching to the legacy launcher.
 
 The legacy bare-stack and manifest apply paths described below are retained. They do not
-accept the new named-service JSON/plain/yes apply receipt flags. Before a retained bare apply
+accept the new named-service JSON/plain/yes apply receipt flags. A bare stop of such a root needs
+no `--yes`, so `cotal down --yes` there is refused and stops nothing; run `cotal down` without it.
+Before a retained bare apply
 reaches its pidfile sweep, it now requires one locally started registration under
 a real isolated project root and refuses pending maintenance transitions, any valid or
 unreadable additive ledger or attempt under that root, any other local registration at
@@ -728,8 +730,8 @@ stopping leaves the restore journal and fallback store unchanged.
 cotal down
 cotal down --with-agents
 cotal down --preserve-state [--store-dir <dir>] [--session-store <dir> …]
-cotal down manager [delivery auth web nats ...]
-cotal down web [--space <name>]
+cotal down --dry-run [--space <name>] [--json|--plain]
+cotal down <service-name> [<service-name> …] [--instance <id>] [--space <s>] [--yes|--dry-run] [--json|--plain]
 cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 ```
 
@@ -737,8 +739,8 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 |---|---|---|
 | `--file <cotal.yaml>`, `-f` | none | Tear down this manifest's deploy |
 | `--run <id>` | none | Tear down one `spawn -f` run by id |
-| `--space <name>` | current mesh | With components: the mesh whose target-addressed components (e.g. `web`) to stop |
-| `--dry-run` | off | Print the manifest teardown or selected components, mutate nothing |
+| `--space <name>` | current space | With service names: the space whose saved definitions to stop. With bare `--dry-run`: confirm that space belongs to this root. A bare stop refuses it |
+| `--dry-run` | off | Print the manifest teardown, the named service stop or the bare stack preview, mutate nothing |
 | `--with-agents` | off | Bare whole stack only: also stop and deprovision every managed agent |
 | `--preserve-state` | off | Bare whole stack only: fence the manager, retain principals and durable state, stop and prove the stack down, then publish `ready` |
 | `--store-dir <dir>` | `.cotal/nats` | With `--preserve-state`: the actual store path (required for a custom store) |
@@ -773,18 +775,15 @@ cannot turn a later bare shutdown destructive. If a managed agent cannot be prov
 the manager's stop timeout, the manager logs which one, still closes its broker connections and
 console listener, and exits with code 1. It does not release its pidfile, liveness lease or
 service registration in that case, so no successor is handed authority while that agent may still
-run; the lease lapses on its TTL. Positional component names stop
-only those self-registered local processes; for example, `cotal down manager` leaves delivery and
-the broker running, and `cotal down web` is available when the web extension is installed. A
-component that starts target-resolved (the web dashboard) is stopped the same way: `cotal down web`
-resolves the legacy dashboard's recorded mesh (registry current mesh first, `--space` to name one), so
-it works from any directory; the other components always stop under the folder you run it in. The
+run; the lease lapses on its TTL. A named `down` is the service stop above and never stops a
+legacy component by its pidfile, so `cotal down manager` or `cotal down web` on a legacy stack is
+refused unless a saved definition has that name. Only bare `cotal down` stops a legacy root's
+components, all together, under the folder you run it in. It takes no `--space`. The
 `-f` / `--run` forms tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh
-and cannot be combined with component names. Stopping `nats` alone is refused while an unselected
-registered daemon is still live; include those components or use bare `cotal down`.
+and cannot be combined with service names or `--space`.
 
-A pinned manager with no spare-capability record is not signalled by bare `cotal down` or `cotal
-down manager`. A current manager always publishes the record, so a missing one means an older
+A pinned manager with no spare-capability record is not signalled by bare `cotal down`. A current
+manager always publishes the record, so a missing one means an older
 manager: one that predates capability reporting, or one whose pty runtime reported that it cannot
 detach its agents. Stop each managed agent explicitly, then run `cotal down --with-agents` from the
 mesh root to stop the whole stack. An older manager does not understand
@@ -797,15 +796,14 @@ broker address, says no pidfile records that process, says it will not stop a pr
 start, and exits 1. Stop that broker with whatever started it (an init unit, a container, or the
 hand-run process). `cotal meshes rm <space>` only drops the registration. The probe runs whether or
 not other owned components were running: they stop and clear their artifacts first, then the broker
-is named. A component stop and `--dry-run` stay pidfile-only and do not probe.
+is named. A `--dry-run` does not run this probe.
 
 `down` reads each process record once. A component that exits and removes its own record while
 `down` runs counts as having no record, so the stop goes on. Any other failed read is an error.
 Whole-stack shutdown keeps delivery credentials until every required component has stopped.
-A refused stop preserves both the space-scoped credential and its legacy copy. A selective
-delivery stop still removes its credentials after that daemon stops. Credential removal errors
-remain failures. `down` removes the manager's delivery-aware marker, shutdown intent and spare
-capability only after every selected component has stopped, so a refused stop keeps them too.
+A refused stop preserves both the space-scoped credential and its legacy copy. Credential removal
+errors remain failures. `down` removes the manager's delivery-aware marker, shutdown intent and
+spare capability only after every component has stopped, so a refused stop keeps them too.
 
 **Teardown verifies pinned process identity before signalling.** PIDs are recycled by every OS,
 so a recorded pid alone is not a durable target identity. `up` and the dashboard's native child record each
