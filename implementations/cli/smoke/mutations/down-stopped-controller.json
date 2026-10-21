@@ -1,0 +1,79 @@
+{
+  "suite": [
+    "implementations/cli/smoke/space-registration.smoke.ts"
+  ],
+  "guard": "a second bare down of a controller stack its own down stopped is a no-op without --yes that writes nothing, in every presentation, unless a process recorded under its root for another space may still run, which it refuses naming the record, its path and pid in the text and the next step; a selected-space record path that is a link refuses at the link before the stack is called stopped, with nothing behind it read; and a running stack's missing --yes refusal is one line and its remedy",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/space-registration.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-stopped-controller.json",
+  "why": [
+    "A second bare down of a stopped controller stack used to refuse for --yes and print the whole usage text, although nothing would stop. The suite drives the built binary through a prepared root's up, down and second down, so each mutation rebuilds it and the restore rebuilds it back.",
+    "The no-op reads every record a local-process descriptor names under the root, for any space a record name holds, so a live manager another space recorded there refuses it. The suite plants that record over a process of its own, checks the text refusal names it, and follows the printed next step to the record and its live pid.",
+    "Whether the stack is stopped is decided from its service records, and the root's process records are read only by the census, which follows no link. The suite links this root's .cotal/daemon, then its .cotal/worker.record, to a separate root's records of a live process under an installed extension's descriptors, and each down must refuse at the link without naming that pid."
+  ],
+  "mutations": [
+    {
+      "name": "a stack its own down stopped takes the full stop again",
+      "file": "implementations/cli/src/commands/stack-down.ts",
+      "find": "  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && values[\"dry-run\"] !== true);\n",
+      "replace": "",
+      "expectRed": "a second bare down without --yes says the stack is not running, names cotal up, and exits 0",
+      "cell": "a second bare down without --yes says the stack is not running, names cotal up, and exits 0",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the missing --yes refusal prints the command help again",
+      "file": "implementations/cli/src/command.ts",
+      "find": "if (!(failure instanceof ConfirmationRequired)) printCommandHelp(",
+      "replace": "if (failure) printCommandHelp(",
+      "expectRed": "a bare down of the running stack outside a terminal refuses for --yes, with its remedy and without the command help",
+      "cell": "a bare down of the running stack outside a terminal refuses for --yes, with its remedy and without the command help",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the no-op reads only the stack's own space",
+      "file": "implementations/cli/src/lib/stack-journal.ts",
+      "find": "    for (const match of recordedLocalProcessPaths(component.pidFile, root))\n",
+      "replace": "    for (const match of recordedLocalProcessPaths(component.pidFile, root).slice(0, 0))\n",
+      "expectRed": "the text refusal names the other space's manager record and its pid",
+      "cell": "the text refusal names the other space's manager record and its pid",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the refusal drops the records it found from its message",
+      "file": "implementations/cli/src/commands/stack-down.ts",
+      "find": "`recorded processes under this root may still run (${lines.join(\"; \")}), so bare down",
+      "replace": "`recorded processes under this root may still run, so bare down",
+      "expectRed": "the text refusal names the other space's manager record and its pid",
+      "cell": "the text refusal names the other space's manager record and its pid",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the next step names the record paths without their pids",
+      "file": "implementations/cli/src/commands/stack-down.ts",
+      "find": "    const checks = remaining.map((row) => row.pid === undefined ? row.path : `pid ${row.pid} at ${row.path}`);\n",
+      "replace": "    const checks = remaining.map((row) => row.path);\n",
+      "expectRed": "following the remedy reaches the recorded path, which holds the live pid it names",
+      "cell": "following the remedy reaches the recorded path, which holds the live pid it names",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the stopped check reads the space's records through links first",
+      "file": "implementations/cli/src/commands/stack-down.ts",
+      "find": "function alreadyStopped(journal: StackJournal, members: readonly Member[]): boolean {\n",
+      "replace": "import { foreignLocalProcesses as readThroughLinks } from \"../lib/stack-journal.js\";\nfunction alreadyStopped(journal: StackJournal, members: readonly Member[]): boolean {\n  if (readThroughLinks(journal.root, journal.space).length) return false;\n",
+      "expectRed": "a stopped stack whose .cotal/daemon links to another root's live record refuses at the link, names it, and reads nothing behind it",
+      "cell": "a stopped stack whose .cotal/daemon links to another root's live record refuses at the link, names it, and reads nothing behind it",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a candidate already read hides its own unread record",
+      "file": "implementations/cli/src/lib/stack-journal.ts",
+      "find": "    if (reported.has(at)) return;\n",
+      "replace": "    if (attempted.has(at) || reported.has(at)) return;\n",
+      "expectRed": "a stopped stack whose .cotal/worker.record links to another root's live record refuses at the link, names it, and reads nothing behind it",
+      "cell": "a stopped stack whose .cotal/worker.record links to another root's live record refuses at the link, names it, and reads nothing behind it",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

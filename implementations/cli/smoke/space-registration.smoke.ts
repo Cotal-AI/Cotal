@@ -15,10 +15,10 @@
  */
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -30,7 +30,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { clearCurrent, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, removeMesh, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { stackJournalPath, writeStackJournal } = await import("../src/lib/stack-journal.js");
@@ -428,9 +428,102 @@ setCurrent("keep");
   check("a bare up in a root registered to two spaces refuses, naming both, and picks neither",
     refused(twin, 2, "CONFLICT") && /"demo"/.test(twinMessage) && /"twin"/.test(twinMessage) && (twin.env?.error?.remedy ?? "").includes("--space"), shown(twin));
   // A prepared root starts as a controller stack, whose whole-stack down takes --yes outside a terminal.
+  // Without it the refusal is one line and its remedy, not the command's help.
+  assertSmokeSandboxDown(sandbox, ["down"], { cwd: fresh, env: runEnv });
+  const unconfirmed = await run(["down"], {}, fresh);
+  check("a bare down of the running stack outside a terminal refuses for --yes, with its remedy and without the command help",
+    unconfirmed.status === 1 && /requires --yes/.test(unconfirmed.stderr) && /cotal down --yes/.test(unconfirmed.stderr) && !/Usage|Options/.test(unconfirmed.stderr) && findMesh("demo")?.root === fresh, shown(unconfirmed));
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
   const down = await run(["down", "--yes"], {}, fresh);
   check("down stops it", down.status === 0, shown(down));
+  // A second bare down of the stopped stack stops nothing: it needs no --yes, writes nothing, and
+  // every presentation shows the same no-op.
+  const journalBytes = () => readFileSync(stackJournalPath(fresh), "utf8");
+  const stoppedJournal = journalBytes();
+  assertSmokeSandboxDown(sandbox, ["down"], { cwd: fresh, env: runEnv });
+  const secondDown = await run(["down"], {}, fresh);
+  check("a second bare down without --yes says the stack is not running, names cotal up, and exits 0",
+    secondDown.status === 0 && /is not running/.test(secondDown.stdout) && /cotal up/.test(secondDown.stdout) && !/--yes/.test(secondDown.stderr), shown(secondDown));
+  assertSmokeSandboxDown(sandbox, ["down", "--json"], { cwd: fresh, env: runEnv });
+  const secondDownJson = await json(["down"], fresh);
+  check("--json reports it as a no-op of the stopped stack",
+    secondDownJson.status === 0 && secondDownJson.env?.outcome === "no-op" && secondDownJson.env.result?.kind === "stack-not-running" && secondDownJson.env.result.space === "demo", shown(secondDownJson));
+  assertSmokeSandboxDown(sandbox, ["down", "--dry-run", "--json"], { cwd: fresh, env: runEnv });
+  const stoppedPreview = await json(["down", "--dry-run"], fresh);
+  check("--dry-run of the stopped stack shows the same no-op",
+    stoppedPreview.status === 0 && stoppedPreview.env?.outcome === "no-op" && stoppedPreview.env.result?.kind === "stack-not-running", shown(stoppedPreview));
+  assertSmokeSandboxDown(sandbox, ["down", "--plain"], { cwd: fresh, env: runEnv });
+  const plainAgain = await run(["down", "--plain"], {}, fresh);
+  check("--plain of the stopped stack shows the same no-op", plainAgain.status === 0 && /is not running/.test(plainAgain.stdout), shown(plainAgain));
+  check("none of them wrote: the stack journal is byte-identical", journalBytes() === stoppedJournal);
+  // A manager another space recorded under the same root still runs, so the stopped stack's second
+  // down does not call the root's stack stopped. A process of this suite stands in for it, and the
+  // down leaves it, its record and the journal as they were.
+  const otherManager = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  standIns.push(otherManager);
+  const otherRecord = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: fresh, space: "other" });
+  writeFileSync(otherRecord, String(otherManager.pid), { mode: 0o600 });
+  const otherPath = join(".cotal", basename(otherRecord));
+  const otherLine = `manager at ${otherPath} (pid ${otherManager.pid})`;
+  // The text refusal shows the evidence without --json.
+  assertSmokeSandboxDown(sandbox, ["down"], { cwd: fresh, env: runEnv });
+  const otherText = await run(["down"], {}, fresh);
+  check("the text refusal names the other space's manager record and its pid",
+    otherText.status === 2 && otherText.stderr.includes(otherLine) && otherManager.exitCode === null && existsSync(otherRecord), shown(otherText));
+  // Following the printed next step: each pid it names sits at the path it names, and is the live
+  // process. Only the next step says "pid <n> at <path>".
+  const remedyChecks = [...otherText.stderr.matchAll(/pid (\d+) at (\S+?)[,;]/g)].map(([, pid, path]) => ({ pid, path }));
+  check("following the remedy reaches the recorded path, which holds the live pid it names",
+    remedyChecks.length === 1 && remedyChecks.every(({ pid, path }) => existsSync(join(fresh, path)) && readFileSync(join(fresh, path), "utf8").trim() === pid && pid === String(otherManager.pid)) &&
+      otherManager.exitCode === null && otherManager.signalCode === null, { stderr: otherText.stderr.slice(0, 700), remedyChecks });
+  assertSmokeSandboxDown(sandbox, ["down", "--json"], { cwd: fresh, env: runEnv });
+  const otherSpace = await json(["down"], fresh);
+  const recorded: string[] = otherSpace.env?.target?.processes ?? [];
+  check("a live manager recorded for another space under the root keeps a second bare down from a no-op, names the record and its pid in the remedy, and stays running with its record",
+    refused(otherSpace, 2, "LIFECYCLE_BLOCKED") && (otherSpace.env?.error?.remedy ?? "").includes(`pid ${otherManager.pid} at ${otherPath}`) &&
+      recorded.includes(otherLine) &&
+      otherManager.exitCode === null && otherManager.signalCode === null && existsSync(otherRecord) && journalBytes() === stoppedJournal, shown(otherSpace));
+  if (otherManager.exitCode === null && otherManager.signalCode === null) await new Promise((done) => { otherManager.once("exit", done); otherManager.kill("SIGKILL"); });
+  rmSync(otherRecord);
+  // An installed extension records its processes at `.cotal/daemon/worker.pid` and
+  // `.cotal/worker.record`. A separate root holds both for a live process of this suite, and this
+  // root links to them, first through `.cotal/daemon`, then at `.cotal/worker.record`. The stopped
+  // stack's records are read without following a link before it is called stopped, so each down
+  // refuses at the link and reads nothing behind it; the process, its records and the journal stay.
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = runEnv.XDG_CONFIG_HOME;
+  saveExtensionsManifest({ extensions: [{ pkg: "@example/workers", version: "0.0.0", spec: "@example/workers", commands: [], localProcesses: [
+    cacheLocalProcess({ kind: "local-process", name: "nested-worker", label: "nested worker", pidFile: "daemon/worker.pid" }),
+    cacheLocalProcess({ kind: "local-process", name: "record-worker", label: "record worker", pidFile: "worker.record" }),
+  ] }] });
+  const workersManifest = extensionsManifestPath();
+  if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+  else process.env.XDG_CONFIG_HOME = priorXdg;
+  const separate = join(home, "separate");
+  mkdirSync(join(separate, ".cotal", "daemon"), { recursive: true });
+  const outsideWorker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  standIns.push(outsideWorker);
+  for (const record of [join("daemon", "worker.pid"), "worker.record"]) writeFileSync(join(separate, ".cotal", record), String(outsideWorker.pid), { mode: 0o600 });
+  /** Bare `down --json` with this root's `.cotal/<at>` linked to the separate root's, and whether it
+   *  refused naming only that link, with no pid read behind it and nothing changed. */
+  const downThroughLink = async (at: string, name: string) => {
+    const link = join(fresh, ".cotal", at), path = join(".cotal", at);
+    symlinkSync(join(separate, ".cotal", at), link);
+    assertSmokeSandboxDown(sandbox, ["down", "--json"], { cwd: fresh, env: runEnv });
+    const linked = await json(["down"], fresh);
+    const refusedAtLink = refused(linked, 2, "LIFECYCLE_BLOCKED") && (linked.env?.target?.processes ?? []).join("\n") === `${name} at ${path} (link, not followed)` &&
+      (linked.env?.error?.remedy ?? "").includes(path) && !`${linked.stdout}${linked.stderr}`.includes(`pid ${outsideWorker.pid}`) &&
+      outsideWorker.exitCode === null && outsideWorker.signalCode === null && lstatSync(link).isSymbolicLink() && journalBytes() === stoppedJournal;
+    unlinkSync(link);
+    return { refusedAtLink, shown: shown(linked) };
+  };
+  const throughDir = await downThroughLink("daemon", "nested-worker");
+  check("a stopped stack whose .cotal/daemon links to another root's live record refuses at the link, names it, and reads nothing behind it", throughDir.refusedAtLink, throughDir.shown);
+  const throughLeaf = await downThroughLink("worker.record", "record-worker");
+  check("a stopped stack whose .cotal/worker.record links to another root's live record refuses at the link, names it, and reads nothing behind it", throughLeaf.refusedAtLink, throughLeaf.shown);
+  if (outsideWorker.exitCode === null && outsideWorker.signalCode === null) await new Promise((done) => { outsideWorker.once("exit", done); outsideWorker.kill("SIGKILL"); });
+  rmSync(workersManifest);
+  rmSync(separate, { recursive: true });
 
   const later = join(home, "later");
   mkdirSync(later);
