@@ -9,15 +9,16 @@ import type { ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, canonicalRoot, deliveryCredsKey, isCommandFailure, oneLine, presentationOf,
   removeMeshesByRoot, recordPreparedSpace, renderReport, terminalWidth, workspaceSecretStore, writeResult,
-  type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan,
+  type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
+import { ConfirmationRequired } from "../lib/confirmation-required.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
-import { instanceProjection, observeServiceProcess, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
+import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, stopProcessService } from "../lib/service-process.js";
-import { newStackOperation, processGone, readStackJournal, refuseControllerCut, stackMaintenanceFence, stackScopeRefusals, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, newStackOperation, processGone, readStackJournal, refuseControllerCut, stackMaintenanceFence, stackScopeRefusals, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -63,6 +64,27 @@ function scopeRefusals(journal: StackJournal): string | undefined {
   return maintenance.admittedRestore;
 }
 
+/** A stack its own down stopped completely, with no recorded member, no other service instance of
+ *  its space and no legacy process under its root running since. Stopping it again would stop
+ *  nothing. A stack that stopped any other way still takes the full stop, which also finishes its
+ *  registration and credential cleanup. */
+function alreadyStopped(journal: StackJournal, members: readonly Member[]): boolean {
+  if (journal.operation.kind !== "down" || journal.operation.phase !== "completed" || members.some((member) => member.live)) return false;
+  const running = serviceInstances(journal.space).some((row) => !processGone(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state));
+  return !running && foreignLocalProcesses(journal.root, journal.space).length === 0;
+}
+
+/** A bare down of a stack that is not running stops nothing. It answers with a no-op and writes
+ *  nothing, so it needs no --yes, and its preview shows the same. --with-agents refuses there,
+ *  because no running manager can stop the agents. The legacy route answers the same way. */
+export function nothingRunning(presentation: Presentation, target: { root: string; space?: string; server?: string }, withAgents: boolean): void {
+  if (withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's running manager, and this folder's stack is not running; nothing was stopped", { target, remedy: "start it with `cotal up`, then run `cotal down --with-agents`" });
+  writeResult(presentation, { command: "down", target, result: { kind: "stack-not-running", ...target }, noOp: true }, () => ({ sections: [
+    { title: `The stack in ${target.root} is not running`, blocks: [{ kind: "lines", lines: ["Nothing was stopped."] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it" }] }] },
+  ] }));
+}
+
 /** The retained active restore an admitted stop names. */
 function restoreNotice(attemptId: string | undefined): Report["sections"] {
   return attemptId ? [{ title: "Retained restore journal", blocks: [{ kind: "lines", lines: [`Active restore ${attemptId} stays in this root's maintenance journal. It was read and not changed.`] }] }] : [];
@@ -93,6 +115,7 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
   if (values.space !== undefined && values.space !== journal0.space) throw new CommandFailure("refused", "CONFLICT", "the selected space differs from this root's recorded controller stack; no member was stopped", { target: { root, selectedSpace: values.space, recordedSpace: journal0.space } });
   const members = readMembers(journal0);
   const target = { root, space: journal0.space, server: journal0.server };
+  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && values["dry-run"] !== true);
   if (values["dry-run"] === true) {
     // A preview reports what would refuse the real stop instead of refusing itself.
     let blocked: CommandFailure | undefined, restore: string | undefined;
@@ -103,7 +126,7 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
     return;
   }
   const admittedRestore = scopeRefusals(journal0);
-  if (!values.yes && !interactive) throw new CommandFailure("refused", "USAGE_INVALID", "stopping the whole controller stack requires --yes outside an interactive terminal", { target });
+  if (!values.yes && !interactive) throw new ConfirmationRequired("stopping the whole controller stack requires --yes outside an interactive terminal", { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
   // Complete native impact before confirmation. The broker's own kernel scope cannot be prepared
   // while its dependants run; it is recomputed after they stop and refuses on any change then.
   const manager = members.find((member) => member.role === "manager" && member.live);

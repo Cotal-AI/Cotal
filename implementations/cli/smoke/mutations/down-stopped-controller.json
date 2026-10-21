@@ -1,0 +1,32 @@
+{
+  "suite": [
+    "implementations/cli/smoke/space-registration.smoke.ts"
+  ],
+  "guard": "a second bare down of a controller stack its own down stopped is a no-op without --yes that writes nothing, in every presentation, and a running stack's missing --yes refusal is one line and its remedy",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/space-registration.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-stopped-controller.json",
+  "why": [
+    "A second bare down of a stopped controller stack used to refuse for --yes and print the whole usage text, although nothing would stop. The suite drives the built binary through a prepared root's up, down and second down, so each mutation rebuilds it and the restore rebuilds it back."
+  ],
+  "mutations": [
+    {
+      "name": "a stack its own down stopped takes the full stop again",
+      "file": "implementations/cli/src/commands/stack-down.ts",
+      "find": "  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && values[\"dry-run\"] !== true);\n",
+      "replace": "",
+      "expectRed": "a second bare down without --yes says the stack is not running, names cotal up, and exits 0",
+      "cell": "a second bare down without --yes says the stack is not running, names cotal up, and exits 0",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the missing --yes refusal prints the command help again",
+      "file": "implementations/cli/src/command.ts",
+      "find": "if (!(failure instanceof ConfirmationRequired)) printCommandHelp(",
+      "replace": "if (failure) printCommandHelp(",
+      "expectRed": "a bare down of the running stack outside a terminal refuses for --yes, with its remedy and without the command help",
+      "cell": "a bare down of the running stack outside a terminal refuses for --yes, with its remedy and without the command help",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

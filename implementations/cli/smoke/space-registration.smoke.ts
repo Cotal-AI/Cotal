@@ -428,9 +428,34 @@ setCurrent("keep");
   check("a bare up in a root registered to two spaces refuses, naming both, and picks neither",
     refused(twin, 2, "CONFLICT") && /"demo"/.test(twinMessage) && /"twin"/.test(twinMessage) && (twin.env?.error?.remedy ?? "").includes("--space"), shown(twin));
   // A prepared root starts as a controller stack, whose whole-stack down takes --yes outside a terminal.
+  // Without it the refusal is one line and its remedy, not the command's help.
+  assertSmokeSandboxDown(sandbox, ["down"], { cwd: fresh, env: runEnv });
+  const unconfirmed = await run(["down"], {}, fresh);
+  check("a bare down of the running stack outside a terminal refuses for --yes, with its remedy and without the command help",
+    unconfirmed.status === 1 && /requires --yes/.test(unconfirmed.stderr) && /cotal down --yes/.test(unconfirmed.stderr) && !/Usage|Options/.test(unconfirmed.stderr) && findMesh("demo")?.root === fresh, shown(unconfirmed));
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
   const down = await run(["down", "--yes"], {}, fresh);
   check("down stops it", down.status === 0, shown(down));
+  // A second bare down of the stopped stack stops nothing: it needs no --yes, writes nothing, and
+  // every presentation shows the same no-op.
+  const journalBytes = () => readFileSync(stackJournalPath(fresh), "utf8");
+  const stoppedJournal = journalBytes();
+  assertSmokeSandboxDown(sandbox, ["down"], { cwd: fresh, env: runEnv });
+  const secondDown = await run(["down"], {}, fresh);
+  check("a second bare down without --yes says the stack is not running, names cotal up, and exits 0",
+    secondDown.status === 0 && /is not running/.test(secondDown.stdout) && /cotal up/.test(secondDown.stdout) && !/--yes/.test(secondDown.stderr), shown(secondDown));
+  assertSmokeSandboxDown(sandbox, ["down", "--json"], { cwd: fresh, env: runEnv });
+  const secondDownJson = await json(["down"], fresh);
+  check("--json reports it as a no-op of the stopped stack",
+    secondDownJson.status === 0 && secondDownJson.env?.outcome === "no-op" && secondDownJson.env.result?.kind === "stack-not-running" && secondDownJson.env.result.space === "demo", shown(secondDownJson));
+  assertSmokeSandboxDown(sandbox, ["down", "--dry-run", "--json"], { cwd: fresh, env: runEnv });
+  const stoppedPreview = await json(["down", "--dry-run"], fresh);
+  check("--dry-run of the stopped stack shows the same no-op",
+    stoppedPreview.status === 0 && stoppedPreview.env?.outcome === "no-op" && stoppedPreview.env.result?.kind === "stack-not-running", shown(stoppedPreview));
+  assertSmokeSandboxDown(sandbox, ["down", "--plain"], { cwd: fresh, env: runEnv });
+  const plainAgain = await run(["down", "--plain"], {}, fresh);
+  check("--plain of the stopped stack shows the same no-op", plainAgain.status === 0 && /is not running/.test(plainAgain.stdout), shown(plainAgain));
+  check("none of them wrote: the stack journal is byte-identical", journalBytes() === stoppedJournal);
 
   const later = join(home, "later");
   mkdirSync(later);

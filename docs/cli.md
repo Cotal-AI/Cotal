@@ -705,7 +705,8 @@ queries. Duplicate names and `--instance` with multiple names are usage errors. 
 
 Bare `down --dry-run` reads local process records for one registered space at the current
 project root. A root with no `.cotal/` directory, or with no stack registered at it, refuses
-`TARGET_NOT_FOUND`, exit 2, because there is no stack there to preview. Add `--space <name>` to
+`TARGET_NOT_FOUND`, exit 2, because there is no stack there to preview. A root whose stack is
+already stopped shows the no-op described below instead. Add `--space <name>` to
 confirm that exact space belongs to this root;
 `--json` and `--plain` produce a partial, finite inspection receipt. It lists pidfile
 liveness, readable additive deployment IDs, retained additive attempts and
@@ -733,10 +734,26 @@ dependants stop. A failure stops the sequence and preserves completed and unatte
 Only a complete confirmed stop removes the delivery credential and local registration. Saved
 definitions and the journal remain for the next `up`. No descendant, lease or authority cleanup is
 implied. A dry run reads records only and does not establish native impact. Controller roots refuse
-preservation and manifest flags rather than switching to the legacy launcher.
+preservation and manifest flags rather than switching to the legacy launcher. Outside a terminal,
+a bare `down` that would stop a running member refuses without `--yes`, exit 1, and prints that
+line and its remedy without the command help.
+
+A bare `down` in a folder whose stack is already stopped stops nothing. It reports that the stack
+in that folder is not running and names `cotal up`, outcome `no-op`, exit 0, and writes nothing,
+so it needs no `--yes`. `--dry-run`, `--json` and `--plain` show the same. A controller stack
+counts as stopped when its last whole-stack operation was a completed `down` and no member, no
+other service instance of its space and no legacy process under its root runs. A stack that
+stopped any other way takes the full stop, which also finishes its cleanup. A legacy root counts as
+stopped when no registration names it and no process record remains in its `.cotal`, and the root
+still holds the broker configuration a start rendered there or a space prepared there. Without
+that evidence a legacy root still refuses, with one next step: `TARGET_NOT_FOUND` when nothing
+shows a stack there, and `CONFLICT` when several registrations name the root or a process record
+remains that no registration explains. `--with-agents` on a stopped stack refuses
+`LIFECYCLE_BLOCKED`, because no running manager can stop the agents; start the stack first.
 
 The legacy bare-stack and manifest apply paths described below are retained. They do not
-accept the new named-service JSON/plain/yes apply receipt flags. A bare stop of such a root needs
+accept the new named-service JSON/plain/yes apply receipt flags, except that `--json` and
+`--plain` show the no-op of a stack that is already stopped. A bare stop of such a root needs
 no `--yes`, so `cotal down --yes` there is refused and stops nothing; run `cotal down` without it.
 Before a retained bare apply
 reaches its pidfile sweep, it now requires one locally started registration under

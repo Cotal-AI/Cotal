@@ -109,6 +109,30 @@ async function rejection(call: Promise<unknown>): Promise<{ code?: string; messa
   }
 }
 
+/** A bare down run from `root`, with what it printed, the exit code it set and its refusal. */
+async function bareDownIn(root: string, values: Record<string, string | boolean> = {}) {
+  let out = "";
+  const log = console.log, write = process.stdout.write, exitCode = process.exitCode, cwd = process.cwd();
+  process.exitCode = undefined;
+  console.log = (...args: unknown[]) => { out += `${args.join(" ")}\n`; };
+  process.stdout.write = ((chunk: string | Uint8Array) => { out += String(chunk); return true; }) as typeof process.stdout.write;
+  try {
+    process.chdir(root);
+    const error = await rejection(run([], values));
+    return { out, exitCode: process.exitCode, error };
+  } finally {
+    console.log = log;
+    process.stdout.write = write;
+    process.exitCode = exitCode;
+    process.chdir(cwd);
+  }
+}
+
+/** The envelope a `--json` run printed, or undefined. */
+function envelope(out: string): { outcome?: string; result?: { kind?: string } } | undefined {
+  try { return JSON.parse(out); } catch { return undefined; }
+}
+
 type LegacyManagerStop = {
   managerAlive: boolean;
   agentAlive: boolean;
@@ -556,6 +580,49 @@ try {
   try { process.kill(mixedBroker.pid, "SIGTERM"); } catch { /* already gone */ }
   for (let i = 0; i < 50 && alive(mixedBroker.pid); i++) await sleep(50);
   rmSync(mixedRoot, { recursive: true, force: true });
+
+  // A legacy root whose own down already ran keeps no registration and no process record, and
+  // still holds the broker configuration its start rendered. A second bare down stops nothing and
+  // says so in every presentation.
+  const stoppedRoot = mkdtempSync(join(tmpdir(), "cotal-stopped-"));
+  mkdirSync(join(stoppedRoot, ".cotal"), { recursive: true });
+  writeFileSync(join(stoppedRoot, ".cotal", "server-open.conf"), "# rendered by an earlier up\n", { mode: 0o600 });
+  const again = await bareDownIn(stoppedRoot);
+  check("a second bare down of a stopped legacy root says its stack is not running, names cotal up, and exits 0",
+    again.error === undefined && again.exitCode === 0 && /is not running/.test(again.out) && /cotal up/.test(again.out), again);
+  const againJson = await bareDownIn(stoppedRoot, { json: true });
+  check("--json reports the same no-op",
+    againJson.error === undefined && againJson.exitCode === 0 && envelope(againJson.out)?.outcome === "no-op" && envelope(againJson.out)?.result?.kind === "stack-not-running", againJson);
+  const preview = await bareDownIn(stoppedRoot, { "dry-run": true, json: true });
+  check("--dry-run shows the same no-op",
+    preview.error === undefined && envelope(preview.out)?.outcome === "no-op" && envelope(preview.out)?.result?.kind === "stack-not-running", preview);
+  const plain = await bareDownIn(stoppedRoot, { plain: true });
+  check("--plain shows the same no-op", plain.error === undefined && plain.exitCode === 0 && /is not running/.test(plain.out), plain);
+  const reap = await bareDownIn(stoppedRoot, { "with-agents": true });
+  check("--with-agents on the stopped root refuses LIFECYCLE_BLOCKED, because no manager runs to stop its agents",
+    reap.error?.code === "LIFECYCLE_BLOCKED" && /cotal up/.test(reap.error.remedy ?? ""), reap);
+
+  // Without that evidence nothing tells a stopped stack apart, so bare down still refuses, naming one
+  // next step.
+  const neverRoot = mkdtempSync(join(tmpdir(), "cotal-nostack-"));
+  mkdirSync(join(neverRoot, ".cotal"), { recursive: true });
+  const never = await bareDownIn(neverRoot);
+  check("a folder that never had a stack refuses TARGET_NOT_FOUND and names where to run down",
+    never.error?.code === "TARGET_NOT_FOUND" && /where `cotal up` started/.test(never.error.remedy ?? ""), never);
+  writeFileSync(join(stoppedRoot, ".cotal", "nats.pid"), "not-a-pid\n", { mode: 0o600 });
+  const unexplained = await bareDownIn(stoppedRoot);
+  check("a process record with no registration refuses CONFLICT, points at cotal status, and keeps the record",
+    unexplained.error?.code === "CONFLICT" && /cotal status/.test(unexplained.error.remedy ?? "") && existsSync(join(stoppedRoot, ".cotal", "nats.pid")), unexplained);
+  rmSync(join(stoppedRoot, ".cotal", "nats.pid"));
+  recordMesh({ ...entry("twin-a", stoppedRoot), origin: "up" });
+  recordMesh({ ...entry("twin-b", stoppedRoot), origin: "up" });
+  const twins = await bareDownIn(stoppedRoot);
+  removeMesh("twin-a");
+  removeMesh("twin-b");
+  check("two registrations for the root refuse CONFLICT, naming both, and point at space forget",
+    twins.error?.code === "CONFLICT" && /"twin-a"/.test(twins.error.message ?? "") && /"twin-b"/.test(twins.error.message ?? "") && /cotal space forget/.test(twins.error.remedy ?? ""), twins);
+  rmSync(stoppedRoot, { recursive: true, force: true });
+  rmSync(neverRoot, { recursive: true, force: true });
 
   console.log(`\ndown-target smoke: ${pass} checks passed`);
 } finally {

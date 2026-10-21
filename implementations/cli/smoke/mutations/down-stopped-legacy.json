@@ -1,0 +1,69 @@
+{
+  "grades": "integration",
+  "suite": [
+    "implementations/cli/smoke/down-target.smoke.ts"
+  ],
+  "guard": "a bare down of a legacy root whose stack is already stopped is a no-op in every presentation, and a root with no such evidence, a leftover process record or two registrations still refuses with one next step",
+  "command": "pnpm --filter @cotal-ai/cli... build > /dev/null && pnpm smoke:down-target",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-stopped-legacy.json",
+  "why": [
+    "A legacy root's own down removes its registration, so a second bare down used to refuse CONFLICT with no next step. The evidence that it is stopped is the broker configuration a start rendered there, or a space prepared there, with no registration and no process record left. Each mutation drops one part of that evidence or one answer, and the suite drives the in-process down from a planted root.",
+    "Every build is scoped to the @cotal-ai/cli dependency closure, as in down-unowned-broker.json."
+  ],
+  "mutations": [
+    {
+      "name": "a stopped legacy root is refused instead of answered",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "    if (stopped) return nothingRunning(presentationOf(args.values), stopped, values[\"with-agents\"] === true && values[\"dry-run\"] !== true);\n",
+      "replace": "",
+      "expectRed": "a second bare down of a stopped legacy root says its stack is not running, names cotal up, and exits 0",
+      "cell": "a second bare down of a stopped legacy root says its stack is not running, names cotal up, and exits 0",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "--json stays refused on a stopped legacy root",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": " && !(bareStop(args.values) && stoppedLegacyStack())) throw",
+      "replace": ") throw",
+      "expectRed": "--json reports the same no-op",
+      "cell": "--json reports the same no-op",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "--with-agents on a stopped stack answers with the no-op",
+      "file": "implementations/cli/src/commands/stack-down.ts",
+      "find": "  if (withAgents) throw new CommandFailure(\"refused\", \"LIFECYCLE_BLOCKED\", \"--with-agents needs the stack's running manager",
+      "replace": "  if (withAgents && false) throw new CommandFailure(\"refused\", \"LIFECYCLE_BLOCKED\", \"--with-agents needs the stack's running manager",
+      "expectRed": "--with-agents on the stopped root refuses LIFECYCLE_BLOCKED, because no manager runs to stop its agents",
+      "cell": "--with-agents on the stopped root refuses LIFECYCLE_BLOCKED, because no manager runs to stop its agents",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "a folder with no rendered broker configuration counts as stopped",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "  if (!prepared && !existsSync(join(root, \".cotal\", \"server-open.conf\")) && !existsSync(join(authDir(root), \"server.conf\"))) return undefined;\n",
+      "replace": "",
+      "expectRed": "a folder that never had a stack refuses TARGET_NOT_FOUND and names where to run down",
+      "cell": "a folder that never had a stack refuses TARGET_NOT_FOUND and names where to run down",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "a leftover process record does not stop the no-op",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": " || meshesForRoot(root).length || pidRecordsUnder(root)) return undefined;\n",
+      "replace": " || meshesForRoot(root).length) return undefined;\n",
+      "expectRed": "a process record with no registration refuses CONFLICT, points at cotal status, and keeps the record",
+      "cell": "a process record with no registration refuses CONFLICT, points at cotal status, and keeps the record",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    },
+    {
+      "name": "two registrations get the generic refusal",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "  if (local.length > 1)\n",
+      "replace": "  if (local.length > 99)\n",
+      "expectRed": "two registrations for the root refuse CONFLICT, naming both, and point at space forget",
+      "cell": "two registrations for the root refuse CONFLICT, naming both, and point at space forget",
+      "afterRestore": "pnpm --filter @cotal-ai/cli... build > /dev/null"
+    }
+  ]
+}
