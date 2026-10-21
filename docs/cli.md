@@ -515,7 +515,9 @@ A space name belongs to one registered mesh. `up` refuses a name that another li
 takes over a name whose broker is not running, and when that registration belonged to another root
 it prints that root and its broker address. It refuses instead when that root holds a restore or a
 preserved cut in its maintenance journal: finish that attempt from its root, or start this stack
-under another `--space`.
+under another `--space`. It also keeps the name when that root or its journal cannot be read, for
+example when access to a parent folder is denied, and names that root. Only a root that is gone or
+is not a directory gives up its name.
 
 A foreground `up` holds the root's maintenance lock only while it starts the stack. A bare
 `cotal down` from another terminal can then stop the stack; the foreground `up` sees the completed
@@ -5257,7 +5259,11 @@ The `linear` service preset uses an existing native `account`, a reverse-DNS `en
 namespace you own, and the selected registered static-auth `root`. An optional `server` only
 repeats its broker. Account login/token setup remains a separate explicit operation. A start whose
 account has no record refuses with `TARGET_NOT_FOUND` and the `linear account add` route before a
-child is launched. `service add` checks only the declared option types and lengths. The account
+child is launched. That check reads the Cotal home of the process that runs `service start`. While
+`COTAL_HOME` is unset, a definition whose `envRefs` set `HOME` (on Windows, `LOCALAPPDATA` or
+`USERPROFILE`) can give the child another home, so that start refuses with `UNSUPPORTED` before a
+child is launched. Set `COTAL_HOME` for the start, or remove that reference.
+`service add` checks only the declared option types and lengths. The account
 and the reverse-DNS endpoint name are checked when the service starts, and an invalid endpoint
 name refuses that start before a child is launched, leaving a failed instance record. The native
 static issuer, inventory, registration, credential renewal, request handling and deregistration
@@ -5640,8 +5646,8 @@ owner-only.
 
 The provider declares foreground, multi-instance and log capabilities. An explicit start records
 its definition revision, full instance, launch request and adapter package/version/declaration
-fingerprint before loading provider code. The launch hook returns executable, argv and working
-directory separately. It must not launch children, mint credentials or start dependencies while
+fingerprint before loading provider code. The launch hook receives the definition's `envRefs`
+names, never their values, and returns executable, argv and working directory separately. It must not launch children, mint credentials or start dependencies while
 planning. A changed adapter is not adopted by a retained instance. Native stop declarations add
 closed impact and terminal hooks; a missing hook refuses instead of using generic signals. The
 manager's adapter supplies its own native policy and receipts. A preset is not installed under an

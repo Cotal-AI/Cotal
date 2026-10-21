@@ -35,6 +35,9 @@ export interface ServiceAdapterContext {
   readonly cliInvocation?: readonly string[];
   readonly options: Readonly<Record<string, unknown>>;
   readonly credentialRef?: ServiceDefinitionInput["credentialRef"];
+  /** The definition's environment references by name, child variable to controller variable. No
+   *  value is passed; an adapter reads this to refuse a child environment it cannot check against. */
+  readonly envRefs?: ServiceDefinitionInput["envRefs"];
   /** Launch-only inputs bound to one maintenance attempt. Never part of a saved definition, an
    *  instance record or a receipt; only the controller's resume passes it, and each adapter accepts
    *  only its own closed fields (see {@link serviceAdapterAttempt}). */

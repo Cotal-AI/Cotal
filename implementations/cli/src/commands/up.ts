@@ -14,8 +14,9 @@ import {
   lstatSync,
   realpathSync,
   readdirSync,
+  type Stats,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   isReachable,
   DEFAULT_SERVER,
@@ -116,7 +117,6 @@ import {
   markOrdinaryResumeDegraded,
   replaceDeadOrdinaryResumeListener,
   localProcessOwnerStatus,
-  isMaintenanceError,
   readMaintenanceJournal,
   readMaintenanceResumeDocument,
   seatCheckpointDir,
@@ -3502,6 +3502,24 @@ function manualClaimRemedy(space: string, server: string): string {
   return `\`cotal meshes rm ${space}\` to drop that record first, or start this one under a different \`--space\``;
 }
 
+/** Whether a prior holder's root is proven gone: it does not resolve (ENOENT, ENOTDIR) or resolves
+ *  to something other than a directory. Any other failure, such as EACCES, EPERM, EIO or ELOOP,
+ *  proves nothing about the root or its journal, so the name is kept and the refusal says why. */
+function priorRootGone(space: string, root: string): boolean {
+  const refuse = (reason: string, remedy: string): never => {
+    throw new Error(`space "${space}" is registered to ${root}, which ${reason} - \`cotal up\` did not take the name; ${remedy}, or start this stack under a different \`--space\``);
+  };
+  if (!isAbsolute(root)) refuse("is not an absolute path", `drop that record with \`cotal meshes rm ${space}\``);
+  let kind: Stats;
+  try { kind = statSync(realpathSync.native(root)); }
+  catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return true;
+    refuse(`could not be resolved (${code ?? String(e)})`, `restore access to ${root} and run this again`);
+  }
+  return !kind!.isDirectory();
+}
+
 /** A space name maps to one mesh in the registry (the key `--space`/`use`/`down` act on). Before
  *  starting a broker, refuse to reuse a space already claimed by a DIFFERENT live mesh — a stale/dead
  *  holder is reclaimed, and said so when it was another root's, unless that root still holds a
@@ -3524,12 +3542,12 @@ export async function claimSpace(space: string, server: string, root: string): P
   }
   // A dead holder at another root keeps its name while that root holds a preserved cut or a restore:
   // taking it would cut that root's recovery off from its space. A journal that cannot be read keeps it
-  // too. A root that is gone or is not a directory (`invalid-path`) holds no journal.
+  // too. Only a root proven gone or not a directory holds no journal.
   const otherRoot = canonicalRoot(existing.root) !== canonicalRoot(root);
-  if (otherRoot) {
+  if (otherRoot && !priorRootGone(space, existing.root)) {
     let held: string | undefined;
     try { held = readMaintenanceJournal(existing.root)?.state; }
-    catch (e) { if (!isMaintenanceError(e) || e.code !== "invalid-path") held = "unreadable"; }
+    catch { held = "unreadable"; }
     if (held)
       throw new Error(`space "${space}" is registered to ${existing.root}, whose maintenance journal holds a preserved cut or a restore (state ${held}) - \`cotal up\` did not take the name; finish that attempt from ${existing.root}, or start this stack under a different \`--space\``);
   }

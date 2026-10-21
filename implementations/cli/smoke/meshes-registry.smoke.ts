@@ -24,7 +24,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -924,6 +924,21 @@ try {
   let goneError: Error | undefined;
   await capture(() => claimSpace("gone", LIVE, localRoot)).catch((e: Error) => void (goneError = e));
   check("a dead holder whose root was deleted is reclaimed", goneError === undefined && findMesh("gone") === undefined, goneError?.message ?? loadMeshes());
+  // A holder root that cannot be read is not proof it is gone: with search permission removed from its
+  // parent, the root and any journal it holds are still there, so the name and its record stay.
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const vault = projectRoot("vault"), vaultedRoot = join(vault, "a");
+    mkdirSync(vaultedRoot);
+    recordMesh({ space: "vaulted", server: DEAD, root: vaultedRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+    const vaultedBefore = JSON.stringify(findMesh("vaulted"));
+    let vaultedError: Error | undefined;
+    chmodSync(vault, 0o000);
+    try { await claimSpace("vaulted", LIVE, localRoot).catch((e: Error) => void (vaultedError = e)); }
+    finally { chmodSync(vault, 0o700); }
+    check("a dead holder whose root cannot be read keeps its registration unchanged", JSON.stringify(findMesh("vaulted")) === vaultedBefore, loadMeshes());
+    check("…and the refusal names that root and the error", vaultedError?.message.includes(`registered to ${vaultedRoot}, which could not be resolved (EACCES)`) === true && vaultedError.message.includes("did not take the name"), vaultedError?.message);
+    removeMesh("vaulted");
+  } else console.log("  (skipped: the inaccessible-root cell needs a non-root POSIX runner)");
   removeMesh("held");
   removeMesh("claimed");
   removeMesh("claimed-live");
