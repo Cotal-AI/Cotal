@@ -9,6 +9,7 @@
  *  C. `attach` replies the holder-bound §13.6 session grant (no ws:// URL, no 127.0.0.1) and the
  *     mesh caller rail opens + handshakes over the real broker (item 6 replaced the loopback WS).
  *  D. `COTAL_DEFAULT_PERSONA` supplies the persona for a bare `spawn --detach`.
+ *  G. a persona the manager cannot find is refused (exit 2) with the manager's reason, and nothing launches.
  *  E. the `start` tombstone errors, naming `spawn --detach` (subprocess through bin/cotal.ts).
  *  F. foreground `--creds` (no --detach) fails loud (subprocess).
  *
@@ -34,7 +35,7 @@ process.env.COTAL_HOME = home;
 
 const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail } = await import("@cotal-ai/core");
 const { connect } = await import("@nats-io/transport-node");
-const { recordMesh } = await import("@cotal-ai/workspace");
+const { recordMesh, isCommandFailure, exitCode } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps/attach) into the registry
 const { Manager } = await import("@cotal-ai/manager");
 import type { Command, Connector, ControlReply, LaunchOpts, SessionGrant } from "@cotal-ai/core";
@@ -312,6 +313,28 @@ try {
       if (prev === undefined) delete process.env.COTAL_DEFAULT_PERSONA;
       else process.env.COTAL_DEFAULT_PERSONA = prev;
     }
+  }
+
+  // G — a persona the manager cannot find is refused before anything ran, so the CLI reports a
+  // refusal (exit 2) carrying the manager's own reason and naming the file it looked for. An
+  // unknown outcome here would tell the operator to inspect a launch that never happened.
+  {
+    lastOpts = undefined as LaunchOpts | undefined;
+    let failure: unknown;
+    try {
+      await capture(() => run("spawn", ["ghost", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE]));
+    } catch (e) {
+      failure = e;
+    }
+    const seen = isCommandFailure(failure) ? { outcome: failure.outcome, code: failure.code, message: failure.message, native: failure.native } : String(failure);
+    ok("a missing persona is a refusal the manager stated before execution, exit 2",
+      isCommandFailure(failure) && failure.outcome === "refused" && failure.native?.outcome === "not-executed" && exitCode(failure.outcome, failure.code) === 2, seen);
+    const missing = join(workspaceRoot, ".cotal", "agents", "ghost.md");
+    ok("...it shows the manager's reason, naming the persona file it looked for",
+      isCommandFailure(failure) && failure.message.includes('no persona "ghost"') && failure.message.includes(missing) && !failure.message.includes("\n"), seen);
+    ok("...and nothing launched", lastOpts === undefined, lastOpts?.name);
+    const psRefused = await capture(() => run("ps", ["--space", SPACE]));
+    ok("...and ps is still empty", /no managed agents/.test(psRefused), psRefused);
   }
 
   // E/F run TRUE subprocesses through bin/cotal.ts with `extensions: true`, so the sandbox must

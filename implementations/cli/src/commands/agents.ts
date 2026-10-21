@@ -723,8 +723,9 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
       const failure = readFailure(reply, target);
       // A user-mode manager view that the broker refused before any responder saw the call. The
       // broker does not say which row was missing, so this names the documented requirement for
-      // these reads instead of asserting a cause, and keeps the native refusal as it was.
-      if (t.auth.bearer && failure.code === "PERMISSION_DENIED" && reply.nativeOutcome === "not-executed")
+      // these reads instead of asserting a cause, and keeps the native refusal as it was. A refusal
+      // the manager answered, such as a retiring caller's, already states its own reason.
+      if (t.auth.bearer && failure.code === "PERMISSION_DENIED" && reply.nativeOutcome === "not-executed" && !reply.answered)
         throw new CommandFailure(failure.outcome, failure.code, failure.message, {
           target,
           remedy: `on a user-auth mesh, the manager's \`${command}\` read is documented to need the \`admin\` scope on your actor grant; \`spawn\` alone does not carry it. Check what your row holds with \`cotal auth grants\``,
