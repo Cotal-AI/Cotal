@@ -1293,8 +1293,8 @@ interactive row, gets one `held` answer for a register, decide or revoke before 
 request's keys. `denied` means the invocation wrote nothing, and either the request can never bind
 or the invocation's own read found no binding. That read is point-in-time; another invocation of the
 same request already in flight can still bind it later. A revoke result reports `denyNew` when it
-has evidence: an endpoint-gate read, which gives `unknown` when the read failed, or an assignment
-that is already fenced, which gives `landed`. The early `held` answers of a tripped engine and of a
+has evidence: an endpoint-gate read, which gives `unknown` when the read failed or found another
+assignment's gate row, or an assignment that is already fenced, which gives `landed`. The early `held` answers of a tripped engine and of a
 granter without a current interactive row carry no `denyNew`, and a result without `denyNew` says
 nothing about deny-new. Completed results
 say whether this invocation applied them or returned a stored record. A stored approval returns

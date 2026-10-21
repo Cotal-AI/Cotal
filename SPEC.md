@@ -1577,9 +1577,11 @@ that holds an assignment binds its own cancel identity in that assignment, or ad
 already bound, and cancels natively.
 The assignment record carries the complete native cancel identity `{operationId, requestDigest,
 cause}`. Any authorized revoker can cancel from that record alone, and the first binding wins.
-Deny-new has landed exactly when the endpoint gate reads `revoked`. After that, an `approving`
-proposal of the assignment closes as `approved` when the gate carries an approval digest and as
-refused otherwise. Revocation stays nonterminal. Owner-scoped reads authorize against the subject
+Deny-new has landed exactly when the endpoint gate reads `revoked` for this assignment. After that, an
+`approving` proposal of the assignment closes as `approved` when the gate carries an approval digest
+and as refused otherwise. A gate row at the key that belongs to another assignment is no evidence
+either way: every revoke path reports deny-new `unknown` for it, as for a failed read. Revocation
+stays nonterminal. Owner-scoped reads authorize against the subject
 owner fixed at binding, and terminal views carry no commands or cluster digests. None of these
 records proves a human decision, broker writer exclusion, restore readiness or terminal retirement.
 
