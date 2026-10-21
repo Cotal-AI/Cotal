@@ -689,6 +689,9 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     if (req.granter.owner !== o) return out(denied("permission-denied"));                                   // never binds
     // Authorization precedes every request-key read, and its refusal is one answer whether or not the request is bound.
     if (!interactive(o)) return out(unread(req.requestId, "permission-denied", "authorize"));
+    // A native control endpoint is never a service name: refused before any effect, like a name binding.
+    try { serviceNameKey(e); }
+    catch (err) { if (err instanceof EpEnvelopeError && err.code === "permission-denied") return out(denied("permission-denied")); throw err; }   // never binds
     const operationId = serviceHostOperationId(space, req.requestId), requestDigest = requestDigestOf(req);
     const proposalDigest = contractDigest({ v: 1, kind: "service-proposal-body", accountPublicKey, space, owner: o, endpoint: e, instanceId: i, clusterDigests, commands });
     const proposalId = proposalIdOf(proposalDigest, req.requestId);
