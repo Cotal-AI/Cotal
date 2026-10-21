@@ -304,4 +304,5 @@ try {
 }
 
 console.log(c.failed === 0 ? `\nSERVICE ENDPOINT AUTHORITY SMOKE OK (${c.passed} passed)` : `\nSERVICE ENDPOINT AUTHORITY SMOKE FAILED (${c.passed} passed, ${c.failed} failed)`);
+c.finish();
 if (c.failed > 0) process.exit(1);

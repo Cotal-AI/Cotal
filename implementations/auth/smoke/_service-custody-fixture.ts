@@ -34,7 +34,7 @@ import {
   type ServiceBootstrapResult, type ServiceCancelResult,
 } from "../src/service-custody.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import type { ServiceWriteScope } from "../src/service-write.js";
 import { serviceHostDiscoveryGrants } from "../src/authority-client.js";
 import { S2A_INVOCATION_MS, openServiceHostEffect, type ServiceHostEffect } from "../src/service-host-ops.js";
@@ -46,7 +46,11 @@ export const within = <T>(p: Promise<T>, ms: number) => Promise.race([p, pause(m
 /** An outcome the writer cannot classify from the error alone. Never a CAS loss. */
 export const ambiguous = () => new Error("fixture: ambiguous outcome");
 
-export interface Checks { passed: number; failed: number; check(label: string, ok: boolean, detail?: unknown): void }
+export interface Checks {
+  passed: number; failed: number; check(label: string, ok: boolean, detail?: unknown): void;
+  /** Prints the canonical sentinel the CI shard grades, as the suite's last line. The suite keeps its own banner and exit status. */
+  finish(): void;
+}
 export function checks(): Checks {
   const c: Checks = {
     passed: 0, failed: 0,
@@ -54,6 +58,7 @@ export function checks(): Checks {
       if (ok) { c.passed++; console.log(`PASS ${label}`); }
       else { c.failed++; console.log(`FAIL ${label}`, detail === undefined ? "" : JSON.stringify(detail)); }
     },
+    finish() { emitSentinel({ passed: c.passed, failed: c.failed }); },
   };
   return c;
 }

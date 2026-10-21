@@ -1715,4 +1715,5 @@ c.check("S (broker grants) no effect or discovery connection of this suite was r
   fixtures.flatMap((f) => f.violations));
 for (const d of ledgers) rmSync(d, { recursive: true, force: true });
 console.log(`service-host-ops: ${c.passed} passed, ${c.failed} failed (owned-broker fixture evidence only)`);
+c.finish();
 if (c.failed) process.exitCode = 1;

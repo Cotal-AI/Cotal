@@ -345,4 +345,5 @@ const L = (r: unknown) => r as Loose;
 for (const r of relays) await r.close();
 for (const dir of ledgers) rmSync(dir, { recursive: true, force: true });
 console.log(`service-host-effect: ${c.passed} passed, ${c.failed} failed (owned-broker fixture evidence only; invocation limit ${S2A_INVOCATION_MS} ms)`);
+c.finish();
 if (c.failed) process.exitCode = 1;

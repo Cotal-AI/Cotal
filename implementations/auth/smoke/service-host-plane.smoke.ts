@@ -522,4 +522,5 @@ try {
 }
 
 console.log(c.failed === 0 ? `\nSERVICE HOST PLANE SMOKE OK (${c.passed} passed)` : `\nSERVICE HOST PLANE SMOKE FAILED (${c.passed} passed, ${c.failed} failed)`);
+c.finish();
 if (c.failed > 0) process.exit(1);
