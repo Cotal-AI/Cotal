@@ -454,8 +454,8 @@ export function parseServiceApprovalResult(raw: unknown): ServiceApprovalResult 
   return structuredClone(o) as unknown as ServiceApprovalResult;
 }
 
-const SUPPORTED_RESULTS = new Set(["decide", "revoke", "operation-read", "proposal-read"]);
-/** Closed parser for the results of the operations this slice serves (decide, revoke,
+const SUPPORTED_RESULTS = new Set(["decide", "revoke", "name-bind", "operation-read", "proposal-read"]);
+/** Closed parser for the results of the operations this slice serves (decide, revoke, name-bind,
  *  operation-read, proposal-read) and for the shared arms of every operation. */
 export function parseServiceHostResult(raw: unknown): ServiceHostResult {
   const env = ["v", "kind", "operation", "requestId", "space", "accountPublicKey", "state"];
@@ -479,6 +479,7 @@ export function parseServiceHostResult(raw: unknown): ServiceHostResult {
     if (!SUPPORTED_RESULTS.has(o?.operation as string)) badResult("unsupported operation result");
     if (o.operation === "decide" && state === "approved") { keys = closed(raw, [...env, "outcome", "approval"], ["debt"]); oneOf(o.outcome, OUTCOMES, "outcome"); parseServiceApprovalResult(o.approval); if (Object.hasOwn(o, "debt")) debtList(o.debt); }
     else if (o.operation === "decide" && state === "refused") { keys = closed(raw, [...env, "outcome", "proposal", "revision"], ["debt"]); oneOf(o.outcome, OUTCOMES, "outcome"); parseServiceProposalTombstoneView(o.proposal); nat(o.revision, "revision"); if (Object.hasOwn(o, "debt")) debtList(o.debt); }
+    else if (o.operation === "name-bind" && state === "bound") { keys = closed(raw, [...env, "binding"]); nameView(o.binding); }
     else if (o.operation === "revoke" && state === "retired") { keys = closed(raw, [...env, "assignmentDigest", "operationId"]); dig(o.assignmentDigest, "assignmentDigest"); hex(o.operationId, 32, "operationId"); }
     else if ((o.operation === "operation-read" || o.operation === "proposal-read") && state === "absent") keys = closed(raw, env);
     else if ((o.operation === "operation-read" || o.operation === "proposal-read") && state === "present") {

@@ -1,7 +1,8 @@
-/** Package-internal DORMANT service host operations: register admission, decide (approve or
- * refuse), revoke, and the operation and proposal reads, over closed per-key records in the auth
- * bucket. Nothing in the product calls it and the index does not export it. It grants no serving,
- * registration, caller policy, restore, terminal retirement or KICK.
+/** Package-internal service host operations: register admission, decide (approve or refuse),
+ * revoke, create-only name binding, the operation and proposal reads and one owner's assignment
+ * state, over closed per-key records in the auth bucket. The index does not export it; only the
+ * owner-proved public authority door calls register. It grants no serving, registration, caller
+ * policy, restore, terminal retirement or KICK.
  *
  * Every write is one zero-history create or one exact-revision CAS on one key, issued through the
  * shared custody writer (service-write.ts) under the same plane-claim hold check and fatal latch as
@@ -22,7 +23,7 @@ import { SERVICE_HOST_INVOCATION_MS, openAuthorityClient, serviceHostEffectGrant
 import { findInteractiveActor } from "./ledger.js";
 import { openLifecycleRegistry, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { approvedServiceGateRow, assertApprovableServiceGate, type ServiceAssignmentBinding, type ServiceGateRows } from "./native-service-gate.js";
-import { readNativeServiceName } from "./native-service-name.js";
+import { readNativeServiceName, serviceNameKey, serviceNameRowBytes } from "./native-service-name.js";
 import type { PlaneClaimHold } from "./plane-claim.js";
 import { encodeRoundTrip } from "./service-custody-shapes.js";
 import {
@@ -427,7 +428,7 @@ async function retryDebt(ctx: Ctx, op: Op, registerRequestIdOf: (proposalId: str
 
 /** What discovery located for one invocation before its effect connection opens. */
 export interface ServiceHostScopeTarget {
-  operation: "startup" | "register" | "decide" | "revoke";
+  operation: "startup" | "register" | "decide" | "revoke" | "name-bind";
   operationId: string | null;
   proposalId: string | null;
   owner: string | null;
@@ -463,6 +464,10 @@ export function serviceHostScopeKeys(account: { accountPublicKey: string; space:
       if (t.endpoint === null || t.instanceId === null) bad("a revoke scope names its selector");
       auth.push(opKeyOf(), assignmentKey(t.endpoint, t.instanceId), CAPACITY_KEY, ...(t.proposalId === null ? [] : [proposalKey(hexN(t.proposalId, 64))]));
       custody("cancel");
+      break;
+    case "name-bind":
+      if (t.endpoint === null) bad("a name binding scope names its endpoint");
+      auth.push(serviceNameKey(t.endpoint));
       break;
   }
   const uniq = (a: string[]) => Object.freeze([...new Set(a)]);
@@ -502,11 +507,13 @@ export interface ServiceHostOperationsOptions {
 }
 export interface ServiceRegisterRequest {
   v: 1; kind: "service-endpoint-host"; requestId: string; operation: "register";
-  input: { owner: string; endpoint: string; instanceId: string; clusterDigests: string[]; commands: Command[] };
+  input: { owner: string; endpoint: string; instanceId: string; clusterDigests: string[]; commands: Command[];
+    /** The public request this admission serves, so a changed public body under one key is a conflict. */
+    publicRequest?: { requestId: string; requestDigest: string } };
   granter: { kind: "owner"; owner: string };
 }
 export type ServiceRegisterResult = { v: 1; kind: "service-endpoint-host"; operation: "register"; requestId: string; space: string; accountPublicKey: string } & (
-  | { state: "registered"; outcome: ServiceHostOutcome; operationId: string; proposalId: string; revision: number; expiresAtMs: number; debt?: ServiceHostDebt[] }
+  | { state: "registered"; outcome: ServiceHostOutcome; operationId: string; proposalId: string; proposalDigest: string; revision: number; expiresAtMs: number; debt?: ServiceHostDebt[] }
   | Arms);
 type Arms =
   | { state: "pending"; operationId: string; phase: string; assignmentDigest?: string; denyNew?: ServiceDenyNew; root?: "none" | "revoked" | "retained-stamped"; debt?: ServiceHostDebt[] }
@@ -518,8 +525,11 @@ export interface ServiceHostOperations {
   readonly accountPublicKey: string;
   /** Internal register admission; the public register route that verifies the owner calls it. */
   register(raw: unknown): Promise<ServiceRegisterResult>;
-  /** decide, revoke, operation-read and proposal-read; every other operation is `unsupported`. */
+  /** decide, revoke, name-bind, operation-read and proposal-read; every other operation is `unsupported`. */
   handle(raw: unknown): Promise<ServiceHostResult>;
+  /** One owner's assignment at a selector, from one discovery read of its record and endpoint gate.
+   *  Another owner's assignment reads absent. For the authority door, which proved the owner. */
+  serviceState(owner: string, endpoint: string, instanceId: string): Promise<ServiceAssignmentState>;
   /** The engine-level fatal latch: refuses new invocations and trips every live invocation host. */
   trip(reason: string): void;
   /** From the moment it is called, refuses every later call with the latch's answers. */
@@ -530,6 +540,14 @@ export interface ServiceHostOperations {
    *  invocation bounds. */
   close(): Promise<void>;
 }
+
+/** The current state of one assignment. `pending-root` has no approval on its endpoint gate yet;
+ *  `revoking` has a bound cancel identity. `unavailable` is a failed or inconsistent read, never absence. */
+export type ServiceAssignmentState =
+  | { state: "absent" } | { state: "unavailable" }
+  | { state: "pending-root"; proposalId: string; assignmentDigest: string }
+  | { state: "approved"; proposalId: string; assignmentDigest: string; approvalDigest: string }
+  | { state: "revoking"; proposalId: string; assignmentDigest: string; operationId: string; denyNew: ServiceDenyNew };
 
 interface Inv { host: ServiceCustodyHost; h: HostInternals; writes: ServiceWriteScope; endMs: number; operationId: string; bound: boolean; assignmentDigest?: string }
 const denied = (reason: ServiceHostReason, boundOperationId?: string): Arms => ({ state: "denied", reason, ...(boundOperationId ? { boundOperationId } : {}) });
@@ -548,8 +566,9 @@ export function parseServiceRegisterRequest(raw: unknown): ServiceRegisterReques
     if (o.v !== 1 || o.kind !== "service-endpoint-host" || o.operation !== "register") bad("unknown version, kind or operation");
     hexN(o.requestId, 32);
     g = closed(o.granter, ["kind", "owner"]); pick(g.kind, ["owner"]); owner(g.owner);
-    input = closed(o.input, ["owner", "endpoint", "instanceId", "clusterDigests", "commands"]);
+    input = closed(o.input, ["owner", "endpoint", "instanceId", "clusterDigests", "commands"], ["publicRequest"]);
     owner(input.owner); endpointName(input.endpoint); token(input.instanceId, "instanceId");
+    if (Object.hasOwn(input, "publicRequest")) { const pr = closed(input.publicRequest, ["requestId", "requestDigest"]); hexN(pr.requestId, 32); digest(pr.requestDigest); }
   } catch (e) { return badRequest(message(e)); }
   const clusterDigests = parseServiceProposalClusters(input.clusterDigests), commands = parseServiceProposalCommands(input.commands);
   if (commands.some((c) => !clusterDigests.includes(c.clusterDigest))) badRequest("every command must come from a submitted cluster");
@@ -646,7 +665,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
   // ---- register (R1-R7) ---------------------------------------------------------------------------
 
   type Selector = { owner: string; endpoint: string; instanceId: string };
-  type Registered = { state: "registered"; outcome: ServiceHostOutcome; operationId: string; proposalId: string; revision: number; expiresAtMs: number; debt?: ServiceHostDebt[] };
+  type Registered = { state: "registered"; outcome: ServiceHostOutcome; operationId: string; proposalId: string; proposalDigest: string; revision: number; expiresAtMs: number; debt?: ServiceHostDebt[] };
   /** R3: the initial refusal reasons, from one read of each authority. */
   async function registerRefusal(ctx: Ctx, sel: Selector, cap: Read<Capacity>, now: number, epoch?: number): Promise<{ reason?: ServiceOperationRefusal & ServiceHostReason; epoch: number }> {
     const adm = await readAdmission(ctx);
@@ -711,7 +730,8 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
 
     async function advanceRegister(inv: Inv, first: Op): Promise<Arms | Registered> {
       const ctx = readCtx(inv, "R-replay");
-      const registered = (r: RegisterResult, outcome: ServiceHostOutcome, debts: ServiceHostDebt[] = []): Registered => ({ state: "registered", outcome, operationId, ...r, ...(debts.length ? { debt: debts } : {}) });
+      // The digest is the binding's own: a matching request digest fixes the same proposal body.
+      const registered = (r: RegisterResult, outcome: ServiceHostOutcome, debts: ServiceHostDebt[] = []): Registered => ({ state: "registered", outcome, operationId, proposalDigest, ...r, ...(debts.length ? { debt: debts } : {}) });
       const recorded = async (op: Op) => {
         const f = outcomeOf(op)!, left = await retryDebt(ctx, op, async () => req.requestId);
         const s = await settle(ctx, operationId, undefined, left);
@@ -1327,6 +1347,61 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     } catch (err) { if (err instanceof Held) return denied("unavailable"); throw err; }
   }
 
+  // ---- name binding (create-only) ----------------------------------------------------------------
+
+  type NameOut = Arms | { state: "bound"; binding: ServiceNameView };
+  /** One zero-history create of the endpoint's name row through this invocation's custody host. Only
+   *  the identical request recovers an existing row; transfer, release and update do not exist. */
+  async function nameBind(req: Extract<ServiceHostRequest, { operation: "name-bind" }>): Promise<NameOut> {
+    const { endpoint: e, owner: o, expectedRevision, claimReference } = req.input;
+    if (expectedRevision !== 0) return denied("unsupported");                                            // never binds
+    let key: string;
+    try { key = serviceNameKey(e); }
+    catch (err) { if (err instanceof EpEnvelopeError && err.code === "permission-denied") return denied("permission-denied"); throw err; }
+    const bytes = serviceNameRowBytes({ accountPublicKey, space }, req), requestDigest = contractDigest(req);
+    const operationId = serviceHostOperationId(space, req.requestId);
+    try {
+      return await invoke({ operation: "name-bind", operationId: null, proposalId: null, owner: null, endpoint: e, instanceId: null, lifecycleUid: null }, async (inv) => {
+        inv.operationId = operationId;
+        try {
+          const ctx = readCtx(inv, "N-read");
+          for (let n = 0; ; n++) {
+            if (n >= S2A_MAX_REDECIDE) held("contention", ctx.step);
+            const found = await nameOf(ctx, e);
+            if (found !== undefined) {
+              if (found.requestId === req.requestId && found.requestDigest === requestDigest && found.owner === o && found.claimReference === claimReference)
+                return { state: "bound", binding: found };
+              return denied(found.requestId === req.requestId ? "conflict" : "name-bound");
+            }
+            ctx.step = "N-create";
+            await write(ctx, "auth", key, bytes, { create: true });
+            ctx.step = "N-read";
+          }
+        } catch (err) { if (err instanceof Held) return heldArm(inv, err); throw err; }
+      });
+    } catch (err) { if (err instanceof Held) return unread(req.requestId, err.reason, err.step); throw err; }
+  }
+
+  // ---- one owner's assignment state (read only) ---------------------------------------------------
+
+  async function serviceState(o: string, e: string, i: string): Promise<ServiceAssignmentState> {
+    if (tripped !== undefined || closed) return { state: "unavailable" };
+    try {
+      const ctx = discoveryCtx("state-read");
+      const asg = await readAssignment(ctx, e, i);
+      if (asg.state === "absent" || asg.row.owner !== o) return { state: "absent" };
+      const a = asg.row, ids = { proposalId: a.proposalId, assignmentDigest: a.assignmentDigest };
+      if (a.state === "fenced") return { state: "revoking", ...ids, operationId: a.cancel.operationId, denyNew: "landed" };
+      const gate = await endpoint(ctx, serviceAssignmentGate(discovery.host, a.reservation));
+      if (a.cancel !== null) return { state: "revoking", ...ids, operationId: a.cancel.operationId, denyNew: denyNewOf(gate) };
+      const approvalDigest = gate.kind === "approved" ? gate.row.serviceAuthority.approvalDigest : null;
+      if (approvalDigest !== null) return { state: "approved", ...ids, approvalDigest };
+      if (gate.kind === "absent" || gate.kind === "pending") return { state: "pending-root", ...ids };
+      // A revoked gate without a bound cancel identity, an approved gate without its digest, or another assignment's row.
+      return { state: "unavailable" };
+    } catch (err) { if (err instanceof Held || err instanceof EpEnvelopeError) return { state: "unavailable" }; throw err; }
+  }
+
   // ---- dispatch -----------------------------------------------------------------------------------
 
   async function handle(raw: unknown): Promise<ServiceHostResult> {
@@ -1335,12 +1410,13 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     const out = (r: object) => ({ ...env, ...r }) as ServiceHostResult;
     // The latch comes before the ledger and every broker read. A request that could bind holds under its
     // operation coordinate, with no deny-new claim because no gate was read; a read never binds.
-    if (tripped !== undefined || closed) return out(req.operation === "decide" || req.operation === "revoke"
+    if (tripped !== undefined || closed) return out(req.operation === "decide" || req.operation === "revoke" || req.operation === "name-bind"
       ? unread(req.requestId, "readiness", "open", req.operation === "revoke" ? req.input.expectedAssignmentDigest : undefined) : denied("unavailable"));
     const authorized = req.granter.kind === "operator" || interactive(req.granter.owner);
     switch (req.operation) {
       case "decide": return out(await decide(req, authorized));
       case "revoke": return out(await revoke(req, authorized));
+      case "name-bind": return out(await nameBind(req));
       case "operation-read": return out(authorized ? await operationRead(req) : denied("permission-denied"));
       case "proposal-read": return out(authorized ? await proposalRead(req) : denied("permission-denied"));
       default: return out(denied("unsupported"));
@@ -1351,6 +1427,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     space, accountPublicKey,
     register: (raw: unknown) => tracked(register(raw)),
     handle: (raw: unknown) => tracked(handle(raw)),
+    serviceState: (owner: string, endpoint: string, instanceId: string) => tracked(serviceState(owner, endpoint, instanceId)),
     refuse() { closed = true; },
     async close() {
       closed = true;
