@@ -119,6 +119,33 @@
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
+      "name": "a running controller stack does not make its space running",
+      "file": "implementations/cli/src/commands/clean.ts",
+      "find": "  return liveStackMembers(root, context.space, false)[0];\n",
+      "replace": "  return undefined;\n",
+      "expectRed": "a space whose controller stack still runs is LIFECYCLE_BLOCKED, naming the member and cotal down",
+      "cell": "a space whose controller stack still runs is LIFECYCLE_BLOCKED, naming the member and cotal down",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "forget blocks on a member proven gone without its stop receipt",
+      "file": "implementations/cli/src/commands/clean.ts",
+      "find": "liveStackMembers(root, context.space, false)",
+      "replace": "liveStackMembers(root, context.space)",
+      "expectRed": "a member proven gone with no stop receipt does not block forget, and the output warns",
+      "cell": "a member proven gone with no stop receipt does not block forget, and the output warns",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "forget does not warn about a member gone without its stop receipt",
+      "file": "implementations/cli/src/commands/space-registration.ts",
+      "find": "      unsettled = unsettledStackMembers(m.root, m.space);\n",
+      "replace": "",
+      "expectRed": "a member proven gone with no stop receipt does not block forget, and the output warns",
+      "cell": "a member proven gone with no stop receipt does not block forget, and the output warns",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
       "name": "forgetting the selected space keeps the selection",
       "file": "implementations/cli/src/commands/space-registration.ts",
       "find": "  if (selectionCleared) clearCurrent();\n",

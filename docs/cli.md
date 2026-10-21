@@ -1470,8 +1470,12 @@ and so does `cotal up --space <name>` run from another folder. `space add` refus
 `space forget <name>` removes a registration this machine keeps. It stops nothing, deletes nothing on
 the broker, and keeps the files under its root. It refuses a space this machine is running with
 `LIFECYCLE_BLOCKED`, because `cotal down` stops it and drops the record, and a discovered space with
-`CONFLICT`, because its catalog keeps it. A prepared space is forgotten the same way, and the
-`.cotal/` that `space create` made stays. Forgetting the selected space clears the selection.
+`CONFLICT`, because its catalog keeps it. A space whose root holds its stack journal counts as
+running while any stack member's process may still run. The refusal names one such member and
+writes nothing: the registration, the selection and the root's files stay. A member whose process
+is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
+that it was never stopped cleanly. A prepared space is forgotten the same way, and the `.cotal/`
+that `space create` made stays. Forgetting the selected space clears the selection.
 `status` in a forgotten space's root then selects no space and probes no broker.
 
 `space delete <name> --dry-run` reads the registered broker in open or static-auth mode.

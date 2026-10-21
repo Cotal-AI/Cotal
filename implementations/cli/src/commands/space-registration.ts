@@ -30,7 +30,7 @@ import {
   type Report,
   type UserBundle,
 } from "@cotal-ai/workspace";
-import { liveMeshOwner } from "./clean.js";
+import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
 import {
   candidateTarget,
   checkDialPolicy,
@@ -409,8 +409,9 @@ function createdView(r: SpaceCreated): Report {
  * `cotal space forget <name>` removes a registration this machine keeps. It stops nothing and
  * deletes nothing on a broker, and the root's files stay. A space this machine is running is
  * stopped with `cotal down`, which also drops its record, and a discovered space follows its
- * catalog. Forgetting the selected space clears the selection. A prepared space is forgotten the
- * same way, and the `.cotal/` folder `space create` made stays.
+ * catalog. A stack member whose process is gone without its stop receipt does not block, and the
+ * result warns about each one. Forgetting the selected space clears the selection. A prepared space
+ * is forgotten the same way, and the `.cotal/` folder `space create` made stays.
  */
 export async function spaceForget(rest: readonly string[], presentation: Presentation): Promise<void> {
   if (rest.length !== 1) throw usage("usage: cotal space forget <name>");
@@ -425,24 +426,27 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   }
   if (m.origin === "catalog")
     throw refuse("CONFLICT", `"${name}" is listed by a signed-in space catalog, so this machine does not own its registration`, target, "it is removed when the catalog no longer lists it and `cotal sync` runs");
+  let unsettled: string[] = [];
   if (m.origin !== "manual") {
     let running: string | undefined;
     try {
       running = liveMeshOwner(m.root, m.space);
+      unsettled = unsettledStackMembers(m.root, m.space);
     } catch (e) {
       throw refuse("LIFECYCLE_BLOCKED", `could not tell whether "${name}" is running from ${m.root}: ${(e as Error).message}`, target, "check it with `cotal status`");
     }
     if (running) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${m.root} (${running})`, target, `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
   }
   removeMesh(name);
-  forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null });
+  const warnings = unsettled.map((member) => ({ code: "STACK_MEMBER_UNSETTLED", target, message: `the stack member ${member} is gone but was never stopped cleanly: its record has no stop receipt` }));
+  forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null }, warnings);
 }
 
-function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | "selectionCleared">): void {
+function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | "selectionCleared">, warnings: OutputWarning[] = []): void {
   const selectionCleared = getCurrent() === r.space;
   if (selectionCleared) clearCurrent();
   const result: SpaceForgotten = { kind: "space-forgotten", ...r, selectionCleared };
-  writeResult(presentation, { command: "space", target: { space: r.space }, result }, forgottenView);
+  writeResult(presentation, { command: "space", target: { space: r.space }, result, warnings }, forgottenView);
 }
 
 function forgottenView(r: SpaceForgotten): Report {

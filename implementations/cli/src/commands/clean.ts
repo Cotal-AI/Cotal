@@ -174,6 +174,11 @@ export function liveMeshProcess(root: string, space?: string): string | undefine
  * keeps "this mesh is running here, use `cotal down`" a true statement: found live against a real
  * registry, where a dashboard watching the remote optiplex mesh made `meshes rm` refuse and point
  * at a `cotal down` that would not have stopped that mesh at all.
+ *
+ * The controller stack this root recorded for the same space makes it the home too. `cotal up`
+ * starts that stack's members as service instances with no pidfile, and `cotal down` stops them
+ * together and drops the record. A member counts here while its process may still run. One proven
+ * gone without its stop receipt does not, and {@link unsettledStackMembers} names it.
  */
 export function liveMeshOwner(root: string, space?: string): string | undefined {
   const context: LocalProcessContext = { root, space: space ?? resolveRuntimeSpace(root) };
@@ -182,7 +187,7 @@ export function liveMeshOwner(root: string, space?: string): string | undefined 
     const running = possiblyRunning(component, context);
     if (running) return running;
   }
-  return undefined;
+  return liveStackMembers(root, context.space, false)[0];
 }
 
 /** `space` names the tenant whose pidfiles to look at. Pass it whenever the caller already knows
@@ -196,22 +201,38 @@ export function liveMeshProcesses(root: string, space?: string): string[] {
     const record = possiblyRunning(component, context);
     if (record) running.push(record);
   }
-  // A controller stack member counts as live unless its process is gone and its
-  // record carries the stop receipt its role requires. Backup, reset store and reset space share this.
-  // The members live under the stack's own recorded space. A space derived from the root's pidfiles
-  // or accounts can name another tenant, or the default, once the stack is stopped.
+  return [...running, ...liveStackMembers(root)];
+}
+
+/** The members of the controller stack recorded at this root that may still run. A member counts as
+ *  live unless its process is gone and its record carries the stop receipt its role requires.
+ *  Backup, reset store and reset space share this rule. With `unreceipted` false, a member whose
+ *  process is proven gone does not count even without its receipt, as `space forget` asks. */
+function liveStackMembers(root: string, space?: string, unreceipted = true): string[] {
+  return stackMembers(root, space).filter((row) => !row.gone || unreceipted && !row.receipted).map((row) => `${row.label}${row.gone ? ", no stop receipt" : ""}`);
+}
+
+/** The members of the controller stack recorded at this root for `space` whose process is proven
+ *  gone with no stop receipt: they can no longer run, but nothing stopped them cleanly. */
+export function unsettledStackMembers(root: string, space: string): string[] {
+  return stackMembers(root, space).filter((row) => row.gone && !row.receipted).map((row) => row.label);
+}
+
+/** Each instance record of the controller stack recorded at this root. The members live under the
+ *  stack's own recorded space. A space derived from the root's pidfiles or accounts can name another
+ *  tenant, or the default, once the stack is stopped. `space` limits the answer to that space's
+ *  stack. */
+function stackMembers(root: string, space?: string): { label: string; gone: boolean; receipted: boolean }[] {
   const stack = readStackJournal(root);
-  if (stack) {
-    for (const definition of Object.values(STACK_DEFINITION)) {
-      for (const row of serviceInstances(stack.journal.space, definition)) {
-        const value = row.record.value;
-        const gone = ["gone", "previous-boot"].includes(observeServiceProcess(value));
-        const receipted = value.state === "stopped" && Boolean(value.nativeStop ?? value.kernelStop ?? value.processStop);
-        if (!gone || !receipted) running.push(`${definition}, instance ${row.name}${gone ? ", no stop receipt" : ""}`);
-      }
-    }
-  }
-  return running;
+  if (!stack || space !== undefined && stack.journal.space !== space) return [];
+  return Object.values(STACK_DEFINITION).flatMap((definition) => serviceInstances(stack.journal.space, definition).map((row) => {
+    const value = row.record.value;
+    return {
+      label: `${definition}, instance ${row.name}`,
+      gone: ["gone", "previous-boot"].includes(observeServiceProcess(value)),
+      receipted: value.state === "stopped" && Boolean(value.nativeStop ?? value.kernelStop ?? value.processStop),
+    };
+  }));
 }
 
 /** "label, pid N" for a record that may still front a process, with the probe's note when it is not

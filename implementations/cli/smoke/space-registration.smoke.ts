@@ -3,15 +3,17 @@
  * in a sandboxed `COTAL_HOME`. An open broker and one that refuses a bare connect answer for real,
  * another address has nothing listening, and a stand-in exchange answers for a user-auth bundle's
  * pins. Each refusal is checked for its code and exit, and for writing nothing; each success for the
- * record it writes and for leaving the selection as it was. A prepared space is then started with
- * `cotal up` in its root and stopped again.
+ * record it writes and for leaving the selection as it was. On Linux, a space started as a controller
+ * stack is written as its stack journal and instance records, with nothing launched. A prepared space
+ * is then started with `cotal up` in its root and stopped again.
  *
  * Needs `nats-server` on PATH.
  *
  * Run: pnpm smoke:space-registration
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +30,8 @@ const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 process.env.COTAL_HOME = join(home, ".cotal");
 const { clearCurrent, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
+const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
+const { stackJournalPath, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
@@ -241,6 +245,64 @@ setCurrent("keep");
   recordMesh({ space: "running", server: LIVE, root: ownedRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const live = await json(["space", "forget", "running"]);
   check("a space this machine is running is LIFECYCLE_BLOCKED, naming cotal down", refused(live, 2, "LIFECYCLE_BLOCKED") && /cotal down/.test(live.env?.error?.remedy ?? "") && findMesh("running") !== undefined, shown(live));
+
+  // `cotal up` runs a space as a controller stack: service instances with no pidfile. The stack
+  // journal and instance records are written here as a stack leaves them, and nothing is launched. A
+  // member pinned to this process runs; one pinned to an exited stand-in is gone.
+  if (process.platform === "linux") {
+    const exited = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120_000)"], { stdio: "ignore" });
+    standIns.push(exited);
+    const gonePid = requireProcessIdentity(exited.pid!);
+    await new Promise((done) => { exited.once("exit", done); exited.kill("SIGKILL"); });
+    const ts = new Date().toISOString();
+    /** One member's instance record. A stopped one carries the generic process-exit receipt. */
+    const member = (space: string, definition: string, pinned: { pid: number; token: string }, stopped: boolean): string => {
+      const id = randomUUID(), requestId = randomUUID();
+      serviceInstanceStore(space).commit(id, undefined, {
+        schemaVersion: 1, instanceId: id, definition, definitionRevision: `rev-${definition}`, space, host: processServiceHost(),
+        requestId, launchRequestId: requestId, state: stopped ? "stopped" : "running", launcher: requireProcessIdentity(process.pid), process: pinned,
+        readiness: stopped ? "not-checked" : "process-running", supervisor: "none", foreground: false, createdAt: ts, updatedAt: ts,
+        ...(stopped ? { processStop: { kind: "process-exit" as const, requestId, process: pinned, signal: "SIGTERM" as const, observedAt: ts } } : {}),
+      });
+      return id;
+    };
+    /** A registered space this machine started, whose root holds its stack journal. */
+    const stack = (space: string, mode: "open" | "auth", rows: { broker?: string; delivery?: string }, state: "started" | "stopped"): string => {
+      const stackRoot = realpathSync.native(projectRoot(space));
+      const row = (role: "broker" | "auth" | "delivery" | "manager", instanceId: string | undefined) =>
+        ({ role, definition: `stack-${role}`, instanceId: instanceId ?? null, state: instanceId ? state : "not-attempted" as const });
+      writeStackJournal(stackRoot, undefined, {
+        schemaVersion: 1, kind: "cotal-stack-controller", root: stackRoot, space, server: LIVE, mode,
+        members: [row("broker", rows.broker), row("auth", undefined), row("delivery", rows.delivery), row("manager", undefined)],
+        operation: { id: randomUUID(), kind: state === "started" ? "up" : "down", phase: "completed", recordedAt: ts, withAgents: false }, updatedAt: ts,
+      });
+      recordMesh({ space, server: LIVE, root: stackRoot, mode, origin: "up", ts });
+      return stackRoot;
+    };
+
+    const runningRoot = stack("stackrun", "open", { broker: member("stackrun", "stack-broker", requireProcessIdentity(process.pid), false) }, "started");
+    const before = registryFiles(), selected = getCurrent(), journal = readFileSync(stackJournalPath(runningRoot), "utf8");
+    const running = await json(["space", "forget", "stackrun"]);
+    check("a space whose controller stack still runs is LIFECYCLE_BLOCKED, naming the member and cotal down",
+      refused(running, 2, "LIFECYCLE_BLOCKED") && /stack-broker/.test(running.env?.error?.message ?? "") && /cotal down/.test(running.env?.error?.remedy ?? ""), shown(running));
+    check("...and it writes nothing: the registration, the selection and the stack journal stay",
+      JSON.stringify(registryFiles()) === JSON.stringify(before) && getCurrent() === selected && readFileSync(stackJournalPath(runningRoot), "utf8") === journal, shown(running));
+
+    stack("stackgone", "open", { broker: member("stackgone", "stack-broker", gonePid, false) }, "started");
+    const unsettled = await json(["space", "forget", "stackgone"]);
+    const warned = (unsettled.env?.warnings ?? []).filter((w: { code: string }) => w.code === "STACK_MEMBER_UNSETTLED");
+    check("a member proven gone with no stop receipt does not block forget, and the output warns",
+      unsettled.status === 0 && unsettled.env?.result.kind === "space-forgotten" && findMesh("stackgone") === undefined &&
+        warned.length === 1 && /stack-broker/.test(warned[0].message) && /never stopped cleanly/.test(warned[0].message), shown(unsettled));
+
+    // Only a delivery member is recorded: its generic stop leaves the process-exit receipt this suite
+    // can write, where the broker's and the manager's receipts carry native evidence.
+    stack("stackdone", "auth", { delivery: member("stackdone", "stack-delivery", gonePid, true) }, "stopped");
+    const settled = await json(["space", "forget", "stackdone"]);
+    check("a space whose stack stopped with its receipts is forgotten",
+      settled.status === 0 && settled.env?.result.kind === "space-forgotten" && settled.env.result.origin === "up" && findMesh("stackdone") === undefined &&
+        settled.env.warnings.length === 0, shown(settled));
+  } else console.log("  - controller stack forget cells skipped: service records need Linux machine and boot identity");
 
   const stopped = await json(["space", "forget", "started"]);
   check("a stopped space this machine started is forgotten", stopped.status === 0 && stopped.env?.result.kind === "space-forgotten" && stopped.env.result.origin === "up" && findMesh("started") === undefined, shown(stopped));
