@@ -257,6 +257,8 @@ connection, a copy the client already received never reaches the handler; it sta
 broker redelivers it after the durable's ack wait. An ack, nak or in-progress signal from a handler
 whose connection has closed throws instead of being lost. The mode registers no presence, so the
 reader is not on the roster. Credential renewal and reconnects use the endpoint's normal paths.
+On a user-auth mesh, the `dm-reader` exchange view mints this credential
+([identity-and-auth.md](identity-and-auth.md)).
 
 ## Channel delivery
 

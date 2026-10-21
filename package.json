@@ -617,6 +617,7 @@
     "smoke:auth-attenuation": "tsx implementations/auth/smoke/attenuation.smoke.ts",
     "smoke:auth-callout:auth": "tsx implementations/auth/smoke/auth-callout.smoke.ts",
     "smoke:bearer-exp-ceiling:auth": "tsx implementations/auth/smoke/bearer-exp-ceiling.smoke.ts",
+    "smoke:dm-reader:auth": "tsx implementations/auth/smoke/dm-reader.smoke.ts",
     "smoke:endpoint-usermode:auth": "tsx implementations/auth/smoke/endpoint-usermode.smoke.ts",
     "smoke:join-user:auth": "tsx implementations/auth/smoke/join-user.smoke.ts",
     "smoke:session-adapter:auth": "tsx implementations/auth/smoke/session-ledger.smoke.ts",

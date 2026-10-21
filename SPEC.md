@@ -768,6 +768,7 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
 | `transfer-writer` | one carried transcript's chunk and meta subjects in one manager instance's transfer bucket (§8) | a last-message Direct Get on those two subjects | one-shot per CLI call, minted after the transcript is hashed; no consumer and no other object |
+| `dm-reader` | `CONSUMER.INFO` and `CONSUMER.MSG.NEXT` on its own lifecycle-scoped `dm_…`, and its `$JS.ACK` subtree | own `_INBOX_<connId>.>` | no message publish, presence, channel, CHAT, `dlv_`, `$JS.API.INFO` or stream INFO row; bound to the bearer's expiry |
 | `transfer-reader` | the stock delete marker on its own transfer bucket's meta subjects | its own `OBJ_cotal_xfer_<space>_<instanceId>` stream: info, message get, its push consumer, purge | one-shot per `transcript-receive` or sweep; no other instance's bucket |
 | scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Appendix B summarizes them; the concrete grant lists are **generated from the §13.9 ownership matrix** into `provision.ts` (the matrix is the single oracle; `provision.ts` is its artifact, Appendix B its summary). |
 
@@ -957,6 +958,16 @@ On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`,
 managed-agent secret exchange MUST refuse every view other than `manager-caller`.
 The service-only `service-endpoint` view (§13.1) is not selectable on either ordinary exchange
 face. Its dedicated authority path checks native service custody rather than an enrolled actor row.
+The `dm-reader` view needs no ledger scope and MUST remain loopback-only. It rides only a
+purpose-bound IdP proof. The proof carries the bridge's dedicated `dmReaderAudience`, which is
+explicit configuration and MUST differ from the ordinary audience. It also carries
+`purpose: "dm-reader"` and the `actor`, `lifecycle` and `space` claims. The exchange MUST refuse
+unless the request names `view: "dm-reader"`, `actor` equals the requested actor, `lifecycle`
+equals the current ledger row's lifecycle UID, and `space` equals the bridge's space. Every other
+door that takes a human IdP proof MUST refuse any token carrying a `purpose` claim. At this release
+those are the other `/exchange` forms, `/manager-instances`, `/manager-service-authority`, the three
+chat-session routes, `/tool-result-human-proof/verify` and `/tool-result-consent/issue`. The
+bearer's expiry, and with it the connection's, is bounded by the proof's.
 
 **User-mode chat sessions.** The auth service is a minting authority for chat sessions only
 (§13.1). A signed-in human opens one with a fresh IdP proof and the SHA-256 of a holder secret the
