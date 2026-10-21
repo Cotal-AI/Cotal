@@ -14,6 +14,7 @@ import {
   DEV_OWNER,
   dialerFor,
   epCallerGrantRows,
+  isReachable,
   jwtFromCreds,
   mintCreds,
   mintLifecycleUid,
@@ -200,14 +201,16 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
     throw new Error(`managed seat credential is missing at ${path}; refusing to act as a different caller`);
   const creds = readFileSync(path, "utf8");
   const tls = mesh.tlsRequired;
-  // As the operator mint does, a broker that is not there is reported in the preflight's classified
-  // words rather than as the raw dial error. The probe uses the seat's own credential and never prunes.
+  // As the operator mint does, a broker that does not answer is reported in the preflight's classified
+  // words rather than as the raw dial error; the probe uses the seat's own credential and never prunes.
+  // A broker that answers keeps the dial's own error, so a refused seat credential is not reported as
+  // a registry mismatch.
   const nc = await dialerFor(mesh.server)({
     servers: mesh.server,
     ...standaloneConnectOpts({ creds, tls }),
     maxReconnectAttempts: 0,
   }).catch(async (e: unknown) => {
-    await preflightOrThrow(mesh, creds, true);
+    if (!(await isReachable(mesh.server))) await preflightOrThrow(mesh, creds, true);
     throw e;
   });
   let epCaller: IssuedCaller;
