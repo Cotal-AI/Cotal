@@ -186,7 +186,7 @@ const M = mgr as unknown as {
   agents: Map<string, { id: string; lifecycleUid: string; handle: PrivHandle }>;
 };
 
-type Call = (c: string, a?: Record<string, unknown>, t?: { actor: string; lifecycleUid: string }) => Promise<{ reply: { ok: boolean; data?: unknown; error?: { code?: string; message?: string } } }>;
+type Call = (c: string, a?: Record<string, unknown>, t?: { actor: string; lifecycleUid: string }) => Promise<{ reply: { ok: boolean; data?: unknown; error?: { code?: string; message?: string; outcome?: string } } }>;
 
 /** `spawn` is an ACTION: its reply is the acceptance, returned before the child is live. Poll `ps`
  *  for the allocated row, which carries the id + lifecycle uid a targeted call needs. */
@@ -675,7 +675,7 @@ try {
 // evidence without removing the green. Bumping this number is the deliberate edit that makes such
 // a drop impossible to miss. The count is read BEFORE this cell is tallied, so it is the number of
 // preceding cells (37), not 38.
-const EXPECTED_CELLS = 37;
+const EXPECTED_CELLS = 38;
 check(`every cell ran (a silently skipped cell must not read as green): expected ${EXPECTED_CELLS}`,
   pass + fail === EXPECTED_CELLS, { ran: pass + fail, expected: EXPECTED_CELLS });
 
