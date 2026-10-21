@@ -163,9 +163,22 @@ output scrolls.
 
 On a terminal, a long value, line, warning or failure wraps at spaces, and each continuation line
 starts under the text it continues. A word wider than the line, such as a path, keeps a line of its
-own and is never split. Help wraps the same way: a usage line breaks only between options, and when
-the flag names leave their descriptions fewer than 30 columns, each description goes on the lines
-under its flag. Output to a pipe or a file is never wrapped.
+own and is never split. Help wraps the same way, including the title of `cotal help --all`.
+
+A usage line breaks only between options, never between an option and its argument. A ` | ` stays
+on the line before it whenever it fits there. A compact `|`, such as the one in
+`<persona.md>|--prompt`, is a break point too: the line ends right after it, the next line starts
+with the following option, and no space is added or lost. A usage too wide for the line breaks after
+its own ` | ` or compact `|` alternatives first. A group too wide for the line, such as
+`(--to/-t <agent> | --channel/-c <channel> | --role/-r <role>)`, takes lines of its own and breaks
+the same way inside, and so does a group nested in it. A group that fits, such as
+`[--json|--plain]`, stays whole. Only a single option with its argument that is wider than the line
+breaks at its spaces. Examples are not wrapped, so each stays one line to copy.
+
+When the flag names leave their descriptions fewer than 30 columns, each description goes on the
+lines under its flag. A report's list of commands follows the same 30-column rule. Below 48 columns,
+a record puts each label on a line of its own with its value under it. Output to a pipe or a file is
+never wrapped.
 
 A read that could not read part of what it was asked for is `partial`: `result` holds what it read,
 `completeness` is `partial`, each part it could not read is a warning, and it exits 4. A list is
@@ -524,7 +537,13 @@ through its path, which follows a symlink; this step does not refuse a symlinked
 `.cotal`.
 On Windows the owner and symlink checks do not
 apply, because POSIX modes are not that platform's protection model; the file is opened with mode
-`0600` and private secrets are locked down by their access list. When a service path check refuses a path, the refusal names the option,
+`0600` and private secrets are locked down by their access list. Local records under `~/.cotal`
+and a project's `.cotal`, such as the stack journal, service records and deployment attempts, use
+the same model there. A store directory Cotal creates gets the private access list, and a record is
+written like a private secret. Reading a record or checking its path does not check an owner, a mode
+or an access list, and does not refuse a link: a symlink or junction is followed. Size limits, the
+record schema, the regular-file check and the refusal of a link inside a record store's own
+directories still apply. When a service path check refuses a path, the refusal names the option,
 the path that failed, and its owner and mode. A whole-stack failure shows that sentence as its
 native detail.
 
@@ -724,9 +743,7 @@ address aliases, remote tenants or live attachments. The preview does not establ
 ownership, the complete service set, exclusive broker use or agent impact.
 `--with-agents` only marks the requested policy. It does not reserve or signal
 a process, and the receipt is not an authorized stop plan. A fresh `team show`
-summary points to this read-only command from the recorded root. This preview
-refuses on Windows while protected workstation-record reads remain unsupported;
-it does not replace them with a weaker file reader.
+summary points to this read-only command from the recorded root.
 
 On a root with a controller journal, bare `down` reads only its recorded full instance IDs. It
 shows the member set and the live manager's native agent impact before confirmation, then stops
@@ -1578,8 +1595,7 @@ readable coordinates in JSON.
 It appears only when there is something to inspect. A missing fresh summary
 does not prove the original broker never started; an additive intent does not
 prove which resources changed. This read grants neither retry nor stop
-authority. Windows reports this protected-file inventory as not checked, because
-native access is not supported there. If the folder inherits
+authority. If the folder inherits
 the machine's home `.cotal`, status warns that unqualified `up` refuses instead of starting
 there. Prepare the intended folder first with
 `space create <space> --root .`; `up --root .` then names it.
@@ -4548,8 +4564,7 @@ not proof that a later boot may replace it. For a concrete candidate broker
 address, the preview also lists other local registrations with that exact
 address. A match blocks fresh apply; no match does not prove exclusivity against
 aliases or remote tenants. A host-derived candidate leaves this comparison not
-checked. This preview refuses on Windows until protected workstation-record
-reads are supported there.
+checked.
 Where the manifest supplies a broker URL or uses the default without a host override,
 it makes a credless reachability probe. A failed probe is not proof of absence on a
 TLS-first listener. The result is partial: port binding, exclusive local ownership,
@@ -4602,7 +4617,7 @@ explicitly grant the invoking user with `cotal auth grant cli --sub <subject>`, 
 before `cotal team boot <file>`. Do not start the manager between preparation and that stop. A
 static-auth or open preparation uses `cotal up --no-manager` before `cotal down`. No implicit owner
 grant or borrowed caller is substituted. A previously attempted manager is never adopted.
-Windows apply refuses, because protected service-record reads are not supported there.
+Windows cannot apply, because the stack's process services need Linux machine and boot identity.
 
 `--space` must agree with the manifest. Hand-registered and discovered spaces are not local boot
 targets. Public broker addresses and fresh-attempt views omit URL user info, queries and fragments;
@@ -4873,8 +4888,9 @@ Existing names are not silently overwritten.
 compares the held revision and content under the private writer lock before forgetting metadata.
 It never deregisters a native endpoint, stops a process, removes credential files or revokes grants.
 
-Protected no-follow/nonblocking file access supports POSIX hosts. Windows refuses as Unsupported,
-because it has no protected file-access adapter. Saved references do not provide native live
+Protected no-follow/nonblocking file access supports POSIX hosts. Windows uses its access-list
+model for local records instead: a credential reference there must be a regular file, and its
+owner, mode and links are not checked. Saved references do not provide native live
 inventory, invocation resolution or the remaining endpoint verbs.
 
 
@@ -4919,10 +4935,10 @@ owned direct incarnation is gone and that no OS supervisor is installed before r
 unchanged instance records and definition. Logs are retained. No process or OS unit is removed
 by this operation. The presets are described below. A preset is not installed under an OS
 supervisor.
-Protected local records currently refuse on Windows; no weaker file-access path is substituted.
-There, `cotal ext add` and the setup seed still add an extension that declares service adapters or
-presets, record no service receipt and say that its services cannot run on this platform; any use of
-them refuses Unsupported.
+On Windows, local records use the access-list model described under `up`. There, `cotal ext add`
+and the setup seed record a service receipt for an extension that declares service adapters or
+presets, and starting one of its process services refuses Unsupported, because the process driver
+needs Linux machine and boot identity.
 
 ### Service presets
 
@@ -5232,7 +5248,8 @@ model-policy and live authority checks are labeled not performed.
 foreground enrollment path. The file is opened with protected ownership/mode and bounded input
 checks; its URL is not printed, copied into the child environment or persisted by this input
 adapter. It does not supply a managed enrollment authority path. Dry-run does not read or redeem
-the enrollment file. Protected file access is not supported on Windows.
+the enrollment file. On Windows the file must be a regular file; its owner, mode and links are not
+checked.
 
 ### Owned process services
 

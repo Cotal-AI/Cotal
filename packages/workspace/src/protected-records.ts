@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, unlinkSync, type Stats } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { acquireLock, ensureDirNoSymlink, mkSecretDir, realDirNoSymlink, writeSecretFileAtomic } from "@cotal-ai/core";
+import { acquireLock, ensureDirNoSymlink, hardenPrivate, mkSecretDir, realDirNoSymlink, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure } from "./output.js";
 import { homeCotalDir } from "./mesh-registry.js";
 import { spaceKey } from "./auth-paths.js";
@@ -19,35 +19,64 @@ export function localRecordName(name: string): string {
   return name;
 }
 
-/** Whether this platform has the owner, no-follow and nonblocking file access protected records need. */
+/**
+ * How local records are protected. `posix` checks the owner and the mode and refuses links, and
+ * opens without following a link or blocking. `windows-acl` is the model Cotal already uses for
+ * private files on Windows: a private file or directory gets an access list for this user, SYSTEM
+ * and Administrators when Cotal creates it (core `hardenPrivate`). Windows has no POSIX owner or
+ * mode, so that model checks neither and does not refuse a link.
+ */
+export type LocalRecordAccess = "posix" | "windows-acl";
+
+/** The model for `platform`, or undefined when a POSIX host lacks the owner id or the no-follow
+ *  and nonblocking opens the POSIX checks need. It is the one place the platform is decided;
+ *  `platform` is a parameter so a suite can select the Windows model off Windows. */
+export function localRecordAccess(platform: NodeJS.Platform = process.platform): LocalRecordAccess | undefined {
+  if (platform === "win32") return "windows-acl";
+  return process.getuid !== undefined && constants.O_NOFOLLOW !== undefined && constants.O_NONBLOCK !== undefined ? "posix" : undefined;
+}
+
+/** Whether this platform has a protection model for local records. */
 export function protectedFileAccessAvailable(): boolean {
-  return process.platform !== "win32" && process.getuid !== undefined && constants.O_NOFOLLOW !== undefined && constants.O_NONBLOCK !== undefined;
+  return localRecordAccess() !== undefined;
+}
+
+/** This platform's model, refusing where there is none. */
+function requireLocalRecordAccess(): LocalRecordAccess {
+  const access = localRecordAccess();
+  if (!access) throw new CommandFailure("refused", "UNSUPPORTED", "protected workstation file access is not available on this platform in this author preview; no weaker file access was substituted");
+  return access;
 }
 
 export function assertProtectedFileAccess(): void {
-  if (!protectedFileAccessAvailable())
-    throw new CommandFailure("refused", "UNSUPPORTED", "protected workstation file access is not available on this platform in this author preview; no weaker file access was substituted");
+  requireLocalRecordAccess();
 }
 
-function privateDirectory(path: string): void {
+function privateDirectory(path: string, access: LocalRecordAccess): void {
+  if (access === "windows-acl") {
+    if (!statSync(path).isDirectory()) throw new CommandFailure("refused", "PERMISSION_DENIED", "the local-record store must use directories", { target: { path } });
+    return;
+  }
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0)
     throw new CommandFailure("refused", "PERMISSION_DENIED", "the local-record store must use owned private directories without symlinks", { target: { path } });
 }
 
-/** Open nonblocking/no-follow, establish a regular descriptor, then read only bounded bytes. */
+/** Establish a regular descriptor, then read only bounded bytes. POSIX opens nonblocking and
+ *  without following a link, and checks a private file's owner and mode; Windows does neither. */
 export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, privateFile = false): Buffer | undefined {
-  assertProtectedFileAccess();
+  const access = requireLocalRecordAccess();
+  const posix = access === "posix";
   let fd: number;
-  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  try { fd = openSync(path, posix ? constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK : constants.O_RDONLY); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new CommandFailure("refused", "PERMISSION_DENIED", "the local record source could not be opened without following links", { target: { path } });
+    throw new CommandFailure("refused", "PERMISSION_DENIED", posix ? "the local record source could not be opened without following links" : "the local record source could not be opened", { target: { path } });
   }
   try {
     const before = fstatSync(fd);
     if (!before.isFile()) throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input must be a regular file", { target: { path } });
-    if (privateFile && (before.uid !== process.getuid!() || (before.mode & 0o077) !== 0)) throw new CommandFailure("refused", "PERMISSION_DENIED", "the saved local record is not owned and private", { target: { path } });
+    if (privateFile && posix && (before.uid !== process.getuid!() || (before.mode & 0o077) !== 0)) throw new CommandFailure("refused", "PERMISSION_DENIED", "the saved local record is not owned and private", { target: { path } });
     if (before.size > limit) throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input exceeds its byte limit", { target: { path } });
     const bytes = Buffer.alloc(limit + 1);
     let length = 0;
@@ -229,8 +258,9 @@ const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : `'
  *  must own it. Group write needs the caller's proven user private group and no extended ACL, whose
  *  named entries the group bits only mask. World write is never accepted. An `ancestor` walk also
  *  accepts a root-owned sticky directory such as /tmp. `what` names the path the caller checks,
- *  for the refusal. */
+ *  for the refusal. These are POSIX owner, mode and link checks, so the Windows model skips them. */
 export function assertProtectedEntry(what: string, path: string, stat: EntryStat, options: { ancestor?: boolean; policy?: ProtectedPathPolicy } = {}): void {
+  if (localRecordAccess() === "windows-acl") return;
   const refuse = (reason: string, remedy: string): never => { throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} is not protected against other local writers: ${path} ${reason}`, { remedy, target: { path } }); };
   const physical = "use a physical path owned by you or root, without symlinks";
   if (stat.isSymbolicLink()) refuse("is a symbolic link", physical);
@@ -251,7 +281,7 @@ export function assertProtectedEntry(what: string, path: string, stat: EntryStat
 /** Verify an existing physical directory chain before using a protected private output path.
  *  `what` names the path for the refusal, such as "the project root". */
 export function protectedLocalDirectory(path: string, what = "the path", policy?: ProtectedPathPolicy): void {
-  assertProtectedFileAccess();
+  requireLocalRecordAccess();
   let parent = path;
   for (;;) {
     const directory = lstatSync(parent);
@@ -264,10 +294,14 @@ export function protectedLocalDirectory(path: string, what = "the path", policy?
 }
 
 export function protectedCredentialReference(path: string): void {
-  assertProtectedFileAccess();
+  const access = requireLocalRecordAccess();
   try {
-    const stat = lstatSync(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the referenced credential must be an owned private regular file; its bytes were not read");
+    if (access === "windows-acl") {
+      if (!statSync(path).isFile()) throw new CommandFailure("refused", "PERMISSION_DENIED", "the referenced credential must be a regular file; its bytes were not read");
+    } else {
+      const stat = lstatSync(path);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the referenced credential must be an owned private regular file; its bytes were not read");
+    }
     protectedLocalDirectory(dirname(path), "the credential reference");
   } catch (error) {
     if (error instanceof CommandFailure) throw error;
@@ -300,18 +334,22 @@ export class ProtectedRecordStore<T> {
   ) {}
 
   directory(create = false): string | undefined {
-    assertProtectedFileAccess();
+    const access = requireLocalRecordAccess();
     const home = homeCotalDir();
-    try { privateDirectory(home); }
+    try { privateDirectory(home, access); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       if (!create) return undefined;
-      mkSecretDir(home); privateDirectory(home);
+      mkSecretDir(home); privateDirectory(home, access);
     }
     const segments = [this.namespace, spaceKey(this.space), ...(this.family ? [this.family] : [])];
+    const paths = segments.map((_, index) => join(home, ...segments.slice(0, index + 1)));
+    // Windows has no create mode, so each store directory made here gets the private access list.
+    const created = create && access === "windows-acl" ? paths.filter((path) => !existsSync(path)) : [];
     const found = create ? ensureDirNoSymlink(home, ...segments) : realDirNoSymlink(home, ...segments);
     if (!found) return undefined;
-    for (let count = 1; count <= segments.length; count++) privateDirectory(join(home, ...segments.slice(0, count)));
+    for (const path of created) hardenPrivate(path, "dir");
+    for (const path of paths) privateDirectory(path, access);
     return found;
   }
 
