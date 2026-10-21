@@ -1277,8 +1277,11 @@ alias or rotates a root.
 A second package-internal dormant module builds service host operations on that writer: register
 admission, decide (approve or refuse), revoke, and the operation and proposal reads. It shares the
 writer's sealed host, plane-claim hold check and fatal latch, and each invocation opens its own
-custody host over a per-invocation effect registry. Its records and their write order are in SPEC
-§13.1. Results name their operation once a binding exists or may exist: `pending`, `held` and
+custody host over a per-invocation effect registry. That host writes only the invocation's scope,
+the exact keys discovery located before the effect registry opened, and the effect registry is
+handed the same key set so a broker grant can match it. A step that needs a key outside the scope
+holds as `scope-mismatch` before anything is issued; replaying the same request discovers what is
+stored and scopes it. The module's records and their write order are in SPEC §13.1. Results name their operation once a binding exists or may exist: `pending`, `held` and
 `refused` all carry `operationId`. A result can carry `debt`, the capacity releases its operation
 still owed as far as that invocation observed. A result without `debt` does not mean nothing is
 owed; the operation read is the authoritative view of the debt. A `held` result by itself implies

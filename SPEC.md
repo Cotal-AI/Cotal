@@ -1540,6 +1540,12 @@ recreated. No record carries a TTL, and none is deleted or purged. A live operat
 becomes terminal only by a CAS on the same key, after every write it depends on is durable.
 
 Each write is one create or one exact-revision CAS on one key; there are no multi-key batches.
+An invocation writes only its scope: the exact keys its discovery read located before the
+invocation's effect connection opened, which are its own records and, for a located reservation, the
+native custody keys of that one reservation. Only an approval's scope holds the reservation's UID
+key; a revoke's never does. A step that needs a key outside the scope holds as `scope-mismatch`
+before anything is issued, including before native custody of a reservation the scope does not name.
+A replay of the same request discovers the stored binding and assignment and scopes them.
 Register reads admission, capacity, the selector's assignment and the name binding first. An initial
 refusal writes nothing and binds nothing. Otherwise the binding is created before the capacity CAS
 and the zero-history proposal create, whose times are fixed once in the binding. A refusal found
