@@ -2,12 +2,12 @@
   "suite": [
     "implementations/cli/smoke/space-registration.smoke.ts"
   ],
-  "guard": "space add checks the address, the trust, the broker's enforcement and the credentials before it writes, refuses each failure with its code, keeps the selection, and space forget removes only a registration this machine owns and is not running",
+  "guard": "space add checks the address, the trust, the broker's enforcement and the credentials before it writes, refuses each failure with its code, keeps the selection, space forget removes only a registration this machine owns and is not running, and up refuses a runtime with no installed provider before it writes",
   "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/space-registration.smoke.ts",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/space-registration.json",
   "why": [
-    "Each mutation removes one check space add or space forget makes before it writes, or one code a refusal carries. The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back."
+    "Each mutation removes one check space add, space forget or up makes before it writes, or one code a refusal carries. The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back."
   ],
   "mutations": [
     {
@@ -143,6 +143,15 @@
       "replace": "",
       "expectRed": "a member proven gone with no stop receipt does not block forget, and the output warns",
       "cell": "a member proven gone with no stop receipt does not block forget, and the output warns",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "up starts without checking that its runtime has an installed provider",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "    if (values.runtime) {\n      try { await preflightRuntime(values.runtime); }\n",
+      "replace": "    if (false) {\n      try { await preflightRuntime(values.runtime); }\n",
+      "expectRed": "up with a runtime no installed extension provides is DEPENDENCY_UNAVAILABLE, exit 2, naming cotal ext add, and leaves the root and registrations unchanged",
+      "cell": "up with a runtime no installed extension provides is DEPENDENCY_UNAVAILABLE, exit 2, naming cotal ext add, and leaves the root and registrations unchanged",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {

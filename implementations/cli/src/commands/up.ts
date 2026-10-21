@@ -591,6 +591,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         await preflightUserStack(root, stackSpace, values.idp);
       }
     }
+    // A runtime with no installed provider refuses here, before the lock creates its layout and
+    // before any member starts. The manager member resolves the same name through the same
+    // installed-extension lookup when it boots, so this check and the manager cannot disagree.
+    if (values.runtime) {
+      try { await preflightRuntime(values.runtime); }
+      catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the requested runtime did not pass preflight; nothing was started", { target: { root, space: stackSpace, runtime: values.runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" }); }
+    }
     const lock = acquireMaintenanceLock(root);
     let pending: PendingOrdinaryResume | undefined;
     let recoveredRestore: PreparedRestore | undefined;

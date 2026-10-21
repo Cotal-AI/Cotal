@@ -5,7 +5,8 @@
  * pins. Each refusal is checked for its code and exit, and for writing nothing; each success for the
  * record it writes and for leaving the selection as it was. On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A prepared space
- * is then started with `cotal up` in its root and stopped again.
+ * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
+ * no installed provider has refused and left the root as it was.
  *
  * Needs `nats-server` on PATH.
  *
@@ -378,6 +379,17 @@ setCurrent("keep");
   check("up --space for it from another folder refuses, naming its root, and makes nothing there", refused(away, 2, "TARGET_UNAVAILABLE") && away.env?.error?.message.includes(`prepared in ${fresh}`) && !existsSync(join(elsewhere, ".cotal")), shown(away));
   const otherName = await json(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "other"], fresh);
   check("up --space for another space in its root refuses", refused(otherName, 2, "CONFLICT") && /root of "demo"/.test(otherName.env?.error?.message ?? "") && findMesh("other") === undefined, shown(otherName));
+  // The address is the suite's own broker, so without the check this up would still refuse before
+  // its broker started, and the cell would go red on the code and the files it wrote.
+  const cotalFiles = () => (readdirSync(join(fresh, ".cotal"), { recursive: true }) as string[]).sort().map((p) => {
+    const stat = statSync(join(fresh, ".cotal", p));
+    return `${p}:${stat.isDirectory() ? "dir" : stat.size}:${stat.mtimeMs}`;
+  }).join(",");
+  const beforeRuntime = { files: cotalFiles(), registry: registryFiles() };
+  const noProvider = await json(["up", "--open", "--runtime", "tmux", "--server", LIVE], fresh);
+  check("up with a runtime no installed extension provides is DEPENDENCY_UNAVAILABLE, exit 2, naming cotal ext add, and leaves the root and registrations unchanged",
+    refused(noProvider, 2, "DEPENDENCY_UNAVAILABLE") && noProvider.env?.target?.runtime === "tmux" && (noProvider.env?.error?.remedy ?? "").includes("cotal ext add @cotal-ai/tmux") &&
+      cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(noProvider));
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");
