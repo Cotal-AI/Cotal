@@ -18,7 +18,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
-import { assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
+import { assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
 import { acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, refuseControllerCut, settleStackOperation, stackMaintenanceFence, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
@@ -53,7 +53,10 @@ function readMembers(journal: StackJournal): Member[] {
     const state = observeServiceProcess(instance.record.value);
     const inspect = `inspect it with cotal service status ${row.definition} --instance ${row.instanceId} --space ${journal.space}`;
     if (!processGone(state) && state !== "running") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a recorded stack member is foreign, unreadable or has an unresolved launch; no member was stopped", { target: instanceProjection(instance), remedy: inspect });
-    if (instance.record.value.state === "stopping") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a recorded stack member retains an unconfirmed stop request; it was not resubmitted and no member was stopped", { target: instanceProjection(instance), remedy: inspect });
+    const retained = retainedStopRequest(instance.record.value);
+    if (instance.record.value.state === "stopping" || retained) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", retained?.publication === "unknown"
+      ? "a recorded stack member's stop request file does not read as its own, so whether a stop was published is unknown; nothing was resubmitted and no member was stopped"
+      : "a recorded stack member retains an unconfirmed stop request; it was not resubmitted and no member was stopped", { target: { ...instanceProjection(instance), ...(retained ? { requestId: retained.requestId, stopPublication: retained.publication } : {}) }, remedy: inspect });
     assertNoServiceUnitAttempts(journal.space, row.definition);
     members.push({ role: row.role, definition, instance, live: state === "running" });
   }

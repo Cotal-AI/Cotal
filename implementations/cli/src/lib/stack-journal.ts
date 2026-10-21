@@ -9,7 +9,7 @@ import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, cano
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance } from "./service-instances.js";
-import { settleExitedInstance } from "./service-process.js";
+import { retainedStopRequest, settleExitedInstance } from "./service-process.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -231,14 +231,20 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
     if (!rows.length) return undefined;
     const row = settle ? settleExitedInstance(rows[0]!) : rows[0]!;
     const value: ServiceInstance = row.record.value, observed = observeServiceProcess(value);
-    if (observed === "running" && value.state !== "stopping") return { role, instanceId: row.name, process: "running" };
+    // A stop request the member retains is neither live nor gone here; only its own receipt settles
+    // it. Read-only, a crash-like record whose launch holds one is found before the settlement would
+    // record it `stopping`.
+    const retained = retainedStopRequest(value), stopRetained = value.state === "stopping" || retained !== undefined;
+    if (observed === "running" && !stopRetained) return { role, instanceId: row.name, process: "running" };
     const gone = processGone(observed);
     // Read-only, a crash is classified as the settled `failed` record it will become.
-    if (gone && (["failed", "stopped"].includes(value.state) || !settle && value.process !== undefined && ["starting", "running", "unknown"].includes(value.state))) return { role, instanceId: row.name, process: "gone" };
+    if (gone && !stopRetained && (["failed", "stopped"].includes(value.state) || !settle && value.process !== undefined && ["starting", "running", "unknown"].includes(value.state))) return { role, instanceId: row.name, process: "gone" };
     // Nothing was changed by this command, so its own outcome is a known refusal.
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", value.state === "stopping"
-      ? "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
-      : "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(value.state === "stopping" ? { requestId: value.requestId } : {}) }, remedy: inspect(row.name) });
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", !stopRetained
+      ? "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
+      : retained?.publication === "unknown"
+        ? "a stack member's stop request file does not read as its own, so whether a stop was published is unknown and the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
+        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: inspect(row.name) });
   } finally { hold?.release(); }
 }
 

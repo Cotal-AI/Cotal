@@ -586,9 +586,14 @@ or one with a stop that was requested and never confirmed, refuses `LIFECYCLE_BL
 `cotal service status <definition> --instance <id> --space <space>`. A manager stop whose request
 was published and never confirmed keeps the manager's record `stopping` under that request, also
 after its process exits. After a `down` that ends this way, the next bare `up` or `down` refuses
-`LIFECYCLE_BLOCKED` and names the instance and the original request. Its exit is never recorded as
-a crash, and no `up`, `down`, `service stop` or `service remove` relaunches it, removes its record
-or removes the stack's registration. No command in this release clears such a stop. When `up` redefines a member because its launch options changed, the journal records the
+`LIFECYCLE_BLOCKED` and names the instance and the original request. `service start`, `restart` and
+`stop` refuse it `OPERATION_UNKNOWN` before any readiness probe or record write. When the launch's
+request file does not read as its own, the refusal reports that it is unknown whether a stop was
+published. A manager record that an earlier release left `unknown` while its launch still holds a
+stop request is recorded `stopping` under that request when its process is gone. Its exit is never
+recorded as a crash, and no `up`, `down` or `service` command relaunches it, removes its record or
+removes the stack's registration. No command in this release clears such a stop. When `up`
+redefines a member because its launch options changed, the journal records the
 replacement's instance and launch request before the old instance is retired, and the new
 definition's revision before the replacement launches. After an `up` cut off in between, the next
 bare `up` or `down` adopts the replacement only when its record carries that launch request and

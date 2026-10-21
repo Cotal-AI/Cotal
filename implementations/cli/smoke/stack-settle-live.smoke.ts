@@ -17,9 +17,10 @@
  *     exits 0, and the reset preview then names `cotal up` and `cotal down`.
  *  5. An unconfirmed native manager stop. The manager is frozen when its stop request is published,
  *     so the first `down` reports the stop unknown and the manager record stays `stopping` under that
- *     request. While the manager runs and after it is killed, `down` refuses `LIFECYCLE_BLOCKED`
- *     naming the instance and the request, and nothing is stopped or cleaned up; after it is gone
- *     `up` refuses the same way and launches no manager.
+ *     request. While the manager runs, `down` refuses `LIFECYCLE_BLOCKED` naming the instance and the
+ *     request, and `service start` refuses before any readiness probe and keeps the record. After it
+ *     is killed `down` still refuses and nothing is stopped or cleaned up; `up` refuses the same way
+ *     and launches no manager.
  *  6. An interrupted redefinition. An `up` whose `--max-sessions` redefines the manager is killed
  *     while the replacement manager is frozen before its readiness is recorded. The next bare `down`
  *     adopts the journaled replacement and stops it; in a second stack the next bare `up` adopts it
@@ -292,6 +293,9 @@ try {
     const delivery = pidOf(space, "stack-delivery"), broker = pidOf(space, "stack-broker");
     const whileRunning = cli(root, "down", "--yes", "--json");
     check("while the frozen manager runs, down refuses naming its instance and request", names(whileRunning) && pid !== null && alive(pid) && held(), shown(whileRunning));
+    // A public start on the live retained instance refuses before any readiness probe or record write.
+    const serviceStart = cli(root, "service", "start", "stack-manager", "--space", space, "--json");
+    check("while the frozen manager runs, service start refuses naming the retained request and leaves the record stopping", serviceStart.env?.outcome === "unknown" && serviceStart.env.error?.code === "OPERATION_UNKNOWN" && serviceStart.env.target?.instanceId === manager?.name && serviceStart.env.target?.requestId === request && serviceStart.env.target?.stopPublication === "published" && Boolean(serviceStart.env.error.remedy?.includes(`cotal service status stack-manager --instance ${manager?.name} --space ${space}`)) && pid !== null && alive(pid) && held(), { ...shown(serviceStart), target: serviceStart.env?.target, record: record() });
     if (pid !== null) process.kill(pid, "SIGKILL");
     await until(() => gone(space, "stack-manager"), 10_000);
     const afterExit = cli(root, "down", "--yes", "--json");
@@ -326,8 +330,11 @@ try {
     child.kill("SIGKILL");
     await exited(child);
     if (pid !== undefined) process.kill(pid, "SIGCONT");
-    const serving = await until(() => cli(root, "ps", "--json").status === 0, 60_000);
-    check(`${space}: the resumed replacement manager serves`, serving, { replacement: replacement?.name });
+    // Asked in its own space: an unqualified ps resolves the registry's selected space, which an
+    // earlier section can leave pointing at another stack.
+    const last: { ps?: Run } = {};
+    const serving = await until(() => { last.ps = cli(root, "ps", "--space", space, "--json"); return last.ps.status === 0 && last.ps.env?.target?.space === space; }, 60_000);
+    check(`${space}: the resumed replacement manager serves`, serving, { replacement: replacement?.name, ps: last.ps && { ...shown(last.ps), target: last.ps.env?.target, managers: last.ps.env?.result?.managers } });
     return { root, replacement: replacement?.name };
   };
   {
