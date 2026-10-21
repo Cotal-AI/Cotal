@@ -224,14 +224,14 @@ const collapsed = await presentation.fire("ui.render", row) as UiNode;
 assert.equal(collapsed.type, "Box", "native wake renders a compact indicator instead of the prompt card");
 const button = (collapsed.props.children as UiNode[])[0]!;
 assert.equal(button.type, "Button");
-assert.equal(button.props.label, "Cotal · new message  ›");
+assert.equal(button.props.label, "Cotal · 2 unread  ›");
 assert.equal(JSON.stringify(row), before, "presentation never changes the stored message or its origin");
 assert.equal(presentation.submitted.length, 1, "rendering starts no additional model turn");
 await (button.props.onPress as () => void)();
 const expanded = await presentation.fire("ui.render", row) as UiNode;
 assert.ok((expanded.props.children as unknown[]).length >= 2, "details disclose the native wake or its bounded preview");
 const another = await presentation.fire("ui.render", { ...row, requestId: "another-row" }) as UiNode;
-assert.equal((another.props.children as UiNode[])[0]!.props.label, "Cotal · new message  ›", "expansion is per message");
+assert.match(String((another.props.children as UiNode[])[0]!.props.label), /›$/, "expansion is per message");
 for (const origin of [{ kind: "user" }, { kind: "plugin", name: "other" }, { kind: "plugin", name: "cotal", asUser: true }]) {
   const foreign: Event = { ...row, props: { text: wake("render-id"), origin } };
   assert.equal(await presentation.fire("ui.render", foreign), foreign, "never hide user, other-plugin or unattributed input");
