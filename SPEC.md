@@ -1233,7 +1233,8 @@ sufficient *authority* identity on this surface. Two further identity components
   authorize through this active-only reader. It confers no writer, bootstrap, abort, rotation
   or terminal authority and makes no atomic multi-key snapshot claim. Ordinary readers stay
   closed to every marked service row.
-  A package-internal dormant custody writer, with no product caller, may advance one sealed
+  A package-internal custody writer, reached in the product only through the service endpoint
+  host's decide and revoke (whose proposals nothing in the product creates), may advance one sealed
   reservation. Bootstrap order is reservation, pending-root endpoint gate, `service-creating`
   head, native gate created frozen at generation0 under the creation operation and opened at
   generation1, RootPlan `{credentialId,expMs}` fixed once by head CAS at
@@ -1590,6 +1591,29 @@ either way: every revoke path that reads the gate reports deny-new `unknown` for
 read; an already fenced assignment is its own evidence and reports `landed`. Revocation stays
 nonterminal. Owner-scoped reads authorize against the subject owner fixed at binding, and terminal views carry no commands or cluster digests. None of these
 records proves a human decision, broker writer exclusion, restore readiness or terminal retirement.
+
+An authority plane opened with `serviceEndpoints` hosts these operations; without it, the default,
+the plane opens no service host, no discovery connection and no `svchost.admission` write. The host
+uses the plane's own claim hold, data account and actor ledger directory. Its startup MUST be named
+`normal`: a restore or a missing startup refuses the whole plane open, which unwinds what it opened
+and releases the claim. Discovery is one standing connection named
+`cotal:service-host-discovery:<space>` on the ordinary renewing profile with the read-only grant. A
+broker loss makes its reads fail until the stock client reconnects; a read that fails answers as
+`unavailable` within its invocation's own limit, with nothing written. A renewal failure closes it
+for good, and every later read through it fails until the plane is opened again; nothing reopens it.
+Both plane fatal paths, a scanner death and a failed native-issuance cleanup, trip the host's fatal
+latch, and a fence that lands while the host is opening latches it once it exists. Plane close
+refuses every later host call, waits until every call that entered before it has returned, including
+one still reading discovery or opening its effect connection, then closes discovery, and only then
+releases the claim. Close trips nothing; a call in flight ends under its own discovery-read bound
+and invocation deadline, each at most 60 s.
+
+The plane and a hosted context expose only `decide`, `revoke`, `operation-read` and `proposal-read`,
+as one in-process function; a hosted context refuses it as `unavailable` while it is not ready.
+Register admission has no product caller, so no proposal can be created through the product. There
+is no route, capability, CLI flag or caller policy. The host checks an owner granter's current
+interactive row but authenticates no caller: the embedder MUST authenticate the granter it passes,
+operator or owner.
 
 A local scoped Describe callback may receive immutable request context alongside the caller.
 Its subject comes from actual dispatch, and its fingerprint is the canonical digest of

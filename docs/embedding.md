@@ -1248,7 +1248,8 @@ The account is trusted host configuration. Sealed readers do not attest the brok
 detect a cross-account pair of legitimately constructed handles. Future service integration must
 construct the registry, reader and callout from the same authenticated account context.
 
-A package-internal dormant custody writer has no product caller and is not exported. Bootstrap
+A package-internal custody writer is not exported; in the product only the service endpoint host's
+decide and revoke reach it, and nothing in the product creates the proposal they would act on. Bootstrap
 writes the reservation, the pending-root endpoint gate, a creating head, a frozen activation native
 gate opened at generation1, a RootPlan fixed once by head CAS, the planned active root, an
 identical-bytes native gate touch and the active head stamp. It rechecks the endpoint gate at open
@@ -1301,12 +1302,27 @@ assignment's gate row, or an assignment that is already fenced, which gives `lan
 granter without a current interactive row carry no `denyNew`, and a result without `denyNew` says
 nothing about deny-new. Completed results
 say whether this invocation applied them or returned a stored record. A stored approval returns
-unchanged, and its `approvedGateRevision` is null unless its own gate CAS was observed. Nothing in the
-product constructs this module and the index does not export it; only the typed request, result and
-view parsers in the service host contract are public.
+unchanged, and its `approvedGateRevision` is null unless its own gate CAS was observed. The index
+does not export this module; the typed request, result and view parsers in the service host contract
+are public.
 
-This is a refusal foundation, not service endpoint admission. The dormant writer above has no
-product caller, so service bootstrap and cancellation are not available to embedders, and terminal
+`openAuthAuthorityPlane` and `startAuthService` take `serviceEndpoints: { startup: { kind: "normal" } }`
+to host these operations; it is off by default and no CLI flag sets it. With it, the plane and the
+hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke` and the two reads
+in process. A hosted context rejects it as `unavailable` while it is not ready. Register admission
+stays package-internal, so nothing in the product creates a proposal, and there is no route,
+capability or caller policy. The host authenticates no caller: the embedder must authenticate the
+operator or owner granter it passes. The host runs over the plane's claim hold, data account and
+actor ledger directory. A restore or missing startup refuses the plane open, which unwinds and
+releases the claim. Its discovery connection is an ordinary renewing read-only client: a broker loss
+fails its reads until the stock client reconnects, and those calls answer `unavailable` with nothing
+written. A renewal failure closes it permanently, and the host stays unavailable until the plane is
+opened again. Both plane fatal paths trip the host. Plane close refuses new host calls, waits for
+every call that already entered, from entry through discovery and effect open, closes discovery and
+then releases the claim.
+
+This is a refusal foundation, not service endpoint admission. Nothing in the product creates a
+proposal, so service bootstrap and cancellation are not available to embedders, and terminal
 retirement, complete observer evidence, writer exclusion and restore readiness remain unavailable. Do not seed service reservations in an existing space, adopt old service-shaped rows,
 or use ordinary retirement to make them terminal. A signing-key or raw-store holder can bypass
 helper guards, so schema rejection alone does not make mixed-version writers safe. Restore must
