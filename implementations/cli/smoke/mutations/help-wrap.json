@@ -21,12 +21,52 @@
       "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     },
     {
-      "name": "help wraps its usage at any space",
+      "name": "help leaves its usage to the report renderer's wrap",
       "file": "implementations/cli/src/help.ts",
-      "find": "wrapWords(usageGroups(usage), width - 2)",
-      "replace": "wrapWords(usage, width - 2)",
+      "find": "usageLines(usage.split(\" \"), width - 2)",
+      "replace": "[usage]",
       "expectRed": "on 60 columns its usage wraps only between options",
       "cell": "on 60 columns its usage wraps only between options",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a usage group too wide for its line is left to the report renderer's wrap",
+      "file": "implementations/cli/src/help.ts",
+      "find": "      lines.push(...usageLines(unit, width));\n",
+      "replace": "      lines.push(piece);\n",
+      "expectRed": "on 60 columns cotal help send breaks its destination group after its alternatives",
+      "cell": "on 60 columns cotal help send breaks its destination group after its alternatives",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a usage breaks between options before its own alternatives",
+      "file": "implementations/cli/src/help.ts",
+      "find": "  const cuts = level.some((gap) => gap.alternative) ? level.filter((gap) => gap.alternative) : level;\n",
+      "replace": "  const cuts = level;\n",
+      "expectRed": "on 40 columns cotal help setup breaks a nested group after its own alternative",
+      "cell": "on 40 columns cotal help setup breaks a nested group after its own alternative",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a usage word may leave its argument",
+      "file": "implementations/cli/src/help.ts",
+      "find": "  return word !== \"|\" && !/[\\])>]$/.test(word) && (next.startsWith(\"<\") || (/^[[(]*-/.test(word) && !/^[-[(|]/.test(next)));\n",
+      "replace": "  return false;\n",
+      "expectRed": "on 40 columns cotal help completion script keeps script with its argument",
+      "cell": "on 40 columns cotal help completion script keeps script with its argument",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "help --all writes its title unwrapped",
+      "file": "implementations/cli/src/help.ts",
+      "find": "  let out = `${hang(\"\", title(), width).join(\"\\n\")}\\n`;\n",
+      "replace": "  let out = `${title()}\\n`;\n",
+      "expectRed": "on 40 columns cotal help --all wraps its title",
+      "cell": "on 40 columns cotal help --all wraps its title",
       "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },

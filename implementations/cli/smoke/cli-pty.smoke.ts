@@ -126,6 +126,12 @@ try {
   // flag column too wide to leave its descriptions 30 columns puts each description under its flag.
   const lines = (text: string) => text.split(/\r?\n/).filter((line) => line.trim() !== "");
   const fit = (text: string, cols: number) => lines(text).filter((line) => [...line].length > cols);
+  // A help's usage is the section under the `Usage` title, up to the next title.
+  const usageOf = (all: string[]) => {
+    const at = all.indexOf("Usage");
+    const end = all.findIndex((line, i) => i > at && /^\S/.test(line));
+    return at === -1 ? [] : all.slice(at + 1, end === -1 ? undefined : end);
+  };
   for (const cols of [80, 60]) {
     for (const argv of [[], ["help"], ["help", "spawn"]]) {
       const pty = cotalPty(argv, { cwd: home, env, cols, rows: 200 });
@@ -135,10 +141,7 @@ try {
       check(`${["cotal", ...argv].join(" ")} on a ${cols}-column terminal fits every line`, s.exitCode === 0 && fit(s.text(), cols).length === 0 && lines(s.text()).length > 10, fit(s.text(), cols));
       if (argv[1] !== "spawn") continue;
       const all = lines(s.text());
-      // The usage is the section under the `Usage` title, up to the next title.
-      const at = all.indexOf("Usage");
-      const end = all.findIndex((line, i) => i > at && /^\S/.test(line));
-      const usage = at === -1 ? [] : all.slice(at + 1, end === -1 ? undefined : end);
+      const usage = usageOf(all);
       check(`on ${cols} columns its usage wraps only between options`, usage.length > 1 && usage.every((line, i) => line.split("[").length === line.split("]").length && (i === 0 ? /^ {2}\S/.test(line) : line.startsWith("  ["))), usage);
       const space = all.findIndex((line) => line.trimStart().startsWith("-s, --space <s>"));
       check(
@@ -148,6 +151,49 @@ try {
       );
     }
   }
+
+  // A usage too wide for its line breaks after its own ` | ` alternatives first, and a group too wide
+  // takes lines of its own and breaks the same way inside. A word never leaves its argument.
+  // Examples are never wrapped, so each stays one line to copy, and setup's fit stops before them.
+  const helpAt = async (argv: string[], cols: number) => {
+    const pty = cotalPty(argv, { cwd: home, env, cols, rows: 200 });
+    ptys.push(pty);
+    const s = session(pty);
+    await until(() => s.exitCode !== undefined);
+    const all = lines(s.text());
+    const examples = all.indexOf("Examples");
+    return { exitCode: s.exitCode, all, shown: (examples === -1 ? all : all.slice(0, examples)).join("\n") };
+  };
+  const send = await helpAt(["help", "send"], 60);
+  check("cotal help send on a 60-column terminal fits every line", send.exitCode === 0 && fit(send.all.join("\n"), 60).length === 0 && send.all.length > 10, fit(send.all.join("\n"), 60));
+  check(
+    "on 60 columns cotal help send breaks its destination group after its alternatives",
+    usageOf(send.all).join("\n") === [
+      "  cotal send", "  (--to/-t <agent> | --channel/-c <channel> |", "  --role/-r <role>)",
+      '  ["<message>" | --file/-f <path> | --stdin]', "  [--json|--plain]",
+    ].join("\n"),
+    usageOf(send.all),
+  );
+  const setup = await helpAt(["help", "setup"], 40);
+  check("cotal help setup on a 40-column terminal fits every line before its examples", setup.exitCode === 0 && fit(setup.shown, 40).length === 0 && lines(setup.shown).length > 10, fit(setup.shown, 40));
+  check(
+    "on 40 columns cotal help setup breaks a nested group after its own alternative",
+    usageOf(setup.all).join("\n") === [
+      "  cotal setup", "  [--destination <local|self-hosted>]", "  [-H|--harness <connector>]", "  [--runtime <name>]...",
+      "  [--project <dir>] [--space <name>]", "  [--connection-file <bundle.json>]", "  [--configure-only |",
+      "  --start [-d|--detach]]", "  [--demo|--full] [-y|--yes]", "  [--json|--plain] |", "  setup --skills",
+    ].join("\n"),
+    usageOf(setup.all),
+  );
+  const script = await helpAt(["help", "completion", "script"], 40);
+  check(
+    "on 40 columns cotal help completion script keeps script with its argument",
+    script.exitCode === 0 && fit(script.shown, 40).length === 0 && usageOf(script.all).join("\n") === ["  cotal completion", "  script <bash|zsh|fish|powershell>"].join("\n"),
+    script.all,
+  );
+  const listing = await helpAt(["help", "--all"], 40);
+  check("cotal help --all on a 40-column terminal fits every line", listing.exitCode === 0 && fit(listing.shown, 40).length === 0 && listing.all.length > 10, fit(listing.shown, 40));
+  check("on 40 columns cotal help --all wraps its title", listing.all[0] === "cotal - lateral agent coordination over" && listing.all[1] === "NATS", listing.all.slice(0, 2));
 
   // A classified failure is a report: its message, a labeled record of outcome and code, and the
   // remedy under `Next`, which wraps at spaces with its continuation under its text.
