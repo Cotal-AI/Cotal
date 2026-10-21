@@ -217,6 +217,14 @@ function stampConsole(): void {
   console.error = (...args: unknown[]) => originalError(new Date().toISOString(), ...args);
 }
 
+function superviseExecution(v: Values): "runtime" | "none" {
+  if (v.execution !== undefined && v.execution !== "runtime" && v.execution !== "none")
+    throw new CommandFailure("refused", "USAGE_INVALID", '--execution must be "runtime" or "none"');
+  if (v.execution === "none" && ["runtime", "spawn", "roster", "launch", "resume-attempt", "resume-commit-token", "resume-commit-file", "resume-commit-sha256"].some((key) => v[key] !== undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", "execution: none forbids runtime and startup workload flags");
+  return v.execution ?? "runtime";
+}
+
 /** Run a manager daemon in this process (the long-lived supervisor), then block.
  *  `pty` ships with the manager; every other runtime needs a registered provider. The published
  *  CLI lazy-loads installed providers, while library roots import their integrations explicitly.
@@ -231,13 +239,16 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   stampConsole();
   const v = args.values as Values;
   const managerRoot = service?.root ?? findCotalRoot();
-  let runtime = defaultRuntime;
+  const execution = superviseExecution(v);
+  let runtime: RuntimeMode | undefined = execution === "none" ? undefined : defaultRuntime;
   if (defaultRuntime === "auto" && v.runtime) {
     runtime = v.runtime as RuntimeMode;
   }
   let target: ReturnType<typeof superviseTarget>;
   try {
     target = superviseTarget(v, managerRoot);
+    if (execution === "none" && target.remoteUser)
+      throw new Error("execution: none on supervise requires a genuine hosting user-auth root, not a participant registration");
   } catch (e) {
     if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
     console.error(c.red(`✗ ${(e as Error).message}`));
@@ -531,6 +542,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       servers: server,
       eventsRequired,
       runtime,
+      execution,
       consolePort,
       wsPort,
       attachHost,
@@ -861,6 +873,7 @@ const managerCommands: Command[] = [
       { name: "space", type: "string", value: "<s>", description: "space to supervise (default: this folder's auth space; env COTAL_SPACE when unset)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh; env COTAL_SERVER when unset)" },
       { name: "runtime", type: "string", value: "<name>", description: "agent runtime (default pty; others come from installed extensions)" },
+      { name: "execution", type: "string", value: "<runtime|none>", description: "runtime by default; none requires a fresh hosting user-auth control instance and no runtime or startup workload" },
       { name: "console-port", type: "string", value: "<n>", description: "protocol-console port" },
       { name: "console-host", type: "string", value: "<host>", description: "bind host for the console endpoint (default: loopback)" },
       { name: "ws-port", type: "string", value: "<n>", description: "broker ws listener port for the console session client" },
@@ -873,7 +886,9 @@ const managerCommands: Command[] = [
       { name: "resume-commit-sha256", type: "string", value: "<hex>", description: "full digest of the resume commit handoff" },
       { name: "spawn", type: "string", value: "<names>", description: "comma-separated personas to pre-spawn at startup" },
     ],
+    validate: (args) => { superviseExecution(args.values as Values); },
     requiredExtensions: (args) => {
+      if (superviseExecution(args.values as Values) === "none") return [];
       const runtime = args.values.runtime;
       return typeof runtime === "string" && runtime !== "pty" ? [{ kind: "runtime", name: runtime }] : [];
     },

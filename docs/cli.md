@@ -2444,8 +2444,15 @@ run from a managed seat's shell selects the manager that launched the seat (`COT
 and any other caller's selection must be unique. Discovery and the command use that instance route.
 The caller gains no registry read or scatter permission. An absent, ambiguous or unauthorized
 selection refuses before sending the command. With several of your managers live, the refusal lists
-their instance ids so you can pass one to `--on`. When every manager you registered has exited, the
-refusal says to start one with [`supervise`](#supervise); the command is not sent to the local manager.
+their instance ids so you can pass one to `--on`. By default, when every manager you registered has
+exited, the refusal says to start one with [`supervise`](#supervise); the command is not sent to the local manager.
+
+A trusted hosted composition may opt into an [interactive local primary](embedding.md#interactive-manager-primary).
+Under that policy, unpinned human control selects the genuine local Manager up front, even when your
+own remote Manager is live; an unavailable local Manager refuses without remote substitution. This
+affects all interactive Manager verbs, not only `ps`. Select your remote Manager explicitly for its
+spawn, run or terminal operations. Explicit pins and managed-seat launching bindings keep their rules.
+There is no user flag for the policy, and stock `up` and recovery defaults do not enable it.
 
 A seat is reported as **not found** only when every reachable instance answered for itself. An
 instance that stayed silent past the deadline, or that refused the read rather than answering, said
@@ -2676,7 +2683,7 @@ draft validation and commit fence. Only its explicit `--running` overlay connect
 ## supervise
 
 ```bash
-cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <names>]
+cotal supervise [--execution runtime|none] [--runtime <name>] [--space <s>] [--server <url>] [--spawn <names>]
 ```
 
 `supervise` is a deprecated entry kept for existing units, scripts and containers, and help and
@@ -2690,6 +2697,7 @@ starts runs the same code through a hidden entry and prints no warning.
 | `--space <s>` | this folder's auth space | Space to supervise. On a root that hosts several spaces, name one of them here |
 | `--server <url>` | hosting mesh, or matching registered mesh | Broker URL. A registered mesh supplies it when omitted; a different explicit value is refused before anything is dialed. |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
+| `--execution runtime|none` | `runtime` | NONE is a genuine hosting user-auth control instance with no Runtime, connector inspection, workload or terminal execution |
 | `--console-port <n>` | none | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
 | `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair or `spawn -f` keeps it |
@@ -2712,6 +2720,25 @@ if every declared connector is unavailable, those commands stay on this instance
 unpinned spawn can bind-fence against a skip member; re-issue, or pin `--on`. A partial
 inventory keeps the class rail and names `--on` on a harness refusal, because sibling
 inventories are not readable from the serve credential. See [control surface](control-surface.md#instance-routing).
+
+Use `--execution none` only for a fresh control instance in an existing hosting user-auth root.
+It requires that space's signing trust, provider pin and user-mode mesh record, without remote
+manager authority. It rejects `--runtime`, startup workload flags and participant registrations
+before resolving a Runtime or connector. The mode needs no connector seeding. An existing
+unclassified identity or retained workload refuses admission; a recorded NONE instance cannot
+restart as runtime. Do not delete identity or capability files to change modes.
+
+NONE retains native registration, status and the selected Manager's empty managed-seat ps.
+It does not adopt foreground agents, roster peers or HTTP-hosted sessions. Workload operations
+still need an explicitly selected execution-owning participant Manager and its existing authority.
+Starting a control instance does not enable an auth service's interactive local-primary policy.
+NONE also refuses model inspection and caller-driven persona, purge, transcript, preservation,
+resume, cancellation, turn-yield and self-stop writes. It starts no transcript receiver or sweep.
+Its native registration, lease, renewal, session-ledger and goal maintenance can still write.
+
+Local runtime startup now records identity and execution mode during admission. A later failed
+authentication or registration can leave those files classified as runtime. Invalid supervise
+arguments refuse before connector seeding, with one error line rather than seeding first.
 
 On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the selected runtime to
 prove the seat is gone before it releases the manager lease or service registration. A stop that

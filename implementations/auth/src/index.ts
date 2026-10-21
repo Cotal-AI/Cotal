@@ -128,7 +128,7 @@ export {
   type ActorKind,
   type ActorRow,
 } from "./ledger.js";
-export { runAuthService, startAuthService, type AuthServiceHandle, type PublicFaceInput, type PlatformControlInput, openAuthAuthorityPlane, dispatchManagerAuthorityRequest, handleManagerServiceAuthority, type ManagerServiceAuthorityCtx, handleToolResultHumanProof, type ToolResultHumanProofCtx, TOOL_RESULT_HUMAN_PROOF_PATH, handleToolResultConsent, TOOL_RESULT_CONSENT_PATH, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, CHAT_SESSION_PATHS, MANAGED_RETIRE_PATH, VERIFY_ENROLLMENT_PATH, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type AuthAuthorityPlane } from "./service.js";
+export { runAuthService, startAuthService, type AuthServiceRuntimeOptions, type OpenAuthAuthorityPlaneOptions, type AuthServiceHandle, type PublicFaceInput, type PlatformControlInput, openAuthAuthorityPlane, dispatchManagerAuthorityRequest, handleManagerServiceAuthority, type ManagerServiceAuthorityCtx, handleToolResultHumanProof, type ToolResultHumanProofCtx, TOOL_RESULT_HUMAN_PROOF_PATH, handleToolResultConsent, TOOL_RESULT_CONSENT_PATH, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, CHAT_SESSION_PATHS, MANAGED_RETIRE_PATH, VERIFY_ENROLLMENT_PATH, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type AuthAuthorityPlane } from "./service.js";
 export { remoteManagerIssuerGrants } from "./authority-client.js";
 export { PLANE_CLAIM_REFUSED, PLANE_CLAIM_KEY, readPlaneClaim, planeClaimRefusal, type PlaneClaimRefusal, type PlaneClaimRow } from "./plane-claim.js";
 // The R1 connect-arm deny-new READ seam (SPEC 13.1): the reader grant builder, the sealed

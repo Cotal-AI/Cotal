@@ -33,6 +33,32 @@ the full `up` orchestration are **not** public runners: `up` also does broker br
 process and registry management, and lifecycle work, and `supervise`'s orchestration is private (see
 [Supervisor signing authority](#supervisor-signing-authority)).
 
+## Interactive Manager primary
+
+A trusted composition can pass `{ interactiveManagerSelection: "local-primary" }` as the third
+argument of `runAuthService(args, store, options)`. `AuthServiceRuntimeOptions` is exported by
+`@cotal-ai/auth`. The third argument still accepts the native daemon lifecycle hooks. No CLI
+flag or exchange field sets the policy, and unsupported runtime values refuse before startup effects. `openAuthAuthorityPlane` accepts the same option beside its fresh
+`localManager` reader; `OpenAuthAuthorityPlaneOptions` is exported too.
+
+The opt-in chooses the genuine local Manager up front for an unpinned human `manager-caller`
+exchange. It reads the persisted local identity and requires the existing open gate, serve
+principal, registration revision and status epoch checks. An absent, unreadable or noncandidate
+local Manager refuses without scanning or substituting remote Managers. Explicit selectors win,
+and managed-secret exchanges and launching or issued instance bindings keep their existing rules.
+The option adds no scopes, registry reads or inventory rows.
+
+This routes all unpinned interactive Manager control, not only `ps`: slot reads, stop, attach,
+input, spawn, models, hosted run verbs and generic Manager describe/invoke share the view. It
+chooses local even when the person has a live remote Manager. A host must decide whether that
+routing is appropriate; a local Manager without execution cannot forward a spawn or run to the
+person's remote Manager. The person selects that Manager explicitly for those operations.
+
+Absent the option, selection is unchanged. `startAuthService` still has no local Manager and
+keeps its remote-only composition. Supplying this programmatic option does not enable it in stock
+`up`, restart or recovery paths; a host must compose those paths separately after adopting the
+published API. `ps` still lists only the selected Manager's managed seats, not HTTP-hosted sessions.
+
 ## Account connection census
 
 `mintAccountCensusCreds` creates a host-only SYS user with at most five minutes of authority.
@@ -210,7 +236,7 @@ absent. The reported path is kept byte for byte, whitespace included; an empty s
 | `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. `ManagerOptions.remoteAuthority` is the hosted manager-service authority bundle, including host-owned release, retained-validation, goal-index, and serve-time admin-authorization callbacks. |
 | `ManagerOptions.pooled` | `@cotal-ai/manager` | require signerless remote authority and either an explicit non-custodial runtime or `execution: "none"`. A pooled composition must supply the assigned account key and all-duty renewal callback; the CLI's default remains unchanged. A signed-in human's manager gets that material from `managerServiceAuthority`. A platform-run control manager gets it from `AuthServiceHandle.platformControlAuthority` with the shipped `remoteManagerClient` builders, as the [platform control authority](design/platform-pooled-control-authority.md) design describes. |
 | `ManagerStatus` *(type)* | `@cotal-ai/manager` | verified status payload, including optional advisory `host` and `version` from the answering Manager. Older payloads may omit them. |
-| `ManagerOptions.execution` | `@cotal-ai/manager` | omitted or `"runtime"` keeps runtime execution. Explicit `"none"` requires pooled, complete signerless authority and no `runtime` option. It constructs no Runtime and performs no connector inspection, seat launch or workflow hosting. |
+| `ManagerOptions.execution` | `@cotal-ai/manager` | omitted or `"runtime"` keeps runtime execution. Explicit `"none"` accepts a genuine hosting user-auth root, or pooled complete signerless authority, with no `runtime` option. It constructs no Runtime and performs no connector inspection, seat launch or workflow hosting. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
 | `liveKvEntries(kv, filterOrOptions?, options?)`, `LiveKvEntriesOptions` *(type)* | `@cotal-ai/core` | read live KV entries in one finite scan. Pass `{ signal }` as the second argument or after a key filter to cancel. An interrupted scan throws `IncompleteKvScan`; cancellation throws the signal reason, including during an empty-bucket bind. The scan deletes only its owned consumers, including each one nats.js rebuilt from it, after the broker has answered every create those rebuilds sent. A not-found delete counts as gone, a refused one leaves the consumers to broker inactivity expiry (which also covers a crash), and any other delete failure is thrown, as is a not-found delete of a consumer whose create got no reply from the broker before a timeout or a closed connection. A cleanup failure is thrown only when the scan would otherwise return; the scan's own error, its cancellation reason and `IncompleteKvScan` take precedence. |
 
@@ -225,15 +251,34 @@ the presence of these types is not an operational pooled renewal guarantee.
 An execution-free control Manager retains native registration, goal recovery, session-ledger,
 renewal and maintenance duties. Its status reports `execution: "none"`, `runtime: "none"`,
 `custody: "none"`, no children or connectors, and false `classSpawn`, `runHosting` and
-`terminalSessions`. The required status fields change the output digest and manager cluster
-revision to 25. Execution is recorded per instance. An incompatible record, retained seat/turn
-inventory or an older unclassified instance refuses boot before recovery.
+`terminalSessions`. Local NONE uses this existing status schema without a new wire field.
+Execution is recorded per instance. An incompatible record, retained seat/turn inventory or an
+older unclassified instance refuses boot before recovery. NONE refuses caller-driven writes,
+including persona definition, purge, transcript transfer, preservation and resume, and resolves
+no model adapter. It starts no transcript receiver or sweep. Autonomous registration, lease,
+renewal, session-ledger and goal maintenance still write their native control state.
 
 Select the genuine participant Manager with a host-issued, instance-pinned `manager-caller`
 view for workflow and terminal operations. That Manager retains the children, workflow journal
 and terminal sessions. The control instance neither adopts roster peers nor proxies user runs.
-Missing participant selection or authority refuses. This embedding capability adds no CLI flag
-or application routing.
+Missing participant selection or authority refuses. This capability adds no application routing.
+
+For a genuine local control instance, pass `execution: "none"` without `pooled`, `remoteAuthority`
+or `runtime`. Startup requires that space's local signing trust, provider pin and user-mode mesh
+record. It keeps the native persisted local instance and serve identity; local-primary selection
+uses the existing gate. An existing unclassified identity, including a preclaimed identity with no
+execution record, is refused. A NONE record cannot restart as runtime. Retained seat or turn
+inventory refuses before recovery. Do not remove identity or capability files to change modes.
+
+The public `cotal supervise --execution none --space <space>` composition supports the same local
+mode. It validates arguments before connector seeding, resolves no Runtime, and rejects startup
+workload flags and participant registrations. Omitted execution keeps the ordinary PTY behavior.
+This does not opt an auth service into local-primary, change scopes or broaden native ps.
+
+Runtime remains the default, but local startup now claims its native identity and execution
+record during admission, before later authentication and registration checks. A failed start
+can leave those files classified as runtime. Malformed identity or capability files also refuse
+earlier. These lifecycle timing changes do not change the instance's identity format or authority.
 
 With `renewStandingBundle` configured, the manager renews all five standing credentials together.
 It checks every returned credential for the held nkey and assigned account, test-connects each one,
