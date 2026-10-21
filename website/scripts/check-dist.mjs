@@ -23,7 +23,7 @@ for (const needle of ['/prompt.md', '/getting-started.md', '/mcp-tools.md', '/sp
 // The agent setup runbook must ship, keep its commands, and stay in step with
 // the Quickstart (same commands, so neither can drift alone).
 const runbook = readFileSync(join(dist, 'prompt.md'), 'utf8');
-for (const cmd of ['npx cotal-ai setup --yes', 'npx cotal-ai up --detach']) {
+for (const cmd of ['npx cotal-ai setup --destination local --harness claude --project . --space main --no-input', 'npx cotal-ai up --root . --space main --detach']) {
   if (!runbook.includes(cmd)) fail(`prompt.md lost its command: ${cmd}`);
 }
 
@@ -35,7 +35,7 @@ if (!quickstartHtml.includes('agent-prompt')) fail('quickstart lost its prompt c
 const quickstartTwin = readFileSync(join(dist, 'getting-started.md'), 'utf8');
 if (!quickstartTwin.includes('prompt.md, then set up Cotal'))
   fail('quickstart twin lost the setup prompt');
-for (const cmd of ['npx cotal-ai setup --yes', 'npx cotal-ai up --detach']) {
+for (const cmd of ['npx cotal-ai setup --destination local --harness claude --project . --space main --no-input', 'npx cotal-ai up --root . --space main --detach']) {
   if (!quickstartTwin.includes(cmd)) fail(`quickstart lost the runbook command: ${cmd}`);
 }
 for (const f of ['getting-started.md', 'llms-full.txt', 'llms-small.txt']) {
@@ -72,7 +72,7 @@ const setupSkill = readFileSync(
   join(dist, '.well-known', 'agent-skills', 'cotal-setup', 'SKILL.md'),
   'utf8',
 );
-for (const cmd of ['npx cotal-ai setup --yes', 'npx cotal-ai up --detach']) {
+for (const cmd of ['npx cotal-ai setup --destination local --harness claude --project . --space main --no-input', 'npx cotal-ai up --root . --space main --detach']) {
   if (!setupSkill.includes(cmd)) fail(`cotal-setup skill lost its command: ${cmd}`);
 }
 
