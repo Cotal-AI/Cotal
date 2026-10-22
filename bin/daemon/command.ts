@@ -193,7 +193,8 @@ async function registerCommand(args: ParsedArgs): Promise<void> {
   if (r.outcome === "not-signed-in") throw new CommandFailure("refused", "AUTH_REQUIRED", r.message, native);
   if (r.outcome === "unreachable") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", r.message, native);
   if (r.outcome === "account-mismatch" || r.outcome === "conflict") throw new CommandFailure("refused", "CONFLICT", r.message, native);
-  if (r.outcome === "refused") throw new CommandFailure("refused", "PERMISSION_DENIED", r.message, native);
+  // Only a refusal carrying the space's stock reason is a denial; one without is the daemon's own failure.
+  if (r.outcome === "refused") throw new CommandFailure("refused", "reason" in r ? "PERMISSION_DENIED" : "DEPENDENCY_UNAVAILABLE", r.message, native);
   if (r.outcome !== "approval-required" && r.outcome !== "pending" && r.outcome !== "registered") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", r.message, native);
   const title = r.outcome === "approval-required" ? "Waiting for the space owner" : r.outcome === "pending" ? "Registration in progress" : "Registered, not connected";
   writeResult(presentation, { command: "daemon register", target: { space }, result: r }, () => ({ sections: [
