@@ -4,6 +4,7 @@ import { HARNESS } from "../lib/harness.js";
 import { renderMarkdown } from "../lib/md.js";
 import { displayNameOf, type NameIndex } from "../lib/names.js";
 import { partsToText } from "../lib/parts.js";
+import { clock } from "../lib/time.js";
 import type { RosterRow } from "../lib/roster.js";
 import { Avatar } from "./Avatar.tsx";
 import { useBadgeOf } from "./identity.js";
@@ -24,9 +25,6 @@ export function harnessName(connector: string): string {
   const key = connector === "claude-code" ? "claude" : connector;
   return Object.hasOwn(HARNESS, key) ? HARNESS[key as keyof typeof HARNESS].label : connector;
 }
-
-/** `hh:mm` in the reader's own clock. */
-export const clock = (d: Date): string => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 
 /** One message, as mock section D draws it: the sender's character in the gutter, the header
  *  (name, role, harness, time), the body, and for an anycast the route chip.

@@ -9,7 +9,7 @@ import { Avatar } from "./Avatar.tsx";
 import { useBadgeOf } from "./identity.js";
 import { focusComposer } from "./Composer.tsx";
 import { copy } from "./CopyCommand.tsx";
-import { clock } from "./MessageRow.tsx";
+import { clock } from "../lib/time.js";
 
 /** Where this browser keeps its dismissals: a JSON list of `needsKey` values. */
 const KEY = "cotal.needs.dismissed";

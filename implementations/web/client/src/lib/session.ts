@@ -24,6 +24,7 @@ import type { CotalMessage } from "../api/types.js";
 import type { StoredMessage } from "../state/types.js";
 import { partsToText } from "./parts.js";
 import type { Status } from "./roster.js";
+import { hhmm } from "./time.js";
 import { toolResultOf } from "./toolResult.js";
 
 export type TurnSource = "prompt" | "mesh" | "continuation" | "notification";
@@ -328,7 +329,8 @@ function flatten(frames: readonly SessionFrame[]): { flat: Flat[]; marked: boole
           const full = str(e.toolCallName) ?? "?";
           const name = toolShortName(full);
           const call: ToolCall = { key, id: str(e.toolCallId) ?? "", name, full, kind: toolKind(name), ...(at !== undefined ? { ts: at } : {}), live };
-          calls.set(call.id, call);
+          // A call with no id can never be named by a marker, so it is never indexed for one.
+          if (call.id !== "") calls.set(call.id, call);
           flat.push({ call, at, live });
           break;
         }
@@ -582,9 +584,20 @@ const capital = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
 const count = (pattern: { one: string; many: string }, n: number): string => (n === 1 ? pattern.one : pattern.many.replace("#", String(n)));
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 
+/** The most characters of a tool name any title or description shows. */
+export const TOOL_NAME_CAP = 64;
+
+/** A tool name as titles and descriptions show it: its first `TOOL_NAME_CAP` characters, and "…" when
+ *  it is longer. The harness names its tools, so a name can be any length; the whole name stays on
+ *  `ToolCall.full` for a `title` attribute. */
+export function shownName(name: string): string {
+  const chars = Array.from(name);
+  return chars.length > TOOL_NAME_CAP ? `${chars.slice(0, TOOL_NAME_CAP).join("")}…` : name;
+}
+
 /** A call's title: the wording table's, or `Called <short name>` for a call in the `called` state. */
 export function callTitle(kind: ToolKind, state: CallState, name: string): string {
-  return state === "called" ? `Called ${name}` : TOOL_WORDS[kind].title[state];
+  return state === "called" ? `Called ${shownName(name)}` : TOOL_WORDS[kind].title[state];
 }
 
 /** A group's title. With tool status: a part per kind, in order of first appearance, each with its
@@ -594,7 +607,7 @@ export function callTitle(kind: ToolKind, state: CallState, name: string): strin
 export function groupTitle(calls: readonly ToolCall[], toolStatus: boolean): { title: string; failed: number } {
   const failed = calls.filter((c) => c.failed === true).length;
   if (!toolStatus) {
-    const names = calls.map((c) => c.name);
+    const names = calls.map((c) => shownName(c.name));
     const list = names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
     return { title: `Called ${list}`, failed };
   }
@@ -619,7 +632,7 @@ export function turnTitle(turn: Turn, status: Status, now: number): { title: str
   else if (turn.outcome === "failed") title = said("Turn failed after", span(turn.start, turn.end), "Turn failed");
   else if (turn.superseded || (status !== "working" && status !== "waiting")) title = "No end arrived for this turn";
   else if (status === "working") title = said("Working for", span(turn.start, now), "Working");
-  else title = said("Open for", span(turn.start, now), "Open");
+  else title = said("Open for", span(turn.start, now), "Turn open");
 
   const bad = callsOf(turn).filter((c) => c.failed === true);
   if (bad.length === 0) return { title };
@@ -635,16 +648,16 @@ const BY: Record<TurnSource, string> = {
   notification: "started by a notification",
 };
 
-/** A turn's description: its span (`<hh:mm> to <hh:mm>` closed, `since <hh:mm>` open), what started
- *  it when the source is known, its steps (calls, prose and posts), and the first channel it posted
- *  in, joined " · ". `now` is not read: an open turn's description does not count. */
-export function turnDescription(turn: Turn, now: number): string {
+/** A turn's description: its span (`<hh:mm> to <hh:mm>` closed, one time when both are the same
+ *  minute, `since <hh:mm>` open), what started it when the source is known, its steps (calls, prose
+ *  and posts), and the first channel it posted in, joined " · ". */
+export function turnDescription(turn: Turn): string {
   const parts: string[] = [];
   const from = hhmm(turn.start);
   const to = hhmm(turn.end);
   if (turn.outcome === "open") {
     if (from !== undefined) parts.push(`since ${from}`);
-  } else if (from !== undefined && to !== undefined) parts.push(`${from} to ${to}`);
+  } else if (from !== undefined && to !== undefined) parts.push(from === to ? from : `${from} to ${to}`);
   if (turn.source !== undefined) parts.push(BY[turn.source]);
   let steps = 0;
   for (const s of turn.steps) {
@@ -667,7 +680,8 @@ export function callDescription(call: ToolCall, state: CallState, now: number): 
   if (state === "done" || state === "failed") tail = call.ts === undefined || call.end === undefined ? undefined : formatDuration(call.end - call.ts, true);
   else if (state === "running") tail = call.ts === undefined ? undefined : formatDuration(now - call.ts, false);
   else tail = at === undefined ? undefined : `started ${at}`;
-  return tail === undefined ? call.name : `${call.name} · ${tail}`;
+  const name = shownName(call.name);
+  return tail === undefined ? name : `${name} · ${tail}`;
 }
 
 /** A group's description. With tool status: `<n> steps`, and the span from the first start to the
@@ -688,14 +702,6 @@ export function groupDescription(calls: readonly ToolCall[], toolStatus: boolean
 }
 
 // ── Times ────────────────────────────────────────────────────────────────────────────────────────
-
-const two = (n: number): string => String(n).padStart(2, "0");
-/** `hh:mm` in the reader's own clock, or undefined when the wire gave no time a Date can hold. */
-function hhmm(ts: number | undefined): string | undefined {
-  if (ts === undefined || !Number.isFinite(ts)) return undefined;
-  const d = new Date(ts);
-  return Number.isNaN(d.getTime()) ? undefined : `${two(d.getHours())}:${two(d.getMinutes())}`;
-}
 
 /** Calls: "0.4s", "20.0s", "2m 31s", "1h 4m". Turns and live clocks: "12s", "3m 2s", "1h 4m".
  *  Under a minute, `precise` gives one decimal and otherwise whole seconds, both floored; then minutes

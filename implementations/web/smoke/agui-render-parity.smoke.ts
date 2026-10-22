@@ -366,7 +366,7 @@ ok("CONTROL: the projection sees a dropped trailing ellipsis",
 
 // ── THE FOLD'S RESULTS AGAINST THE RENDERER'S ────────────────────────────────────────────────────
 // The fact projection skips every `  ↳ ` line, so the marker is compared here instead: per corpus
-// entry, the renderer's `  ↳ done` lines count the calls the fold holds with an end and not failed,
+// entry, the renderer's `  ↳ done` lines count the calls whose marker the fold holds as not failed,
 // and its `  ↳ failed` lines count the calls the fold holds as failed. Counts, never content.
 const callsOf = (items: readonly WorkItem[]): ToolCall[] =>
   items.flatMap((i) => (i.kind === "turn" ? callsOf(i.steps) : i.kind === "tools" ? i.calls : []));
@@ -377,7 +377,7 @@ const results = CORPUS.map(({ name, part }, i) => {
     name,
     renderedDone: lines.filter((l) => l === "  ↳ done").length,
     renderedFailed: lines.filter((l) => l === "  ↳ failed").length,
-    foldDone: calls.filter((c) => c.end !== undefined && c.failed !== true).length,
+    foldDone: calls.filter((c) => c.failed === false).length,
     foldFailed: calls.filter((c) => c.failed === true).length,
   };
 });

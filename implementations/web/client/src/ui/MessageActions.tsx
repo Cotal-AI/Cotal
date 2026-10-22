@@ -10,7 +10,7 @@ import { Avatar } from "./Avatar.tsx";
 import { copy } from "./CopyCommand.tsx";
 import { FocusTrap } from "./focusTrap.tsx";
 import { useBadgeOf } from "./identity.js";
-import { hhmm } from "./session/Time.tsx";
+import { hhmm } from "../lib/time.js";
 
 /** A touch held this long on a message opens its actions. */
 export const LONG_PRESS_MS = 500;

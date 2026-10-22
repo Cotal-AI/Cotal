@@ -108,6 +108,46 @@
       "replace": "  if (s < 60) return false ? ",
       "expectRed": "formatDuration: 0.4s and 20.0s precise, 12s whole, 3m 2s, 1h 4m, and none for -1 or NaN",
       "cell": "formatDuration: 0.4s and 20.0s precise, 12s whole, 3m 2s, 1h 4m, and none for -1 or NaN"
+    },
+    {
+      "name": "S14 a same-minute turn prints both ends, so its description reads 10:44 to 10:44",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "parts.push(from === to ? from : `${from} to ${to}`)",
+      "replace": "parts.push(`${from} to ${to}`)",
+      "expectRed": "turn description: a turn that starts and ends in the same minute shows one time",
+      "cell": "turn description: a turn that starts and ends in the same minute shows one time"
+    },
+    {
+      "name": "S15 the no-duration title for an open turn while waiting goes back to the bare Open, which reads like the page's Open links",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": ", \"Turn open\");",
+      "replace": ", \"Open\");",
+      "expectRed": "turn title: with no duration the titles read Worked, Turn failed, Working and Turn open",
+      "cell": "turn title: with no duration the titles read Worked, Turn failed, Working and Turn open"
+    },
+    {
+      "name": "S16 tool names are shown uncapped, so a harness can push any length of text into a title or description",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  return chars.length > TOOL_NAME_CAP ? ",
+      "replace": "  return false ? ",
+      "expectRed": "tool names: a 200-character name shows as its first 64 characters and …, and the call keeps it whole",
+      "cell": "tool names: a 200-character name shows as its first 64 characters and …, and the call keeps it whole"
+    },
+    {
+      "name": "S17 a call with no id is indexed for markers, so a marker for \"\" sets the result of whichever id-less call came last",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "          if (call.id !== \"\") calls.set(call.id, call);",
+      "replace": "          calls.set(call.id, call);",
+      "expectRed": "work: a call with no id is never matched by a marker, not even one for \"\"",
+      "cell": "work: a call with no id is never matched by a marker, not even one for \"\""
+    },
+    {
+      "name": "S18 a post right after a cotal_send call is folded into the call, so the agent's verified message disappears behind a tool row",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "      place(s.post);\n",
+      "replace": "      if (tools?.calls.at(-1)?.kind !== \"send\") place(s.post);\n",
+      "expectRed": "work: a cotal_send call and its post stay separate steps, never joined",
+      "cell": "work: a cotal_send call and its post stay separate steps, never joined"
     }
   ]
 }

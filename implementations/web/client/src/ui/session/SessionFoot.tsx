@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Icon } from "../../icons/Icon.tsx";
 import { statusLabel, type RosterRow } from "../../lib/roster.js";
 import { STATUS_ICON } from "../Status.tsx";
-import { hhmm } from "./Time.tsx";
+import { hhmm } from "../../lib/time.js";
 import { useXfade } from "./xfade.js";
 
 /** The live footer under a session (mock S and C, `ui-sess-foot`), from presence and nothing else:

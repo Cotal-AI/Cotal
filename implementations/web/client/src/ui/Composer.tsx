@@ -8,7 +8,7 @@ import { useStore } from "../state/hooks.js";
 import type { Store } from "../state/store.js";
 import type { DashboardState, Draft } from "../state/types.js";
 import { CopyCommand } from "./CopyCommand.tsx";
-import { clock } from "./MessageRow.tsx";
+import { clock } from "../lib/time.js";
 
 /** The controller's two composer calls, for the composers the views draw. Null before the dashboard
  *  has started, when the box is read only and nothing sends. */

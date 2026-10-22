@@ -1,5 +1,6 @@
 import type { TurnSource } from "../../lib/session.js";
-import { Time, wireDate } from "./Time.tsx";
+import { wireDate } from "../../lib/time.js";
+import { Time } from "./Time.tsx";
 
 /** What started a turn, as the turn line says it. */
 const BY: Record<TurnSource, string> = {

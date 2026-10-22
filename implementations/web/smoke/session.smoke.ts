@@ -31,6 +31,7 @@ import {
   groupTitle,
   toolGroupLabel,
   toolKind,
+  shownName,
   toolShortName,
   turnDescription,
   turnTitle,
@@ -622,7 +623,7 @@ ok("call state: idle and offline give no result", state(one(), { status: "idle" 
     ...text("b", "Checking with lead."), ...call("c3", "mcp__plugin_cotal_cotal__cotal_dm"), finished(L(10, 44)),
   ])], []);
   const [t] = turns(w.items);
-  const d = t ? turnDescription(t, L(11, 0)) : "no turn";
+  const d = t ? turnDescription(t) : "no turn";
   ok("turn description: the mock's second turn reads \"10:36 to 10:44 · started by a message from the mesh · 5 steps\"",
     d === "10:36 to 10:44 · started by a message from the mesh · 5 steps", d);
 }
@@ -630,12 +631,67 @@ ok("call state: idle and offline give no result", state(one(), { status: "idle" 
   const w = foldWork([frame("f1", [started("channel", L(10, 49)), ...call("c1", "cotal_inbox", L(10, 49)), ...text("a", "Returning { ate, dead }.", { ts: L(10, 50) })], L(10, 50))],
     [post("m1", L(10, 49) + 30_000, "posted")]);
   const [t] = turns(w.items);
-  const d = t ? turnDescription(t, L(10, 52)) : "no turn";
+  const d = t ? turnDescription(t) : "no turn";
   ok("turn description: an open turn reads \"since 10:49 · started by a message from the mesh · 3 steps · posted in #team\"",
     d === "since 10:49 · started by a message from the mesh · 3 steps · posted in #team", d);
 }
 
-// ── 19. foldWork: keys, ids and live ─────────────────────────────────────────────────────────────
+{
+  const t: Turn = { ...openTurn, start: L(10, 44, 5), end: L(10, 44, 50), outcome: "finished" };
+  ok("turn description: a turn that starts and ends in the same minute shows one time",
+    turnDescription(t) === "10:44 · 0 steps", turnDescription(t));
+}
+{
+  // A span with its end before its start, from clock skew, has no duration.
+  const start = L(10, 50);
+  const skewed = (over: Partial<Turn>, status: "working" | "waiting") => turnTitle({ ...openTurn, start, ...over }, status, start - 1000).title;
+  const got = [
+    skewed({ outcome: "finished", end: start - 5 }, "working"),
+    skewed({ outcome: "failed", end: start - 5 }, "working"),
+    skewed({}, "working"),
+    skewed({}, "waiting"),
+  ];
+  ok("turn title: with no duration the titles read Worked, Turn failed, Working and Turn open",
+    got.join("|") === "Worked|Turn failed|Working|Turn open", got);
+}
+
+// ── 19. Tool names: the display cap, the id-less call, the send call and its post ────────────────
+{
+  const long = "x".repeat(200);
+  const w = foldWork([frame("f1", [started(), ...call("c1", long, L(10, 50)), finished()])], []);
+  const [c] = allCalls(w.items);
+  const capped = `${"x".repeat(64)}…`;
+  const shown = [callTitle(c.kind, "called", c.name), callDescription(c, "noResult", L(10, 51)), groupTitle([c, c], false).title];
+  ok("tool names: a 200-character name shows as its first 64 characters and …, and the call keeps it whole",
+    shown.join("|") === `Called ${capped}|${capped} · started 10:50|Called ${capped} and ${capped}` &&
+      capped.length === 65 && c.name === long && c.full === long && shownName("Bash") === "Bash",
+    shown.map((x) => x.length));
+}
+{
+  const w = foldWork([frame("f1", [
+    { type: "TOOL_CALL_START", toolCallName: "Bash" }, { type: "TOOL_CALL_END" },
+    { type: "CUSTOM", name: "cotal.toolResult", value: { toolCallId: "", isError: true } },
+  ])], []);
+  const [c] = allCalls(w.items);
+  ok("work: a call with no id is never matched by a marker, not even one for \"\"",
+    c?.id === "" && c.failed === undefined && c.end === undefined && w.toolStatus === true, c);
+}
+{
+  const w = foldWork([frame("f1", [
+    started("channel", L(10, 40)),
+    ...call("c1", "mcp__plugin_cotal_cotal__cotal_send", L(10, 42)), marker("c1", false, L(10, 42) + 300),
+    ...text("a", "Done for now.", { ts: L(10, 43) }),
+    finished(L(10, 44)),
+  ], L(10, 44))], [post("m1", L(10, 42) + 1, "app/snake.js is ready.")]);
+  const [t] = turns(w.items);
+  const [send] = allCalls(w.items);
+  const p = t?.steps.find((s) => s.kind === "post");
+  ok("work: a cotal_send call and its post stay separate steps, never joined",
+    work(w.items) === "turn(finished)[tools(1) post said]" && send.kind === "send" && p?.kind === "post" && p.msg.id === "m1",
+    work(w.items));
+}
+
+// ── 20. foldWork: keys, ids and live ─────────────────────────────────────────────────────────────
 {
   const input = (): SessionFrame[] => [
     frame("f1", [...text("x", "loose"), started("human"), ...call("c1", "Bash"), marker("c1", false), ...call("c2", "Edit"), ...text("a", "x", { end: false })]),

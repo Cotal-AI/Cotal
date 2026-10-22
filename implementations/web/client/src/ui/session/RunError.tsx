@@ -1,6 +1,7 @@
 import { AlertCircleIcon } from "@hugeicons/core-free-icons";
 import { Icon } from "../../icons/Icon.tsx";
-import { Time, wireDate } from "./Time.tsx";
+import { wireDate } from "../../lib/time.js";
+import { Time } from "./Time.tsx";
 
 /** A condition presence reports for the agent: its code, quoted as it came, and when it began. */
 export interface RunErrorCondition { code: string; since?: number }
