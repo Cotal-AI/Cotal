@@ -19,7 +19,9 @@
  *  L7 expired renewal material is refused before dispatch: `ended expired`, 0 requests;
  *  L8 close() settles a pull in flight as closed without waiting for its answer, rejects new pulls
  *     with no request, and a second close is a no-op;
- *  L9 no token appears in state(), in thrown errors, or in the persisted record's non-material fields.
+ *  L9 no token appears in state(), in thrown errors, or in the persisted record's non-material fields;
+ *  L10 a revoke whose cause is `restore-quarantine` (how quarantine reaches an active instance; the
+ *      admission gate itself guards only new requests) ends the source as approval-revoked.
  */
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -262,6 +264,21 @@ try {
     c.check("L6 a later pull refuses with 0 POST", later !== "" && doorPosts === posts0, { later, posts: doorPosts - posts0 });
   });
 
+  await cell("L10 a quarantine-restore revoke ends the source the same way", async () => {
+    const five = await registeredWitness(ep);
+    const s = source(five.witness);
+    tokensSeen.push(await s.bearer());
+    const r = await call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: { kind: "owner", owner },
+      input: { endpoint: ep, instanceId: five.instanceId, expectedAssignmentDigest: five.assignmentDigest, cause: "restore-quarantine" } });
+    for (let i = 0; i < 20 && s.state().state !== "ended"; i++) {
+      try { tokensSeen.push(await s.bearer()); } catch { /* the state says why */ }
+      if (s.state().state !== "ended") await new Promise((res) => setTimeout(res, 250));
+    }
+    const st = s.state();
+    c.check("L10 instrument: the stock host accepted the restore-quarantine revoke", r.state !== "denied", r);
+    c.check("L10 ended approval-revoked, never unavailable", st.state === "ended" && (st as { reason: string }).reason === "approval-revoked", st);
+  });
+
   await cell("L7 expired renewal material is refused before dispatch", async () => {
     const three = await registeredWitness(ep);
     const s = source(three.witness);
@@ -305,7 +322,7 @@ try {
   await cell("L9 no token outside bearer()", async () => {
     const records = [...clientStore.values.entries()].filter(([k]) => k.includes("/service-renewal/")).map(([, v]) => JSON.parse(v) as Record<string, any>);
     const outside = records.map(({ material: _m, ...rest }) => JSON.stringify(rest)).join("\n");
-    c.check("L9 records hold no token outside their material field", records.length >= 4 && !tokensSeen.some((t) => outside.includes(t)) && !jwtLike.test(outside), records.length);
+    c.check("L9 records hold no token outside their material field", records.length >= 5 && !tokensSeen.some((t) => outside.includes(t)) && !jwtLike.test(outside), records.length);
   });
 } finally {
   for (const f of closers.reverse()) await f().catch(() => {});
