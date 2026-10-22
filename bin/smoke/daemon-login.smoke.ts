@@ -52,6 +52,7 @@ import { serveDaemon } from "../daemon/server.js";
 import { createLoginCoordinator } from "../daemon/login.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-login smoke: Linux only; skipped on ${process.platform}`);
+const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -136,7 +137,7 @@ const secretKeys = (frames: Frame[]) => keysOf(frames).filter((k) => SECRET_KEYS
 
 // A unix socket path is limited to 107 bytes, so the scratch parent must stay short. COTAL_DAEMON_SMOKE_TMP
 // chooses it, as in daemon-endpoint.smoke.ts.
-const root = mkdtempSync(join(process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir(), "cdl-"));
+const root = mkdtempSync(join(scratchParent, "cdl-"));
 chmodSync(root, 0o700);
 let n = 0;
 const fresh = () => {
