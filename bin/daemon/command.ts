@@ -125,8 +125,13 @@ async function login(args: ParsedArgs): Promise<void> {
   const r: LoginResult = reply.result;
   if (r.outcome === "cancelled") throw new CommandFailure("refused", "USAGE_INVALID", "the sign-in was cancelled on this machine; nothing was saved and nothing was revoked at the provider", { native: { code: "CANCELLED" } });
   if (r.outcome === "failed") {
-    const code = r.reason === "unreachable" ? "DEPENDENCY_UNAVAILABLE" : "PERMISSION_DENIED";
-    throw new CommandFailure(r.reason === "unreachable" ? "refused" : "failed", code, `${r.message}; no session was saved`, { native: { code: r.reason.toUpperCase() } });
+    const native = { native: { code: r.reason.toUpperCase() } };
+    // Denied, expired and unreachable end before stock writes anything: refusals at the provider's
+    // boundary. Any other failure can come after stock saved the session, so it claims nothing about
+    // what was saved; `cotal daemon login` again replaces whatever is there.
+    if (r.reason === "unreachable") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${r.message}; no session was saved`, native);
+    if (r.reason === "denied" || r.reason === "expired") throw new CommandFailure("refused", "PERMISSION_DENIED", `${r.message}; no session was saved`, native);
+    throw new CommandFailure("failed", "OPERATION_FAILED", `${r.message}; a session may have been saved before the failure, so sign in again`, native);
   }
   writeResult(presentation, { command: "daemon login", target: { idp }, result: { attempt: reply.attempt, ...r } }, () => ({ sections: [
     { title: "Signed in", blocks: [{ kind: "fields", rows: [["Account", r.label || r.sub], ["Subject", r.sub], ["Provider", r.idp]] }, { kind: "lines", lines: [{ text: "The daemon holds this session in the machine's Cotal home. No session token is printed. Each space's grants decide access separately.", tone: "hint" }] }] },

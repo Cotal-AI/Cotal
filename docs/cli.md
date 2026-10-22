@@ -3066,8 +3066,11 @@ HTTP loopback IP URL; `--client-id` defaults to `cotal-cli`.
 One sign-in runs at a time: a second `login` refuses `CONFLICT` (`LOGIN_IN_PROGRESS`) without
 contacting the provider. Ctrl-C, or the command's connection closing, cancels the sign-in on this
 machine and saves nothing, even after approval. It revokes nothing at the provider. A cancel
-reports `USAGE_INVALID` (`CANCELLED`). A denied or expired approval fails `PERMISSION_DENIED`
-(`DENIED` or `EXPIRED`), and an unreachable provider refuses `DEPENDENCY_UNAVAILABLE`. `status`
+reports `USAGE_INVALID` (`CANCELLED`). A denied or expired approval refuses `PERMISSION_DENIED`
+(`DENIED` or `EXPIRED`), and an unreachable provider refuses `DEPENDENCY_UNAVAILABLE`
+(`UNREACHABLE`); none of these saves a session. Any other provider answer fails `OPERATION_FAILED`
+(`REFUSED`). Such a failure can come after the session was saved, so run `login` again. A failure
+is reported with a fixed sentence; the provider's own error text is never relayed. `status`
 keeps answering while a sign-in waits.
 
 ## service

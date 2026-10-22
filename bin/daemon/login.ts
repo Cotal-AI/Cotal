@@ -4,9 +4,14 @@
  *
  * Attempts are named by a daemon-minted id. A cancel names the attempt it means, so a cancel aimed
  * at a finished attempt can never stop its successor. A cancel is answered only after the attempt
- * has settled, and it answers with what actually happened: `cancelled` when the stock fence stopped
- * it before anything was persisted, `completed` when it had already finished (or finished while the
- * cancel raced it), and `not-found` for an attempt this daemon never started or no longer remembers.
+ * has settled, meaning its result has been delivered to the requester, and it answers with what
+ * actually happened: `cancelled` when the stock fence stopped it before anything was persisted,
+ * `completed` when it had already finished (or finished while the cancel raced it), and `not-found`
+ * for an attempt this daemon never started or no longer remembers. Until that delivery the attempt
+ * stays in flight, so no second sign-in starts underneath an undelivered result.
+ *
+ * A failure crosses the endpoint as a fixed sentence per reason. Stock error text can quote the
+ * provider's answer, so none of it is relayed.
  *
  * Cancelling stops this local sign-in. It does not revoke anything at the IdP.
  */
@@ -18,6 +23,16 @@ import type { CancelResult, LoginPrompt, LoginResult } from "./protocol.js";
 export const DEFAULT_CLIENT_ID = "cotal-cli";
 /** How many finished attempt ids are remembered, so a late cancel still gets a truthful answer. */
 const REMEMBERED = 16;
+
+type FailReason = Extract<LoginResult, { outcome: "failed" }>["reason"];
+/** The only failure text a requester sees. It never quotes the provider or a stock error. */
+const FAILURE: Record<FailReason, string> = {
+  denied: "the sign-in was denied at the verification page",
+  expired: "the approval code expired before the sign-in was approved",
+  unreachable: "the provider could not be reached",
+  refused: "the provider's answer could not be used to sign in",
+};
+const failed = (reason: FailReason): LoginResult => ({ outcome: "failed", reason, message: FAILURE[reason] });
 
 type Establish = typeof establishIdpSession;
 
@@ -71,12 +86,12 @@ export function createLoginCoordinator(opts: { readonly sessionDir: string; read
       return { outcome: "signed-in", idp: req.idp, sub: r.sub, ...(r.label ? { label: r.label } : {}), ...(r.previousSub ? { previousSub: r.previousSub } : {}) };
     } catch (e) {
       if (e instanceof IdpLoginCancelled) return { outcome: "cancelled" };
-      const message = e instanceof Error ? e.message : String(e);
-      if (e instanceof IdpUnreachableError) return { outcome: "failed", reason: "unreachable", message };
+      if (e instanceof IdpUnreachableError) return failed("unreachable");
       // Stock throws plain Errors for these two IdP answers; match their exact sentences.
-      if (message.startsWith("idp login: the sign-in was denied at the verification page")) return { outcome: "failed", reason: "denied", message };
-      if (message.startsWith("idp login: the device code expired")) return { outcome: "failed", reason: "expired", message };
-      return { outcome: "failed", reason: "refused", message };
+      const message = e instanceof Error ? e.message : "";
+      if (message.startsWith("idp login: the sign-in was denied at the verification page")) return failed("denied");
+      if (message.startsWith("idp login: the device code expired")) return failed("expired");
+      return failed("refused");
     }
   };
 
@@ -86,9 +101,12 @@ export function createLoginCoordinator(opts: { readonly sessionDir: string; read
       const id = randomBytes(16).toString("base64url").slice(0, 22);
       const abort = new AbortController();
       const settled = run(id, abort, req).then(async (result) => {
-        remember(id, result.outcome);
-        if (current?.id === id) current = undefined;
-        await req.onResult(id, result);
+        try {
+          await req.onResult(id, result);
+        } finally {
+          remember(id, result.outcome);
+          if (current?.id === id) current = undefined;
+        }
         return result;
       });
       current = { id, abort, settled };
