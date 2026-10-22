@@ -144,8 +144,8 @@ const QUESTION = "Which one?";
   check("the refused up -f wrote nothing", readdirSync(project).join(",") === "mesh.yaml");
   const dry = run(["up", "-f", "mesh.yaml", "--space", "alpha", "--dry-run"], project);
   check("up -f with a --space repeating the manifest's space runs", dry.status === 0 && /space "alpha"/.test(dry.stdout), shown(dry));
-  const spawnF = run(["spawn", "-f", "mesh.yaml", "--space", "beta", "--dry-run"], project);
-  check("spawn -f with a --space naming another space refuses before it connects", spawnF.status === 1 && /--space beta does not match this manifest's space "alpha"/.test(spawnF.stderr) && !existsSync(join(project, ".cotal")), shown(spawnF));
+  const deploy = run(["team", "deploy", "mesh.yaml", "--space", "beta"], project);
+  check("team deploy with a --space naming another space refuses before it connects", deploy.status === 2 && /--space differs from this manifest's exact target; no broker was contacted/.test(`${deploy.stdout}${deploy.stderr}`) && !existsSync(join(project, ".cotal")), shown(deploy));
 }
 
 for (const p of ptys) p.kill();

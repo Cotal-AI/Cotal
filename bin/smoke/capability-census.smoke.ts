@@ -39,6 +39,7 @@ check("CLI items reach modes declared only in a command's positionals",
   ["cli:doctor auth", "cli:deliver pending", "cli:app-identity provision"].every((id) => ids.has(id)));
 check("auth routes keyed by a module constant are census items", ids.has("auth-http:/interactive-lifecycle/retire"));
 check("auth routes keyed by a property of a module constant object are census items", ids.has("auth-http:/chat-session/open"));
+check("auth routes keyed by a constant imported from a sibling module are census items", ids.has("auth-http:/service-endpoint-authority"));
 
 const problems = ownerMapProblems(items, map);
 check(`every one of ${items.length} items has a well-formed owner and every row is live`, problems.length === 0, problems);

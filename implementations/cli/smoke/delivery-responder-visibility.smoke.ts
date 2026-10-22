@@ -31,6 +31,7 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE } from "@cotal-ai/workspace";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix } from "../src/lib/delivery-responder.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -41,6 +42,9 @@ const SPACE = "responder-visibility";
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}responder-root-`));
 const home = mkdtempSync(join(tmpdir(), "cotal-responder-home-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
+// The record a delivery daemon writes for this space. Its name binds the folder to the space, so
+// status reads it as this space's process record.
+const DELIVERY_PID = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root, space: SPACE });
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -81,7 +85,7 @@ async function stop(child: ChildProcess | undefined): Promise<void> {
 }
 /** The bare-status delivery row, pid-normalized: the CLAIM the row makes, not its instance values. */
 function deliveryRow(text: string): string | undefined {
-  return text.split("\n").map((l) => strip(l).trimEnd()).find((l) => /^\s{2}delivery:\s/.test(l))?.trim().replace(/\(pid \d+\)/, "(pid N)");
+  return text.split("\n").map((l) => strip(l).trimEnd()).find((l) => /^ {2}Delivery {2,}\S/.test(l))?.trim().replace(/\(pid \d+\)/, "(pid N)");
 }
 function componentRow(text: string): string | undefined {
   return text.split("\n").map((l) => l.trim()).find((l) => /^delivery\s+(serving|not-serving|absent|refused|stopped)/.test(l));
@@ -99,7 +103,7 @@ async function startHolder(mode: "claim" | "ready", server: string): Promise<Chi
     child.stdout?.once("data", () => { clearTimeout(t); res(); });
   });
   assert.ok(child.pid, "holder received a pid");
-  writeFileSync(join(root, ".cotal", "delivery.pid"), String(child.pid));
+  writeFileSync(DELIVERY_PID, String(child.pid));
   return child;
 }
 
@@ -127,9 +131,11 @@ try {
     /RESPONDER NOT BOUND/.test(unboundRow ?? ""), unboundRow);
   check("CELL 1: it names the CONSEQUENCE rather than only the state",
     /no spawn, no retirement, no join until it binds/.test(unboundRow ?? ""), unboundRow);
-  check("CELL 1: the mesh section states it too, with the command that starts it",
-    /delivery responder:\s+NOT BOUND/.test(strip(unboundBare.text)) && /cotal deliver --space|cotal up/.test(strip(unboundBare.text)),
-    strip(unboundBare.text).split("\n").filter((l) => /responder/i.test(l)));
+  // The mesh section is a detailed diagnostic, so it renders under --verbose.
+  const unboundVerbose = cli("status", "--verbose", "--space", SPACE, "--server", server);
+  check("CELL 1: the verbose mesh section states it too, with the command that starts it",
+    /delivery responder:\s+NOT BOUND/.test(unboundVerbose.text) && /cotal deliver --space|cotal up/.test(unboundVerbose.text),
+    unboundVerbose.text.split("\n").filter((l) => /responder/i.test(l)));
   // Bare status stays a recovery-oriented, zero-exit diagnostic: naming the axis must not turn it
   // into a monitor. `--components` owns the exit disposition.
   check("CELL 1: bare status still exits 0 (it reports, it does not gate)", unboundBare.status === 0, unboundBare.status);
@@ -146,7 +152,7 @@ try {
   // ---------- REFUSE CONTROL: the same fixture, responder BOUND ----------
   await stop(holder);
   holder = undefined;
-  rmSync(join(root, ".cotal", "delivery.pid"), { force: true });
+  rmSync(DELIVERY_PID, { force: true });
   // The lease bucket has a 10s TTL; a fresh holder must CAS-create, so wait for the claim to expire
   // rather than racing it. Without this wait the `ready` leg would silently measure the old record.
   await sleep(11_000);
@@ -178,7 +184,7 @@ try {
   const bystander = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
   teardownOnSignal(bystander);
   assert.ok(bystander.pid, "bystander fixture received a pid");
-  writeFileSync(join(root, ".cotal", "delivery.pid"), String(bystander.pid));
+  writeFileSync(DELIVERY_PID, String(bystander.pid));
   try {
     const noLease = cli("status", "--space", SPACE, "--server", server);
     const noLeaseRow = deliveryRow(noLease.text);
@@ -191,7 +197,7 @@ try {
       componentRow(noLeaseComponents.text));
   } finally {
     try { bystander.kill("SIGTERM"); } catch { /* already gone */ }
-    rmSync(join(root, ".cotal", "delivery.pid"), { force: true });
+    rmSync(DELIVERY_PID, { force: true });
   }
 
   // ---------- CELL 5: the READER ITSELF, unit-level ----------

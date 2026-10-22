@@ -14,7 +14,7 @@ import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, MANAGER_S
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { checkInheritedPipeCleanup } from "./_foreground-pipe-fixture.js";
-import { emitSentinel, freePort } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   console.log("SKIP foreground-up-signals: POSIX terminal process groups do not apply on Windows");
@@ -50,6 +50,7 @@ function token(path: string): ProcessIdentityRecord | undefined {
 async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean }): Promise<boolean> {
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
   for (const p of [root, home, mesh, join(mesh, ".cotal"), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
   const rootIdentity = statSync(mesh, { bigint: true });
   const markerIdentity = statSync(join(mesh, ".cotal"), { bigint: true });
   const port = await freePort(); assert.notEqual(port, 4222);
@@ -142,6 +143,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.equal(registration.space, space);
       assert.equal(registration.server, `nats://127.0.0.1:${port}`);
       assert.deepEqual(Object.keys(env).filter((key) => /^COTAL_/i.test(key)).sort(), ["COTAL_HOME", "COTAL_SKIP_CONNECTOR_SEED"]);
+      assertSmokeSandboxDown(sandbox, ["down", "--with-agents"], { cwd: mesh, env });
       const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--with-agents"]);
       writeFileSync(join(root, "down.json"), JSON.stringify(down), { mode: 0o600 });
       assert.equal(down.code, 0, "own-root public down --with-agents succeeds after resume and serving readiness"); passed++;
