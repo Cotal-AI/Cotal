@@ -24,8 +24,9 @@
  *  C8  terminal: the owner revokes; the state becomes `ended approval-revoked`, never connected again;
  *  C9  daemon shutdown: the socket is gone and nothing answers;
  *  C10 no IdP session, JWT, access bearer or renewal proof in any frame or CLI output;
- *  C11 the CLI through the composition root: `service-status` reports ended as a refusal carrying the
- *      stock code, `service-connect` on a space without service endpoints refuses, and
+ *  C11 the CLI through the composition root, after C9's restart: `service-status` is not connected
+ *      (state is per daemon process), `service-connect` for the revoked registration refuses and never
+ *      connects, `service-connect` with no register request refuses TARGET_NOT_FOUND, and
  *      `service-disconnect` answers disconnected.
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
@@ -371,9 +372,11 @@ try {
         return { status, doc, out };
       };
       const st = await cli("service-status", "--space", ON);
-      check("C11 `cotal daemon service-status` reports ended as a refusal (exit 2), never connected", st.status === 2 && st.doc.error?.code === "PERMISSION_DENIED" && st.doc.error?.cause?.code === "APPROVAL_REVOKED", { status: st.status, out: st.out.slice(0, 400) });
+      check("C11 after a daemon restart `service-status` is not connected (state is per daemon process), exit 2", st.status === 2 && st.doc.error?.code === "TARGET_UNAVAILABLE" && st.doc.error?.cause?.code === "DISCONNECTED", { status: st.status, out: st.out.slice(0, 400) });
+      const re = await cli("service-connect", "--space", ON);
+      check("C11 `service-connect` for the revoked registration refuses (exit 2) and never connects", re.status === 2 && re.doc.outcome === "refused" && re.doc.result === null, { status: re.status, out: re.out.slice(0, 400) });
       const off = await cli("service-connect", "--space", OFF);
-      check("C11 `cotal daemon service-connect` on a space without service endpoints refuses UNSUPPORTED (exit 2)", off.status === 2 && off.doc.error?.code === "UNSUPPORTED", { status: off.status, out: off.out.slice(0, 400) });
+      check("C11 `service-connect` with no register request refuses TARGET_NOT_FOUND (exit 2)", off.status === 2 && off.doc.error?.code === "TARGET_NOT_FOUND" && off.doc.error?.cause?.code === "NOT_REQUESTED", { status: off.status, out: off.out.slice(0, 400) });
       const dis = await cli("service-disconnect", "--space", OFF);
       check("C11 `cotal daemon service-disconnect` answers disconnected (exit 0)", dis.status === 0 && dis.doc.result?.state === "disconnected", { status: dis.status, out: dis.out.slice(0, 400) });
     });
