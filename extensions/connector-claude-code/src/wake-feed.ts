@@ -1,8 +1,9 @@
 /**
  * How a plain Claude Code session's local server wakes the session. The server writes the
- * connection id of each wake to a socket of its own, and the native reader (`monitor.ts`) turns
- * each one into a fixed line for the hooks module to submit. Nothing read from a socket reaches the
- * model as text. The server and native reader are children of the same Claude Code host process,
+ * connection id and a bounded preview, or an opt-in whole-message offer, to its private socket.
+ * The native reader (`monitor.ts`) validates each frame before the hooks module can admit it.
+ * Only a separate confirmed native receipt commits an inline offer. The server and native reader
+ * are children of the same Claude Code host process,
  * whose pid names the session's sockets. Classic monitors instead receive that pid in CLAUDE_PID.
  * Each server's own pid completes its socket's name, so a restarted or second server never takes
  * another's.
@@ -11,7 +12,8 @@ import { lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RenderedInboxPreview } from "@cotal-ai/connector-core";
+import type { InlineDeliveryBatch, InlineDeliveryPayload, RenderedInboxPreview } from "@cotal-ai/connector-core";
+import { NativeDeliveries } from "./native-deliveries.js";
 
 /** A connection id the feed carries. Gateway ids are UUIDs, so anything else is not one. */
 export const WAKE_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -66,10 +68,13 @@ export function nativeSocketPath(feed: string): string {
 export interface WakeFeed {
   /** Write one bounded preview + `id` to every monitor reading the feed. False when none is. */
   send(id: string, preview: RenderedInboxPreview, session?: string): boolean;
+  supportsInline(session: string): boolean;
+  fitsInline(id: string, session: string, payload: InlineDeliveryPayload): boolean;
+  sendInline(id: string, session: string, batch: InlineDeliveryBatch, settled: (delivered: boolean) => void, retry: () => void): boolean;
   /** Native lifecycle frames are routed by their explicit session identity, never reader order. */
   onNative(fn: (event: Record<string, unknown>) => Promise<void>): void;
   /** Whether a monitor is reading the feed now. */
-  watched(): boolean;
+  watched(session?: string): boolean;
   /** Run `fn` each time a monitor starts reading. */
   onReader(fn: () => void): void;
   close(): void;
@@ -86,8 +91,9 @@ export async function openWakeFeed(claudePid: number): Promise<WakeFeed> {
     }
   }
   const path = wakeSocketPath(claudePid);
-  const readers = new Map<Socket, string | undefined>();
+  const readers = new Map<Socket, { session?: string; inline: boolean }>();
   const joined: Array<() => void> = [];
+  const deliveries = new NativeDeliveries(path);
   let native: ((event: Record<string, unknown>) => Promise<void>) | undefined;
   const nativeSockets = new Set<Socket>();
   const lifecycle = createServer((s) => {
@@ -102,6 +108,7 @@ export async function openWakeFeed(claudePid: number): Promise<WakeFeed> {
       s.removeAllListeners("data");
       try {
         const frame = JSON.parse(buffer.slice(0, end)) as { op?: string; event?: Record<string, unknown> };
+        if (frame.op === "inline") { s.end(`${JSON.stringify(deliveries.request(frame))}\n`); return; }
         if (frame.op !== "native" || !frame.event || !native) { s.destroy(); return; }
         void native(frame.event).then(() => s.end('{"ok":true}\n'), () => s.end('{"ok":false}\n'));
       } catch { s.destroy(); }
@@ -110,7 +117,7 @@ export async function openWakeFeed(claudePid: number): Promise<WakeFeed> {
     s.on("error", () => s.destroy());
   });
   const server = createServer((s) => {
-    const watch = (session?: string) => { readers.set(s, session); for (const fn of joined) fn(); };
+    const watch = (session?: string, inline = false) => { readers.set(s, { session, inline }); for (const fn of joined) fn(); };
     watch();
     let buffer = "";
     s.setEncoding("utf8");
@@ -121,12 +128,12 @@ export async function openWakeFeed(claudePid: number): Promise<WakeFeed> {
       if (end < 0) return;
       s.removeAllListeners("data");
       try {
-        const frame = JSON.parse(buffer.slice(0, end)) as { op?: string; session?: string };
-        if (frame.op === "watch" && typeof frame.session === "string" && WAKE_ID.test(frame.session)) watch(frame.session);
+        const frame = JSON.parse(buffer.slice(0, end)) as { op?: string; session?: string; inline?: number };
+        if (frame.op === "watch" && typeof frame.session === "string" && WAKE_ID.test(frame.session)) watch(frame.session, frame.inline === 1);
         else s.destroy();
       } catch { s.destroy(); }
     });
-    s.on("close", () => readers.delete(s));
+    s.on("close", () => { readers.delete(s); deliveries.dropReader(s); });
     s.on("error", () => s.destroy());
   });
   await new Promise<void>((resolve, reject) => {
@@ -141,21 +148,28 @@ export async function openWakeFeed(claudePid: number): Promise<WakeFeed> {
   } catch (error) { server.close(); throw error; }
   return {
     onNative: (fn) => { native = fn; },
+    supportsInline: (session) => [...readers.values()].some((reader) => reader.session === session && reader.inline),
+    fitsInline: (id, session, payload) => deliveries.fits(id, session, payload),
+    sendInline(id, session, batch, settled, retry) {
+      const reader = [...readers].find(([, owner]) => owner.session === session && owner.inline)?.[0];
+      return !!reader && deliveries.send(reader, id, session, batch, settled, retry);
+    },
     send(id, preview, session) {
       if (!WAKE_ID.test(id)) throw new Error(`not a connection id: ${JSON.stringify(id)}`);
       const frame = JSON.stringify({ id, preview });
       if (frame.length > 4_096) throw new Error(`Cotal wake preview frame is ${frame.length} characters, over 4096`);
       let sent = false;
       for (const [s, owner] of readers) {
-        if (session !== undefined && owner !== session) continue;
+        if (session !== undefined && owner.session !== session) continue;
         s.write(`${frame}\n`);
         sent = true;
       }
       return sent;
     },
-    watched: () => readers.size > 0,
+    watched: (session) => [...readers.values()].some((reader) => session === undefined || reader.session === session),
     onReader: (fn) => void joined.push(fn),
     close() {
+      deliveries.close();
       for (const s of readers.keys()) s.destroy();
       for (const s of nativeSockets) s.destroy();
       lifecycle.close();

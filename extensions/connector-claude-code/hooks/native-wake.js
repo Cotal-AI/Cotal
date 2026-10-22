@@ -1,5 +1,11 @@
 const WAKE = /^Cotal: a new message for connection_id ([A-Za-z0-9_-]{1,128})\. Read it with cotal_inbox\.$/;
 const PREVIEW = /^Cotal preview for connection_id ([A-Za-z0-9_-]{1,128}): (\{.*\})$/;
+const INLINE = /^Cotal: inline messages for connection_id ([A-Za-z0-9_-]{1,128})\.$/;
+const ID = /^[A-Za-z0-9_-]{1,128}$/;
+const offers = new Map();
+const retries = new Map();
+const admissions = new Map();
+const inlineRows = new Map();
 const pending = new Set();
 const expanded = new Set();
 const wakeRows = new Set();
@@ -22,10 +28,89 @@ async function relayNative($, event) {
   if (result.exitCode !== 0) throw new Error('Cotal native lifecycle binding was not confirmed');
 }
 
+function inlineFrame(frame, session) {
+  const item = frame?.inline;
+  return frame && typeof frame.id === 'string' && ID.test(frame.id) && typeof frame.route === 'string' &&
+    item?.v === 1 && item.session === session && typeof item.receipt === 'string' && ID.test(item.receipt) &&
+    typeof item.text === 'string' && item.text.startsWith(`Cotal: inline messages for connection_id ${frame.id}.\n`) &&
+    Number.isInteger(item.count) && item.count > 0 && item.count <= 8 &&
+    Number.isInteger(item.remaining) && item.remaining >= 0 && JSON.stringify(frame).length <= 4096;
+}
+
+async function receipt($, frame, action, uuid) {
+  const root = $.plugin.root;
+  const record = JSON.parse(await $.fs.read(root + '/dist/cli.json'));
+  const session = await $.session.id();
+  if (frame.inline.session !== session) throw new Error('Cotal native session changed');
+  const result = await $.process.run(
+    [record.argv[0], root + '/dist/monitor.cjs', '--native', '--session', session, '--native-delivery'],
+    { stdin: JSON.stringify({ route: frame.route, session, id: frame.id, receipt: frame.inline.receipt, action, ...(uuid ? { uuid } : {}) }), timeoutMs: 3000 },
+  );
+  if (result.exitCode !== 0) throw new Error('Cotal native receipt was not confirmed');
+  return JSON.parse(result.stdout);
+}
+
+async function deferInline($, frame) {
+  retries.set(frame.id, frame);
+  try { await receipt($, frame, 'reject'); } catch {}
+}
+
+async function resumeInline($) {
+  for (const [key, frame] of retries) {
+    try {
+      const result = await receipt($, frame, 'retry');
+      if (result.ok) retries.delete(key);
+    } catch {}
+  }
+}
+
+async function submitInline($, frame, inTurn) {
+  const claim = await receipt($, frame, 'claim');
+  if (!claim.ok) {
+    await receipt($, frame, 'retry');
+    return;
+  }
+  if (!inlineFrame(claim.frame, await $.session.id()) || JSON.stringify(claim.frame) !== JSON.stringify(frame))
+    throw new Error('Cotal inline offer changed');
+  const text = claim.frame.inline.text;
+  const admission = { frame: claim.frame, uuid: undefined, resolve: undefined, observed: undefined };
+  admission.observed = new Promise(resolve => { admission.resolve = resolve; });
+  admissions.set(text, admission);
+  try {
+    if (paused || active !== inTurn) throw new Error('Cotal delivery paused');
+    const result = inTurn
+      ? await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+      : await $.prompt.submit({ text });
+    if (result?.drop || result?.deny) throw new Error('Cotal native admission was refused');
+    const uuid = inTurn ? result?.uuid : admission.uuid || await Promise.race([
+      admission.observed, $.clock.sleep(2000).then(() => undefined),
+    ]);
+    if (!uuid) throw new Error('Cotal native admission was not confirmed');
+    wakeRows.add(uuid);
+    inlineRows.set(uuid, claim.frame.inline);
+    $.ui.invalidate('ui.render');
+    const committed = await receipt($, claim.frame, 'commit', uuid);
+    if (!committed.ok) throw new Error('Cotal native receipt expired');
+  } finally {
+    admissions.delete(text);
+  }
+}
+
 async function submit($, inTurn = false) {
   if (submitting || paused || active !== inTurn) return;
   submitting = true;
   try {
+    for (const [key, frame] of [...offers]) {
+      if (paused || active !== inTurn) break;
+      offers.delete(key);
+      try { await submitInline($, frame, inTurn); }
+      catch {
+        paused = true;
+        await deferInline($, frame);
+        $.ui.log('Cotal incoming delivery is paused. Your next message can resume it.');
+        break;
+      }
+    }
     for (const text of pending) {
       if (paused || active !== inTurn) break;
       pending.delete(text);
@@ -53,6 +138,7 @@ async function submit($, inTurn = false) {
     }
   } finally {
     submitting = false;
+    if (!paused && !active && offers.size) void submit($);
   }
 }
 
@@ -86,12 +172,23 @@ async function listen($) {
               previews.set(preview[1], value);
             }
           } catch {}
+        } else if (line.startsWith('Cotal inline delivery: ')) {
+          try {
+            if (line.length > 4120) continue;
+            const frame = JSON.parse(line.slice('Cotal inline delivery: '.length));
+            if (!inlineFrame(frame, session)) continue;
+            if (paused) await deferInline($, frame);
+            else {
+              offers.set(frame.inline.receipt, frame);
+              void submit($);
+            }
+          } catch {}
         } else if (WAKE.test(line)) {
           pending.add(line);
           void submit($);
         }
       }
-      if (buffer.length > 256) throw new Error('invalid Cotal wake feed');
+      if (buffer.length > 4120) throw new Error('invalid Cotal wake feed');
     }
   } catch {
     await reader?.return();
@@ -104,7 +201,16 @@ export function register(on) {
     const own = e.origin.kind === 'plugin' && e.origin.name === $.plugin.name && !e.origin.asUser;
     const text = e.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
     const result = await next(e);
-    if (own && text.split(/\r?\n/).some(line => WAKE.test(line))) {
+    if (own && !result?.deny && e.uuid && text.split(/\r?\n/).some(line => WAKE.test(line) || INLINE.test(line))) {
+      // Claude may wrap a plugin prompt in its own attribution text before storing it. Require
+      // our complete offered bytes on whole lines and our plugin origin, never a marker alone.
+      const matches = [...admissions].filter(([body]) => text === body || text.includes(`\n${body}\n`));
+      if (matches.length === 1) {
+        const admission = matches[0][1];
+        admission.uuid = e.uuid;
+        admission.resolve(e.uuid);
+        inlineRows.set(e.uuid, admission.frame.inline);
+      }
       wakeRows.add(e.uuid);
       $.ui.invalidate('ui.render');
     }
@@ -118,9 +224,10 @@ export function register(on) {
     if (!own && !wakeRows.has(e.requestId)) return next(e);
     // Some app versions include their attribution wrapper in the rendered text. Match only our
     // fixed wake line, and keep the full original available through the disclosure below.
-    if (!e.props.text.split(/\r?\n/).some(line => WAKE.test(line))) return next(e);
-    const id = e.props.text.split(/\r?\n/).map(line => WAKE.exec(line)?.[1]).find(Boolean);
-    const preview = id ? previews.get(id) : undefined;
+    if (!e.props.text.split(/\r?\n/).some(line => WAKE.test(line) || INLINE.test(line))) return next(e);
+    const id = e.props.text.split(/\r?\n/).map(line => (WAKE.exec(line) || INLINE.exec(line))?.[1]).find(Boolean);
+    const delivered = inlineRows.get(e.requestId);
+    const preview = delivered ? undefined : id ? previews.get(id) : undefined;
     const { Box, Button } = $.ui.resolve(e);
     const open = expanded.has(e.requestId);
     return Box({
@@ -128,7 +235,9 @@ export function register(on) {
       children: [
         Button({
           key: 'cotal-wake-details',
-          label: preview
+          label: delivered
+            ? `Cotal · ${delivered.count} message${delivered.count === 1 ? '' : 's'}${delivered.remaining ? ` · ${delivered.remaining} pending` : ''}  ${open ? '▾' : '›'}`
+            : preview
             ? `Cotal · ${preview.unread} unread  ${open ? '▾' : '›'}`
             : open ? 'Cotal · new message  ▾' : 'Cotal · new message  ›',
           plain: true,
@@ -153,7 +262,10 @@ export function register(on) {
     const result = await next(e);
     // The engine stamps the person's input. Peer deliveries, timers and another plugin's prompt
     // must not restart work after Stop. Desktop and SDK hosts submit their own input as sdk.
-    if (!result?.drop && ['composer', 'bridge', 'sdk'].includes(e.origin?.kind)) paused = false;
+    if (!result?.drop && ['composer', 'bridge', 'sdk'].includes(e.origin?.kind)) {
+      paused = false;
+      await resumeInline($);
+    }
     return result;
   });
   on('turn.start', async ($, e, next) => {
@@ -192,8 +304,12 @@ export function register(on) {
     if (e.agentId !== undefined) return completed;
     active = false;
     // Stop pauses both wake paths; only the host's next person-origin prompt resumes them.
-    if (e.isAborted) paused = true;
-    if (!paused && pending.size > 0) void submit($);
+    if (e.isAborted) {
+      paused = true;
+      for (const frame of offers.values()) await deferInline($, frame);
+      offers.clear();
+    }
+    if (!paused && (pending.size > 0 || offers.size > 0)) void submit($);
     return completed;
   });
   on('session.end', async ($, e, next) => {
@@ -202,6 +318,12 @@ export function register(on) {
     readerSession = undefined;
     nativeBinding = undefined;
     pending.clear();
+    offers.clear();
+    retries.clear();
+    admissions.clear();
+    inlineRows.clear();
+    wakeRows.clear();
+    expanded.clear();
     previews.clear();
     return next(e);
   });

@@ -17,6 +17,8 @@ import {
   eventPlaneArmed,
   hasIdentity,
   MeshAgent,
+  prepareInlineDelivery,
+  type GatewayConnection,
   startControlServer,
   registerCotalTools,
   feedbackLine,
@@ -49,8 +51,9 @@ const LOCAL =
 
 /** How a Claude Code conversation hears messages through its native hooks module. */
 const CODE_LISTENING =
-  "This plugin's native hooks module submits a Cotal-attributed notification when a message arrives: " +
-  'it begins with "Cotal:" and names the connection_id, and you read the message with cotal_inbox. ' +
+  "This plugin's native hooks module delivers Cotal-attributed incoming messages. " +
+  'A prompt beginning "Cotal: inline messages" contains complete messages; answer those without fetching them again. ' +
+  'A notification beginning "Cotal:" without complete messages names the connection_id; read those with cotal_inbox. ' +
   "cotal_connect reports whether its incoming-message reader is connected. Where it is not: " +
   GATEWAY_LISTENING;
 
@@ -71,6 +74,7 @@ async function serveLocal(desktop: boolean): Promise<void> {
   // children of the same host process, which names their private feed.
   const feed = desktop ? undefined : await openWakeFeed(process.ppid);
   feed?.onNative((event) => host.nativeEvent(event));
+  let rearm: (connection?: GatewayConnection, fireNow?: boolean) => void = () => {};
   const served = await serveGatewayStdio(host, {
     source: "claude-local",
     connectContext: !desktop,
@@ -78,12 +82,32 @@ async function serveLocal(desktop: boolean): Promise<void> {
       ? {
           instructions: `${LOCAL}${GATEWAY_CONNECTING} ${CODE_LISTENING}`,
           wake: {
-            signal: (c, preview) => feed.send(c.id, preview, host.sessionFor(c.id)),
-            attach: (rewake) => feed.onReader(rewake),
-            listening: () =>
-              feed.watched()
-                ? "The Cotal incoming-message reader is connected. New messages can start a turn, subject to Claude's Stop and organization policies."
-                : "Automatic incoming messages are unavailable in this session. Check that the Cotal plugin and its native hooks module are enabled; call cotal_wait to listen.",
+            signal(c, preview) {
+              const session = host.sessionFor(c.id);
+              if (session && feed.supportsInline(session)) {
+                const batch = prepareInlineDelivery(c.agent, {
+                  connectionId: c.id,
+                  fits: (payload) => feed.fitsInline(c.id, session, payload),
+                });
+                if (batch) {
+                  if (feed.sendInline(c.id, session, batch, (delivered) => queueMicrotask(() => rearm(c, delivered)), () => queueMicrotask(() => rearm(c)))) return true;
+                  batch.settle(false);
+                }
+              }
+              return feed.send(c.id, preview, session);
+            },
+            attach(rewake) {
+              rearm = rewake;
+              feed.onReader(() => rewake());
+            },
+            listening(c) {
+              const session = host.sessionFor(c.id);
+              if (!session || !feed.watched(session))
+                return "Automatic incoming messages are unavailable in this session. Check that the Cotal plugin and its native hooks module are enabled; call cotal_wait to listen.";
+              return feed.supportsInline(session)
+                ? "The Cotal incoming-message reader is connected with complete short-message delivery. New messages can start a turn, subject to Claude's Stop and organization policies."
+                : "The Cotal incoming-message reader is connected in notification-only mode. Read messages with cotal_inbox; reload the Cotal plugin to enable complete short-message delivery.";
+            },
           },
         }
       : { instructions: `${LOCAL}${GATEWAY_INSTRUCTIONS}` }),

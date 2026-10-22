@@ -51,8 +51,9 @@ interface UiNode { type: string; props: Record<string, unknown>; children?: unkn
 interface Api {
   plugin: { root: string; name: string };
   env: { get(name: string): Promise<string | undefined> };
+  clock: { sleep(ms: number): Promise<void> };
   fs: { read(path: string): Promise<string> };
-  process: { spawn(request: { argv: string[] }): Feed; run(argv: string[]): Promise<{ exitCode: number; stdout: string }> };
+  process: { spawn(request: { argv: string[] }): Feed; run(argv: string[], options?: { stdin?: string; timeoutMs?: number }): Promise<{ exitCode: number; stdout: string }> };
   prompt: { submit(input: { text: string; asUser?: boolean }): Promise<{ drop?: string }> };
   session: { id(): Promise<string>; append(input: { message: { type: string; content: Array<{ type: string; text: string }> } }): Promise<{ uuid?: string; deny?: string }> };
   ui: {
@@ -83,25 +84,39 @@ function fixture(managed = false) {
   const appended: Array<{ message: { type: string; content: Array<{ type: string; text: string }> } }> = [];
   const commands: string[][] = [];
   const relayed: string[][] = [];
+  const inlineOffers = new Map<string, Record<string, any>>();
+  const receipts: Array<Record<string, any>> = [];
+  let recordPrompt = true;
   let binding: Record<string, string> | undefined;
   let dropped = false;
   let denied = false;
   let reads = 0;
   const api: Api = {
     plugin: { root: "/cotal-plugin", name: "cotal" },
+    clock: { async sleep() {} },
     env: { async get(name) { return managed && name === "COTAL_NAME" ? "managed-seat" : undefined; } },
     fs: { async read(path) {
       reads++;
       assert.equal(path, "/cotal-plugin/dist/cli.json");
       return JSON.stringify({ argv: ["/node", "/cotal"] });
     } },
-    process: { spawn({ argv }) { commands.push(argv); return feed; }, async run(argv) {
+    process: { spawn({ argv }) { commands.push(argv); return feed; }, async run(argv, options) {
+      if (argv.includes("--native-delivery")) {
+        const value = JSON.parse(options?.stdin ?? "null");
+        assert(!argv.some((part) => part.includes(value.receipt)), "receipt capabilities never enter argv");
+        receipts.push(value);
+        return { exitCode: 0, stdout: JSON.stringify(value.action === "claim"
+          ? { ok: inlineOffers.has(value.receipt), frame: inlineOffers.get(value.receipt) }
+          : { ok: true }) };
+      }
       if (argv.includes("--native-binding")) return { exitCode: binding ? 0 : 1, stdout: binding ? JSON.stringify(binding) : "" };
       relayed.push(argv);
       return { exitCode: 0, stdout: "" };
     } },
     prompt: { async submit(input) {
       submitted.push(input);
+      if (!dropped && recordPrompt) await fire("session.append", { door: "prompt", uuid: `prompt-${submitted.length}`,
+        origin: { kind: "plugin", name: "cotal" }, message: { content: [{ type: "text", text: `The cotal plugin sent a message:\n${input.text}\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns.` }] } });
       return dropped ? { drop: "the session was stopped and nobody has sent input since" } : {};
     } },
     session: { async id() { return "native-session"; }, async append(input) {
@@ -136,7 +151,9 @@ function fixture(managed = false) {
     }
     return result ?? event;
   };
-  return { feed, submitted, appended, commands, relayed, fire, hooks, matchers,
+  return { feed, submitted, appended, commands, relayed, fire, hooks, matchers, receipts,
+    offer(frame: Record<string, any>) { inlineOffers.set(frame.inline.receipt, frame); feed.push(`Cotal inline delivery: ${JSON.stringify(frame)}\n`); },
+    noStoredPrompt: () => { recordPrompt = false; },
     bind: (value: Record<string, string>) => { binding = value; },
     reads: () => reads, drop: (value: boolean) => { dropped = value; }, deny: (value: boolean) => { denied = value; } };
 }
@@ -327,4 +344,63 @@ assert.equal(lifecycle.relayed.length, 1, "foreign sessions and subagents cannot
 await lifecycle.fire("session.end", { reason: "resume" });
 assert(lifecycle.feed.ended, "clear/resume ends the prior conversation reader");
 console.log("  ✓ explicit native session binding, prompt privacy and fork-context replacement");
+const inlineOffer = (receipt: string, session = "native-session") => ({
+  id: "inline-connection", route: "/private/feed.sock", inline: {
+    v: 1, receipt, session, count: 1, remaining: 0,
+    text: 'Cotal: inline messages for connection_id inline-connection.\n[DM from peer] Complete message',
+  },
+});
+const inlineIdle = fixture();
+await inlineIdle.fire("session.start");
+await until(() => inlineIdle.commands.length === 1);
+const full = inlineOffer("receipt-idle");
+inlineIdle.offer(full);
+await until(() => inlineIdle.receipts.some((value) => value.action === "commit"));
+assert.equal(inlineIdle.submitted[0]?.text, full.inline.text);
+assert.deepEqual(inlineIdle.receipts.map((value) => value.action), ["claim", "commit"]);
+assert.equal(inlineIdle.receipts[1]?.uuid, "prompt-1", "idle acceptance requires the stored own prompt UUID");
+assert(!JSON.stringify(inlineIdle.submitted).includes(full.inline.receipt));
+const inlineUi = await inlineIdle.fire("ui.render", { requestId: "prompt-1", props: { text: full.inline.text, origin: { kind: "sdk" } } }) as UiNode;
+assert.equal((inlineUi.props.children as UiNode[])[0]?.props.label, "Cotal · 1 message  ›");
+inlineIdle.offer(inlineOffer("receipt-next"));
+await until(() => inlineIdle.receipts.filter((value) => value.action === "commit").length === 2);
+await inlineIdle.fire("session.end");
+console.log("  ✓ idle full text commits only after its own stored row, with compact UI and no leaked receipt");
+
+const inlineBusy = fixture();
+await inlineBusy.fire("session.start");
+await until(() => inlineBusy.commands.length === 1);
+await inlineBusy.fire("turn.start");
+inlineBusy.offer(inlineOffer("receipt-busy"));
+await tick();
+assert.equal(inlineBusy.receipts.length, 0, "busy delivery waits for the main boundary");
+await inlineBusy.fire("tool.call");
+assert.equal(inlineBusy.appended[0]?.message.content[0]?.text, full.inline.text);
+assert.equal(inlineBusy.receipts.find((value) => value.action === "commit")?.uuid, "appended-1");
+await inlineBusy.fire("session.end");
+console.log("  ✓ busy complete text uses returned append UUID without protected-row interception");
+
+for (const missing of [false, true]) {
+  const refused = fixture();
+  if (missing) refused.noStoredPrompt(); else refused.drop(true);
+  await refused.fire("session.start");
+  await until(() => refused.commands.length === 1);
+  refused.offer(inlineOffer(missing ? "receipt-no-row" : "receipt-refused"));
+  await until(() => refused.receipts.some((value) => value.action === "reject"));
+  assert(!refused.receipts.some((value) => value.action === "commit"), "queued/refused/unrecorded submission is never committed");
+  await refused.fire("prompt.submit", { origin: { kind: "plugin", name: "other" } });
+  assert(!refused.receipts.some((value) => value.action === "retry"));
+  await refused.fire("prompt.submit", { origin: { kind: "composer" } });
+  assert(refused.receipts.some((value) => value.action === "retry"), "genuine input asks for a revalidated new offer, not a stale body");
+  await refused.fire("session.end");
+}
+const isolatedInline = fixture();
+await isolatedInline.fire("session.start");
+await until(() => isolatedInline.commands.length === 1);
+isolatedInline.offer(inlineOffer("foreign-receipt", "foreign-session"));
+await tick();
+assert.equal(isolatedInline.submitted.length, 0);
+assert.equal(isolatedInline.receipts.length, 0);
+await isolatedInline.fire("session.end");
+console.log("  ✓ refusal, missing stored-row proof, genuine-input resume and foreign-session exclusion");
 console.log("NATIVE WAKE TESTS PASSED");

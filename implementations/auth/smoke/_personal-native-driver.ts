@@ -70,7 +70,7 @@ export async function runPersonalNativeAcceptance(input: {
   const markers: string[] = [];
   let nativePrincipal: string | undefined;
   try {
-    prompt(`This is an isolated Cotal native acceptance test. Call mcp__cotal__cotal_connect with name ${name}. Do not call cotal_wait. Once connected, reply READY_NATIVE and its connection_id. On a Cotal wake, read cotal_inbox using your own connection_id and follow the test message. Never inspect environment variables or login files.`);
+    prompt(`This is an isolated Cotal native acceptance test. Call mcp__cotal__cotal_connect with name ${name}. Do not call cotal_wait. Once connected, reply READY_NATIVE and its connection_id. A Cotal inline delivery contains the complete message: follow it without calling cotal_inbox. Only notification-only or explicitly incomplete deliveries require an inbox read using your own connection_id. Never inspect environment variables or login files.`);
     await until(() => assistantSaid("READY_NATIVE") && input.peer.roster().some((row) => row.card.name === name), "native connect");
     const native = input.peer.roster().find((row) => row.card.name === name)!;
     assert(native.card.id, "native connection has no actual principal");
@@ -81,10 +81,30 @@ export async function runPersonalNativeAcceptance(input: {
     const idleAt = sequence;
     await input.sender.unicast(native.card.id, `Reply with ${idle} after reading this message.`);
     await until(() => assistantSaid(idle, idleAt), "actual idle wake and inbox receipt");
-    passed.push("native-signed-in-connect-and-idle-dm");
-    console.log("  ✓ intended native CLI connects to the signed-in fixture and wakes idle for a real DM");
+    assert.equal(toolCalls("mcp__cotal__cotal_inbox", idleAt).length, 0, "complete idle delivery needs no inbox call");
+    passed.push("native-signed-in-connect-and-idle-inline-dm");
+    console.log("  ✓ intended native CLI connects and handles a complete idle DM without an inbox call");
+    const second = `NATIVE_SECOND_ACK_${randomUUID().replaceAll("-", "")}`;
+    markers.push(second);
+    const secondAt = sequence;
+    await input.sender.unicast(native.card.id, `Reply with ${second}. Do not call cotal_inbox for this complete inline message.`);
+    await until(() => assistantSaid(second, secondAt), "second inline wake after automatic drain");
+    assert.equal(toolCalls("mcp__cotal__cotal_inbox", secondAt).length, 0);
+    passed.push("second-inline-delivery-rearms-without-inbox");
+    const contextsAt = sequence;
+    const contextMarkers = [0, 1].map(() => `NATIVE_CONTEXT_ACK_${randomUUID().replaceAll("-", "")}`);
+    markers.push(...contextMarkers);
+    const requests = await Promise.all(contextMarkers.map((marker) => input.sender.unicast(native.card.id!,
+      `Send a DM back to fixture_sender containing ${marker}, with replyTo set to this message_id. Then output ${marker}.`,
+      { contextId: randomUUID() })));
+    await until(() => contextMarkers.every((marker) => assistantSaid(marker, contextsAt)), "two distinct reply contexts");
+    const replies = toolCalls("mcp__cotal__cotal_dm", contextsAt);
+    assert(requests.every((request, index) => replies.some((reply) => reply.input.replyTo === request.id && reply.input.text.includes(contextMarkers[index]))),
+      "inline wire IDs must disambiguate two outstanding peer contexts");
+    assert.equal(toolCalls("mcp__cotal__cotal_inbox", contextsAt).length, 0);
+    passed.push("inline-replies-preserve-two-peer-contexts");
     const busyAt = sequence;
-    prompt("Run Bash with command sleep 3 six times sequentially, never in parallel or combined. Between tools, if Cotal notifies you, immediately read cotal_inbox and output the requested marker before continuing the remaining sleeps. Begin with BUSY_NATIVE_STARTED and end with BUSY_NATIVE_FINISHED after all six sleeps.");
+    prompt("Run Bash with command sleep 3 six times sequentially, never in parallel or combined. Between tools, immediately act on complete inline Cotal messages and output the requested marker before continuing the remaining sleeps. Do not fetch complete inline messages again with cotal_inbox. Begin with BUSY_NATIVE_STARTED and end with BUSY_NATIVE_FINISHED after all six sleeps.");
     await until(() => toolCalls("Bash", busyAt).length >= 1, "first deliberately unfinished native tool");
     const busyMarker = `NATIVE_BUSY_ACK_${randomUUID().replaceAll("-", "")}`;
     markers.push(busyMarker);
@@ -92,10 +112,17 @@ export async function runPersonalNativeAcceptance(input: {
     await input.sender.unicast(native.card.id, `Output ${busyMarker} now, while your sleep sequence is still unfinished. Then finish your remaining work.`);
     await until(() => assistantSaid(busyMarker, busyDeliveredAt), "actual busy-boundary wake");
     assert(!assistantSaid("BUSY_NATIVE_FINISHED", busyAt), "busy message was postponed until the original work finished");
-    assert(toolCalls("mcp__cotal__cotal_inbox", busyDeliveredAt).length > 0, "busy acknowledgement did not follow a real inbox read");
+    assert.equal(toolCalls("mcp__cotal__cotal_inbox", busyDeliveredAt).length, 0, "complete busy delivery needs no inbox call");
     passed.push("busy-dm-before-original-turn-finished");
     console.log("  ✓ a real DM reaches the native model before its unfinished multi-step turn ends");
     await until(() => assistantSaid("BUSY_NATIVE_FINISHED", busyAt), "completion of the original native work");
+    const longAt = sequence;
+    const longMarker = `NATIVE_LONG_ACK_${randomUUID().replaceAll("-", "")}`;
+    markers.push(longMarker);
+    await input.sender.unicast(native.card.id, `This message deliberately exceeds inline size. ${"Long-message fixture content. ".repeat(100)}\nRead through the inbox, then output ${longMarker}.`);
+    await until(() => assistantSaid(longMarker, longAt), "long message read through inbox");
+    assert(toolCalls("mcp__cotal__cotal_inbox", longAt).length > 0, "oversized messages remain queued until an actual inbox read");
+    passed.push("oversized-message-keeps-inbox-path");
     const stopAt = sequence;
     prompt("Run sleep 10 using Bash, then reply STOP_TEST_FINISHED. Do not start any other work yet.");
     await until(() => toolCalls("Bash", stopAt).length > 0, "native stop fixture tool");
@@ -107,7 +134,7 @@ export async function runPersonalNativeAcceptance(input: {
     await input.sender.unicast(native.card.id, `After the person resumes you, output ${stopMarker}.`);
     await wait(3_000);
     assert(!assistantSaid(stopMarker, stoppedAt), "peer mail restarted a genuinely interrupted native session");
-    prompt("Resume now. Read your waiting Cotal inbox and output its requested test marker.");
+    prompt("Resume now. Handle the waiting Cotal message and output its requested test marker. Complete inline deliveries do not need another inbox read.");
     await until(() => assistantSaid(stopMarker, stoppedAt), "retained mail after genuine test input");
     passed.push("explicit-interrupt-and-genuine-input-resume");
     console.log("  ✓ explicit native interruption retains mail without autonomous restart, then resumes on input");

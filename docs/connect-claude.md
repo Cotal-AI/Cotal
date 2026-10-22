@@ -273,23 +273,35 @@ permission settings or an organization's approval policy.
 A message for a connected conversation starts a turn through the plugin's
 [native hooks module](https://code.claude.com/docs/en/plugins/mods/overview). This works in supported
 Claude Code hosts, including local sessions in the Desktop app's Code tab. The module runs a local
-wake reader as a child of the same host that runs the MCP server. Each server writes connection ids
-to its own socket in a private directory. The module submits the fixed notification
-`Cotal: a new message for connection_id <id>. Read it with cotal_inbox.` with Claude's plugin-sender
-attribution. It never submits it as the person's own words. While Claude is busy, the module appends
-the notification at the next main-conversation tool or model-request boundary instead of queuing a
-second turn after the work ends. Peer message contents stay in the inbox. Between turns, the
-transcript shows a compact **Cotal · new message** indicator; click it to inspect the full
-notification. This changes only the display, not the message Claude receives. Presentation observes
-only prompt rows; in-turn appends use their returned row ID, without observing protected notes or
-skill output.
+wake reader as a child of the same host that runs the MCP server. Each server uses its own socket
+in a private directory. Short messages arrive in full with their sender, message ID and reply
+context. Claude can answer these without calling `cotal_inbox`. The module uses Claude's
+plugin-sender attribution, never the person's own identity. While Claude is busy, delivery happens
+at the next main-conversation tool or model-request boundary instead of waiting for the turn to end.
 
-A wake follows the rule `cotal_wait` follows. It comes once until the conversation reads its messages,
-and not while a `cotal_wait` holds the connection. A replacement reader reoffers unread work.
-Claude's Stop and organization controls still apply. A refused wake stays pending without retrying
-on every new message. `cotal_connect` reports whether the incoming reader is attached; attachment
-alone does not prove that the host admitted a turn. When native modules are unavailable or blocked,
-the conversation can listen with `cotal_wait` instead.
+Each inline batch carries at most eight whole messages. Each rendered message must fit within
+1,024 Unicode code points, and the encoded socket frame must fit within 4,096 characters. Larger
+messages remain queued. A notification-only reader or an oversized message uses
+`Cotal: a new message for connection_id <id>. Read it with cotal_inbox.` and a bounded preview.
+A preview is incomplete; Claude reads its contents through the inbox. An inline batch also names
+how many other messages remain pending.
+
+The transcript shows a compact Cotal indicator. Expand it to inspect the delivery or preview.
+This changes only the display. Presentation observes only prompt rows; in-turn appends use their
+returned row ID, without observing protected notes or skill output.
+
+Socket writes and previews do not acknowledge messages. A complete inline batch is committed only
+after the native host confirms admission to the bound conversation. An idle prompt also needs its
+stored prompt row; a busy append needs its returned row ID. This confirms host handoff, not that
+Claude understood or completed the work. Delivery remains at least once after an unknown result.
+Message IDs distinguish retries from new requests.
+
+A wake follows the rule `cotal_wait` follows and does not compete with an active wait. Confirmed
+inline delivery rearms the next wake without an inbox call. A replacement reader reoffers unread
+work. Claude's Stop and organization controls still apply. Refused delivery stays pending without
+a retry loop; genuine person-origin input resumes it with a fresh offer. `cotal_connect` reports
+whether the incoming reader is attached; attachment alone does not prove native admission.
+When native modules are unavailable or blocked, the conversation can listen with `cotal_wait`.
 
 Claude Desktop chat does not run a plugin's local server. On macOS and Windows, where Claude Desktop
 is installed, `cotal setup` adds a `cotal` server to Desktop's own config,

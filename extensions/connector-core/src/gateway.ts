@@ -139,15 +139,16 @@ export interface GatewayOptions {
 /** How an embedder wakes its client when a connection has something to read. */
 export interface GatewayWake {
   /** Called when a connection gets something that ends a `cotal_wait` while none holds it, and
-   *  not again for that connection until a `cotal_inbox` or `cotal_wait` reads its messages.
-   *  Return false when no client heard it, so the next rewake signals it again. */
+   *  not again until a read or explicit settlement rearms that connection. A true return means
+   *  a reader heard the signal, not that content was admitted or acknowledged. */
   signal(connection: GatewayConnection, preview: RenderedInboxPreview): boolean;
   /** What `cotal_connect` adds about listening, read when the connection opens: whether this
    *  client will be woken. */
-  listening(): string;
-  /** Called once with the rewake: call it when a client starts listening, and every connection
-   *  with something to read that no client heard about is signalled. */
-  attach?(rewake: () => void): void;
+  listening(connection: GatewayConnection): string;
+  /** Called once with the rearm callback. With no connection, reoffer unread work to a replacement
+   *  reader. A settled inline handoff rearms only its own connection; false clears its latch without
+   *  immediately retrying a refused delivery. */
+  attach?(rewake: (connection?: GatewayConnection, fireNow?: boolean) => void): void;
 }
 
 /** The names `cotal_connect` tries for `base`, in order. */
@@ -297,9 +298,10 @@ export function registerCotalGatewayTools(
   // check for each watched connection, which the rewake runs again.
   const signalled = new WeakSet<MeshAgent>();
   const holding = new WeakMap<MeshAgent, number>();
-  const watched = new Set<() => void>();
-  wake?.attach?.(() => {
-    for (const fire of watched) fire();
+  const watched = new Map<GatewayConnection, (fireNow?: boolean) => void>();
+  wake?.attach?.((connection, fireNow) => {
+    if (connection) watched.get(connection)?.(fireNow);
+    else for (const fire of watched.values()) fire(fireNow);
   });
   const watch = (c: GatewayConnection) => {
     if (!wake) return;
@@ -309,16 +311,16 @@ export function registerCotalGatewayTools(
       if (c.agent.stopping || signalled.has(c.agent) || (holding.get(c.agent) ?? 0) > 0 || wakeCount(c.agent) === 0) return;
       if (wake.signal(c, renderInboxPreview(c.agent.inboxSnapshot()))) signalled.add(c.agent);
     };
-    const replay = () => {
-      // A previous reader may have exited before its client started a turn.
+    const replay = (fireNow = true) => {
+      // A previous reader may have exited, or an inline handoff has settled.
       signalled.delete(c.agent);
-      fire();
+      if (fireNow) fire();
     };
-    watched.add(replay);
+    watched.set(c, replay);
     c.agent.on("incoming", fire);
     c.agent.on("mention-wake", fire);
     c.agent.once("stopping", () => {
-      watched.delete(replay);
+      watched.delete(c);
       c.agent.off("incoming", fire);
       c.agent.off("mention-wake", fire);
     });
@@ -357,7 +359,7 @@ export function registerCotalGatewayTools(
           const c = await host.open(account, candidate, "context" in input && typeof input.context === "string" ? input.context : undefined);
           watch(c);
           const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
-          const listening = wake ? `\n${wake.listening()}` : "";
+          const listening = wake ? `\n${wake.listening(c)}` : "";
           return toContent({
             text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.${listening}`,
           });
