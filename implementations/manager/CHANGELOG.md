@@ -1,5 +1,16 @@
 # @cotal-ai/manager
 
+## 0.92.2
+
+### Patch Changes
+
+- d454988: A user-auth seat's bearer command now names the CLI entry file that the `cotal` bin link resolved to, instead of the link. Before, an install that replaced the link with a launcher Node cannot load cut every running seat off the mesh at its next bearer refresh. Running the get.cotal.ai installer over an `npm i -g` install is one such install: it writes a shell script over `~/.local/bin/cotal`.
+- Updated dependencies [43a5715]
+- Updated dependencies [736207e]
+  - @cotal-ai/core@0.92.2
+  - @cotal-ai/workspace@0.92.2
+  - @cotal-ai/seat@0.92.2
+
 ## 0.92.1
 
 ### Patch Changes

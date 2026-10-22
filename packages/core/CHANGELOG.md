@@ -1,5 +1,12 @@
 # @cotal-ai/core
 
+## 0.92.2
+
+### Patch Changes
+
+- 43a5715: The membership feed no longer warns "CONNZ sweep omitted our own rw connection" when the sweep ran while its own data connection was reconnecting. Adopting a renewed rw credential reconnects that connection in place, and a sweep inside the reconnect cannot see it. That sweep still keeps the last membership, and the connection's return polls again. The warning remains for a sweep that misses the connection while it is up.
+- 736207e: `cotal spawn --foreground` on a remote user-auth mesh with no sign-in now exits 2 with `AUTH_REQUIRED`, before any request is sent. Before, it was reported as an unknown outcome (`OPERATION_UNKNOWN`, exit 3), which told a script the agent might have been provisioned. Any failure after the provisioning request, an endpoint 401 or 403 included, is still an unknown outcome.
+
 ## 0.92.1
 
 ### Patch Changes
