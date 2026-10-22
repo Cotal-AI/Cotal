@@ -2,14 +2,16 @@
  *  run against a real DOM. Agent text is untrusted, so what matters is what the sanitizer leaves:
  *  raw HTML is stripped, a link can only lead to http(s), mailto, a relative path or an anchor, every
  *  link opens in a new tab with no opener and no referrer, and the Markdown a message actually uses
- *  (lists, code, quotes, headings) survives. Each cell renders a source and reads the HTML.
+ *  (lists, code, quotes, headings) survives. Each cell renders a source and reads the HTML. The last
+ *  section splits a source at its fenced code with `markdownSegments`, which hands each fence back as
+ *  raw text for the code block to draw.
  *
  *  The DOM is jsdom, DOMPurify's own test environment. It is installed by `dom-globals.ts` after the
  *  first cell, because that cell needs the process WITHOUT a usable DOM: it proves the renderer
  *  refuses to run there instead of handing back the HTML unsanitized. */
 import { strict as assert } from "node:assert";
 import { JSDOM } from "jsdom";
-import { renderMarkdown, sanitizeHtml } from "../client/src/lib/md.js";
+import { markdownSegments, renderMarkdown, sanitizeHtml } from "../client/src/lib/md.js";
 
 let n = 0;
 const ok = (name: string, cond: unknown, detail?: unknown) => {
@@ -116,6 +118,24 @@ await import("./dom-globals.js");
   const once = CORPUS.map((src) => renderMarkdown(src));
   const changed = once.filter((html) => sanitizeHtml(html) !== html);
   ok("5.1 sanitizing the rendered output a second time changes nothing", changed.length === 0, changed);
+}
+
+// ── 6. Splitting at fenced code ──────────────────────────────────────────────────────────────────
+{
+  const src = "Intro **bold**\n\n```js\nconst a = '<b>';\n```\n\nBetween <img src=x onerror=alert(1)>\n\n```\nplain & simple\n```\n\nEnd";
+  const parts = markdownSegments(src);
+  ok("6.1 markdownSegments splits prose and fences in order, each fence with the first word of its info string",
+    JSON.stringify(parts.map((p) => (p.kind === "code" ? `code:${p.lang}` : p.kind))) === JSON.stringify(["html", "code:js", "html", "code:", "html"]), parts);
+  const html = parts.flatMap((p) => (p.kind === "html" ? [p.html] : []));
+  const want = ["Intro **bold**", "Between <img src=x onerror=alert(1)>", "End"].map(renderMarkdown);
+  ok("6.2 each prose piece is renderMarkdown of its own source, so it is sanitized",
+    JSON.stringify(html) === JSON.stringify(want) && html.every((h) => !/<img|onerror/.test(h)), { html, want });
+  const code = parts.flatMap((p) => (p.kind === "code" ? [p.text] : []));
+  ok("6.3 a fence's text is raw: not escaped and not sanitized as HTML",
+    JSON.stringify(code) === JSON.stringify(["const a = '<b>';", "plain & simple"]), code);
+  const open = markdownSegments("Run:\n```sh title=x\nnode a.mjs\nnode b.mjs");
+  ok("6.4 a fence with no closing line runs to the end of the source and keeps its language",
+    JSON.stringify(open) === JSON.stringify([{ kind: "html", html: renderMarkdown("Run:") }, { kind: "code", lang: "sh", text: "node a.mjs\nnode b.mjs" }]), open);
 }
 
 const { closeDom } = await import("./dom-globals.js");

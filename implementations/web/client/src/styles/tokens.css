@@ -33,6 +33,13 @@
   --muted: var(--soft); --secondary: var(--soft); --muted-foreground: var(--dim);
   --border: var(--line); --input: var(--card-line); --ring: var(--focus); --accent: var(--hover);
   --primary-foreground: var(--primary-ink); --destructive: var(--red-ink); --popover: var(--card);
+  /* Shiki's CSS-variables theme (lib/highlight.ts) for code in an agent's prose, each from one of our
+     inks, so Night follows. */
+  --shiki-foreground: var(--ink); --shiki-token-keyword: var(--multi-ink);
+  --shiki-token-string: var(--any-ink); --shiki-token-string-expression: var(--any-ink);
+  --shiki-token-comment: var(--dim); --shiki-token-constant: var(--uni-ink);
+  --shiki-token-function: var(--ink); --shiki-token-parameter: var(--ink);
+  --shiki-token-punctuation: var(--ink); --shiki-token-link: var(--ink);
 }
 
 :root[data-theme="light"] { color-scheme: light; }

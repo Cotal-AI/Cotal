@@ -8,18 +8,10 @@
     {
       "name": "S1 a text item no longer ends a tool group, so a call after a paragraph joins the calls before it and the paragraph reads as if it came after both",
       "file": "implementations/web/client/src/lib/session.ts",
-      "find": "    group = undefined;\n    steps.push({ ...s.item, live: s.live });",
-      "replace": "    if (s.item.kind !== \"said\") group = undefined;\n    steps.push({ ...s.item, live: s.live });",
+      "find": "    tools = undefined;\n    (turn?.steps ?? items).push(step);",
+      "replace": "    if (step.kind !== \"said\") tools = undefined;\n    (turn?.steps ?? items).push(step);",
       "expectRed": "grouping: a turn by a prompt, a prompt, a said paragraph, two calls, text, one call and a turn end give turn(prompt) prompt said tools(2) said tools(1) turnEnd",
       "cell": "grouping: a turn by a prompt, a prompt, a said paragraph, two calls, text, one call and a turn end give turn(prompt) prompt said tools(2) said tools(1) turnEnd"
-    },
-    {
-      "name": "S2 the inbox rule drops its at-least-two test, so one inbox read with a Bash call reads \"Checked the inbox 1 times\" and hides the Bash name",
-      "file": "implementations/web/client/src/lib/session.ts",
-      "find": "if (inbox >= 2 && calls.every(",
-      "replace": "if (calls.every(",
-      "expectRed": "Bash, cotal_inbox is \"2 tool calls\" with \"Bash, cotal_inbox\"",
-      "cell": "Bash, cotal_inbox is \"2 tool calls\" with \"Bash, cotal_inbox\""
     },
     {
       "name": "S3 the tool name falls back on falsiness, so an empty toolCallName reads ? and the fold disagrees with both renderers on absent versus empty",

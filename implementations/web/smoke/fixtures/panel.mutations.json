@@ -936,8 +936,8 @@
     {
       "name": "PS3 the section draws every step, not the newest six",
       "file": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
-      "find": ".slice(-PREVIEW_STEPS)",
-      "replace": "",
+      "find": "recentWork(foldWork(frames, posts), PREVIEW_STEPS)",
+      "replace": "foldWork(frames, posts)",
       "expectRed": "8.3 the section draws at most six steps, the newest, then the footer",
       "cell": "8.3 the section draws at most six steps, the newest, then the footer"
     },

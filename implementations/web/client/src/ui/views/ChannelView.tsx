@@ -144,7 +144,7 @@ export function usePinnedScroll(list: string, last: string | undefined) {
  *    where the reader left it.
  *  - Members are `channelMembers`: the broker's when its feed is authoritative, else who posted here.
  *  - The working line names the first member of this channel, in that order, whose status is
- *    working, with its status text from `statusLabel`. Unknown progress draws no moving dots.
+ *    working, with its status text from `statusLabel`.
  *  - The dock holds the card for the first waiting agent this browser has not dismissed, and the
  *    composer under it once `/api/meta` has said what the dashboard can post as. With neither it is
  *    not drawn at all. The operator's posts the list does not hold yet follow the messages.
@@ -227,7 +227,6 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
               <Avatar vendor={working.harness} status={working.status} size={18} dot={false} badge={badgeOf(working.id)} />
               <b>{working.name}</b>
               {` is ${statusLabel(working)} `}
-              {working.progress?.kind !== "unknown" && <span className="ui-dots"><i /><i /><i /></span>}
               {working.activity && <span>{working.activity}</span>}
             </div>
           )}

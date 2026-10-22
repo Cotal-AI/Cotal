@@ -1,6 +1,5 @@
 // An agent's work as the dashboard draws it: its AG-UI frames and its own verified posts and DMs,
 // folded into turns that hold steps (`foldWork`), and the words and durations each part shows.
-// `foldSession` is the older flat list the session view still draws.
 //
 // The third reader of the frame vocabulary. `aguiFrame.ts` (this client) and connector-core's
 // `agui-render.ts` draw a frame as text lines; this folds the same events into items a view lays
@@ -50,20 +49,6 @@ export interface ToolCall {
   failed?: boolean;
   live: boolean;
 }
-
-export type SessionItem =
-  | { kind: "turn"; key: string; ts?: number; source?: TurnSource }
-  | { kind: "prompt"; key: string; text: string; cut: boolean }
-  | { kind: "said"; key: string; text: string; cut: boolean }
-  | { kind: "tools"; key: string; calls: ToolCall[] }
-  | { kind: "turnEnd"; key: string; ts?: number }
-  | { kind: "runError"; key: string; ts?: number }
-  | { kind: "reasoning"; key: string; text: string; cut: boolean }
-  | { kind: "post"; key: string; channel: string; msg: CotalMessage }
-  | { kind: "unknown"; key: string; label: string; ts?: number };
-/** Every key is stable across a re-fold of the same input, and an item whose frames all arrived live
- *  carries live: true (for the rise animation). */
-export type SessionStep = SessionItem & { live: boolean };
 
 /** One step inside a turn, or loose before the first RUN_STARTED the window holds. A `post` is a
  *  channel post (`channel` set) or a DM (`to` set). Keys are stable across re-folds, and `live` is true
@@ -167,19 +152,6 @@ export function toolKind(shortName: string): ToolKind {
   return KINDS.get(shortName) ?? "other";
 }
 
-/** The group's label and its names slot: "Checked the inbox N times" with "M tool calls" when every
- *  call is cotal_inbox or Bash and at least two are cotal_inbox; otherwise "M tool calls" (or
- *  "1 tool call") with the short names joined by ", " in call order. */
-export function toolGroupLabel(calls: readonly ToolCall[]): { label: string; names: string } {
-  const count = calls.length === 1 ? "1 tool call" : `${calls.length} tool calls`;
-  const inbox = calls.filter((c) => c.name === "cotal_inbox").length;
-  // Only the inbox calls are named: Bash's command (often a `sleep`) is not on the wire.
-  if (inbox >= 2 && calls.every((c) => c.name === "cotal_inbox" || c.name === "Bash")) {
-    return { label: `Checked the inbox ${inbox} times`, names: count };
-  }
-  return { label: count, names: calls.map((c) => c.name).join(", ") };
-}
-
 /** The roster id an event channel names, `events.<owner>.<actor>` to `<owner>.<actor>`, or undefined.
  *  Both tokens are [A-Za-z0-9_]+, as core's `eventChannelPrincipal` requires; restated because the
  *  client cannot import core. */
@@ -210,17 +182,25 @@ function turnSource(e: Wire): TurnSource | undefined {
   return raw === undefined ? undefined : SOURCES.get(raw);
 }
 
+/** A frame step before the fold nests it: a turn's start or end, a run error, a stream, or an event
+ *  it does not know. */
+type FlatItem =
+  | { kind: "turn"; key: string; ts?: number; source?: TurnSource }
+  | { kind: "turnEnd" | "runError"; key: string; ts?: number }
+  | { kind: "said" | "prompt" | "reasoning"; key: string; text: string; cut: boolean }
+  | { kind: "unknown"; key: string; label: string; ts?: number };
+
 /** One step before the posts are merged and the calls grouped. `at` is its time for the merge, and
  *  `live` whether the frames it came from all arrived live. */
 type Flat =
-  | { item: SessionItem; at?: number; live: boolean }
+  | { item: FlatItem; at?: number; live: boolean }
   | { call: ToolCall; at?: number; live: boolean };
 
 /** A stream being accumulated: its text, the role its START gave, the key of the event that opened
  *  it, the time of the last event that touched it, and whether every frame it came from was live. */
 interface Stream { text: string; user: boolean; key: string; at?: number; live: boolean }
 
-/** The frames as flat steps, in the order both folds draw them, and whether any well-formed tool
+/** The frames as flat steps, in the order the fold draws them, and whether any well-formed tool
  *  result marker was held.
  *
  *  Text and reasoning accumulate by `messageId` and land where their END lands, as the renderers
@@ -393,34 +373,6 @@ function mergeByTime<T extends { at?: number }>(flat: readonly T[], ordered: rea
   return merged;
 }
 
-/** Fold frames and channel posts into the flat steps the session view draws, oldest first: a turn
- *  line, its steps and its end line, each a step. Posts merge by time. Calls then group: a call joins
- *  the calls right before it, and any other step (text, a post, a turn line) ends the group. */
-export function foldSession(frames: readonly SessionFrame[], posts: readonly StoredMessage[]): SessionStep[] {
-  const ordered = postsByTime(posts, (m) => typeof m.channel === "string")
-    .map(({ msg, at }): Flat => ({ item: { kind: "post", key: `post:${msg.id}`, channel: msg.channel as string, msg }, at, live: true }));
-  const merged = mergeByTime(flatten(frames).flat, ordered);
-
-  // Calls group with the calls right before them; anything else ends the group.
-  const steps: SessionStep[] = [];
-  let group: (SessionStep & { kind: "tools" }) | undefined;
-  for (const s of merged) {
-    if ("call" in s) {
-      if (group !== undefined) {
-        group.calls.push(s.call);
-        group.live = group.live && s.live;
-      } else {
-        group = { kind: "tools", key: s.call.key, calls: [s.call], live: s.live };
-        steps.push(group);
-      }
-      continue;
-    }
-    group = undefined;
-    steps.push({ ...s.item, live: s.live });
-  }
-  return steps;
-}
-
 type WorkFlat = Flat | { post: WorkStep & { kind: "post" }; at?: number };
 
 /** Fold frames, channel posts and DMs into turns holding their steps, oldest first.
@@ -497,10 +449,6 @@ export function foldWork(frames: readonly SessionFrame[], posts: readonly Stored
         break;
       case "unknown":
         place({ ...it, live: s.live });
-        break;
-      // `flatten` yields neither: calls come as `call`, and posts merge in above.
-      case "tools":
-      case "post":
         break;
     }
   }

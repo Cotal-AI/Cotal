@@ -1,4 +1,4 @@
-import { renderMarkdown } from "../../lib/md.js";
+import { Prose } from "../work/Prose.tsx";
 
 /** A stream with no END, shown with the trailing " …" the renderers add. For plain text. */
 export const withCut = (text: string, cut: boolean): string => (cut ? `${text} …` : text);
@@ -15,8 +15,9 @@ export function markdownCut(text: string, cut: boolean): string {
   return open ? `${text}\n\`\`\`\n …` : `${text} …`;
 }
 
-/** The agent's prose (mock S, `ui-said`), whole paragraphs through the sanitized Markdown. The panel
- *  clamps it to three lines from its `ui-lt` container in CSS, so the part itself has no compact form. */
-export function SaidBlock({ text, cut }: { text: string; cut: boolean }) {
-  return <div className="ui-said" dangerouslySetInnerHTML={{ __html: renderMarkdown(markdownCut(text, cut)) }} />;
+/** The agent's prose (mock B1, `ox-said`), whole paragraphs through `Prose`, with the trailing " …"
+ *  when its stream was cut. The panel (`compact`) clamps it to three lines in CSS rather than with
+ *  Show more. */
+export function SaidBlock({ text, cut, compact = false }: { text: string; cut: boolean; compact?: boolean }) {
+  return <Prose className="ox-said" src={markdownCut(text, cut)} clamp={!compact} />;
 }

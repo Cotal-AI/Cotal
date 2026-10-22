@@ -27,9 +27,9 @@
     },
     {
       "name": "SV3 every step new to the list rises in, history included",
-      "file": "implementations/web/client/src/ui/session/SessionList.tsx",
-      "find": "return (step) => now !== undefined && (now.rising.has(step.key) || (step.live && !now.known.has(step.key)));",
-      "replace": "return (step) => now !== undefined && (now.rising.has(step.key) || !now.known.has(step.key));",
+      "file": "implementations/web/client/src/ui/work/WorkList.tsx",
+      "find": "return (item) => now !== undefined && (now.rising.has(item.key) || (item.live && !now.known.has(item.key)));",
+      "replace": "return (item) => item.live && (now === undefined || now.rising.has(item.key) || !now.known.has(item.key));",
       "expectRed": "8.1 steps a history read adds after mount carry no ui-in, nor do the steps of the first paint",
       "cell": "8.1 steps a history read adds after mount carry no ui-in, nor do the steps of the first paint"
     },
@@ -90,12 +90,12 @@
       "cell": "7.2 arriving while the read is in flight waits for it, scrolls to the post after the pin, and stops following"
     },
     {
-      "name": "SV11 a group that a joining call makes appears at once",
-      "file": "implementations/web/client/src/ui/session/ToolGroup.tsx",
-      "find": "<ToolGroup calls={calls} compact={compact} className={fade} />",
-      "replace": "<ToolGroup calls={calls} compact={compact} />",
-      "expectRed": "8.3 a call that joins a single one fades the new group in, and a group there at first paint does not fade",
-      "cell": "8.3 a call that joins a single one fades the new group in, and a group there at first paint does not fade"
+      "name": "SV11 a run that folds into a group appears at once",
+      "file": "implementations/web/client/src/ui/work/Step.tsx",
+      "find": "<ToolGroup key=\"group\" calls={step.calls} at={at} toolStatus={toolStatus} className={fade} />",
+      "replace": "<ToolGroup key=\"group\" calls={step.calls} at={at} toolStatus={toolStatus} />",
+      "expectRed": "8.3 a run of calls that ends folds into a group that fades in, and a group there at first paint does not fade",
+      "cell": "8.3 a run of calls that ends folds into a group that fades in, and a group there at first paint does not fade"
     },
     {
       "name": "SV12 only a channel is remembered as the place to go back to",

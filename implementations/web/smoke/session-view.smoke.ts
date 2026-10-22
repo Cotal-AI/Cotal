@@ -3,7 +3,7 @@
  *
  *  Section 1 pairs `openSession` with `closeSession`. Section 2 renders every state's words. Section 3
  *  is the plane note, section 4 Load earlier and the cap, section 5 the composer, section 6 the Live
- *  chip, section 7 the arrival at a message, and section 8 which steps rise or fade in. Section 9
+ *  chip, section 7 the arrival at a message, and section 8 which steps rise, fade or fold in. Section 9
  *  mounts `App` with a fake address to read where the crumb goes back to. Section 10 mounts `Shell`
  *  to hold that the Agent tab keeps a session open only while an open panel shows it.
  *
@@ -126,7 +126,7 @@ const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => Ses
   const { root, m } = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({ load: "loading" }) } });
   const busy = root.querySelector('.ui-col[aria-busy="true"]');
   ok("2.1 loading draws the skeleton rows, busy, under the real header",
-    busy !== null && all(busy, ".ui-skel").length === 8 && text(root.querySelector(".ui-bar h1")) === "engine" && root.querySelector(".ui-sess") === null,
+    busy !== null && all(busy, ".ui-skel").length === 8 && text(root.querySelector(".ui-bar h1")) === "engine" && root.querySelector(".ox-work") === null,
     root.innerHTML.slice(0, 400));
   await m.unmount();
 }
@@ -168,7 +168,7 @@ const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => Ses
   const col = root.querySelector(".ui-scroll .ui-col");
   const kids = [...(col?.children ?? [])] as HTMLElement[];
   const line = kids.findIndex((k) => k.classList.contains("ui-plane") && text(k).startsWith("engine's session didn't load"));
-  const list = kids.findIndex((k) => k.classList.contains("ui-sess"));
+  const list = kids.findIndex((k) => k.classList.contains("ox-work"));
   ok("2.4 failed with frames held keeps the list and says it didn't load above it",
     line !== -1 && list > line && text(kids[list]).includes("Hello from before") && root.querySelector(".ui-sess-empty") === null,
     { line, list, html: col?.innerHTML.slice(0, 300) });
@@ -178,7 +178,7 @@ const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => Ses
   const { root, m } = await open({ roster: [entry("idle", "off")], sessions: { [ENGINE]: session({ posts: [posted("m-1", "Plan: two-player chess")] }) } });
   const notes = all(root, ".ui-plane").map(text);
   same("2.5 with the plane off the view says so and shows only the agent's posts",
-    { notes, post: text(root.querySelector(".ui-post .ui-post-h span")), body: text(root.querySelector(".ui-post .ui-tx")) },
+    { notes, post: text(root.querySelector(".ox-post .ox-post-h span")), body: text(root.querySelector(".ox-post .ui-tx")) },
     { notes: ["engine publishes no session events, so this view shows only what engine posted."], post: "Posted in #team", body: "Plan: two-player chess" });
   await m.unmount();
 }
@@ -206,7 +206,7 @@ const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => Ses
   const { root, m } = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({ load: "loading", frames: [said("f1", "Held while it reloads")] }) } });
   ok("2.8 a reload that holds frames keeps them on screen with a quiet loading line, not skeleton rows",
     root.querySelector('[aria-busy="true"]') === null && root.querySelector(".ui-skel") === null
-      && text(root.querySelector(".ui-sess")).includes("Held while it reloads") && text(root.querySelector('[role="status"]')) === "Loading",
+      && text(root.querySelector(".ox-work")).includes("Held while it reloads") && text(root.querySelector('[role="status"]')) === "Loading",
     root.innerHTML.slice(0, 400));
   await m.unmount();
 }
@@ -218,7 +218,7 @@ const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => Ses
   await on.m.unmount();
   const unknown = await open({ roster: [entry("working")], sessions: { [ENGINE]: session({ frames: [said("f1", "Hello")] }) } });
   const unknownNotes = all(unknown.root, ".ui-plane").length;
-  const unknownList = text(unknown.root.querySelector(".ui-sess")).includes("Hello");
+  const unknownList = text(unknown.root.querySelector(".ox-work")).includes("Hello");
   await unknown.m.unmount();
   same("3.1 the plane note shows for on and not for unknown",
     { onNote, unknownNotes, unknownList },
@@ -299,7 +299,7 @@ const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => Ses
     "m-1",
   );
   same("7.1 with at naming a held post, that post is marked and no other",
-    all(root, ".ui-post").map((p) => [p.getAttribute("data-post"), p.classList.contains("ui-post-hl")]),
+    all(root, ".ox-post").map((p) => [p.getAttribute("data-post"), p.classList.contains("ox-post-hl")]),
     [["m-1", true], ["m-2", false]]);
   await m.unmount();
 }
@@ -341,7 +341,7 @@ const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => Ses
   const { root, store, m } = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({ more: true, frames: [said("f2", "The newest page", T)] }) } });
   // Load earlier lands: an older page from history, frames not live.
   await m.run(() => putSession(store, (s) => ({ ...s, frames: [said("f1", "An older page", T - MIN), ...s.frames] })));
-  const steps = () => all(root, ".ui-sess > div").filter((d) => !d.classList.contains("ui-sess-foot"));
+  const steps = () => all(root, ".ox-work > div").filter((d) => !d.classList.contains("ox-foot"));
   const history = steps().map((d) => [text(d), d.classList.contains("ui-in")]);
   same("8.1 steps a history read adds after mount carry no ui-in, nor do the steps of the first paint",
     history, [["An older page", false], ["The newest page", false]]);
@@ -352,15 +352,24 @@ const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => Ses
   await m.unmount();
 }
 {
-  // A group of two already there, a paragraph, then one call; a second call then joins that one.
+  // An open turn: a finished run of two already grouped, a paragraph, then two calls that run. Their
+  // result markers then arrive live, and the two lines fold into a group.
+  const ended = (id: string, ts: number, live = false): SessionFrame => ({
+    id: `m-${id}`, ts, live, events: [{ type: "CUSTOM", name: "cotal.toolResult", value: { toolCallId: id, isError: false }, timestamp: ts }],
+  });
   const { root, store, m } = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({
-    frames: [called("c0", "Read", T - 2 * MIN), called("c1", "Read", T - 2 * MIN), said("p1", "Running the tests", T - MIN), called("c2", "Bash", T)],
+    frames: [
+      { id: "r1", ts: T - 3 * MIN, live: false, events: [{ type: "RUN_STARTED", threadId: "t", runId: "r", timestamp: T - 3 * MIN }] },
+      called("c0", "Read", T - 2 * MIN), called("c1", "Read", T - 2 * MIN), ended("c0", T - 2 * MIN + 100), ended("c1", T - 2 * MIN + 200),
+      said("p1", "Running the tests", T - MIN), called("c2", "Bash", T), called("c3", "Bash", T),
+    ],
   }) } });
-  const before = { groups: all(root, ".ui-tg").length, row: text(root.querySelector(".ui-sess > div > .ui-tc-line code")) };
-  await m.run(() => putSession(store, (s) => ({ ...s, frames: [...s.frames, called("c3", "cotal_inbox", T + MIN, true)] })));
-  same("8.3 a call that joins a single one fades the new group in, and a group there at first paint does not fade",
-    { before, fades: all(root, ".ui-tg").map((g) => g.classList.contains("ui-xfade")) },
-    { before: { groups: 1, row: "Bash" }, fades: [false, true] });
+  const groups = () => all(root, ".ox-turn [data-slot=trace-collapsible]");
+  const before = { groups: groups().length, running: all(root, ".ox-turn [data-slot=trace-line][data-status=running]").length };
+  await m.run(() => putSession(store, (s) => ({ ...s, frames: [...s.frames, ended("c2", T + 1000, true), ended("c3", T + 2000, true)] })));
+  same("8.3 a run of calls that ends folds into a group that fades in, and a group there at first paint does not fade",
+    { before, fades: groups().map((g) => g.classList.contains("ui-xfade")), folding: all(root, ".ox-fold [data-slot=trace-line]").length },
+    { before: { groups: 1, running: 1 }, fades: [false, true], folding: 1 });
   await m.unmount();
 }
 

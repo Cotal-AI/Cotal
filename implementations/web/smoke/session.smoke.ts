@@ -1,7 +1,8 @@
 /**
  * An agent's work, folded: `client/src/lib/session.ts` turns AG-UI frames and the agent's own
- * verified posts and DMs into the flat steps the session view draws (`foldSession`) and into turns
- * holding steps (`foldWork`), and gives each call, group and turn its state, words and duration.
+ * verified posts and DMs into turns holding steps (`foldWork`), and gives each call, group and turn
+ * its state, words and duration. Sections 1 to 9 read the fold laid flat, a turn's start, its steps
+ * and its end in order, so the cells on streams, names and placement read one list.
  *
  * WHAT IT DRIVES. The module is imported by source path, as the client bundle imports it, and every
  * cell calls it on a small synthetic frame list. Core is imported here, and only here, to check that
@@ -23,13 +24,11 @@ import {
   callTitle,
   eventChannelAgent,
   eventCount,
-  foldSession,
   foldWork,
   formatDuration,
   framesOf,
   groupDescription,
   groupTitle,
-  toolGroupLabel,
   toolKind,
   shownName,
   toolShortName,
@@ -37,9 +36,9 @@ import {
   turnTitle,
   type CallState,
   type SessionFrame,
-  type SessionStep,
   type ToolCall,
   type Turn,
+  type TurnSource,
   type WorkItem,
   type WorkStep,
 } from "../client/src/lib/session.js";
@@ -83,15 +82,29 @@ const post = (id: string, ts: number, body: string): StoredMessage => ({
   senderId: "local.engine",
 });
 
+/** One step of the fold laid flat: a turn's start, a step, or a turn's end. */
+type FlatStep =
+  | WorkStep
+  | { kind: "turn"; key: string; ts?: number; source?: TurnSource; live: boolean }
+  | { kind: "turnEnd"; key: string; ts?: number; live: boolean };
+/** `foldWork`'s items laid flat: each turn as its start, its steps, and its end when it finished. A
+ *  failed turn's run error is already its last step, and a loose turn end stays as it is. */
+const flat = (frames: SessionFrame[], posts: StoredMessage[]): FlatStep[] =>
+  foldWork(frames, posts).items.flatMap((i): FlatStep[] => i.kind !== "turn" ? [i] : [
+    { kind: "turn", key: i.key, ...(i.start === undefined ? {} : { ts: i.start }), ...(i.source === undefined ? {} : { source: i.source }), live: i.live },
+    ...i.steps,
+    ...(i.outcome === "finished" ? [{ kind: "turnEnd" as const, key: `${i.key}:end`, ...(i.end === undefined ? {} : { ts: i.end }), live: i.live }] : []),
+  ]);
+
 /** The steps as one short string: `tools(n)` for a group, `turn(<source>)` for a turn line. */
-const shape = (steps: SessionStep[]) =>
+const shape = (steps: FlatStep[]) =>
   steps.map((s) => (s.kind === "tools" ? `tools(${s.calls.length})` : s.kind === "turn" ? `turn(${s.source ?? ""})` : s.kind)).join(" ");
 const calls = (...names: string[]): ToolCall[] =>
   names.map((n, i) => ({ key: `k${i}`, id: `c${i}`, name: n, full: n, kind: toolKind(n), live: false }));
 
 // ── 1. The shape of a turn ───────────────────────────────────────────────────────────────────────
 {
-  const steps = foldSession([frame("f1", [
+  const steps = flat([frame("f1", [
     started("human"),
     ...text("p", "You are engine.", { role: "user" }),
     ...text("a", "I'll check #team first."),
@@ -110,11 +123,11 @@ const calls = (...names: string[]): ToolCall[] =>
   ok("a START with role user gives a prompt carrying its text", prompt?.kind === "prompt" && prompt.text === "You are engine." && !prompt.cut, prompt);
 }
 {
-  const steps = foldSession([frame("f1", [...call("c1", "Read"), finished(), ...call("c2", "Read")])], []);
+  const steps = flat([frame("f1", [...call("c1", "Read"), finished(), ...call("c2", "Read")])], []);
   ok("a turn line ends a group", shape(steps) === "tools(1) turnEnd tools(1)", shape(steps));
 }
 {
-  const steps = foldSession([frame("f1", [
+  const steps = flat([frame("f1", [
     ...call("c1", "Read"),
     { type: "TOOL_CALL_ARGS", toolCallId: "c1", delta: "{}" },
     { type: "TOOL_CALL_RESULT", toolCallId: "c1", content: "ok" },
@@ -123,13 +136,13 @@ const calls = (...names: string[]): ToolCall[] =>
   ok("args and a result draw nothing and do not end a group", shape(steps) === "tools(2)", shape(steps));
 }
 {
-  const steps = foldSession([frame("f1", [...text("a", "one", { end: false })]), frame("f2", [...call("c1", "Bash")])], []);
+  const steps = flat([frame("f1", [...text("a", "one", { end: false })]), frame("f2", [...call("c1", "Bash")])], []);
   ok("a stream with no END lands at the end of the fold, after a call that came later", shape(steps) === "tools(1) said", shape(steps));
 }
 
 // ── 2. Turn sources ──────────────────────────────────────────────────────────────────────────────
 const sourceOf = (turnSource?: string) => {
-  const s = foldSession([frame("f", [started(turnSource)])], [])[0];
+  const s = flat([frame("f", [started(turnSource)])], [])[0];
   return s?.kind === "turn" ? s.source : "not a turn";
 };
 ok("turn source: a channel turn has source mesh", sourceOf("channel") === "mesh", sourceOf("channel"));
@@ -141,46 +154,19 @@ ok("turn source: unknown, a stranger and a prototype key give none",
   sourceOf("unknown") === undefined && sourceOf("task-notification") === undefined && sourceOf("constructor") === undefined,
   [sourceOf("unknown"), sourceOf("task-notification"), sourceOf("constructor")]);
 {
-  const s = foldSession([frame("f", [{ type: "RUN_STARTED", cotal: { turnSource: 7 } }, { type: "RUN_STARTED", cotal: "channel" }])], []);
+  const s = flat([frame("f", [{ type: "RUN_STARTED", cotal: { turnSource: 7 } }, { type: "RUN_STARTED", cotal: "channel" }])], []);
   ok("turn source: a non-string turnSource and a non-object cotal give none", s.every((x) => x.kind === "turn" && x.source === undefined), s);
-}
-
-// ── 3. Tool group labels ─────────────────────────────────────────────────────────────────────────
-{
-  const g = toolGroupLabel(calls("Bash", "cotal_inbox", "Bash", "cotal_inbox"));
-  ok("Bash, cotal_inbox, Bash, cotal_inbox is \"Checked the inbox 2 times\" with \"4 tool calls\"",
-    g.label === "Checked the inbox 2 times" && g.names === "4 tool calls", g);
-}
-{
-  const g = toolGroupLabel(calls("Bash", "cotal_inbox"));
-  ok("Bash, cotal_inbox is \"2 tool calls\" with \"Bash, cotal_inbox\"", g.label === "2 tool calls" && g.names === "Bash, cotal_inbox", g);
-}
-{
-  const g = toolGroupLabel(calls("Edit", "Edit"));
-  ok("Edit, Edit keeps both names", g.label === "2 tool calls" && g.names === "Edit, Edit", g);
-}
-{
-  const g = toolGroupLabel(calls("Read"));
-  ok("one call is \"1 tool call\"", g.label === "1 tool call" && g.names === "Read", g);
-}
-{
-  const g = toolGroupLabel(calls("cotal_inbox", "Read", "cotal_inbox"));
-  ok("a call other than cotal_inbox or Bash keeps the plain count", g.label === "3 tool calls" && g.names === "cotal_inbox, Read, cotal_inbox", g);
-}
-{
-  const g = toolGroupLabel(calls("cotal_inbox", "cotal_inbox", "cotal_inbox"));
-  ok("three inbox polls alone are \"Checked the inbox 3 times\"", g.label === "Checked the inbox 3 times" && g.names === "3 tool calls", g);
 }
 
 // ── 4. Tool names: absent versus empty ───────────────────────────────────────────────────────────
 const toolOf = (name: string | undefined) => {
-  const s = foldSession([frame("f", call("c", name))], [])[0];
+  const s = flat([frame("f", call("c", name))], [])[0];
   return s?.kind === "tools" ? s.calls[0] : undefined;
 };
 ok("tool name: an absent toolCallName is ?", toolOf(undefined)?.full === "?" && toolOf(undefined)?.name === "?", toolOf(undefined));
 ok("tool name: an empty toolCallName is \"\", kept apart from an absent one", toolOf("")?.full === "" && toolOf("")?.name === "", toolOf(""));
 {
-  const s = foldSession([frame("f", [{ type: "TOOL_CALL_START", toolCallId: "c", toolCallName: { a: 1 } }])], [])[0];
+  const s = flat([frame("f", [{ type: "TOOL_CALL_START", toolCallId: "c", toolCallName: { a: 1 } }])], [])[0];
   ok("tool name: a non-string toolCallName is ?", s?.kind === "tools" && s.calls[0].full === "?", s);
 }
 ok("toolShortName(mcp__plugin_cotal_cotal__cotal_inbox) is cotal_inbox", toolShortName("mcp__plugin_cotal_cotal__cotal_inbox") === "cotal_inbox");
@@ -192,7 +178,7 @@ ok("toolShortName(Bash) stays Bash", toolShortName("Bash") === "Bash");
     frame("f1", [...call("c1", "Bash", at(10, 57)), ...call("c2", "mcp__plugin_cotal_cotal__cotal_send", at(10, 58))], at(10, 58)),
     frame("f2", [...text("t", "Done for now.", { ts: at(10, 59) })], at(10, 59)),
   ];
-  const steps = foldSession(frames, [post("m1", at(10, 58), "app/chess.js is ready.")]);
+  const steps = flat(frames, [post("m1", at(10, 58), "app/chess.js is ready.")]);
   const group = steps[0];
   ok("post placement: a post at 10:58 between cotal_send at 10:58 and text at 10:59 lands between them and splits nothing it should not",
     shape(steps) === "tools(2) post said" && group?.kind === "tools" && group.calls.map((c) => c.name).join(",") === "Bash,cotal_send",
@@ -202,53 +188,49 @@ ok("toolShortName(Bash) stays Bash", toolShortName("Bash") === "Bash");
 }
 {
   const frames = [frame("f1", [...call("c1", "Bash", at(10, 57)), ...call("c2", "Bash", at(10, 59))])];
-  const steps = foldSession(frames, [post("m1", at(10, 58), "between")]);
+  const steps = flat(frames, [post("m1", at(10, 58), "between")]);
   ok("a post between two calls ends the group and joins neither half", shape(steps) === "tools(1) post tools(1)", shape(steps));
 }
 {
-  const steps = foldSession([frame("f1", [started("human", at(10, 0))])], [post("m2", at(11, 0), "b"), post("m1", at(9, 0), "a")]);
+  const steps = flat([frame("f1", [started("human", at(10, 0))])], [post("m2", at(11, 0), "b"), post("m1", at(9, 0), "a")]);
   ok("posts are ordered by time, before and after the frame steps", steps.map((s) => (s.kind === "post" ? s.msg.id : s.kind)).join(" ") === "m1 turn m2",
     steps.map((s) => s.kind));
 }
 {
   const odd = (id: string, ts: unknown) => ({ ...post(id, 0, id), msg: { ...post(id, 0, id).msg, ts } as unknown as CotalMessage });
-  const steps = foldSession([frame("f1", [started("human", at(10, 0))])], [odd("nan", Number.NaN), odd("str", "5"), post("m1", at(9, 0), "a"), odd("inf", Infinity)]);
+  const steps = flat([frame("f1", [started("human", at(10, 0))])], [odd("nan", Number.NaN), odd("str", "5"), post("m1", at(9, 0), "a"), odd("inf", Infinity)]);
   ok("a post whose ts is not a finite number goes last, in arrival order",
     steps.map((s) => (s.kind === "post" ? s.msg.id : s.kind)).join(" ") === "m1 turn nan str inf", steps.map((s) => (s.kind === "post" ? s.msg.id : s.kind)));
-}
-{
-  const dm = { msg: { id: "d1", ts: at(10, 0), space: "s", from: { id: "local.engine", name: "engine" }, parts: [], to: "x" } as CotalMessage, senderId: "local.engine" };
-  ok("a message with no channel is never a post row", foldSession([], [dm]).length === 0);
 }
 
 // ── 6. Streams, errors and named markers ─────────────────────────────────────────────────────────
 {
-  const steps = foldSession([frame("f", text("a", "half a sent", { end: false }))], []);
+  const steps = flat([frame("f", text("a", "half a sent", { end: false }))], []);
   const s = steps[0];
   ok("an unterminated text stream ends cut: true", steps.length === 1 && s.kind === "said" && s.text === "half a sent" && s.cut === true, steps);
-  const whole = foldSession([frame("f", text("a", "whole"))], [])[0];
+  const whole = flat([frame("f", text("a", "whole"))], [])[0];
   ok("a terminated stream is not cut", whole?.kind === "said" && whole.cut === false, whole);
 }
-ok("an empty text gives no item", foldSession([frame("f", text("a", ""))], []).length === 0);
+ok("an empty text gives no item", flat([frame("f", text("a", ""))], []).length === 0);
 {
-  const steps = foldSession([frame("f", [{ type: "RUN_ERROR", message: "run failed", code: "E_X" }])], []);
+  const steps = flat([frame("f", [{ type: "RUN_ERROR", message: "run failed", code: "E_X" }])], []);
   ok("RUN_ERROR gives runError and no text from its message",
     shape(steps) === "runError" && !JSON.stringify(steps).includes("run failed") && !JSON.stringify(steps).includes("E_X"), steps);
 }
 {
-  const steps = foldSession([frame("f", [{ type: "CUSTOM", name: "checkpoint" }, { type: "CUSTOM" }, { type: "CUSTOM", name: "" }, { type: "STATE_SNAPSHOT" }])], []);
+  const steps = flat([frame("f", [{ type: "CUSTOM", name: "checkpoint" }, { type: "CUSTOM" }, { type: "CUSTOM", name: "" }, { type: "STATE_SNAPSHOT" }])], []);
   const labels = steps.map((s) => (s.kind === "unknown" ? s.label : s.kind));
   ok("CUSTOM and an unknown type are named",
     labels.join("|") === 'Custom event "checkpoint"|Custom event (unnamed)|Custom event ""|Unrecognised event "STATE_SNAPSHOT"', labels);
 }
 {
-  const steps = foldSession([frame("f", [{ type: "CUSTOM", name: "" }, { type: "" }, { type: "CUSTOM", name: 7 }])], []);
+  const steps = flat([frame("f", [{ type: "CUSTOM", name: "" }, { type: "" }, { type: "CUSTOM", name: 7 }])], []);
   const labels = steps.map((s) => (s.kind === "unknown" ? s.label : s.kind));
   ok("an empty type or name is quoted, never a label that ends in a bare space",
     labels.join("|") === 'Custom event ""|Unrecognised event ""|Custom event (unnamed)' && labels.every((l) => !l.endsWith(" ")), labels);
 }
 {
-  const steps = foldSession([frame("f", [
+  const steps = flat([frame("f", [
     started("human"), ...text("a", "half a sent", { end: false }), finished(),
     started("channel"), { type: "REASONING_MESSAGE_CONTENT", messageId: "n", delta: "thinking" }, { type: "RUN_ERROR" },
     started("human"), ...text("b", "next", { end: false }), started("human"),
@@ -258,13 +240,13 @@ ok("an empty text gives no item", foldSession([frame("f", text("a", ""))], []).l
     shape(steps) === "turn(prompt) said turnEnd turn(mesh) reasoning runError turn(prompt) said turn(prompt)" && cut === 3, shape(steps));
 }
 {
-  const steps = foldSession([frame("f", [started("human"), null, 42, { type: 5 }, ...text("a", "after"), finished()])], []);
+  const steps = flat([frame("f", [started("human"), null, 42, { type: 5 }, ...text("a", "after"), finished()])], []);
   const labels = steps.map((s) => (s.kind === "unknown" ? s.label : s.kind));
   ok("a null event is named and the events after it still fold",
     labels.join("|") === "turn|Unrecognised event null|Unrecognised event null|Unrecognised event null|said|turnEnd", labels);
 }
 {
-  const steps = foldSession([frame("f", [
+  const steps = flat([frame("f", [
     { type: "REASONING_MESSAGE_START", messageId: "n" },
     { type: "REASONING_MESSAGE_CONTENT", messageId: "n", delta: "step one" },
     { type: "REASONING_MESSAGE_END", messageId: "n" },
@@ -277,7 +259,7 @@ ok("an empty text gives no item", foldSession([frame("f", text("a", ""))], []).l
 
 // ── 7. Ids that a plain object would mishandle ───────────────────────────────────────────────────
 {
-  const steps = foldSession([frame("f", [
+  const steps = flat([frame("f", [
     ...text("10", "ten", { end: false }),
     ...text("2", "two", { end: false }),
     ...text("__proto__", "proto", { end: false }),
@@ -286,7 +268,7 @@ ok("an empty text gives no item", foldSession([frame("f", text("a", ""))], []).l
   ok("ids \"2\", \"10\" and \"__proto__\" fold in insertion order and none is lost", got.join(",") === "ten,two,proto", got);
 }
 {
-  const steps = foldSession([frame("f", [
+  const steps = flat([frame("f", [
     { type: "TEXT_MESSAGE_START", messageId: "a" },
     { type: "TEXT_MESSAGE_START", messageId: "b" },
     { type: "TEXT_MESSAGE_CONTENT", messageId: "a", delta: "AAA" },
@@ -298,7 +280,7 @@ ok("an empty text gives no item", foldSession([frame("f", text("a", ""))], []).l
   ok("a second START empties its stream and keeps its first place", got.join(",") === "again,BBB", got);
 }
 {
-  const steps = foldSession([frame("f", [{ type: "TEXT_MESSAGE_START" }, { type: "TEXT_MESSAGE_CONTENT", delta: "keyless" }, { type: "TEXT_MESSAGE_END" }])], []);
+  const steps = flat([frame("f", [{ type: "TEXT_MESSAGE_START" }, { type: "TEXT_MESSAGE_CONTENT", delta: "keyless" }, { type: "TEXT_MESSAGE_END" }])], []);
   ok("an absent messageId is the \"\" stream", shape(steps) === "said" && steps[0].kind === "said" && steps[0].text === "keyless", steps);
 }
 
@@ -307,7 +289,7 @@ const message = (parts: unknown[], id = "m1"): CotalMessage =>
   ({ id, ts: T0, space: "s", from: { id: "local.engine", name: "engine" }, parts, channel: "events.local.engine" }) as unknown as CotalMessage;
 {
   const frames = framesOf(message([{ kind: "text", text: "a plain line" }]), true);
-  const steps = foldSession(frames, []);
+  const steps = flat(frames, []);
   ok("a message with a text part and no frame part yields one unknown step",
     steps.length === 1 && steps[0].kind === "unknown" && steps[0].label === "a plain line" && steps[0].live, steps);
 }
@@ -318,7 +300,7 @@ const message = (parts: unknown[], id = "m1"): CotalMessage =>
   ok("framesOf gives one frame per frame part, the first keyed by the message id",
     frames.length === 2 && frames[0].id === "m1" && frames[1].id === "m1#1" && frames[0].ts === T0 && !frames[0].live,
     frames.map((f) => f.id));
-  ok("a message's frames fold in part order", shape(foldSession(frames, [])) === "turn(prompt) turnEnd");
+  ok("a message's frames fold in part order", shape(flat(frames, [])) === "turn(prompt) turnEnd");
 }
 {
   const framed = [{ kind: "ag-ui.frame", events: [started("human")] }];
@@ -329,7 +311,7 @@ const message = (parts: unknown[], id = "m1"): CotalMessage =>
     JSON.stringify(got) === JSON.stringify([0, 0, 0, 0]) && JSON.stringify(control) === JSON.stringify(["7"]), { got, control });
 }
 {
-  const steps = foldSession(framesOf(message([{ kind: "ag-ui.frame", events: [] }, { kind: "ag-ui.frame", events: "nope" }]), false), []);
+  const steps = flat(framesOf(message([{ kind: "ag-ui.frame", events: [] }, { kind: "ag-ui.frame", events: "nope" }]), false), []);
   ok("a frame part with no events is named, never dropped",
     steps.length === 2 && steps.every((s) => s.kind === "unknown" && s.label === "A frame with no events"), steps);
 }
@@ -341,20 +323,20 @@ const message = (parts: unknown[], id = "m1"): CotalMessage =>
     frame("f2", [null, { type: "CUSTOM", name: "n" }, finished()]),
   ];
   const posts = [post("m1", T0, "hi")];
-  const a = foldSession(input(), posts).map((s) => s.key);
-  const b = foldSession(input(), posts).map((s) => s.key);
+  const a = flat(input(), posts).map((s) => s.key);
+  const b = flat(input(), posts).map((s) => s.key);
   ok("keys are equal across two folds of the same input", a.join("|") === b.join("|") && a.length === 8, [a, b]);
   ok("keys are unique within a fold", new Set(a).size === a.length, a);
 }
 {
-  const steps = foldSession([frame("f", [{ type: "RUN_STARTED", timestamp: at(10, 40) }, { type: "RUN_FINISHED", timestamp: Number.NaN }], at(10, 45))], []);
+  const steps = flat([frame("f", [{ type: "RUN_STARTED", timestamp: at(10, 40) }, { type: "RUN_FINISHED", timestamp: Number.NaN }], at(10, 45))], []);
   ok("a step's time is the event's timestamp when finite, else the frame's ts",
     steps[0].kind === "turn" && steps[0].ts === at(10, 40) && steps[1].kind === "turnEnd" && steps[1].ts === at(10, 45), steps);
 }
 {
-  const live = foldSession([frame("f1", call("c1", "Bash"), T0, true), frame("f2", text("a", "x"), T0, true)], []);
+  const live = flat([frame("f1", call("c1", "Bash"), T0, true), frame("f2", text("a", "x"), T0, true)], []);
   ok("an item whose frames all arrived live is live", live.every((s) => s.live), live);
-  const mixed = foldSession([
+  const mixed = flat([
     frame("f1", [{ type: "TEXT_MESSAGE_START", messageId: "a" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "a", delta: "x" }], T0, false),
     frame("f2", [{ type: "TEXT_MESSAGE_END", messageId: "a" }, ...call("c1", "Bash")], T0, true),
     frame("f3", call("c2", "Bash"), T0, false),

@@ -1,20 +1,22 @@
-import { ArrowRight01Icon, Brain02Icon } from "@hugeicons/core-free-icons";
-import { useState } from "react";
+import { Brain02Icon } from "@hugeicons/core-free-icons";
 import { Icon } from "../../icons/Icon.tsx";
+import { TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceIcon, TraceLine, TraceTitle } from "../shadcn/trace.tsx";
 import { withCut } from "./SaidBlock.tsx";
 
-/** Reasoning, if a frame ever carries it (mock C, `ui-think`): full view only, collapsed by default,
- *  and when opened shown dim as plain text, never mixed into the prose. */
+/** Reasoning, if a frame ever carries it (mock C): full view only, closed by default, and when opened
+ *  shown dim as plain text, never mixed into the prose. */
 export function Reasoning({ text, cut }: { text: string; cut: boolean }) {
-  const [open, setOpen] = useState(false);
   return (
-    <div className="ui-tg ui-think" data-open={open ? "" : undefined}>
-      <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <Icon icon={Brain02Icon} size={16} className="ui-ic" />
-        <span>Reasoning</span>
-        <Icon icon={ArrowRight01Icon} size={16} className="ui-ic ui-tg-chev" />
-      </button>
-      {open && <div className="ui-think-body">{withCut(text, cut)}</div>}
-    </div>
+    <TraceCollapsible>
+      <TraceCollapsibleTrigger className="ox-trig">
+        <TraceLine className="ox-line">
+          <TraceIcon><Icon icon={Brain02Icon} size={16} /></TraceIcon>
+          <TraceTitle>Reasoning</TraceTitle>
+        </TraceLine>
+      </TraceCollapsibleTrigger>
+      <TraceCollapsibleContent className="ox-cc">
+        <div className="ox-think">{withCut(text, cut)}</div>
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
   );
 }

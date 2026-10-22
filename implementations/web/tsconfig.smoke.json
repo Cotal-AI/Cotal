@@ -10,6 +10,7 @@
   "compilerOptions": { "noEmit": true, "rootDir": "../..", "jsx": "react-jsx", "allowImportingTsExtensions": true },
   "include": ["smoke/**/*.ts"],
   // The suites that stub or drive a DOM need DOM types and are typechecked by tsconfig.smoke-dom.json
-  // instead: the theme suite, and the suites that mount React in jsdom.
-  "exclude": ["smoke/client-theme.smoke.ts", "smoke/components.smoke.ts", "smoke/app-mount.smoke.ts", "smoke/sidebar.smoke.ts", "smoke/views.smoke.ts", "smoke/topology-view.smoke.ts", "smoke/agents-view.smoke.ts", "smoke/panel.smoke.ts", "smoke/states.smoke.ts", "smoke/layout.smoke.ts", "smoke/compose.smoke.ts", "smoke/identity.smoke.ts", "smoke/session-parts.smoke.ts", "smoke/session-view.smoke.ts", "smoke/mount.ts"]
+  // instead: the theme suite, the suites that mount React in jsdom, and the shell suites, whose
+  // imports reach a copied shadcn file that names a DOM global.
+  "exclude": ["smoke/client-theme.smoke.ts", "smoke/components.smoke.ts", "smoke/app-mount.smoke.ts", "smoke/sidebar.smoke.ts", "smoke/views.smoke.ts", "smoke/topology-view.smoke.ts", "smoke/agents-view.smoke.ts", "smoke/panel.smoke.ts", "smoke/states.smoke.ts", "smoke/layout.smoke.ts", "smoke/compose.smoke.ts", "smoke/identity.smoke.ts", "smoke/session-parts.smoke.ts", "smoke/session-view.smoke.ts", "smoke/mount.ts", "smoke/app-shell.smoke.ts", "smoke/event-order.smoke.ts", "smoke/parts-non-silence.smoke.ts", "smoke/snapshot-retention.smoke.ts", "smoke/render-shell.ts"]
 }

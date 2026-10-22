@@ -132,6 +132,38 @@
       "replace": "ALLOWED_URI_REGEXP: /(?:https?:|mailto:|#|\\/)/i,",
       "expectRed": "3.1b a javascript: link that names https further on still loses its href: the pattern is anchored",
       "cell": "3.1b a javascript: link that names https further on still loses its href: the pattern is anchored"
+    },
+    {
+      "name": "MD17 fences are never split out, so a code block's text renders as prose HTML and is never highlighted",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "    if (token.type === \"code\" && token.codeBlockStyle !== \"indented\") {",
+      "replace": "    if (false) {",
+      "expectRed": "6.1 markdownSegments splits prose and fences in order, each fence with the first word of its info string",
+      "cell": "6.1 markdownSegments splits prose and fences in order, each fence with the first word of its info string"
+    },
+    {
+      "name": "MD18 prose pieces skip the sanitizer, so an img with onerror between two fences reaches the page",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "    const html = renderMarkdown(prose);",
+      "replace": "    const html = marked.parse(prose, { async: false });",
+      "expectRed": "6.2 each prose piece is renderMarkdown of its own source, so it is sanitized",
+      "cell": "6.2 each prose piece is renderMarkdown of its own source, so it is sanitized"
+    },
+    {
+      "name": "MD19 a fence's text is sent through renderMarkdown, so the code block draws markup and loses what the sanitizer strips",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "text: String(token.text) });",
+      "replace": "text: renderMarkdown(String(token.text)) });",
+      "expectRed": "6.3 a fence's text is raw: not escaped and not sanitized as HTML",
+      "cell": "6.3 a fence's text is raw: not escaped and not sanitized as HTML"
+    },
+    {
+      "name": "MD20 a fence's whole info string becomes its language, so a fence written sh title=x is never highlighted",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": ".trim().split(/\\s+/)[0] ?? \"\"",
+      "replace": ".trim()",
+      "expectRed": "6.4 a fence with no closing line runs to the end of the source and keeps its language",
+      "cell": "6.4 a fence with no closing line runs to the end of the source and keeps its language"
     }
   ]
 }

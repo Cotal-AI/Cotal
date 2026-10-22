@@ -202,7 +202,7 @@ const all = (el: Element, sel: string) => [...el.querySelectorAll(sel)] as HTMLE
   const line = (patch: Partial<DashboardState>) => centre(shellDom(channelSeed(patch), channelRoute)).querySelector(".ui-typing");
   const l = line({});
   ok("3.1 the working line names the first working member of #review in the broker's order, with its activity",
-    textOf(l) === "reviewer is working Reviewing the presence TTL diff" && textOf(l?.querySelector("b")) === "reviewer" && l?.querySelector(".ui-dots") !== null, textOf(l));
+    textOf(l) === "reviewer is working Reviewing the presence TTL diff" && textOf(l?.querySelector("b")) === "reviewer", textOf(l));
   ok("3.2 a working agent who is not in the channel is not named",
     line({ membership: { snapshot: { asOf: Date.now(), members: [{ id: "local.rv2", live: ["review"], durable: [], observedAt: 1 }] } as unknown as MembershipSnapshot } }) === null);
   const unknown = roster.map((p) => (p.card.id === "local.rev" ? { ...p, progress: { kind: "unknown" as const } } : p));

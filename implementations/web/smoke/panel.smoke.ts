@@ -491,14 +491,17 @@ const othersAnd = (rev: RosterEntry) => roster.map((p) => (p.card.id === "local.
 const sessionOf = (over: Partial<SessionState> = {}): SessionState => ({ views: 1, frames: [], posts: [], load: "ok", more: false, limit: 200, ...over });
 /** reviewer's own verified post on #review at 10:<minute>. */
 const postAt = (minute: number): StoredMessage => ({ msg: msg(`p${minute}`, "local.rev", `post at ${minute}`, at(10, minute)), senderId: "local.rev" });
-/** One frame holding two tool calls with no text between, which fold into one group. */
+/** One frame holding two tool calls with no text between, each with its result marker, which fold
+ *  into one group. */
 const twoCalls = (): SessionFrame => {
   const ts = at(10, 30);
+  const ended = (id: string) => ({ type: "CUSTOM", name: "cotal.toolResult", value: { toolCallId: id, isError: false }, timestamp: ts + 1000 });
   return {
     id: "f-tools", ts, live: false,
     events: [
       { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "Bash", timestamp: ts }, { type: "TOOL_CALL_END", toolCallId: "c1", timestamp: ts },
       { type: "TOOL_CALL_START", toolCallId: "c2", toolCallName: "Read", timestamp: ts }, { type: "TOOL_CALL_END", toolCallId: "c2", timestamp: ts },
+      ended("c1"), ended("c2"),
     ],
   };
 };
@@ -514,7 +517,7 @@ const sessionController = () => {
 };
 const tabWith = (rev: RosterEntry, patch: Partial<DashboardState> = {}, route?: Route) =>
   parse(renderToString(createElement(AgentTab, { store: storeOf({ roster: othersAnd(rev), ...patch }), id: "local.rev", channel: "review", route, clock: () => NOW })));
-const footOf = (tab: HTMLElement) => textOf(tab.querySelector(".ui-lt .ui-sess-foot"));
+const footOf = (tab: HTMLElement) => textOf(tab.querySelector(".ox-compact .ox-foot"));
 {
   const rev = agentTab("local.rev");
   same("8.1 the Agent tab has Open session after Message, linking to the agent's session",
@@ -525,17 +528,17 @@ const footOf = (tab: HTMLElement) => textOf(tab.querySelector(".ui-lt .ui-sess-f
   const chip = on.querySelector(".ui-lt-head .ui-livechip") as HTMLElement | null;
   ok("8.2 with the plane on and the read through, the Session section is headed Session with Live, and follows the profile",
     textOf(on.querySelector(".ui-lt-head h5")) === "Session" && textOf(chip) === "Live" && chip?.title === "New steps appear as reviewer publishes them"
-      && on.querySelector(".ui-profile")?.nextElementSibling?.className === "ui-lt-head" && textOf(on.querySelector(".ui-lt .ui-post .ui-tx")) === "post at 40",
+      && on.querySelector(".ui-profile")?.nextElementSibling?.className === "ui-lt-head" && textOf(on.querySelector(".ox-compact .ox-post .ui-tx")) === "post at 40",
     on.innerHTML.slice(0, 400));
 
   const many = tabWith(withPlane("on"), { sessions: { "local.rev": sessionOf({ posts: [40, 41, 42, 43, 44, 45, 46, 47, 48].map(postAt) }) } });
   same("8.3 the section draws at most six steps, the newest, then the footer",
-    [all(many, ".ui-lt .ui-post .ui-tx").map(textOf), many.querySelector(".ui-lt")?.lastElementChild?.className],
-    [["post at 43", "post at 44", "post at 45", "post at 46", "post at 47", "post at 48"], "ui-sess-foot"]);
+    [all(many, ".ox-compact .ox-post .ui-tx").map(textOf), many.querySelector(".ox-compact")?.lastElementChild?.classList.contains("ox-foot")],
+    [["post at 43", "post at 44", "post at 45", "post at 46", "post at 47", "post at 48"], true]);
 
   const off = tabWith(withPlane("off"), { sessions: { "local.rev": sessionOf({ posts: [postAt(40)] }) } });
   same("8.4 with the plane off the section holds only the panel's plane note, with no Live and no steps",
-    [textOf(off.querySelector(".ui-lt-head")), all(off, ".ui-lt").map((l) => [...l.children].map((c) => c.className)), textOf(off.querySelector(".ui-lt .ui-plane"))],
+    [textOf(off.querySelector(".ui-lt-head")), all(off, ".ox-compact").map((l) => [...l.children].map((c) => c.className)), textOf(off.querySelector(".ox-compact .ui-plane"))],
     ["Session", [["ui-plane"]], "reviewer publishes no session events. Open session shows its posts only."]);
 
   const offSpy = sessionController();
@@ -554,17 +557,17 @@ const footOf = (tab: HTMLElement) => textOf(tab.querySelector(".ui-lt .ui-sess-f
   const ownSession = pane(beside);
   const elsewhere = tabWith(withPlane("on"), {}, { view: "agent", id: "local.dav" });
   ok("8.7 beside that agent's own session the Agent tab has no Session section, and beside another agent's it does",
-    textOf(ownSession.querySelector(".ui-profile h4")) === "reviewer" && ownSession.querySelector(".ui-lt-head") === null && ownSession.querySelector(".ui-lt") === null
+    textOf(ownSession.querySelector(".ui-profile h4")) === "reviewer" && ownSession.querySelector(".ui-lt-head") === null && ownSession.querySelector(".ox-compact") === null
       && textOf(elsewhere.querySelector(".ui-lt-head h5")) === "Session",
     textOf(ownSession).slice(0, 200));
-  const fullFoot = textOf(beside.querySelector("main .ui-sess > .ui-sess-foot"));
+  const fullFoot = textOf(beside.querySelector("main .ox-work > .ox-foot"));
 
   const offline = tabWith(withPlane("on", { status: "offline", ts: at(10, 52) }), { connection: "connected", sessions: { "local.rev": sessionOf() } });
   ok("8.8 the section's footer says an offline agent is offline and when its last heartbeat came, and shows no Live",
-    footOf(offline) === "reviewer is offline. Last heartbeat 10:52." && offline.querySelector(".ui-livechip") === null, footOf(offline));
+    footOf(offline) === "reviewer is offline Last heartbeat 10:52." && offline.querySelector(".ui-livechip") === null, footOf(offline));
   const unknown = tabWith(withPlane("on", { progress: { kind: "unknown" } } as Partial<RosterEntry>), { sessions: { "local.rev": sessionOf() } });
   ok("8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size",
-    footOf(unknown) === "reviewer is working" && unknown.querySelector(".ui-lt .ui-sess-foot .ui-dots") === null, footOf(unknown));
+    footOf(unknown) === "reviewer is working Reported 10:43." && unknown.querySelector(".ox-compact .ox-foot .ui-dots") === null, footOf(unknown));
   const waiting = tabWith(withPlane("on", { status: "waiting", statusSince: at(10, 49) }), { sessions: { "local.rev": sessionOf() } });
   ok("8.10 the section's footer says a waiting agent is waiting and when it reported",
     footOf(waiting) === "reviewer is waiting Reported 10:49.", footOf(waiting));
@@ -577,9 +580,9 @@ const footOf = (tab: HTMLElement) => textOf(tab.querySelector(".ui-lt .ui-sess-f
   const tools = tabWith(withPlane("on"), { sessions: { "local.rev": sessionOf({ frames: [twoCalls()] }) } });
   const stops = all(tools, "a[href], button").map((el) => (el.hasAttribute("aria-expanded") ? `group ${textOf(el)}` : textOf(el)));
   same("8.11 Tab goes Message, Open session, the two commands, then the session's tool group",
-    stops, ["Message", "Open session", "Copy", "Copy", "group 2 tool calls"]);
+    stops, ["Message", "Open session", "Copy", "Copy", "group Ran a command, read a file 2 steps · 1.0s"]);
   ok("8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity",
-    fullFoot === "reviewer is working Reviewing the presence TTL diff", fullFoot);
+    fullFoot === "reviewer is working Reviewing the presence TTL diff. Reported 10:43.", fullFoot);
 }
 {
   // The shipped controller over a fake Api that records the watch, the read and the unwatch, under

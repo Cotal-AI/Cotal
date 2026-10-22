@@ -3,7 +3,8 @@
  *  character art the avatars draw. Its theme boot script loads before the stylesheet and puts the
  *  saved theme on the root element, and its stylesheet's color-scheme follows the theme. Tailwind
  *  comes in without its preflight reset, the shadcn parts' border reset and dark variant land where
- *  the existing styles expect them, and the copied shadcn source and Tailwind carry their licenses. */
+ *  the existing styles expect them, and the copied shadcn source and Tailwind carry their licenses.
+ *  Shiki, which highlights code in an agent's prose, stays out of the files the page loads first. */
 import { strict as assert } from "node:assert";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -147,12 +148,23 @@ ok("bundle-licenses.json lists shadcn/ui with MIT and 4.22.1",
 const tailwindMeta = JSON.parse(readFileSync(createRequire(join(pkg, "package.json")).resolve("tailwindcss/package.json"), "utf8")) as { version: string; license: string };
 ok("bundle-licenses.json lists tailwindcss with its own version and license",
   licenses.bundled.some((b) => b.package === "tailwindcss" && b.version === tailwindMeta.version && b.license === tailwindMeta.license), licenses.bundled);
+// The work parts draw on Radix (Collapsible, Tooltip) and the copied parts' cn() and variants.
+const unlisted = ["class-variance-authority", "clsx", "tailwind-merge", "@radix-ui/react-collapsible", "@radix-ui/react-tooltip"].filter((p) => !names.includes(p));
+ok("bundle-licenses.json lists class-variance-authority, clsx, tailwind-merge and the Radix packages now bundled", unlisted.length === 0, { unlisted, names });
 ok("every bundled package carries a version and a license",
   licenses.bundled.every((b) => b.version && b.license), licenses.bundled);
 // The same plain comparison the build sorts with (vite.config.ts), so the two cannot disagree.
 ok("bundle-licenses.json is sorted by package", names.join() === [...names].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).join());
 
 const assets = readdirSync(join(out, "assets"));
+// Shiki loads on the first code block a reader sees, never with the page. "ShikiError" is a string
+// Shiki's own code holds, so a minifier cannot rename it away. The files the page loads and preloads
+// must not hold it, and the lazy chunks must, or the cell would pass with Shiki gone altogether.
+const firstLoad = refs.filter((r) => r.endsWith(".js") && r.startsWith("/assets/")).map((r) => r.slice("/assets/".length));
+const holdsShiki = (file: string) => readFileSync(join(out, "assets", file), "utf8").includes("ShikiError");
+ok("no first-load chunk holds Shiki, and a lazy chunk does",
+  firstLoad.length > 0 && firstLoad.every((f) => !holdsShiki(f)) && assets.some((a) => a.endsWith(".js") && !firstLoad.includes(a) && holdsShiki(a)),
+  { firstLoad, shiki: assets.filter((a) => a.endsWith(".js") && holdsShiki(a)) });
 ok("the font ships as a local woff2 file", assets.some((a) => a.endsWith(".woff2")), assets);
 // The avatars draw through the art seam, which loads the brand's characters file at run time. A
 // bundle that left it out would build and then fail on the first avatar, so the built scripts must

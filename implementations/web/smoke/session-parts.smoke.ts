@@ -1,21 +1,27 @@
-/** The session parts (agents mock sections S, C and E): the turn line, prose, tool rows and groups,
- *  posts, the run error, the footer, the jump button and the list that lays them out. Sections 1 to
- *  9 render each part with `renderToString` and read the HTML through a parsed element: what each
- *  turn source says, that agent prose is sanitized and a tool name is text, the inbox group's label,
- *  that no tool row draws a spinner, the post's link back, the run error's condition, the footer from
- *  presence, what the panel leaves out, and the jump count. Section 10 mounts the parts in jsdom for
- *  what needs a second render or a click: which steps rise in, opening a group and a prompt, and the
- *  run error's condition on the last step only.
+/** The parts that draw an agent's work (overhaul mock B1, C, E and G): `ToolLine`, `ToolGroup` and
+ *  `Turn` on shadcn's Trace, laid out by `WorkList`, with prose through `Prose`, code in `Code`, the
+ *  agent's own posts and direct messages, and the footer from presence.
+ *
+ *  Each cell mounts a part in jsdom, or renders it with `renderToString` when nothing needs an effect,
+ *  and reads the DOM: what a call says while it runs, after its result marker, when it failed, while
+ *  the agent waits and once no result can arrive; when calls group; what a turn says, which turns
+ *  start open and that a closed one mounts nothing; the note for a connector without tool status;
+ *  that agent text, tool names and highlighted code never reach the page as HTML; a post's link back;
+ *  the footer's words; which steps rise in; and where presence's condition goes.
  *
  *  The DOM is jsdom, installed first, because the prose renders through `lib/md.ts`, whose sanitizer
- *  needs a window. */
+ *  needs a window, and React's client reads `window` when it loads. */
 import { closeDom } from "./dom-globals.js";
+import { CancelCircleIcon } from "@hugeicons/core-free-icons";
 import { strict as assert } from "node:assert";
 import { createElement, useState, type ReactElement } from "react";
 import { renderToString } from "react-dom/server";
 import type { CotalMessage } from "../client/src/api/types.js";
+import { Icon } from "../client/src/icons/Icon.tsx";
+import { highlight } from "../client/src/lib/highlight.js";
+import { formatRoute } from "../client/src/lib/route.js";
 import type { RosterRow } from "../client/src/lib/roster.js";
-import type { SessionStep, ToolCall, TurnSource } from "../client/src/lib/session.js";
+import { toolKind, type CallState, type ToolCall, type Turn, type Work, type WorkItem, type WorkStep } from "../client/src/lib/session.js";
 import { JumpButton } from "../client/src/ui/session/JumpButton.tsx";
 import { PostRow } from "../client/src/ui/session/PostRow.tsx";
 import { PromptBlock } from "../client/src/ui/session/PromptBlock.tsx";
@@ -23,12 +29,10 @@ import { Reasoning } from "../client/src/ui/session/Reasoning.tsx";
 import { RunError } from "../client/src/ui/session/RunError.tsx";
 import { SaidBlock } from "../client/src/ui/session/SaidBlock.tsx";
 import { SessionFoot } from "../client/src/ui/session/SessionFoot.tsx";
-import { SessionList } from "../client/src/ui/session/SessionList.tsx";
-import { ToolGroup } from "../client/src/ui/session/ToolGroup.tsx";
-import { ToolRow } from "../client/src/ui/session/ToolRow.tsx";
-import { TurnLine } from "../client/src/ui/session/TurnLine.tsx";
-import { UnknownStep } from "../client/src/ui/session/UnknownStep.tsx";
-import { mount } from "./mount.js";
+import { Prose } from "../client/src/ui/work/Prose.tsx";
+import { ToolLine } from "../client/src/ui/work/ToolLine.tsx";
+import { WorkList } from "../client/src/ui/work/WorkList.tsx";
+import { mount, type Mounted } from "./mount.js";
 
 let n = 0;
 const ok = (name: string, cond: unknown, detail?: unknown) => {
@@ -53,190 +57,319 @@ const draw = (name: string, el: ReactElement): HTMLElement => {
 const all = (el: ParentNode, sel: string) => [...el.querySelectorAll(sel)] as HTMLElement[];
 /** Text with runs of whitespace collapsed, as a reader sees it. */
 const text = (el: Element | null | undefined) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** 10:58 on the reader's own clock, so the expected `hh:mm` holds in any time zone. */
-const T = new Date(2026, 9, 17, 10, 58).getTime();
-const MIN = 60_000;
-const hm = (ts: number) => { const d = new Date(ts); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+// Radix measures the tooltip it opens, and jsdom has no ResizeObserver.
+const g = globalThis as { ResizeObserver?: unknown };
+g.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
 
-const row = (over: Partial<RosterRow> = {}): RosterRow => ({ id: "local.engine", name: "engine", status: "working", ts: T, ...over });
-const msg = (id: string, body: string, ts = T) =>
-  ({ id, ts, space: "main", from: { id: "local.engine", name: "engine" }, channel: "team", parts: [{ kind: "text", text: body }] }) as unknown as CotalMessage;
-const call = (name: string, ts = T): ToolCall =>
-  ({ key: name, id: "", name, full: name.startsWith("cotal_") ? `mcp__plugin_cotal_cotal__${name}` : name, kind: "other", ts, live: false });
+/** A time on the reader's own clock, so an expected `hh:mm` holds in any time zone. */
+const L = (h: number, m: number, s = 0) => new Date(2026, 9, 22, h, m, s).getTime();
 
-// ── 1. The turn line ─────────────────────────────────────────────────────────────────────────────
+const row = (over: Partial<RosterRow> = {}): RosterRow => ({ id: "local.logic", name: "logic", status: "working", ts: L(10, 51), ...over });
+const nameOf = (id: string) => (id === "local.lead" ? "lead" : id);
+let seq = 0;
+/** A call named `name` started at `ts`, with its marker's end and isError when given. */
+const call = (name: string, ts?: number, marker?: { end: number; failed: boolean }): ToolCall => {
+  const key = `c${++seq}`;
+  return { key, id: key, name, full: name, kind: toolKind(name), ...(ts === undefined ? {} : { ts }), ...(marker ?? {}), live: false };
+};
+const tools = (...calls: ToolCall[]): WorkStep => ({ kind: "tools", key: calls[0]!.key, calls, live: false });
+const said = (body: string, live = false): WorkStep => ({ kind: "said", key: `s${++seq}`, text: body, cut: false, live });
+const turn = (over: Partial<Turn> & Pick<Turn, "steps">): Turn =>
+  ({ kind: "turn", key: `t${++seq}`, start: L(10, 36), outcome: "finished", end: L(10, 44), superseded: false, source: "mesh", live: false, ...over });
+const work = (items: WorkItem[], toolStatus = true): Work => ({ items, toolStatus });
+const list = (w: Work, r: RosterRow = row(), extra: { highlight?: string; condition?: { code: string; since?: number } } = {}) =>
+  createElement(WorkList, { work: w, row: r, nameOf, ...extra });
+const msg = (id: string, body: string, where: { channel: string } | { to: string }, ts = L(10, 44)) =>
+  ({ id, ts, space: "main", from: { id: "local.logic", name: "logic" }, ...where, parts: [{ kind: "text", text: body }] }) as unknown as CotalMessage;
+
+/** The trace lines a root holds, each as [title, description, data-status]. */
+const lines = (root: ParentNode) => all(root, "[data-slot=trace-line]").map((l) =>
+  [text(l.querySelector("[data-slot=trace-title]")), text(l.querySelector("[data-slot=trace-description]")), l.getAttribute("data-status")]);
+/** The `d` of every path in the first svg under `el`, which names an icon. */
+const glyph = (el: Element | null | undefined) => all(el?.querySelector("svg") ?? document.createElement("div"), "path").map((p) => p.getAttribute("d")).join("|");
+const CROSS = glyph(draw("cross", createElement(Icon, { icon: CancelCircleIcon, size: 16 })));
+/** A collapsible's trigger: the button that holds `title`. */
+const trigger = (root: ParentNode, title: string) => all(root, "[data-slot=trace-collapsible-trigger]")
+  .find((b) => text(b.querySelector("[data-slot=trace-title]")) === title);
+
+// ── 1. One call ──────────────────────────────────────────────────────────────────────────────────
 {
-  const say = (source: TurnSource | undefined, compact: boolean) => text(draw("1.1", createElement(TurnLine, { ts: T, source, compact })).querySelector(".ui-turn"));
-  same("1.1 each turn source renders its words, and the full view's mesh line says where the text is",
-    [say("prompt", false), say("mesh", true), say("mesh", false), say("continuation", false), say("notification", true)],
-    [
-      `Turn started ${hm(T)} by a prompt`,
-      `Turn started ${hm(T)} by a message from the mesh`,
-      `Turn started ${hm(T)} by a message from the mesh. Its text stays where it was sent.`,
-      `Turn started ${hm(T)} by the harness continuing itself`,
-      `Turn started ${hm(T)} by a notification`,
-    ]);
-  const full = draw("1.2", createElement(TurnLine, { ts: T, source: "mesh" })).querySelector(".ui-turn");
-  same("1.2 the full view's mesh line carries the tooltip, and the panel's does not",
-    [full?.getAttribute("title"), draw("1.2", createElement(TurnLine, { ts: T, source: "mesh", compact: true })).querySelector(".ui-turn")?.getAttribute("title") ?? null],
-    ["The event plane doesn't carry the text of a message another agent sent. Read it where it was sent.", null]);
-  const none = text(draw("1.3", createElement(TurnLine, { ts: T })).querySelector(".ui-turn"));
-  ok("1.3 a turn with no source renders no \"by\"", none === `Turn started ${hm(T)}` && !/\bby\b/.test(none), none);
-}
-
-// ── 2. Untrusted text ────────────────────────────────────────────────────────────────────────────
-{
-  const hostile = "Done <img src=x onerror=\"alert(1)\"> and [here](javascript:alert(1))";
-  const said = draw("2.1", createElement(SaidBlock, { text: hostile, cut: false }));
-  const anchors = all(said, "a").map((a) => a.getAttribute("href"));
-  ok("2.1 a said text with <img onerror> and a javascript: link renders sanitized",
-    all(said, "img").length === 0 && !said.innerHTML.includes("onerror") && anchors.every((h) => h === null || !/^\s*javascript:/i.test(h)) && text(said).startsWith("Done"),
-    { html: said.innerHTML });
-  const tool = draw("2.2", createElement(ToolRow, { call: { ...call("x"), name: "<b>x</b>", full: "mcp__evil__<b>x</b>" } }));
-  const code = tool.querySelector(".ui-tc code");
-  same("2.2 a tool name <b>x</b> renders as escaped text, with the full name as its title",
-    [all(tool, "b").length, code?.textContent, code?.getAttribute("title")],
-    [0, "<b>x</b>", "mcp__evil__<b>x</b>"]);
-  same("2.3 a cut paragraph ends with the trailing ellipsis", text(draw("2.3", createElement(SaidBlock, { text: "Running the suite", cut: true }))), "Running the suite …");
-  const fenced = draw("2.4", createElement(SaidBlock, { text: "Running:\n```sh\nnode app/chess.test.mjs", cut: true }));
-  same("2.4 a paragraph cut inside an open code fence closes the fence first, so the trailing ellipsis sits outside the code block",
-    [text(fenced.querySelector("pre")), text(fenced).endsWith("…"), all(fenced, "pre").some((pre) => text(pre).includes("…"))],
-    ["node app/chess.test.mjs", true, false]);
-  const unknown = draw("2.5", createElement(UnknownStep, { label: "Custom event \"<b>x</b>\"", ts: T }));
-  same("2.5 an unknown step's label <b>x</b> renders as text, not markup",
-    [all(unknown, "b").length, text(unknown.querySelector(".ui-tc-line span"))], [0, "Custom event \"<b>x</b>\""]);
-}
-
-// ── 3. Tool groups ───────────────────────────────────────────────────────────────────────────────
-{
-  const polls = [call("Bash", T), call("cotal_inbox", T + MIN), call("Bash", T + MIN), call("cotal_inbox", T + 2 * MIN)];
-  const full = draw("3.1", createElement(ToolGroup, { calls: polls }));
-  const button = full.querySelector(".ui-tg > button");
-  same("3.1 a group of four inbox polls reads \"Checked the inbox 2 times\" and \"4 tool calls\", collapsed",
-    [text(button?.querySelector("span")), text(full.querySelector(".ui-tg-names")), button?.getAttribute("aria-expanded"), full.querySelector(".ui-tg-list") === null],
-    ["Checked the inbox 2 times", "4 tool calls", "false", true]);
-  const compact = draw("3.2", createElement(ToolGroup, { calls: polls, compact: true }));
-  same("3.2 the compact group has no names slot", [compact.querySelector(".ui-tg-names"), text(compact.querySelector(".ui-tg > button"))], [null, "Checked the inbox 2 times"]);
-}
-
-// ── 4. No spinner ────────────────────────────────────────────────────────────────────────────────
-{
-  const line = draw("4.1", createElement(ToolRow, { call: call("Bash") }));
-  same("4.1 a tool row has no spinner element, only its icon, name and time",
-    [all(line, ".ui-spin").length, line.querySelector(".ui-tc-line") !== null, text(line.querySelector("code")), text(line.querySelector("time"))],
-    [0, true, "Bash", hm(T)]);
-}
-
-// ── 5. Posts ─────────────────────────────────────────────────────────────────────────────────────
-{
-  const full = draw("5.1", createElement(PostRow, { msg: msg("m1", "Tests pass"), channel: "team" }));
-  const link = full.querySelector(".ui-post-h a");
-  same("5.1 a post renders \"Posted in #team\" and \"Open in #team\" linking to #/channel/team",
-    [text(full.querySelector(".ui-post-h span")), text(link), link?.getAttribute("href"), full.querySelector(".ui-post")?.getAttribute("data-post"), text(full.querySelector(".ui-tx"))],
-    ["Posted in #team", "Open in #team", "#/channel/team", "m1", "Tests pass"]);
-  const compact = draw("5.2", createElement(PostRow, { msg: msg("m1", "Tests pass"), channel: "team", compact: true }));
-  same("5.2 the compact post has no link", [all(compact, "a").length, text(compact.querySelector(".ui-post-h span"))], [0, "Posted in #team"]);
-  ok("5.3 highlight marks the post", draw("5.3", createElement(PostRow, { msg: msg("m1", "x"), channel: "team", highlight: true })).querySelector(".ui-post.ui-post-hl") !== null);
-}
-
-// ── 6. The run error ─────────────────────────────────────────────────────────────────────────────
-{
-  const bare = draw("6.1", createElement(RunError, { ts: T }));
-  same("6.1 the run error without a condition has no \"Presence reports\"",
-    [text(bare.querySelector(".ui-runerr")).includes("Presence reports"), text(bare.querySelector(".ui-runerr b")), all(bare, ".ui-runerr span").map(text)],
-    [false, `Turn failed at ${hm(T)}`, ["The event plane doesn't say why."]]);
-  const since = T + 14 * MIN;
-  const reported = draw("6.2", createElement(RunError, { ts: T, condition: { code: "rate_limit", since } }));
-  same("6.2 with a rate_limit condition since a time it quotes the code as text",
-    [text(reported.querySelector(".ui-runerr code")), all(reported, ".ui-runerr span").map(text)[1]],
-    ["rate_limit", `Presence reports rate_limit since ${hm(since)}.`]);
-  same("6.3 a condition with no time says only the code",
-    all(draw("6.3", createElement(RunError, { ts: T, condition: { code: "<i>auth</i>" } })), ".ui-runerr span").map(text)[1], "Presence reports <i>auth</i>.");
-}
-
-// ── 7. The footer ────────────────────────────────────────────────────────────────────────────────
-{
-  const foot = (r: RosterRow, compact = false) => draw("7", createElement(SessionFoot, { row: r, compact }));
-  const unknown = foot(row({ activity: "Running node app/chess.test.mjs", progress: { kind: "unknown" } }));
-  const known = foot(row({ activity: "Running node app/chess.test.mjs" }));
-  same("7.1 the foot for a working row with unknown progress has no moving dots, and one without has them",
-    [all(unknown, ".ui-dots").length, all(known, ".ui-dots").length, text(unknown.querySelector(".ui-sess-foot"))],
-    [0, 1, "engine is working Running node app/chess.test.mjs"]);
-  const since = T + 5 * MIN;
-  const waiting = foot(row({ status: "waiting", activity: "Needs approval to run node app/chess.test.mjs", statusSince: since }));
-  same("7.2 the foot for a waiting row says what it reported and when",
-    text(waiting.querySelector(".ui-sess-foot")), `engine is waiting Needs approval to run node app/chess.test.mjs. Reported ${hm(since)}.`);
-  same("7.3 the foot for an offline row has its last heartbeat",
-    text(foot(row({ status: "offline", ts: T + 11 * MIN })).querySelector(".ui-sess-foot")), `engine is offline. Last heartbeat ${hm(T + 11 * MIN)}.`);
-  same("7.4 the compact foot drops the activity", text(foot(row({ activity: "Running node app/chess.test.mjs" }), true).querySelector(".ui-sess-foot")), "engine is working");
-}
-
-// ── 8. What the panel leaves out ─────────────────────────────────────────────────────────────────
-const STEPS: SessionStep[] = [
-  { kind: "turn", key: "f1:0", ts: T, source: "prompt", live: false },
-  { kind: "prompt", key: "f1:1", text: "You are engine.", cut: false, live: false },
-  { kind: "reasoning", key: "f1:2", text: "Attack map first.", cut: false, live: false },
-  { kind: "said", key: "f1:3", text: "Writing it now.", cut: false, live: false },
-  { kind: "tools", key: "f1:4", calls: [call("Write")], live: false },
-  { kind: "turnEnd", key: "f1:5", ts: T + MIN, live: false },
-];
-{
-  const kinds = (root: HTMLElement) => ["ui-prompt", "ui-think"].map((c) => all(root, `.${c}`).length);
-  const compact = draw("8.1", createElement(SessionList, { steps: STEPS, row: row(), compact: true }));
-  const full = draw("8.1", createElement(SessionList, { steps: STEPS, row: row() }));
-  same("8.1 SessionList in compact never renders a reasoning step and never a prompt, and the full view does",
-    [kinds(compact), text(compact).includes("Reasoning"), kinds(full), compact.querySelector(".ui-lt") !== null, full.querySelector(".ui-sess") !== null],
-    [[0, 0], false, [1, 1], true, true]);
-  same("8.2 the list draws the turn end and ends with the footer",
-    [text(full.querySelector(".ui-tend")), full.querySelector(".ui-sess")?.lastElementChild?.className],
-    [`Turn ended ${hm(T + MIN)}`, "ui-sess-foot"]);
-}
-
-// ── 9. The jump button ───────────────────────────────────────────────────────────────────────────
-same("9.1 the jump button reads \"1 new step\" and \"3 new steps\"",
-  [1, 3].map((count) => text(draw("9.1", createElement(JumpButton, { count, onJump: () => undefined })).querySelector(".ui-jump"))),
-  ["1 new step", "3 new steps"]);
-
-// ── 10. Mounted: the rise, a click, the condition ────────────────────────────────────────────────
-{
-  let set: (steps: SessionStep[]) => void = () => undefined;
-  function Harness({ initial }: { initial: SessionStep[] }) {
-    const [steps, setSteps] = useState(initial);
-    set = setSteps;
-    return createElement(SessionList, { steps, row: row() });
+  let set: (c: { call: ToolCall; state: CallState }) => void = () => undefined;
+  function Harness({ initial }: { initial: { call: ToolCall; state: CallState } }) {
+    const [p, setP] = useState(initial);
+    set = setP;
+    return createElement(ToolLine, p);
   }
-  // A history step and a live one are on the list when it mounts; neither rises.
-  const first: SessionStep[] = [
-    { kind: "said", key: "h1:0", text: "From history.", cut: false, live: false },
-    { kind: "said", key: "l1:0", text: "Already here.", cut: false, live: true },
-  ];
-  const m = await mount(createElement(Harness, { initial: first }));
-  const rising = () => all(m.container, ".ui-in").map((el) => text(el));
-  const atMount = rising();
-  await m.run(() => set([
-    ...first,
-    { kind: "said", key: "h2:0", text: "Late history.", cut: false, live: false },
-    { kind: "said", key: "l2:0", text: "Just arrived.", cut: false, live: true },
-  ]));
-  const afterOne = rising();
-  await m.run(() => set([
-    ...first,
-    { kind: "said", key: "h2:0", text: "Late history.", cut: false, live: false },
-    { kind: "said", key: "l2:0", text: "Just arrived.", cut: false, live: true },
-    { kind: "said", key: "l3:0", text: "And another.", cut: false, live: true },
-  ]));
-  same("10.1 nothing rises on the first draw, only a live step that arrives after it rises, and it keeps its class",
-    [atMount, afterOne, rising()], [[], ["Just arrived."], ["Just arrived.", "And another."]]);
+  const started = Date.now() - 12_000;
+  const running = call("Bash", started);
+  const m = await mount(createElement(Harness, { initial: { call: running, state: "running" } }));
+  const line = () => m.container.querySelector("[data-slot=trace-line]");
+  const before = [line()?.getAttribute("data-status"), line()?.querySelector("[data-slot=spinner]") !== null, text(line()?.querySelector("[data-slot=trace-title]"))];
+  await m.run(() => set({ call: { ...running, end: started + 1800, failed: false }, state: "done" }));
+  same("1.1 a running call has a spinner, data-status running and \"Running a command\"; its marker turns it into \"Ran a command\" and \"Bash · 1.8s\" with no spinner",
+    { before, after: lines(m.container), spinners: all(m.container, "[data-slot=spinner]").length },
+    { before: ["running", true, "Running a command"], after: [["Ran a command", "Bash · 1.8s", null]], spinners: 0 });
   await m.unmount();
 }
 {
-  const m = await mount(createElement(ToolGroup, { calls: [call("Edit"), call("Bash", T + MIN)] }));
-  const button = m.container.querySelector(".ui-tg > button") as HTMLButtonElement;
+  /** The words a failed call's tooltip shows once its line takes focus. */
+  const tip = async (c: ToolCall) => {
+    const m = await mount(createElement(ToolLine, { call: c, state: "failed" }));
+    const button = m.container.querySelector("button") as HTMLButtonElement;
+    await m.run(() => {
+      button.focus();
+      button.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+    // Radix repeats the content once, visually hidden, as the role=tooltip element the line describes.
+    const words = text(document.querySelector("[data-slot=tooltip-content] [role=tooltip]"));
+    const shown = { lines: lines(m.container), cross: glyph(m.container.querySelector("[data-slot=trace-icon]")) === CROSS };
+    await m.unmount();
+    return { ...shown, words };
+  };
+  const bash = await tip(call("Bash", L(10, 40), { end: L(10, 40) + 1800, failed: true }));
+  const edit = await tip(call("Edit", L(10, 40), { end: L(10, 40) + 400, failed: true }));
+  same("1.2 a failed command reads \"A command failed\" with the cross and a tooltip that names what is not published, and a failed edit's tooltip names the tool's input",
+    { bash, edit: edit.words },
+    {
+      bash: { lines: [["A command failed", "Bash · 1.8s", "error"]], cross: true, words: "The connector reports the call returned an error. It doesn't publish the error text or the command." },
+      edit: "The connector reports the call returned an error. It doesn't publish the error text or the tool's input.",
+    });
+}
+{
+  const open = (status: RosterRow["status"]) => draw("1.3", list(work([turn({ outcome: "open", end: undefined, start: L(10, 49), steps: [tools(call("Bash", L(10, 50)))] })]), row({ status })));
+  const waiting = open("waiting");
+  const offline = open("offline");
+  same("1.3 waiting with an open call reads \"A command hasn't finished\" and \"Bash · started 10:50\" with no spinner, and offline \"No result arrived for a command\"",
+    { waiting: lines(waiting).slice(1), spinners: all(waiting, "[data-slot=spinner]").length, offline: lines(offline).slice(1) },
+    { waiting: [["A command hasn't finished", "Bash · started 10:50", "pending"]], spinners: 0, offline: [["No result arrived for a command", "Bash · started 10:50", "pending"]] });
+}
+
+// ── 2. Groups ────────────────────────────────────────────────────────────────────────────────────
+{
+  const pair = (failed: boolean) => {
+    const root = draw("2.1", list(work([turn({ steps: [said("Writing it."), tools(call("Write", L(10, 38), { end: L(10, 38) + 200, failed: false }), call("Bash", L(10, 38) + 200, { end: L(10, 38) + 2000, failed }))] })])));
+    const group = trigger(root, failed ? "Wrote a file, ran a command, 1 failed" : "Wrote a file, ran a command");
+    return [text(group?.querySelector("[data-slot=trace-description]")), group?.getAttribute("aria-expanded"), all(root, "[data-slot=trace-collapsible-content]").length];
+  };
+  same("2.1 two finished calls draw one closed group titled \"Wrote a file, ran a command\" with \"2 steps · 2.0s\", and \", 1 failed\" when one failed",
+    [pair(false), pair(true)], [["2 steps · 2.0s", "false", 1], ["2 steps · 2.0s", "false", 1]]);
+}
+{
+  const root = draw("2.2", list(work([turn({ outcome: "open", end: undefined, steps: [tools(call("Write", L(10, 50), { end: L(10, 50) + 200, failed: false }), call("Bash", Date.now() - 3000))] })])));
+  same("2.2 a run with a running call draws each call as its own line, never a group",
+    { lines: lines(root).slice(1).map((l) => [l[0], l[2]]), groups: all(root, "[data-slot=trace-collapsible-trigger]").length },
+    { lines: [["Wrote a file", null], ["Running a command", "running"]], groups: 1 });
+}
+{
+  const root = draw("2.3", list(work([turn({ outcome: "open", end: undefined, steps: [tools(call("Bash", Date.now() - 3000), call("Read", Date.now() - 2000))] })])));
+  same("2.3 with two calls running only the latest line has data-status running, and both turn",
+    { status: lines(root).slice(1).map((l) => [l[0], l[2]]), spinners: all(root, "[data-slot=trace-collapsible-content] [data-slot=spinner]").length },
+    { status: [["Running a command", null], ["Reading a file", "running"]], spinners: 2 });
+}
+
+// ── 3. Turns ─────────────────────────────────────────────────────────────────────────────────────
+{
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    const live = turn({ outcome: "open", end: undefined, start: clock - 182_400, steps: [said("ui wants step() to say when the snake eats.")] });
+    const m = await mount(list(work([live])));
+    const head = () => m.container.querySelector("[data-slot=trace-collapsible-trigger] [data-slot=trace-line]");
+    const first = [text(head()?.querySelector("[data-slot=trace-title] b")), head()?.getAttribute("data-status"), head()?.querySelector("[data-slot=spinner].ox-live") !== null];
+    clock += 1000;
+    await m.run(() => sleep(1100));
+    same("3.1 the open working turn reads \"Working for 3m 2s\" in bold with the live spinner, never shimmers, and counts on",
+      [first, text(head()?.querySelector("[data-slot=trace-title]"))], [["Working for 3m 2s", null, true], "Working for 3m 3s"]);
+    await m.unmount();
+  } finally {
+    Date.now = realNow;
+  }
+}
+{
+  const done = turn({ start: L(10, 36), end: L(10, 36) + 468_000, steps: [tools(call("Write", L(10, 38), { end: L(10, 38) + 200, failed: false }), call("Bash", L(10, 39), { end: L(10, 39) + 1800, failed: true })), said("The wall test fails.")] });
+  const root = draw("3.2", list(work([done]), row({ status: "idle" })));
+  const head = root.querySelector("[data-slot=trace-collapsible-trigger]");
+  same("3.2 a finished turn with a failed command reads \"Worked for 7m 48s, 1 command failed\", the failure in its own span with the cross",
+    [text(head?.querySelector("[data-slot=trace-title]")), text(head?.querySelector(".ox-fail")), glyph(head?.querySelector(".ox-fail")) === CROSS],
+    ["Worked for 7m 48s, 1 command failed", "1 command failed", true]);
+}
+{
+  const expanded = (root: ParentNode) => all(root, ".ox-work > .ox-step > [data-slot=trace-collapsible] > [data-slot=trace-collapsible-trigger]").map((b) => b.getAttribute("aria-expanded"));
+  const a = turn({ steps: [said("first")] });
+  const b = turn({ start: L(10, 45), end: L(10, 47), steps: [said("second")] });
+  const c = turn({ outcome: "open", start: L(10, 49), end: undefined, steps: [said("third")] });
+  same("3.3 the open turn starts open and finished turns closed, and with none open the last turn starts open",
+    [expanded(draw("3.3", list(work([a, b, c])))), expanded(draw("3.3", list(work([a, b]), row({ status: "idle" }))))],
+    [["false", "false", "true"], ["false", "true"]]);
+}
+{
+  const closed = turn({ steps: [said("Rewriting it:\n```js\nconst game = SnakeGame.create(20, 20)\n```")] });
+  const open = turn({ outcome: "open", start: L(10, 49), end: undefined, steps: [said("Checking the inbox.")] });
+  const root = draw("3.4", list(work([closed, open])));
+  same("3.4 a closed turn mounts none of its steps, so it draws no code block and loads no highlighter",
+    { code: all(root, "[data-slot=code-block]").length, prose: all(root, ".ox-said").map(text) },
+    { code: 0, prose: ["Checking the inbox."] });
+}
+{
+  const post = { kind: "post" as const, key: "post:m-1044", msg: msg("m-1044", "Tests pass 9 of 9.", { channel: "team" }), channel: "team", live: false };
+  const held = turn({ steps: [said("Posting to #team."), post] });
+  const later = turn({ start: L(10, 45), end: L(10, 47), steps: [said("later")] });
+  const root = draw("3.5", list(work([held, later]), row({ status: "idle" }), { highlight: "m-1044" }));
+  same("3.5 arriving at a post opens the turn holding it and marks the post",
+    { expanded: all(root, ".ox-work > .ox-step > [data-slot=trace-collapsible] > [data-slot=trace-collapsible-trigger]").map((b) => b.getAttribute("aria-expanded")), marked: all(root, ".ox-post-hl").map((p) => p.getAttribute("data-post")) },
+    { expanded: ["true", "false"], marked: ["m-1044"] });
+}
+
+// ── 4. A connector without tool status ───────────────────────────────────────────────────────────
+{
+  const legacy = turn({ start: L(10, 36), end: L(10, 44), steps: [tools(call("Write", L(10, 38)), call("Bash", L(10, 41)), call("Bash", L(10, 43)))] });
+  const root = draw("4.1", list(work([legacy], false), row({ status: "idle" })));
+  const group = trigger(root, "Called Write, Bash and Bash");
+  same("4.1 a connector without tool status gets the note, and its calls read \"Called Write, Bash and Bash\" with \"3 calls · 10:38 to 10:43\"",
+    { note: text(root.querySelector(".ui-plane")), group: text(group?.querySelector("[data-slot=trace-description]")) },
+    {
+      note: "logic's connector reports which tools it calls but not when they finish, so Work can't show running, done or failed. A connector that reports tool results shows them here once logic restarts on it.",
+      group: "3 calls · 10:38 to 10:43",
+    });
+}
+
+// ── 5. Untrusted text ────────────────────────────────────────────────────────────────────────────
+{
+  const root = draw("5.1", createElement(SaidBlock, { text: "Done <img src=x onerror=\"alert(1)\"> and [here](javascript:alert(1))", cut: false }));
+  const hrefs = all(root, "a").map((a) => a.getAttribute("href"));
+  ok("5.1 prose with <img onerror> and a javascript: link renders sanitized",
+    all(root, "img").length === 0 && !root.innerHTML.includes("onerror") && hrefs.every((h) => h === null || !/^\s*javascript:/i.test(h)) && text(root).startsWith("Done"),
+    { html: root.innerHTML });
+}
+{
+  const hostile = { ...call("x", L(10, 40), { end: L(10, 40) + 100, failed: false }), name: "<b>x</b>", full: "mcp__evil__<b>x</b>" };
+  const root = draw("5.2", createElement(ToolLine, { call: hostile, state: "done" }));
+  same("5.2 a tool name <b>x</b> renders as escaped text",
+    [all(root, "b").length, text(root.querySelector("[data-slot=trace-description] code"))], [0, "<b>x</b>"]);
+}
+{
+  const long = "t".repeat(200);
+  const root = draw("5.3", createElement(ToolLine, { call: { ...call("x", L(10, 40), { end: L(10, 40) + 100, failed: false }), name: long, full: `mcp__x__${long}` }, state: "done" }));
+  const code = root.querySelector("[data-slot=trace-description] code");
+  same("5.3 a 200-character tool name shows its first 64 characters and keeps the whole name in title",
+    [code?.textContent, code?.getAttribute("title")], [`${"t".repeat(64)}…`, `mcp__x__${long}`]);
+}
+
+// ── 6. Code ──────────────────────────────────────────────────────────────────────────────────────
+{
+  const src = "Rewriting it:\n```js\nconst s = \"<b>x</b>\" // one tick\n```\n\nAnd in Rust:\n```rust\nfn main() {}\n```";
+  const m = await mount(createElement(Prose, { src, className: "ox-said" }));
+  const blocks = () => all(m.container, "[data-slot=code-block]");
+  const styled = (el: Element | undefined) => all(el ?? m.container, "[data-slot=code-block-content] span[style]");
+  const first = { blocks: blocks().length, head: text(blocks()[0]?.querySelector("[data-slot=code-block-header]")), code: blocks()[0]?.querySelector("[data-slot=code-block-content]")?.textContent, styled: styled(blocks()[0]).length };
+  for (let i = 0; i < 100 && styled(blocks()[0]).length === 0; i++) await m.run(() => sleep(100));
+  const colours = styled(blocks()[0]).map((s) => s.style.color);
+  same("6.1 a js fence draws a code block with \"js\" and Copy, plain text first, then token spans coloured var(--shiki-…) with no element from Shiki's HTML",
+    {
+      first,
+      tokens: colours.length > 1 && colours.every((c) => c.startsWith("var(--shiki-")),
+      text: blocks()[0]?.querySelector("[data-slot=code-block-content]")?.textContent?.replace(/\n/g, ""),
+      markup: all(blocks()[0] ?? m.container, "[data-slot=code-block-content] b, [data-slot=code-block-content] pre pre, .shiki").length,
+    },
+    { first: { blocks: 2, head: "js Copy", code: "const s = \"<b>x</b>\" // one tick", styled: 0 }, tokens: true, text: "const s = \"<b>x</b>\" // one tick", markup: 0 });
+  await m.run(() => sleep(300));
+  same("6.2 a rust fence stays plain", [styled(blocks()[1]).length, await highlight("fn main() {}", "rust")], [0, undefined]);
+  await m.unmount();
+}
+
+// ── 7. Posts ─────────────────────────────────────────────────────────────────────────────────────
+{
+  const dm = draw("7.1", createElement(PostRow, { msg: msg("d1", "Game over, or wrap?", { to: "local.lead" }), agent: "local.logic", to: "local.lead", toName: "lead" }));
+  const post = draw("7.1", createElement(PostRow, { msg: msg("p1", "Tests pass", { channel: "team" }), agent: "local.logic", channel: "team" }));
+  const read = (root: HTMLElement) => {
+    const a = root.querySelector(".ox-post-h a");
+    return [text(root.querySelector(".ox-post-h span")), text(a), a?.getAttribute("href"), root.querySelector(".ox-post")?.className];
+  };
+  same("7.1 a direct message reads \"Sent to lead\" with \"Open conversation\" to the conversation, and a channel post \"Posted in #team\" with \"Open in #team\"",
+    [read(dm), read(post)],
+    [["Sent to lead", "Open conversation", formatRoute({ view: "dm", peer: "local.logic", with: "local.lead" }), "ox-post ox-post-dm"], ["Posted in #team", "Open in #team", "#/channel/team", "ox-post"]]);
+}
+
+// ── 8. The footer ────────────────────────────────────────────────────────────────────────────────
+{
+  const foot = (r: RosterRow) => draw("8", createElement(SessionFoot, { row: r }));
+  const working = foot(row({ activity: "Running node app/snake.test.mjs", statusSince: L(10, 51), progress: { kind: "unknown" } }));
+  same("8.1 the foot reads \"logic is working Running node app/snake.test.mjs. Reported 10:51.\" with no moving dots",
+    [text(working.querySelector(".ox-foot")), all(working, ".ui-dots").length], ["logic is working Running node app/snake.test.mjs. Reported 10:51.", 0]);
+  same("8.2 waiting says what it reported in the gold ink, idle says no current activity, and offline its last heartbeat",
+    [
+      text(foot(row({ status: "waiting", activity: "Needs approval to run python3 -m http.server", statusSince: L(10, 50) })).querySelector(".ox-foot .ox-foot-wait")),
+      text(foot(row({ status: "idle" })).querySelector(".ox-foot")),
+      text(foot(row({ status: "offline" })).querySelector(".ox-foot")),
+    ],
+    ["Needs approval to run python3 -m http.server. Reported 10:50.", "logic is idle No current activity.", "logic is offline Last heartbeat 10:51."]);
+}
+
+// ── 9. Which steps rise in ───────────────────────────────────────────────────────────────────────
+{
+  let set: (w: Work) => void = () => undefined;
+  function Harness({ initial }: { initial: Work }) {
+    const [w, setW] = useState(initial);
+    set = setW;
+    return list(w);
+  }
+  const first = [said("From history."), said("Already here.", true)];
+  const m: Mounted = await mount(createElement(Harness, { initial: work(first) }));
+  const rising = () => all(m.container, ".ui-in").map(text);
+  const atMount = rising();
+  const late = said("Late history.");
+  const arrived = said("Just arrived.", true);
+  await m.run(() => set(work([...first, late, arrived])));
+  const afterOne = rising();
+  await m.run(() => set(work([...first, late, arrived, said("And another.", true)])));
+  same("9.1 nothing rises on the first draw, only a live step that arrives after it rises, and it keeps its class",
+    [atMount, afterOne, rising()], [[], ["Just arrived."], ["Just arrived.", "And another."]]);
+  await m.unmount();
+}
+
+// ── 10. The run error and presence's condition ───────────────────────────────────────────────────
+{
+  const bare = draw("10.1", createElement(RunError, { ts: L(10, 52) }));
+  same("10.1 the run error without a condition says the turn failed and that the plane doesn't say why, with no \"Presence reports\"",
+    [text(bare.querySelector(".ui-runerr b")), all(bare, ".ui-runerr span").map(text)], ["Turn failed at 10:52", ["The event plane doesn't say why."]]);
+  const quoted = draw("10.2", createElement(RunError, { ts: L(10, 52), condition: { code: "<i>rate_limit</i>", since: L(10, 52) } }));
+  same("10.2 with a condition it quotes the code as text and when it began",
+    [all(quoted, ".ui-runerr i").length, all(quoted, ".ui-runerr span").map(text)[1]], [0, "Presence reports <i>rate_limit</i> since 10:52."]);
+}
+{
+  const failed = turn({ outcome: "failed", end: L(10, 52), steps: [{ kind: "runError", key: "e1", ts: L(10, 52), live: false }] });
+  const before = turn({ start: L(10, 40), end: L(10, 45), steps: [said("before it")] });
+  const condition = { code: "rate_limit", since: L(10, 52) };
+  // The failed turn is the last turn in each, so it is open and its run error drawn.
+  const says = (items: WorkItem[]) => {
+    const root = draw("10.3", list(work(items), row({ status: "idle" }), { condition }));
+    return [all(root, ".ui-runerr").length, text(root.querySelector(".ui-runerr")).includes("Presence reports")];
+  };
+  same("10.3 a failed turn carries presence's condition only when it is the list's last item",
+    [says([before, failed]), says([failed, said("after it")])], [[1, true], [1, false]]);
+}
+
+// ── 11. The other parts of the work list ─────────────────────────────────────────────────────────
+{
+  same("11.1 a cut paragraph ends with the trailing ellipsis", text(draw("11.1", createElement(SaidBlock, { text: "Running the suite", cut: true }))), "Running the suite …");
+  const fenced = draw("11.2", createElement(SaidBlock, { text: "Running:\n```sh\nnode app/snake.test.mjs", cut: true }));
+  same("11.2 a paragraph cut inside an open code fence closes the fence first, so the trailing ellipsis sits outside the code block",
+    [fenced.querySelector("[data-slot=code-block-content]")?.textContent, text(fenced).endsWith("…"), all(fenced, "[data-slot=code-block-content]").some((pre) => text(pre).includes("…"))],
+    ["node app/snake.test.mjs", true, false]);
+  same("11.3 the jump button reads \"1 new step\" and \"3 new steps\"",
+    [1, 3].map((count) => text(draw("11.3", createElement(JumpButton, { count, onJump: () => undefined })).querySelector(".ui-jump"))), ["1 new step", "3 new steps"]);
+}
+{
+  const m = await mount(createElement(Reasoning, { text: "<b>x</b> then the wall test", cut: true }));
+  const button = m.container.querySelector("[data-slot=trace-collapsible-trigger]") as HTMLButtonElement;
+  const closed = [button.getAttribute("aria-expanded"), m.container.querySelector(".ox-think") === null, text(button)];
   await m.run(() => button.click());
-  same("10.2 a click opens a group: aria-expanded is true and the list draws each call by name",
-    [button.getAttribute("aria-expanded"), m.container.querySelector(".ui-tg")?.hasAttribute("data-open"), all(m.container, ".ui-tg-list code").map(text)],
-    ["true", true, ["Edit", "Bash"]]);
+  const body = m.container.querySelector(".ox-think");
+  same("11.4 reasoning is closed by default, and opened its body is plain text",
+    [closed, button.getAttribute("aria-expanded"), body?.children.length, text(body)], [["false", true, "Reasoning"], "true", 0, "<b>x</b> then the wall test …"]);
   await m.unmount();
 }
 {
@@ -244,28 +377,9 @@ same("9.1 the jump button reads \"1 new step\" and \"3 new steps\"",
   const more = () => m.container.querySelector(".ui-more") as HTMLButtonElement;
   const before = [text(more()), m.container.querySelector(".ui-prompt .ui-tx.ui-clamp") !== null];
   await m.run(() => more().click());
-  same("10.3 a long prompt clamps with Show more, and opens with Show less",
-    [before, [text(more()), m.container.querySelector(".ui-prompt .ui-tx.ui-clamp") !== null], text(m.container.querySelector(".ui-prompt > span"))],
-    [["Show more", true], ["Show less", false], "Prompt"]);
+  same("11.5 a long prompt clamps with Show more, and opens with Show less",
+    [before, [text(more()), m.container.querySelector(".ui-prompt .ui-tx.ui-clamp") !== null]], [["Show more", true], ["Show less", false]]);
   await m.unmount();
-}
-{
-  const m = await mount(createElement(Reasoning, { text: "<b>x</b> then the attack map", cut: true }));
-  const button = m.container.querySelector(".ui-think > button") as HTMLButtonElement;
-  const collapsed = [button.getAttribute("aria-expanded"), m.container.querySelector(".ui-think-body") === null, text(button)];
-  await m.run(() => button.click());
-  const body = m.container.querySelector(".ui-think-body");
-  same("10.5 reasoning is collapsed by default, and opened its body is plain text",
-    [collapsed, button.getAttribute("aria-expanded"), body?.children.length, text(body)],
-    [["false", true, "Reasoning"], "true", 0, "<b>x</b> then the attack map …"]);
-  await m.unmount();
-}
-{
-  const failed: SessionStep = { kind: "runError", key: "e1:0", ts: T, live: false };
-  const later: SessionStep = { kind: "turn", key: "e2:0", ts: T + MIN, source: "mesh", live: false };
-  const condition = { code: "rate_limit", since: T };
-  const says = (steps: SessionStep[]) => text(draw("10.4", createElement(SessionList, { steps, row: row(), condition })).querySelector(".ui-runerr")).includes("Presence reports");
-  same("10.4 the run error carries presence's condition only when it is the last step", [says([failed]), says([failed, later])], [true, false]);
 }
 
 await closeDom();

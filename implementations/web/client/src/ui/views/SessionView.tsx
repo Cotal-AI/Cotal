@@ -5,7 +5,7 @@ import type { ComposeTarget } from "../../lib/compose.js";
 import { displayNameOf, nameIndex } from "../../lib/names.js";
 import { rosterRows, type RosterRow } from "../../lib/roster.js";
 import { formatRoute, type Route } from "../../lib/route.js";
-import { eventCount, foldSession, SESSION_EVENT_CAP, type SessionFrame } from "../../lib/session.js";
+import { eventCount, foldWork, SESSION_EVENT_CAP, type SessionFrame, type Work, type WorkItem } from "../../lib/session.js";
 import { SESSION_LIMIT_MAX, type Controller } from "../../state/controller.js";
 import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
@@ -20,8 +20,8 @@ import { LiveChip } from "../session/LiveChip.tsx";
 import { PlaneNote } from "../session/PlaneNote.tsx";
 import type { RunErrorCondition } from "../session/RunError.tsx";
 import { SessionEmpty } from "../session/SessionEmpty.tsx";
-import { SessionList } from "../session/SessionList.tsx";
 import { StatusWord } from "../Status.tsx";
+import { WorkList } from "../work/WorkList.tsx";
 import { usePinnedScroll } from "./ChannelView.tsx";
 
 /** A reader within this many pixels of the bottom is following the session, as in ChannelView. */
@@ -29,6 +29,17 @@ const PINNED_PX = 24;
 /** Stable empty lists, so the fold is not redone while no session is held. */
 const NO_FRAMES: SessionFrame[] = [];
 const NO_POSTS: StoredMessage[] = [];
+
+/** Every turn, step, call and loose item of `work` in order, by key, for following and the jump
+ *  count. A run of calls is keyed by its first call, so that call is not listed twice. A post carries
+ *  its message id. */
+function stepsOf(work: Work): { key: string; live: boolean; post?: string }[] {
+  return work.items.flatMap((item): WorkItem[] => (item.kind === "turn" ? [item, ...item.steps] : [item]))
+    .flatMap((s) => [
+      { key: s.key, live: s.live, ...(s.kind === "post" ? { post: s.msg.id } : {}) },
+      ...(s.kind === "tools" ? s.calls.slice(1).map((c) => ({ key: c.key, live: c.live })) : []),
+    ]);
+}
 
 /** The parts of the scroll box this view reads. Spelled out rather than taken from the DOM lib,
  *  because the suites typecheck the components that render on the server with no DOM lib. */
@@ -86,8 +97,8 @@ function SessionSkeleton() {
  *    the agent is online: while the feed is down no new step can arrive. On a
  *    phone the crumb is the back button, the pill is left out, and Agent details opens the panel.
  *  - The list: the event plane note when the card says the plane is on, Load earlier while the channel
- *    holds more and the session is below the cap (or the cap line at it), the folded steps and the
- *    footer. A reload that holds frames keeps them on screen with a quiet loading line.
+ *    holds more and the session is below the cap (or the cap line at it), the agent's work as turns
+ *    (`WorkList`) and the footer. A reload that holds frames keeps them on screen with a quiet loading line.
  *  - The states, first match wins: loading with nothing held (skeleton rows), refused (the broker's
  *    reason and the grant to copy), failed with nothing held (Try again), the plane off (only the
  *    agent's posts), and with no steps the plane on or the card silent.
@@ -129,7 +140,9 @@ export function SessionView({ store, controller, id, at, back, phone = false, on
   const badgeOf = useBadgeOf();
   const frames = session?.frames ?? NO_FRAMES;
   const posts = session?.posts ?? NO_POSTS;
-  const steps = useMemo(() => foldSession(frames, posts), [frames, posts]);
+  const work = useMemo(() => foldWork(frames, posts), [frames, posts]);
+  const steps = useMemo(() => stepsOf(work), [work]);
+  const nameOf = useMemo(() => (who: string) => displayNameOf(who, idx, self), [idx, self]);
   const target = useMemo((): ComposeTarget => ({ kind: "dm", to: id }), [id]);
   const sub = [known?.role, known?.harness && harnessName(known.harness)].filter(Boolean).join(" · ");
   const plane = known?.events;
@@ -161,7 +174,7 @@ export function SessionView({ store, controller, id, at, back, phone = false, on
   // bottom when it does. This effect runs after the pin's, and stops following itself, so neither
   // that read nor a new step pulls the view away from the post.
   const arrived = useRef<string | undefined>(undefined);
-  const holdsAt = at !== undefined && steps.some((s) => s.kind === "post" && s.msg.id === at);
+  const holdsAt = at !== undefined && steps.some((s) => s.post === at);
   useLayoutEffect(() => {
     if (!holdsAt || at === undefined || arrived.current === at || load === "loading") return;
     const el = scroller();
@@ -193,7 +206,7 @@ export function SessionView({ store, controller, id, at, back, phone = false, on
       )}
       {more && atCap && <div className="ui-cutoff">Showing the newest 2,000 events</div>}
       {load === "loading" && <div className="ui-cutoff" role="status">Loading</div>}
-      <SessionList steps={steps} row={row} condition={condition} highlight={at} />
+      <WorkList work={work} row={row} condition={condition} highlight={at} nameOf={nameOf} />
     </>
   );
 
@@ -212,7 +225,7 @@ export function SessionView({ store, controller, id, at, back, phone = false, on
             </>
           )}
         </SessionEmpty>
-        {steps.length > 0 && <SessionList steps={steps} row={row} condition={condition} highlight={at} />}
+        {steps.length > 0 && <WorkList work={work} row={row} condition={condition} highlight={at} nameOf={nameOf} />}
       </div>
     );
   } else if (load === "failed") {
@@ -236,7 +249,7 @@ export function SessionView({ store, controller, id, at, back, phone = false, on
     body = (
       <div className="ui-col">
         <PlaneNote>{`${name} publishes no session events, so this view shows only what ${name} posted.`}</PlaneNote>
-        <SessionList steps={steps} row={row} condition={condition} highlight={at} />
+        <WorkList work={work} row={row} condition={condition} highlight={at} nameOf={nameOf} />
       </div>
     );
   } else if (steps.length === 0 && plane === "on") {

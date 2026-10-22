@@ -58,3 +58,33 @@ export function sanitizeHtml(html: string): string {
 export function renderMarkdown(src: string): string {
   return src ? sanitizeHtml(marked.parse(String(src), { async: false })) : "";
 }
+
+/** One piece of `markdownSegments`: prose as sanitized HTML, or one fenced block's raw text. */
+export type MarkdownSegment = { kind: "html"; html: string } | { kind: "code"; lang: string; text: string };
+
+/** Markdown split at fenced code: sanitized HTML for prose, raw text for each fence, in order.
+ *
+ *  The prose between two fences renders through `renderMarkdown` as one piece, and prose that
+ *  renders to nothing is left out. A fence's text is never HTML: the caller draws it as text. Its
+ *  language is the first word of the info string, "" when there is none. A fence with no closing line
+ *  runs to the end of the source, as CommonMark says. An indented code block and a fence inside a
+ *  list or a quote stay in the prose. */
+export function markdownSegments(src: string): MarkdownSegment[] {
+  const out: MarkdownSegment[] = [];
+  let prose = "";
+  const flush = (): void => {
+    const html = renderMarkdown(prose);
+    if (html) out.push({ kind: "html", html });
+    prose = "";
+  };
+  for (const token of marked.lexer(String(src))) {
+    if (token.type === "code" && token.codeBlockStyle !== "indented") {
+      flush();
+      out.push({ kind: "code", lang: String(token.lang ?? "").trim().split(/\s+/)[0] ?? "", text: String(token.text) });
+    } else {
+      prose += token.raw;
+    }
+  }
+  flush();
+  return out;
+}

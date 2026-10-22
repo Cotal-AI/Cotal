@@ -184,6 +184,24 @@
       "expectRed": "bundle-licenses.json lists tailwindcss with its own version and license",
       "cell": "bundle-licenses.json lists tailwindcss with its own version and license",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "highlight.ts imports Shiki's core statically, so every page load downloads the highlighter",
+      "file": "implementations/web/client/src/lib/highlight.ts",
+      "find": "import type { HighlighterCore, LanguageInput } from \"shiki/core\";\n\n/** Shiki's core and its JavaScript regex engine, loaded on the first highlight. */\nconst loadShiki = () => Promise.all([import(\"shiki/core\"), import(\"shiki/engine/javascript\")]);",
+      "replace": "import * as shikiCore from \"shiki/core\";\ntype HighlighterCore = shikiCore.HighlighterCore;\ntype LanguageInput = shikiCore.LanguageInput;\n\n/** Shiki's core and its JavaScript regex engine, loaded on the first highlight. */\nconst loadShiki = () => Promise.all([Promise.resolve(shikiCore), import(\"shiki/engine/javascript\")]);",
+      "expectRed": "no first-load chunk holds Shiki, and a lazy chunk does",
+      "cell": "no first-load chunk holds Shiki, and a lazy chunk does",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the Radix packages are left out of the licenses, so bundled primitives ship without their license",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "          if (p) found.set(p.name, p.root);",
+      "replace": "          if (p && !p.name.startsWith(\"@radix-ui/\")) found.set(p.name, p.root);",
+      "expectRed": "bundle-licenses.json lists class-variance-authority, clsx, tailwind-merge and the Radix packages now bundled",
+      "cell": "bundle-licenses.json lists class-variance-authority, clsx, tailwind-merge and the Radix packages now bundled",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
     }
   ]
 }
