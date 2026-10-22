@@ -11,8 +11,7 @@ const binary = process.argv[2] || "claude";
 const baseline = process.argv[3] || "Cotal-AI/Cotal#v0.88.0";
 const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-plugin-upgrade-")));
 const projects = [join(root, "one"), join(root, "two")];
-for (const key of Object.keys(process.env))
-  if (key.startsWith("COTAL_") || key.startsWith("CLAUDE_") || key === "CLAUDECODE") delete process.env[key];
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_") || key.startsWith("CLAUDE_") || key === "CLAUDECODE") delete process.env[key];
 Object.assign(process.env, {
   HOME: root,
   XDG_CONFIG_HOME: join(root, ".config"),
