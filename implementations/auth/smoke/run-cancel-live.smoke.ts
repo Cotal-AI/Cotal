@@ -7,7 +7,8 @@ import { mkdirSync, rmSync } from "node:fs";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import {
-  issuedUserCaller, mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams,
+  issuedUserCaller, mintCreds, mintLifecycleUid, mintGeneration, mintAcceptedToken, newIdentity, setupSpaceStreams,
+  withIssuerSession, standaloneConnectOpts,
   resolveService, invokeCommand, registry, type RuntimeProvider, type IssuedCaller,
   RUN_HOST_KIND, COTAL_LANG_RUN_HOST, recordsBucket, recordStatusKey, RECORD_KINDS, type RunHost,
   type RemoteManagerAuthorityMaterial, type RemoteRunAdmissionResult, type RemoteRunAttemptResult,
@@ -41,6 +42,8 @@ let launchHold: { entered: ReturnType<typeof deferred<string>>; release: ReturnT
   marker: ReturnType<typeof deferred<void>>; startSettled: ReturnType<typeof deferred<void>>;
   beforeReply: boolean; runId?: string } | undefined;
 let completionHold: { entered: ReturnType<typeof deferred<string>>; release: ReturnType<typeof deferred<void>> } | undefined;
+let postMarkerHold: { entered: ReturnType<typeof deferred<void>>; release: ReturnType<typeof deferred<void>> } | undefined;
+let nextOperatorHold: typeof postMarkerHold;
 const realHost = registry.resolve<RunHost>(RUN_HOST_KIND, COTAL_LANG_RUN_HOST);
 registry.unregister(RUN_HOST_KIND, COTAL_LANG_RUN_HOST);
 const observedHost: RunHost = { ...realHost, drive: (planes, request, mediator) => {
@@ -116,6 +119,22 @@ async function dial(actor: string, uid: string) {
   return { nc, caller };
 }
 type Client = { nc: NatsConnection; caller: IssuedCaller };
+/** The human manager-caller view has no channel rows. This separate fixture-owned issuer uses
+ * the supported agent profile with one declared channel. It tests channel cancellation, not the
+ * human callout's channel issuance or interactive-owner authority. */
+async function channelClient(): Promise<Client> {
+  const identity = newIdentity(), uid = mintLifecycleUid();
+  const issued = { generation: mintGeneration(), acceptedToken: mintAcceptedToken() };
+  const caller: IssuedCaller = { owner, actor: "channel", uid, generation: issued.generation };
+  const creds = await withIssuerSession({ servers: fx.servers, space: account.space, auth: account.auth, tls: false }, session =>
+    mintCreds(account.auth, identity, "agent", { principal: { owner, actor: "channel" }, lifecycleUid: uid,
+      capabilities: ["run"], allowSubscribe: ["cancel-window"], issued, expiresInSeconds: 300,
+      endpointCapabilities: ["describe", "run-start", "run-status", "run-cancel"].map(command => ({ endpoint: "manager", command, instanceId: state.instanceId, instanceOnly: true })),
+      issuance: { mode: "issue", store: session.store, accepted: session.accepted, sources: [] } }));
+  const nc = await connect({ servers: fx.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  connections.push(nc);
+  return { nc, caller };
+}
 async function call(client: Client, command: string, args: Record<string, unknown>): Promise<EndpointReply> {
   const target = await resolveService(client.nc, account.space, "manager", client.caller, { instanceId: state.instanceId, deadlineMs: 10000 });
   return (await invokeCommand(client.nc, account.space, target, command, args, { deadlineMs: 15000 })).reply;
@@ -175,6 +194,12 @@ try {
     runHosting: remote.remoteRunHosting({ state, owner, registrationProof: proof, accountPublicKey: account.accountPublicKey, processEpoch: registered.processEpoch,
       requestRunAdmission: request => post<RemoteRunAdmissionResult>("/manager-service-authority", { idpToken, request }),
       requestRunAttempt: async request => {
+        if (request.operator && nextOperatorHold) {
+          const hold = nextOperatorHold;
+          nextOperatorHold = undefined;
+          hold.entered.resolve();
+          await bounded(hold.release.promise, "post-marker holder reader release");
+        }
         if (request.operator && failNextOperatorReads > 0) {
           failNextOperatorReads--;
           throw new Error("fixture read-only issuance transport unavailable");
@@ -191,6 +216,10 @@ try {
       requestRunCancel: async request => {
         stages.push({ stage: request.stage, runId: request.cancel.runId });
         const result = await post<RemoteRunCancelResult>("/manager-service-authority", { idpToken, request });
+        if (result.stage === "commit" && result.result.kind === "committed" && postMarkerHold) {
+          nextOperatorHold = postMarkerHold;
+          postMarkerHold = undefined;
+        }
         const hold = launchHold;
         if (result.stage === "commit" && result.result.kind === "committed" && hold?.runId === request.cancel.runId) {
           if (hold.beforeReply) {
@@ -361,6 +390,38 @@ try {
     } finally {
       hold.release.resolve();
       completionHold = undefined;
+    }
+  });
+  await cell("a channel wait observes cancellation while the holder recheck is delayed", async () => {
+    const channel = await channelClient();
+    const runId = await start(channel, 'await wait(message(channel("cancel-window")), { name: "channel-window" });');
+    const hold = { entered: deferred<void>(), release: deferred<void>() };
+    postMarkerHold = hold;
+    const cancelling = call(channel, "run-cancel", { runId, reason: "channel cancellation window" })
+      .then(value => ({ status: "fulfilled" as const, value }), reason => ({ status: "rejected" as const, reason }));
+    try {
+      await bounded(hold.entered.promise, "post-marker holder read");
+      let observed: RunStatusView | undefined;
+      const until = performance.now() + 7000;
+      while (performance.now() < until) {
+        const reply = await call(channel, "run-status", { runId });
+        assert.ok(reply.ok, reply.error?.message);
+        observed = reply.data as RunStatusView;
+        if (observed.status?.state !== "running") break;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      console.log(`channel marker window: ${JSON.stringify({ state: observed?.status?.state,
+        marker: observed?.revoked !== undefined, outcome: observed?.journal.filter(r => r.kind === "step").at(-1)?.outcome })}`);
+      hold.release.resolve();
+      const result = await cancelling;
+      assert.equal(result.status, "fulfilled");
+      assert.equal(observed?.status?.state, "released", "an observed cancellation marker must classify the channel exit as cancellation");
+      assert.equal(observed?.journal.filter(r => r.kind === "step").at(-1)?.outcome, "cancelled");
+    } finally {
+      hold.release.resolve();
+      postMarkerHold = undefined;
+      nextOperatorHold = undefined;
+      await cancelling;
     }
   });
 } finally {
