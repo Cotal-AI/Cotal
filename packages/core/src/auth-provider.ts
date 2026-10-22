@@ -1,7 +1,7 @@
 import { execFile, type ExecFileException } from "node:child_process";
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
-import type { ServiceAuthorityInfo, ServiceAuthorityProof, ServiceAuthorityRequest, ServiceAuthorityResult } from "./remote-service-authority.js";
+import type { ServiceAuthorityInfo, ServiceAuthorityProof, ServiceAuthorityRequest, ServiceAuthorityResult, ServiceRegistrationWitness } from "./remote-service-authority.js";
 import type {
   RemoteManagerAdminAuthorizationRequest,
   RemoteManagerAdminAuthorizationResult,
@@ -200,6 +200,14 @@ export interface AuthProvider extends Extension {
     timeoutMs?: number;
     signal?: AbortSignal;
   }): Promise<{ result: ServiceAuthorityResult; sentinelCreds: string }>;
+  /**
+   * A renewal source for one registered service witness: the bearer function a long-lived service
+   * endpoint passes as `EndpointOptions.bearer`. Its first pull activates and later pulls renew, each
+   * replaying one requestId per operation that is persisted in `store` before its first send. The
+   * source holds the material; it owns no timers, and the endpoint's own schedule drives it. Optional,
+   * so a provider without service endpoints refuses at the caller.
+   */
+  serviceEndpointRenewal?(opts: { store: SecretStore; dir: string; witness: ServiceRegistrationWitness }): ServiceEndpointRenewal;
   /**
    * Request the closed remote manager-service authority material from the host's loopback/operator
    * exchange. This is an explicitly typed lifecycle protocol, not a generic profile mint: the
@@ -555,6 +563,28 @@ export function resolveAuthProvider(): AuthProvider {
   if (providers.length > 1)
     throw new Error(`multiple auth providers registered (${providers.map((p) => p.name).join(", ")}) - cannot choose between them`);
   return providers[0];
+}
+
+/** Where a {@link ServiceEndpointRenewal} stands. `unavailable` is an outage the next pull retries with
+ *  the same request; `ended` is terminal, and every later pull refuses without sending anything. No
+ *  state carries a token. */
+export type ServiceEndpointRenewalState =
+  | { readonly state: "idle" }
+  | { readonly state: "current"; readonly accessExpiresAt: number; readonly renewalExpiresAt: number }
+  | { readonly state: "unavailable" }
+  | { readonly state: "ended"; readonly reason: string }
+  | { readonly state: "closed" };
+
+/** A service endpoint's renewal source (see {@link AuthProvider.serviceEndpointRenewal}). */
+export interface ServiceEndpointRenewal {
+  /** The bearer function: a fresh, unexpired service access bearer. Concurrent calls share one request. */
+  bearer(): Promise<string>;
+  /** The current state, with expiries only. */
+  state(): ServiceEndpointRenewalState;
+  /** The space's deny-all sentinel creds the endpoint presents with the bearer, known after the first success. */
+  readonly sentinelCreds: string | undefined;
+  /** Refuse new pulls, abort the request in flight and wait for it. Idempotent. */
+  close(): Promise<void>;
 }
 
 /** What {@link AuthProvider.userCredentials} takes: `store` and `dir` locate this machine's state,
