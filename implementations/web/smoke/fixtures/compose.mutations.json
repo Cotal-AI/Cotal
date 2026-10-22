@@ -288,8 +288,8 @@
     {
       "name": "K36 the mode line drops the member count",
       "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
-      "find": "to={`to #${channel} · ${count} member${count === 1 ? \"\" : \"s\"}`}",
-      "replace": "to={`to #${channel}`}",
+      "find": "to={sheet ? `to #${channel}` : `to #${channel} · ${count} member${count === 1 ? \"\" : \"s\"}`}",
+      "replace": "to={sheet ? `to #${channel}` : `to #${channel}`}",
       "expectRed": "3.2 its row is Mention, the mode line, as operator and send",
       "cell": "3.2 its row is Mention, the mode line, as operator and send"
     },
@@ -796,6 +796,30 @@
       "replace": "operatorId: meta.operatorId ?? null",
       "expectRed": "6.5 a meta with no operator id keeps the one a post's answer gave",
       "cell": "6.5 a meta with no operator id keeps the one a post's answer gave"
+    },
+    {
+      "name": "PC1 a phone's Mention keeps its word",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "{!phone && \"Mention\"}",
+      "replace": "{\"Mention\"}",
+      "expectRed": "3.26 on a phone the row fits the screen as mock D draws it: Mention as its named icon, the channel alone in the mode line, no as operator, and send",
+      "cell": "3.26 on a phone the row fits the screen as mock D draws it: Mention as its named icon, the channel alone in the mode line, no as operator, and send"
+    },
+    {
+      "name": "PC2 a phone keeps as operator",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "{!phone && <span className=\"ui-pick\">as operator</span>}",
+      "replace": "<span className=\"ui-pick\">as operator</span>",
+      "expectRed": "3.26 on a phone the row fits the screen as mock D draws it: Mention as its named icon, the channel alone in the mode line, no as operator, and send",
+      "cell": "3.26 on a phone the row fits the screen as mock D draws it: Mention as its named icon, the channel alone in the mode line, no as operator, and send"
+    },
+    {
+      "name": "PC3 a phone's mode line keeps the member count",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "to={sheet ? `to #${channel}` :",
+      "replace": "to={false ? `to #${channel}` :",
+      "expectRed": "3.26 on a phone the row fits the screen as mock D draws it: Mention as its named icon, the channel alone in the mode line, no as operator, and send",
+      "cell": "3.26 on a phone the row fits the screen as mock D draws it: Mention as its named icon, the channel alone in the mode line, no as operator, and send"
     }
   ]
 }

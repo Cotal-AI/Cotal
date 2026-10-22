@@ -8,6 +8,7 @@ import { useStore } from "../state/hooks.js";
 import type { Store } from "../state/store.js";
 import type { DashboardState, Draft } from "../state/types.js";
 import { CopyCommand } from "./CopyCommand.tsx";
+import { SheetMenu } from "./sheet.js";
 import { clock } from "../lib/time.js";
 
 /** The controller's two composer calls, for the composers the views draw. Null before the dashboard
@@ -49,12 +50,17 @@ const BLANK: Draft = { text: "", outgoing: [] };
  *  - Refused: the draft is back in the box, the card is ringed, Try again replaces the row, and the
  *    note is the refusal, as plain text: the server's part of it is not ours to format.
  *
+ *  On a phone (`SheetMenu`) the row fits the screen as mock D draws it: Mention is its icon alone,
+ *  named for assistive tech, and "as operator" is left out. The mode line shrinks before the send
+ *  button moves.
+ *
  *  `where` is `#review` or the agent's name; `to` is the mode line, `to #review · 5 members`. */
 export function Composer({ store, target, where, to }: { store: Store<DashboardState>; target: ComposeTarget; where: string; to: string }) {
   const key = composeKey(target);
   const post = useStore(store, (s) => s.post);
   const draft = useStore(store, (s) => s.drafts[key]) ?? BLANK;
   const ctl = useContext(Compose);
+  const phone = useContext(SheetMenu) !== null;
   const box = useRef<HTMLTextAreaElement>(null);
   const field = () => box.current as unknown as Field | null;
   useLayoutEffect(() => {
@@ -121,16 +127,16 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
         <div className="ui-crow">
           {refused === undefined ? (
             <>
-              <button type="button" className="ui-pick" disabled={ctl === null} onClick={mention}>
+              <button type="button" className="ui-pick" disabled={ctl === null} onClick={mention} title={phone ? "Mention" : undefined} aria-label={phone ? "Mention" : undefined}>
                 <Icon icon={AtIcon} size={16} className="ui-ic" />
-                Mention
+                {!phone && "Mention"}
               </button>
               <span className="ui-sp" />
               <span className="ui-pick">
                 <i className="ui-mode-dot" style={{ background: target.kind === "msg" ? "var(--multi)" : "var(--uni)" }} />
                 {to}
               </span>
-              <span className="ui-pick">as operator</span>
+              {!phone && <span className="ui-pick">as operator</span>}
               <button type="button" className="ui-send" title={sending ? "Sending" : "Send"} aria-label={sending ? "Sending" : "Send"} disabled={!ready} onClick={submit}>
                 {sending ? <span className="ui-spin" /> : <Icon icon={ArrowUp02Icon} size={16} className="ui-ic ui-ic16" />}
               </button>

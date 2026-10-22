@@ -150,8 +150,8 @@ export function usePinnedScroll(list: string, last: string | undefined) {
  *    no panel) their buttons are disabled.
  *  - `onTogglePanel` adds the header's Toggle panel button, pressed while `panelOpen`, so a reader
  *    who closed the panel can bring it back.
- *  - On a phone (`SheetMenu`) the header opens with the menu button that shows the places sheet, and
- *    the panel button is titled Open agent panel. */
+ *  - On a phone (`SheetMenu`) the header opens with the menu button that shows the places sheet, the
+ *    panel button is titled Open agent panel, and the composer's mode line names the channel alone. */
 export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen = false, onTogglePanel }: {
   store: Store<DashboardState>;
   channel: string;
@@ -233,7 +233,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
         <div className="ui-dock">
           <div className="ui-dock-in">
             {needing && <NeedsCard row={needing} onViewAgent={onViewAgent} onDismiss={() => dismiss(needsKey(needing))} post={post} selfId={self} />}
-            <Composer store={store} target={target} where={`#${channel}`} to={`to #${channel} · ${count} member${count === 1 ? "" : "s"}`} />
+            <Composer store={store} target={target} where={`#${channel}`} to={sheet ? `to #${channel}` : `to #${channel} · ${count} member${count === 1 ? "" : "s"}`} />
           </div>
         </div>
       )}

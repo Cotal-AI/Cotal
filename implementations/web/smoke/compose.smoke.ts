@@ -346,6 +346,11 @@ const answer = (id: string, operatorId = OP): SendAnswer => ({ ok: true, id, ope
   const tab = parse(renderToString(createElement(AgentProfile, { store: tabStore, id: "local.evil", clock: () => 2 })));
   same("3.25 the agent's Profile quotes a hostile agent name in its attach and stop commands",
     [...tab.querySelectorAll(".ui-cmd code")].map((x) => x.textContent), [`cotal attach --name ${shellArg(evil)}`, `cotal stop --name ${shellArg(evil)}`]);
+  const phoneStore = createStore<DashboardState>({ ...initialState, ...seed({}) });
+  const phone = parse(renderToString(createElement(Shell, { store: phoneStore, controller: started, route: channelRoute, paneOpen: false, msgPerSecond: () => 0, phone: true }))).querySelector("main.ui-center") ?? none();
+  same("3.26 on a phone the row fits the screen as mock D draws it: Mention as its named icon, the channel alone in the mode line, no as operator, and send",
+    [...card(phone).querySelectorAll(".ui-crow > *")].map((x) => [x.tagName, x.className, textOf(x), x.getAttribute("aria-label")]),
+    [["BUTTON", "ui-pick", "", "Mention"], ["SPAN", "ui-sp", "", null], ["SPAN", "ui-pick", "to #review", null], ["BUTTON", "ui-send", "", "Send"]]);
 }
 
 // ── 4. Mounted: typing, sending, and the Message buttons ─────────────────────────────────────────

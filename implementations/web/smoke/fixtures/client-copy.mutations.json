@@ -172,6 +172,14 @@
       "replace": "",
       "expectRed": "only a working Agents row keeps room for View work, and on a phone a row hides its host",
       "cell": "only a working Agents row keeps room for View work, and on a phone a row hides its host"
+    },
+    {
+      "name": "the composer's pickers no longer shrink",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": ".ui-crow > span.ui-pick { min-width: 0; overflow: hidden; text-overflow: ellipsis; }\n",
+      "replace": "",
+      "expectRed": "the composer's pickers and a phone header's title shrink rather than push the page sideways",
+      "cell": "the composer's pickers and a phone header's title shrink rather than push the page sideways"
     }
   ]
 }

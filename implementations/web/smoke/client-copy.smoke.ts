@@ -149,6 +149,10 @@ const ruleBody = (selector: string) => appRules.filter((r) => !reduced(r) && r.s
 ok("only a working Agents row keeps room for View work, and on a phone a row hides its host",
   /padding-right\s*:/.test(ruleBody(".ox-arow-w > .v3-arow")) && !/padding-right\s*:/.test(ruleBody(".ox-arow > .v3-arow")) && /display\s*:\s*none/.test(ruleBody(".ui-phone .ox-host")),
   [ruleBody(".ox-arow-w > .v3-arow"), ruleBody(".ox-arow > .v3-arow"), ruleBody(".ui-phone .ox-host")]);
+ok("the composer's pickers and a phone header's title shrink rather than push the page sideways",
+  /min-width\s*:\s*0/.test(ruleBody(".ui-crow > span.ui-pick")) && /overflow\s*:\s*hidden/.test(ruleBody(".ui-crow > span.ui-pick"))
+    && /min-width\s*:\s*0/.test(ruleBody(".ui-phone .ui-bar h1")) && /overflow\s*:\s*hidden/.test(ruleBody(".ui-phone .ui-bar h1")),
+  [ruleBody(".ui-crow > span.ui-pick"), ruleBody(".ui-phone .ui-bar h1")]);
 const animated = appRules.filter((r) => !reduced(r) && sets(r.body) && sets(r.body) !== "none")
   .flatMap((r) => r.selectors).filter((s) => s.includes("."));
 const stopped = new Set(appRules.filter((r) => reduced(r) && sets(r.body) === "none")
