@@ -74797,10 +74797,10 @@ async function submitFeedback(input, options = {}) {
 var import_node_child_process3 = require("node:child_process");
 
 // ../connector-core/dist/docs-bundle.generated.js
-var DOCS_VERSION = "0.94.1";
+var DOCS_VERSION = "0.94.2";
 function loadDocsBundle() {
   return {
-    "version": "0.94.1",
+    "version": "0.94.2",
     "generatedFrom": "docs/*.md + SPEC.md + spec/cotal-lang.md + spec/cotal.schema.json",
     "pages": [
       {
@@ -77088,21 +77088,23 @@ ${accessLine(c.config)}${listening}`
         });
       } catch (e) {
         if (e instanceof ApprovalRequired) {
+          const resume = options.approvalResume ? ` and approval_id ${JSON.stringify(e.pending.approval.id)}` : "";
+          const message = `Permission approval required. This conversation is not connected.
+The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.
+Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.
+After they approve, retry cotal_connect with name ${JSON.stringify(candidate2)}${resume} and the same requested permissions. Do not poll or start another request while waiting.`;
           const structuredContent = {
             v: 1,
             status: "pending",
             name: candidate2,
             requestId: e.pending.requestId,
             approval: e.pending.approval,
-            proposed: e.pending.proposed
+            proposed: e.pending.proposed,
+            message
           };
-          const resume = options.approvalResume ? ` and approval_id ${JSON.stringify(e.pending.approval.id)}` : "";
           return {
             content: [
-              { type: "text", text: `Permission approval required. This conversation is not connected.
-The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.
-Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.
-After they approve, retry cotal_connect with name ${JSON.stringify(candidate2)}${resume} and the same requested permissions. Do not poll or start another request while waiting.` },
+              { type: "text", text: message },
               { type: "text", text: JSON.stringify(structuredContent) }
             ],
             structuredContent
