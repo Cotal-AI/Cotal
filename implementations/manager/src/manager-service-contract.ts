@@ -993,6 +993,8 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
   properties: {
     runId: { type: "string" },
     endpoint: { type: "string" },
+    revoked: RUN_ROW_SCHEMA.properties.revoked,
+    revocationUnreadable: RUN_ROW_SCHEMA.properties.revocationUnreadable,
     // The record halves are core's own closed shapes; they ride here as the values the store holds.
     spec: { type: "object" },
     status: { type: "object" },

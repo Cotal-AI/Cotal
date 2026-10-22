@@ -629,7 +629,7 @@ export class RunHosting {
     this.observeCancellation(input.runId);
     if (!slot || this.runs.get(input.runId) !== slot) {
       this.clearObservedCancellation(input.runId);
-      return reply("not-driven-here");
+      return reply(slot && !slot.drive ? "launch-abandoned" : "not-driven-here");
     }
     // A preactivation slot may have activated while the marker was being written. Re-observe
     // before selecting its handle; an old holder observation cannot stop a superseded attempt.

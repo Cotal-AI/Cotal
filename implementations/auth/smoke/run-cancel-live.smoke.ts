@@ -110,7 +110,9 @@ async function start(client: Client, source: string) {
   const reply = await call(client, "run-start", { source });
   assert.ok(reply.ok, reply.error?.message);
   const runId = (reply.data as { runId: string }).runId;
-  await status(client, runId, "pending");
+  const pending = await status(client, runId, "pending");
+  assert.equal(pending.revoked, undefined);
+  assert.equal(pending.revocationUnreadable, undefined);
   return runId;
 }
 try {
@@ -193,6 +195,8 @@ try {
     console.log(`status marker observation: ${JSON.stringify({ recordedState: final.status?.state,
       hasRevoked: Object.hasOwn(final, "revoked"), hasUnreadable: Object.hasOwn(final, "revocationUnreadable"),
       cancellationObservedMarker: firstResult.revocation !== undefined })}`);
+    assert.deepEqual(final.revoked, { by: firstResult.revocation!.by, reason: firstResult.revocation!.reason });
+    assert.equal(final.revocationUnreadable, undefined);
     assert.ok(!final.journal.some(r => r.kind === "step" && r.step.includes("log")));
   });
   await cell("fresh duplicate keeps the first marker", async () => {

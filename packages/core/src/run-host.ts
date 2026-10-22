@@ -267,6 +267,10 @@ export interface RunStatusView {
   readonly endpoint: string;
   readonly spec: RunSpecValue;
   readonly status?: RunStatusValue;
+  /** The independently observed marker, not proof that the recorded holder has stopped. */
+  readonly revoked?: { readonly by: string; readonly reason: string };
+  /** A failed marker read is unknown, not an absent marker or a resumable run. */
+  readonly revocationUnreadable?: string;
   readonly journal: RunJournalRow[];
 }
 

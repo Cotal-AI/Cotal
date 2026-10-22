@@ -349,9 +349,17 @@ export const cotalLangRunHost: RunHost = {
     // The replay durable is named by the caller's takeover id (its credential's row); the read
     // half of that row is what a status view rides.
     const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, req.runId, req.takeoverId);
+    let revocation: Pick<RunStatusView, "revoked" | "revocationUnreadable"> = {};
+    try {
+      const marker = await readRunRevocation(planes.jsm, planes.space, req.endpoint, req.runId);
+      if (marker) revocation = { revoked: { by: marker.by, reason: marker.reason } };
+    } catch (error) {
+      revocation = { revocationUnreadable: (error as Error).message };
+    }
     return {
       runId: req.runId,
       endpoint: req.endpoint,
+      ...revocation,
       spec: record.spec.value,
       ...(record.status !== undefined ? { status: record.status.value } : {}),
       journal: await journalRows(planes.kv, req.endpoint, replay.records),

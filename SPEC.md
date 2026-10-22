@@ -5785,6 +5785,13 @@ record held elsewhere refuses before a write unless a marker already exists, in 
 reply reports `not-driven-here` without stopping a local handle. An absent run record, a spec
 without status, and a released run remain distinct from another holder's running attempt.
 
+The closed `run-status` view also carries optional `revoked: { by, reason }` and
+`revocationUnreadable: string`, with the same meaning as the run list. The marker is read
+independently of the recorded state. A running record with a marker does not prove cessation;
+a released record with a marker cannot resume. A failed marker read MUST be reported as unreadable,
+not as marker absence or permission to resume. A terminal record remains terminal whether or not
+it has a marker.
+
 Each cancellation intent is keyed by the full served subject, not just the envelope id. A pending
 intent prevents a new local launch but does not stop an existing drive. Only an observed durable
 marker permits the manager to call the current eligible drive's cooperative `cancel(reason)`

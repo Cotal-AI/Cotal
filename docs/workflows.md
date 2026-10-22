@@ -349,7 +349,11 @@ outcome was observed; `stop-requested` means it was not observed within the requ
 `duplicate` is false for a confirmed new marker, true for a confirmed existing one, and null after
 an unknown write followed by marker readback. Preserve unknown outcomes. Neither a marker nor a
 reply proves process cleanup or that another host stopped. Revoked runs remain readable through
-`run status`, but cannot receive new drive or answering authority.
+`run status`, but cannot receive new drive or answering authority. The endpoint's `run-status`
+reply carries `revoked: { by, reason }` independently of the recorded run state. A running record
+with that marker is not proof of a stopped holder. `revocationUnreadable` means the marker could
+not be checked; do not read that as unrevoked or resumable. A released record without a marker can
+be resumed under its original admission; a released record with a marker cannot.
 
 Embedding hosts can call a drive's `cancel(reason)` handle to signal cooperative root cancellation.
 The language's `RootCancellation` source carries the first reason through the walker and compiled
