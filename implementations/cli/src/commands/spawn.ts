@@ -355,8 +355,13 @@ async function uniqueMeshName(
 }
 
 
-/** Only an occupied actor is retryable; authorization and provisioning failures stay failures. */
-class ForegroundActorCollision extends Error {}
+/** Only an occupied actor is retryable; authorization and provisioning failures stay failures.
+ *  Every collision is found before anything is launched or issued, so it is a refusal. */
+class ForegroundActorCollision extends CommandFailure {
+  constructor(message: string) {
+    super("refused", "CONFLICT", message);
+  }
+}
 
 async function provisionFreshForeground<T>(
   requested: string,

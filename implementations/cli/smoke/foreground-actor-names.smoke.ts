@@ -45,7 +45,8 @@ if (process.argv[2] === "worker") {
     }),
   };
   registry.register(connector);
-  await runCli(registry, ["spawn", ...process.argv.slice(3)]);
+  // Direct foreground execution. A bare spawn is a managed attachment, which needs terminals.
+  await runCli(registry, ["spawn", "--foreground", ...process.argv.slice(3)]);
   process.exit(process.exitCode ?? 0);
 }
 
@@ -154,7 +155,8 @@ try {
   const beforePinned = requests.length;
   const pinned = launch(["--name", "default_agent"]);
   assert.equal(await pinned.ready, false, "explicit held identity never launches a replacement");
-  assert.equal(await pinned.closed, 1, "explicit held identity still refuses");
+  assert.equal(await pinned.closed, 2, `explicit held identity still refuses: ${pinned.output}`);
+  assert(/Outcome: refused/.test(pinned.output) && /Code:\s+CONFLICT/.test(pinned.output), `a held identity is a refusal, not an unconfirmed outcome: ${pinned.output}`);
   assert(pinned.output.includes("foreground actor material") && requests.length === beforePinned, "explicit collision refuses before remote provisioning");
   await stop(first);
   const third = launch();
@@ -165,10 +167,11 @@ try {
   const beforeDenied = requests.length;
   const denied = launch();
   assert.equal(await denied.ready, false, "ordinary authorization refusal never launches");
-  assert.equal(await denied.closed, 1, "ordinary authorization refusal remains an error");
+  // The provider's failure reaches the command unclassified, so its outcome is reported unconfirmed.
+  assert.equal(await denied.closed, 3, `ordinary authorization refusal remains an error: ${denied.output}`);
   assert.deepEqual(requests.slice(beforeDenied), ["denied"], "ordinary authorization refusal is not retried under another actor");
   console.log("FOREGROUND ACTOR NAMING: all real-process collision controls passed");
-  emitSentinel({ passed: 15, failed: 0 });
+  emitSentinel({ passed: 16, failed: 0 });
   passed = true;
 } finally {
   for (const worker of workers) await stop(worker);
