@@ -1709,9 +1709,12 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
   async function registerEffect(ctx: Ctx, inv: Inv, req: ServiceServeRequest, b: Bound, id: string): Promise<ServiceServeResult> {
     ctx.step = "R-gate";
     const r = req.register!;
+    const stampedHere = (row: EndpointRow) => {
+      const stamp = row.serviceAuthority.registration;
+      return stamp?.requestId === req.requestId && stamp.requestDigest === req.requestDigest;
+    };
     const recovered = async (g: Awaited<ReturnType<typeof servedGate>>) => {
-      const stamp = g.row.serviceAuthority.registration;
-      if (stamp?.requestId !== req.requestId || stamp.requestDigest !== req.requestDigest) return undefined;
+      if (!stampedHere(g.row)) return undefined;
       const witness = stampWitness(ctx, b.binding, g.row)!;
       return { state: "registered" as const, witness, snapshot: await snapshotOf(ctx, witness, r.artifacts) };
     };
@@ -1747,15 +1750,18 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     const { progress: _progress, ...observed } = endpointRegistrationBarrier(stores.authKv, space,
       { endpoint: b.binding.endpoint, instanceId: b.binding.instanceId, opId: id, serviceRegistration: { requestId: req.requestId, requestDigest: req.requestDigest } });
     void _progress;
-    // The barrier freezes the gate revision it observes after the publishes above, and the checks
-    // ran on an earlier read. The expected witness is checked again on exactly the revision being
-    // frozen: a gate that moved is a definite refusal, with nothing frozen or written.
-    let refusal: string | undefined;
-    const barrier = resuming ? observed : { ...observed, freeze: async (revision: number) => {
+    // The barrier freezes the gate revision it observes after the publishes above, whenever it does
+    // not find the gate frozen by this operation: also for a request that read it frozen and finds
+    // it reopened. The checks above ran on an earlier read, so they are made again on exactly the
+    // revision being frozen, and nothing is frozen or written unless they hold. A stamp that already
+    // names this request was completed by another invocation of it and answers as a replay does.
+    let decided: "approval-revoked" | "stamped" | "conflict" | undefined;
+    const barrier = { ...observed, freeze: async (revision: number) => {
       const now = await servedGate(ctx, b);
-      if (now.kind === "revoked") refusal = "approval-revoked";
-      else if (now.revision !== revision || now.row.state !== "open" || !expectationHolds(now.row)) refusal = "conflict";
-      return refusal === undefined ? await observed.freeze(revision) : null;
+      if (now.kind === "revoked") decided = "approval-revoked";
+      else if (stampedHere(now.row)) decided = "stamped";
+      else if (now.revision !== revision || now.row.state !== "open" || !expectationHolds(now.row)) decided = "conflict";
+      return decided === undefined ? await observed.freeze(revision) : null;
     } };
     await readyBefore(ctx);
     try {
@@ -1763,8 +1769,12 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
         spec: { endpoint: b.binding.endpoint, owner: b.binding.owner, clusterDigests: [...r.clusterDigests], protocol: { v: 1 } },
         authority: nativeServiceNameAuthority(inv.h.registry, { space, accountPublicKey }), barrier, readClusterArtifact: (d) => artifacts.get(d) }));
     } catch (err) {
-      if (refusal !== undefined && err instanceof Held) return deniedServe(refusal);
-      throw err;
+      if (decided === undefined || !(err instanceof Held)) throw err;
+      if (decided !== "stamped") return deniedServe(decided);
+      ctx.step = "R-confirm";
+      const now = await servedGate(ctx, b);
+      if (now.kind === "revoked") return deniedServe("approval-revoked");
+      return (await recovered(now)) ?? held("unknown", ctx.step, "this request's registration was replaced while it was confirmed");
     }
     await readyAfter(ctx);
     ctx.step = "R-confirm";
