@@ -71,6 +71,7 @@ export const GATEWAY_TOOLS: ReadonlySet<string> = new Set([
   "cotal_orientation",
   "cotal_connection_status",
   "cotal_roster",
+  "cotal_docs",
   "cotal_inbox",
   "cotal_send",
   "cotal_dm",
@@ -96,6 +97,7 @@ const GATEWAY_ANNOTATIONS: Readonly<Record<string, ToolAnnotations>> = {
   cotal_orientation: READ_ONLY,
   cotal_connection_status: READ_ONLY,
   cotal_roster: READ_ONLY,
+  cotal_docs: READ_ONLY,
   cotal_inbox: UPDATING,
   cotal_send: ADDITIVE,
   cotal_dm: ADDITIVE,
@@ -194,6 +196,13 @@ function toContent(r: ToolResult) {
 }
 
 const refuse = (text: string) => toContent({ text, isError: true });
+
+/** What a new connection may read and post, from the configuration its grant produced, so the
+ *  conversation learns its real access before it tries a channel. */
+function accessLine(config: AgentConfig): string {
+  const list = (cs: readonly string[]) => (cs.length ? cs.map((c) => `#${c}`).join(", ") : "none");
+  return `Reads ${list(config.subscribe)}; may join ${list(config.allowSubscribe)}; may post to ${list(config.allowPublish)}.`;
+}
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -364,7 +373,7 @@ export function registerCotalGatewayTools(
           const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
           const listening = wake ? `\n${wake.listening(c)}` : "";
           return toContent({
-            text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.${listening}`,
+            text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}`,
           });
         } catch (e) {
           if (e instanceof NameTaken) continue;

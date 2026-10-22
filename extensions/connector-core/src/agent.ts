@@ -8,6 +8,7 @@ import {
   isConcreteChannel,
   assertValidChannel,
   channelInAllow,
+  eventChannelPrincipal,
   resolvePeer as resolvePeerInRoster,
   peerLabel,
   CotalEndpoint,
@@ -253,6 +254,8 @@ const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
  *  suppression, oldest forgotten first, so a server producing novel error text on every request
  *  cannot grow the map. */
 const MAX_ENDPOINT_NOTICES = 16;
+/** How many present names a DM miss lists before it starts counting them instead. */
+const NAMED_SIMILAR = 5;
 /** Cadence of the turn-pending pull while connected. The relay is PULL-shaped by design (the
  *  manager holds no DM machinery and a pushed relay could not authenticate its sender), so this
  *  poll is the intake's whole latency: a fresh turn waits at most one interval plus one wake.
@@ -2053,6 +2056,24 @@ export class MeshAgent extends EventEmitter {
     return match && match[0] !== peer?.card.id ? { id: match[0], name: match[1] } : undefined;
   }
 
+  /** Why a DM target resolved to no one, under a current presence view. A target that names this
+   *  session says so, since the roster leaves it out of DM resolution. Present names that start with
+   *  the target are listed for the caller to choose from; none of them is ever picked. */
+  private noPeer(target: string): string {
+    const want = target.trim().toLowerCase();
+    if (target === this.id || want === this.config.name.toLowerCase())
+      return `"${target}" is this session: a DM goes to another peer, so nothing was sent. cotal_roster lists who is present.`;
+    const missing = `no peer "${target}" in space "${this.config.space}"`;
+    if (!want) return missing;
+    const names = [...new Set(this.ep.getRoster()
+      .filter((p) => p.card.id !== this.id && p.card.name.toLowerCase().startsWith(want))
+      .map((p) => p.card.name))];
+    if (!names.length) return missing;
+    const shown = names.slice(0, NAMED_SIMILAR).map((n) => JSON.stringify(n)).join(", ");
+    const more = names.length > NAMED_SIMILAR ? ` and ${names.length - NAMED_SIMILAR} more` : "";
+    return `${missing}. A name must match in full, so nothing was sent. Present names that start with it: ${shown}${more}. DM one by its full name or instance id.`;
+  }
+
   async dm(
     target: string,
     text: string,
@@ -2089,8 +2110,7 @@ export class MeshAgent extends EventEmitter {
       : this.heldSender(target, this.ep.presenceView().state === "current", peer);
     if (!peer && !held) {
       const after = this.ep.presenceView();
-      if (after.state === "current")
-        throw new Error(`no peer "${target}" in space "${this.config.space}"`);
+      if (after.state === "current") throw new Error(this.noPeer(target));
       throw this.cannotVerify(`peer "${target}"`, after, "The DM was not sent.");
     }
     // The only status we can truthfully attribute is the roster snapshot taken right before the
@@ -2807,14 +2827,24 @@ export class MeshAgent extends EventEmitter {
 
   /** A channel's registry config + effective replay policy, from the endpoint's live cache.
    *  Config only — never membership (that view is kept off agents on purpose). */
-  channelInfo(channel: string): { description?: string; instructions?: string; replay: boolean; registered: boolean } {
+  channelInfo(channel: string): { description?: string; instructions?: string; replay: boolean; registered: boolean; event?: "own" | "agent" } {
     const cfg = this.ep.getChannelConfig(channel);
     return {
       description: cfg?.description,
       instructions: cfg?.instructions,
       replay: this.ep.channelReplay(channel),
       registered: cfg !== undefined,
+      event: this.eventChannelOf(channel),
     };
+  }
+
+  /** Whether `channel` is an agent's event channel (`events.<owner>.<actor>`) and whose: this
+   *  session's own, or another agent's. Undefined for a chat channel. */
+  private eventChannelOf(channel: string): "own" | "agent" | undefined {
+    const principal = eventChannelPrincipal(channel);
+    if (!principal) return undefined;
+    const own = this.ep.principal;
+    return principal.owner === own.owner && principal.actor === own.actor ? "own" : "agent";
   }
 
   /** Channels we're currently subscribed to (live — reflects join/leave). */
@@ -2835,6 +2865,7 @@ export class MeshAgent extends EventEmitter {
       deliveryHealth?: "active" | "degraded" | "unknown";
       messages: number;
       mode: ChannelMode | "normal";
+      event?: "own" | "agent";
     }[]
   > {
     const mine = this.ep.joinedChannels();
@@ -2889,6 +2920,7 @@ export class MeshAgent extends EventEmitter {
     const rows: {
       channel: string; description?: string; replay: boolean; joined: boolean;
       durableUnclosed: boolean; deliveryHealth?: "active" | "degraded" | "unknown"; messages: number; mode: ChannelMode | "normal";
+      event?: "own" | "agent";
     }[] = (await this.ep.listChannels()).map((c) => {
       const joined = mine.some((p) => subjectMatches(p, c.channel));
       return {
@@ -2902,6 +2934,7 @@ export class MeshAgent extends EventEmitter {
         deliveryHealth: health(c.channel, joined),
         messages: c.messages,
         mode: this.channelMode(c.channel) ?? "normal",
+        event: this.eventChannelOf(c.channel),
       };
     });
     // A channel in refused-sub durable cleanup can have NO traffic AND no registry entry, so listChannels()
@@ -2918,6 +2951,7 @@ export class MeshAgent extends EventEmitter {
         deliveryHealth: undefined,
         messages: 0,
         mode: this.channelMode(ch) ?? "normal",
+        event: this.eventChannelOf(ch),
       });
     }
     return rows;

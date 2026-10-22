@@ -425,9 +425,11 @@ The host implements `GatewayHost`:
   caller and must not carry secrets.
 - `find(account, id)` and `close(account, id)` act only on a connection that account owns.
 
-`cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. `GATEWAY_TOOLS`
-names the mesh tools the gateway offers. Spawn, despawn, persona, run, yield and reconnect belong
-to a supervised local seat and are left out. One tool list serves every connection, so no
+`cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. Its reply names
+the channels the new connection reads, may join and may post to, from the configuration its grant
+produced. `GATEWAY_TOOLS` names the mesh tools the gateway offers, `cotal_docs` included, so the
+docs the orientation card points to are reachable. Spawn, despawn, persona, run, yield and reconnect
+belong to a supervised local seat and are left out. One tool list serves every connection, so no
 advertised text names one connection's channels. Each call runs against that connection's own
 configuration. Authentication, credential issuance and revocation and durable connection records
 stay with the host.

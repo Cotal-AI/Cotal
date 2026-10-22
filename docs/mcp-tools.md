@@ -126,6 +126,7 @@ Send a private message to one specific peer, by name (or instance id).
 
 - **Side-effect:** sends a private message to one peer.
 - **Available:** always.
+- A name must match a present peer's name in full (case-insensitive) or its instance id. On a miss nothing is sent, and the refusal lists present names that start with the target so you can choose one; it never picks one for you. Your own name is refused as this session, not as a missing peer.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
@@ -139,11 +140,11 @@ On success the tool answers `DM stored as seq <N> for <name> (recipient was <sta
 
 *ask any agent of a role*
 
-Send a request to ANY one available agent of a given role (load-balanced). Use when you need 'a reviewer' rather than a specific person.
+Send a request to ANY one available agent of a given role (load-balanced). Use when you need 'a reviewer' rather than a specific person. The request waits on the role's queue until a holder takes it, so one sent while no agent holds the role is kept for the next that does.
 
 - **Side-effect:** queues a request for one holder of a role.
 - **Available:** always.
-- A request with no holder online waits on the role's queue.
+- When no holder is online the reply says that the request waits on the role's queue.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
@@ -156,7 +157,7 @@ On success the tool answers `Request stored as seq <N> on the @<role> queue (<k>
 
 *set your status / attention*
 
-Set your presence status (what you're doing, so peers can see) and/or your attention mode (how much peer traffic interrupts you). Both are optional: pass only the one you want to change; with neither, it reports your current status and attention.
+Set your presence status (what you're doing, so peers can see) and/or your attention mode (how much peer traffic interrupts you). Both are optional: pass only the one you want to change; with neither, it reports your current status and attention. A connector that sees your turns also sets status itself, working when a turn starts and idle when it ends, so a status you set holds until your next turn starts.
 
 - **Side-effect:** updates your own presence / attention.
 - **Available:** always.
@@ -176,7 +177,7 @@ Look up a channel's purpose, usage notes, and replay policy from the channel reg
 
 - **Side-effect:** read-only.
 - **Available:** always.
-- An unregistered name is reported as not in the channel registry. It is still a real channel if it has traffic.
+- An unregistered name is reported as not in the channel registry. It is still a real channel if it has traffic. An agent's event channel (`events.<owner>.<actor>`) is described as one, and your own as yours.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
@@ -186,12 +187,16 @@ Look up a channel's purpose, usage notes, and replay policy from the channel reg
 
 *list channels*
 
-Discover the channels in your space: name, one-line description, whether you're subscribed, its replay policy, and YOUR per-channel attention (quiet/muted, set with cotal_channel_mode). Use this to find a channel to cotal_join, or to see at a glance which channels you've silenced. Shows only your own subscription + attention, never other peers'.
+Discover the channels in your space: name, one-line description, whether you're subscribed, its replay policy, and YOUR per-channel attention (quiet/muted, set with cotal_channel_mode). Use this to find a channel to cotal_join, or to see at a glance which channels you've silenced. Shows only your own subscription + attention, never other peers'. By default it lists the channels you are on or may join, and counts the agents' event channels and the channels outside your read ACL it leaves out; all: true lists those too. filter narrows by name. A list longer than 100 rows ends with the after value that continues it.
 
 - **Side-effect:** read-only.
 - **Available:** always.
 
-No arguments.
+| Argument | Type | Required | Meaning |
+|---|---|---|---|
+| `filter` | string | no | Only channels whose name contains this text (case-insensitive). |
+| `all` | boolean | no | Also list agents' event channels and channels outside your read ACL. |
+| `after` | string | no | Continue a long list after this channel name, as the previous reply says. Pass the same filter and all. |
 
 ## `cotal_channel_mode`
 

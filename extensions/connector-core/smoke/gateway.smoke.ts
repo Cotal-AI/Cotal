@@ -13,7 +13,8 @@
  *   - each call runs on its connection's own channels, and the advertised send default names none;
  *   - two connections of one account are independent mesh identities;
  *   - disconnect closes one connection and leaves the other working;
- *   - only the remote subset is offered, and the orientation card says so;
+ *   - only the remote subset is offered, and the orientation card says so; the docs it points to
+ *     are offered and answer; connect names the connection's own access;
  *   - cotal_wait returns a message as soon as it arrives, at once when one is waiting, and after its
  *     bound with none; it follows attention, counts a focus @mention that landed between waits,
  *     ignores a run turn the gateway cannot surface, ends when its connection closes, and leaves
@@ -209,7 +210,7 @@ try {
   // ---- the offered surface ----
   const tools = (await a.listTools()).tools;
   const names = new Set(tools.map((t) => t.name));
-  const readOnly = new Set(["cotal_orientation", "cotal_connection_status", "cotal_roster", "cotal_channel_info", "cotal_channels"]);
+  const readOnly = new Set(["cotal_orientation", "cotal_connection_status", "cotal_roster", "cotal_docs", "cotal_channel_info", "cotal_channels"]);
   const additive = new Set(["cotal_connect", "cotal_send", "cotal_dm", "cotal_anycast", "cotal_join"]);
   const destructive = new Set(["cotal_disconnect", "cotal_wait", "cotal_inbox", "cotal_status", "cotal_channel_mode", "cotal_leave"]);
   check(
@@ -225,7 +226,7 @@ try {
   const routed = tools.filter((t) => t.name !== "cotal_connect");
   check(
     "every routed tool requires connection_id",
-    routed.length === 15 && routed.every((t) => (t.inputSchema.required ?? []).includes("connection_id")),
+    routed.length === 16 && routed.every((t) => (t.inputSchema.required ?? []).includes("connection_id")),
     routed.map((t) => t.name),
   );
 
@@ -238,6 +239,7 @@ try {
   const first = await call(a, "cotal_connect", { name: "claude" });
   const id1 = idOf(first);
   check("the requested name is used when free", !first.isError && first.text.startsWith("Connected as claude.") && id1 !== "", first);
+  check("connect names the connection's own read, join and post access", first.text.includes("\nReads #lobby; may join #lobby; may post to #lobby."), first);
   const second = await call(a, "cotal_connect", { name: "claude" });
   const id2 = idOf(second);
   check("a taken name moves to the next one and says so", !second.isError && second.text.startsWith('Connected as claude_2 ("claude" was taken).'), second);
@@ -318,6 +320,10 @@ try {
   const card = await call(a, "cotal_orientation", { connection_id: id2 });
   check("orientation names this connection", card.text.includes("claude_2"), card.text.slice(0, 400));
   check("orientation lists only offered tools", card.text.includes("cotal_inbox") && !card.text.includes("cotal_spawn") && !card.text.includes("cotal_reconnect"), card.text);
+  // The card tells every agent to call cotal_docs, so the gateway must offer it and it must answer.
+  check("orientation recommends cotal_docs and lists it as offered", card.text.includes("call cotal_docs") && /Tools — more: .*cotal_docs/.test(card.text), card.text);
+  const docs = await call(a, "cotal_docs", { connection_id: id2, page: "spec" });
+  check("cotal_docs answers through the gateway with the bundled page", !docs.isError && docs.text.includes(`(bundled v${DOCS_VERSION})`), docs.text.slice(0, 300));
 
   // ---- listening ----
   const listener = idOf(await call(a, "cotal_connect", { name: "listener" }));
