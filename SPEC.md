@@ -1762,8 +1762,10 @@ Every effect is then evaluated against current native state. A registration answ
 `approval-revoked` first if the assignment is revoked. Otherwise, when the current stamp names this
 request (requestId and digest), it answers the top-level `registered` with that witness and snapshot,
 before or after activation and readiness: no barrier, no epoch advance and no artifact publish.
-Otherwise it requires the gate open, or frozen by this same request's operation, which resumes;
-`expected` to match the stamp; and a live approval. It then publishes each submitted artifact
+Otherwise it answers `registration-active` once activation has been issued. A gate frozen by this
+same request's operation resumes with no further check here; any other request requires the gate
+open (else `registration-pending`), `expected` to match the stamp (else `conflict`), and a live
+approval (else `expired`). It then publishes each submitted artifact
 create-only to the contract store and runs the native registration barrier and spec registration
 under the request's operation id, with no repair cursor (a service's credential family is empty
 before activation). The barrier freezes the gate revision it observes after those publishes

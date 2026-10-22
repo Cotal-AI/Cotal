@@ -1406,7 +1406,11 @@ status only while it holds an interactive row, and a service proof reads only it
 `registered` and `ready` in a status mean only that the request's registration is current. A
 pre-activation re-registration sends `expected: { state: "registered", witness }` and yields a new
 witness; a register that another request overtakes before its barrier freezes answers `conflict`,
-so read the instance and expect its current witness. Once a service has activated, its registration
+so read the instance and expect its current witness. A register whose gate moved under it without a
+new registration, such as a freeze another barrier then aborted, also answers `conflict` with the
+witness unchanged: if the instance still shows the witness you sent, replay the same request. A
+register held inside the native barrier, or while another invocation of the same request is still
+running, answers 503; replay the same request. Once a service has activated, its registration
 can no longer change. Commands must be ephemeral and declare
 no governed trait.
 
