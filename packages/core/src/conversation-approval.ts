@@ -36,7 +36,7 @@ export interface ConversationApprovalDecision {
 /** The approved selection that grants no optional channel, role, `run` or endpoint. Only an
  *  approval may carry it; a request that selects nothing proposes `null`. */
 export const EMPTY_CONVERSATION_SELECTION: Readonly<ConversationSelection> = Object.freeze({
-  v: 1 as const, channels: [], role: null, capabilities: [], endpoints: [] as [],
+  v: 1 as const, channels: Object.freeze([]) as [], role: null, capabilities: Object.freeze([]) as [], endpoints: Object.freeze([]) as [],
 });
 
 /** What a client reports while the decision is open. It carries no credential, secret or path. */
