@@ -398,6 +398,14 @@ function sameStrings(a: readonly string[] | undefined, b: readonly string[] | un
   return JSON.stringify([...(a ?? [])].sort()) === JSON.stringify([...(b ?? [])].sort());
 }
 
+/** The start of every agent's bearer command: node, its loader flags and this manager's entry,
+ *  resolved through every symlink. The agent runs that command for each renewal for as long as it
+ *  lives, and an install can replace the bin link meanwhile: get.cotal.ai writes a shell launcher
+ *  over `~/.local/bin/cotal`, which `npm i -g` had made a link to `dist/cotal.js`. */
+function bearerEntryArgv(): string[] {
+  return [process.execPath, ...process.execArgv, realpathSync(process.argv[1]!)];
+}
+
 /** The caller keeps the arrays it passed, so a launch form is admitted with its own copies: a later
  *  write to the caller's array cannot change what the manager grants, shares or preserves. */
 function ownLists<T extends { subscribe?: readonly string[]; allowSubscribe?: readonly string[]; allowPublish?: readonly string[]; capabilities?: readonly string[]; shareTools?: readonly string[] }>(form: T): T {
@@ -4433,9 +4441,7 @@ export class Manager {
         // process execs this argv for every bearer, so it must resolve from ANY cwd. Correct
         // whenever the manager runs under a real `cotal` entry (supervise/up); a test constructing
         // Manager directly never reaches this branch (user meshes boot through the CLI).
-        process.execPath,
-        ...process.execArgv,
-        process.argv[1],
+        ...bearerEntryArgv(),
         provider.agentBearerCommand,
         "--dir", dir,
         "--space", this.space,
@@ -4540,9 +4546,7 @@ export class Manager {
       await materializeSecretToFile(secrets, agentSecretKeyForFile(files.sentinelCreds, this.space), files.sentinelCreds);
       rmSync(files.health, { force: true }); // a fresh start opens a fresh health window
       const bearerCmd = [
-        process.execPath,
-        ...process.execArgv,
-        process.argv[1],
+        ...bearerEntryArgv(),
         provider.agentBearerCommand,
         // The signerless arm: the pinned public exchange, never a local state dir.
         "--exchange-url", material.agentBearerExchangeUrl,
@@ -7065,9 +7069,7 @@ export class Manager {
           actor: entry.identity.actor,
           sentinelCredsPath: entry.identity.sentinelCredential.path,
           bearerCmd: [
-            process.execPath,
-            ...process.execArgv,
-            process.argv[1],
+            ...bearerEntryArgv(),
             provider.agentBearerCommand,
             ...(this.remoteAuthority
               ? ["--exchange-url", this.remoteAuthority.agentBearerExchangeUrl]

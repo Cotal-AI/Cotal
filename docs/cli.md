@@ -4588,7 +4588,10 @@ pinned public exchange with no local capability, follows no redirects, and refus
 URL because the actor token is the credential in the request body. Because a seat execs it on every
 bearer refresh, it skips the connector-seed boot gate entirely: it reads one 0600 token file,
 exchanges it and prints the bearer without consulting or writing the operator-global seed store, so
-a newer store generation cannot refuse a live seat's refresh. `--manager-call` asks for the
+a newer store generation cannot refuse a live seat's refresh. For the same reason the seat's command
+names the CLI entry file the `cotal` bin link resolved to at spawn, not the link: an install that
+later replaces the link, such as the get.cotal.ai launcher over an `npm i -g` link, leaves running
+seats able to refresh. `--manager-call` asks for the
 instance-bound `manager-caller` view; `--manager-instance <id>` selects an explicit live candidate,
 and an owner with more than one live candidate is refused with their ids until it names one.
 That mode still prints only the raw token and does not update `--health-file`. A spawn runs it once as the agent auth

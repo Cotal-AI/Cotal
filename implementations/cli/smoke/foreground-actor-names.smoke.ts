@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
 import { emitSentinel, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -51,11 +52,12 @@ if (process.argv[2] === "worker") {
     kind: "connector", name: "foreground-names-fixture", requires: [], eventChannel,
     buildLaunch: (options) => ({
       command: process.execPath,
-      args: ["-e", "console.log('FIXTURE_READY '+process.env.COTAL_NAME+' '+process.env.COTAL_ACTOR+' '+process.env.COTAL_BEARER_ACTOR);process.stdin.on('data',()=>process.exit(0));process.stdin.resume();"],
+      args: ["-e", "console.log('FIXTURE_BEARER '+process.env.COTAL_BEARER_CMD);console.log('FIXTURE_READY '+process.env.COTAL_NAME+' '+process.env.COTAL_ACTOR+' '+process.env.COTAL_BEARER_ACTOR);process.stdin.on('data',()=>process.exit(0));process.stdin.resume();"],
       env: {
         COTAL_NAME: options.name,
         COTAL_ACTOR: options.userAuth?.actor ?? "",
         COTAL_BEARER_ACTOR: options.userAuth?.bearerCmd[options.userAuth.bearerCmd.indexOf("--actor") + 1] ?? "",
+        COTAL_BEARER_CMD: JSON.stringify(options.userAuth?.bearerCmd ?? []),
       },
     }),
   };
@@ -134,8 +136,8 @@ const env: NodeJS.ProcessEnv = {
 for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"]) mkdirSync(env[key]!, { recursive: true });
 type Worker = { child: ChildProcessWithoutNullStreams; output: string; ready: Promise<boolean>; closed: Promise<number | null>; exited: boolean };
 const workers: Worker[] = [];
-function launch(extra: string[] = [], extraEnv: NodeJS.ProcessEnv = {}): Worker {
-  const child = spawn(process.execPath, [...process.execArgv, process.argv[1], "worker", ...extra], { cwd: root, env: { ...env, ...extraEnv }, stdio: ["pipe", "pipe", "pipe"], detached: true });
+function launch(extra: string[] = [], extraEnv: NodeJS.ProcessEnv = {}, entry = process.argv[1]): Worker {
+  const child = spawn(process.execPath, [...process.execArgv, entry, "worker", ...extra], { cwd: root, env: { ...env, ...extraEnv }, stdio: ["pipe", "pipe", "pipe"], detached: true });
   let complete!: (ready: boolean) => void;
   const ready = new Promise<boolean>((resolve) => { complete = resolve; });
   const worker: Worker = { child, output: "", ready, closed: Promise.resolve(null), exited: false };
@@ -235,8 +237,28 @@ try {
   assert.equal(await unavailable.closed, 3, `a failing endpoint's outcome is unconfirmed: ${unavailable.output}`);
   assert(/Outcome: unknown/.test(unavailable.output) && /Code:\s+OPERATION_UNKNOWN/.test(unavailable.output), `a 5xx stays an unknown outcome: ${unavailable.output}`);
   assert.deepEqual(requests.slice(beforeUnavailable), ["unavailable"], "a failing endpoint is not retried under another actor");
+  // An install can replace the bin link a seat was started through: get.cotal.ai writes a shell
+  // launcher over `~/.local/bin/cotal`, which `npm i -g` had made a link to `dist/cotal.js`. The seat
+  // runs its bearer command for every renewal for as long as it lives, so that command must name the
+  // file the link resolved to. Skipped on Windows, where unprivileged `symlinkSync` is EPERM.
+  const relinkChecks = process.platform === "win32" ? 0 : 2;
+  if (relinkChecks) {
+    const bin = join(home, "bin");
+    mkdirSync(bin, { recursive: true });
+    const link = join(bin, "foreground-actor-names.smoke.ts");
+    symlinkSync(fileURLToPath(import.meta.url), link);
+    writePersona("relinked");
+    const relinked = launch([], {}, link);
+    assert(await relinked.ready, `a launch through a bin link reaches a real child: ${relinked.output}`);
+    const bearerCmd = JSON.parse(/^FIXTURE_BEARER (.*)$/m.exec(relinked.output)?.[1] ?? "[]") as string[];
+    rmSync(link);
+    writeFileSync(link, `#!/bin/sh\nexec "${process.execPath}" "$@"\n`);
+    chmodSync(link, 0o755);
+    const renewal = spawnSync(bearerCmd[0]!, bearerCmd.slice(1), { cwd: root, env, encoding: "utf8" });
+    assert.equal(renewal.stdout.trim(), "foreground-names-fixture-bearer", `the bearer command still runs after an install replaced the bin link: ${JSON.stringify(bearerCmd)} ${renewal.stderr}`);
+  }
   console.log("FOREGROUND ACTOR NAMING: all real-process collision controls passed");
-  emitSentinel({ passed: 33, failed: 0 });
+  emitSentinel({ passed: 33 + relinkChecks, failed: 0 });
   passed = true;
 } finally {
   for (const worker of workers) await stop(worker);
