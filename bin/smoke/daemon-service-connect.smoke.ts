@@ -42,7 +42,7 @@
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, type AddressInfo, type Socket } from "node:net";
-import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -374,18 +374,24 @@ try {
         try {
           r = await connectS(ON);
           s = await statusS(ON);
-        } finally { if (target) writeFileSync(target, original, { mode: 0o600 }); }
+        } catch (e) { r = { result: { state: `no-answer: ${(e as Error).message.slice(0, 60)}` } }; }
+        finally { if (target) writeFileSync(target, original, { mode: 0o600 }); }
         const exited = await Promise.race([childExit, sleep(5000).then(() => "running" as const)]);
         console.log(`  C14 frame ${String(stateOf(r))}, status ${String(stateOf(s))}, process ${String(exited)}`);
         check("C14 instrument: exactly one ready record was corrupted", readyFiles.length === 1, readyFiles);
         check("C14 the connect is not connected, with fixed text", stateOf(r) === "unavailable" && !String(resultOf(r).message).includes("not-json"), r);
         check("C14 status agrees: no live connection left behind", stateOf(s) === stateOf(r), { frame: stateOf(r), status: stateOf(s) });
         check("C14 the shipped daemon process is still running", exited === "running", { exited, err: childErr.split("\n").filter((x) => /Error|Unexpected/.test(x)).slice(0, 2) });
-        const again = await connectS(ON);
-        check("C14 with the record restored, the same daemon connects", stateOf(again) === "connected", again);
+        if (exited === "running") {
+          const again = await connectS(ON);
+          check("C14 with the record restored, the same daemon connects", stateOf(again) === "connected", again);
+        } else check("C14 with the record restored, the same daemon connects", false, "the daemon process had exited");
         check("C14 the daemon wrote nothing secret to stderr", ![SESSION, ...jwtsIssued].some((t) => childErr.includes(t)) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(childErr));
       } finally {
         if (child.exitCode === null) { child.kill("SIGTERM"); await childExit; }
+        // A crashed child leaves its socket behind (the defect under test). Remove only that file,
+        // known to be this suite's own stale socket, so the later cells keep their daemon.
+        if (child.exitCode !== 0 && existsSync(paths.socket)) unlinkSync(paths.socket);
       }
       d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     });
