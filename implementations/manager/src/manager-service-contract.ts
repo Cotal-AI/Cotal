@@ -24,6 +24,7 @@
  * today.
  *
  * Capability labels (describe/grant vocabulary, one per tier class):
+ *   manager.vitals read host CPU, memory and filesystem capacity on this exact Manager
  *   manager.read     status / ps / inspect / models / list-personas / show-persona
  *   manager.spawn    spawn / resolve-cwd / resolve-agent   (privileged-grade creation)
  *   manager.lifecycle despawn / attach / input             (owner-mode terminal/interactive)
@@ -35,6 +36,7 @@
  *                    run-status / run-ps ride manager.read
  */
 import type { BrowserContractSource } from "@cotal-ai/core/browser-validators-build";
+import type { ManagerVitals } from "./vitals.js";
 import {
   serviceContractTable,
   singleDocumentClosure,
@@ -95,6 +97,45 @@ const STOP_IMPACT_SCHEMA = {
       properties: {
         attemptId: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" },
         inventorySha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+      },
+    },
+  },
+} as const;
+
+const VITALS_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["sampledAt", "cpu", "memory", "filesystems"],
+  properties: {
+    sampledAt: { type: "string", format: "date-time" },
+    cpu: {
+      type: "object", additionalProperties: false,
+      required: ["logicalCount", "load1", "load5", "load15"],
+      properties: {
+        logicalCount: { type: "integer", minimum: 1 },
+        load1: { type: "number", minimum: 0 },
+        load5: { type: "number", minimum: 0 },
+        load15: { type: "number", minimum: 0 },
+      },
+    },
+    memory: {
+      type: "object", additionalProperties: false,
+      required: ["totalBytes", "availableBytes"],
+      properties: {
+        totalBytes: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+        availableBytes: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+      },
+    },
+    filesystems: {
+      type: "array", maxItems: 128,
+      items: {
+        type: "object", additionalProperties: false,
+        required: ["mount", "totalBytes", "freeBytes"],
+        properties: {
+          mount: { type: "string", minLength: 1, maxLength: 1024, pattern: "^[^\\u0000-\\u001f\\u007f-\\u009f]+$" },
+          totalBytes: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+          freeBytes: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+        },
       },
     },
   },
@@ -1054,6 +1095,7 @@ interface CommandRow {
 }
 
 const ROWS: CommandRow[] = [
+  { name: "vitals", capability: "manager.vitals", input: VOID_SCHEMA, output: VITALS_OUTPUT_SCHEMA, targeted: false, handler: "vitals" },
   { name: "status", capability: "manager.read", input: VOID_SCHEMA, output: STATUS_OUTPUT_SCHEMA, targeted: false, handler: "status" },
   { name: "ps", capability: "manager.read", input: VOID_SCHEMA, output: PS_OUTPUT_SCHEMA, targeted: false, handler: "ps" },
   { name: "inspect", capability: "manager.read", input: INSPECT_INPUT_SCHEMA, output: AGENT_ROW_SCHEMA, targeted: false, handler: "inspect" },
@@ -1269,7 +1311,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 35,
+    revision: 36,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -1335,6 +1377,7 @@ export function managerBrowserContractSource(): BrowserContractSource {
  *  the command's output value (the compiled output contract validates it at the serve boundary).
  *  Kept as a narrow interface so the contract module stays broker-free. */
 export interface ManagerServiceHandlers {
+  vitals(ctx: EpServeContext): ManagerVitals | Promise<ManagerVitals>;
   status(ctx: EpServeContext): ManagerStatus | Promise<ManagerStatus>;
   ps(ctx: EpServeContext): unknown | Promise<unknown>;
   inspect(ctx: EpServeContext): unknown | Promise<unknown>;

@@ -32,6 +32,7 @@ import { connect, PermissionViolationError, type NatsConnection } from "@nats-io
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, EpEnvelopeError,
+  MANAGER_VITALS_SCOPE,
   resolveService, invokeCommand, registry, parseGoalResultFact, goalResultSubject, epfStreamName,
   parseEpSubject, deriveReplySubject, epCallerReplyFilter, epRequestSubject,
   type Connector, type ControlReply, type EpCaller, type EpAttributedReply, type LaunchOpts, type LaunchSpec,
@@ -107,7 +108,7 @@ try {
 
   console.log("1. resolveService: describe + fetch + recompile the full surface (no hand-imported schemas)");
   const service = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 10_000 });
-  check("the keyed pair advances the manager cluster revision and retains chat sessions, cancel, transcript-receive, goal-result and resolve-cwd", shipped.revision === 35 && service.commands.has("chat-session-open") && service.commands.has("chat-session-retire") && service.commands.has("cancel") && service.commands.has("transcript-receive") && service.commands.has("goal-result") && service.commands.has("resolve-cwd"), shipped);
+  check("the vitals addition advances the manager cluster revision and retains chat sessions, cancel, transcript-receive, goal-result and resolve-cwd", shipped.revision === 36 && service.commands.has("vitals") && service.commands.has("chat-session-open") && service.commands.has("chat-session-retire") && service.commands.has("cancel") && service.commands.has("transcript-receive") && service.commands.has("goal-result") && service.commands.has("resolve-cwd"), shipped);
   check("the resolved surface matches the shipped cluster document", service.commands.size === shipped.commandCount && shipped.names.every((n) => service.commands.has(n)) && service.commands.has("status") && service.commands.has("spawn") && service.commands.has("despawn"), [...service.commands.keys()].sort());
   const statusCmd = service.commands.get("status")!;
   check("status resolved: untargeted, read capability, recompiled contracts carry closure digests",
@@ -121,6 +122,53 @@ try {
   const rStatus = await invokeCommand(nc, space, service, "status", undefined, { currentEpoch });
   const status = rStatus.reply.data as { instanceId: string; runtime: string; agentCount: number; connectors: unknown[] };
   check("invoke status returns the typed ManagerStatus", rStatus.reply.ok === true && status.runtime === "pty" && typeof status.agentCount === "number" && Array.isArray(status.connectors), rStatus.reply);
+
+  console.log("2b. invoke vitals through an exact-instance machine-vitals view");
+  const instanceId = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
+  const vitalsId = newIdentity();
+  const vitalsUid = mintLifecycleUid();
+  const vitalsCaller: EpCaller = { owner: DEV_OWNER, actor: vitalsId.id, uid: vitalsUid };
+  const vitalsCreds = await mintCreds(auth, vitalsId, "manager-caller", {
+    lifecycleUid: vitalsUid,
+    capabilities: [MANAGER_VITALS_SCOPE],
+    managerInstanceId: instanceId,
+  });
+  const vitalsNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: vitalsCreds, tls: false }), maxReconnectAttempts: 0 });
+  connections.push(vitalsNc);
+  const vitalsService = await resolveService(vitalsNc, space, MANAGER_ENDPOINT, vitalsCaller, { instanceId, deadlineMs: 10_000 });
+  const vitalsCmd = vitalsService.commands.get("vitals")!;
+  check("the described exact-instance surface exposes vitals as untargeted manager.vitals with fetched contracts",
+    vitalsCmd?.targeted === false && vitalsCmd?.capability === "manager.vitals"
+    && vitalsCmd.contract.input.closureDigest.startsWith("sha256:") && vitalsCmd.contract.output.closureDigest.startsWith("sha256:"), vitalsCmd);
+  const rVitals = await invokeCommand(vitalsNc, space, vitalsService, "vitals", undefined, { currentEpoch });
+  const vitals = rVitals.reply.data as {
+    sampledAt: string;
+    cpu: { logicalCount: number; load1: number; load5: number; load15: number };
+    memory: { totalBytes: number; availableBytes: number };
+    filesystems: Array<{ mount: string; totalBytes: number; freeBytes: number }>;
+  };
+  check("invoke vitals returns a complete live host sample over the public Manager endpoint",
+    rVitals.reply.ok === true && Number.isFinite(Date.parse(vitals.sampledAt))
+    && vitals.cpu.logicalCount > 0 && [vitals.cpu.load1, vitals.cpu.load5, vitals.cpu.load15].every(Number.isFinite)
+    && vitals.memory.totalBytes > 0 && vitals.memory.availableBytes >= 0 && vitals.memory.availableBytes <= vitals.memory.totalBytes
+    && vitals.filesystems.length > 0 && vitals.filesystems.every((row) => row.mount.startsWith("/") && row.totalBytes > 0 && row.freeBytes >= 0 && row.freeBytes <= row.totalBytes), vitals);
+
+  const deniedId = newIdentity();
+  const deniedUid = mintLifecycleUid();
+  const deniedCaller: EpCaller = { owner: DEV_OWNER, actor: deniedId.id, uid: deniedUid };
+  const deniedCreds = await mintCreds(auth, deniedId, "manager-caller", {
+    lifecycleUid: deniedUid,
+    capabilities: [],
+    managerInstanceId: instanceId,
+  });
+  const deniedNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: deniedCreds, tls: false }), maxReconnectAttempts: 0 });
+  connections.push(deniedNc);
+  const deniedService = await resolveService(deniedNc, space, MANAGER_ENDPOINT, deniedCaller, { instanceId, deadlineMs: 10_000 });
+  let vitalsRefusal = "";
+  try { await invokeCommand(deniedNc, space, deniedService, "vitals", undefined, { currentEpoch }); }
+  catch (e) { vitalsRefusal = `${(e as { code?: string }).code ?? ""}: ${(e as Error).message}`; }
+  check("an exact-instance manager-caller without machine-vitals is broker-denied before execution",
+    vitalsRefusal.includes("permission-denied") && vitalsRefusal.includes("vitals"), vitalsRefusal);
 
   console.log("3. invoke spawn (the recompiled input contract gates args)");
   let badCode: string | undefined;
@@ -269,7 +317,7 @@ try {
   }
 }
 
-const EXPECTED = 23;
+const EXPECTED = 26;
 check("every declared manager service invoke cell ran", pass + fail === EXPECTED, { ran: pass + fail, expected: EXPECTED });
 console.log(`\n${fail === 0 ? "MANAGER SERVICE INVOKE SMOKE OK ✅" : "MANAGER SERVICE INVOKE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 emitSentinel({ passed: pass, failed: fail });

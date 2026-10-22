@@ -61,6 +61,14 @@ same trust chain, so there is nothing the built-ins can reach that a described c
 `retire-lifecycle` and its exact-mode target shape.
 See [SPEC §13.7](../SPEC.md#137-contracts-and-discovery) and [cli.md](cli.md).
 
+The manager's `vitals` command reports one invocation-time sample of host CPU count and load,
+available and total memory, and bounded local filesystem capacity. It is untargeted but resolves to
+one exact Manager instance. The separate `manager.vitals` capability is issued only when the actor
+scope contains `machine-vitals`; `spawn`, `run` and `admin` do not imply it. The response contains
+mount points and aggregate byte counts, never device paths, remote endpoints, process data, command
+lines, environment values or persisted history. Unsupported measurement refuses without a partial
+or zero-valued fallback.
+
 The manager's `resolve-cwd` command is in the `manager.spawn` capability class. It accepts an
 absolute path on that manager's host and returns its canonical directory plus the host name. It
 refuses a relative, missing or non-directory path with `failed-precondition`; it creates nothing.
