@@ -1,5 +1,13 @@
 # @cotal-ai/auth
 
+## 0.94.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.94.1
+  - @cotal-ai/lang@0.94.1
+  - @cotal-ai/workspace@0.94.1
+
 ## 0.94.0
 
 ### Minor Changes
