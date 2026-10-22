@@ -19,6 +19,10 @@ concurrency:
   # `queue: max` with `cancel-in-progress: true` is a validation error, so this tracks the line above.
   queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
+# The CLI runs for real in these jobs; its usage telemetry would count our runners as users.
+env:
+  COTAL_TELEMETRY: off
+
 jobs:
   plan:
     # One checkout runs the selector and names the shards that hold a selected fixture. Before this

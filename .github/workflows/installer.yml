@@ -35,6 +35,10 @@ concurrency:
   # Tracks the line above: `queue: max` with `cancel-in-progress: true` is a validation error.
   queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
+# The CLI runs for real in these jobs; its usage telemetry would count our runners as users.
+env:
+  COTAL_TELEMETRY: off
+
 jobs:
   lint:
     timeout-minutes: 5
