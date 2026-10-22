@@ -287,7 +287,8 @@ try {
     const stubFile = join(xdg, "cotal", `completion.${shell}`);
     check(`completion install ${shell} writes a stub that calls \`cotal __complete\``,
       install.status === 0 && existsSync(stubFile) && readFileSync(stubFile, "utf8").includes("$(cotal __complete "), out(install));
-    check(`the ${shell} rc file sources the stub`, readFileSync(join(home, shell === "zsh" ? ".zshrc" : ".bashrc"), "utf8").includes(`source "${stubFile}"`));
+    const rc = readFileSync(join(home, shell === "zsh" ? ".zshrc" : ".bashrc"), "utf8");
+    check(`the ${shell} rc file sources the stub`, rc.includes(`# >>> cotal completion >>>\nsource '${stubFile}'\n# <<< cotal completion <<<\n`), rc);
   }
   const fish = cotal(["completion", "install", "fish"]);
   const fishFile = join(xdg, "fish", "completions", "cotal.fish");
