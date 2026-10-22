@@ -268,7 +268,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     await served?.close().catch(() => {});
     await host?.closeAll().catch(() => {});
     for (const endpoint of endpoints.reverse()) await endpoint.stop().catch(() => {});
-    await manager?.stop().catch(() => {});
+    await manager?.stop({ withAgents: true }).catch(() => {});
     await delivery?.stop().catch(() => {});
     await stopped(authService);
     await stopped(broker);
