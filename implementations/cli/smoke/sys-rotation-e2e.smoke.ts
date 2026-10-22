@@ -307,7 +307,9 @@ try {
   // above, so its silence there was a real reading rather than a broken probe.
   const tail3 = await daemonTail(mark);
   check("the daemon's membership feed IS up after the rotation", /membership feed up/.test(tail3), tail3.slice(-500));
-  check("the daemon no longer reports a degraded membership feed", !/! membership:/.test(tail3), tail3.slice(-500));
+  // A degraded feed says so. The first sweep after boot can miss the daemon's own connection and
+  // keep its last membership for one interval; that warning is not a degraded feed.
+  check("the daemon no longer reports a degraded membership feed", !/! membership:.*graph membership degraded/.test(tail3), tail3.split("\n").filter((line) => /! membership:/.test(line)));
   // Bounded, and only on the POSITIVE assertion. `doctor auth` also grades the last renewal record,
   // which still holds the pre-rotation adoption failure until the manager's first post-boot pass
   // rewrites it, so this waits for that pass rather than for the rotation, which has already
