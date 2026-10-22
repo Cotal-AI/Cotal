@@ -160,7 +160,9 @@ async function openPlanes(values: RunValues, role: "run-driver" | "run-operator"
  *  file can supply neither, and is refused by name before any other local check. */
 function refuseSingleCredential(conn: Connection): void {
   if (conn.creds !== undefined && conn.auth === undefined)
-    throw new Error("run --local needs the space signer to mint a separate mediator; a single --creds file cannot supply both roles. From the project with the recorded static-auth mesh and signer, omit --creds and run cotal run start --local --space <space> --file <program>. If you only have caller credentials, ask the mesh operator to host the run.");
+    throw new CommandFailure("refused", "USAGE_INVALID", "run --local needs the space signer to mint a separate mediator; a single --creds file cannot supply both roles", {
+      remedy: "From the project with the recorded static-auth mesh and signer, omit --creds and run cotal run start --local --space <space> --file <program>. If you only have caller credentials, ask the mesh operator to host the run.",
+    });
 }
 
 /** Mint from the same resolved target as the driver, preserving its broker and TLS intent. */
