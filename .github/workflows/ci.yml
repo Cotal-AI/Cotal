@@ -122,6 +122,7 @@ jobs:
 
   smoke:
     if: ${{ github.event_name != 'workflow_dispatch' }}
+    needs: workspace-native
     name: smoke (shard ${{ matrix.shard }}/4)
     # Shard 2/4 runs ~39-40 min, so the previous 40 left a median margin of 15 seconds and
     # cancelled healthy runs (#1220 died at 40m18s). Sized at ~1.5x the slowest observed
@@ -180,6 +181,19 @@ jobs:
         run: echo "$HOME/nats-bin" >> "$GITHUB_PATH"
       - name: Build
         run: pnpm build
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-x64
+          path: ${{ runner.temp }}/workspace-native-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-arm64
+          path: ${{ runner.temp }}/workspace-native-arm64
+      - name: Assemble source-matched Windows creation identity bindings
+        run: node scripts/workspace-assemble-natives.mjs
+        env:
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/workspace-native-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/workspace-native-arm64
       - name: Protocol & security smoke tests (shard ${{ matrix.shard }}/4)
         # The detector grades committed blobs. Earlier steps must not change inputs or execution hooks.
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
@@ -265,12 +279,11 @@ jobs:
         run: pnpm smoke:transport-liveness
 
   # The Windows identity binding needs an MSVC Developer Command Prompt, so it is built once here and
-  # downloaded by the Windows platforms leg, as windows.yml does.
+  # downloaded by the Windows platforms leg, as windows.yml does. The smoke shards take both
+  # architectures: their pack suites pack @cotal-ai/workspace, whose prepack requires the pair.
   workspace-native:
     if: ${{ github.event_name != 'workflow_dispatch' }}
     uses: ./.github/workflows/workspace-native.yml
-    with:
-      architectures: '["x64"]'
 
   platforms:
     if: ${{ github.event_name != 'workflow_dispatch' }}
