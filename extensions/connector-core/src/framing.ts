@@ -16,7 +16,40 @@
  * so neither surface can drift into a second convention.
  */
 import { peerLabel } from "@cotal-ai/core/peer-label";
-import type { InboxItem } from "./agent.js";
+import type { InboxItem, InboxSnapshot } from "./agent.js";
+
+export interface RenderedInboxPreview {
+  unread: number;
+  rows: string[];
+}
+
+/**
+ * Control characters and lone surrogates a peer can put in a preview row, apart from the newline that
+ * `fmtBody` writes before each indented continuation.
+ *
+ * A preview row is drawn in the host's own UI, so ESC and the other C0/C1 controls would reach its
+ * terminal as commands. They also break the row bound: each is one code point but JSON writes it as
+ * a six-unit `\uXXXX` escape, so three short rows of them made a wake frame larger than the feed
+ * accepts, and the throw from that send lost the recipient's wake. After this replacement every
+ * remaining code point costs at most two JSON units, which is what keeps the frame bounded.
+ */
+const PREVIEW_CONTROL = /(?!\n)[\p{Cc}\p{Cs}]/gu;
+
+/** Bound one preview row by Unicode code points, preserving its connector-authored attribution. */
+function boundedRow(row: string, maxCodePoints: number): string {
+  const points = Array.from(row);
+  return points.length <= maxCodePoints ? row : `${points.slice(0, maxCodePoints - 1).join("")}…`;
+}
+
+/** Render a non-consuming inbox snapshot with the same provenance convention as `cotal_inbox`. */
+export function renderInboxPreview(snapshot: InboxSnapshot, maxRowCodePoints = 240): RenderedInboxPreview {
+  if (!Number.isInteger(maxRowCodePoints) || maxRowCodePoints < 16 || maxRowCodePoints > 1_000)
+    throw new Error(`inbox preview row bound must be a whole number from 16 to 1000, got ${maxRowCodePoints}`);
+  return {
+    unread: snapshot.unread,
+    rows: snapshot.items.map((item) => boundedRow(fmtItem(item).replace(PREVIEW_CONTROL, "\uFFFD"), maxRowCodePoints)),
+  };
+}
 
 /**
  * What counts as a line break, which is more than what JavaScript splits on.

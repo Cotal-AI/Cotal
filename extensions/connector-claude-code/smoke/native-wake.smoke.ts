@@ -61,6 +61,8 @@ type Next = ((event: Event) => Promise<Event> | AsyncGenerator<Event>) & { signa
 type Handler = (api: Api, event: Event, next: Next) => Promise<unknown> | AsyncGenerator<unknown>;
 const source = readFileSync(new URL("../hooks/native-wake.js", import.meta.url), "utf8");
 const wake = (id: string) => `Cotal: a new message for connection_id ${id}. Read it with cotal_inbox.`;
+const preview = (id: string, value: { unread: number; rows: string[] }) =>
+  `Cotal preview for connection_id ${id}: ${JSON.stringify(value)}`;
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 async function until(predicate: () => boolean): Promise<void> {
   for (let n = 0; n < 50 && !predicate(); n++) await tick();
@@ -209,20 +211,27 @@ await busy.fire("session.end", { reason: "other" });
 console.log("  ✓ busy boundary delivery, coalescing, subagent isolation, Stop and denied append retention");
 
 const presentation = fixture();
+await presentation.fire("session.start");
+await until(() => presentation.commands.length === 1);
+presentation.feed.push(preview("render-id", {
+  unread: 2,
+  rows: ["[DM from ada/reviewer] Please review", "[#general bob/worker] Build is green"],
+}) + "\n" + wake("render-id") + "\n");
+await until(() => presentation.submitted.length === 1);
 const row: Event = { requestId: "wake-row", props: { text: wake("render-id"), origin: { kind: "plugin", name: "cotal" } } };
 const before = JSON.stringify(row);
 const collapsed = await presentation.fire("ui.render", row) as UiNode;
 assert.equal(collapsed.type, "Box", "native wake renders a compact indicator instead of the prompt card");
 const button = (collapsed.props.children as UiNode[])[0]!;
 assert.equal(button.type, "Button");
-assert.equal(button.props.label, "Cotal · new message  ›");
+assert.equal(button.props.label, "Cotal · 2 unread  ›");
 assert.equal(JSON.stringify(row), before, "presentation never changes the stored message or its origin");
-assert.equal(presentation.submitted.length, 0, "rendering starts no model turn");
+assert.equal(presentation.submitted.length, 1, "rendering starts no additional model turn");
 await (button.props.onPress as () => void)();
 const expanded = await presentation.fire("ui.render", row) as UiNode;
-assert.equal((expanded.props.children as unknown[])[1], row, "details expose the original native message");
+assert.ok((expanded.props.children as unknown[]).length >= 2, "details disclose the native wake or its bounded preview");
 const another = await presentation.fire("ui.render", { ...row, requestId: "another-row" }) as UiNode;
-assert.equal((another.props.children as UiNode[])[0]!.props.label, "Cotal · new message  ›", "expansion is per message");
+assert.match(String((another.props.children as UiNode[])[0]!.props.label), /›$/, "expansion is per message");
 for (const origin of [{ kind: "user" }, { kind: "plugin", name: "other" }, { kind: "plugin", name: "cotal", asUser: true }]) {
   const foreign: Event = { ...row, props: { text: wake("render-id"), origin } };
   assert.equal(await presentation.fire("ui.render", foreign), foreign, "never hide user, other-plugin or unattributed input");
@@ -241,4 +250,33 @@ assert.equal(await presentation.fire("ui.render", userRender), userRender, "matc
 const ordinary: Event = { ...row, props: { text: "Cotal failed to connect. Please check your settings.", origin: { kind: "plugin", name: "cotal" } } };
 assert.equal(await presentation.fire("ui.render", ordinary), ordinary, "other Cotal errors stay visible");
 console.log("  ✓ compact native indicator, expandable details and unchanged message provenance");
+
+const previewFailures: string[] = [];
+const previewCell = (name: string, run: () => void) => {
+  try { run(); }
+  catch (error) { previewFailures.push(`${name}: ${(error as Error).message}`); }
+};
+previewCell("bounded unread collapsed label with no bodies", () => {
+  assert.equal(button.props.label, "Cotal · 2 unread  ›");
+  assert.ok(!JSON.stringify(collapsed).includes("Please review") && !JSON.stringify(collapsed).includes("Build is green"));
+});
+previewCell("expanded attributed DM and channel rows", () => {
+  const rendered = JSON.stringify(expanded);
+  assert.match(rendered, /\[DM from ada\/reviewer\] Please review/);
+  assert.match(rendered, /\[#general bob\/worker\] Build is green/);
+});
+previewCell("expand and collapse are UI-only", () => {
+  assert.equal(presentation.submitted.length, 1, "rendering submits no additional prompt");
+  assert.equal(presentation.appended.length, 0, "rendering appends no message and therefore drains or commits nothing");
+});
+previewCell("expansion state is independent per row", () => {
+  assert.match(String((expanded.props.children as UiNode[])[0]!.props.label), /▾$/);
+  assert.match(String((another.props.children as UiNode[])[0]!.props.label), /›$/);
+});
+previewCell("user and foreign rows remain untouched", () => {
+  assert.equal(userRender.requestId, "real-user-row");
+  assert.equal(ordinary.props?.text, "Cotal failed to connect. Please check your settings.");
+});
+assert.deepEqual(previewFailures, [], `AGENT-31 native preview cells red=${previewFailures.length}/5:\n${previewFailures.join("\n")}`);
+console.log("  ✓ AGENT-31 native preview cells passed (5/5)");
 console.log("NATIVE WAKE TESTS PASSED");

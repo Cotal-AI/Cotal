@@ -11,6 +11,7 @@ import { lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { RenderedInboxPreview } from "@cotal-ai/connector-core";
 
 /** A connection id the feed carries. Gateway ids are UUIDs, so anything else is not one. */
 export const WAKE_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -58,8 +59,8 @@ export function wakeSockets(claudePid: number): string[] {
 }
 
 export interface WakeFeed {
-  /** Write `id` to every monitor reading the feed. False when none is. */
-  send(id: string): boolean;
+  /** Write one bounded preview + `id` to every monitor reading the feed. False when none is. */
+  send(id: string, preview: RenderedInboxPreview): boolean;
   /** Whether a monitor is reading the feed now. */
   watched(): boolean;
   /** Run `fn` each time a monitor starts reading. */
@@ -91,9 +92,11 @@ export async function openWakeFeed(claudePid: number): Promise<WakeFeed> {
     server.listen(path, () => resolve());
   });
   return {
-    send(id) {
+    send(id, preview) {
       if (!WAKE_ID.test(id)) throw new Error(`not a connection id: ${JSON.stringify(id)}`);
-      for (const s of readers) s.write(`${id}\n`);
+      const frame = JSON.stringify({ id, preview });
+      if (frame.length > 4_096) throw new Error(`Cotal wake preview frame is ${frame.length} characters, over 4096`);
+      for (const s of readers) s.write(`${frame}\n`);
       return readers.size > 0;
     },
     watched: () => readers.size > 0,

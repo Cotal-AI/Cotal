@@ -86,7 +86,7 @@ async function serveLocal(desktop: boolean): Promise<void> {
       ? {
           instructions: `${LOCAL}${GATEWAY_CONNECTING} ${CODE_LISTENING}`,
           wake: {
-            signal: (c) => feed.send(c.id),
+            signal: (c, preview) => feed.send(c.id, preview),
             attach: (rewake) => feed.onReader(rewake),
             listening: () =>
               feed.watched()
