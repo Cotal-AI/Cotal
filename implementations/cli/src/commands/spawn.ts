@@ -106,7 +106,7 @@ import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
 import { attachSeat } from "./agents.js";
 import { extensionNames, materializeExtension } from "../ext-loader.js";
-import { claimManagedHandoff } from "../managed-handoff.js";
+import { claimManagedHandoff, holdsManagedHandoff } from "../managed-handoff.js";
 import {
   checkDialPolicy,
   checkEnforcement,
@@ -383,7 +383,7 @@ async function provisionFreshForeground<T>(
 export const spawnFlags = [
   spaceFlag,
   serverFlag,
-  { ...credsFlag, description: "control-caller creds for an off-registry manager (--detach only)" },
+  { ...credsFlag, description: "control-caller creds for an off-registry manager (managed launch only, not --foreground)" },
   ...launchFlags,
   { name: "harness", short: "H", type: "string", value: "<connector>", description: "application connector; an explicit flag wins over persona and saved defaults" },
   { name: "foreground", type: "boolean", description: "run the native application directly; terminal exit may end it" },
@@ -395,9 +395,9 @@ export const spawnFlags = [
   { name: "file", type: "string", short: "f", value: "<persona-file>", description: "persona file on the execution host; never a manifest deploy or implicit upload" },
   { name: "dry-run", type: "boolean", description: "preview the launch without allocation, provisioning or starting an application" },
   { name: "enrollment-file", type: "string", value: "<private-file>", description: "with --foreground: protected file holding this one seat's enrollment URL; never print or forward it" },
-  { name: "allow-stale", type: "string", value: "<a,b>", description: "with -f: waive named stale agents (apply-only)" },
-  { name: "runtime", type: "string", value: "<name>", description: "with -f: override the manifest's runtime" },
-  { name: "on", type: "string", value: "<instance>", description: "with --detach: launch through one manager instance, by the id `ps` prints, in a space with several managers; by default any one takes it" },
+  { name: "allow-stale", type: "string", value: "<a,b>", description: "refused: a manifest deployment option; use cotal team deploy <file>" },
+  { name: "runtime", type: "string", value: "<name>", description: "refused: a manifest deployment option; use cotal team deploy <file>" },
+  { name: "on", type: "string", value: "<instance>", description: "managed launch only: launch through one manager instance, by the id `ps` prints, in a space with several managers; by default any one takes it" },
   { name: "expect-owner", type: "string", value: "<u_…>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the owner the managed handoff must carry` },
   { name: "expect-lifecycle-uid", type: "string", value: "<uid>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the lifecycle UID the managed handoff must carry` },
 ] as const satisfies readonly FlagSpec[];
@@ -406,7 +406,10 @@ export const spawnFlags = [
 export function validateSpawnArguments(args: ParsedArgs): void {
   const values = args.values as FlagValues<typeof spawnFlags>;
   presentationOf(values);
-  const internal = Boolean(process.env[MANAGED_HANDOFF_FILE_ENV] || process.env[ENROLLMENT_URL_ENV] || process.env[ENROLLMENT_FILE_ENV]);
+  // `runCli` has already taken the handoff into custody and deleted its variable.
+  const internal = holdsManagedHandoff() || Boolean(process.env[ENROLLMENT_URL_ENV] || process.env[ENROLLMENT_FILE_ENV]);
+  if (!holdsManagedHandoff() && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", `--expect-owner and --expect-lifecycle-uid apply only with ${MANAGED_HANDOFF_FILE_ENV}`);
   const direct = values.foreground === true || internal;
   if (values.file !== undefined && (args.positionals.length || values.config !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "choose one positional persona or --file/-f, not multiple explicit persona sources");
   if (!internal && values.config !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--config is reserved for persisted internal launch callers; use cotal spawn --file <persona-file>");
@@ -751,10 +754,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     scrubEnrollmentEnv(process.env);
   }
   let redeemedEnrollment: ReturnType<typeof checkEnrollmentBundle> | undefined;
-  if (handoffText === undefined && (values["expect-owner"] !== undefined || values["expect-lifecycle-uid"] !== undefined)) {
-    console.error(c.red(`✗ --expect-owner and --expect-lifecycle-uid apply only with ${MANAGED_HANDOFF_FILE_ENV}`));
-    process.exit(1);
-  }
   if (handoffText !== undefined) {
     const refusal =
       enrollmentUrl ? `${MANAGED_HANDOFF_FILE_ENV} cannot be combined with ${ENROLLMENT_URL_ENV}/${ENROLLMENT_FILE_ENV}`

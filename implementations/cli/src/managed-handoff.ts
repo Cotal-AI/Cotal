@@ -30,6 +30,12 @@ export function takeManagedHandoffCustody(env: Record<string, string | undefined
   process.exit(1);
 }
 
+/** Whether custody holds a handoff, without handing it over. Spawn's argument check reads this,
+ *  because custody already removed the variable it would otherwise see. */
+export function holdsManagedHandoff(): boolean {
+  return held !== undefined;
+}
+
 /** The text custody holds, handed over once. A later call returns undefined. Only the spawn
  *  handler calls it. */
 export function claimManagedHandoff(): string | undefined {
