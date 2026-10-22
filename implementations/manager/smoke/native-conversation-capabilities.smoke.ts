@@ -129,7 +129,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     check("a real user-auth broker, auth service, delivery daemon and Manager are live", authService.exitCode === null && broker.exitCode === null);
 
     host = createAppHost({ cotal: () => [process.execPath, ...process.execArgv, import.meta.filename], cwd: root, env: childEnv });
-    for (const session of ["native-plain", "native-wide", "native-sel"]) {
+    for (const session of ["native-plain", "native-wide", "native-sel", "native-run"]) {
       const path = join(home, `${session}.jsonl`);
       writeFileSync(path, "");
       await host.nativeEvent({ hook_event_name: "SessionStart", session_id: session, transcript_path: path, source: "startup", cwd: root });
@@ -230,6 +230,12 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
       .managerInvoke("turn-pending", undefined, { target: { mode: "self" } });
     console.log(`    turn-pending for the conversation: ${JSON.stringify(turns).slice(0, 400)}`);
     check("the Manager answers the conversation's own turn pull", turns.ok === true || typeof turns.error === "string", turns);
+
+    const runner = idOf(await tool("cotal_connect", { name: "run_conv", context: "native-run", capabilities: ["run"] }));
+    const started = await tool("cotal_run", { connection_id: runner, verb: "start", source: 'await sleep("1s", { name: "native-nap" });' });
+    check("a local user-auth Manager says it hosts no runs; a participant Manager does (smoke:native-conversation-run)",
+      started.isError && /hosts no workflow runs yet/.test(started.text), started);
+    await tool("cotal_disconnect", { connection_id: runner });
 
     await tool("cotal_disconnect", { connection_id: sel });
     check("disconnect retires the selected identity", await cotalAuthProvider.actorScope({ dir: stateDir, owner, actor }) === undefined && identities() === before);
