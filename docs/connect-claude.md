@@ -270,8 +270,21 @@ Its manager calls exchange the conversation's own secret for a manager-call view
 its grant and name the manager instance when more than one could answer. A conversation is not a
 managed seat. `cotal_despawn` without a name refuses rather than stopping your app, and
 `cotal_disconnect` retires only that connection. No run turn is addressed to it, because a workflow
-addresses turns to agents it spawned, so `cotal_yield` is not offered. Persona text and model pins
-do not change the conversation's own instructions or model.
+addresses turns to agents it spawned, so `cotal_yield` is not offered. Defining or spawning a
+persona leaves the conversation's own instructions and model as they are.
+
+A native Code conversation on a signed-in mesh can adopt a persona when you name one: `persona`
+takes a name from the mesh's persona catalog on this computer, never a path. The reply carries the
+persona's instructions as their own item. The plugin's native module moves that item out of the tool
+result into its own context: the call's context for that turn, then a `cotal-persona` prompt block
+on each later turn until `cotal_disconnect` or the session ends. They add to Claude's system prompt,
+your instructions and the host's settings, and replace none of them. The card takes the persona's
+description, tags and display metadata. Its role, channels and capabilities are not read, because
+the selection alone decides access. Its model, variant, agent and launch options are not applied,
+and the reply names each one. The card also shows the model Claude Code reports for the conversation;
+Cotal records no model pin for it. A call the native module did not bind cannot adopt a persona or
+report a model. A static-auth or open mesh refuses a persona, because its default persona supplies
+the connection's access there.
 
 The plugin's ordinary command hooks supply the session and transcript binding. Its native module
 uses that binding without intercepting `classic.*` events, which Claude's built-in security guard

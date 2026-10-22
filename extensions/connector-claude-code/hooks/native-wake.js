@@ -1,5 +1,7 @@
 const WAKE = /^Cotal: a new message for connection_id ([A-Za-z0-9_-]{1,128})\. Read it with cotal_inbox\.$/;
 const PREVIEW = /^Cotal preview for connection_id ([A-Za-z0-9_-]{1,128}): (\{.*\})$/;
+const PERSONA = /^Cotal persona "[A-Za-z0-9_-]{1,64}" for connection_id ([A-Za-z0-9_-]{1,128})\n/;
+const COTAL_TOOL = /^mcp__(cotal|plugin_cotal_cotal)__(cotal_connect|cotal_disconnect)$/;
 const pending = new Set();
 const expanded = new Set();
 const wakeRows = new Set();
@@ -10,6 +12,8 @@ let active = false;
 let reader;
 let readerSession;
 let nativeBinding;
+// The adopted persona's instructions by connection_id, repeated in this conversation's context.
+const personas = new Map();
 
 async function relayNative($, event) {
   if (await $.env.get('COTAL_NAME') || await $.env.get('COTAL_LINK') || await $.env.get('COTAL_AGENT_FILE')) return;
@@ -20,6 +24,19 @@ async function relayNative($, event) {
   for (const key of fields) if (typeof event[key] === 'string') frame[key] = event[key];
   const result = await $.process.run([record.argv[0], root + '/dist/monitor.cjs', '--native', '--native-event', JSON.stringify(frame)]);
   if (result.exitCode !== 0) throw new Error('Cotal native lifecycle binding was not confirmed');
+}
+
+// Move the connect reply's persona item into this plugin's own context, now as the call's context
+// and on later turns as a prompt block, so the persona reads as plugin context, not tool output.
+function adoptPersona($, result) {
+  if (!Array.isArray(result?.result)) return result;
+  const item = result.result.find(part => part?.type === 'text' && PERSONA.test(part.text));
+  if (!item) return result;
+  const kept = result.result.filter(part => part !== item);
+  personas.clear();
+  personas.set(PERSONA.exec(item.text)[1], item.text);
+  $.ui.invalidate('prompt.context');
+  return { ...result, result: kept, text: kept.map(part => part.text ?? '').join('\n'), context: [item.text] };
 }
 
 async function submit($, inTurn = false) {
@@ -160,9 +177,15 @@ export function register(on) {
     if (e.agentId === undefined) active = true;
     return next(e);
   });
+  on('prompt.context', async ($, e, next) => {
+    const context = await next(e);
+    if (e.agentId !== undefined || !personas.size) return context;
+    return { ...context, blocks: [...context.blocks, ...[...personas.values()].map(text => ({ name: 'cotal-persona', text }))] };
+  });
   on('tool.call', async ($, e, next) => {
     let input = e;
-    if (e.agentId === undefined && /^mcp__(cotal|plugin_cotal_cotal)__cotal_connect$/.test(e.tool)) {
+    const tool = e.agentId === undefined ? COTAL_TOOL.exec(e.tool)?.[2] : undefined;
+    if (tool === 'cotal_connect') {
       const session = await $.session.id();
       try {
         const root = $.plugin.root;
@@ -174,9 +197,16 @@ export function register(on) {
         await relayNative($, nativeBinding);
         void listen($);
       } catch { return { deny: 'Cotal could not bind this native conversation to its local server. No identity was requested.' }; }
-      input = { ...e, context: session };
+      let model;
+      try { model = await $.session.model(); } catch {}
+      // Only the host reports its model: a value the model wrote into the call is dropped.
+      const { host_model: _written, ...call } = e;
+      input = { ...call, context: session, ...(typeof model === 'string' && model ? { host_model: model } : {}) };
     }
-    const result = await next(input);
+    let result = await next(input);
+    if (tool === 'cotal_connect') result = adoptPersona($, result);
+    if (tool === 'cotal_disconnect' && result?.text === `Disconnected ${e.connection_id}.` && personas.delete(e.connection_id))
+      $.ui.invalidate('prompt.context');
     if (e.agentId === undefined && !next.signal.aborted) await submit($, true);
     return result;
   });
@@ -201,6 +231,7 @@ export function register(on) {
     reader = undefined;
     readerSession = undefined;
     nativeBinding = undefined;
+    personas.clear();
     pending.clear();
     previews.clear();
     return next(e);

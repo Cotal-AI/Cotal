@@ -7,12 +7,14 @@ import {
   CotalEndpoint,
   deprovisionAgent,
   isReachable,
+  listPersonaCatalog,
   loadAgentFile,
   mintCreds,
   mintLifecycleUid,
   newIdentity,
   provisionAgent,
   resolveReadAcl,
+  type AgentDef,
   type ConversationGrant,
   type FlagSpec,
   type FlagValues,
@@ -43,6 +45,7 @@ export const appIdentityFlags = [
   { name: "session", type: "string", value: "<id>", description: "provision: the native conversation identity" },
   { name: "events", type: "boolean", description: "provision: a real native transcript source is bound" },
   { name: "selection", type: "string", value: "<json>", description: "provision: channels, role and capabilities to request within your own grant" },
+  { name: "persona", type: "string", value: "<name>", description: "provision: a catalog persona whose instructions and card the conversation adopts; it grants nothing" },
 ] as const satisfies readonly FlagSpec[];
 
 /** What the record in a credential directory says. `owner` is the process that ran provision. */
@@ -53,8 +56,24 @@ interface IdentityRecord {
   owner: number;
 }
 
+/** A persona a conversation adopted with `--persona`. Its body and card fields are display and
+ *  instruction text. The fields a launch would apply are reported so the host can say they were
+ *  not applied; the access fields the file names are listed by name and never read. */
+export interface AppPersona {
+  name: string;
+  description?: string;
+  tags?: string[];
+  meta?: Record<string, string>;
+  instructions?: string;
+  model?: string;
+  variant?: string;
+  agent?: string;
+  launchOptions?: true;
+  access: string[];
+}
+
 export type AppIdentityReply =
-  | { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant }
+  | { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant; persona?: AppPersona }
   | { ok: false; taken: true }
   | { ok: false; error: string };
 
@@ -95,14 +114,60 @@ function missingPersonaNext(persona: string, t: MeshTarget): string {
   return fix.cwd ? `Run \`${fix.command}\` in ${fix.cwd} to write it.` : `Create it with \`${fix.command}\`.`;
 }
 
+/** The longest persona body a conversation adopts. The native module adds it to the context of
+ *  every turn. */
+const PERSONA_MAX = 32_000;
+
+/** Load the persona a conversation names. Only a catalog name in the mesh's persona root is
+ *  accepted, never a path, so a tool call reads no other file. */
+function adoptPersona(t: MeshTarget, ref: string): AppPersona {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(ref))
+    throw new Error(`persona ${JSON.stringify(ref)} is not a catalog name; name a persona in ${t.personaRoot}, not a path`);
+  let def: AgentDef;
+  try {
+    def = loadAgentFile(agentFilePath(t.root, ref));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    const names = listPersonaCatalog(t.root).filter((p) => p.def).map((p) => p.name);
+    throw new Error(`no "${ref}" persona in ${t.personaRoot} for the mesh "${t.space}"; ${names.length ? `it has ${names.join(", ")}` : "it has none"}`);
+  }
+  const instructions = def.persona?.trim();
+  if (instructions && instructions.length > PERSONA_MAX)
+    throw new Error(`persona "${ref}" has ${instructions.length} characters of instructions; a conversation adopts at most ${PERSONA_MAX}`);
+  const access = [
+    def.role !== undefined && "role",
+    (def.subscribe ?? def.allowSubscribe ?? def.allowPublish) !== undefined && "channels",
+    def.capabilities?.length && "capabilities",
+  ].filter((a): a is string => typeof a === "string");
+  return {
+    name: ref,
+    ...(def.description ? { description: def.description } : {}),
+    ...(def.tags?.length ? { tags: def.tags } : {}),
+    ...(def.meta ? { meta: def.meta } : {}),
+    ...(instructions ? { instructions } : {}),
+    ...(def.model ? { model: def.model } : {}),
+    ...(def.variant ? { variant: def.variant } : {}),
+    ...(def.agent ? { agent: def.agent } : {}),
+    ...(def.launchOptions && Object.keys(def.launchOptions).length ? { launchOptions: true as const } : {}),
+    access,
+  };
+}
+
 async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<AppIdentityReply> {
   const name = values.name?.trim();
   if (!name) return { ok: false, error: "provision needs --name <name>" };
   const selection = values.selection === undefined ? undefined : checkConversationSelection(JSON.parse(values.selection));
   const t = await target(values.space);
-  if (t.mode === "user")
-    return { ok: true, ...await provisionUserApp(t, name, values.session, values.events === true, selection) };
+  if (t.mode === "user") {
+    // Loaded before any identity is requested, so a persona that cannot be adopted connects nothing.
+    const persona = values.persona === undefined ? undefined : adoptPersona(t, values.persona);
+    return { ok: true, ...await provisionUserApp(t, name, values.session, values.events === true, selection), ...(persona ? { persona } : {}) };
+  }
   if (selection) return { ok: false, error: `the mesh "${t.space}" has no signed-in identities, so a conversation cannot request a selection on it` };
+  // Here the default persona supplies the connection's channels and role, so adopting another
+  // persona's instructions over that access would misstate it.
+  if (values.persona !== undefined)
+    return { ok: false, error: `the mesh "${t.space}" has no signed-in identities, so a conversation cannot adopt a persona on it` };
   const taken = await liveMeshNames(t);
   if (!taken) return { ok: false, error: `the mesh "${t.space}" at ${t.server} is not answering. Start it with \`cotal up\`.` };
   if (taken.has(name)) return { ok: false, taken: true };

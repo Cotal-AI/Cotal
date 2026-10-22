@@ -3,7 +3,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { basename, isAbsolute } from "node:path";
-import { configFromEnv, eventPlaneArmed, GATEWAY_TOOLS, MeshAgent, NameTaken, type GatewayConnection, type GatewayHost, type HookEvent } from "@cotal-ai/connector-core";
+import { configFromEnv, eventPlaneArmed, GATEWAY_TOOLS, MeshAgent, NameTaken, type ConnectProfile, type GatewayConnection, type GatewayHost, type HookEvent } from "@cotal-ai/connector-core";
 import type { ConversationGrant, ConversationSelection } from "@cotal-ai/core";
 import { createClaudeHandle, type ClaudeHooks } from "./hooks.js";
 import { createClaudeEventPlane } from "./claude-events.js";
@@ -35,7 +35,35 @@ interface Held {
   stopped?: boolean;
 }
 
-type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant } | { ok: false; taken?: true; error?: string };
+/** The persona `cotal app-identity provision --persona` loaded. */
+interface ReplyPersona {
+  name: string;
+  description?: string;
+  tags?: string[];
+  meta?: Record<string, string>;
+  instructions?: string;
+  model?: string;
+  variant?: string;
+  agent?: string;
+  launchOptions?: true;
+  access: string[];
+}
+
+type Reply =
+  | { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant; persona?: ReplyPersona }
+  | { ok: false; taken?: true; error?: string };
+
+/** What an adopted persona names that a running native conversation does not take. */
+function notApplied(p: ReplyPersona, hostModel: string | undefined): string[] {
+  const runs = hostModel ? `this conversation runs on ${JSON.stringify(hostModel)}, which its host chose` : "its host chose this conversation's model and did not report it";
+  return [
+    ...(p.model ? [`its model ${JSON.stringify(p.model)}: ${runs}, and Cotal cannot change a running conversation's model`] : []),
+    ...(p.variant ? [`its variant ${JSON.stringify(p.variant)}`] : []),
+    ...(p.agent && p.agent !== "claude" ? [`its agent ${JSON.stringify(p.agent)}: this is a Claude Code conversation`] : []),
+    ...(p.launchOptions ? ["its launch options"] : []),
+    ...(p.access.length ? [`its ${p.access.join(", ")}: this connection's access is what its selection was issued`] : []),
+  ];
+}
 
 /** The native tools a signed-in conversation's own grant can use. The manager that serves each
  *  call still decides it from that grant. */
@@ -71,9 +99,14 @@ export function createAppHost(o: AppHostOptions): AppHost {
     const reply = await plumbing(["retire", "--dir", dir]);
     if (!reply.ok) throw new Error(reply.error ?? "identity retirement is unconfirmed");
   };
-  const open = async (name: string, context?: string, selection?: ConversationSelection): Promise<GatewayConnection> => {
+  const open = async (name: string, context?: string, selection?: ConversationSelection, profile: ConnectProfile = {}): Promise<GatewayConnection> => {
     const binding = context ? bindings.get(context) : undefined;
     if (context && !binding) throw new Error("the native conversation has not bound its lifecycle and transcript; no identity was requested");
+    // Both come from the native module, which binds the conversation: only it can report the model
+    // and deliver a persona's instructions as the conversation's own context.
+    if (!binding && profile.persona !== undefined)
+      throw new Error("a persona needs the Cotal plugin's native module, which delivers its instructions; no identity was requested");
+    if (!binding && profile.hostModel !== undefined) throw new Error("host_model is reported by the native module; no identity was requested");
     if (context && [...held.values()].some((h) => h.session === context))
       throw new Error("this native conversation already has a connection; disconnect it before connecting again");
     const previous = context ? pending.get(context) : undefined;
@@ -81,7 +114,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
     // Capture the personal privacy boundary before provisioning or waiting for a network connection.
     const source = binding ? await createBoundClaudeTranscriptSource(binding.path, "resume") : undefined;
     const reply = await plumbing(["provision", "--name", name, ...(binding ? ["--session", binding.session, "--events"] : []),
-      ...(selection ? ["--selection", JSON.stringify(selection)] : [])]);
+      ...(selection ? ["--selection", JSON.stringify(selection)] : []), ...(profile.persona !== undefined ? ["--persona", profile.persona] : [])]);
     if (!reply.ok) {
       if (reply.taken) throw new NameTaken(name);
       throw new Error(reply.error ?? "identity provisioning failed");
@@ -96,16 +129,24 @@ export function createAppHost(o: AppHostOptions): AppHost {
       // No run turn is addressed to a conversation. Its own bearer command exchanges its own
       // secret for a manager-call view, so manager calls carry only what its grant holds.
       config.turnRelay = false;
+      // Card text only. The persona's access fields were never read, and its launch settings are
+      // reported as not applied.
+      const persona = reply.persona;
+      if (persona?.name !== profile.persona) throw new Error("the Cotal CLI did not confirm the persona this conversation named");
+      if (persona) Object.assign(config, { description: persona.description, tags: persona.tags, meta: persona.meta });
       if (eventPlaneArmed(config, env) && !binding) throw new Error("this mesh requires a bound native event source");
       agent = new MeshAgent(config, env, { withholdProcessCwd: true });
       agent.on("error", () => process.stderr.write("[cotal-connector] personal connection error; inspect cotal_connection_status\n"));
+      // The model the host reported, as display metadata; it is no pin and nothing enforces it.
+      if (profile.hostModel) await agent.setModel(profile.hostModel);
       if (eventPlaneArmed(config, env)) plane = createClaudeEventPlane(agent, config, env, source);
       const hooks = binding ? createClaudeHandle({ env, events: () => plane?.events }) : undefined;
       hooks?.adoptTranscript(binding!.path, "resume");
       void agent.start();
       for (let waited = 0; !agent.connected && waited < JOIN_MS; waited += 100) await new Promise((resolve) => setTimeout(resolve, 100));
       if (!agent.connected) throw new Error(`the personal conversation did not join within ${JOIN_MS / 1000} s; its identity was retained for exact cleanup`);
-      const conn: GatewayConnection = { id: randomUUID(), agent, config, ...(reply.grant ? { tools: grantedTools(reply.grant) } : {}) };
+      const conn: GatewayConnection = { id: randomUUID(), agent, config, ...(reply.grant ? { tools: grantedTools(reply.grant) } : {}),
+        ...(persona ? { persona: { name: persona.name, instructions: persona.instructions, notApplied: notApplied(persona, profile.hostModel) } } : {}) };
       held.set(conn.id, { conn, dir, session: binding?.session, hooks, plane });
       if (binding && hooks) await hooks.handle(agent, binding.event);
       return conn;
@@ -138,8 +179,8 @@ export function createAppHost(o: AppHostOptions): AppHost {
   };
   return {
     account: () => "local",
-    open(_account, name, context, selection) {
-      const next = opening.then(() => open(name, context, selection));
+    open(_account, name, context, selection, profile) {
+      const next = opening.then(() => open(name, context, selection, profile));
       opening = next.catch(() => {});
       return next;
     },

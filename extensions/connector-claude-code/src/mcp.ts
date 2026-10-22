@@ -75,8 +75,9 @@ async function serveLocal(desktop: boolean): Promise<void> {
   const served = await serveGatewayStdio(host, {
     source: "claude-local",
     connectContext: !desktop,
-    // A signed-in Code conversation asks for its own grant and calls with it; see the host.
-    ...(desktop ? {} : { tools: NATIVE_GATEWAY_TOOLS, selection: true }),
+    // A signed-in Code conversation asks for its own grant and calls with it; see the host. Its
+    // native module delivers an adopted persona's instructions, which Desktop has no module for.
+    ...(desktop ? {} : { tools: NATIVE_GATEWAY_TOOLS, selection: true, persona: true }),
     ...(feed
       ? {
           instructions: `${LOCAL}${GATEWAY_CONNECTING} ${CODE_LISTENING}`,

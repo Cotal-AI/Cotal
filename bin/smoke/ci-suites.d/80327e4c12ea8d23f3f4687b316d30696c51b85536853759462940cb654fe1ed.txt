@@ -1,0 +1,3 @@
+# A signed-in native conversation adopts a persona's instructions and card text through the native
+# gateway on a real user-auth mesh, and none of its access or launch settings.
+smoke:native-persona

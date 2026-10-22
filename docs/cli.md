@@ -4607,7 +4607,11 @@ it keeps them. Each provision also retires the directories whose owning process 
 covers a host killed before it could retire. A mesh that uses per-user sign-in is refused. Like
 `agent-bearer`, it skips the connector-seed boot gate. On a signed-in mesh, `--selection <json>`
 requests channels, a role and capabilities within your own grant for a native conversation. A
-selection on any other mesh is refused.
+selection on any other mesh is refused. On a signed-in mesh, `--persona <name>` also returns a
+catalog persona's instructions and card text for the conversation to adopt. It takes a catalog name,
+never a path, and refuses before any identity is requested when the persona is missing or its
+instructions exceed 32000 characters. The persona's role, channels and capabilities are not read.
+A persona on any other mesh is refused.
 
 ## watch
 

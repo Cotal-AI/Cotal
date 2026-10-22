@@ -417,7 +417,7 @@ The host implements `GatewayHost`:
 
 - `account(auth)` returns the account the request authenticated as, read from the SDK's `AuthInfo`.
   It throws when the request has none, and the tool then runs nothing.
-- `open(account, name, context?, selection?)` issues and starts a new connection under that name. It throws `NameTaken`
+- `open(account, name, context?, selection?, profile?)` issues and starts a new connection under that name. It throws `NameTaken`
   only when the issuer reports that the name exists. `cotal_connect` then tries `name_2`, `name_3`
   and so on, up to `GATEWAY_NAME_ATTEMPTS` names. Any other error goes back to the caller and no
   other name is tried. The collision check and the issue must be one atomic step per account, so
@@ -433,7 +433,13 @@ persona, run and reconnect but not yield. Registering a tool offers it to no con
 a connection calls only the tools its host lists in `GatewayConnection.tools`, default
 `GATEWAY_TOOLS`, and only those its credential's capabilities allow. With `options.selection`,
 `cotal_connect` takes channels, a role and capabilities, builds the canonical selection with core's
-`conversationSelection`, and hands it to `open`. The host issues that selection as given or throws. One tool list serves every connection, so no
+`conversationSelection`, and hands it to `open`. The host issues that selection as given or throws.
+With `options.connectContext`, `cotal_connect` also takes a `host_model` the native host reports,
+passed as `profile.hostModel`. With `options.persona`, which needs `connectContext`, it takes a
+persona catalog name as `profile.persona`. The host adopts it or throws, and returns it in
+`GatewayConnection.persona`. The reply then names what the persona did not apply, and returns its
+instructions as a second item that `personaContext` formats, for the embedder's native module to
+deliver as the conversation's own context. A persona grants nothing. One tool list serves every connection, so no
 advertised text names one connection's channels. Each call runs against that connection's own
 configuration. Authentication, credential issuance and revocation and durable connection records
 stay with the host.

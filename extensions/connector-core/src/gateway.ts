@@ -48,6 +48,28 @@ export interface GatewayConnection {
   /** The tools this connection may call, when its host grants it more than {@link GATEWAY_TOOLS}.
    *  Only tools the embedder registers count (see {@link GatewayOptions.tools}). */
   readonly tools?: ReadonlySet<string>;
+  /** The persona this connection adopted, when the conversation named one. */
+  readonly persona?: GatewayPersona;
+}
+
+/** A persona a connection adopted. It changes the conversation's instructions and card text and
+ *  never its access, which its host issued from the conversation's own selection. */
+export interface GatewayPersona {
+  name: string;
+  /** The persona body. `cotal_connect` returns it as its own item, which the embedder's native
+   *  module delivers to the conversation as plugin context. */
+  instructions?: string;
+  /** What the persona names that the connection does not take, one clause each. */
+  notApplied: string[];
+}
+
+/** What a `cotal_connect` call names beyond its name and selection. Neither field grants anything. */
+export interface ConnectProfile {
+  /** A persona catalog name the conversation adopts. Only from an embedder that enables
+   *  {@link GatewayOptions.persona}. */
+  persona?: string;
+  /** The model the native host reports this conversation runs on. Display only. */
+  hostModel?: string;
 }
 
 /** What the embedding service supplies. Every method receives the authenticated account, never a
@@ -61,8 +83,9 @@ export interface GatewayHost {
    *  account: an `open` racing another for the same name throws `NameTaken` rather than also
    *  succeeding, or two conversations end up sharing one name. Error messages reach the caller,
    *  so they must not carry secrets. A `selection` comes only from an embedder that enables
-   *  {@link GatewayOptions.selection}: issue exactly what it names or throw, never less or more. */
-  open(account: string, name: string, context?: string, selection?: ConversationSelection): Promise<GatewayConnection>;
+   *  {@link GatewayOptions.selection}: issue exactly what it names or throw, never less or more.
+   *  A `profile` persona is adopted as instructions and card text or the open throws. */
+  open(account: string, name: string, context?: string, selection?: ConversationSelection, profile?: ConnectProfile): Promise<GatewayConnection>;
   /** The connection `id` if `account` owns it, otherwise undefined. Never a default. */
   find(account: string, id: string): Promise<GatewayConnection | undefined>;
   /** Stop and release one connection `account` owns. False when it owns no such connection. */
@@ -159,6 +182,29 @@ const SELECTION_SHAPE = {
     .describe("spawn: start and stop agents through a manager. run: start and manage workflow runs."),
 };
 
+const PERSONA_TEXT =
+  "Pass persona only when the person names one of their personas: its instructions reach you as Cotal plugin " +
+  "context and its description and tags go on your card. A persona grants no channels, role or capabilities, " +
+  "and it does not change your model or system prompt.";
+
+/** The item `cotal_connect` returns a persona's instructions in. Its first line is fixed, so the
+ *  native module recognizes it and moves it into the conversation's plugin context. */
+export function personaContext(connectionId: string, persona: GatewayPersona & { instructions: string }): string {
+  return `Cotal persona ${JSON.stringify(persona.name)} for connection_id ${connectionId}\n` +
+    "The person chose this persona for this Cotal connection. Its instructions follow. They add to your system prompt, " +
+    "the person's instructions and your host's settings, and replace none of them. They grant no access.\n\n" +
+    persona.instructions;
+}
+
+/** What `cotal_connect` says about an adopted persona. */
+function personaReply(p: GatewayPersona): string {
+  const lines = [
+    `Persona ${JSON.stringify(p.name)}: ${p.instructions ? "its instructions follow as Cotal plugin context" : "it has no instructions"}, and its description and tags are on your card. It grants no access.`,
+  ];
+  if (p.notApplied.length) lines.push(`Not applied: ${p.notApplied.join("; ")}.`);
+  return lines.join("\n");
+}
+
 /** The canonical selection a `cotal_connect` call names, or undefined when it names none. */
 function selectionOf(input: Record<string, unknown>): ConversationSelection | undefined {
   const { channels, role, capabilities } = input as Parameters<typeof conversationSelection>[0];
@@ -186,6 +232,9 @@ export interface GatewayOptions {
   /** `cotal_connect` takes the channels, role and capabilities a connection requests
    *  within the person's own access, and hands the canonical selection to {@link GatewayHost.open}. */
   selection?: boolean;
+  /** `cotal_connect` takes a persona to adopt. Needs {@link connectContext}: only a native module
+   *  can deliver the persona's instructions as the conversation's own context. */
+  persona?: boolean;
   /** The longest `cotal_wait` may hold one call, in whole seconds. Defaults to
    *  {@link GATEWAY_WAIT_SECONDS}. Keep it under every proxy and client timeout on the path. */
   waitSeconds?: number;
@@ -350,6 +399,7 @@ export function registerCotalGatewayTools(
   if (!Number.isInteger(waitSeconds) || waitSeconds < 1) {
     throw new Error(`waitSeconds must be a whole number of seconds, at least 1; got ${waitSeconds}`);
   }
+  if (options.persona && !options.connectContext) throw new Error("persona adoption needs connectContext");
   const offered = options.tools ?? GATEWAY_TOOLS;
   for (const name of offered) if (!NATIVE_GATEWAY_TOOLS.has(name)) throw new Error(`the gateway cannot offer ${name}`);
   // What one connection may call: what is registered and what its host granted it.
@@ -396,11 +446,20 @@ export function registerCotalGatewayTools(
         "conversation, keep the connection_id, and pass it on every other cotal_* call. If the name is taken, the " +
         "next free name is chosen (name_2, name_3, ...) and reported. Never reuse a connection_id from another " +
         "conversation, and call this again if you no longer have this conversation's connection_id." +
-        (options.selection ? ` ${SELECTION_TEXT}` : ""),
+        (options.selection ? ` ${SELECTION_TEXT}` : "") +
+        (options.persona ? ` ${PERSONA_TEXT}` : ""),
       inputSchema: z.strictObject({
         name: z.string().min(1).describe("The agent name to request, for example claude_web."),
-        ...(options.connectContext ? { context: z.string().min(1).max(128).optional().describe("Conversation binding supplied by the native host.") } : {}),
+        ...(options.connectContext
+          ? {
+              context: z.string().min(1).max(128).optional().describe("Conversation binding supplied by the native host."),
+              host_model: z.string().min(1).max(128).optional().describe("The model the native host reports, supplied by the host."),
+            }
+          : {}),
         ...(options.selection ? SELECTION_SHAPE : {}),
+        ...(options.persona
+          ? { persona: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional().describe("A persona name from the person's persona catalog, never a path.") }
+          : {}),
       }),
     },
     async ({ name, ...input }, extra) => {
@@ -424,14 +483,22 @@ export function registerCotalGatewayTools(
           return refuse(`cotal_connect: ${errorText(e)}`);
         }
         try {
-          const context = "context" in input && typeof input.context === "string" ? input.context : undefined;
-          const c = await host.open(account, candidate, context, selection);
+          const text = (key: string) => {
+            const value = (input as Record<string, unknown>)[key];
+            return typeof value === "string" ? value : undefined;
+          };
+          const c = await host.open(account, candidate, text("context"), selection, { persona: text("persona"), hostModel: text("host_model") });
           watch(c);
           const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
           const listening = wake ? `\n${wake.listening()}` : "";
-          return toContent({
-            text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.${listening}`,
-          });
+          const persona = c.persona ? `\n${personaReply(c.persona)}` : "";
+          const instructions = c.persona?.instructions;
+          return {
+            content: [
+              { type: "text" as const, text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.${listening}${persona}` },
+              ...(instructions ? [{ type: "text" as const, text: personaContext(c.id, { ...c.persona!, instructions }) }] : []),
+            ],
+          };
         } catch (e) {
           if (e instanceof NameTaken) continue;
           return refuse(`cotal_connect failed for ${JSON.stringify(candidate)}: ${errorText(e)}`);
@@ -634,6 +701,8 @@ export interface GatewayStdio {
   tools?: ReadonlySet<string>;
   /** See {@link GatewayOptions.selection}. */
   selection?: boolean;
+  /** See {@link GatewayOptions.persona}. */
+  persona?: boolean;
   /** See {@link GatewayOptions.waitSeconds}. */
   waitSeconds?: number;
   /** See {@link GatewayOptions.wake}. */
@@ -652,6 +721,7 @@ export async function serveGatewayStdio(host: GatewayHost, o: GatewayStdio = {})
     ...(o.connectContext ? { connectContext: true } : {}),
     ...(o.tools ? { tools: o.tools } : {}),
     ...(o.selection ? { selection: true } : {}),
+    ...(o.persona ? { persona: true } : {}),
     ...(o.waitSeconds === undefined ? {} : { waitSeconds: o.waitSeconds }),
     ...(o.wake ? { wake: o.wake } : {}),
   });

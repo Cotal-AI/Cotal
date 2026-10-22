@@ -51,7 +51,11 @@ A session the Cotal CLI did not launch (no `COTAL_NAME`, `COTAL_LINK` or `COTAL_
 only when the conversation calls `cotal_connect` with a name, as an identity of its own on your
 selected mesh, including a signed-in mesh supported by its identity authority. A native session
 binds its own lifecycle and transcript before signed-in issuance. Each conversation gets a separate
-roleless, capability-free identity with direct messages and only its own event publication grant.
+identity. Without a selection it has no role or capabilities, receives direct messages and publishes
+only its own events. A selection requests channels, a role and capabilities within your own grant. A
+persona you name adds its instructions through this plugin's native module, as plugin context, and
+its description and tags to the card. It grants nothing and leaves Claude's model and system prompt
+as they are.
 Remote identity discovery is public; creation and retirement use the existing account sign-in
 without exposing its proof to Claude. Required events cannot be disabled or replaced with a fake
 stream. A pending retirement retains its private recovery record until completion is confirmed.
