@@ -137,6 +137,17 @@ interface OpTerminal {
 }
 type Op = OpLive | OpTerminal;
 type Command = EpCommandAuthority & { name: string };
+/** A caller-ceiling entry an approval may carry: pinned to the proposal's own instance with
+ *  `instanceOnly`, on a declared command, with exactly the target presence and mode that command
+ *  admits. `any` and `ledger` need an operator target policy, which stock does not wire. Containment
+ *  then compares instance rails directly; no class entry is re-read as an instance one. */
+const ceilingEntryAdmitted = (c: EpCapability, p: { endpoint: string; instanceId: string; commands: Command[] }): boolean => {
+  if (c.endpoint !== p.endpoint || c.instanceId !== p.instanceId || c.instanceOnly !== true) return false;
+  const k = p.commands.find((x) => x.name === c.command);
+  if (k === undefined) return false;
+  if (!k.targeted) return c.target === undefined;
+  return c.target !== undefined && c.target.mode !== "any" && c.target.mode !== "ledger" && k.modes.includes(c.target.mode);
+};
 interface ProposalLive {
   v: 1; kind: "service-proposal"; proposalId: string; proposalDigest: string; account: Account; owner: string; endpoint: string; instanceId: string;
   register: { requestId: string; requestDigest: string; operationId: string }; createdAtMs: number; expiresAtMs: number;
@@ -1072,8 +1083,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       if (name === undefined || name.owner !== p.owner) return out(denied("name-claim-required"));
       if (name.revision !== req.input.expectedNameRevision) return out(denied("conflict"));
       const ceiling = parseEndpointCapabilities(req.input.callerCeiling);
-      if (ceiling.some((c) => c.endpoint !== p.endpoint || !p.commands.some((k) => k.name === c.command) || (c.instanceId !== undefined && c.instanceId !== p.instanceId)))
-        return out(denied("bad-request"));
+      if (ceiling.some((c) => !ceilingEntryAdmitted(c, p))) return out(denied("bad-request"));
       const reservation: ServiceUidCustodyV1 = { v: 1, kind: "native-service-uid", native: { accountPublicKey, space, lifecycleUid },
         assignment: { owner: p.owner, actor: serviceEndpointActor({ accountPublicKey, space, owner: p.owner, endpoint: p.endpoint, instanceId: p.instanceId }),
           endpoint: p.endpoint, instanceId: p.instanceId, duty: "serve" },
