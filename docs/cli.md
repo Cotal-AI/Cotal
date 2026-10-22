@@ -4607,8 +4607,9 @@ it keeps them. Each provision also retires the directories whose owning process 
 covers a host killed before it could retire. On a mesh that uses per-user sign-in, provision needs
 the conversation's native `--session` and keeps its request and secret in a private record under
 `~/.cotal/app-identities`. `retire` keeps that record until the mesh confirms retirement, and names
-the mesh's phase while it is pending. Each signed-in provision also retires the same mesh's saved
-conversations whose server process has provably exited. Like `agent-bearer`, it skips the
+the mesh's phase while it is pending. `cotal app-identity reap` retires the selected mesh's saved
+conversations whose server process no longer exists. The connector runs it after each signed-in
+connection, so a connection never waits for that cleanup. Like `agent-bearer`, it skips the
 connector-seed boot gate.
 
 ## watch

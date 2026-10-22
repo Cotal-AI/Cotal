@@ -19,7 +19,7 @@ import {
 import { defaultPersonaRef, resolveTargetOrThrow, type MeshTarget } from "@cotal-ai/workspace";
 import { liveMeshNames } from "../lib/live-names.js";
 import { defaultPersonaFix } from "../lib/default-persona.js";
-import { isUserAppDir, provisionUserApp, retireUserApp } from "../lib/app-user-identity.js";
+import { isUserAppDir, provisionUserApp, retireDeadUserApps, retireUserApp } from "../lib/app-user-identity.js";
 
 /** Every credential directory provision makes is a fresh `mkdtemp` under the OS temp dir with this prefix. */
 const CRED_DIR_PREFIX = "cotal-app-identity-";
@@ -70,7 +70,8 @@ export async function appIdentity(args: ParsedArgs): Promise<void> {
   try {
     if (verb === "provision" && args.positionals.length === 1) return reply(await provision(values));
     if (verb === "retire" && args.positionals.length === 1) return reply(await retire(values));
-    reply({ ok: false, error: "usage: cotal app-identity provision --name <name> [--space <space>] | retire --dir <dir>" });
+    if (verb === "reap" && args.positionals.length === 1) return reply(await reap(values));
+    reply({ ok: false, error: "usage: cotal app-identity provision --name <name> [--space <space>] | retire --dir <dir> | reap [--space <space>]" });
   } catch (e) {
     reply({ ok: false, error: errorText(e) });
   }
@@ -168,6 +169,14 @@ async function retire(values: FlagValues<typeof appIdentityFlags>): Promise<{ ok
   if (!values.dir) return { ok: false, error: "retire needs --dir <dir>" };
   if (isUserAppDir(values.dir)) await retireUserApp(values.dir);
   else await retireDir(values.dir);
+  return { ok: true };
+}
+
+/** On a signed-in mesh, retire the saved conversations whose server process has exited. The
+ *  connector runs this after a connection, so the connection never waits for that cleanup. */
+async function reap(values: FlagValues<typeof appIdentityFlags>): Promise<{ ok: true }> {
+  const t = await target(values.space);
+  if (t.mode === "user") await retireDeadUserApps(t);
   return { ok: true };
 }
 
