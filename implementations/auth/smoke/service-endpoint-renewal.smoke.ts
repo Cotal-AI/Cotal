@@ -21,7 +21,9 @@
  *     with no request, and a second close is a no-op;
  *  L9 no token appears in state(), in thrown errors, or in the persisted record's non-material fields;
  *  L10 a revoke whose cause is `restore-quarantine` (how quarantine reaches an active instance; the
- *      admission gate itself guards only new requests) ends the source as approval-revoked.
+ *      admission gate itself guards only new requests) ends the source as approval-revoked;
+ *  L11 a real `CotalEndpoint` starts with the source as its bearer function. It does not outlive a
+ *      bearer here; the endpoint's own refresh schedule is covered by its own suites.
  */
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -31,7 +33,7 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { Kvm, type KV } from "@nats-io/kv";
 import { connect, credsAuthenticator, tokenAuthenticator } from "@nats-io/transport-node";
 import {
-  VOID_SCHEMA_DIGEST, endpointToken, epAuthBucket, mintCreds, newIdentity, serviceWitnessDigest, setupSpaceStreams, singleDocumentClosure,
+  CotalEndpoint, VOID_SCHEMA_DIGEST, endpointToken, epAuthBucket, mintCreds, newIdentity, serviceWitnessDigest, setupSpaceStreams, singleDocumentClosure,
   type ServiceAuthorityRequest, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { cotalAuthProvider } from "../src/provider.js";
@@ -318,6 +320,26 @@ try {
     let second = "ok";
     try { await s.close(); } catch (e) { second = e instanceof Error ? e.message : String(e); }
     c.check("L8 a second close resolves and changes nothing", second === "ok" && s.state().state === "closed", second);
+  });
+
+  await cell("L11 a real CotalEndpoint starts on the source as its bearer function", async () => {
+    const six = await registeredWitness(ep);
+    const s = source(six.witness);
+    const posts0 = doorPosts;
+    // The endpoint needs the sentinel before start; the source exposes it after its first pull.
+    const first = await s.bearer(); tokensSeen.push(first);
+    const epx = new CotalEndpoint({
+      space, servers: fx.servers, bearer: () => s.bearer(), sentinelCreds: s.sentinelCreds!,
+      card: { name: "renewal-service", kind: "endpoint", owner: six.witness.principal.owner, actor: six.witness.principal.actor },
+      channels: [], registerPresence: false, watchPresence: false, watchChannels: false, consume: false,
+    });
+    epx.on("error", () => {}); epx.on("warning", () => {});
+    let started = "ok";
+    try { await epx.start(); } catch (e) { started = e instanceof Error ? e.message : String(e); }
+    c.check("L11 the endpoint starts with the source's bearer through the native service callout", started === "ok", started);
+    c.check("L11 the endpoint's pulls went through the one renew id: at most 1 renew intent", await count(ep, six.instanceId, "renew") <= 1 && await count(ep, six.instanceId, "activate") === 1,
+      { renew: await count(ep, six.instanceId, "renew"), posts: doorPosts - posts0 });
+    await epx.stop();
   });
 
   await cell("L9 no token outside bearer()", async () => {
