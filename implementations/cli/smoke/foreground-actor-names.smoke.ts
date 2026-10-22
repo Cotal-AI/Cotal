@@ -30,6 +30,11 @@ if (process.argv[2] === "worker") {
       if (!response.ok) throw new Error('foreground actor material for "denied" is already held');
       return response.json();
     },
+    async postAgentEnrollment({ url }: { url: string }) {
+      const response = await fetch(url, { method: "POST" });
+      if (!response.ok) throw new Error("fixture enrollment refused");
+      return response.json();
+    },
   };
   registry.register(provisioningDouble);
   const connector: Connector = {
@@ -57,14 +62,26 @@ process.env.COTAL_HOME = home;
 const { isReachable, mintLifecycleUid } = await import("@cotal-ai/core");
 const { recordMesh, agentSecretFilePaths } = await import("@cotal-ai/workspace");
 const owner = `u_${"a".repeat(26)}`;
+const idp = { url: "https://idp.example/api/auth", issuer: "https://idp.example", audience: "https://idp.example" };
 const granted = new Set<string>();
 const requests: string[] = [];
+const redeemed: string[] = [];
 const provisioning = createServer(async (request, response) => {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  response.setHeader("content-type", "application/json");
+  // A one-time enrollment: each redemption issues a fresh grant for the actor its path names.
+  const enrollment = /^\/enroll\/([a-z0-9_]+)$/.exec(request.url ?? "");
+  if (enrollment) {
+    redeemed.push(enrollment[1]);
+    response.end(JSON.stringify({
+      space, brokerAccess: { kind: "direct", url: server }, authServiceUrl: provisioningUrl, idp,
+      actor: enrollment[1], owner, lifecycleUid: mintLifecycleUid(), actorToken: "fixture-enrolled-token", sentinelCreds: "fixture-enrolled-sentinel", allowSubscribe: [], allowPublish: [],
+    }));
+    return;
+  }
   const { actor } = JSON.parse(Buffer.concat(chunks).toString()) as { actor: string };
   requests.push(actor);
-  response.setHeader("content-type", "application/json");
   if (actor === "denied") {
     response.statusCode = 403;
     response.end('{"error":"fixture_denied"}');
@@ -86,7 +103,7 @@ teardownOnSignal(broker, store);
 const server = `nats://127.0.0.1:${port}`;
 const space = "foregroundnames";
 recordMesh({ space, server, root, mode: "user", origin: "manual", policy: { events: "required" }, userAuth: {
-  provider: "cotal", idp: { url: "https://idp.example/api/auth", issuer: "https://idp.example", audience: "https://idp.example" },
+  provider: "cotal", idp,
   endpoints: { url: provisioningUrl, agentProvisioningUrl: provisioningUrl }, remote: true,
 }, ts: new Date().toISOString() } as never);
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
@@ -101,8 +118,8 @@ const env: NodeJS.ProcessEnv = {
 for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"]) mkdirSync(env[key]!, { recursive: true });
 type Worker = { child: ChildProcessWithoutNullStreams; output: string; ready: Promise<boolean>; closed: Promise<number | null>; exited: boolean };
 const workers: Worker[] = [];
-function launch(extra: string[] = []): Worker {
-  const child = spawn(process.execPath, [...process.execArgv, process.argv[1], "worker", ...extra], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+function launch(extra: string[] = [], extraEnv: NodeJS.ProcessEnv = {}): Worker {
+  const child = spawn(process.execPath, [...process.execArgv, process.argv[1], "worker", ...extra], { cwd: root, env: { ...env, ...extraEnv }, stdio: ["pipe", "pipe", "pipe"], detached: true });
   let complete!: (ready: boolean) => void;
   const ready = new Promise<boolean>((resolve) => { complete = resolve; });
   const worker: Worker = { child, output: "", ready, closed: Promise.resolve(null), exited: false };
@@ -163,6 +180,14 @@ try {
   assert(await third.ready, `implicit launch skips an existing remote grant as well as a local held name: ${third.output}`);
   assert(third.output.split(/\r?\n/).includes("FIXTURE_READY default_agent_3 default_agent_3 default_agent_3"), "remote grant and held second name allocate the next fresh actor in every identity field");
   assert.equal(requests.filter((name) => name === "default_agent").length, 2, "remote existing-grant response is observed without reissuing it");
+  // An enrollment is redeemed before the actor's material is claimed. A held actor found after that
+  // is not a refusal: the one-time enrollment is already spent.
+  const beforeEnrolled = requests.length;
+  const enrolled = launch(["--name", "default_agent_2", "--space", space], { COTAL_ENROLLMENT_URL: `${provisioningUrl}/enroll/default_agent_2` });
+  assert.equal(await enrolled.ready, false, "an enrollment for a held actor never launches a replacement");
+  assert.equal(await enrolled.closed, 3, `a held actor after a redeemed enrollment is not reported as a refusal: ${enrolled.output}`);
+  assert(/Outcome: unknown/.test(enrolled.output) && /Code:\s+OPERATION_UNKNOWN/.test(enrolled.output) && enrolled.output.includes("foreground actor material"), `the spent enrollment's outcome is reported unconfirmed: ${enrolled.output}`);
+  assert(redeemed.join() === "default_agent_2" && requests.length === beforeEnrolled, "the enrollment was redeemed once and nothing was provisioned besides it");
   writePersona("denied");
   const beforeDenied = requests.length;
   const denied = launch();
@@ -171,7 +196,7 @@ try {
   assert.equal(await denied.closed, 3, `ordinary authorization refusal remains an error: ${denied.output}`);
   assert.deepEqual(requests.slice(beforeDenied), ["denied"], "ordinary authorization refusal is not retried under another actor");
   console.log("FOREGROUND ACTOR NAMING: all real-process collision controls passed");
-  emitSentinel({ passed: 16, failed: 0 });
+  emitSentinel({ passed: 20, failed: 0 });
   passed = true;
 } finally {
   for (const worker of workers) await stop(worker);
