@@ -114,8 +114,8 @@
       "file": "implementations/web/client/src/lib/route.ts",
       "find": "return r.tab === \"work\" ? page : `${page}/${r.tab}`;",
       "replace": "return page;",
-      "expectRed": "parseRoute reads back formatRoute for {\"view\":\"agent\",\"id\":\"local.abc\",\"tab\":\"messages\"}",
-      "cell": "parseRoute reads back formatRoute for {\"view\":\"agent\",\"id\":\"local.abc\",\"tab\":\"messages\"}"
+      "expectRed": "formatRoute writes Work with no message as the bare page, and another tab by name",
+      "cell": "formatRoute writes Work with no message as the bare page, and another tab by name"
     },
     {
       "name": "formatRoute writes a message in the old form",

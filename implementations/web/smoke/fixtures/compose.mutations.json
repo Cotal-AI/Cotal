@@ -280,7 +280,7 @@
     {
       "name": "K35 the row drops as operator",
       "file": "implementations/web/client/src/ui/Composer.tsx",
-      "find": "<span className=\"ui-pick\">as operator</span>",
+      "find": "{!phone && <span className=\"ui-pick\">as operator</span>}",
       "replace": "",
       "expectRed": "3.2 its row is Mention, the mode line, as operator and send",
       "cell": "3.2 its row is Mention, the mode line, as operator and send"

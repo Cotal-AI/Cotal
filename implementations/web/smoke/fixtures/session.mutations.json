@@ -120,7 +120,7 @@
     {
       "name": "S16 tool names are shown uncapped, so a harness can push any length of text into a title or description",
       "file": "implementations/web/client/src/lib/session.ts",
-      "find": "  return chars.length > TOOL_NAME_CAP ? ",
+      "find": "  return chars.length > cap ? ",
       "replace": "  return false ? ",
       "expectRed": "tool names: a 200-character name shows as its first 64 characters and …, and the call keeps it whole",
       "cell": "tool names: a 200-character name shows as its first 64 characters and …, and the call keeps it whole"

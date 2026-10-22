@@ -213,10 +213,10 @@
       "afterRestore": "pnpm --filter @cotal-ai/web build"
     },
     {
-      "name": "the peek takes its work helpers from the agent page, so the page and its Tabs load with every page",
+      "name": "the peek imports the agent page, so the page and its Tabs load with every page",
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
       "find": "import { useSession } from \"../agent/work.ts\";",
-      "replace": "import { useSession } from \"../views/AgentPage.tsx\";",
+      "replace": "import { useSession } from \"../agent/work.ts\";\nimport { AgentPage } from \"../views/AgentPage.tsx\";\n(globalThis as { agentPage?: unknown }).agentPage = AgentPage;",
       "expectRed": "no first-load chunk holds the agent page's tabs, and a lazy chunk does",
       "cell": "no first-load chunk holds the agent page's tabs, and a lazy chunk does",
       "afterRestore": "pnpm --filter @cotal-ai/web build"

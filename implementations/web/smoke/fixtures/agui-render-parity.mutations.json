@@ -39,8 +39,8 @@
       "file": "implementations/web/client/src/lib/aguiFrame.ts",
       "find": "        if (marker !== undefined) emit(lines, RESULT_PREFIX, CONT, marker.isError ? \"failed\" : \"done\");\n        else emit(",
       "replace": "        emit(",
-      "expectRed": "parity: a call with an error result marker",
-      "cell": "parity: a call with an error result marker"
+      "expectRed": "parity: a call with a result marker",
+      "cell": "parity: a call with a result marker"
     },
     {
       "name": "P6 foldWork reads failed from the wrong key, so a call whose marker says isError is drawn done while both renderers print failed",

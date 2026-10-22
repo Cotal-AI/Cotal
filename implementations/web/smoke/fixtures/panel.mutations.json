@@ -946,8 +946,8 @@
       "file": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
       "find": "      <NowHead turn={turn} current={current} row={row} />",
       "replace": "      <NowHead turn={lastSteps(turn, PEEK_STEPS)} current={current} row={row} />",
-      "expectRed": "8.3 Now's title counts the failed call of the whole turn, though that step is not among the three shown",
-      "cell": "8.3 Now's title counts the failed call of the whole turn, though that step is not among the three shown"
+      "expectRed": "8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn's last three steps, and no footer",
+      "cell": "8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn's last three steps, and no footer"
     },
     {
       "name": "PS10 an idle agent's last turn is headed Now",

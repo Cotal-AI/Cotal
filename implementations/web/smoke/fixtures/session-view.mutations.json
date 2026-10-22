@@ -29,7 +29,7 @@
       "name": "SV3 every step new to the list rises in, history included",
       "file": "implementations/web/client/src/ui/work/WorkList.tsx",
       "find": "return (item) => now !== undefined && (now.rising.has(item.key) || (item.live && !now.known.has(item.key)));",
-      "replace": "return (item) => item.live && (now === undefined || now.rising.has(item.key) || !now.known.has(item.key));",
+      "replace": "return (item) => now !== undefined && (now.rising.has(item.key) || !now.known.has(item.key));",
       "expectRed": "7.1 steps a history read adds after mount carry no ui-in, nor do the steps of the first paint",
       "cell": "7.1 steps a history read adds after mount carry no ui-in, nor do the steps of the first paint"
     },

@@ -490,8 +490,8 @@
       "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "find": "{row.status === \"working\" && (\n        <a className=\"ox-act\"",
       "replace": "{false && (\n        <a className=\"ox-act\"",
-      "expectRed": "11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button",
-      "cell": "11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button"
+      "expectRed": "2.13b a working row draws no host: View work takes its place, beside the row's button",
+      "cell": "2.13b a working row draws no host: View work takes its place, beside the row's button"
     },
     {
       "name": "A65 the activity line shimmers",
