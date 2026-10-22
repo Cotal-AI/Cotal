@@ -38,7 +38,10 @@ is down. The sections below give that window's shape so it can be scheduled rath
 
 Update the CLI and its Claude plugin together, then reopen the native Code session. Existing static
 auth connections keep their credentials and gateway tools. Personal signed-in connections are new;
-the plugin binds a native conversation before creating one. Remote meshes must advertise
+the plugin binds a native conversation through its ordinary command hooks before creating one.
+This works without intercepting the `classic.*` events protected by Claude's built-in guard; keep
+the guard enabled. Organization policies that disable command hooks or native modules still apply.
+Remote meshes must advertise
 conversation identity v1 on the selected registration's HTTPS origin. The existing account signs
 in through Cotal; do not copy login files or paste a token into Claude.
 

@@ -6,7 +6,8 @@
  */
 import { createConnection } from "node:net";
 import { hasIdentity } from "@cotal-ai/connector-core/relay";
-import { WAKE_ID, nativeSocketPath, wakeSockets } from "./wake-feed.js";
+import { WAKE_ID, wakeSockets } from "./wake-feed.js";
+import { bindPersonalSession, readPersonalBinding } from "./native-binding.js";
 import type { RenderedInboxPreview } from "@cotal-ai/connector-core";
 
 /** How often to look for a server that opened its feed since. */
@@ -21,21 +22,7 @@ async function relayNative(claude: number, raw: string): Promise<void> {
   const event = JSON.parse(raw) as Record<string, unknown>;
   if (typeof event.session_id !== "string" || !WAKE_ID.test(event.session_id) || raw.length > 8_192)
     throw new Error("invalid native lifecycle frame");
-  const paths = wakeSockets(claude);
-  if (paths.length === 0) throw new Error("no local native lifecycle server");
-  await Promise.all(paths.map((path) => new Promise<void>((resolve, reject) => {
-    const s = createConnection(nativeSocketPath(path));
-    let reply = "";
-    s.setEncoding("utf8");
-    s.setTimeout(2_000, () => s.destroy(new Error("native lifecycle relay timed out")));
-    s.on("connect", () => s.write(`${JSON.stringify({ op: "native", event })}\n`));
-    s.on("data", (data: string) => { reply += data; if (reply.length > 128) s.destroy(); });
-    s.on("error", reject);
-    s.on("close", () => {
-      try { if (JSON.parse(reply).ok === true) resolve(); else reject(new Error("native lifecycle binding refused")); }
-      catch { reject(new Error("native lifecycle binding was not confirmed")); }
-    });
-  })));
+  await bindPersonalSession(event, claude);
 }
 
 function main(): void {
@@ -46,6 +33,12 @@ function main(): void {
   if (!Number.isInteger(claude) || claude <= 0) {
     process.stderr.write("[cotal-monitor] no CLAUDE_PID, so this is not a Claude Code session\n");
     process.exitCode = 1;
+    return;
+  }
+  const bindingAt = process.argv.indexOf("--native-binding");
+  if (bindingAt >= 0) {
+    try { process.stdout.write(`${JSON.stringify(readPersonalBinding(process.argv[bindingAt + 1] ?? ""))}\n`); }
+    catch { process.exitCode = 1; }
     return;
   }
   const eventAt = process.argv.indexOf("--native-event");

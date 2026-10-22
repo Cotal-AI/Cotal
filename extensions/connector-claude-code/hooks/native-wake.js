@@ -96,17 +96,7 @@ async function listen($) {
 }
 
 export function register(on) {
-  on('classic.*', async ($, e, next) => {
-    const result = await next(e);
-    if (e.agent_id !== undefined || typeof e.session_id !== 'string' || typeof e.transcript_path !== 'string') return result;
-    if (!['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolBatch', 'Notification', 'Stop', 'StopFailure', 'SessionEnd'].includes(e.hook_event_name)) return result;
-    if (e.session_id !== await $.session.id()) return result;
-    nativeBinding = e;
-    try { await relayNative($, e); } catch {}
-    if (e.hook_event_name === 'SessionStart') void listen($);
-    return result;
-  });
-  on('session.append', async ($, e, next) => {
+  on('session.append', { door: /^(?!attachment$|hook-context$|compaction$).+/ }, async ($, e, next) => {
     const own = e.origin.kind === 'plugin' && e.origin.name === $.plugin.name && !e.origin.asUser;
     const text = e.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
     const result = await next(e);
@@ -170,9 +160,16 @@ export function register(on) {
     let input = e;
     if (e.agentId === undefined && /^mcp__(cotal|plugin_cotal_cotal)__cotal_connect$/.test(e.tool)) {
       const session = await $.session.id();
-      if (!nativeBinding || nativeBinding.session_id !== session) return { deny: 'Cotal has no native transcript binding for this conversation. Reload the Cotal plugin before connecting.' };
-      try { await relayNative($, nativeBinding); }
-      catch { return { deny: 'Cotal could not bind this native conversation to its local server. No identity was requested.' }; }
+      try {
+        const root = $.plugin.root;
+        const record = JSON.parse(await $.fs.read(root + '/dist/cli.json'));
+        const binding = await $.process.run([record.argv[0], root + '/dist/monitor.cjs', '--native', '--native-binding', session]);
+        if (binding.exitCode !== 0) return { deny: 'Cotal cannot read this conversation’s native command hooks. Check whether your organization permits the Cotal command hooks.' };
+        nativeBinding = JSON.parse(binding.stdout);
+        if (nativeBinding.session_id !== session) throw new Error('native session mismatch');
+        await relayNative($, nativeBinding);
+        void listen($);
+      } catch { return { deny: 'Cotal could not bind this native conversation to its local server. No identity was requested.' }; }
       input = { ...e, context: session };
     }
     const result = await next(input);

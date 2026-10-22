@@ -22,7 +22,7 @@
     }
   },
   "scripts": {
-    "test": "tsx smoke/launch-env.smoke.ts && tsx smoke/native-wake.smoke.ts && tsx smoke/wake-preview-frame.smoke.ts",
+    "test": "tsx smoke/launch-env.smoke.ts && tsx smoke/native-wake.smoke.ts && tsx smoke/native-binding-live.smoke.ts && tsx smoke/wake-preview-frame.smoke.ts",
     "test:desktop-setup": "tsx smoke/desktop-only-setup-live.smoke.ts",
     "test:upgrade": "tsx smoke/plugin-upgrade-live.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",

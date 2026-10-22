@@ -51,7 +51,7 @@ interface Api {
   plugin: { root: string; name: string };
   env: { get(name: string): Promise<string | undefined> };
   fs: { read(path: string): Promise<string> };
-  process: { spawn(request: { argv: string[] }): Feed; run(argv: string[]): Promise<{ exitCode: number }> };
+  process: { spawn(request: { argv: string[] }): Feed; run(argv: string[]): Promise<{ exitCode: number; stdout: string }> };
   prompt: { submit(input: { text: string; asUser?: boolean }): Promise<{ drop?: string }> };
   session: { id(): Promise<string>; append(input: { message: { type: string; content: Array<{ type: string; text: string }> } }): Promise<{ uuid?: string; deny?: string }> };
   ui: {
@@ -81,6 +81,7 @@ function fixture(managed = false) {
   const appended: Array<{ message: { type: string; content: Array<{ type: string; text: string }> } }> = [];
   const commands: string[][] = [];
   const relayed: string[][] = [];
+  let binding: Record<string, string> | undefined;
   let dropped = false;
   let denied = false;
   let reads = 0;
@@ -92,7 +93,11 @@ function fixture(managed = false) {
       assert.equal(path, "/cotal-plugin/dist/cli.json");
       return JSON.stringify({ argv: ["/node", "/cotal"] });
     } },
-    process: { spawn({ argv }) { commands.push(argv); return feed; }, async run(argv) { relayed.push(argv); return { exitCode: 0 }; } },
+    process: { spawn({ argv }) { commands.push(argv); return feed; }, async run(argv) {
+      if (argv.includes("--native-binding")) return { exitCode: binding ? 0 : 1, stdout: binding ? JSON.stringify(binding) : "" };
+      relayed.push(argv);
+      return { exitCode: 0, stdout: "" };
+    } },
     prompt: { async submit(input) {
       submitted.push(input);
       return dropped ? { drop: "the session was stopped and nobody has sent input since" } : {};
@@ -125,7 +130,9 @@ function fixture(managed = false) {
     }
     return result ?? event;
   };
-  return { feed, submitted, appended, commands, relayed, fire, reads: () => reads, drop: (value: boolean) => { dropped = value; }, deny: (value: boolean) => { denied = value; } };
+  return { feed, submitted, appended, commands, relayed, fire, hooks,
+    bind: (value: Record<string, string>) => { binding = value; },
+    reads: () => reads, drop: (value: boolean) => { dropped = value; }, deny: (value: boolean) => { denied = value; } };
 }
 
 console.log("native-wake.smoke:");
@@ -290,16 +297,18 @@ const lifecycle = fixture();
 await lifecycle.fire("session.start");
 await until(() => lifecycle.commands.length === 1);
 const unbound = await lifecycle.fire("tool.call", { tool: "mcp__plugin_cotal_cotal__cotal_connect" }) as { deny?: string };
-assert.match(unbound.deny ?? "", /no native transcript binding/);
-await lifecycle.fire("classic.*", { session_id: "native-session", transcript_path: "/sessions/native-session.jsonl", hook_event_name: "UserPromptSubmit", prompt: "private human words" } as Event);
-assert.equal(lifecycle.relayed.length, 1);
-assert(!JSON.stringify(lifecycle.relayed).includes("private human words"), "lifecycle transport never carries human prompts");
+assert.match(unbound.deny ?? "", /native command hooks/);
+assert(![...lifecycle.hooks.keys()].some((name) => name.startsWith("classic.")), "the native module never intercepts protected classic hooks");
+lifecycle.bind({ session_id: "native-session", transcript_path: "/sessions/native-session.jsonl", hook_event_name: "UserPromptSubmit", prompt: "private human words" });
 const connect = await lifecycle.fire("tool.call", { tool: "mcp__plugin_cotal_cotal__cotal_connect", context: "inherited-parent" }) as Event;
 assert.equal(connect.context, "native-session", "native host replaces a copied connection context");
-assert.equal(lifecycle.relayed.length, 2);
-await lifecycle.fire("classic.*", { session_id: "other-session", transcript_path: "/sessions/other-session.jsonl", hook_event_name: "Stop" });
-await lifecycle.fire("classic.*", { session_id: "native-session", transcript_path: "/sessions/native-session.jsonl", hook_event_name: "Stop", agent_id: "child" });
-assert.equal(lifecycle.relayed.length, 2, "foreign sessions and subagents cannot drive the main lifecycle");
+assert.equal(lifecycle.relayed.length, 1);
+assert(!JSON.stringify(lifecycle.relayed).includes("private human words"), "lifecycle transport never carries human prompts");
+lifecycle.bind({ session_id: "other-session", transcript_path: "/sessions/other-session.jsonl", hook_event_name: "UserPromptSubmit" });
+const foreign = await lifecycle.fire("tool.call", { tool: "mcp__plugin_cotal_cotal__cotal_connect" }) as { deny?: string };
+assert.match(foreign.deny ?? "", /could not bind/);
+await lifecycle.fire("tool.call", { tool: "mcp__plugin_cotal_cotal__cotal_connect", agentId: "child" });
+assert.equal(lifecycle.relayed.length, 1, "foreign sessions and subagents cannot drive the main lifecycle");
 await lifecycle.fire("session.end", { reason: "resume" });
 assert(lifecycle.feed.ended, "clear/resume ends the prior conversation reader");
 console.log("  ✓ explicit native session binding, prompt privacy and fork-context replacement");

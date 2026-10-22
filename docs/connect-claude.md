@@ -253,6 +253,11 @@ the conversation or its tools. A remote mesh must advertise conversation identit
 HTTPS discovery endpoint. An absent capability, a different origin or a changed registration is
 refused before authenticated issuance. There is no legacy provisioning fallback.
 
+The plugin's ordinary command hooks supply the session and transcript binding. Its native module
+uses that binding without intercepting `classic.*` events, which Claude's built-in security guard
+withholds from user plugins. The guard stays enabled. If an organization disables command hooks or
+native modules, its administrator must permit them before this connection path can work.
+
 A signed-in identity keeps its request and secret in private local recovery state. A lost create
 response retries the same request without rotating its secret or allocating another identity.
 `cotal_disconnect`, session end and a signal request retirement of that lifecycle only. Pending or
