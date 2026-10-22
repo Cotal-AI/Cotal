@@ -61,7 +61,7 @@ const go = (hash: string) => {
   host.location.hash = hash;
   listeners.forEach((l) => l());
 };
-const controller = { open: async () => undefined } as unknown as Controller;
+const controller = { open: async () => undefined, openSession: () => undefined, closeSession: () => undefined } as unknown as Controller;
 let patch: Partial<DashboardState> = seed;
 const start = (s: Store<DashboardState>) => {
   s.set(patch);
