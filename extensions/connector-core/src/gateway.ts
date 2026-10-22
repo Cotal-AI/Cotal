@@ -471,15 +471,17 @@ export function registerCotalGatewayTools(
           });
         } catch (e) {
           if (e instanceof ApprovalRequired) {
-            const structuredContent = { v: 1, status: "pending", name: candidate,
-              requestId: e.pending.requestId, approval: e.pending.approval, proposed: e.pending.proposed };
             const resume = options.approvalResume ? ` and approval_id ${JSON.stringify(e.pending.approval.id)}` : "";
+            const message = `Permission approval required. This conversation is not connected.\n` +
+              `The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.\n` +
+              `Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.\n` +
+              `After they approve, retry cotal_connect with name ${JSON.stringify(candidate)}${resume} and the same requested permissions. Do not poll or start another request while waiting.`;
+            // Some native clients give the model only structuredContent, not the text blocks.
+            const structuredContent = { v: 1, status: "pending", name: candidate,
+              requestId: e.pending.requestId, approval: e.pending.approval, proposed: e.pending.proposed, message };
             return {
               content: [
-                { type: "text" as const, text: `Permission approval required. This conversation is not connected.\n` +
-                  `The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.\n` +
-                  `Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.\n` +
-                  `After they approve, retry cotal_connect with name ${JSON.stringify(candidate)}${resume} and the same requested permissions. Do not poll or start another request while waiting.` },
+                { type: "text" as const, text: message },
                 { type: "text" as const, text: JSON.stringify(structuredContent) },
               ],
               structuredContent,
