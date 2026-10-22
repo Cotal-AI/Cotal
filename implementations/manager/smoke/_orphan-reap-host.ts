@@ -1,11 +1,12 @@
-// The manager host for orphan-seat-reap.smoke.ts: a real Manager on the production custodial pty
-// runtime (COTAL_SEAT_ROOT points every host of one run at the same custody root), spawning the
-// lifecycle e2e stub through a pty so the seat is a real custodian + child pair. Prints the seat's
-// custody reference so the suite can read the record and watch both pids.
+// The manager host for the orphan-seat suites: a real Manager whose spawning instance launches through
+// the custodial pty runtime (COTAL_SEAT_ROOT points every host of one run at the same custody root),
+// spawning the lifecycle e2e stub through a pty so the seat is a real custodian + child pair. Prints
+// the seat's custody reference so the suite can read the record and watch both pids.
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, writeFileSync } from "node:fs";
 import { Manager, type SpawnHooks } from "../src/manager.js";
+import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import { evictDeniedPrincipalWithCreds, registry, type AgentHandle, type Connector, type EvictionResult, type LaunchOpts, type LaunchSpec, type Runtime } from "@cotal-ai/core";
 
 const root = process.env.REPRO_ROOT!;
@@ -19,6 +20,10 @@ const envFor = (o: LaunchOpts): Record<string, string> => ({ PATH: process.env.P
 registry.register({ kind: "connector", name: "orphan-reap-repro", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [stub], env: envFor(o) }) } as Connector);
 const alias = process.env.REPRO_ALIAS ?? "worker";
 const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: root, consolePort: 0 });
+// The built-in pty runtime starts no custodian since #1391, so a seat that outlives its manager comes
+// from a custodial runtime. A spawning host launches through one; a successor keeps the built-in
+// runtime, which still adopts and reaps the seats a custodial runtime left.
+if (process.env.REPRO_SPAWN === "1") (manager as unknown as { runtime: Runtime }).runtime = new CustodialPtyRuntime();
 (manager as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict =
   (principal) => evictDeniedPrincipalWithCreds({
     servers,

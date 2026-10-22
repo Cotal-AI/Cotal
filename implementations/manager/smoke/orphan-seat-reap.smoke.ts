@@ -8,6 +8,10 @@
  * custody reference, and the successor's terminal reaps by that reference, verified by process
  * start identity, before the lifecycle retires. Linux only, like the custodian.
  *
+ * A successor adopts a live seat its predecessor left a seat record for (#4095), so the seat it reaps
+ * has none. A custodial seat never has one in practice: the built-in pty runtime stopped starting
+ * custodians (#2351) before managers wrote seat records (#4094). The suite removes the record the
+ * spawning host wrote, which leaves the seat such an older manager left behind.
  *
  * Run: pnpm smoke:orphan-seat-reap
  */
@@ -17,10 +21,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, createSpaceAuth, evictDeniedPrincipalWithCreds, isReachable, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
+import { CotalEndpoint, createSpaceAuth, evictDeniedPrincipalWithCreds, evictDeniedPrincipalsWithCreds, isReachable, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { readRecord, recordPath } from "@cotal-ai/seat";
 import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, makeSeatRoot } from "@cotal-ai/smoke-kit";
+import { readSeatRecord, removeSeatRecord } from "../src/resume.js";
 
 if (process.platform !== "linux") {
   console.log(`ORPHAN-SEAT REAP COMPLETE on ${process.platform}: custody transport unsupported (no skip-as-pass)`);
@@ -72,7 +77,7 @@ async function startManager(tag: string, spawnSeat: boolean, opts: { alias?: str
 }
 try {
   for (let i = 0; i < 100 && !(await isReachable(servers)); i++) await wait(50); await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  const did = newIdentity(); daemon = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, did, "delivery"), card: { id: did.id, name: "delivery", role: "delivery", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false }); daemon.on("error", () => {}); await daemon.start(); await daemon.startPlane3(async () => undefined, { evictPrincipal: async (principal) => evictDeniedPrincipalWithCreds({ servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal, options: { maxVerifyRounds: 12 } }), reloadStoreIdentity: () => workspaceSecretStore(root).identity });
+  const did = newIdentity(); daemon = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, did, "delivery"), card: { id: did.id, name: "delivery", role: "delivery", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false }); daemon.on("error", () => {}); await daemon.start(); await daemon.startPlane3(async () => undefined, { evictPrincipal: async (principal) => evictDeniedPrincipalWithCreds({ servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal, options: { maxVerifyRounds: 12 } }), evictPrincipals: async (principals) => evictDeniedPrincipalsWithCreds({ servers, observerCreds, evictorCreds, accountId: auth.account.pub, principals, options: { maxVerifyRounds: 12 } }), reloadStoreIdentity: () => workspaceSecretStore(root).identity });
   // The manager's #1694 binding requires the answer to name a real holder of the delivery
   // lease rather than assert it; acquire it the way manager-reconcile-startup.smoke.ts does so
   // `holdsDeliveryLease` below is truthful.
@@ -85,6 +90,9 @@ try {
   process.kill(ready.managerPid, "SIGKILL"); await new Promise((resolve) => first.child.once("exit", resolve));
   await wait(1_000);
   check("instrument: manager SIGKILL leaves the custodian and the seat child live", live(record.custodianPid) && live(record.childPid), { custodian: state(record.custodianPid), child: state(record.childPid) });
+  const seatRecord = readSeatRecord(root, space, "worker");
+  removeSeatRecord(root, space, "worker", ready.lifecycleUid);
+  check("instrument: the seat record the spawning host wrote is removed, as no custodial seat has one", seatRecord?.agent.identity.lifecycleUid === ready.lifecycleUid && readSeatRecord(root, space, "worker") === undefined, seatRecord);
   // The dead manager's liveness lease must lapse before the same logical instance can start again.
   await wait(20_000);
   const second = await startManager("successor", false);
@@ -96,7 +104,7 @@ try {
   check("broker eviction and process reap are separate, ordered evidence (rails verified gone, then the process)", evictedFirst >= 0 && reapedAt > evictedFirst, { evictedFirst, reapedAt });
   const retired = await until(() => /static reconcile completed: 1 attempted, 1 succeeded, 0 failed/.test(second.stderr()), 30_000);
   check("the lifecycle retires once the process is proved gone", retired && !/static retirement worker \(/.test(second.stderr()), second.stderr().split("\n").filter((l) => /static (reconcile|retirement)/.test(l)).join("\n"));
-  const EXPECTED = 6;
+  const EXPECTED = 7;
   if (pass + fail !== EXPECTED) throw new Error(`expected ${EXPECTED} cells, ran ${pass + fail}; a cell was added or silently skipped`);
   console.log(`\nORPHAN-SEAT REAP SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"} (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
