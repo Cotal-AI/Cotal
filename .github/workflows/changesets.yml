@@ -1,31 +1,13 @@
 name: Changesets
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('publication-direct {0} {1} {2} {3}', inputs.version, inputs.source, inputs.native_run, inputs.requested_at) || 'Prepare release versions' }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && 'Publish packages' || 'Prepare release versions' }}
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Exact version already present in the release source."
-        type: string
-        required: true
-      source:
-        description: "Immutable first-parent main source to publish."
-        type: string
-        required: true
-      native_run:
-        description: "Run containing successful source-matched native builder artifacts."
-        type: string
-        required: true
-      tag:
-        description: "Registry dist-tag."
-        type: string
-        default: latest
-      requested_at:
-        description: "Original human publish-command UTC time; never reset it."
-        type: string
-        required: true
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
@@ -33,9 +15,32 @@ concurrency:
   queue: max
 
 jobs:
+  select:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.select.outputs.mode }}
+      plan: ${{ steps.select.outputs.publish-plan-artifact-id }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: changesets/action/select-mode@v2.1.2
+        id: select
+      - name: Require versioned packages before publication
+        if: github.event_name == 'workflow_dispatch' && steps.select.outputs.mode == 'version'
+        run: |
+          printf '%s\n' 'Merge the Changesets version PR before publishing.'
+          exit 1
+
   version-pr:
-    if: github.event_name == 'push'
-    timeout-minutes: 35
+    needs: select
+    if: github.event_name == 'push' && needs.select.outputs.mode == 'version'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -44,86 +49,109 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
-      - run: pnpm install --frozen-lockfile
-      - uses: changesets/action@v1
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: changesets/action/version@v2.1.2
         with:
-          version: pnpm ci:version
-          title: "chore(release): version packages"
-          commit: "chore(release): version packages"
-          setupGitUser: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          github-token: ${{ secrets.GH_PAT }}
+          script: pnpm ci:version
+          pr-title: 'chore(release): version packages'
+          commit-message: 'chore(release): version packages'
 
-  version:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    timeout-minutes: 15
+  native:
+    needs: select
+    if: github.event_name == 'workflow_dispatch' && needs.select.outputs.mode == 'publish'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm --filter @cotal-ai/seat build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-native-${{ matrix.arch }}
+          path: packages/seat/build/Release/linux-${{ matrix.arch }}/peercred.node
+          if-no-files-found: error
+
+  workspace-native:
+    needs: select
+    if: github.event_name == 'workflow_dispatch' && needs.select.outputs.mode == 'publish'
+    uses: ./.github/workflows/workspace-native.yml
+
+  pack:
+    needs: [select, native, workspace-native]
+    runs-on: ubuntu-latest
+    outputs:
+      artifact: ${{ steps.pack.outputs.pack-dir-artifact-id }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm build
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-native-*'
+          path: ${{ runner.temp }}/native
+      - name: Assemble Cotal's native binaries
+        run: |
+          node scripts/seat-assemble-natives.mjs
+          node scripts/workspace-assemble-natives.mjs
+        env:
+          SEAT_NATIVE_X64: ${{ runner.temp }}/native/seat-native-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/native/seat-native-arm64/peercred.node
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/native/workspace-native-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/native/workspace-native-arm64
+      - uses: changesets/action/pack@v2.1.2
+        id: pack
+        with:
+          publish-plan-artifact-id: ${{ needs.select.outputs.plan }}
+
+  publish:
+    needs: pack
     runs-on: ubuntu-latest
     environment: npm-publish
     permissions:
       contents: write
       actions: read
       id-token: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      RELEASE_VERSION: ${{ inputs.version }}
-      RELEASE_SOURCE: ${{ inputs.source }}
-      RELEASE_NATIVE_RUN: ${{ inputs.native_run }}
-      RELEASE_TAG: ${{ inputs.tag }}
-      RELEASE_REQUESTED_AT: ${{ inputs.requested_at }}
     steps:
-      - name: Record execution start without resetting the command time
-        run: printf 'RELEASE_ATTEMPT_STARTED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
-      - name: Install publisher tools without lifecycle scripts
-        run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Select successful native builds
-        id: native
-        run: node scripts/select-release-natives.mjs
-      - uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ steps.native.outputs.artifact-ids }}
-          run-id: ${{ inputs.native_run }}
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/native
-      - name: Check out the requested release source
-        run: |
-          [[ "$RELEASE_SOURCE" =~ ^[a-f0-9]{40}$ ]]
-          git rev-list --first-parent HEAD | grep -Fx "$RELEASE_SOURCE"
-          git worktree add --detach "$RUNNER_TEMP/release-source" "$RELEASE_SOURCE"
-          printf 'RELEASE_ROOT=%s/release-source\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-      - name: Build and publish directly
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: changesets/action/publish@v2.1.2
         id: publish
-        run: node scripts/direct-release.mjs
-      - name: Create the release announcement
-        if: steps.publish.outputs.published == 'true' && inputs.tag == 'latest'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          if ! gh release view "v$RELEASE_VERSION" >/dev/null 2>&1; then
-            gh release create "v$RELEASE_VERSION" --target "$RELEASE_SOURCE" --title "v$RELEASE_VERSION" --latest --generate-notes
-          fi
-      - name: Observe fresh install after publication
-        if: steps.publish.outputs.published == 'true'
-        run: node scripts/verify-release-installable.mjs "$RELEASE_VERSION" --deadline-ms=120000
-      - name: Keep publication outcomes
-        if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: publication-outcome-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/publication.json
-            ${{ runner.temp }}/registry-archives.json
-            ${{ runner.temp }}/direct-candidate/manifest.json
-          if-no-files-found: warn
+          pack-dir-artifact-id: ${{ needs.pack.outputs.artifact }}
+          create-github-releases: true
+      - name: Verify the published CLI installs and runs
+        if: steps.publish.outputs.published == 'true'
+        run: |
+          version=$(node --print "require('./bin/package.json').version")
+          node scripts/verify-release-installable.mjs "$version" --deadline-ms=600000
