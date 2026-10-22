@@ -996,13 +996,20 @@ c("real:every-RESULT-is-followed-by-one-cotal.toolResult-for-the-same-call", (()
 c("real:every-marker-carries-its-RESULT's-timestamp",
   resultPairs.length > 0 && resultPairs.every(({ result, next }) => isMarker(next) && next!.timestamp === result.timestamp),
   { results: resultPairs.length });
-// The marker's isError is the record's is_error, and the fixture holds results that set it. The
-// RESULT carries the same fact as `cotal.isError`, so each pair is checked against its own result.
-c("real:a-marker-says-isError-true-where-its-RESULT-carries-cotal.isError", (() => {
-  const failed = resultPairs.filter(({ result }) => result.cotal?.isError === true);
-  return failed.length > 0 && resultPairs.every(({ result, next }) =>
-    isMarker(next) && next!.value?.isError === (result.cotal?.isError === true));
-})(), { results: resultPairs.length });
+// The marker's isError is the record's is_error. The RESULT carries the same fact as
+// `cotal.isError`, so each pair is checked against its own result. The equality holds on any session;
+// only a session with a failed call can show it says true, so the cell keys on that, as the HEAD
+// cell above keys on what the head holds. The committed fixture has failed calls.
+const failedResults = resultPairs.filter(({ result }) => result.cotal?.isError === true).length;
+const isErrorMatches = resultPairs.length > 0 && resultPairs.every(({ result, next }) =>
+  isMarker(next) && next!.value?.isError === (result.cotal?.isError === true));
+if (failedResults > 0) {
+  c("real:a-marker-says-isError-true-where-its-RESULT-carries-cotal.isError", isErrorMatches,
+    { results: resultPairs.length, failed: failedResults });
+} else {
+  c("ARM:this-session-has-no-failed-tool-result, so every marker must say isError false and the true case is NOT assertable here",
+    isErrorMatches, { results: resultPairs.length });
+}
 // No record in the fixture lacks a timestamp, so the arrival stamp is driven here on one that does.
 c("synthetic:an-arrival-stamped-result's-marker-carries-cotal.tsSource-arrival", (() => {
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => "r-arrival", now: () => 42 });

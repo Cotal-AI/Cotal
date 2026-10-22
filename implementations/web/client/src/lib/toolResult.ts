@@ -6,7 +6,8 @@
 // It lives in its own module so the session fold can read it without loading `aguiFrame.ts`, which
 // registers a part renderer on import.
 //
-// The shape rule matches `agui-render.ts` in connector-core: a plain object with a string
+// The shape rule matches `toolResultValue` in connector-core's `agui.ts`, which its closed schema and
+// `agui-render.ts` both use: a plain object with a string
 // `toolCallId`, a boolean `isError` and no other key. Anything else is not a marker a reader may
 // trust, so it is drawn as the plain custom event it is.
 

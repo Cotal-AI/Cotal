@@ -1185,6 +1185,16 @@ function toolResultValueDefect(value: unknown): string | undefined {
 }
 
 /**
+ * A {@link TOOL_RESULT_EVENT} marker's `value` when it has the closed shape, or `undefined`. The
+ * closed schema and the text renderer both read the marker through this one rule.
+ */
+export function toolResultValue(value: unknown): { toolCallId: string; isError: boolean } | undefined {
+  if (toolResultValueDefect(value) !== undefined) return undefined;
+  const v = value as { toolCallId: string; isError: boolean };
+  return { toolCallId: v.toolCallId, isError: v.isError };
+}
+
+/**
  * Find the first extra property on a parsed frame, returning its JSON-path
  * string, or `undefined` when the envelope is closed.
  *
