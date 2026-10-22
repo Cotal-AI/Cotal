@@ -223,6 +223,20 @@ export async function userSessionAuth(
   return { bearer, sentinelCreds };
 }
 
+/** {@link userViewAuth} with the provider's own failure classified, as {@link userConnectOrThrow}
+ *  classifies the bearer's. A refused, signed-out or unanswered exchange happens before any request,
+ *  so it is a {@link ConnectRefusal} under its code, not an unclassified error that a structured
+ *  command must report as unknown. Any other error rethrows unchanged. */
+export async function userViewAuthOrThrow(conn: Connection, view: string, opts: Parameters<typeof userViewAuth>[2] = {}): Promise<UserViewAuth> {
+  try {
+    return await userViewAuth(conn, view, opts);
+  } catch (e) {
+    const code = (e as { code?: unknown } | undefined)?.code;
+    if (code !== "refused" && code !== "signed-out" && code !== "unavailable") throw e;
+    throw new ConnectRefusal(`✗ ${(e as Error).message}`, undefined, { cause: e, code: credentialCode(e) });
+  }
+}
+
 /** {@link userViewAuth}, workstation-flavoured: colour the thrown sentence and exit. */
 export async function userViewAuthOrExit(conn: Connection, view: string): Promise<UserViewAuth> {
   try {

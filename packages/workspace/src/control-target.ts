@@ -29,7 +29,7 @@ import {
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths } from "./agent-secrets.js";
 import { authDir, findCotalRoot, soleSpaceOf } from "./auth-paths.js";
-import { connectOrExit, connectOrThrow, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, preflightOrThrow, userViewAuth, type ConnectFlags } from "./connect.js";
+import { connectOrExit, connectOrThrow, connectUserControlOrExit, connectUserControlOrThrow, endpointAuth, preflightOrThrow, userViewAuthOrThrow, type ConnectFlags } from "./connect.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget, type MeshTargetErrorCode } from "./mesh-target.js";
 import { findMesh } from "./mesh-registry.js";
 import { pruneStaleMeshes } from "./preflight.js";
@@ -116,7 +116,7 @@ export async function resolveControlTarget(
       const pin = instanceId ?? seatManagerInstance(conn.space);
       const manager = (opts.endpoint === undefined || opts.endpoint === "manager") &&
           (profile === "control-caller-privileged" || profile === "control-caller-admin")
-        ? await userViewAuth(conn, "manager-caller", pin === undefined ? {} : { managerInstanceId: pin })
+        ? await userViewAuthOrThrow(conn, "manager-caller", pin === undefined ? {} : { managerInstanceId: pin })
         : undefined;
       return {
         space: conn.space,

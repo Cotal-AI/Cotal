@@ -4442,7 +4442,9 @@ credential.
 
 Hosted run verbs accept `--on <manager-instance>` to choose one full manager id
 as `cotal ps` prints it. A managed seat defaults to the manager that launched
-it; an unbound user-auth caller with several managers must choose one.
+it; an unbound user-auth caller with several managers must choose one. Without
+`--on` its call is refused with exit 2 before any request, and the refusal names
+each live manager.
 `--on` does not apply to local, offline or seat-only run commands, and a failed
 pin never falls back to another manager. Rich run reports label an explicit pin
 as the requested manager, and the JSON target carries `requestedManagerInstance`.
