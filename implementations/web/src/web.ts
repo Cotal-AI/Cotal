@@ -1202,7 +1202,18 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   httpServer.on("error", (e: NodeJS.ErrnoException) => {
     if (e.code === "EADDRINUSE") console.error(c.red(lifecycle ? "native dashboard port is in use; no alternate port was selected" : `Port ${port} is in use. Pass --port <n>.`));
     else console.error(c.red(lifecycle ? "! native dashboard HTTP listener failed; diagnostic body omitted" : "! " + e.message));
-    process.exit(1);
+    // A native listener that never bound served nothing and wrote no session, so it hands its service
+    // PID custody back before exiting. Exiting here directly kept the slot, and every later start of
+    // the service in this space refused LIFECYCLE_BLOCKED until `cotal down` cleared it.
+    if (!lifecycle || httpServer.listening) process.exit(1);
+    clearInterval(ping);
+    void (async () => { await membershipWatch?.stop(); await ep.stop(); await lifecycle.onClosed(); })().then(
+      () => process.exit(1),
+      () => {
+        console.error("! native dashboard shutdown did not confirm completion; original custody was retained");
+        process.exit(1);
+      },
+    );
   });
 
   await new Promise<void>((ready) => httpServer.listen(port, host, ready));
