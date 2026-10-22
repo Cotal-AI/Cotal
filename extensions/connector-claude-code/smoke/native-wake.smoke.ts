@@ -55,7 +55,7 @@ interface Api {
   fs: { read(path: string): Promise<string> };
   process: { spawn(request: { argv: string[] }): Feed; run(argv: string[], options?: { stdin?: string; timeoutMs?: number }): Promise<{ exitCode: number; stdout: string }> };
   prompt: { submit(input: { text: string; asUser?: boolean }): Promise<{ drop?: string }> };
-  session: { id(): Promise<string>; append(input: { message: { type: string; content: Array<{ type: string; text: string }> } }): Promise<{ uuid?: string; deny?: string }> };
+  session: { id(): Promise<string>; append(input: { message: { type: string; content: Array<{ type: string; text: string }> } }): Promise<{ uuid?: string; deny?: string; message?: { content: Array<{ type: string; text: string }> } }> };
   ui: {
     log(text: string): void;
     invalidate(event: string): void;
@@ -87,6 +87,10 @@ function fixture(managed = false) {
   const inlineOffers = new Map<string, Record<string, any>>();
   const receipts: Array<Record<string, any>> = [];
   let recordPrompt = true;
+  let rewriteStored = false;
+  let claimGate: Promise<void> | undefined;
+  let releaseClaim: (() => void) | undefined;
+  const logs: string[] = [];
   let binding: Record<string, string> | undefined;
   let dropped = false;
   let denied = false;
@@ -105,6 +109,7 @@ function fixture(managed = false) {
         const value = JSON.parse(options?.stdin ?? "null");
         assert(!argv.some((part) => part.includes(value.receipt)), "receipt capabilities never enter argv");
         receipts.push(value);
+        if (value.action === "claim") await claimGate;
         return { exitCode: 0, stdout: JSON.stringify(value.action === "claim"
           ? { ok: inlineOffers.has(value.receipt), frame: inlineOffers.get(value.receipt) }
           : { ok: true }) };
@@ -121,10 +126,10 @@ function fixture(managed = false) {
     } },
     session: { async id() { return "native-session"; }, async append(input) {
       appended.push(input);
-      return denied ? { deny: "native policy refused append" } : { uuid: `appended-${appended.length}` };
+      return denied ? { deny: "native policy refused append" } : { uuid: `appended-${appended.length}`, message: rewriteStored ? { content: [{ type: "text", text: "changed by native host" }] } : input.message };
     } },
     ui: {
-      log() {},
+      log(text) { logs.push(text); },
       invalidate() {},
       resolve() {
         const element = (type: string) => (props: Record<string, unknown>): UiNode => ({ type, props });
@@ -141,7 +146,9 @@ function fixture(managed = false) {
   const fire = async (name: string, event: Event = {}, aborted = false): Promise<unknown> => {
     const controller = new AbortController();
     if (aborted) controller.abort();
-    const next = Object.assign(name === "turn.step" ? async function* (e: Event) { yield e; } : async (e: Event) => e, { signal: controller.signal });
+    const next = Object.assign(name === "turn.step" ? async function* (e: Event) { yield e; } : async (e: Event) =>
+      rewriteStored && name === "session.append" ? { ...e, message: { content: [{ type: "text", text: "changed by native host" }] } } : e,
+      { signal: controller.signal });
     if (name === "session.append" && event.door !== matchers.get(name)?.door) return event;
     const result = hooks.get(name)?.(api, event, next);
     if (result && Symbol.asyncIterator in result) {
@@ -151,7 +158,10 @@ function fixture(managed = false) {
     }
     return result ?? event;
   };
-  return { feed, submitted, appended, commands, relayed, fire, hooks, matchers, receipts,
+  return { feed, submitted, appended, commands, relayed, fire, hooks, matchers, receipts, logs,
+    rewrite: () => { rewriteStored = true; },
+    holdClaim() { claimGate = new Promise<void>((resolve) => { releaseClaim = resolve; });
+      return () => { releaseClaim?.(); claimGate = undefined; }; },
     offer(frame: Record<string, any>) { inlineOffers.set(frame.inline.receipt, frame); feed.push(`Cotal inline delivery: ${JSON.stringify(frame)}\n`); },
     noStoredPrompt: () => { recordPrompt = false; },
     bind: (value: Record<string, string>) => { binding = value; },
@@ -403,4 +413,32 @@ assert.equal(isolatedInline.submitted.length, 0);
 assert.equal(isolatedInline.receipts.length, 0);
 await isolatedInline.fire("session.end");
 console.log("  ✓ refusal, missing stored-row proof, genuine-input resume and foreign-session exclusion");
+const transition = fixture();
+await transition.fire("session.start");
+await until(() => transition.commands.length === 1);
+const release = transition.holdClaim();
+transition.offer(inlineOffer("receipt-transition"));
+await until(() => transition.receipts.some((value) => value.action === "claim"));
+await transition.fire("turn.start");
+release();
+await until(() => transition.receipts.some((value) => value.action === "defer"));
+await tick();
+await transition.fire("tool.call");
+assert(transition.receipts.some((value) => value.action === "commit"));
+assert(!transition.logs.some((value) => value.includes("paused")), "an ordinary turn-state change is not Stop or refusal");
+await transition.fire("session.end");
+for (const busy of [false, true]) {
+  const rewritten = fixture();
+  await rewritten.fire("session.start");
+  await until(() => rewritten.commands.length === 1);
+  rewritten.rewrite();
+  if (busy) await rewritten.fire("turn.start");
+  rewritten.offer(inlineOffer(busy ? "receipt-rewritten-busy" : "receipt-rewritten-idle"));
+  await tick();
+  if (busy) await rewritten.fire("tool.call");
+  await until(() => rewritten.receipts.some((value) => value.action === "reject"));
+  assert(!rewritten.receipts.some((value) => value.action === "commit"), "rewritten stored text does not confirm the complete offer");
+  await rewritten.fire("session.end");
+}
+console.log("  ✓ state-change deferral stays live and rewritten stored content never commits the full offer");
 console.log("NATIVE WAKE TESTS PASSED");

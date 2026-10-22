@@ -100,6 +100,10 @@ async function serveLocal(desktop: boolean): Promise<void> {
               rearm = rewake;
               feed.onReader(() => rewake());
             },
+            inboxNotice(c) {
+              const session = host.sessionFor(c.id);
+              return !session || !feed.supportsInline(session);
+            },
             listening(c) {
               const session = host.sessionFor(c.id);
               if (!session || !feed.watched(session))

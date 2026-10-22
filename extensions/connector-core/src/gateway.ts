@@ -145,6 +145,9 @@ export interface GatewayWake {
   /** What `cotal_connect` adds about listening, read when the connection opens: whether this
    *  client will be woken. */
   listening(connection: GatewayConnection): string;
+  /** Whether other tool results should recommend an inbox read. A full-content native reader can
+   *  suppress that advice while it owns delivery; notification-only clients keep the default. */
+  inboxNotice?(connection: GatewayConnection): boolean;
   /** Called once with the rearm callback. With no connection, reoffer unread work to a replacement
    *  reader. A settled inline handoff rearms only its own connection; false clears its latch without
    *  immediately retrying a refused delivery. */
@@ -478,7 +481,7 @@ export function registerCotalGatewayTools(
           result = refuse(errorText(e));
         }
         // cotal_inbox already says what it left buffered.
-        const notice = spec.name === "cotal_inbox" ? undefined : waitingNotice(c.agent);
+        const notice = spec.name === "cotal_inbox" || wake?.inboxNotice?.(c) === false ? undefined : waitingNotice(c.agent);
         return notice ? { ...result, content: [...result.content, notice] } : result;
       },
     );

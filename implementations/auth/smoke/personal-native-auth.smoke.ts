@@ -175,7 +175,8 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     if (nativeAcceptance) {
       const { runPersonalNativeAcceptance } = await import("./_personal-native-driver.js");
       const evidence = process.argv.includes("--native-evidence") ? process.argv[process.argv.indexOf("--native-evidence") + 1] : undefined;
-      const options = { home, cwd: root, cli: [process.execPath, ...process.execArgv, import.meta.filename], sender, peer: b.agent, env: childEnv };
+      const options = { home, cwd: root, cli: [process.execPath, ...process.execArgv, import.meta.filename], sender, peer: b.agent, env: childEnv,
+        transitionRace: process.argv.includes("--native-transition-race"), longBoundary: process.argv.includes("--native-long-boundary") };
       if (process.argv.includes("--native-concurrent")) {
         const connected = new Set<string>();
         let release!: () => void;

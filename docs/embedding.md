@@ -462,13 +462,22 @@ and names the local user. A client that cancels a call aborts its signal, so a c
 listening. The streams default to the process's own, and stdout then carries only MCP.
 
 An embedder whose client can be woken passes `wake`, to `serveGatewayStdio` or in the options of
-`registerCotalGatewayTools`. The gateway calls `wake.signal(connection)` when a connection gets
-something that would end a `cotal_wait` while no wait holds it, and not again for that connection
-until `cotal_inbox` or `cotal_wait` reads. `signal` returns false when no client heard it. The
-gateway then signals that connection again when the embedder calls the function `wake.attach`
-received, which it does when a client starts listening. `cotal_connect` adds `wake.listening()` to
-its reply. `GATEWAY_INSTRUCTIONS` is `GATEWAY_CONNECTING` followed by `GATEWAY_LISTENING`, so an
-embedder can say how its conversations listen and keep how they connect.
+`registerCotalGatewayTools`. The gateway calls `wake.signal(connection, preview)` when a connection
+gets something that would end a `cotal_wait` while no wait holds it. A true result means a reader
+heard the signal, not that it received complete message content. The preview never consumes mail.
+`cotal_connect` adds `wake.listening(connection)` to its reply. An embedder delivering full content
+can return false from `wake.inboxNotice(connection)` to omit competing inbox-read advice from other
+tool results. Notification-only clients retain that advice.
+
+`wake.attach` receives a rearm callback. Call it without arguments when a replacement reader starts
+listening. Call it with one connection after confirmed inline delivery to reoffer that connection's
+remaining work. Pass `false` as its second argument to clear the latch without immediately retrying
+a refused handoff. Ordinary inbox reads and waits also clear the latch. An adapter offering complete
+inline messages can use `prepareInlineDelivery`: hold whole automatic messages, validate the final
+transport size, recheck the batch before admission, then settle it with the native result. A failed
+or unknown admission releases the hold without committing. Never settle successfully on a preview,
+socket write or queued native call. `GATEWAY_INSTRUCTIONS` combines `GATEWAY_CONNECTING` and
+`GATEWAY_LISTENING`, so an embedder can supply its own listening instructions.
 
 ### Private tool results
 

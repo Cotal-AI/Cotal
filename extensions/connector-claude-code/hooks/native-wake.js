@@ -56,11 +56,17 @@ async function deferInline($, frame) {
 }
 
 async function resumeInline($) {
+  let reopen = false;
   for (const [key, frame] of retries) {
-    try {
-      const result = await receipt($, frame, 'retry');
-      if (result.ok) retries.delete(key);
-    } catch {}
+    try { if (!(await receipt($, frame, 'retry')).ok) reopen = true; }
+    catch { reopen = true; }
+    retries.delete(key);
+  }
+  if (reopen) {
+    await reader?.return();
+    reader = undefined;
+    readerSession = undefined;
+    void listen($);
   }
 }
 
@@ -77,20 +83,35 @@ async function submitInline($, frame, inTurn) {
   admission.observed = new Promise(resolve => { admission.resolve = resolve; });
   admissions.set(text, admission);
   try {
-    if (paused || active !== inTurn) throw new Error('Cotal delivery paused');
-    const result = inTurn
-      ? await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
-      : await $.prompt.submit({ text });
-    if (result?.drop || result?.deny) throw new Error('Cotal native admission was refused');
+    if (paused) { await deferInline($, frame); return; }
+    if (active !== inTurn) {
+      await receipt($, frame, 'defer');
+      offers.set(frame.inline.receipt, frame);
+      return;
+    }
+    let result;
+    try {
+      result = inTurn
+        ? await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+        : await $.prompt.submit({ text });
+    } catch (error) { paused = true; throw error; }
+    if (result?.drop || result?.deny) {
+      paused = true;
+      throw new Error('Cotal native admission was refused');
+    }
     const uuid = inTurn ? result?.uuid : admission.uuid || await Promise.race([
       admission.observed, $.clock.sleep(2000).then(() => undefined),
     ]);
-    if (!uuid) throw new Error('Cotal native admission was not confirmed');
+    const stored = result?.message?.content?.filter(block => block.type === 'text').map(block => block.text).join('\n');
+    if (!uuid || inTurn && stored !== text) {
+      paused = true;
+      throw new Error('Cotal native admission was not confirmed');
+    }
     wakeRows.add(uuid);
     inlineRows.set(uuid, claim.frame.inline);
     $.ui.invalidate('ui.render');
     const committed = await receipt($, claim.frame, 'commit', uuid);
-    if (!committed.ok) throw new Error('Cotal native receipt expired');
+    if (!committed.ok) await receipt($, claim.frame, 'retry');
   } finally {
     admissions.delete(text);
   }
@@ -105,9 +126,10 @@ async function submit($, inTurn = false) {
       offers.delete(key);
       try { await submitInline($, frame, inTurn); }
       catch {
-        paused = true;
         await deferInline($, frame);
-        $.ui.log('Cotal incoming delivery is paused. Your next message can resume it.');
+        $.ui.log(paused
+          ? 'Cotal incoming delivery is paused. Your next message can resume it.'
+          : 'Cotal could not confirm incoming delivery. The message remains in the inbox.');
         break;
       }
     }
@@ -199,19 +221,19 @@ async function listen($) {
 export function register(on) {
   on('session.append', { door: 'prompt' }, async ($, e, next) => {
     const own = e.origin.kind === 'plugin' && e.origin.name === $.plugin.name && !e.origin.asUser;
-    const text = e.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
     const result = await next(e);
-    if (own && !result?.deny && e.uuid && text.split(/\r?\n/).some(line => WAKE.test(line) || INLINE.test(line))) {
+    const text = result?.message?.content?.filter(block => block.type === 'text').map(block => block.text).join('\n') || '';
+    if (own && !result?.deny && result?.uuid && text.split(/\r?\n/).some(line => WAKE.test(line) || INLINE.test(line))) {
       // Claude may wrap a plugin prompt in its own attribution text before storing it. Require
       // our complete offered bytes on whole lines and our plugin origin, never a marker alone.
       const matches = [...admissions].filter(([body]) => text === body || text.includes(`\n${body}\n`));
       if (matches.length === 1) {
         const admission = matches[0][1];
-        admission.uuid = e.uuid;
-        admission.resolve(e.uuid);
-        inlineRows.set(e.uuid, admission.frame.inline);
+        admission.uuid = result.uuid;
+        admission.resolve(result.uuid);
+        inlineRows.set(result.uuid, admission.frame.inline);
       }
-      wakeRows.add(e.uuid);
+      wakeRows.add(result.uuid);
       $.ui.invalidate('ui.render');
     }
     return result;

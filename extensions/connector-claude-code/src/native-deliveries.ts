@@ -14,7 +14,7 @@ interface Offer {
   reader: Socket;
   batch: InlineDeliveryBatch;
   claimed: boolean;
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
   onSettled(delivered: boolean): void;
   retry(): void;
 }
@@ -48,9 +48,9 @@ export class NativeDeliveries {
     if (this.sessions.has(session) || !this.fits(id, session, batch.payload)) return false;
     const receipt = randomUUID();
     const frame: NativeInlineFrame = { id, inline: { ...batch.payload, v: 1, receipt, session }, route: this.route };
-    const timer = setTimeout(() => this.finish(receipt, false), this.timeoutMs);
-    timer.unref?.();
-    this.offers.set(receipt, { frame, reader, batch, timer, claimed: false, onSettled, retry });
+    // A long-running native tool may postpone its next safe boundary indefinitely. Before claim,
+    // the live reader owns this bounded offer; its socket closing releases it without an ACK.
+    this.offers.set(receipt, { frame, reader, batch, claimed: false, onSettled, retry });
     this.sessions.add(session);
     try { reader.write(`${JSON.stringify(frame)}\n`); }
     catch { this.finish(receipt, false); return false; }
@@ -73,8 +73,18 @@ export class NativeDeliveries {
     if (offer.frame.id !== id || offer.frame.inline.session !== session) return { ok: false };
     if (action === "claim") {
       if (!offer.batch.current() || offer.reader.destroyed) { this.finish(receipt, false); return { ok: false }; }
+      if (!offer.claimed) {
+        offer.timer = setTimeout(() => this.finish(receipt, false), this.timeoutMs);
+        offer.timer.unref?.();
+      }
       offer.claimed = true;
       return { ok: true, frame: offer.frame };
+    }
+    if (action === "defer") {
+      clearTimeout(offer.timer);
+      offer.timer = undefined;
+      offer.claimed = false;
+      return { ok: true };
     }
     if (action === "reject") { this.finish(receipt, false); return { ok: true }; }
     if (action === "commit" && offer.claimed && typeof value.uuid === "string" && ID.test(value.uuid)) {

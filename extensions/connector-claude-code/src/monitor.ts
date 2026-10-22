@@ -35,7 +35,7 @@ async function relayInline(claude: number, session: string | undefined): Promise
   const frame = JSON.parse(input) as Record<string, unknown>;
   if (!session || frame.session !== session || typeof frame.route !== "string" ||
       !wakeSockets(claude).includes(frame.route) ||
-      !["claim", "commit", "reject", "retry"].includes(String(frame.action)) ||
+      !["claim", "commit", "defer", "reject", "retry"].includes(String(frame.action)) ||
       typeof frame.receipt !== "string" || !WAKE_ID.test(frame.receipt) ||
       typeof frame.id !== "string" || !WAKE_ID.test(frame.id)) throw new Error("invalid inline receipt");
   const reply = await new Promise<string>((resolve, reject) => {

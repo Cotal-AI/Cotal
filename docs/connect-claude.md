@@ -292,7 +292,9 @@ returned row ID, without observing protected notes or skill output.
 
 Socket writes and previews do not acknowledge messages. A complete inline batch is committed only
 after the native host confirms admission to the bound conversation. An idle prompt also needs its
-stored prompt row; a busy append needs its returned row ID. This confirms host handoff, not that
+stored prompt row; a busy append needs its returned row ID and complete stored text. An offer waits
+for a busy conversation's next safe boundary while its reader remains connected. Admission after
+claim has its own deadline. This confirms host handoff, not that
 Claude understood or completed the work. Delivery remains at least once after an unknown result.
 Message IDs distinguish retries from new requests.
 
