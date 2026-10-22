@@ -42,6 +42,7 @@ export * from "./seat-checkpoint.js";
 export * from "./space.js";
 export * from "./space-segmentation.js";
 export * from "./system-rotation.js";
+export * from "./telemetry.js";
 export * from "./win-cmd.js";
 export * from "./pid.js";
 export * from "./progress.js";

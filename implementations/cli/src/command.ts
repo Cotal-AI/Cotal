@@ -43,6 +43,7 @@ import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
 import { ConfirmationRequired } from "./lib/confirmation-required.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
+import { armTelemetry, recordTelemetryFailure } from "./telemetry.js";
 
 /** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
 function asksForHelp(args: readonly string[]): boolean {
@@ -101,6 +102,7 @@ function asksForJson(cmd: Command, args: readonly string[]): boolean {
  *  for, and the exit code its outcome sets. The envelope is written synchronously, because stdout
  *  to a pipe is asynchronous on some platforms and `exit` would cut it short. */
 function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false): never {
+  recordTelemetryFailure(failure.outcome, failure.code);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
   // missing --yes is not a grammar mistake, and its remedy says the whole fix.
   if (failure.code === "USAGE_INVALID" && !json) {
@@ -156,6 +158,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   // planning surface reads what is installed; it never seeds to make the plan prettier.
   if (argv.includes("--dry-run")) return true;
   if (name === "persona" || (name === "personas" && !argv.includes("--running"))) return true; // local files or existing native manager routes; neither installs connectors
+  if (name === "telemetry") return true; // one local settings file; never installs connectors
   if (["__service-feedback-intake", "__service-delivery", "__service-manager", "__service-auth", "__service-linear", "__service-web", "__service-exec-endpoint"].includes(name)) return true; // explicit native service child; never repairs the installation
   if (name === "team" && (sub === "deploy" || sub === "remove")) return true; // existing native manager/channel operations never install local connectors
   // `backup restore` is excluded: it starts the restored stack and resumes its seats through `up
@@ -238,6 +241,7 @@ function usageExit(message: string, cmd?: Command, json = false): never {
   // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
   // the remedy names stays out of it.
   if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: `run \`cotal help ${cmd.name}\`` }), true);
+  recordTelemetryFailure("refused", "USAGE_INVALID");
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
   stderrLine("✗ ", message, c.red);
@@ -317,6 +321,7 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
  * come from importing a package the seed keeps current.
  */
 export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
+  const startedAt = Date.now();
   // Global flags before the command word apply whatever the command is. The output flags are the
   // command's own, so one written before the command word moves after it, and a `--` there ends
   // the leading flags. A command that takes its words raw has no flags to read them as, so it
@@ -398,6 +403,18 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       failureExit(cmd, failure, asksForJson(cmd, rest), rest.includes("--plain"));
     }
   }
+  // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
+  // counts too, and before anything runs, so the one-time notice precedes the command's output.
+  const arm = (): void => {
+    if (!cmd) return;
+    try {
+      armTelemetry(registry, cmd, words, startedAt);
+    } catch (e) {
+      if (isCommandFailure(e)) failureExit(cmd, e, asksForJson(cmd, rest), rest.includes("--plain"));
+      throw e;
+    }
+  };
+  arm();
   // A seeded package's command (`web`) can be absent only because the first seed has not installed
   // it yet, so running it seeds and resolves again. Asking for its help seeds nothing, and any other
   // unknown word is a usage error.
@@ -424,6 +441,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     cmd = findCommand(commands, word);
     if (!cmd) usageExit(`unknown command: ${word} - run \`cotal help\` to list commands`);
     rest = ownWords(cmd, words);
+    arm();
   }
   // An extension stub materializes before parsing: verify the version pin, import the package
   // (self-registers), and parse with the LIVE specs — the cache never drives run's input.

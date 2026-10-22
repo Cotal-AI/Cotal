@@ -258,6 +258,7 @@ failure.
 | Extensions & misc | [`config`](#config) | Show and set your preferences: the defaults your commands use |
 | Extensions & misc | [`completion`](#completion) | Report, print or install shell completion |
 | Extensions & misc | [`feedback`](#feedback) | Send feedback to the Cotal developers |
+| Extensions & misc | [`telemetry`](#telemetry) | Show or set the anonymous usage telemetry level (`off`, `minimal`, `regular`) |
 | Extensions & misc | [`deliver`](#server-daemons) | Deprecated and hidden from help: run the delivery daemon; use the `delivery` service preset |
 | Workflow runs | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
 | Extensions & misc | [`feedback-intake`](#server-daemons) | Deprecated and hidden from help: run a feedback intake server; use the `feedback-intake` service preset |
@@ -4536,6 +4537,25 @@ server provides one. They do not repeat the submitted summary, details, contact 
 response body. Acceptance does not prove that anyone read the report or acted on it. A success
 response without an established ID is reported with that limitation, not retried for a new ID.
 Run a self-hosted intake with [`feedback-intake`](#server-daemons).
+
+## telemetry
+
+```bash
+cotal telemetry [--json|--plain]
+cotal telemetry off|minimal|regular [--json|--plain]
+```
+
+The CLI sends anonymous usage data: one small event per command as it exits, and at the default
+`regular` level one install summary per day. [Telemetry](telemetry.md) lists every field and what
+is never sent. The bare form prints the level in force, what set it (the settings file,
+`COTAL_TELEMETRY`, `DO_NOT_TRACK` or `COTAL_TELEMETRY_DISABLED`), the install id, the intake URL and
+the settings file. A level argument writes the file; `on` is an alias of `regular`, and writing the
+level the file already holds is a `no-op`. A level the environment forces still wins, and the
+report says so. `cotal telemetry` itself sends nothing.
+
+The first interactive run at `regular` prints one notice to stderr. `COTAL_TELEMETRY` set to
+anything but a level refuses `USAGE_INVALID`, and a settings file that does not validate refuses
+`SCHEMA_INVALID` on every command until it is fixed or moved away.
 
 ## run
 
