@@ -53,6 +53,7 @@ const seed: Partial<DashboardState> = {
 const listeners = new Set<() => void>();
 const host: RouteHost = {
   location: { hash: "#/channel/review", pathname: "/" },
+  history: { replaceState: () => undefined },
   addEventListener: (_t, l) => void listeners.add(l),
   removeEventListener: (_t, l) => void listeners.delete(l),
 };

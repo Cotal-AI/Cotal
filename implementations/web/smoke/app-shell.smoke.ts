@@ -162,6 +162,7 @@ const fake = () => {
     const listeners = new Set<() => void>();
     const h = {
       location: { hash, pathname },
+      history: { replaceState: () => undefined },
       addEventListener: (type: "hashchange", l: () => void) => { assert.equal(type, "hashchange"); listeners.add(l); },
       removeEventListener: (type: "hashchange", l: () => void) => { assert.equal(type, "hashchange"); listeners.delete(l); },
     } satisfies RouteHost;

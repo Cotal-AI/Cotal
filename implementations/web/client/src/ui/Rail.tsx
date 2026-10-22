@@ -54,7 +54,7 @@ export function leadsTo(view: Route["view"], route: Route, places: Places): Rout
     case "needs":
       return { view };
     case "agent":
-      // No item stands for one agent's session; the Agents item is current there.
+      // No item stands for one agent's page; the Agents item is current there.
       return null;
   }
 }
@@ -153,7 +153,7 @@ function Settings({ theme, onTheme }: { theme?: Theme; onTheme?: (t: Theme) => v
 }
 
 /** The view rail down the left edge, under the Cotal mark. `places` says where Channels and Direct
- *  messages lead when the route is not already on them. Agents is current on an agent's session too.
+ *  messages lead when the route is not already on them. Agents is current on an agent's page too.
  *  An item that leads nowhere yet is a button marked disabled, which keyboard and screen readers
  *  still reach, titled with the empty state it would show. Settings opens the theme menu when
  *  `onTheme` is given and is disabled until then. The mark is drawn in `currentColor`, so the

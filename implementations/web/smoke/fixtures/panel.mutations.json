@@ -248,7 +248,7 @@
     {
       "name": "S2 message rows get no picker",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": "<AgentPicker.Provider value={panel.selectAgent}>",
+      "find": "<AgentPicker.Provider value={pick}>",
       "replace": "<AgentPicker.Provider value={null}>",
       "expectRed": "5.6 a verified sender's name in the channel is a button, and a history row's is not",
       "cell": "5.6 a verified sender's name in the channel is a button, and a history row's is not"
@@ -356,14 +356,6 @@
       "replace": "",
       "expectRed": "2.13 a member the roster does not know draws no status dot, as it shows no status word",
       "cell": "2.13 a member the roster does not know draws no status dot, as it shows no status word"
-    },
-    {
-      "name": "A25 Recent names the channel again",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": "<h5>Recent</h5>",
-      "replace": "<h5>{`Recent in #${channel}`}</h5>",
-      "expectRed": "3.17 Recent lists the agent's own messages in the open channel, newest first, history marked unverified",
-      "cell": "3.17 Recent lists the agent's own messages in the open channel, newest first, history marked unverified"
     },
     {
       "name": "M7 picking a member picks someone else",
@@ -570,32 +562,32 @@
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
       "find": "[row.role, row.harness && harnessName(row.harness)]",
       "replace": "[row.role, row.harness]",
-      "expectRed": "3.1 the profile is the name and role · harness",
-      "cell": "3.1 the profile is the name and role · harness"
+      "expectRed": "3.1 the peek is the name and role · harness",
+      "cell": "3.1 the peek is the name and role · harness"
     },
     {
-      "name": "A2 the character is drawn at the brief's 76",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": "size={72} dot={false}",
-      "replace": "size={76} dot={false}",
-      "expectRed": "3.2 the character is drawn at 72px with no status dot",
-      "cell": "3.2 the character is drawn at 72px with no status dot"
+      "name": "A2 Profile draws the character at 92",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
+      "find": "size={88} dot={false}",
+      "replace": "size={92} dot={false}",
+      "expectRed": "3.2 Profile draws the character at 88px with no status dot",
+      "cell": "3.2 Profile draws the character at 88px with no status dot"
     },
     {
       "name": "A3 the character carries a status dot",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": "size={72} dot={false}",
-      "replace": "size={72}",
-      "expectRed": "3.2 the character is drawn at 72px with no status dot",
-      "cell": "3.2 the character is drawn at 72px with no status dot"
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
+      "find": "size={88} dot={false}",
+      "replace": "size={88}",
+      "expectRed": "3.2 Profile draws the character at 88px with no status dot",
+      "cell": "3.2 Profile draws the character at 88px with no status dot"
     },
     {
       "name": "A4 Reported shows the raw time",
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
       "find": "`Reported ${hhmm(new Date(row.statusSince))}`",
       "replace": "`Reported ${row.statusSince}`",
-      "expectRed": "3.3 the status line is the status word, the activity, and when it reported",
-      "cell": "3.3 the status line is the status word, the activity, and when it reported"
+      "expectRed": "3.3 the peek's status line is the status word, the activity, and when it reported",
+      "cell": "3.3 the peek's status line is the status word, the activity, and when it reported"
     },
     {
       "name": "A5 no activity shows nothing",
@@ -610,36 +602,36 @@
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
       "find": "href={formatRoute(messageRoute(row.id, self))}",
       "replace": "href={formatRoute(messageRoute(row.name, self))}",
-      "expectRed": "3.4 Message opens the DM view with this agent",
-      "cell": "3.4 Message opens the DM view with this agent"
+      "expectRed": "3.4 the peek's Message opens the DM view with this agent",
+      "cell": "3.4 the peek's Message opens the DM view with this agent"
     },
     {
       "name": "A7 attach names the id",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
       "find": "command={`cotal attach --name ${shellArg(row.name)}`}",
       "replace": "command={`cotal attach --name ${shellArg(row.id)}`}",
-      "expectRed": "3.5 attach and stop are commands to copy, by the agent's name, each led by its icon",
-      "cell": "3.5 attach and stop are commands to copy, by the agent's name, each led by its icon"
+      "expectRed": "3.5 Profile's attach and stop are commands to copy, by the agent's name, each led by its icon",
+      "cell": "3.5 Profile's attach and stop are commands to copy, by the agent's name, each led by its icon"
     },
     {
       "name": "A8 stop names the id",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
       "find": "command={`cotal stop --name ${shellArg(row.name)}`}",
       "replace": "command={`cotal stop --name ${shellArg(row.id)}`}",
-      "expectRed": "3.5 attach and stop are commands to copy, by the agent's name, each led by its icon",
-      "cell": "3.5 attach and stop are commands to copy, by the agent's name, each led by its icon"
+      "expectRed": "3.5 Profile's attach and stop are commands to copy, by the agent's name, each led by its icon",
+      "cell": "3.5 Profile's attach and stop are commands to copy, by the agent's name, each led by its icon"
     },
     {
       "name": "A9 a missing model reads a dash",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": ": <dd className=\"ui-nr\">not reported</dd>}\n        {row.host",
-      "replace": ": <dd>-</dd>}\n        {row.host",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
+      "find": ": <dd className=\"ui-nr\">not reported</dd>}\n          {row.host",
+      "replace": ": <dd>-</dd>}\n          {row.host",
       "expectRed": "3.9 a card with no model reads Model not reported",
       "cell": "3.9 a card with no model reads Model not reported"
     },
     {
       "name": "A10 open attention gets an Attention row",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
       "find": "{(row.attention === \"dnd\" || row.attention === \"focus\") && ",
       "replace": "{row.attention && ",
       "expectRed": "3.11 open attention, an unknown mode and none show no Attention row",
@@ -655,7 +647,7 @@
     },
     {
       "name": "A12 the heartbeat shows its own time, not its age",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
       "find": "{ageText(clock() - row.ts)} ago",
       "replace": "{ageText(row.ts)} ago",
       "expectRed": "3.6 the heartbeat is labelled as a heartbeat: Heartbeat 2s ago",
@@ -663,7 +655,7 @@
     },
     {
       "name": "A13 the heartbeat is called last seen",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
       "find": "<dt>Heartbeat</dt>",
       "replace": "<dt>Last seen</dt>",
       "expectRed": "3.6 the heartbeat is labelled as a heartbeat: Heartbeat 2s ago",
@@ -671,7 +663,7 @@
     },
     {
       "name": "A14 the agent's channel modes are dropped",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
       "find": "channels.map((c) => c.channel), activity, entry.channelModes)",
       "replace": "channels.map((c) => c.channel), activity, undefined)",
       "expectRed": "3.13 Channels are the agent's from membership, sorted, with its quiet or muted mode and no other",
@@ -679,7 +671,7 @@
     },
     {
       "name": "A15 a reader of every channel says nothing",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
       "find": "{mine.wide && <div className=\"ui-chrow\"><span>Reads every channel</span><span /></div>}",
       "replace": "",
       "expectRed": "3.14 a reader of every channel says so instead of listing each",
@@ -687,7 +679,7 @@
     },
     {
       "name": "A16 a channel's mode is not shown",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
       "find": "<span>{c.mode ?? \"\"}</span>",
       "replace": "<span></span>",
       "expectRed": "3.13 Channels are the agent's from membership, sorted, with its quiet or muted mode and no other",
@@ -695,99 +687,67 @@
     },
     {
       "name": "A17 skills show their ids",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
       "find": "(entry.card.skills ?? []).map((s) => s.name)",
       "replace": "(entry.card.skills ?? []).map((s) => s.id)",
       "expectRed": "3.16 Skills are the card's",
       "cell": "3.16 Skills are the card's"
     },
     {
-      "name": "A18 Recent drops the agent's rows read from history",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": "m.senderId === id || (m.senderId === undefined && m.msg.from?.id === id)",
-      "replace": "m.senderId === id",
-      "expectRed": "3.17 Recent lists the agent's own messages in the open channel, newest first, history marked unverified",
-      "cell": "3.17 Recent lists the agent's own messages in the open channel, newest first, history marked unverified"
-    },
-    {
-      "name": "A19 Recent lists oldest first",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": ".slice(-RECENT).reverse()",
-      "replace": ".slice(-RECENT)",
-      "expectRed": "3.17 Recent lists the agent's own messages in the open channel, newest first, history marked unverified",
-      "cell": "3.17 Recent lists the agent's own messages in the open channel, newest first, history marked unverified"
-    },
-    {
-      "name": "A20 Recent lists the open channel off a channel route",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": "open !== null && open.channel === channel",
-      "replace": "open !== null",
-      "expectRed": "3.18 off a channel there is no Recent section",
-      "cell": "3.18 off a channel there is no Recent section"
-    },
-    {
-      "name": "A21 a history row in Recent is not marked unverified",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": "{senderId === undefined && <>{\" \"}<span className=\"ui-unverified\"",
-      "replace": "{false && <>{\" \"}<span className=\"ui-unverified\"",
-      "expectRed": "3.17 Recent lists the agent's own messages in the open channel, newest first, history marked unverified",
-      "cell": "3.17 Recent lists the agent's own messages in the open channel, newest first, history marked unverified"
-    },
-    {
       "name": "A22 an agent not on the roster draws nothing",
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
       "find": "if (!entry) return <p className=\"ui-nr\">Not on the roster</p>;",
       "replace": "if (!entry) return null;",
-      "expectRed": "3.19 an id the roster does not hold reads Not on the roster",
-      "cell": "3.19 an id the roster does not hold reads Not on the roster"
+      "expectRed": "3.18 an id the roster does not hold reads Not on the roster, in the peek and in Profile",
+      "cell": "3.18 an id the roster does not hold reads Not on the roster, in the peek and in Profile"
     },
     {
       "name": "A23 the heartbeat's age stands still",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
       "find": "setInterval(redraw, BEAT_MS)",
       "replace": "setInterval(redraw, 60_000)",
-      "expectRed": "3.21 the heartbeat's age moves on by itself, every second",
-      "cell": "3.21 the heartbeat's age moves on by itself, every second"
+      "expectRed": "3.20 the heartbeat's age moves on by itself, every second",
+      "cell": "3.20 the heartbeat's age moves on by itself, every second"
     },
     {
       "name": "A24 the harness row shows the connector id",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
       "find": "<dd>{harnessName(row.harness)}</dd>",
       "replace": "<dd>{row.harness}</dd>",
-      "expectRed": "3.7 the details are harness, model, host, attention and heartbeat",
-      "cell": "3.7 the details are harness, model, host, attention and heartbeat"
+      "expectRed": "3.7 Profile's details are harness, model, host, attention, heartbeat and work events",
+      "cell": "3.7 Profile's details are harness, model, host, attention, heartbeat and work events"
     },
     {
       "name": "G1 a second under a minute reads as minutes",
       "file": "implementations/web/client/src/lib/age.ts",
       "find": "if (seconds < 60) return",
       "replace": "if (seconds < 59) return",
-      "expectRed": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
-      "cell": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported"
+      "expectRed": "3.19 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
+      "cell": "3.19 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported"
     },
     {
       "name": "G2 a clock ahead reads as a negative age",
       "file": "implementations/web/client/src/lib/age.ts",
       "find": "Math.max(0, ms)",
       "replace": "ms",
-      "expectRed": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
-      "cell": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported"
+      "expectRed": "3.19 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
+      "cell": "3.19 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported"
     },
     {
       "name": "G3 an age that is no number is written anyway",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
       "find": "{Number.isFinite(row.ts) ? <dd",
       "replace": "{true ? <dd",
-      "expectRed": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
-      "cell": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported"
+      "expectRed": "3.19 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
+      "cell": "3.19 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported"
     },
     {
       "name": "G4 a whole day reads as 24 hours",
       "file": "implementations/web/client/src/lib/age.ts",
       "find": "if (hours < 24) return",
       "replace": "if (hours <= 24) return",
-      "expectRed": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
-      "cell": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported"
+      "expectRed": "3.19 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
+      "cell": "3.19 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported"
     },
     {
       "name": "E1 a wide reader is not called wide",
@@ -914,72 +874,128 @@
       "file": "implementations/web/client/src/ui/CopyCommand.tsx",
       "find": "{icon && <Icon icon={icon} size={16} className=\"ui-ic ui-ic16\" />}",
       "replace": "",
-      "expectRed": "3.5 attach and stop are commands to copy, by the agent's name, each led by its icon",
-      "cell": "3.5 attach and stop are commands to copy, by the agent's name, each led by its icon"
+      "expectRed": "3.5 Profile's attach and stop are commands to copy, by the agent's name, each led by its icon",
+      "cell": "3.5 Profile's attach and stop are commands to copy, by the agent's name, each led by its icon"
     },
     {
-      "name": "PS1 the Session section stays beside the agent's own session in the centre",
+      "name": "PS1 Now stays beside the agent's own page in the centre",
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
       "find": "{!(route?.view === \"agent\" && route.id === id) && <SessionPreview",
       "replace": "{true && <SessionPreview",
-      "expectRed": "8.7 beside that agent's own session the Agent tab has no Session section, and beside another agent's it does",
-      "cell": "8.7 beside that agent's own session the Agent tab has no Session section, and beside another agent's it does"
+      "expectRed": "8.8 beside that agent's own page the peek has no Now, and beside another agent's it does",
+      "cell": "8.8 beside that agent's own page the peek has no Now, and beside another agent's it does"
     },
     {
-      "name": "PS2 a plane the card says is off still opens a session",
+      "name": "PS2 a plane the card says is off is still opened",
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
       "find": "useSession(entry && plane !== \"off\" ? controller : null, id);",
       "replace": "useSession(entry ? controller : null, id);",
-      "expectRed": "8.5 with the plane off the section opens no session",
-      "cell": "8.5 with the plane off the section opens no session"
+      "expectRed": "8.6 with the plane off the peek opens nothing",
+      "cell": "8.6 with the plane off the peek opens nothing"
     },
     {
-      "name": "PS3 the section draws every step, not the newest six",
+      "name": "PS3 the peek draws four steps",
       "file": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
-      "find": "recentWork(foldWork(frames, posts), PREVIEW_STEPS)",
-      "replace": "foldWork(frames, posts)",
-      "expectRed": "8.3 the section draws at most six steps, the newest, then the footer",
-      "cell": "8.3 the section draws at most six steps, the newest, then the footer"
+      "find": "export const PEEK_STEPS = 3;",
+      "replace": "export const PEEK_STEPS = 4;",
+      "expectRed": "8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn's last three steps, and no footer",
+      "cell": "8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn's last three steps, and no footer"
     },
     {
-      "name": "PS4 the section shows Live for an offline agent",
-      "file": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
-      "find": " && row.status !== \"offline\"",
-      "replace": "",
-      "expectRed": "8.8 the section's footer says an offline agent is offline and when its last heartbeat came, and shows no Live",
-      "cell": "8.8 the section's footer says an offline agent is offline and when its last heartbeat came, and shows no Live"
-    },
-    {
-      "name": "PS5 Open session leads to the Agents view, not the agent's session",
+      "name": "PS5 Open <name>'s page leads to the Agents view, not the agent's page",
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": "href={formatRoute({ view: \"agent\", id: row.id })}",
+      "find": "href={formatRoute({ view: \"agent\", id: row.id, tab: \"work\" })}",
       "replace": "href={formatRoute({ view: \"agents\", group: \"status\" })}",
-      "expectRed": "8.1 the Agent tab has Open session after Message, linking to the agent's session",
-      "cell": "8.1 the Agent tab has Open session after Message, linking to the agent's session"
+      "expectRed": "8.1 the peek ends with Open <name>'s page, to the agent's page, then Message",
+      "cell": "8.1 the peek ends with Open <name>'s page, to the agent's page, then Message"
     },
     {
       "name": "PS6 the panel does not hand the Agent tab the centre's route",
       "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
-      "find": "channel={channel} route={route} clock={clock}",
-      "replace": "channel={channel} clock={clock}",
-      "expectRed": "8.7 beside that agent's own session the Agent tab has no Session section, and beside another agent's it does",
-      "cell": "8.7 beside that agent's own session the Agent tab has no Session section, and beside another agent's it does"
+      "find": "id={panel.agent} route={route} />",
+      "replace": "id={panel.agent} />",
+      "expectRed": "8.8 beside that agent's own page the peek has no Now, and beside another agent's it does",
+      "cell": "8.8 beside that agent's own page the peek has no Now, and beside another agent's it does"
     },
     {
-      "name": "PS7 the Agent tab lets go of the session while the centre shows it, so opening the session closes and reopens it",
+      "name": "PS7 the peek lets go of the work while the centre shows that agent's page, so opening the page closes and reopens it",
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
       "find": "useSession(entry && plane !== \"off\" ? controller : null, id);",
       "replace": "useSession(entry && plane !== \"off\" && !(route?.view === \"agent\" && route.id === id) ? controller : null, id);",
-      "expectRed": "8.13 opening the agent's session beside its Agent tab keeps the session the tab holds: no unwatch, no second watch or read, and two views",
-      "cell": "8.13 opening the agent's session beside its Agent tab keeps the session the tab holds: no unwatch, no second watch or read, and two views"
+      "expectRed": "8.11 opening the agent's page beside its peek keeps the work the peek holds: no unwatch, no second watch or read, and two views",
+      "cell": "8.11 opening the agent's page beside its peek keeps the work the peek holds: no unwatch, no second watch or read, and two views"
     },
     {
-      "name": "PS8 the Session section shows Live while the feed is down, so it claims new steps will appear when none can arrive",
+      "name": "A26 Profile of an agent not on the roster draws nothing",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
+      "find": "if (!entry) return <p className=\"ui-nr\">Not on the roster</p>;",
+      "replace": "if (!entry) return null;",
+      "expectRed": "3.18 an id the roster does not hold reads Not on the roster, in the peek and in Profile",
+      "cell": "3.18 an id the roster does not hold reads Not on the roster, in the peek and in Profile"
+    },
+    {
+      "name": "A27 the peek keeps the details list",
+      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "find": "      {!(route?.view === \"agent\" && route.id === id) && <SessionPreview store={store} id={id} />}\n",
+      "replace": "      <dl className=\"ui-kv\"><dt>Model</dt><dd>not reported</dd></dl>\n      {!(route?.view === \"agent\" && route.id === id) && <SessionPreview store={store} id={id} />}\n",
+      "expectRed": "3.17 the peek holds no commands, details, channels, skills or recent messages: Profile and Messages have them",
+      "cell": "3.17 the peek holds no commands, details, channels, skills or recent messages: Profile and Messages have them"
+    },
+    {
+      "name": "PS9 Now's title counts only the steps it shows, so a failed call left out goes unsaid",
       "file": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
-      "find": "  const live = connection === \"connected\" && session?.load === \"ok\"",
-      "replace": "  const live = session?.load === \"ok\"",
-      "expectRed": "8.14 the section shows no Live while the feed is down, though the read went through and the agent is working",
-      "cell": "8.14 the section shows no Live while the feed is down, though the read went through and the agent is working"
+      "find": "      <NowHead turn={turn} current={current} row={row} />",
+      "replace": "      <NowHead turn={lastSteps(turn, PEEK_STEPS)} current={current} row={row} />",
+      "expectRed": "8.3 Now's title counts the failed call of the whole turn, though that step is not among the three shown",
+      "cell": "8.3 Now's title counts the failed call of the whole turn, though that step is not among the three shown"
+    },
+    {
+      "name": "PS10 an idle agent's last turn is headed Now",
+      "file": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "find": "<h5>{current ? \"Now\" : \"Last turn\"}</h5>",
+      "replace": "<h5>Now</h5>",
+      "expectRed": "8.4 for an idle agent the peek shows Last turn, with how long it worked",
+      "cell": "8.4 for an idle agent the peek shows Last turn, with how long it worked"
+    },
+    {
+      "name": "PS11 the plane off says nothing in the peek",
+      "file": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "find": "if (row.events === \"off\") return <PlaneNote>{`${row.name} publishes no work events.`}</PlaneNote>;",
+      "replace": "if (row.events === \"off\") return null;",
+      "expectRed": "8.5 with the plane off the peek holds only the note that the agent publishes no work events",
+      "cell": "8.5 with the plane off the peek holds only the note that the agent publishes no work events"
+    },
+    {
+      "name": "PS12 a group in the peek opens like the page's",
+      "file": "implementations/web/client/src/ui/work/Step.tsx",
+      "find": "line={compact}",
+      "replace": "line={false}",
+      "expectRed": "8.10 in the peek a run of calls is its group's title line, with nothing to open, so Tab goes Open <name>'s page, then Message",
+      "cell": "8.10 in the peek a run of calls is its group's title line, with nothing to open, so Tab goes Open <name>'s page, then Message"
+    },
+    {
+      "name": "PS13 the peek draws the footer under its steps",
+      "file": "implementations/web/client/src/ui/work/WorkList.tsx",
+      "find": "{!compact && <SessionFoot row={row} />}",
+      "replace": "<SessionFoot row={row} />",
+      "expectRed": "8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn's last three steps, and no footer",
+      "cell": "8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn's last three steps, and no footer"
+    },
+    {
+      "name": "PS14 the way to the page reads Open session",
+      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "find": "{`Open ${row.name}'s page`}",
+      "replace": "Open session",
+      "expectRed": "8.1 the peek ends with Open <name>'s page, to the agent's page, then Message",
+      "cell": "8.1 the peek ends with Open <name>'s page, to the agent's page, then Message"
+    },
+    {
+      "name": "PS15 the peek never opens the agent's work",
+      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "find": "useSession(entry && plane !== \"off\" ? controller : null, id);",
+      "replace": "useSession(null, id);",
+      "expectRed": "8.7 with the plane on the peek opens the agent's work on mount and closes it on unmount, once each",
+      "cell": "8.7 with the plane on the peek opens the agent's work on mount and closes it on unmount, once each"
     }
   ]
 }

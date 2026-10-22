@@ -1,16 +1,16 @@
 /** The right panel (mock section D, the panel; section B, the delete dialog and the agent states):
- *  its tabs and their defaults, the Members tab with its pill and channel details, the Agent tab with
- *  its fields and commands, the delete dialog, the Topology tab at panel size, and the one picker,
- *  `selectAgent`, that every view calls. Each cell renders the real shell or a tab over a seeded store,
+ *  its tabs and their defaults, the Members tab with its pill and channel details, the Agent tab's
+ *  peek and the Profile its fields and commands moved to, the delete dialog, the Topology tab at
+ *  panel size, and the picker, `selectAgent`, that the views call. Each cell renders the real shell or a tab over a seeded store,
  *  on the server or mounted in jsdom when it needs a click, and reads the DOM it drew.
  *
  *  What is pinned, beyond the markup: Model says "not reported" when the card has none; only Do not
  *  disturb and Focus show; the heartbeat is labelled as a heartbeat ("Heartbeat 2s ago"); the delete
  *  button waits for the exact name and a refusal stays in the dialog; the panel's open state survives
- *  a reload and blocked storage; and a graph honours a new size on the same mount. The Agent tab's
- *  Session section shows the last six steps of the agent's session and opens that session while it
- *  is drawn, except when the card says the event plane is off, and it is left out beside that
- *  agent's own session in the centre. */
+ *  a reload and blocked storage; and a graph honours a new size on the same mount. The peek's "Now"
+ *  shows the current turn's last three steps, or the last turn's, and the peek holds the agent's work
+ *  open while it is drawn, except when the card says the event plane is off; "Now" is left out beside
+ *  that agent's own page in the centre. */
 import { closeDom, dom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { createElement, useState } from "react";
@@ -25,6 +25,7 @@ import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState, type SessionState, type StoredMessage } from "../client/src/state/types.js";
 import { ForceLayout } from "../client/src/ui/graph/layout.js";
 import { TopologyGraph } from "../client/src/ui/graph/TopologyGraph.tsx";
+import { AgentProfile } from "../client/src/ui/agent/AgentProfile.tsx";
 import { AgentTab } from "../client/src/ui/panel/AgentTab.tsx";
 import { DeleteChannelDialog } from "../client/src/ui/panel/DeleteChannelDialog.tsx";
 import { PANEL_KEY } from "../client/src/ui/panel/RightPanel.tsx";
@@ -118,8 +119,11 @@ const pane = (el: ParentNode) => (el.querySelector("section.ui-pane") as HTMLEle
 const tabs = (el: ParentNode) => all(pane(el), ".ui-tabs [role=tab]").map((t) => [textOf(t), t.getAttribute("aria-selected"), (t as HTMLButtonElement).disabled]);
 const kv = (el: ParentNode) => all(el, "dl.ui-kv dt").map((dt) => [textOf(dt), textOf(dt.nextElementSibling)]);
 const storeOf = (patch: Partial<DashboardState> = {}) => createStore<DashboardState>({ ...initialState, ...seed(patch) });
-const agentTab = (id: string, patch: Partial<DashboardState> = {}, channel: string | null = "review") =>
-  parse(renderToString(createElement(AgentTab, { store: storeOf(patch), id, channel, clock: () => NOW })));
+const agentTab = (id: string, patch: Partial<DashboardState> = {}) =>
+  parse(renderToString(createElement(AgentTab, { store: storeOf(patch), id })));
+/** The Profile tab of the agent's page, which holds what the Agent tab held before its peek. */
+const profile = (id: string, patch: Partial<DashboardState> = {}) =>
+  parse(renderToString(createElement(AgentProfile, { store: storeOf(patch), id, clock: () => NOW })));
 
 // ── 1. The panel in the shell and its tab defaults ───────────────────────────────────────────────
 {
@@ -173,71 +177,67 @@ const agentTab = (id: string, patch: Partial<DashboardState> = {}, channel: stri
   same("2.13 a member the roster does not know draws no status dot, as it shows no status word", unknownDot, [true, false]);
 }
 
-// ── 3. The Agent tab ─────────────────────────────────────────────────────────────────────────────
+// ── 3. The Agent tab's peek, and the Profile tab that holds the rest ─────────────────────────────
 {
   const rev = agentTab("local.rev");
-  same("3.1 the profile is the name and role · harness", [textOf(rev.querySelector(".ui-profile h4")), textOf(rev.querySelector(".ui-profile .ui-sub"))], ["reviewer", "reviewer · Codex"]);
-  const big = rev.querySelector(".ui-big .ui-av") as HTMLElement | null;
-  ok("3.2 the character is drawn at 72px with no status dot", big?.getAttribute("style")?.includes("--s:72px") === true && big.querySelector(".ui-st") === null, big?.outerHTML.slice(0, 120));
+  const card = profile("local.rev");
+  same("3.1 the peek is the name and role · harness", [textOf(rev.querySelector(".ox-peek-who b")), textOf(rev.querySelector(".ox-peek-who .ui-sub"))], ["reviewer", "reviewer · Codex"]);
+  const big = card.querySelector(".ui-big .ui-av") as HTMLElement | null;
+  ok("3.2 Profile draws the character at 88px with no status dot", big?.getAttribute("style")?.includes("--s:88px") === true && big.querySelector(".ui-st") === null, big?.outerHTML.slice(0, 120));
   const sline = rev.querySelector(".ui-sline") ?? none();
-  same("3.3 the status line is the status word, the activity, and when it reported",
+  same("3.3 the peek's status line is the status word, the activity, and when it reported",
     [textOf(sline.querySelector(".v3-spill")), textOf(sline.querySelector(":scope > span:not(.v3-spill)")), textOf(sline.querySelector("small"))],
     ["Working", "Reviewing the presence TTL diff", "Reported 10:43"]);
-  const message = rev.querySelector(".ui-actions a.ui-btn-primary") as HTMLAnchorElement | null;
-  same("3.4 Message opens the DM view with this agent", [textOf(message), message?.getAttribute("href")], ["Message", formatRoute({ view: "dm", peer: "local.rev" })]);
-  same("3.5 attach and stop are commands to copy, by the agent's name, each led by its icon",
-    all(rev, ".ui-actions .ui-cmd").map((c) => [c.firstElementChild?.tagName, textOf(c.querySelector("code"))]), [["svg", "cotal attach --name reviewer"], ["svg", "cotal stop --name reviewer"]]);
-  const beat = all(rev, "dl.ui-kv dt").find((dt) => textOf(dt) === "Heartbeat");
-  ok("3.6 the heartbeat is labelled as a heartbeat: Heartbeat 2s ago", `${textOf(beat)} ${textOf(beat?.nextElementSibling)}` === "Heartbeat 2s ago", textOf(rev.querySelector("dl.ui-kv")));
-  same("3.7 the details are harness, model, host, attention and heartbeat", kv(rev),
-    [["Harness", "Codex"], ["Model", "gpt-5.5-codex"], ["Host", "build-box"], ["Attention", "Do not disturb"], ["Heartbeat", "2s ago"]]);
-  const dnd = rev.querySelector("dl.ui-kv .v3-meta") as HTMLElement | null;
+  const message = rev.querySelector(".ui-actions a[data-variant=outline]") as HTMLAnchorElement | null;
+  same("3.4 the peek's Message opens the DM view with this agent", [textOf(message), message?.getAttribute("href")], ["Message", formatRoute({ view: "dm", peer: "local.rev" })]);
+  same("3.5 Profile's attach and stop are commands to copy, by the agent's name, each led by its icon",
+    all(card, ".ui-actions .ui-cmd").map((c) => [c.firstElementChild?.tagName, textOf(c.querySelector("code"))]), [["svg", "cotal attach --name reviewer"], ["svg", "cotal stop --name reviewer"]]);
+  const beat = all(card, "dl.ui-kv dt").find((dt) => textOf(dt) === "Heartbeat");
+  ok("3.6 the heartbeat is labelled as a heartbeat: Heartbeat 2s ago", `${textOf(beat)} ${textOf(beat?.nextElementSibling)}` === "Heartbeat 2s ago", textOf(card.querySelector("dl.ui-kv")));
+  same("3.7 Profile's details are harness, model, host, attention, heartbeat and work events", kv(card),
+    [["Harness", "Codex"], ["Model", "gpt-5.5-codex"], ["Host", "build-box"], ["Attention", "Do not disturb"], ["Heartbeat", "2s ago"], ["Work events", "not reported"]]);
+  const dnd = card.querySelector("dl.ui-kv .v3-meta") as HTMLElement | null;
   ok("3.8 Do not disturb carries its icon and the notes' tooltip",
     dnd?.title === "Channel messages wait for its next turn. DMs and mentions still wake it." && dnd.querySelector("svg") !== null, dnd?.outerHTML.slice(0, 160));
-  const rv2 = agentTab("local.rv2");
-  const model = all(rv2, "dl.ui-kv dt").find((dt) => textOf(dt) === "Model")?.nextElementSibling as HTMLElement | undefined;
+  const model = all(profile("local.rv2"), "dl.ui-kv dt").find((dt) => textOf(dt) === "Model")?.nextElementSibling as HTMLElement | undefined;
   ok("3.9 a card with no model reads Model not reported", textOf(model) === "not reported" && model?.className === "ui-nr", model?.outerHTML);
-  const pln = agentTab("local.pln");
-  const focus = pln.querySelector("dl.ui-kv .v3-meta") as HTMLElement | null;
+  const focus = profile("local.pln").querySelector("dl.ui-kv .v3-meta") as HTMLElement | null;
   same("3.10 Focus shows with its own tooltip", [textOf(focus), focus?.title], ["Focus", "Channel messages stay in the channel. DMs and role requests still reach it."]);
-  const attention = (a: string | undefined) => kv(agentTab("local.dav", { roster: [entry("local.dav", "david", "working", { attention: a })] })).map((r) => r[0]);
+  const attention = (a: string | undefined) => kv(profile("local.dav", { roster: [entry("local.dav", "david", "working", { attention: a })] })).map((r) => r[0]);
   same("3.11 open attention, an unknown mode and none show no Attention row", [attention("open"), attention("away"), attention(undefined)],
-    [["Model", "Heartbeat"], ["Model", "Heartbeat"], ["Model", "Heartbeat"]]);
+    [["Model", "Heartbeat", "Work events"], ["Model", "Heartbeat", "Work events"], ["Model", "Heartbeat", "Work events"]]);
   const unknown = agentTab("local.dav", { roster: [entry("local.dav", "david", "working", { progress: { kind: "unknown" } })] });
   same("3.12 working with no reported progress reads Working, and no activity or time reads as none",
     [textOf(unknown.querySelector(".ui-sline .v3-spill")), textOf(unknown.querySelector(".ui-sline > span:not(.v3-spill)")), unknown.querySelector(".ui-sline small")],
     ["Working", "No current activity", null]);
   const channelRows = (el: HTMLElement) => all(el, ".ui-chrow").map((r) => [...r.children].map(textOf));
-  same("3.13 Channels are the agent's from membership, sorted, with its quiet or muted mode and no other", channelRows(rev), [["#general", "quiet"], ["#review", ""]]);
-  const wide = agentTab("local.rev", { membership: { snapshot: snapshot([{ id: "local.rev", live: [">"] }]) } });
+  same("3.13 Channels are the agent's from membership, sorted, with its quiet or muted mode and no other", channelRows(card), [["#general", "quiet"], ["#review", ""]]);
+  const wide = profile("local.rev", { membership: { snapshot: snapshot([{ id: "local.rev", live: [">"] }]) } });
   same("3.14 a reader of every channel says so instead of listing each", channelRows(wide), [["Reads every channel", ""], ["#general", "quiet"]]);
-  const posted = agentTab("local.dav", {
+  const posted = profile("local.dav", {
     membership: {},
     activity: [{ mode: "chat", channel: "ops", msg: msg("a1", "local.dav", "hi", 1, "ops") }, { mode: "chat", channel: "review", msg: msg("a2", "local.rev", "hi", 2) }],
   });
   same("3.15 with no membership feed the channels are where the agent has posted", channelRows(posted), [["#ops", ""]]);
-  same("3.16 Skills are the card's", all(rev, ".ui-tags .ui-chip").map(textOf), ["code-review", "typescript", "spec"]);
-  const recent = all(rev, ".ui-mini").map((m) => [textOf(m.querySelector("time")), m.querySelector(".ui-unverified") !== null]);
-  ok("3.17 Recent lists the agent's own messages in the open channel, newest first, history marked unverified",
-    textOf(all(rev, "h5").find((h) => textOf(h).startsWith("Recent"))) === "Recent"
-      && JSON.stringify(recent) === JSON.stringify([["10:46", true], ["10:45", true], ["10:44", false]]), recent);
-  ok("3.18 off a channel there is no Recent section", agentTab("local.rev", {}, null).querySelector(".ui-mini") === null);
-  const gone = agentTab("local.nobody");
-  ok("3.19 an id the roster does not hold reads Not on the roster", textOf(gone) === "Not on the roster", textOf(gone));
+  same("3.16 Skills are the card's", all(card, ".ui-tags .ui-chip").map(textOf), ["code-review", "typescript", "spec"]);
+  ok("3.17 the peek holds no commands, details, channels, skills or recent messages: Profile and Messages have them",
+    rev.querySelector(".ui-cmd, dl.ui-kv, .ui-chrow, .ui-tags, .ui-mini") === null, rev.innerHTML.slice(0, 300));
+  same("3.18 an id the roster does not hold reads Not on the roster, in the peek and in Profile",
+    [textOf(agentTab("local.nobody")), textOf(profile("local.nobody"))], ["Not on the roster", "Not on the roster"]);
   const heartbeatAt = (age: number) => {
-    const tab = agentTab("local.dav", { roster: [entry("local.dav", "david", "working", { ts: NOW - age })] });
+    const tab = profile("local.dav", { roster: [entry("local.dav", "david", "working", { ts: NOW - age })] });
     return textOf(all(tab, "dl.ui-kv dt").find((dt) => textOf(dt) === "Heartbeat")?.nextElementSibling);
   };
-  same("3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
+  same("3.19 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
     [0, 1999, 59_999, 60_000, 3_599_999, 3_600_000, 86_400_000, -5, Number.NaN].map(heartbeatAt),
     ["0s ago", "1s ago", "59s ago", "1m ago", "59m ago", "1h ago", "1d ago", "0s ago", "not reported"]);
   let t = NOW;
-  const ticking = await mount(createElement(AgentTab, { store: storeOf(), id: "local.rev", channel: "review", clock: () => t }));
+  const ticking = await mount(createElement(AgentProfile, { store: storeOf(), id: "local.rev", clock: () => t }));
   const beatNow = () => textOf(all(ticking.container, "dl.ui-kv dt").find((dt) => textOf(dt) === "Heartbeat")?.nextElementSibling);
   const first = beatNow();
   t += 5000;
   await ticking.run(() => sleep(1100));
-  ok("3.21 the heartbeat's age moves on by itself, every second", first === "2s ago" && beatNow() === "7s ago", [first, beatNow()]);
+  ok("3.20 the heartbeat's age moves on by itself, every second", first === "2s ago" && beatNow() === "7s ago", [first, beatNow()]);
   await ticking.unmount();
 }
 
@@ -295,20 +295,20 @@ localStorage.clear();
   await m.run(() => click(tabBy(m, "Members")));
   ok("5.2 and clicking Members goes back to the members", selected(m) === "Members" && pane(m.container).querySelector("button.v3-mrow") !== null, selected(m));
   await m.run(() => click(pane(m.container).querySelector("button.v3-mrow[data-member='local.dav']")));
-  ok("5.3 picking a member opens the Agent tab on that agent", selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ui-profile h4")) === "david", selected(m));
+  ok("5.3 picking a member opens the Agent tab on that agent", selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ox-peek-who b")) === "david", selected(m));
   await m.run(() => click(tabBy(m, "Topology")));
   await m.run(() => click(m.container.querySelector("header button.ui-members")));
   ok("5.4 the channel's member stack opens the Members tab", selected(m) === "Members" && (m.container.querySelector("header button.ui-members") as HTMLButtonElement).disabled === false, selected(m));
   await m.run(() => click(m.container.querySelector(".ui-dock .ui-btns > button")));
-  ok("5.5 the Needs card's View agent opens the Agent tab on the waiting agent", selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ui-profile h4")) === "reviewer_2", selected(m));
+  ok("5.5 the Needs card's View agent opens the Agent tab on the waiting agent", selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ox-peek-who b")) === "reviewer_2", selected(m));
   const name = all(m.container, "main .ui-msg .ui-mh button.ui-who").map(textOf);
   ok("5.6 a verified sender's name in the channel is a button, and a history row's is not", JSON.stringify(name) === JSON.stringify(["david", "reviewer"]), name);
   await m.run(() => click(all(m.container, "main .ui-msg .ui-mh button.ui-who").find((b) => textOf(b) === "reviewer")));
-  ok("5.7 clicking a sender's name opens its Agent tab", selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ui-profile h4")) === "reviewer", selected(m));
+  ok("5.7 clicking a sender's name opens its Agent tab", selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ox-peek-who b")) === "reviewer", selected(m));
   const faces = all(m.container, "main .ui-msg .ui-gut button.ui-who");
   await m.run(() => click(faces[0]));
   ok("5.8 a verified sender's avatar opens it too, and is not a second tab stop",
-    selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ui-profile h4")) === "david" && JSON.stringify(faces.map((f) => [f.getAttribute("aria-label"), f.tabIndex])) === JSON.stringify([["david", -1], ["reviewer", -1]]),
+    selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ox-peek-who b")) === "david" && JSON.stringify(faces.map((f) => [f.getAttribute("aria-label"), f.tabIndex])) === JSON.stringify([["david", -1], ["reviewer", -1]]),
     faces.map((f) => [f.getAttribute("aria-label"), f.tabIndex]));
   await m.run(() => click(all(m.container, "main .ui-msg .ui-mh button.ui-who").find((b) => textOf(b) === "reviewer")));
   await m.run(() => goTo({ view: "channel", channel: "general" }));
@@ -317,7 +317,7 @@ localStorage.clear();
   ok("5.10 a route with no panel drops the pick, so no panel is drawn", m.container.querySelector("section.ui-pane") === null);
   await m.run(() => click(m.container.querySelector("main .ui-msg .ui-mh button.ui-who")));
   same("5.11 off a channel, picking a sender opens the panel on the Agent tab, with Members disabled",
-    [tabs(m.container), textOf(pane(m.container).querySelector(".ui-profile h4"))], [[["Members", "false", true], ["Agent", "true", false], ["Topology", "false", false]], "david"]);
+    [tabs(m.container), textOf(pane(m.container).querySelector(".ox-peek-who b"))], [[["Members", "false", true], ["Agent", "true", false], ["Topology", "false", false]], "david"]);
   await m.run(() => goTo(inReview));
   await m.run(() => click(pane(m.container).querySelector("button[aria-label='Close panel']")));
   ok("5.12 Close panel hides the panel and saves that", m.container.querySelector("section.ui-pane") === null && localStorage.getItem(PANEL_KEY) === "0", localStorage.getItem(PANEL_KEY));
@@ -481,7 +481,7 @@ const idle = async () => { for (let i = 0; i < 500 && frames.size > 0; i++) awai
   await g.unmount();
 }
 
-// ── 8. The Agent tab's Session section and Open session ──────────────────────────────────────────
+// ── 8. The peek's Now, Open <name>'s page, and the work it holds open ─────────────────────────────
 /** reviewer's card saying its event plane is `events`, with the rest of its entry as above. */
 const withPlane = (events: "on" | "off", over: Partial<RosterEntry> = {}): RosterEntry => {
   const rev = roster.find((p) => p.card.id === "local.rev")!;
@@ -489,8 +489,24 @@ const withPlane = (events: "on" | "off", over: Partial<RosterEntry> = {}): Roste
 };
 const othersAnd = (rev: RosterEntry) => roster.map((p) => (p.card.id === "local.rev" ? rev : p));
 const sessionOf = (over: Partial<SessionState> = {}): SessionState => ({ views: 1, frames: [], posts: [], load: "ok", more: false, limit: 200, ...over });
-/** reviewer's own verified post on #review at 10:<minute>. */
-const postAt = (minute: number): StoredMessage => ({ msg: msg(`p${minute}`, "local.rev", `post at ${minute}`, at(10, minute)), senderId: "local.rev" });
+/** A frame of one event, or of a paragraph of reviewer's text. */
+const frame = (id: string, ts: number, events: unknown[]): SessionFrame => ({ id, ts, live: false, events });
+const run = (id: string, ts: number) => frame(id, ts, [{ type: "RUN_STARTED", threadId: "t", runId: id, timestamp: ts }]);
+const done = (id: string, ts: number) => frame(id, ts, [{ type: "RUN_FINISHED", threadId: "t", runId: id, timestamp: ts }]);
+const para = (id: string, body: string, ts: number) => frame(id, ts, [
+  { type: "TEXT_MESSAGE_START", messageId: id, timestamp: ts },
+  { type: "TEXT_MESSAGE_CONTENT", messageId: id, delta: body, timestamp: ts },
+  { type: "TEXT_MESSAGE_END", messageId: id, timestamp: ts },
+]);
+const call = (id: string, name: string, ts: number, isError?: boolean) => frame(id, ts, [
+  { type: "TOOL_CALL_START", toolCallId: id, toolCallName: name, timestamp: ts }, { type: "TOOL_CALL_END", toolCallId: id, timestamp: ts },
+  ...(isError === undefined ? [] : [{ type: "CUSTOM", name: "cotal.toolResult", value: { toolCallId: id, isError }, timestamp: ts + 1000 }]),
+]);
+/** An open turn three minutes old: a command that failed, then four paragraphs. */
+const openTurn = (): SessionFrame[] => {
+  const t0 = NOW - 3 * 60_000;
+  return [run("r1", t0), call("c1", "Bash", t0 + 1000, true), ...[1, 2, 3, 4].map((i) => para(`p${i}`, `step ${i}`, t0 + i * 10_000))];
+};
 /** One frame holding two tool calls with no text between, each with its result marker, which fold
  *  into one group. */
 const twoCalls = (): SessionFrame => {
@@ -499,6 +515,7 @@ const twoCalls = (): SessionFrame => {
   return {
     id: "f-tools", ts, live: false,
     events: [
+      { type: "RUN_STARTED", threadId: "t", runId: "r0", timestamp: ts },
       { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "Bash", timestamp: ts }, { type: "TOOL_CALL_END", toolCallId: "c1", timestamp: ts },
       { type: "TOOL_CALL_START", toolCallId: "c2", toolCallName: "Read", timestamp: ts }, { type: "TOOL_CALL_END", toolCallId: "c2", timestamp: ts },
       ended("c1"), ended("c2"),
@@ -516,77 +533,70 @@ const sessionController = () => {
   return { controller, calls };
 };
 const tabWith = (rev: RosterEntry, patch: Partial<DashboardState> = {}, route?: Route) =>
-  parse(renderToString(createElement(AgentTab, { store: storeOf({ roster: othersAnd(rev), ...patch }), id: "local.rev", channel: "review", route, clock: () => NOW })));
-const footOf = (tab: HTMLElement) => textOf(tab.querySelector(".ox-compact .ox-foot"));
+  parse(renderToString(createElement(AgentTab, { store: storeOf({ roster: othersAnd(rev), ...patch }), id: "local.rev", route })));
+const steps = (tab: HTMLElement) => all(tab, ".ox-compact > .ox-step").map(textOf);
 {
   const rev = agentTab("local.rev");
-  same("8.1 the Agent tab has Open session after Message, linking to the agent's session",
-    all(rev, ".ui-actions > a").map((a) => [textOf(a), a.getAttribute("href")]),
-    [["Message", formatRoute({ view: "dm", peer: "local.rev" })], ["Open session", "#/agent/local.rev"]]);
+  same("8.1 the peek ends with Open <name>'s page, to the agent's page, then Message",
+    all(rev, ".ui-actions > a").map((a) => [textOf(a), a.getAttribute("href"), a.getAttribute("data-variant")]),
+    [["Open reviewer's page", "#/agent/local.rev", "default"], ["Message", formatRoute({ view: "dm", peer: "local.rev" }), "outline"]]);
 
-  const on = tabWith(withPlane("on"), { connection: "connected", sessions: { "local.rev": sessionOf({ posts: [postAt(40)] }) } });
-  const chip = on.querySelector(".ui-lt-head .ui-livechip") as HTMLElement | null;
-  ok("8.2 with the plane on and the read through, the Session section is headed Session with Live, and follows the profile",
-    textOf(on.querySelector(".ui-lt-head h5")) === "Session" && textOf(chip) === "Live" && chip?.title === "New steps appear as reviewer publishes them"
-      && on.querySelector(".ui-profile")?.nextElementSibling?.className === "ui-lt-head" && textOf(on.querySelector(".ox-compact .ox-post .ui-tx")) === "post at 40",
-    on.innerHTML.slice(0, 400));
+  const working = tabWith(withPlane("on"), { sessions: { "local.rev": sessionOf({ frames: openTurn() }) } });
+  same("8.2 for a working agent the peek shows Now, with Working for on the right, over the open turn's last three steps, and no footer",
+    {
+      head: textOf(working.querySelector(".ox-now-head h5")),
+      title: /^Working for \d+m \d+s,/.test(textOf(working.querySelector(".ox-now-t"))),
+      steps: steps(working),
+      foot: working.querySelector(".ox-foot"),
+      after: working.querySelector(".ui-sline")?.nextElementSibling?.classList.contains("ox-now-head"),
+    },
+    { head: "Now", title: true, steps: ["step 2", "step 3", "step 4"], foot: null, after: true });
+  ok("8.3 Now's title counts the failed call of the whole turn, though that step is not among the three shown",
+    textOf(working.querySelector(".ox-now-t")).endsWith(", 1 command failed"), textOf(working.querySelector(".ox-now-t")));
 
-  const many = tabWith(withPlane("on"), { sessions: { "local.rev": sessionOf({ posts: [40, 41, 42, 43, 44, 45, 46, 47, 48].map(postAt) }) } });
-  same("8.3 the section draws at most six steps, the newest, then the footer",
-    [all(many, ".ox-compact .ox-post .ui-tx").map(textOf), many.querySelector(".ox-compact")?.lastElementChild?.classList.contains("ox-foot")],
-    [["post at 43", "post at 44", "post at 45", "post at 46", "post at 47", "post at 48"], true]);
+  const t0 = NOW - 10 * 60_000;
+  const idle = tabWith(withPlane("on", { status: "idle" }), { sessions: { "local.rev": sessionOf({ frames: [run("r1", t0), para("p1", "wrapped up", t0 + 1000), done("r1", t0 + 220_000)] }) } });
+  same("8.4 for an idle agent the peek shows Last turn, with how long it worked",
+    [textOf(idle.querySelector(".ox-now-head h5")), textOf(idle.querySelector(".ox-now-t")), steps(idle)],
+    ["Last turn", "Worked for 3m 40s", ["wrapped up"]]);
 
-  const off = tabWith(withPlane("off"), { sessions: { "local.rev": sessionOf({ posts: [postAt(40)] }) } });
-  same("8.4 with the plane off the section holds only the panel's plane note, with no Live and no steps",
-    [textOf(off.querySelector(".ui-lt-head")), all(off, ".ox-compact").map((l) => [...l.children].map((c) => c.className)), textOf(off.querySelector(".ox-compact .ui-plane"))],
-    ["Session", [["ui-plane"]], "reviewer publishes no session events. Open session shows its posts only."]);
+  const off = tabWith(withPlane("off"), { sessions: { "local.rev": sessionOf({ frames: openTurn() }) } });
+  same("8.5 with the plane off the peek holds only the note that the agent publishes no work events",
+    [all(off, ".ox-peek > .ui-plane").map(textOf), off.querySelector(".ox-now-head"), off.querySelector(".ox-compact")],
+    [["reviewer publishes no work events."], null, null]);
 
   const offSpy = sessionController();
-  const offTab = await mount(createElement(AgentTab, { store: storeOf({ roster: othersAnd(withPlane("off")) }), controller: offSpy.controller, id: "local.rev", channel: "review", clock: () => NOW }));
+  const offTab = await mount(createElement(AgentTab, { store: storeOf({ roster: othersAnd(withPlane("off")) }), controller: offSpy.controller, id: "local.rev" }));
   await offTab.unmount();
-  same("8.5 with the plane off the section opens no session", offSpy.calls, []);
+  same("8.6 with the plane off the peek opens nothing", offSpy.calls, []);
 
   const onSpy = sessionController();
-  const onTab = await mount(createElement(AgentTab, { store: storeOf({ roster: othersAnd(withPlane("on")) }), controller: onSpy.controller, id: "local.rev", channel: "review", clock: () => NOW }));
+  const onTab = await mount(createElement(AgentTab, { store: storeOf({ roster: othersAnd(withPlane("on")) }), controller: onSpy.controller, id: "local.rev" }));
   const whileOpen = [...onSpy.calls];
   await onTab.unmount();
-  same("8.6 with the plane on the section opens the agent's session on mount and closes it on unmount, once each",
+  same("8.7 with the plane on the peek opens the agent's work on mount and closes it on unmount, once each",
     [whileOpen, onSpy.calls], [["open local.rev"], ["open local.rev", "close local.rev"]]);
 
-  const beside = parse(renderShell(seed({ roster: othersAnd(withPlane("on")), sessions: { "local.rev": sessionOf({ posts: [postAt(40)] }) } }), { view: "agent", id: "local.rev" }, true));
-  const ownSession = pane(beside);
-  const elsewhere = tabWith(withPlane("on"), {}, { view: "agent", id: "local.dav" });
-  ok("8.7 beside that agent's own session the Agent tab has no Session section, and beside another agent's it does",
-    textOf(ownSession.querySelector(".ui-profile h4")) === "reviewer" && ownSession.querySelector(".ui-lt-head") === null && ownSession.querySelector(".ox-compact") === null
-      && textOf(elsewhere.querySelector(".ui-lt-head h5")) === "Session",
-    textOf(ownSession).slice(0, 200));
+  const held = { roster: othersAnd(withPlane("on")), sessions: { "local.rev": sessionOf({ frames: openTurn() }) } };
+  const beside = parse(renderShell(seed(held), { view: "agent", id: "local.rev", tab: "work" }, true));
+  const ownPage = pane(beside);
+  const elsewhere = tabWith(withPlane("on"), { sessions: held.sessions }, { view: "agent", id: "local.dav", tab: "work" });
+  ok("8.8 beside that agent's own page the peek has no Now, and beside another agent's it does",
+    textOf(ownPage.querySelector(".ox-peek-who b")) === "reviewer" && ownPage.querySelector(".ox-now-head") === null && ownPage.querySelector(".ox-compact") === null
+      && textOf(elsewhere.querySelector(".ox-now-head h5")) === "Now",
+    textOf(ownPage).slice(0, 200));
   const fullFoot = textOf(beside.querySelector("main .ox-work > .ox-foot"));
-
-  const offline = tabWith(withPlane("on", { status: "offline", ts: at(10, 52) }), { connection: "connected", sessions: { "local.rev": sessionOf() } });
-  ok("8.8 the section's footer says an offline agent is offline and when its last heartbeat came, and shows no Live",
-    footOf(offline) === "reviewer is offline Last heartbeat 10:52." && offline.querySelector(".ui-livechip") === null, footOf(offline));
-  const unknown = tabWith(withPlane("on", { progress: { kind: "unknown" } } as Partial<RosterEntry>), { sessions: { "local.rev": sessionOf() } });
-  ok("8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size",
-    footOf(unknown) === "reviewer is working Reported 10:43." && unknown.querySelector(".ox-compact .ox-foot .ui-dots") === null, footOf(unknown));
-  const waiting = tabWith(withPlane("on", { status: "waiting", statusSince: at(10, 49) }), { sessions: { "local.rev": sessionOf() } });
-  ok("8.10 the section's footer says a waiting agent is waiting and when it reported",
-    footOf(waiting) === "reviewer is waiting Reported 10:49.", footOf(waiting));
-
-  const down = (["reconnecting", "closed", "connecting"] as const).map((connection) =>
-    [connection, tabWith(withPlane("on"), { connection, sessions: { "local.rev": sessionOf({ posts: [postAt(40)] }) } }).querySelector(".ui-livechip") !== null]);
-  same("8.14 the section shows no Live while the feed is down, though the read went through and the agent is working",
-    down, [["reconnecting", false], ["closed", false], ["connecting", false]]);
+  ok("8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity",
+    fullFoot === "reviewer is working Reviewing the presence TTL diff. Reported 10:43.", fullFoot);
 
   const tools = tabWith(withPlane("on"), { sessions: { "local.rev": sessionOf({ frames: [twoCalls()] }) } });
   const stops = all(tools, "a[href], button").map((el) => (el.hasAttribute("aria-expanded") ? `group ${textOf(el)}` : textOf(el)));
-  same("8.11 Tab goes Message, Open session, the two commands, then the session's tool group",
-    stops, ["Message", "Open session", "Copy", "Copy", "group Ran a command, read a file 2 steps · 1.0s"]);
-  ok("8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity",
-    fullFoot === "reviewer is working Reviewing the presence TTL diff. Reported 10:43.", fullFoot);
+  same("8.10 in the peek a run of calls is its group's title line, with nothing to open, so Tab goes Open <name>'s page, then Message",
+    [steps(tools), stops], [["Ran a command, read a file"], ["Open reviewer's page", "Message"]]);
 }
 {
   // The shipped controller over a fake Api that records the watch, the read and the unwatch, under
-  // the real shell. reviewer's Agent tab is open beside #review, then Open session goes to its session.
+  // the real shell. reviewer's peek is open beside #review, then the reader opens reviewer's page.
   const calls: string[] = [];
   const h = harness({
     agentEvents: async (id, limit) => {
@@ -603,10 +613,10 @@ const footOf = (tab: HTMLElement) => textOf(tab.querySelector(".ox-compact .ox-f
   await m.run(() => click(all(m.container, "main .ui-msg .ui-mh button.ui-who").find((b) => textOf(b) === "reviewer")));
   await m.run(() => sleep(0));
   const before = [...calls];
-  await m.run(() => goTo({ view: "agent", id: "local.rev" }));
+  await m.run(() => goTo({ view: "agent", id: "local.rev", tab: "work" }));
   await m.run(() => sleep(0));
-  same("8.13 opening the agent's session beside its Agent tab keeps the session the tab holds: no unwatch, no second watch or read, and two views",
-    [before, calls.slice(before.length), h.store.get().sessions["local.rev"]?.views, pane(m.container).querySelector(".ui-lt-head")],
+  same("8.11 opening the agent's page beside its peek keeps the work the peek holds: no unwatch, no second watch or read, and two views",
+    [before, calls.slice(before.length), h.store.get().sessions["local.rev"]?.views, pane(m.container).querySelector(".ox-now-head")],
     [["watch local.rev feed-1", "read local.rev 200"], [], 2, null]);
   await m.unmount();
 }

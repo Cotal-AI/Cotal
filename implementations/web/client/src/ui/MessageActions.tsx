@@ -36,7 +36,7 @@ type Page = { document: { body: unknown } };
  *  or a cancelled pointer ends the press. The click that ends a press that fired is the press's, so
  *  it does not also follow a link or open the sender under the finger. A browser may send no click
  *  after a long press, so that hold lasts only `PRESS_CLICK_MS` past the lift, and a later click (Enter
- *  on the Session link) goes through. */
+ *  on the View work link) goes through. */
 function useLongPress(child: { current: unknown }, onPress: () => void): void {
   const press = useRef(onPress);
   press.current = onPress;
@@ -105,9 +105,9 @@ function useLongPress(child: { current: unknown }, onPress: () => void): void {
 
 /** The hover action row, and on touch the long-press sheet (agents mock S3, C "Focus", D and E).
  *
- *  - The action row (`ui-msg-acts`) holds one link, Session, to the sender's session at this
- *    message (`#/agent/<id>/<message id>`), titled "Open <name>'s session at <hh:mm>". It shows on
- *    hover and while it holds focus, and stays in the tab order.
+ *  - The action row (`ui-msg-acts`) holds one link, View work, to the sender's page at this message
+ *    (`#/agent/<id>/work/<message id>`), titled "View <name>'s work at <hh:mm>". It shows on hover and
+ *    while it holds focus, and stays in the tab order.
  *  - A touch held on the row opens a bottom sheet: the sender, "Message at <hh:mm>", then the same
  *    link, View agent (`onViewAgent`) and Copy text. It holds focus while open and closes on the
  *    scrim, on Escape or on any choice. It is drawn on the page's body, outside the row, so a press
@@ -126,13 +126,13 @@ export function MessageActions({ msg, senderId, name, peer, onViewAgent }: {
   const acts = useRef<HTMLDivElement>(null);
   useLongPress(acts, () => setSheet(true));
   const at = hhmm(msg.ts);
-  const href = formatRoute({ view: "agent", id: senderId, at: msg.id });
+  const href = formatRoute({ view: "agent", id: senderId, tab: "work", at: msg.id });
   return (
     <>
       <div ref={acts} className="ui-msg-acts">
-        <a href={href} title={at ? `Open ${name}'s session at ${at}` : `Open ${name}'s session`}>
+        <a href={href} title={at ? `View ${name}'s work at ${at}` : `View ${name}'s work`}>
           <Icon icon={ArrowUpRight01Icon} size={16} className="ui-ic ui-ic16" />
-          Session
+          View work
         </a>
       </div>
       {sheet && (
@@ -179,7 +179,7 @@ function ActionSheet({ msg, senderId, name, peer, at, href, onViewAgent, onClose
         </div>
         <a className="ui-row" href={href} onClick={onClose}>
           <Icon icon={ArrowUpRight01Icon} className="ui-ic" />
-          <span className="ui-row-lbl">{`Open ${name}'s session here`}</span>
+          <span className="ui-row-lbl">{`View ${name}'s work here`}</span>
         </a>
         <button type="button" className="ui-row" onClick={() => { onClose(); onViewAgent(senderId); }}>
           <Icon icon={UserGroupIcon} className="ui-ic" />

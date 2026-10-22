@@ -91,7 +91,7 @@ function sections(root: ParentNode): Section[] {
 }
 /** The right panel's selected tab, and the name its Agent tab shows, read from the shell's panel. */
 const panelTab = (root: ParentNode): string => textOf(root.querySelector("section.ui-pane [role=tab][aria-selected=true]"));
-const panelAgent = (root: ParentNode): string => textOf(root.querySelector("section.ui-pane .ui-profile h4"));
+const panelAgent = (root: ParentNode): string => textOf(root.querySelector("section.ui-pane .ox-peek-who b"));
 const rowByName = (root: ParentNode, name: string): Element => Array.from(root.querySelectorAll(".v3-arow")).find((r) => textOf(r.querySelector("b")) === name) ?? gone();
 const names = (s: Section) => s.rows.map((r) => textOf(r.querySelector("b")));
 const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));

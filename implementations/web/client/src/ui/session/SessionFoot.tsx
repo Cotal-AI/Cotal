@@ -10,13 +10,12 @@ import { useXfade } from "./xfade.js";
  *  - waiting: the same in the gold ink, never who or what it waits for;
  *  - idle: "No current activity.";
  *  - offline: when its last heartbeat came.
- *  The panel (`compact`) drops the activity. When presence changes the status the footer cross-fades,
- *  keyed by the status. */
-export function SessionFoot({ row, compact = false }: { row: RosterRow; compact?: boolean }) {
+ *  When presence changes the status the footer cross-fades, keyed by the status. */
+export function SessionFoot({ row }: { row: RosterRow }) {
   const icon = Object.hasOwn(STATUS_ICON, row.status) ? STATUS_ICON[row.status] : undefined;
   const status = statusLabel(row);
   const fade = useXfade(row.status);
-  const activity = compact ? undefined : row.activity || undefined;
+  const activity = row.activity || undefined;
   let said: string | undefined;
   if (row.status === "working" || row.status === "waiting") {
     const reported = hhmm(row.statusSince);

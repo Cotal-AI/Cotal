@@ -108,8 +108,7 @@ type Scroller = { scrollTop: number; scrollHeight: number; clientHeight: number 
 /** Keep a list's scroll at the newest message while the reader is at the bottom, and leave it where
  *  the reader put it otherwise. It acts only when `list` changes (a new conversation, which starts at
  *  the bottom) or `last` does (a new newest message), so a reload of the same rows moves nothing.
- *  Hand the returned ref and `onScroll` to the scrolling element. `unpin` stops following until the
- *  reader returns to the bottom. */
+ *  Hand the returned ref and `onScroll` to the scrolling element. */
 export function usePinnedScroll(list: string, last: string | undefined) {
   const ref = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -128,12 +127,7 @@ export function usePinnedScroll(list: string, last: string | undefined) {
     const el = scroller();
     if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight <= PINNED_PX;
   };
-  /** Stop following until the reader scrolls back to the bottom, for a view that moved the reader
-   *  itself (the session view arriving at a message). */
-  const unpin = () => {
-    pinned.current = false;
-  };
-  return { ref, onScroll, unpin };
+  return { ref, onScroll };
 }
 
 /** One channel (mock section D, the centre): the header with the topic, the policy chips and the

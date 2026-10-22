@@ -16,7 +16,7 @@ import { ActivityView } from "./ui/views/ActivityView.tsx";
 import { ChannelView } from "./ui/views/ChannelView.tsx";
 import { DmView } from "./ui/views/DmView.tsx";
 import { AgentsView } from "./ui/views/AgentsView.tsx";
-import { SessionView } from "./ui/views/SessionView.tsx";
+import { AgentPage } from "./ui/views/AgentPage.tsx";
 import { AgentPicker } from "./ui/panel/picker.js";
 import { BadgeOf, badgeLookup } from "./ui/identity.js";
 import { SheetMenu } from "./ui/sheet.js";
@@ -39,19 +39,20 @@ function StatusLines({ store }: { store: Store<DashboardState> }) {
 /** The view the centre draws for a route. The Agents route draws the Agents view in the grouping its
  *  address names, and the Needs route draws it by status with the Waiting group in focus. `clock` is
  *  the time the topology view measures hot links against and the Agents view measures heartbeats
- *  against. `panel` is how a view opens the right panel: the member stack opens Members, View agent
- *  and an Agents view row pick the agent. It is the panel as the views see it: its `agent` is the one
- *  the panel is showing on its Agent tab, and null while the panel is closed or on another tab, so
- *  the Agents view marks a row only while that agent is on screen. An agent's route draws its session,
- *  keyed by the agent so each agent's view starts afresh, with `session`'s controller, layout and
- *  the place its back link returns to; on a phone its Agent details opens the panel on that agent. */
+ *  against. `panel` is how a view opens the right panel: the member stack opens Members and View
+ *  agent picks the agent. It is the panel as the views see it: its `agent` is the one the panel is
+ *  showing on its Agent tab, and null while the panel is closed or on another tab, so the Agents view
+ *  marks a row only while that agent is on screen. `pick` is what an Agents view row does (see
+ *  `Shell`). An agent's route draws its page, keyed by the agent so each agent's page starts afresh,
+ *  with `page`'s controller, layout and the place its back link returns to. */
 function centreView(
   store: Store<DashboardState>,
   route: Route,
   clock: () => number,
   panel: Panel,
   panelOpen: boolean,
-  session: { controller: Controller | null; phone: boolean; back: { label: string; route: Route }; panelOpen: boolean; toggle: () => void; details: (id: string) => void },
+  pick: (id: string) => void,
+  page: { controller: Controller | null; phone: boolean; back: { label: string; route: Route }; panelOpen: boolean; toggle: () => void },
 ): ReactNode {
   switch (route.view) {
     case "channel":
@@ -63,26 +64,24 @@ function centreView(
     case "topology":
       return <TopologyView store={store} clock={clock} />;
     case "agents":
-      return <AgentsView store={store} group={route.group === "host" ? "host" : undefined} selected={panel.agent} onPick={panel.selectAgent} clock={clock} />;
+      return <AgentsView store={store} group={route.group === "host" ? "host" : undefined} selected={panel.agent} onPick={pick} clock={clock} />;
     case "needs":
-      return <AgentsView store={store} group="status" focusWaiting selected={panel.agent} onPick={panel.selectAgent} clock={clock} />;
-    case "agent": {
-      const id = route.id;
+      return <AgentsView store={store} group="status" focusWaiting selected={panel.agent} onPick={pick} clock={clock} />;
+    case "agent":
       return (
-        <SessionView
-          key={id}
+        <AgentPage
+          key={route.id}
           store={store}
-          controller={session.controller}
-          id={id}
+          controller={page.controller}
+          id={route.id}
+          tab={route.tab}
           at={route.at}
-          back={session.back}
-          phone={session.phone}
-          onDetails={() => session.details(id)}
-          panelOpen={session.panelOpen}
-          onTogglePanel={session.toggle}
+          back={page.back}
+          phone={page.phone}
+          panelOpen={page.panelOpen}
+          onTogglePanel={page.toggle}
         />
       );
-    }
   }
 }
 
@@ -96,8 +95,10 @@ function centreView(
  *  (`centreView`) inside a section that says which view it is. The panel draws while the reader has
  *  it open and there is something to show: the route's channel or a picked agent (`panelShown`).
  *
- *  `selectAgent(id)` (from `usePanel`) is the one picker: the Needs card's View agent, the Agents
- *  view rows and the Members tab rows are handed it, and message rows reach it through `AgentPicker`.
+ *  `selectAgent(id)` (from `usePanel`) opens an agent's peek: the Needs card's View agent and the
+ *  Members tab rows are handed it. A pick (a message row's name or avatar through `AgentPicker`, an
+ *  Agents view row, a topology node) opens the peek too, except on a phone, where no panel sits
+ *  beside the view and a pick goes to the agent's page instead.
  *
  *  While the first roster and channel reads are outstanding (`loading`) the centre draws skeleton
  *  rows in place of the view, as the sidebar does in place of the places.
@@ -133,8 +134,9 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const shown = panelShown(panel, paneOpen);
   const seen: Panel = { ...panel, agent: shown && panel.tab === "agent" ? panel.agent : null };
   const back = useBack(route);
-  const session = { controller, phone, back, panelOpen: shown, toggle: panel.toggle, details: panel.selectAgent };
-  const view = loading.roster || loading.channels ? <SkeletonView /> : centreView(store, route, clock, seen, shown, session);
+  const pick = useMemo(() => (phone ? openPage : panel.selectAgent), [phone, panel.selectAgent]);
+  const page = { controller, phone, back, panelOpen: shown, toggle: panel.toggle };
+  const view = loading.roster || loading.channels ? <SkeletonView /> : centreView(store, route, clock, seen, shown, pick, page);
   const panelBody = <RightPanel store={store} controller={controller} channel={route.view === "channel" ? route.channel : null} route={route} panel={panel} clock={clock} />;
   // The sheet remembers the route it was opened on, so any new route closes it, during render and
   // with no effect to run, and coming back to that route does not reopen it.
@@ -145,7 +147,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const menu = useMemo(() => (phone ? { open: sheetOpen, show: () => setSheetAt(here) } : null), [phone, sheetOpen, here]);
   return (
     <Compose.Provider value={controller}>
-    <AgentPicker.Provider value={panel.selectAgent}>
+    <AgentPicker.Provider value={pick}>
     <BadgeOf.Provider value={badgeOf}>
       <SheetMenu.Provider value={menu}>
         <AppShell
@@ -196,7 +198,12 @@ function usePlaces(route: Route, channels: DashboardState["channels"], dms: Dash
   return { channel, dm };
 }
 
-/** What an agent's session calls the place it goes back to: the channel by name, any other view by
+/** Go to an agent's page, as a pick does on a phone. The address changes, so the route follows. */
+function openPage(id: string): void {
+  (globalThis as unknown as { location: { hash: string } }).location.hash = formatRoute({ view: "agent", id, tab: "work" });
+}
+
+/** What an agent's page calls the place it goes back to: the channel by name, any other view by
  *  the name the rail or the sidebar gives it. */
 function placeLabel(r: Route): string {
   switch (r.view) {
@@ -216,8 +223,8 @@ function placeLabel(r: Route): string {
   }
 }
 
-/** Where an agent's session goes back to: the last route the reader had that was not a session,
- *  with its label, or the Agents view when the page opened on a session. Kept as the route changes,
+/** Where an agent's page goes back to: the last route the reader had that was not an agent's page,
+ *  with its label, or the Agents view when the dashboard opened on one. Kept as the route changes,
  *  during render, so the crumb never draws a frame that points at the place before. */
 function useBack(route: Route): { label: string; route: Route } {
   const [from, setFrom] = useState<Route | null>(null);

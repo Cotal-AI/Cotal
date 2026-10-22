@@ -56,7 +56,7 @@ export interface Panel {
   toggle(): void;
 }
 
-/** The tab a route opens on: the Agent tab beside an agent's session, Members beside a channel,
+/** The tab a route opens on: the Agent tab beside an agent's page, Members beside a channel,
  *  otherwise Topology, the one tab that needs nothing picked. */
 const tabFor = (route: Route): PanelTab => (route.view === "agent" ? "agent" : (route.view === "channel" ? "members" : "topology"));
 
@@ -66,7 +66,7 @@ const tabFor = (route: Route): PanelTab => (route.view === "agent" ? "agent" : (
  *    before the first paint, so a server render never touches storage, and blocked storage reads as
  *    open. Picking an agent or the member stack opens the panel, and that is saved too.
  *  - A new route resets the tab: Members on a channel route, with the picked agent kept so its tab
- *    stays one click away; the Agent tab on an agent's session, with that agent picked; any other
+ *    stays one click away; the Agent tab on an agent's page, with that agent picked; any other
  *    route drops the pick.
  *  - On a phone (`phone`) the panel covers the whole page, so it starts closed, opens only when the
  *    reader asks (the member stack, the panel button, picking an agent), closes again on a new route,
@@ -141,7 +141,7 @@ export function RightPanel({ store, controller, channel, route, panel, clock }: 
   controller: Controller | null;
   /** The channel the route has open, or null off a channel route. */
   channel: string | null;
-  /** The centre's route, which the Agent tab reads to leave out a session the centre already shows. */
+  /** The centre's route, which the Agent tab reads to leave out "Now" beside that agent's own page. */
   route: Route;
   panel: Panel;
   clock: () => number;
@@ -190,7 +190,7 @@ export function RightPanel({ store, controller, channel, route, panel, clock }: 
       </div>
       <div className="ui-pane-body" role="tabpanel" id="pane-body" aria-labelledby={`pane-tab-${tab}`} data-tab={tab}>
         {tab === "members" && channel !== null && <MembersTab store={store} controller={controller} channel={channel} now={clock()} onPick={panel.selectAgent} />}
-        {tab === "agent" && panel.agent !== null && <AgentTab store={store} controller={controller} id={panel.agent} channel={channel} route={route} clock={clock} />}
+        {tab === "agent" && panel.agent !== null && <AgentTab store={store} controller={controller} id={panel.agent} route={route} />}
         {tab === "topology" && <TopologyTab store={store} clock={clock} />}
       </div>
     </>

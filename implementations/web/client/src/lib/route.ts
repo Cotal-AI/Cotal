@@ -2,6 +2,11 @@
 // with the back button. This module only maps text to a route and back: it reads no location itself.
 import { eventChannelAgent } from "./session.js";
 
+/** The tabs of an agent's page. */
+export type AgentTab = "work" | "messages" | "profile";
+const AGENT_TABS: readonly string[] = ["work", "messages", "profile"] satisfies AgentTab[];
+const isAgentTab = (s: string): s is AgentTab => AGENT_TABS.includes(s);
+
 export type Route =
   | { view: "channel"; channel: string }
   | { view: "activity" }
@@ -9,7 +14,7 @@ export type Route =
   | { view: "agents"; group: "status" | "host" }
   | { view: "topology" }
   | { view: "needs" }
-  | { view: "agent"; id: string; at?: string };
+  | { view: "agent"; id: string; tab: AgentTab; at?: string };
 
 /** Where a blank or unrecognised address lands. */
 export const DEFAULT_ROUTE: Route = { view: "activity" };
@@ -33,24 +38,32 @@ function decode(segment: string): string | undefined {
 function fromHash(hash: string): Route | undefined {
   const parts = hash.replace(/^#/, "").split("/");
   if (parts[0] !== "") return undefined; // every route hash starts "#/"
-  const [, view, a, b, ...extra] = parts;
-  if (extra.length > 0) return undefined;
+  const [, view, a, b, c, ...extra] = parts;
+  // Only an agent's page has a third segment: the message its Work tab opens at.
+  if (extra.length > 0 || (c !== undefined && view !== "agent")) return undefined;
   switch (view) {
     case "channel": {
       if (!a || b !== undefined) return undefined;
       const channel = decode(a);
       if (!channel) return undefined;
-      // An agent's event channel opens its session: its frames reach the page only through a watch.
+      // An agent's event channel opens its page: its frames reach the page only through a watch.
       const agent = eventChannelAgent(channel);
-      return agent ? { view: "agent", id: agent } : { view: "channel", channel };
+      return agent ? { view: "agent", id: agent, tab: "work" } : { view: "channel", channel };
     }
     case "agent": {
       if (!a) return undefined;
       const id = decode(a);
       if (!id || !AGENT_ID.test(id)) return undefined;
-      if (b === undefined) return { view: "agent", id };
-      const at = b === "" ? undefined : decode(b);
-      return at ? { view: "agent", id, at } : undefined;
+      if (b === undefined) return { view: "agent", id, tab: "work" };
+      if (c === undefined) {
+        if (isAgentTab(b)) return { view: "agent", id, tab: b };
+        // The old link, `#/agent/<id>/<message id>`, opens Work at that message.
+        const old = b === "" ? undefined : decode(b);
+        return old ? { view: "agent", id, tab: "work", at: old } : undefined;
+      }
+      if (b !== "work") return undefined;
+      const at = c === "" ? undefined : decode(c);
+      return at ? { view: "agent", id, tab: "work", at } : undefined;
     }
     case "dm": {
       if (!a) return undefined;
@@ -81,7 +94,9 @@ export function parseRoute(hash: string, path: string): Route {
 }
 
 /** The hash for a route. `parseRoute(formatRoute(r), "/")` gives `r` back, except for a channel route
- *  that names an agent's event channel, which reads back as that agent's session. */
+ *  that names an agent's event channel, which reads back as that agent's page. An agent's page is
+ *  `#/agent/<id>` on Work, `#/agent/<id>/<tab>` on another tab, and `#/agent/<id>/work/<message id>`
+ *  at a message; a route with `at` is always on Work. */
 export function formatRoute(r: Route): string {
   switch (r.view) {
     case "channel":
@@ -90,8 +105,11 @@ export function formatRoute(r: Route): string {
       return `#/dm/${encodeURIComponent(r.peer)}${r.with === undefined ? "" : `/${encodeURIComponent(r.with)}`}`;
     case "agents":
       return r.group === "status" ? "#/agents" : `#/agents/${r.group}`;
-    case "agent":
-      return `#/agent/${encodeURIComponent(r.id)}${r.at === undefined ? "" : `/${encodeURIComponent(r.at)}`}`;
+    case "agent": {
+      const page = `#/agent/${encodeURIComponent(r.id)}`;
+      if (r.at !== undefined) return `${page}/work/${encodeURIComponent(r.at)}`;
+      return r.tab === "work" ? page : `${page}/${r.tab}`;
+    }
     default:
       return `#/${r.view}`;
   }

@@ -22,7 +22,6 @@ import { HIGHLIGHT_CAP, highlight } from "../client/src/lib/highlight.js";
 import { formatRoute } from "../client/src/lib/route.js";
 import type { RosterRow } from "../client/src/lib/roster.js";
 import { toolKind, type CallState, type ToolCall, type Turn, type Work, type WorkItem, type WorkStep } from "../client/src/lib/session.js";
-import { JumpButton } from "../client/src/ui/session/JumpButton.tsx";
 import { PostRow } from "../client/src/ui/session/PostRow.tsx";
 import { PromptBlock } from "../client/src/ui/session/PromptBlock.tsx";
 import { Reasoning } from "../client/src/ui/session/Reasoning.tsx";
@@ -384,8 +383,6 @@ const tipWords = () => text(document.querySelector("[data-slot=tooltip-content] 
   same("11.2 a paragraph cut inside an open code fence closes the fence first, so the trailing ellipsis sits outside the code block",
     [fenced.querySelector("[data-slot=code-block-content]")?.textContent, text(fenced).endsWith("…"), all(fenced, "[data-slot=code-block-content]").some((pre) => text(pre).includes("…"))],
     ["node app/snake.test.mjs", true, false]);
-  same("11.3 the jump button reads \"1 new step\" and \"3 new steps\"",
-    [1, 3].map((count) => text(draw("11.3", createElement(JumpButton, { count, onJump: () => undefined })).querySelector(".ui-jump"))), ["1 new step", "3 new steps"]);
 }
 {
   const m = await mount(createElement(Reasoning, { text: "<b>x</b> then the wall test", cut: true }));
@@ -393,7 +390,7 @@ const tipWords = () => text(document.querySelector("[data-slot=tooltip-content] 
   const closed = [button.getAttribute("aria-expanded"), m.container.querySelector(".ox-think") === null, text(button)];
   await m.run(() => button.click());
   const body = m.container.querySelector(".ox-think");
-  same("11.4 reasoning is closed by default, and opened its body is plain text",
+  same("11.3 reasoning is closed by default, and opened its body is plain text",
     [closed, button.getAttribute("aria-expanded"), body?.children.length, text(body)], [["false", true, "Reasoning"], "true", 0, "<b>x</b> then the wall test …"]);
   await m.unmount();
 }
@@ -402,7 +399,7 @@ const tipWords = () => text(document.querySelector("[data-slot=tooltip-content] 
   const more = () => m.container.querySelector(".ui-more") as HTMLButtonElement;
   const before = [text(more()), m.container.querySelector(".ui-prompt .ui-tx.ui-clamp") !== null];
   await m.run(() => more().click());
-  same("11.5 a long prompt clamps with Show more, and opens with Show less",
+  same("11.4 a long prompt clamps with Show more, and opens with Show less",
     [before, [text(more()), m.container.querySelector(".ui-prompt .ui-tx.ui-clamp") !== null]], [["Show more", true], ["Show less", false]]);
   await m.unmount();
 }

@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 631,
-    "honest-text": 54,
-    "presence-only-glyph/count": 107,
+    "total": 649,
+    "honest-text": 52,
+    "presence-only-glyph/count": 114,
     "command-ack": 12,
-    "non-render/control": 458
+    "non-render/control": 471
   },
   "renderers": [
     {
@@ -3823,13 +3823,6 @@
     },
     {
       "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
-      "kind": "status-token",
-      "anchor": "g className={status === \"offline\" ? \"ui-ta ui-ta-off\" : \"",
-      "class": "non-render/control",
-      "rationale": "Styling: the class that dims an offline node in the topology graph; nothing is said in text."
-    },
-    {
-      "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
       "kind": "derived-output",
       "anchor": "dangerouslySetInnerHTML={{ __html: characterMarkup(node.vendor, status) }}",
       "class": "presence-only-glyph/count",
@@ -4097,20 +4090,6 @@
       "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
     },
     {
-      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
-      "kind": "status-token",
-      "anchor": "\"offline\"",
-      "class": "non-render/control",
-      "rationale": "Routing: Live shows only while the agent is online; it renders nothing itself and names no status."
-    },
-    {
-      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
-      "kind": "derived-output",
-      "anchor": "{live && <LiveChip name={row.name} />}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The panel's Live chip, shown only while the agent is online: a chip that names no status and makes no progress claim."
-    },
-    {
       "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
       "kind": "derived-output",
       "anchor": "Object.hasOwn(STATUS_ICON, row.status)",
@@ -4216,7 +4195,7 @@
       "rationale": "The footer under an agent's work, <name> is <statusLabel> and what presence reported with it: the status presence reports and nothing more; the cited assertion reads the words.",
       "proof": {
         "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size\""
+        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
       }
     },
     {
@@ -4248,7 +4227,7 @@
       "rationale": "The footer under an agent's work, <name> is <statusLabel> and what presence reported with it: the status presence reports and nothing more; the cited assertion reads the words.",
       "proof": {
         "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size\""
+        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
       }
     },
     {
@@ -4259,7 +4238,7 @@
       "rationale": "The footer under an agent's work, <name> is <statusLabel> and what presence reported with it: the status presence reports and nothing more; the cited assertion reads the words.",
       "proof": {
         "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size\""
+        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
       }
     },
     {
@@ -4289,176 +4268,6 @@
       "anchor": "assName={row.status === \"waiting\" ? \"ox-foot-wait\" : unde",
       "class": "non-render/control",
       "rationale": "Styling: the waiting words take the gold ink; the words themselves are what presence reported."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "status-token",
-      "anchor": " ?? { id, name, status: \"offline\", ts: Number.NaN };\n  co",
-      "class": "non-render/control",
-      "rationale": "Data shaping: the row drawn for an id the roster does not hold, offline with no heartbeat to report; the words drawn from it are statusLabel's in the footer."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "status-token",
-      "anchor": "ned && known.status !== \"offline\";\n  const events = event",
-      "class": "non-render/control",
-      "rationale": "Routing: Live shows only while the agent is online; it renders nothing itself and names no status."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "ry}</PlaneNote>\n        {list}\n      </div>\n    );\n  }",
-      "class": "honest-text",
-      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
-      "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "<div className=\"ui-col\">{list}</div>;\n  }\n\n  return (\n",
-      "class": "honest-text",
-      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
-      "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "status={row.status}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "{row.status}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "{!phone && known && <StatusWord row={known} />}",
-      "class": "honest-text",
-      "rationale": "The session header's status pill, StatusWord: its word is statusLabel's, so a working agent reads Working with no progress claim.",
-      "proof": {
-        "path": "implementations/web/smoke/components.smoke.ts",
-        "anchor": "ok(\"2.5 a working row whose progress is unknown reads Working, with no progress claim\""
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "{fresh > 0 ? <JumpButton count={fresh} onJump={jump} /> : live && <LiveChip name={name} />}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The header's Live chip or the count of new steps: a chip and a count that make no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "count={fresh}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The count of new steps on the jump button: an aggregate count that makes no progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "{fresh}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The count of new steps on the jump button: an aggregate count that makes no progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "{body}",
-      "class": "honest-text",
-      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
-      "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "tus\">Loading</div>}\n      <WorkList work={work} row={row} condition={condition} highlight={at} nameOf={na",
-      "class": "honest-text",
-      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
-      "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": ">Loading</div>}\n      <WorkList work={work} row={row} condition={condition} highlight={at} nameOf={na",
-      "class": "honest-text",
-      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
-      "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "{steps.length > 0 && <WorkList work={work} row={row} condition={condition} highlight={at} nameOf={nameOf} />}",
-      "class": "honest-text",
-      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
-      "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "& <WorkList work={work} row={row} condition={condition} h",
-      "class": "honest-text",
-      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
-      "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": " {steps.length > 0 && <WorkList work={work} row={row} condition={condition} highlight={at} nameOf={na",
-      "class": "honest-text",
-      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
-      "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "ed.`}</PlaneNote>\n        <WorkList work={work} row={row} condition={condition} highlight={at} nameOf={na",
-      "class": "honest-text",
-      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
-      "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "kind": "derived-output",
-      "anchor": "}</PlaneNote>\n        <WorkList work={work} row={row} condition={condition} highlight={at} nameOf={na",
-      "class": "honest-text",
-      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
-      "proof": {
-        "path": "implementations/web/smoke/panel.smoke.ts",
-        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
-      }
     },
     {
       "path": "implementations/web/client/src/lib/session.ts",
@@ -4653,6 +4462,315 @@
       "anchor": "{failed !== undefined && (\n          <>\n            {\", \"}\n            <span className=\"ox-fail\"><Icon icon={CancelCircleIcon} size={16} />{failed}</span>\n          </>\n        )}",
       "class": "non-render/control",
       "rationale": "Not presence: the failed calls come from the result markers, read beside the title that turnTitle returns with them; no status word is drawn here."
+    },
+    {
+      "path": "implementations/web/client/src/ui/agent/AgentMessages.tsx",
+      "kind": "derived-output",
+      "anchor": "status={row.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/agent/AgentMessages.tsx",
+      "kind": "derived-output",
+      "anchor": "{row.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
+      "kind": "derived-output",
+      "anchor": "status={row.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
+      "kind": "derived-output",
+      "anchor": "{row.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "kind": "status-token",
+      "anchor": "  className={status === \"offline\" ? \"ui-ta ui-ta-off\" : \"",
+      "class": "non-render/control",
+      "rationale": "Styling: the class that dims an offline node in the topology graph; nothing is said in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "derived-output",
+      "anchor": "turnTitle(turn, row.status, now)",
+      "class": "honest-text",
+      "rationale": "The peek's Now heading from turnTitle over the whole turn: Working for while presence says working, Open for while it waits, Worked for once it finished. The cited assertion reads the words.",
+      "proof": {
+        "path": "implementations/web/smoke/session.smoke.ts",
+        "anchor": "ok(\"turn title: open while working reads \\\"Working for 3m 2s\\\"\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "derived-output",
+      "anchor": "{title}",
+      "class": "honest-text",
+      "rationale": "The peek's Now heading from turnTitle over the whole turn: Working for while presence says working, Open for while it waits, Worked for once it finished. The cited assertion reads the words.",
+      "proof": {
+        "path": "implementations/web/smoke/session.smoke.ts",
+        "anchor": "ok(\"turn title: open while working reads \\\"Working for 3m 2s\\\"\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "derived-output",
+      "anchor": "{failed !== undefined && (\n          <>\n            {\", \"}\n            <span className=\"ox-fail\"><Icon icon={CancelCircleIcon} size={16} />{failed}</span>\n          </>\n        )}",
+      "class": "non-render/control",
+      "rationale": "Not presence: the failed calls come from the result markers, read beside the title that turnTitle returns with them; no status word is drawn here."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "derived-output",
+      "anchor": "{failed}",
+      "class": "non-render/control",
+      "rationale": "Not presence: the failed calls come from the result markers, read beside the title that turnTitle returns with them; no status word is drawn here."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "non-render/control",
+      "rationale": "Routing: the peek shows the open turn as Now, counting, only while presence says working or waiting, else the last turn; it renders no status word itself."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Routing: the peek shows the open turn as Now, counting, only while presence says working or waiting, else the last turn; it renders no status word itself."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "derived-output",
+      "anchor": "turn={turn}",
+      "class": "non-render/control",
+      "rationale": "Data shaping: which turn the peek shows, chosen with presence's status, handed on as data; the words drawn from it are turnTitle's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "derived-output",
+      "anchor": "{turn}",
+      "class": "non-render/control",
+      "rationale": "Data shaping: which turn the peek shows, chosen with presence's status, handed on as data; the words drawn from it are turnTitle's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "derived-output",
+      "anchor": "current={current}",
+      "class": "non-render/control",
+      "rationale": "Data shaping: which turn the peek shows, chosen with presence's status, handed on as data; the words drawn from it are turnTitle's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "derived-output",
+      "anchor": "{current}",
+      "class": "non-render/control",
+      "rationale": "Data shaping: which turn the peek shows, chosen with presence's status, handed on as data; the words drawn from it are turnTitle's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "derived-output",
+      "anchor": "work={{ items: [lastSteps(turn, PEEK_STEPS)], toolStatus: work.toolStatus }}",
+      "class": "non-render/control",
+      "rationale": "Data shaping: which turn the peek shows, chosen with presence's status, handed on as data; the words drawn from it are turnTitle's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "derived-output",
+      "anchor": "{{ items: [lastSteps(turn, PEEK_STEPS)], toolStatus: work.toolStatus }}",
+      "class": "non-render/control",
+      "rationale": "Data shaping: which turn the peek shows, chosen with presence's status, handed on as data; the words drawn from it are turnTitle's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "derived-output",
+      "anchor": "lastSteps(turn, PEEK_STEPS)",
+      "class": "non-render/control",
+      "rationale": "Data shaping: which turn the peek shows, chosen with presence's status, handed on as data; the words drawn from it are turnTitle's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "Object.hasOwn(STATUS_ICON, row.status)",
+      "class": "non-render/control",
+      "rationale": "Lookup: whether the status has an icon for the header Badge; it renders nothing itself."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "indexed-map",
+      "anchor": "STATUS_ICON[row.status]",
+      "class": "presence-only-glyph/count",
+      "rationale": "Narrow presence glyph: the header Badge's status icon, with no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "className={`ox-badge ox-badge-${row.status}`}",
+      "class": "non-render/control",
+      "rationale": "Styling: the header Badge's colour per status; the word inside it is statusLabel's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "{`ox-badge ox-badge-${row.status}`}",
+      "class": "non-render/control",
+      "rationale": "Styling: the header Badge's colour per status; the word inside it is statusLabel's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "`ox-badge ox-badge-${row.status}`",
+      "class": "non-render/control",
+      "rationale": "Styling: the header Badge's colour per status; the word inside it is statusLabel's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "{row.status === \"working\" ? <Spinner role={undefined} aria-hidden=\"true\" /> : icon && <Icon icon={icon} size={16} />}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The header Badge's icon: the turning spinner while presence says working, else the status's own icon; a glyph with no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "presence-only-glyph/count",
+      "rationale": "The header Badge's icon: the turning spinner while presence says working, else the status's own icon; a glyph with no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "icon={icon}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The header Badge's icon: the turning spinner while presence says working, else the status's own icon; a glyph with no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "{icon}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The header Badge's icon: the turning spinner while presence says working, else the status's own icon; a glyph with no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Data shaping: the row drawn for an id the roster does not hold, offline with no heartbeat to report; the words drawn from it are statusLabel's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "= <WorkList work={work} row={row} condition={condition} h",
+      "class": "honest-text",
+      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "orkList work={work} row={row} condition={condition} h",
+      "class": "honest-text",
+      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "{steps.length > 0 && list}",
+      "class": "honest-text",
+      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "   </PlaneNote>\n        {list}\n      </div>\n    );\n  }",
+      "class": "honest-text",
+      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": ">Loading</div>}\n        {list}\n      </div>\n    );\n  }",
+      "class": "honest-text",
+      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "status={row.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "{known?.harness} status={row.status} size={30} badge={known ",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "{known && <StatusBadge row={known} />}",
+      "class": "honest-text",
+      "rationale": "The page header's status Badge: its word is statusLabel's, so a working agent reads Working with no progress claim; the cited assertion reads it.",
+      "proof": {
+        "path": "implementations/web/smoke/session-view.smoke.ts",
+        "anchor": "ok(\"5.3 the header Badge says the status presence reports, Working, for an agent whose progress is unknown, with no progress claim\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "{body}",
+      "class": "honest-text",
+      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.9 beside the peek, the agent's page ends its work with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "essages groups={groups} row={row} nameOf={nameOf} /></div",
+      "class": "presence-only-glyph/count",
+      "rationale": "The roster row handed to the Messages tab, whose only status use is the face each row's Avatar draws: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "kind": "derived-output",
+      "anchor": "ges groups={groups} row={row} nameOf={nameOf} /></div",
+      "class": "presence-only-glyph/count",
+      "rationale": "The roster row handed to the Messages tab, whose only status use is the face each row's Avatar draws: no textual progress claim."
     }
   ]
 }

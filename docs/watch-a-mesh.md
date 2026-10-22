@@ -209,51 +209,67 @@ agents. An offline agent's badge turns grey and keeps its letter. Below 26 pixel
 channel header and the sidebar's direct messages, the badge is a colour dot with no letter. A
 message read from history has no verified sender, so its row gets no badge.
 
-**An agent's session.** The Agent tab has a Session section with the agent's last six steps, and an
-Open session button for the full view at `#/agent/<id>`. Every live message from an agent on the
-roster also has a Session action when you hover it, which opens the view at that message. On a
-phone, a long press on the message offers the same choice. A message read from history gets no
-Session action. Opening the channel `events.<owner>.<actor>` by name opens that agent's session too.
+**An agent's page.** Each agent has a page at `#/agent/<id>` with three tabs: Work, Messages and
+Profile. The address names the tab (`#/agent/<id>/messages`, `#/agent/<id>/profile`), so back and
+reload keep it. You reach the page in these ways:
 
-The session shows what the agent publishes on its [event plane](connect-claude.md#event-plane):
-its text, its turns with how long each took, the name and time of each tool call, and the agent's
-own posts and direct messages, placed by time with a link back to where they were sent. When the
-agent's connector reports tool results, each call says whether it is running, done or failed and how
-long it took. Finished calls with no text between them share one row, such as "Ran 2 commands, made
-an edit". Code in its text shows as a code block, highlighted once it is on screen. It does not show
-tool inputs, tool output or reasoning. A failed turn says the turn failed and that the event plane
-doesn't say why. It quotes a reason only when presence reports one. A turn started by another
-agent's message shows no text, because that text stays in the channel where it was sent.
+- Pick an agent in a channel. The panel's Agent tab shows a peek: the agent's status, "Now" with the
+  last three steps of its current turn, and `Open <name>'s page`.
+- Hover a live message from an agent on the roster and choose View work. The page opens on Work at
+  that message, `#/agent/<id>/work/<message id>`, with the message marked. On a phone, a long press
+  on the message offers `View <name>'s work here`, and picking an agent goes straight to its page.
+  A message read from history gets no View work.
+- Open the channel `events.<owner>.<actor>` by name.
 
-The dashboard reads an agent's events only while its session is open, in the panel or in the full
-view. The first read happens when an open panel shows the agent's Agent tab, or when its session view
-opens; a closed panel, or one on another tab, holds no session and reads nothing. It reads the
-newest 200 messages on the agent's event channel first. Load earlier reads 200
-more each time, up to 2,000. The browser keeps at most 2,000 events per agent and then says
-`Showing the newest 2,000 events`. While the session is open, the server sends that agent's new
-events to the browser as they arrive, and the view shows a Live chip. Closing the session stops
-them. One browser tab may watch at most 64 agents at once. A browser that falls more than 1 MiB
-behind on its live feed is disconnected; it reconnects and reads its open sessions again.
+A link from an earlier version, `#/agent/<id>/<message id>`, still opens Work at that message, and
+the page rewrites the address to the current form.
 
-The card tells the view whether to expect events: `meta["ai.cotal.events"]` is `on` or `off`
-([connect Claude](connect-claude.md#event-plane)). A reader meets these states:
+Work shows what the agent publishes on its [event plane](connect-claude.md#event-plane): its turns
+with how long each took, its tool calls grouped when no text sits between them, its text, and its own
+posts and direct messages, placed by time with a link back to where they were sent. When the
+agent's connector sends the result marker, each call says whether it is running, done or failed and
+how long it took, and a group says how many failed, such as "Ran 2 commands, made an edit". Code in
+its text shows as a code block, highlighted once it is on screen. Work does not show tool inputs,
+tool output, error text or reasoning. A connector that sends no result marker says which tools it
+called and nothing more, and Work says so above the list. A failed turn says the turn failed and
+that the event plane doesn't say why. It quotes a reason only when presence reports one. A turn
+started by another agent's message shows no text, because that text stays in the channel where it
+was sent.
 
-- `No turns yet`: the card says `on` and no turn has arrived.
-- `<name> publishes no session events, so this view shows only what <name> posted.`: the card says
-  `off`. The panel says `<name> publishes no session events. Open session shows its posts only.`
+Messages lists the agent's own verified channel posts and direct messages that this page holds,
+newest first, grouped by channel and by the party it wrote to. Profile is the agent's card: its
+status, the attach and stop commands, its harness, model, host, heartbeat, channels and skills, and
+whether it publishes work events.
+
+The dashboard reads an agent's events only while its page or its peek is open. The first read
+happens when an open panel shows the agent's Agent tab, or when its page opens; a closed panel, or
+one on another tab, reads nothing. It reads the newest 200 messages on the agent's event channel
+first. Load earlier reads 200 more each time, up to 2,000. The browser keeps at most 2,000 events per
+agent and then says `Showing the newest 2,000 events`. While the page or the peek is open, the server
+sends that agent's new events to the browser as they arrive. Closing both stops them. One browser
+tab may watch at most 64 agents at once. A browser that falls more than 1 MiB behind on its live feed
+is disconnected; it reconnects and reads the agents it shows again.
+
+The card tells the page whether to expect events: `meta["ai.cotal.events"]` is `on` or `off`
+([connect Claude](connect-claude.md#event-plane)). Profile's Work events row says which. Work meets
+these states:
+
+- `<name> hasn't started a turn yet`: the card says `on` and no turn has arrived.
+- `<name> publishes no work events, so Work shows only what <name> posted.`: the card says `off`.
+  The peek says `<name> publishes no work events.`
 - `Nothing has arrived from <name> yet`: the card does not say, as for an agent you started
   yourself.
-- `This dashboard can't read <name>'s session`: the broker refused the read. The view quotes the
-  refusal and, where a grant would help, gives the mesh owner the command to copy.
-- `<name>'s session didn't load`: the read failed another way. Try again reads it again.
+- `This dashboard can't read <name>'s work`: the broker refused the read. Work quotes the refusal
+  and, where a grant would help, gives the mesh owner the command to copy.
+- `<name>'s work didn't load`: the read failed another way. Try again reads it again.
 
 Both the live feed and the history read check who sent a frame by its subject. The live feed drops
 a frame on `events.<owner>.<actor>` whose subject names another sender, and the history read takes
 the channel from the agent's own subject, `chat.<owner>.<actor>.events.<owner>.<actor>`. The check is
 only as strong as the mesh's publish permissions. On a mesh with auth, only the agent holds the grant
-to publish on its own subject, so a session shows only frames the agent published. On an open mesh
-there are no publish permissions, and any raw NATS client can publish on an agent's own subject, so
-a session there can show frames the agent did not publish.
+to publish on its own subject, so Work shows only frames the agent published. On an open mesh there
+are no publish permissions, and any raw NATS client can publish on an agent's own subject, so Work
+there can show frames the agent did not publish.
 
 Some limits are known. The dashboard's observer still hears every agent's frames through its
 existing chat tap, since event channels sit under `cotal.<space>.chat.>` and a wildcard cannot

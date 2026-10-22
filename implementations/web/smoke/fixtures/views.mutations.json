@@ -838,12 +838,12 @@
       "cell": "12.8 the window forgets an id it dropped: that DM delivered again is held again, as the newest"
     },
     {
-      "name": "MA1 a history row gets the Session action for the id its payload names",
+      "name": "MA1 a history row gets the View work action for the id its payload names",
       "file": "implementations/web/client/src/ui/MessageRow.tsx",
       "find": "{senderId !== undefined && peer !== undefined && peers.has(senderId) && (\n        <MessageActions msg={msg} senderId={senderId}",
       "replace": "{who !== undefined && peer !== undefined && (\n        <MessageActions msg={msg} senderId={who}",
-      "expectRed": "13.2 a row read from history has no Session action",
-      "cell": "13.2 a row read from history has no Session action"
+      "expectRed": "13.2 a row read from history has no View work action",
+      "cell": "13.2 a row read from history has no View work action"
     },
     {
       "name": "MA2 the long press fires on a mouse too",
@@ -854,20 +854,20 @@
       "cell": "13.9 a mouse held past 500ms opens nothing: the long press is for touch"
     },
     {
-      "name": "MA3 the Session action drops the message, so the session opens at its end",
+      "name": "MA3 the View work action drops the message, so the page opens at its end",
       "file": "implementations/web/client/src/ui/MessageActions.tsx",
-      "find": "formatRoute({ view: \"agent\", id: senderId, at: msg.id })",
-      "replace": "formatRoute({ view: \"agent\", id: senderId })",
-      "expectRed": "13.1 a live row from a roster agent has the Session action, linking to its session at that message, titled with the name and time",
-      "cell": "13.1 a live row from a roster agent has the Session action, linking to its session at that message, titled with the name and time"
+      "find": "formatRoute({ view: \"agent\", id: senderId, tab: \"work\", at: msg.id })",
+      "replace": "formatRoute({ view: \"agent\", id: senderId, tab: \"work\" })",
+      "expectRed": "13.1 a live row from a roster agent has the View work action, linking to its page's Work at that message, titled with the name and time",
+      "cell": "13.1 a live row from a roster agent has the View work action, linking to its page's Work at that message, titled with the name and time"
     },
     {
-      "name": "MA4 a sender the roster does not hold gets the Session action",
+      "name": "MA4 a sender the roster does not hold gets the View work action",
       "file": "implementations/web/client/src/ui/MessageRow.tsx",
       "find": "{senderId !== undefined && peer !== undefined && peers.has(senderId) && (",
       "replace": "{senderId !== undefined && (",
-      "expectRed": "13.3 a live row from an id the roster does not hold has no Session action",
-      "cell": "13.3 a live row from an id the roster does not hold has no Session action"
+      "expectRed": "13.3 a live row from an id the roster does not hold has no View work action",
+      "cell": "13.3 a live row from an id the roster does not hold has no View work action"
     },
     {
       "name": "MA5 a touch that moves is still a press",
@@ -902,12 +902,68 @@
       "cell": "13.7 View agent closes the sheet and opens the sender's Agent tab"
     },
     {
-      "name": "MA9 a press that fired keeps swallowing clicks until one comes, so the next Enter on the Session link is lost",
+      "name": "MA9 a press that fired keeps swallowing clicks until one comes, so the next Enter on the View work link is lost",
       "file": "implementations/web/client/src/ui/MessageActions.tsx",
       "find": "      settle = setTimeout(() => { fired = false; }, PRESS_CLICK_MS);\n",
       "replace": "",
-      "expectRed": "13.10 after a press that fired with no click of its own, a later click on the row's Session link goes through",
-      "cell": "13.10 after a press that fired with no click of its own, a later click on the row's Session link goes through"
+      "expectRed": "13.10 after a press that fired with no click of its own, a later click on the row's View work link goes through",
+      "cell": "13.10 after a press that fired with no click of its own, a later click on the row's View work link goes through"
+    },
+    {
+      "name": "MA10 the View work title drops the time",
+      "file": "implementations/web/client/src/ui/MessageActions.tsx",
+      "find": "title={at ? `View ${name}'s work at ${at}` : `View ${name}'s work`}",
+      "replace": "title={`View ${name}'s work`}",
+      "expectRed": "13.1 a live row from a roster agent has the View work action, linking to its page's Work at that message, titled with the name and time",
+      "cell": "13.1 a live row from a roster agent has the View work action, linking to its page's Work at that message, titled with the name and time"
+    },
+    {
+      "name": "MA11 the sheet's first row still speaks of a session",
+      "file": "implementations/web/client/src/ui/MessageActions.tsx",
+      "find": "{`View ${name}'s work here`}",
+      "replace": "{`Open ${name}'s session here`}",
+      "expectRed": "13.4 a touch held past 500ms on the row opens the sheet: the sender, when it was sent, and three choices, focus on the first",
+      "cell": "13.4 a touch held past 500ms on the row opens the sheet: the sender, when it was sent, and three choices, focus on the first"
+    },
+    {
+      "name": "PK1 a pick on a phone opens the panel, which covers the page",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "const pick = useMemo(() => (phone ? openPage : panel.selectAgent), [phone, panel.selectAgent]);",
+      "replace": "const pick = panel.selectAgent;",
+      "expectRed": "14.1 on a phone a sender's name goes to that agent's page",
+      "cell": "14.1 on a phone a sender's name goes to that agent's page"
+    },
+    {
+      "name": "PK2 an Agents view row on a phone opens the panel",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "selected={panel.agent} onPick={pick} clock={clock} />;\n    case \"needs\":",
+      "replace": "selected={panel.agent} onPick={panel.selectAgent} clock={clock} />;\n    case \"needs\":",
+      "expectRed": "14.2 on a phone an Agents view row goes to that agent's page",
+      "cell": "14.2 on a phone an Agents view row goes to that agent's page"
+    },
+    {
+      "name": "PK3 a topology node picks nothing",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "onClick={pick ? () => pick(node.id) : undefined}",
+      "replace": "onClick={undefined}",
+      "expectRed": "14.3 on a phone a topology node goes to that agent's page",
+      "cell": "14.3 on a phone a topology node goes to that agent's page"
+    },
+    {
+      "name": "PK4 a topology node always goes to the page, so a wide screen leaves the channel for it",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "onClick={pick ? () => pick(node.id) : undefined}",
+      "replace": "onClick={pick ? () => { (globalThis as unknown as { location: { hash: string } }).location.hash = `#/agent/${node.id}`; } : undefined}",
+      "expectRed": "14.4 on a wide screen a topology node opens that agent's peek and leaves the address alone",
+      "cell": "14.4 on a wide screen a topology node opens that agent's peek and leaves the address alone"
+    },
+    {
+      "name": "PK5 a sender's name always goes to the page, so a wide screen leaves the channel for it",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "onClick={() => pick(senderId)}><b>",
+      "replace": "onClick={() => { (globalThis as unknown as { location: { hash: string } }).location.hash = `#/agent/${senderId}`; }}><b>",
+      "expectRed": "14.5 on a wide screen a sender's name opens that agent's peek and leaves the address alone",
+      "cell": "14.5 on a wide screen a sender's name opens that agent's peek and leaves the address alone"
     }
   ]
 }

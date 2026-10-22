@@ -3,7 +3,7 @@ import { httpApi } from "./api/http.js";
 import { openFeed } from "./api/feed.js";
 import "./lib/aguiFrame.js";
 import { createRate } from "./lib/rate.js";
-import { currentRoute, watchRoute, type RouteHost } from "./routeWatch.js";
+import { currentRoute, settleAddress, watchRoute, type RouteHost } from "./routeWatch.js";
 import { Shell } from "./Shell.tsx";
 import { startDashboard } from "./state/boot.js";
 import type { Controller } from "./state/controller.js";
@@ -27,7 +27,8 @@ const startLive: Start = (s, onArrival) => startDashboard({ store: s, api: httpA
 
 /** The wiring: one store, the dashboard started, the route followed from the address hash, the
  *  theme and the phone layout followed from the browser, and the shell drawn from all of it.
- *  Everything the reader sees is in `Shell`.
+ *  Everything the reader sees is in `Shell`. An agent's page reached by an old link has its address
+ *  rewritten in place to the current form (`settleAddress`).
  *
  *  The dashboard starts in a layout effect, before the first paint, so the skeleton rows it asks for
  *  are the first thing drawn rather than an empty page a frame earlier.
@@ -51,9 +52,10 @@ export function App({ host = window, start = startLive, clock = Date.now }: { ho
   }, [start, rate, clock]);
   const [route, setRoute] = useState(() => currentRoute(host));
   useEffect(() => watchRoute(host, setRoute), [host]);
+  useEffect(() => settleAddress(host, route), [host, route]);
   const [theme, setTheme] = useTheme();
   const phone = usePhone();
-  // The details panel opens beside a channel and beside an agent's session, on that agent's tab.
+  // The details panel opens beside a channel and beside an agent's page, on that agent's tab.
   return (
     <Shell
       store={store}

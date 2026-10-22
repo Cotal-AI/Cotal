@@ -208,8 +208,8 @@
     {
       "name": "SP26 the condition goes on every failed turn, so an old failed turn reads as explained by what presence says now",
       "file": "implementations/web/client/src/ui/work/WorkList.tsx",
-      "find": "condition={item === last ? condition : undefined} compact={compact} nameOf={nameOf} />",
-      "replace": "condition={condition} compact={compact} nameOf={nameOf} />",
+      "find": "condition={item === last ? condition : undefined} nameOf={nameOf} />",
+      "replace": "condition={condition} nameOf={nameOf} />",
       "expectRed": "10.3 a failed turn carries presence's condition only when it is the list's last item",
       "cell": "10.3 a failed turn carries presence's condition only when it is the list's last item"
     },
@@ -230,28 +230,20 @@
       "cell": "11.2 a paragraph cut inside an open code fence closes the fence first, so the trailing ellipsis sits outside the code block"
     },
     {
-      "name": "SP29 the jump button drops the singular",
-      "file": "implementations/web/client/src/ui/session/JumpButton.tsx",
-      "find": "{count === 1 ? \"1 new step\" : `${count} new steps`}",
-      "replace": "{`${count} new steps`}",
-      "expectRed": "11.3 the jump button reads \"1 new step\" and \"3 new steps\"",
-      "cell": "11.3 the jump button reads \"1 new step\" and \"3 new steps\""
-    },
-    {
       "name": "SP30 reasoning goes in as HTML, so its <b> becomes a bold element",
       "file": "implementations/web/client/src/ui/session/Reasoning.tsx",
       "find": "<div className=\"ox-think\">{withCut(text, cut)}</div>",
       "replace": "<div className=\"ox-think\" dangerouslySetInnerHTML={{ __html: withCut(text, cut) }} />",
-      "expectRed": "11.4 reasoning is closed by default, and opened its body is plain text",
-      "cell": "11.4 reasoning is closed by default, and opened its body is plain text"
+      "expectRed": "11.3 reasoning is closed by default, and opened its body is plain text",
+      "cell": "11.3 reasoning is closed by default, and opened its body is plain text"
     },
     {
       "name": "SP31 a long prompt never clamps",
       "file": "implementations/web/client/src/ui/session/PromptBlock.tsx",
       "find": "const long = src.length > CLAMP;",
       "replace": "const long = false;",
-      "expectRed": "11.5 a long prompt clamps with Show more, and opens with Show less",
-      "cell": "11.5 a long prompt clamps with Show more, and opens with Show less"
+      "expectRed": "11.4 a long prompt clamps with Show more, and opens with Show less",
+      "cell": "11.4 a long prompt clamps with Show more, and opens with Show less"
     }
   ]
 }

@@ -639,11 +639,11 @@
     },
     {
       "name": "K80 the attach command pastes a hostile agent name bare",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
       "find": "command={`cotal attach --name ${shellArg(row.name)}`}",
       "replace": "command={`cotal attach --name ${row.name}`}",
-      "expectRed": "3.25 the Agent tab quotes a hostile agent name in its attach and stop commands",
-      "cell": "3.25 the Agent tab quotes a hostile agent name in its attach and stop commands"
+      "expectRed": "3.25 the agent's Profile quotes a hostile agent name in its attach and stop commands",
+      "cell": "3.25 the agent's Profile quotes a hostile agent name in its attach and stop commands"
     },
     {
       "name": "K81 posting off, the Needs card still offers Message",

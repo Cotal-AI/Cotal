@@ -57,8 +57,9 @@ function openByDefault(items: readonly WorkItem[], highlight: string | undefined
 }
 
 /** Every item of a Work in order (mock B1 `tpl-work-logic`): loose steps, turns, loose turn ends, then
- *  the footer from presence. `compact` is the panel's size: no prompt, no reasoning, no descriptions
- *  on turns and no links on posts.
+ *  the footer from presence. `compact` is the panel's peek (mock W, `tpl-peek-logic`): a turn draws as
+ *  its steps with no line of its own, a run of calls as its group's title line, no prompt, no
+ *  reasoning, no links on posts, no description but a running call's, and no footer.
  *
  *  - A connector that reports no tool status gets the note above the list that says so (mock C).
  *  - Each item sits in a div with class "ui-in" while it rises in.
@@ -79,27 +80,35 @@ export function WorkList({ work, row, highlight, compact = false, condition, nam
   const rises = useRising(work.items, row.id);
   const opened = openByDefault(work.items, highlight);
   const ctx = { row, toolStatus: work.toolStatus, compact, nameOf, ...(highlight === undefined ? {} : { highlight }) };
-  const items = compact ? work.items.filter((i) => i.kind !== "prompt" && i.kind !== "reasoning") : work.items;
+  const shown = (s: WorkItem) => !compact || (s.kind !== "prompt" && s.kind !== "reasoning");
   const last = work.items.at(-1);
+  const step = (s: Exclude<WorkItem, WorkTurn>, turn: WorkTurn | undefined, trailing: boolean, cond: RunErrorCondition | undefined) => (
+    <div key={s.key} className={rises(s) ? "ox-step ui-in" : "ox-step"}>
+      {s.kind === "turnEnd" ? <TurnEnd ts={s.ts} /> : <Step step={s} turn={turn} trailing={trailing} ctx={ctx} condition={cond} />}
+    </div>
+  );
   return (
     <Rise.Provider value={rises}>
       <Trace className={compact ? "ox-work ox-compact" : "ox-work"}>
         {!work.toolStatus && (
           <PlaneNote>{`${row.name}'s connector reports which tools it calls but not when they finish, so Work can't show running, done or failed. A connector that reports tool results shows them here once ${row.name} restarts on it.`}</PlaneNote>
         )}
-        {items.map((item) => (
-          <div key={item.key} className={rises(item) ? "ox-step ui-in" : "ox-step"}>
-            {item.kind === "turn" ? (
+        {work.items.filter(shown).map((item) => {
+          if (item.kind !== "turn") return step(item, undefined, item === last, item === last ? condition : undefined);
+          if (compact) {
+            // As in Turn: a run error closes the turn, so the calls before it are still its trailing work.
+            const trailing = item.steps.findLast((s) => s.kind !== "runError");
+            const end = item.steps.at(-1);
+            return item.steps.filter(shown).map((s) => step(s, item, s === trailing, item === last && s === end ? condition : undefined));
+          }
+          return (
+            <div key={item.key} className={rises(item) ? "ox-step ui-in" : "ox-step"}>
               <Turn turn={item} row={row} toolStatus={work.toolStatus} defaultOpen={item === opened} highlight={highlight}
-                condition={item === last ? condition : undefined} compact={compact} nameOf={nameOf} />
-            ) : item.kind === "turnEnd" ? (
-              <TurnEnd ts={item.ts} />
-            ) : (
-              <Step step={item} trailing={item === last} ctx={ctx} condition={item === last ? condition : undefined} />
-            )}
-          </div>
-        ))}
-        <SessionFoot row={row} compact={compact} />
+                condition={item === last ? condition : undefined} nameOf={nameOf} />
+            </div>
+          );
+        })}
+        {!compact && <SessionFoot row={row} />}
       </Trace>
     </Rise.Provider>
   );

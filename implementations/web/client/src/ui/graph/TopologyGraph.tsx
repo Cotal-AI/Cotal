@@ -1,9 +1,10 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useContext, useEffect, useReducer, useRef, useState } from "react";
 import { select } from "d3-selection";
 import { zoom, zoomIdentity, type D3ZoomEvent, type ZoomTransform } from "d3-zoom";
 import type { TopoModel, TopoNode } from "../../lib/topology.js";
 import { characterMarkup } from "../Avatar.tsx";
 import { useBadgeOf } from "../identity.js";
+import { AgentPicker } from "../panel/picker.js";
 import { ForceLayout, pillWidth } from "./layout.js";
 
 /** The two browser calls the frame loop makes, read from `globalThis` when called. Only an effect
@@ -26,9 +27,14 @@ function linkClass(kind: TopoModel["links"][number]["kind"], hot: boolean, sourc
  *
  *  A roster agent also gets its initial badge (`BadgeOf`, by `node.id`) bottom left of the character,
  *  as the avatars draw it: inside the node's group and outside the greyscale one, so an offline
- *  badge's fill is grey (`--id-off`) and its letter keeps full strength. */
+ *  badge's fill is grey (`--id-off`) and its letter keeps full strength.
+ *
+ *  Inside the shell (`AgentPicker`) a click on the node picks the agent: its peek, or on a phone its
+ *  page. The graph is an image to assistive tech, so the node takes no focus; the Agents view and
+ *  the Members tab are the keyboard's way to the same agent. */
 function AgentNode({ node, x, y, size }: { node: TopoNode; x: number; y: number; size: number }) {
   const status = node.status ?? "idle";
+  const pick = useContext(AgentPicker);
   const chip = 8 + "all channels".length * 5.2;
   const badge = useBadgeOf()(node.id);
   const r = size * 0.23;
@@ -41,7 +47,13 @@ function AgentNode({ node, x, y, size }: { node: TopoNode; x: number; y: number;
     </g>
   );
   return (
-    <g className={status === "offline" ? "ui-ta ui-ta-off" : "ui-ta"} data-node={node.id} transform={`translate(${x} ${y})`}>
+    <g
+      className={status === "offline" ? "ui-ta ui-ta-off" : "ui-ta"}
+      data-node={node.id}
+      data-pick={pick ? "" : undefined}
+      transform={`translate(${x} ${y})`}
+      onClick={pick ? () => pick(node.id) : undefined}
+    >
       <g className="ui-ta-art">
         <svg
           x={-size / 2}

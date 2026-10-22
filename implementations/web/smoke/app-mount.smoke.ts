@@ -26,6 +26,7 @@ const rig = (hash: string) => {
   const listeners = new Set<() => void>();
   const host: RouteHost = {
     location: { hash, pathname: "/" },
+    history: { replaceState: () => undefined },
     addEventListener: (_type, l) => void listeners.add(l),
     removeEventListener: (_type, l) => void listeners.delete(l),
   };

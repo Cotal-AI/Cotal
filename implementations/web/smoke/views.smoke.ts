@@ -10,8 +10,10 @@
  *  the rows and the scroll position while its history loads. A reload from history keeps the copy of
  *  a message the page saw verified live, in a channel, the DMs and Activity. The DMs are a window of
  *  the newest 500, and once it may not reach back to a conversation's start the DM view says so. A
- *  live row from a roster agent carries the Session action, and on touch a long press opens its
- *  sheet; a history row and a sender the roster does not hold get neither. */
+ *  live row from a roster agent carries the View work action, and on touch a long press opens its
+ *  sheet; a history row and a sender the roster does not hold get neither. On a phone a pick (a
+ *  sender's name, an Agents view row, a topology node) goes to the agent's page; on a wide screen it
+ *  opens the agent's peek. */
 import { closeDom, dom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { createElement } from "react";
@@ -643,7 +645,7 @@ const dmRead = (n: number, prefix = "r") =>
       && textOf(centre(shellDom({ space: "main", roster, dms: window, dmsCut: false }, { view: "dm", peer: "local.dav", with: "local.rv2" }))).includes("Starts later."));
 }
 
-// ── 13. The Session action on a message ─────────────────────────────────────────────────────────
+// ── 13. The View work action on a message ───────────────────────────────────────────────────────
 /** #review with one more live row, from an id the roster does not hold. */
 const strangerRow: StoredMessage = { msg: msg("z1", "local.zzz", "From a stranger.", at(10, 47)), senderId: "local.zzz" };
 const actionSeed = () => channelSeed({ open: { channel: "review", messages: [...reviewMessages, strangerRow] } });
@@ -652,12 +654,12 @@ const rowWith = (root: Element, body: string) => all(root, ".ui-msg").find((r) =
 {
   const c = centre(shellDom(actionSeed(), channelRoute));
   const link = rowWith(c, "This fails on empty input.")?.querySelector(".ui-msg-acts a") as HTMLAnchorElement | null | undefined;
-  same("13.1 a live row from a roster agent has the Session action, linking to its session at that message, titled with the name and time",
-    [textOf(link), link?.getAttribute("href"), link?.title], ["Session", formatRoute({ view: "agent", id: "local.rev", at: "m3" }), "Open reviewer's session at 10:44"]);
-  same("13.2 a row read from history has no Session action",
+  same("13.1 a live row from a roster agent has the View work action, linking to its page's Work at that message, titled with the name and time",
+    [textOf(link), link?.getAttribute("href"), link?.title], ["View work", "#/agent/local.rev/work/m3", "View reviewer's work at 10:44"]);
+  same("13.2 a row read from history has no View work action",
     ["Read from history.", "Also from history."].map((b) => [rowWith(c, b) !== undefined, rowWith(c, b)?.querySelector(".ui-msg-acts") ?? null]), [[true, null], [true, null]]);
   const stranger = rowWith(c, "From a stranger.");
-  ok("13.3 a live row from an id the roster does not hold has no Session action", stranger !== undefined && stranger.querySelector(".ui-msg-acts") === null);
+  ok("13.3 a live row from an id the roster does not hold has no View work action", stranger !== undefined && stranger.querySelector(".ui-msg-acts") === null);
 }
 {
   const PointerEventOf = dom.window.PointerEvent as typeof PointerEvent;
@@ -682,7 +684,7 @@ const rowWith = (root: Element, body: string) => all(root, ".ui-msg").find((r) =
   await hold();
   same("13.4 a touch held past 500ms on the row opens the sheet: the sender, when it was sent, and three choices, focus on the first",
     [sheet()?.getAttribute("role"), textOf(sheet()?.querySelector(".ui-msg-sheet-h b")), textOf(sheet()?.querySelector(".ui-msg-sheet-sub")), choices(), sheet()?.querySelector("a.ui-row")?.getAttribute("href"), document.activeElement === sheet()?.querySelector("a.ui-row")],
-    ["dialog", "reviewer", "Message at 10:44", ["Open reviewer's session here", "View agent", "Copy text"], formatRoute({ view: "agent", id: "local.rev", at: "m3" }), true]);
+    ["dialog", "reviewer", "Message at 10:44", ["View reviewer's work here", "View agent", "Copy text"], "#/agent/local.rev/work/m3", true]);
   await m.run(() => { document.dispatchEvent(new KeyboardEventOf("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
   ok("13.5 Escape closes the sheet", sheet() === null);
 
@@ -697,7 +699,7 @@ const rowWith = (root: Element, body: string) => all(root, ".ui-msg").find((r) =
   await hold();
   await m.run(() => (all(sheet() ?? none(), ".ui-row").find((b) => textOf(b) === "View agent") as HTMLElement | undefined)?.click());
   ok("13.7 View agent closes the sheet and opens the sender's Agent tab",
-    sheet() === null && selected() === "Agent" && textOf(m.container.querySelector("section.ui-pane .ui-profile h4")) === "reviewer", selected());
+    sheet() === null && selected() === "Agent" && textOf(m.container.querySelector("section.ui-pane .ox-peek-who b")) === "reviewer", selected());
 
   await hold("touch", 20);
   ok("13.8 a touch that moves 20px before 500ms is a scroll and opens nothing", sheet() === null);
@@ -713,8 +715,33 @@ const rowWith = (root: Element, body: string) => all(root, ".ui-msg").find((r) =
   // The link's own listener: it sees the click only if the row let it through, and keeps jsdom from following the hash.
   link?.addEventListener("click", (e) => { reached = !e.defaultPrevented; e.preventDefault(); });
   await m.run(() => { link?.dispatchEvent(new (dom.window.MouseEvent as typeof MouseEvent)("click", { bubbles: true, cancelable: true })); });
-  ok("13.10 after a press that fired with no click of its own, a later click on the row's Session link goes through", reached === true, reached);
+  ok("13.10 after a press that fired with no click of its own, a later click on the row's View work link goes through", reached === true, reached);
   await m.unmount();
+}
+
+// ── 14. Picking an agent: its page on a phone, its peek on a wide screen ────────────────────────
+{
+  const pickOn = async (route: Route, phone: boolean, pickIt: (root: HTMLElement) => void) => {
+    location.hash = "";
+    localStorage.clear();
+    const store = createStore<DashboardState>({ ...initialState, ...channelSeed() });
+    const m = await mount(createElement(Shell, { store, controller: null, route, paneOpen: route.view === "channel", msgPerSecond: () => 0, phone }));
+    await m.run(() => pickIt(m.container));
+    const got = { hash: location.hash, peek: textOf(m.container.querySelector("section.ui-pane .ox-peek-who b")) };
+    await m.unmount();
+    location.hash = "";
+    localStorage.clear();
+    return got;
+  };
+  const byName = (root: HTMLElement) => (all(root, "main .ui-msg .ui-mh button.ui-who").find((b) => textOf(b) === "reviewer") as HTMLElement | undefined)?.click();
+  const byRow = (root: HTMLElement) => (root.querySelector("main button.v3-arow[data-agent='local.rev']") as HTMLElement | null)?.click();
+  const byNode = (root: HTMLElement) =>
+    root.querySelector("main g[data-node='local.rev']")?.dispatchEvent(new (dom.window.MouseEvent as typeof MouseEvent)("click", { bubbles: true, cancelable: true }));
+  same("14.1 on a phone a sender's name goes to that agent's page", await pickOn(channelRoute, true, byName), { hash: "#/agent/local.rev", peek: "" });
+  same("14.2 on a phone an Agents view row goes to that agent's page", await pickOn({ view: "agents", group: "status" }, true, byRow), { hash: "#/agent/local.rev", peek: "" });
+  same("14.3 on a phone a topology node goes to that agent's page", await pickOn({ view: "topology" }, true, byNode), { hash: "#/agent/local.rev", peek: "" });
+  same("14.4 on a wide screen a topology node opens that agent's peek and leaves the address alone", await pickOn({ view: "topology" }, false, byNode), { hash: "", peek: "reviewer" });
+  same("14.5 on a wide screen a sender's name opens that agent's peek and leaves the address alone", await pickOn(channelRoute, false, byName), { hash: "", peek: "reviewer" });
 }
 
 await closeDom();

@@ -25,23 +25,29 @@ function groupIcon(calls: readonly ToolCall[], toolStatus: boolean): IconSvgElem
  *  default, its title the counts of calls per kind (`groupTitle`), with ", " and the cross and
  *  "<n> failed" in the destructive ink when any failed, and its description the step count and span
  *  (`groupDescription`). Open, it holds a Trace of each call's `ToolLine`. A closed group mounts none
- *  of them. */
-export function ToolGroup({ calls, at, toolStatus, className }: { calls: readonly ToolCall[]; at: CallAt; toolStatus: boolean; className?: string }) {
+ *  of them. `line` (the panel's peek) draws only the icon and the title, with nothing to open. */
+export function ToolGroup({ calls, at, toolStatus, line = false, className }: { calls: readonly ToolCall[]; at: CallAt; toolStatus: boolean; line?: boolean; className?: string }) {
   const { title, failed } = groupTitle(calls, toolStatus);
+  const head = (
+    <>
+      <TraceIcon><Icon icon={groupIcon(calls, toolStatus)} size={16} /></TraceIcon>
+      <TraceTitle>
+        {title}
+        {failed > 0 && (
+          <>
+            {", "}
+            <span className="ox-fail"><Icon icon={CancelCircleIcon} size={16} />{`${failed} failed`}</span>
+          </>
+        )}
+      </TraceTitle>
+    </>
+  );
+  if (line) return <TraceLine className={className ? `ox-line ${className}` : "ox-line"}>{head}</TraceLine>;
   return (
     <TraceCollapsible className={className}>
       <TraceCollapsibleTrigger className="ox-trig">
         <TraceLine className="ox-line">
-          <TraceIcon><Icon icon={groupIcon(calls, toolStatus)} size={16} /></TraceIcon>
-          <TraceTitle>
-            {title}
-            {failed > 0 && (
-              <>
-                {", "}
-                <span className="ox-fail"><Icon icon={CancelCircleIcon} size={16} />{`${failed} failed`}</span>
-              </>
-            )}
-          </TraceTitle>
+          {head}
           {" "}
           <TraceDescription>{groupDescription(calls, toolStatus)}</TraceDescription>
         </TraceLine>

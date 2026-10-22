@@ -69,7 +69,7 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
   const api: Api = { ...unusedApi, ...bootReads, roster: () => rosterRead.promise, channels: () => channelsRead.promise as never } as Api;
   let handlers!: FeedHandlers;
   const start = (s: Store<DashboardState>, onArrival: () => void) => startDashboard({ store: s, api, openFeed: (h) => ((handlers = h), () => undefined), onArrival });
-  const host: RouteHost = { location: { hash: "#/activity", pathname: "/" }, addEventListener: () => undefined, removeEventListener: () => undefined };
+  const host: RouteHost = { location: { hash: "#/activity", pathname: "/" }, history: { replaceState: () => undefined }, addEventListener: () => undefined, removeEventListener: () => undefined };
   const m = await mount(createElement(App, { host, start }));
   const side = () => m.container.querySelector("aside.ui-side") as HTMLElement;
   const view = () => m.container.querySelector("section.ui-view") as HTMLElement;

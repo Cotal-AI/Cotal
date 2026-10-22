@@ -1,6 +1,7 @@
 /** The dashboard's hash routes: a hash (and the page path) parses to one view, formatRoute writes the
  *  same route back, a channel name survives encoding, and nothing a user can type throws. An agent's
- *  session has its own route, and an agent's event channel opens that session. */
+ *  page has a route per tab and one for Work at a message, the old message link opens Work at that
+ *  message and is written back in the new form, and an agent's event channel opens its page. */
 import { strict as assert } from "node:assert";
 import { DEFAULT_ROUTE, formatRoute, parseRoute, type Route } from "../client/src/lib/route.js";
 
@@ -39,15 +40,28 @@ same("a dm hash with three ids gives the default route", parseRoute("#/dm/a/b/c"
 same("an undecodable channel name gives the default route", bad.value, DEFAULT_ROUTE);
 same("an undecodable dm peer gives the default route", parseRoute("#/dm/%E0%A4%A", "/"), DEFAULT_ROUTE);
 
-same("an agent hash gives the agent's session with no message", parseRoute("#/agent/local.abc", "/"), { view: "agent", id: "local.abc" });
-same("an agent hash with a message id gives that message as at", parseRoute("#/agent/local.abc/m-1", "/"), { view: "agent", id: "local.abc", at: "m-1" });
+same("an agent hash gives the agent's page on Work", parseRoute("#/agent/local.abc", "/"), { view: "agent", id: "local.abc", tab: "work" });
+same("an agent hash with a tab gives that tab",
+  ["work", "messages", "profile"].map((t) => parseRoute(`#/agent/local.abc/${t}`, "/")),
+  [{ view: "agent", id: "local.abc", tab: "work" }, { view: "agent", id: "local.abc", tab: "messages" }, { view: "agent", id: "local.abc", tab: "profile" }]);
+same("an agent hash on Work with a message id gives Work at that message", parseRoute("#/agent/local.abc/work/m-1", "/"), { view: "agent", id: "local.abc", tab: "work", at: "m-1" });
+same("the old agent hash with a message id gives Work at that message", parseRoute("#/agent/local.abc/m-1", "/"), { view: "agent", id: "local.abc", tab: "work", at: "m-1" });
+ok("the old agent hash is written back in the new form", formatRoute(parseRoute("#/agent/local.abc/m-1", "/")) === "#/agent/local.abc/work/m-1", formatRoute(parseRoute("#/agent/local.abc/m-1", "/")));
 same("an undecodable agent id gives the default route", parseRoute("#/agent/%E0%A4%A", "/"), DEFAULT_ROUTE);
+same("an undecodable message id gives the default route",
+  [parseRoute("#/agent/local.abc/%E0%A4%A", "/"), parseRoute("#/agent/local.abc/work/%E0%A4%A", "/")], [DEFAULT_ROUTE, DEFAULT_ROUTE]);
+same("an agent hash with a message under another tab, or a fourth segment, gives the default route",
+  ["#/agent/x.y/bogus/extra", "#/agent/x.y/messages/m-1", "#/agent/x.y/work/m-1/more", "#/agent/x.y/work/"].map((h) => parseRoute(h, "/")),
+  [DEFAULT_ROUTE, DEFAULT_ROUTE, DEFAULT_ROUTE, DEFAULT_ROUTE]);
 same("an agent id outside <owner>.<actor> gives the default route",
   ["#/agent/team", "#/agent/a.b.c", "#/agent/a%20b.c", "#/agent/.abc", "#/agent/a-b.c/m-1"].map((h) => parseRoute(h, "/")),
   [DEFAULT_ROUTE, DEFAULT_ROUTE, DEFAULT_ROUTE, DEFAULT_ROUTE, DEFAULT_ROUTE]);
-same("an event channel hash opens that agent's session", parseRoute("#/channel/events.local.abc", "/"), { view: "agent", id: "local.abc" });
+same("an event channel hash opens that agent's page on Work", parseRoute("#/channel/events.local.abc", "/"), { view: "agent", id: "local.abc", tab: "work" });
 same("a channel named events.standup stays a channel", parseRoute("#/channel/events.standup", "/"), { view: "channel", channel: "events.standup" });
-ok("formatRoute encodes the agent id and the message id", formatRoute({ view: "agent", id: "a/b", at: "m 1#" }) === "#/agent/a%2Fb/m%201%23", formatRoute({ view: "agent", id: "a/b", at: "m 1#" }));
+ok("formatRoute encodes the agent id and the message id", formatRoute({ view: "agent", id: "a/b", tab: "work", at: "m 1#" }) === "#/agent/a%2Fb/work/m%201%23", formatRoute({ view: "agent", id: "a/b", tab: "work", at: "m 1#" }));
+same("formatRoute writes Work with no message as the bare page, and another tab by name",
+  (["work", "messages", "profile"] as const).map((tab) => formatRoute({ view: "agent", id: "local.abc", tab })),
+  ["#/agent/local.abc", "#/agent/local.abc/messages", "#/agent/local.abc/profile"]);
 
 ok("formatRoute writes a channel as #/channel/<name>", formatRoute({ view: "channel", channel: "review" }) === "#/channel/review");
 ok("formatRoute encodes the channel name with encodeURIComponent", formatRoute({ view: "channel", channel: "a b/c" }) === "#/channel/a%20b%2Fc");
@@ -64,12 +78,14 @@ const valid: Route[] = [
   { view: "agents", group: "host" },
   { view: "topology" },
   { view: "needs" },
-  { view: "agent", id: "local.abc" },
-  { view: "agent", id: "local.abc", at: "m-1" },
-  { view: "agent", id: "local.abc", at: "x y?#" },
+  { view: "agent", id: "local.abc", tab: "work" },
+  { view: "agent", id: "local.abc", tab: "messages" },
+  { view: "agent", id: "local.abc", tab: "profile" },
+  { view: "agent", id: "local.abc", tab: "work", at: "m-1" },
+  { view: "agent", id: "local.abc", tab: "work", at: "x y?#" },
 ];
 for (const r of valid) same(`parseRoute reads back formatRoute for ${JSON.stringify(r)}`, parseRoute(formatRoute(r), "/"), r);
-for (const hash of ["#/channel/team.backend", "#/dm/local.ab/local.cd", "#/agents", "#/agents/host", "#/activity", "#/topology", "#/needs", "#/agent/local.abc", "#/agent/local.abc/m-1"]) {
+for (const hash of ["#/channel/team.backend", "#/dm/local.ab/local.cd", "#/agents", "#/agents/host", "#/activity", "#/topology", "#/needs", "#/agent/local.abc", "#/agent/local.abc/messages", "#/agent/local.abc/profile", "#/agent/local.abc/work/m-1"]) {
   ok(`formatRoute(parseRoute(${hash})) is ${hash}`, formatRoute(parseRoute(hash, "/")) === hash);
 }
 console.log(`route: ${n} checks passed`);

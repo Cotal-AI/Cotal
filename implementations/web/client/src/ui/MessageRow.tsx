@@ -38,11 +38,11 @@ export function harnessName(connector: string): string {
  *    and carries the same unverified mark and tooltip as an unverified author.
  *  - A row whose mentions include `mention` (the reader's own name) is highlighted.
  *  - `place`, when given (even as null), takes the role's place in the header and drops the harness.
- *  - Inside the shell (`AgentPicker`), a verified sender's avatar and name open its Agent tab. A
- *    history row's sender is not verified, so it opens nothing.
+ *  - Inside the shell (`AgentPicker`), a verified sender's avatar and name pick it: its Agent tab
+ *    peek, or on a phone its page. A history row's sender is not verified, so it opens nothing.
  *  - A verified sender on the roster carries its initial badge (`BadgeOf`); a history row's does not.
- *  - A verified sender on the roster also gets the Session action (`MessageActions`): on hover, and
- *    on a phone a long press, to open its session at this message. A history row gets none.
+ *  - A verified sender on the roster also gets the View work action (`MessageActions`): on hover, and
+ *    on a phone a long press, to open its page's Work at this message. A history row gets none.
  *  - `compact` draws a continuation of the row above: no avatar and no header. A caller that groups
  *    consecutive rows must break the run at a row with no `senderId`, and this component enforces it:
  *    a history row ignores `compact` and always draws its header, so its unverified mark is never

@@ -48,7 +48,7 @@
     {
       "name": "a hash with surplus segments is accepted",
       "file": "implementations/web/client/src/lib/route.ts",
-      "find": "if (extra.length > 0) return undefined;",
+      "find": "if (extra.length > 0 || (c !== undefined && view !== \"agent\")) return undefined;",
       "replace": "",
       "expectRed": "a dm hash with three ids gives the default route",
       "cell": "a dm hash with three ids gives the default route"
@@ -86,12 +86,12 @@
       "cell": "formatRoute encodes both dm ids with encodeURIComponent"
     },
     {
-      "name": "an event channel hash stops opening the agent's session",
+      "name": "an event channel hash stops opening the agent's page",
       "file": "implementations/web/client/src/lib/route.ts",
-      "find": "return agent ? { view: \"agent\", id: agent } : { view: \"channel\", channel };",
+      "find": "return agent ? { view: \"agent\", id: agent, tab: \"work\" } : { view: \"channel\", channel };",
       "replace": "return { view: \"channel\", channel };",
-      "expectRed": "an event channel hash opens that agent's session",
-      "cell": "an event channel hash opens that agent's session"
+      "expectRed": "an event channel hash opens that agent's page on Work",
+      "cell": "an event channel hash opens that agent's page on Work"
     },
     {
       "name": "an agent id is taken whatever its shape",
@@ -100,6 +100,78 @@
       "replace": "if (!id) return undefined;",
       "expectRed": "an agent id outside <owner>.<actor> gives the default route",
       "cell": "an agent id outside <owner>.<actor> gives the default route"
+    },
+    {
+      "name": "the old message link stops opening Work at its message",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "        const old = b === \"\" ? undefined : decode(b);\n        return old ? { view: \"agent\", id, tab: \"work\", at: old } : undefined;",
+      "replace": "        return undefined;",
+      "expectRed": "the old agent hash with a message id gives Work at that message",
+      "cell": "the old agent hash with a message id gives Work at that message"
+    },
+    {
+      "name": "formatRoute ignores the tab, so every tab writes Work",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "return r.tab === \"work\" ? page : `${page}/${r.tab}`;",
+      "replace": "return page;",
+      "expectRed": "parseRoute reads back formatRoute for {\"view\":\"agent\",\"id\":\"local.abc\",\"tab\":\"messages\"}",
+      "cell": "parseRoute reads back formatRoute for {\"view\":\"agent\",\"id\":\"local.abc\",\"tab\":\"messages\"}"
+    },
+    {
+      "name": "formatRoute writes a message in the old form",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "if (r.at !== undefined) return `${page}/work/${encodeURIComponent(r.at)}`;",
+      "replace": "if (r.at !== undefined) return `${page}/${encodeURIComponent(r.at)}`;",
+      "expectRed": "the old agent hash is written back in the new form",
+      "cell": "the old agent hash is written back in the new form"
+    },
+    {
+      "name": "a message under a tab other than Work is taken",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "if (b !== \"work\") return undefined;",
+      "replace": "",
+      "expectRed": "an agent hash with a message under another tab, or a fourth segment, gives the default route",
+      "cell": "an agent hash with a message under another tab, or a fourth segment, gives the default route"
+    },
+    {
+      "name": "a tab name is read as a message id",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "        if (isAgentTab(b)) return { view: \"agent\", id, tab: b };\n",
+      "replace": "",
+      "expectRed": "an agent hash with a tab gives that tab",
+      "cell": "an agent hash with a tab gives that tab"
+    },
+    {
+      "name": "a bare agent hash opens Profile",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "if (b === undefined) return { view: \"agent\", id, tab: \"work\" };",
+      "replace": "if (b === undefined) return { view: \"agent\", id, tab: \"profile\" };",
+      "expectRed": "an agent hash gives the agent's page on Work",
+      "cell": "an agent hash gives the agent's page on Work"
+    },
+    {
+      "name": "Work at a message drops the message",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "      const at = c === \"\" ? undefined : decode(c);\n      return at ? { view: \"agent\", id, tab: \"work\", at } : undefined;",
+      "replace": "      return { view: \"agent\", id, tab: \"work\" };",
+      "expectRed": "an agent hash on Work with a message id gives Work at that message",
+      "cell": "an agent hash on Work with a message id gives Work at that message"
+    },
+    {
+      "name": "an old message id is taken undecoded",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "const old = b === \"\" ? undefined : decode(b);",
+      "replace": "const old = b === \"\" ? undefined : b;",
+      "expectRed": "an undecodable message id gives the default route",
+      "cell": "an undecodable message id gives the default route"
+    },
+    {
+      "name": "formatRoute writes Work by name",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "return r.tab === \"work\" ? page : `${page}/${r.tab}`;",
+      "replace": "return `${page}/${r.tab}`;",
+      "expectRed": "formatRoute writes Work with no message as the bare page, and another tab by name",
+      "cell": "formatRoute writes Work with no message as the bare page, and another tab by name"
     }
   ]
 }

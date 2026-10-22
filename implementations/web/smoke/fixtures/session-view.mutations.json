@@ -1,6 +1,6 @@
 {
   "command": "pnpm smoke:web-session-view",
-  "guard": "the session view opens and closes its session in pairs, says every state in the mock's words, shows the plane note only when the card says the plane is on, animates only steps that arrive live after mount, keeps a reader at the message they arrived at, shows Live only for an agent that is online, and goes back where the reader came from",
+  "guard": "the agent page opens and closes the agent's work in pairs, says every Work state in the mock's words, keeps the plane note out of Work, writes its tab into the route, lists the agent's own verified posts and direct messages in Messages, says in Profile whether it publishes work events, animates only steps that arrive live after mount, keeps a reader at the message they arrived at, rewrites an old link in place, and goes back where the reader came from",
   "why": [
     "This suite runs `tsx` directly over `client/src`, with no build step and no compiled second copy, so no `afterRestore` is needed on any mutation here."
   ],
@@ -10,124 +10,308 @@
   "progressPattern": "^  ok ",
   "mutations": [
     {
-      "name": "SV1 the view never closes its session on unmount, so the store's count of views leaks",
-      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "name": "SV1 the page never closes its work on unmount, so the store's count of views leaks",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
       "find": "    return () => controller.closeSession(id);\n",
       "replace": "    return () => undefined;\n",
       "expectRed": "1.1 mounting calls openSession once and unmounting calls closeSession once",
       "cell": "1.1 mounting calls openSession once and unmounting calls closeSession once"
     },
     {
-      "name": "SV2 the plane note shows whenever the card does not say off, so an agent whose card is silent is said to publish",
-      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "find": "{plane === \"on\" && (",
-      "replace": "{plane !== \"off\" && (",
-      "expectRed": "3.1 the plane note shows for on and not for unknown",
-      "cell": "3.1 the plane note shows for on and not for unknown"
+      "name": "SV2 loading with nothing held draws an empty column instead of the skeleton",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "    body = <WorkSkeleton />;",
+      "replace": "    body = <div className=\"ox-col\" />;",
+      "expectRed": "2.1 loading draws the skeleton rows, busy, under the real header and tabs",
+      "cell": "2.1 loading draws the skeleton rows, busy, under the real header and tabs"
     },
     {
       "name": "SV3 every step new to the list rises in, history included",
       "file": "implementations/web/client/src/ui/work/WorkList.tsx",
       "find": "return (item) => now !== undefined && (now.rising.has(item.key) || (item.live && !now.known.has(item.key)));",
       "replace": "return (item) => item.live && (now === undefined || now.rising.has(item.key) || !now.known.has(item.key));",
-      "expectRed": "8.1 steps a history read adds after mount carry no ui-in, nor do the steps of the first paint",
-      "cell": "8.1 steps a history read adds after mount carry no ui-in, nor do the steps of the first paint"
+      "expectRed": "7.1 steps a history read adds after mount carry no ui-in, nor do the steps of the first paint",
+      "cell": "7.1 steps a history read adds after mount carry no ui-in, nor do the steps of the first paint"
     },
     {
-      "name": "SV4 Live shows for an offline agent",
-      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "find": "  const live = connection === \"connected\" && load === \"ok\" && plane !== \"off\" && known !== undefined && known.status !== \"offline\";",
-      "replace": "  const live = connection === \"connected\" && load === \"ok\" && plane !== \"off\" && known !== undefined;",
-      "expectRed": "6.1 Live is absent for an offline agent, and shown for a working one",
-      "cell": "6.1 Live is absent for an offline agent, and shown for a working one"
-    },
-    {
-      "name": "SV5 Load earlier stays at the cap",
-      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "find": "{more && !atCap && (",
-      "replace": "{more && (",
-      "expectRed": "4.2 at 2,000 events the cap line replaces Load earlier",
-      "cell": "4.2 at 2,000 events the cap line replaces Load earlier"
-    },
-    {
-      "name": "SV6 a reload that holds frames draws skeleton rows over them",
-      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "name": "SV4 a reload that holds frames draws skeleton rows over them",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
       "find": "if (load === \"loading\" && steps.length === 0) {",
       "replace": "if (load === \"loading\") {",
       "expectRed": "2.8 a reload that holds frames keeps them on screen with a quiet loading line, not skeleton rows",
       "cell": "2.8 a reload that holds frames keeps them on screen with a quiet loading line, not skeleton rows"
     },
     {
-      "name": "SV7 the broker's reason is set as HTML",
-      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "find": "<p>{`The broker refused it: ${session?.reason ?? \"\"}.`}</p>",
-      "replace": "<p dangerouslySetInnerHTML={{ __html: `The broker refused it: ${session?.reason ?? \"\"}.` }} />",
-      "expectRed": "2.2 refused names the session, quotes the broker's reason as text and offers the grant to copy",
-      "cell": "2.2 refused names the session, quotes the broker's reason as text and offers the grant to copy"
+      "name": "SV5 Load earlier stays at the cap",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "{more && !atCap && (",
+      "replace": "{more && (",
+      "expectRed": "4.2 at 2,000 events the cap line replaces Load earlier",
+      "cell": "4.2 at 2,000 events the cap line replaces Load earlier"
     },
     {
-      "name": "SV8 the crumb forgets where the reader came from and always goes back to Agents",
+      "name": "SV6 the broker's reason is set as HTML",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "<p>{`The broker refused it: ${session?.reason ?? \"\"}.`}</p>",
+      "replace": "<p dangerouslySetInnerHTML={{ __html: `The broker refused it: ${session?.reason ?? \"\"}.` }} />",
+      "expectRed": "2.2 refused names the agent's work, quotes the broker's reason as text and offers the grant to copy",
+      "cell": "2.2 refused names the agent's work, quotes the broker's reason as text and offers the grant to copy"
+    },
+    {
+      "name": "SV7 a failed read with nothing held still speaks of a session",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "title={`${name}'s work didn't load`}",
+      "replace": "title={`${name}'s session didn't load`}",
+      "expectRed": "2.3 failed with nothing held says the work didn't load, gives the reason, and Try again reloads it",
+      "cell": "2.3 failed with nothing held says the work didn't load, gives the reason, and Try again reloads it"
+    },
+    {
+      "name": "SV8 a failed read with steps held drops the line that says so",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "        {load === \"failed\" && (\n          <PlaneNote>",
+      "replace": "        {false && (\n          <PlaneNote>",
+      "expectRed": "2.4 failed with steps held keeps the list and says it didn't load above it",
+      "cell": "2.4 failed with steps held keeps the list and says it didn't load above it"
+    },
+    {
+      "name": "SV9 the plane off is not said, so Work looks like an agent that has done nothing",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "} else if (plane === \"off\" && load !== \"failed\") {",
+      "replace": "} else if (false) {",
+      "expectRed": "2.5 with the plane off Work says so, how agents publish them, and shows only the agent's posts",
+      "cell": "2.5 with the plane off Work says so, how agents publish them, and shows only the agent's posts"
+    },
+    {
+      "name": "SV10 the plane on with no steps falls through to the silent card's words",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "} else if (steps.length === 0 && plane === \"on\") {",
+      "replace": "} else if (false) {",
+      "expectRed": "2.6 with the plane on and no steps it says the agent hasn't started a turn yet",
+      "cell": "2.6 with the plane on and no steps it says the agent hasn't started a turn yet"
+    },
+    {
+      "name": "SV11 the silent card's state says no turns yet, as if the agent publishes",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "title={`Nothing has arrived from ${name} yet`}",
+      "replace": "title=\"No turns yet\"",
+      "expectRed": "2.7 with the card silent and no steps it says nothing has arrived, and why that may be",
+      "cell": "2.7 with the card silent and no steps it says nothing has arrived, and why that may be"
+    },
+    {
+      "name": "SV12 the plane note comes back into Work",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "        {more && !atCap && (\n",
+      "replace": "        {plane === \"on\" && <PlaneNote>{`What ${name} publishes on its event plane: its text and the names of its tools.`}</PlaneNote>}\n        {more && !atCap && (\n",
+      "expectRed": "2.9 with the plane on, Work holds no note about the plane, only the work",
+      "cell": "2.9 with the plane on, Work holds no note about the plane, only the work"
+    },
+    {
+      "name": "SV13 a tab change writes no route, so back and reload lose the tab",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "onValueChange={(next) => (next === \"work\" || next === \"messages\" || next === \"profile\") && goTo({ view: \"agent\", id, tab: next })}",
+      "replace": "onValueChange={() => undefined}",
+      "expectRed": "3.2 the tabs are Work, Messages with its count and Profile, named for the agent, and a tab change writes the route",
+      "cell": "3.2 the tabs are Work, Messages with its count and Profile, named for the agent, and a tab change writes the route"
+    },
+    {
+      "name": "SV14 a history direct message counts as the agent's own, by what its payload says",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "m.senderId === id && typeof m.msg.to === \"string\"",
+      "replace": "(m.senderId ?? m.msg.from?.id) === id && typeof m.msg.to === \"string\"",
+      "expectRed": "3.1 Messages lists the agent's verified posts and direct messages by place, newest first, each linking where it went, and no history row",
+      "cell": "3.1 Messages lists the agent's verified posts and direct messages by place, newest first, each linking where it went, and no history row"
+    },
+    {
+      "name": "SV15 Messages lists the oldest first",
+      "file": "implementations/web/client/src/ui/agent/AgentMessages.tsx",
+      "find": "for (const g of all) g.rows.sort((a, b) => timeOf(b) - timeOf(a));",
+      "replace": "for (const g of all) g.rows.sort((a, b) => timeOf(a) - timeOf(b));",
+      "expectRed": "3.1 Messages lists the agent's verified posts and direct messages by place, newest first, each linking where it went, and no history row",
+      "cell": "3.1 Messages lists the agent's verified posts and direct messages by place, newest first, each linking where it went, and no history row"
+    },
+    {
+      "name": "SV16 one post reads as posts",
+      "file": "implementations/web/client/src/ui/agent/AgentMessages.tsx",
+      "find": "{` · ${n === 1 ? \"1 post\" : `${n} posts`}`}",
+      "replace": "{` · ${n} posts`}",
+      "expectRed": "3.4 one post in a channel reads 1 post",
+      "cell": "3.4 one post in a channel reads 1 post"
+    },
+    {
+      "name": "SV17 the Messages count leaves out direct messages",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "const count = groups.reduce((n, g) => n + g.rows.length, 0);",
+      "replace": "const count = groups.filter((g) => g.channel !== undefined).reduce((n, g) => n + g.rows.length, 0);",
+      "expectRed": "3.2 the tabs are Work, Messages with its count and Profile, named for the agent, and a tab change writes the route",
+      "cell": "3.2 the tabs are Work, Messages with its count and Profile, named for the agent, and a tab change writes the route"
+    },
+    {
+      "name": "SV18 an empty Messages tab draws nothing",
+      "file": "implementations/web/client/src/ui/agent/AgentMessages.tsx",
+      "find": "      {groups.length === 0 && <SessionEmpty",
+      "replace": "      {false && <SessionEmpty",
+      "expectRed": "3.3 Messages with nothing sent says so, and the count is 0",
+      "cell": "3.3 Messages with nothing sent says so, and the count is 0"
+    },
+    {
+      "name": "SV19 Work events says published for a card that says off",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
+      "find": "const WORK_EVENTS = { on: \"Published. Tool names, status and times only.\", off: \"Not published\" } as const;",
+      "replace": "const WORK_EVENTS = { on: \"Published. Tool names, status and times only.\", off: \"Published. Tool names, status and times only.\" } as const;",
+      "expectRed": "3.5 Profile says whether the agent publishes work events: published for on, not published for off, not reported when the card is silent",
+      "cell": "3.5 Profile says whether the agent publishes work events: published for on, not published for off, not reported when the card is silent"
+    },
+    {
+      "name": "SV20 a silent card's Work events reads as not published",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
+      "find": "{row.events ? <dd>{WORK_EVENTS[row.events]}</dd> : <dd className=\"ui-nr\">not reported</dd>}",
+      "replace": "{row.events === \"on\" ? <dd>{WORK_EVENTS.on}</dd> : <dd>Not published</dd>}",
+      "expectRed": "3.5 Profile says whether the agent publishes work events: published for on, not published for off, not reported when the card is silent",
+      "cell": "3.5 Profile says whether the agent publishes work events: published for on, not published for off, not reported when the card is silent"
+    },
+    {
+      "name": "SV21 Profile draws the character at the panel's 72px",
+      "file": "implementations/web/client/src/ui/agent/AgentProfile.tsx",
+      "find": "size={88} dot={false}",
+      "replace": "size={72} dot={false}",
+      "expectRed": "3.6 Profile is the agent's card at reading width: the character at 88px, the status line and the commands to copy",
+      "cell": "3.6 Profile is the agent's card at reading width: the character at 88px, the status line and the commands to copy"
+    },
+    {
+      "name": "SV22 the dock writes to a channel, not to the agent",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "const target = useMemo((): ComposeTarget => ({ kind: \"dm\", to: id }), [id]);",
+      "replace": "const target = useMemo((): ComposeTarget => ({ kind: \"msg\", channel: id }), [id]);",
+      "expectRed": "5.1 the dock is engine's direct message composer",
+      "cell": "5.1 the dock is engine's direct message composer"
+    },
+    {
+      "name": "SV23 the header Badge loses its status colour",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "className={`ox-badge ox-badge-${row.status}`}",
+      "replace": "className=\"ox-badge\"",
+      "expectRed": "5.4 the header is the crumb, the name, role and harness, the status Badge and Message to the operator's conversation",
+      "cell": "5.4 the header is the crumb, the name, role and harness, the status Badge and Message to the operator's conversation"
+    },
+    {
+      "name": "SV24 Message opens a conversation with nobody named as the other party",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "const messageHref = formatRoute(messageRoute(id, self));",
+      "replace": "const messageHref = formatRoute({ view: \"dm\", peer: id });",
+      "expectRed": "5.4 the header is the crumb, the name, role and harness, the status Badge and Message to the operator's conversation",
+      "cell": "5.4 the header is the crumb, the name, role and harness, the status Badge and Message to the operator's conversation"
+    },
+    {
+      "name": "SV25 the phone's Message tool says only Message",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "title={`Message ${name}`} aria-label={`Message ${name}`}",
+      "replace": "title=\"Message\" aria-label=\"Message\"",
+      "expectRed": "5.5 on a phone the crumb is the back tool, Message is a tool titled for the agent, the Badge stays and the tabs stay under the header",
+      "cell": "5.5 on a phone the crumb is the back tool, Message is a tool titled for the agent, the Badge stays and the tabs stay under the header"
+    },
+    {
+      "name": "SV26 the phone keeps the crumb instead of the back tool",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "        {phone ? (\n          <a className=\"ui-tool\" href={formatRoute(back.route)}",
+      "replace": "        {false ? (\n          <a className=\"ui-tool\" href={formatRoute(back.route)}",
+      "expectRed": "5.5 on a phone the crumb is the back tool, Message is a tool titled for the agent, the Badge stays and the tabs stay under the header",
+      "cell": "5.5 on a phone the crumb is the back tool, Message is a tool titled for the agent, the Badge stays and the tabs stay under the header"
+    },
+    {
+      "name": "SV27 the arrival does not wait for the read in flight",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "arrived.current === at || load === \"loading\") return;",
+      "replace": "arrived.current === at) return;",
+      "expectRed": "6.1 arriving with at waits for the read in flight, then opens that post's turn, marks the post and scrolls it to the middle once",
+      "cell": "6.1 arriving with at waits for the read in flight, then opens that post's turn, marks the post and scrolls it to the middle once"
+    },
+    {
+      "name": "SV28 the post the reader arrived at is ignored: its turn stays closed and nothing is marked",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "const list = <WorkList work={work} row={row} condition={condition} highlight={at} nameOf={nameOf} />;",
+      "replace": "const list = <WorkList work={work} row={row} condition={condition} nameOf={nameOf} />;",
+      "expectRed": "6.1 arriving with at waits for the read in flight, then opens that post's turn, marks the post and scrolls it to the middle once",
+      "cell": "6.1 arriving with at waits for the read in flight, then opens that post's turn, marks the post and scrolls it to the middle once"
+    },
+    {
+      "name": "SV29 the arrival never scrolls to the post",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "    found.scrollIntoView?.({ block: \"center\" });\n",
+      "replace": "",
+      "expectRed": "6.1 arriving with at waits for the read in flight, then opens that post's turn, marks the post and scrolls it to the middle once",
+      "cell": "6.1 arriving with at waits for the read in flight, then opens that post's turn, marks the post and scrolls it to the middle once"
+    },
+    {
+      "name": "SV30 the arrival leaves the page following, so the next step pulls it to the bottom",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "    arrived.current = at;\n    setFollowing(false);\n",
+      "replace": "    arrived.current = at;\n",
+      "expectRed": "6.2 and following stops, so a live step after it raises the scroller's button",
+      "cell": "6.2 and following stops, so a live step after it raises the scroller's button"
+    },
+    {
+      "name": "SV31 a run that folds into a group appears at once",
+      "file": "implementations/web/client/src/ui/work/Step.tsx",
+      "find": "<ToolGroup key=\"group\" calls={step.calls} at={at} toolStatus={toolStatus} line={compact} className={fade} />",
+      "replace": "<ToolGroup key=\"group\" calls={step.calls} at={at} toolStatus={toolStatus} line={compact} />",
+      "expectRed": "7.3 a run of calls that ends folds into a group that fades in, and a group there at first paint does not fade",
+      "cell": "7.3 a run of calls that ends folds into a group that fades in, and a group there at first paint does not fade"
+    },
+    {
+      "name": "SV32 the crumb forgets where the reader came from and always goes back to Agents",
       "file": "implementations/web/client/src/Shell.tsx",
       "find": "const last = route.view !== \"agent\" ? route : from;",
       "replace": "const last = route.view !== \"agent\" ? route : null;",
-      "expectRed": "9.1 the crumb links back to the channel the reader came from",
-      "cell": "9.1 the crumb links back to the channel the reader came from"
+      "expectRed": "8.1 the crumb links back to the channel the reader came from",
+      "cell": "8.1 the crumb links back to the channel the reader came from"
     },
     {
-      "name": "SV9 the arrival scroll does not wait for the read in flight",
-      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "find": "arrived.current === at || load === \"loading\") return;",
-      "replace": "arrived.current === at) return;",
-      "expectRed": "7.2 arriving while the read is in flight waits for it, scrolls to the post after the pin, and stops following",
-      "cell": "7.2 arriving while the read is in flight waits for it, scrolls to the post after the pin, and stops following"
-    },
-    {
-      "name": "SV10 the arrival leaves the view following, so the next step pulls it to the bottom",
-      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "find": "    scroll.unpin();\n",
-      "replace": "",
-      "expectRed": "7.2 arriving while the read is in flight waits for it, scrolls to the post after the pin, and stops following",
-      "cell": "7.2 arriving while the read is in flight waits for it, scrolls to the post after the pin, and stops following"
-    },
-    {
-      "name": "SV11 a run that folds into a group appears at once",
-      "file": "implementations/web/client/src/ui/work/Step.tsx",
-      "find": "<ToolGroup key=\"group\" calls={step.calls} at={at} toolStatus={toolStatus} className={fade} />",
-      "replace": "<ToolGroup key=\"group\" calls={step.calls} at={at} toolStatus={toolStatus} />",
-      "expectRed": "8.3 a run of calls that ends folds into a group that fades in, and a group there at first paint does not fade",
-      "cell": "8.3 a run of calls that ends folds into a group that fades in, and a group there at first paint does not fade"
-    },
-    {
-      "name": "SV12 only a channel is remembered as the place to go back to",
+      "name": "SV33 only a channel is remembered as the place to go back to",
       "file": "implementations/web/client/src/Shell.tsx",
       "find": "if (route.view !== \"agent\" && (from === null",
       "replace": "if (route.view === \"channel\" && (from === null",
-      "expectRed": "9.4 the crumb goes back to the last place that was not a session, with its label, not to the last channel",
-      "cell": "9.4 the crumb goes back to the last place that was not a session, with its label, not to the last channel"
+      "expectRed": "8.4 the crumb goes back to the last place that was not an agent's page, with its label, not to the last channel",
+      "cell": "8.4 the crumb goes back to the last place that was not an agent's page, with its label, not to the last channel"
     },
     {
-      "name": "SV13 Live shows while the feed is down, so the view claims new steps will appear when none can arrive",
-      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "find": "  const live = connection === \"connected\" && load === \"ok\" && plane !== \"off\"",
-      "replace": "  const live = load === \"ok\" && plane !== \"off\"",
-      "expectRed": "6.2 Live is absent while the feed is down, though the read went through and the agent is working",
-      "cell": "6.2 Live is absent while the feed is down, though the read went through and the agent is working"
+      "name": "SV34 an old link stays in the address",
+      "file": "implementations/web/client/src/routeWatch.ts",
+      "find": "  if (host.location.hash !== hash) host.history.replaceState(null, \"\", hash);\n",
+      "replace": "",
+      "expectRed": "8.5 an old link to a message is replaced in place by the new form, and opens Work",
+      "cell": "8.5 an old link to a message is replaced in place by the new form, and opens Work"
     },
     {
-      "name": "SV14 a closed panel stays mounted, hidden, so the Agent tab keeps its agent's session watched and read while nobody can see it",
+      "name": "SV35 a closed panel stays mounted, hidden, so the Agent tab keeps its agent's work watched and read while nobody can see it",
       "file": "implementations/web/client/src/ui/AppShell.tsx",
       "find": "      {paneOpen && <section className=\"ui-pane\" aria-label=\"Details\">{props.panel}</section>}",
       "replace": "      <section className=\"ui-pane\" aria-label=\"Details\" hidden={!paneOpen}>{props.panel}</section>",
-      "expectRed": "10.1 picking an agent opens its session once with the Agent tab, and closing the panel closes it, so a closed panel holds no session",
-      "cell": "10.1 picking an agent opens its session once with the Agent tab, and closing the panel closes it, so a closed panel holds no session"
+      "expectRed": "9.1 picking an agent opens its work once with the Agent tab, and closing the panel closes it, so a closed panel holds nothing",
+      "cell": "9.1 picking an agent opens its work once with the Agent tab, and closing the panel closes it, so a closed panel holds nothing"
     },
     {
-      "name": "SV15 the Agent tab stays mounted, hidden, behind another tab, so it keeps its agent's session watched and read while the panel shows Members or Topology",
+      "name": "SV36 the Agent tab stays mounted, hidden, behind another tab, so it keeps its agent's work watched and read while the panel shows Members or Topology",
       "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
-      "find": "        {tab === \"agent\" && panel.agent !== null && <AgentTab store={store} controller={controller} id={panel.agent} channel={channel} route={route} clock={clock} />}",
-      "replace": "        {panel.agent !== null && <div hidden={tab !== \"agent\"}><AgentTab store={store} controller={controller} id={panel.agent} channel={channel} route={route} clock={clock} /></div>}",
-      "expectRed": "10.2 the panel opened again on the Agent tab reads the session again, and moving to another tab closes it",
-      "cell": "10.2 the panel opened again on the Agent tab reads the session again, and moving to another tab closes it"
+      "find": "        {tab === \"agent\" && panel.agent !== null && <AgentTab store={store} controller={controller} id={panel.agent} route={route} />}",
+      "replace": "        {panel.agent !== null && <div hidden={tab !== \"agent\"}><AgentTab store={store} controller={controller} id={panel.agent} route={route} /></div>}",
+      "expectRed": "9.2 the panel opened again on the Agent tab reads the work again, and moving to another tab closes it",
+      "cell": "9.2 the panel opened again on the Agent tab reads the work again, and moving to another tab closes it"
+    },
+    {
+      "name": "SV37 the header Badge adds a progress claim to the status",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "      {word(statusLabel(row))}\n    </Badge>",
+      "replace": "      {`${word(statusLabel(row))} · progress unknown`}\n    </Badge>",
+      "expectRed": "5.3 the header Badge says the status presence reports, Working, for an agent whose progress is unknown, with no progress claim",
+      "cell": "5.3 the header Badge says the status presence reports, Working, for an agent whose progress is unknown, with no progress claim"
+    },
+    {
+      "name": "SV38 every post is marked once the page arrives at a message, held or not",
+      "file": "implementations/web/client/src/ui/work/Step.tsx",
+      "find": "highlight={ctx.highlight !== undefined && step.msg.id === ctx.highlight}",
+      "replace": "highlight={ctx.highlight !== undefined}",
+      "expectRed": "6.3 with no such post the page opens on Work with nothing marked",
+      "cell": "6.3 with no such post the page opens on Work with nothing marked"
     }
   ]
 }

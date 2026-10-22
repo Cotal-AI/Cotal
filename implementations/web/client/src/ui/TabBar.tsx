@@ -14,7 +14,7 @@ const TABS: { label: string; icon: RailIconName; view: Route["view"] }[] = [
  *  the rail's item for that view leads, and a tab with nowhere to go yet is a disabled button titled
  *  with the empty state, as on the rail. Agents carries the gold count of agents waiting, and is the
  *  current tab on the Needs route too, since that route draws the Agents view, and on an agent's
- *  session. */
+ *  page. */
 export function TabBar({ route, places, waiting }: { route: Route; places: Places; waiting: number }) {
   return (
     <nav className="v3-tabbar" aria-label="Sections">

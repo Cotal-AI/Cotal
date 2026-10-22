@@ -33,14 +33,15 @@ export interface StepContext {
 /** The calls that may draw as one group: every one finished, failed or simply called. */
 const SETTLED: ReadonlySet<CallState> = new Set(["done", "failed", "called"]);
 
-/** One `tools` step. Two or more settled calls draw as a closed `ToolGroup`; otherwise each call is its
- *  own `ToolLine`, and only the latest running one shimmers. A call that joins after the step drew
+/** One `tools` step. Two or more settled calls draw as a closed `ToolGroup`, or in the panel's peek
+ *  (`compact`) as its title line; otherwise each call is its own `ToolLine`, and only the latest
+ *  running one shimmers. A call that joins after the step drew
  *  rises in.
  *
  *  When the last call of a run ends, the lines fold into the group: the group cross-fades in where the
  *  first line was, and the lines after it fold up beneath it (`ox-fold`) and leave once that animation
  *  ends. A group there at the first paint draws in place. */
-function ToolStep({ step, at, toolStatus }: { step: WorkStep & { kind: "tools" }; at: CallAt; toolStatus: boolean }) {
+function ToolStep({ step, at, toolStatus, compact }: { step: WorkStep & { kind: "tools" }; at: CallAt; toolStatus: boolean; compact: boolean }) {
   const rises = useContext(Rise);
   const states = step.calls.map((c) => callState(c, { ...at, toolStatus }));
   const grouped = step.calls.length >= 2 && states.every((s) => SETTLED.has(s));
@@ -54,7 +55,7 @@ function ToolStep({ step, at, toolStatus }: { step: WorkStep & { kind: "tools" }
   if (grouped) {
     return (
       <>
-        <ToolGroup key="group" calls={step.calls} at={at} toolStatus={toolStatus} className={fade} />
+        <ToolGroup key="group" calls={step.calls} at={at} toolStatus={toolStatus} line={compact} className={fade} />
         {folding && (
           <div className="ox-fold" aria-hidden="true" style={{ "--fold-n": step.calls.length - 1 } as CSSProperties} onAnimationEnd={() => setFolding(false)}>
             {step.calls.slice(1).map((c, i) => <ToolLine key={c.key} call={c} state={states[i + 1]!} />)}
@@ -115,7 +116,7 @@ export function Step({ step, turn, trailing, ctx, condition }: {
     case "said":
       return <SaidBlock text={step.text} cut={step.cut} compact={ctx.compact} />;
     case "tools":
-      return <ToolStep step={step} at={{ turn, trailing, status: ctx.row.status }} toolStatus={ctx.toolStatus} />;
+      return <ToolStep step={step} at={{ turn, trailing, status: ctx.row.status }} toolStatus={ctx.toolStatus} compact={ctx.compact} />;
     case "post":
       return (
         <PostRow

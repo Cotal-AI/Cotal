@@ -296,7 +296,7 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   const clock = () => now;
   const controller = { open: async () => undefined } as unknown as Controller;
   const start = (_store: unknown, onArrival: () => void) => ((arrive = onArrival), { controller, stop: () => void stops++ });
-  const host: RouteHost = { location: { hash: "#/activity", pathname: "/" }, addEventListener: () => undefined, removeEventListener: () => undefined };
+  const host: RouteHost = { location: { hash: "#/activity", pathname: "/" }, history: { replaceState: () => undefined }, addEventListener: () => undefined, removeEventListener: () => undefined };
   const g = globalThis as unknown as { setInterval: typeof setInterval; clearInterval: typeof clearInterval };
   const realSet = g.setInterval;
   const realClear = g.clearInterval;

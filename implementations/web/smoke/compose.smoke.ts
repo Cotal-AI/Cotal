@@ -23,7 +23,7 @@ import type { Api, Controller } from "../client/src/state/controller.js";
 import { createStore, type Store } from "../client/src/state/store.js";
 import { initialState, type DashboardState, type Draft } from "../client/src/state/types.js";
 import { Compose, Composer, focusComposer } from "../client/src/ui/Composer.tsx";
-import { AgentTab } from "../client/src/ui/panel/AgentTab.tsx";
+import { AgentProfile } from "../client/src/ui/agent/AgentProfile.tsx";
 import { bootReads, gate, harness, page } from "./controller-harness.js";
 import { mount } from "./mount.js";
 import { renderShell } from "./render-shell.js";
@@ -343,8 +343,8 @@ const answer = (id: string, operatorId = OP): SendAnswer => ({ ok: true, id, ope
     ["This conversation is between two agents.", "Message reviewer", formatRoute(messageRoute("local.rev", OP)), ["ui-card ui-composer", "ui-cnote"], 2]);
   const evil = "x'; true; echo $(echo hi)";
   const tabStore = createStore<DashboardState>({ ...initialState, ...seed({ roster: [...roster, entry("local.evil", evil, "idle")] }) });
-  const tab = parse(renderToString(createElement(AgentTab, { store: tabStore, id: "local.evil", channel: null, clock: () => 2 })));
-  same("3.25 the Agent tab quotes a hostile agent name in its attach and stop commands",
+  const tab = parse(renderToString(createElement(AgentProfile, { store: tabStore, id: "local.evil", clock: () => 2 })));
+  same("3.25 the agent's Profile quotes a hostile agent name in its attach and stop commands",
     [...tab.querySelectorAll(".ui-cmd code")].map((x) => x.textContent), [`cotal attach --name ${shellArg(evil)}`, `cotal stop --name ${shellArg(evil)}`]);
 }
 

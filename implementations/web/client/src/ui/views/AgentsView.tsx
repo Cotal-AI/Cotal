@@ -175,8 +175,9 @@ function HeartbeatLine({ beat, clock }: { beat: number; clock: () => number }) {
  *  - `focusWaiting` (the Needs route) marks the Waiting section, and once per arrival on the route,
  *    when the roster first has agents, scrolls it into view and focuses it, if there is one then.
  *  - `selected` is the agent the details panel shows (`aria-current` on its row) and `onPick` is
- *    called with the id of a row the reader opens. The view holds neither, so a row that moves to
- *    another group when its agent changes status stays selected. It keeps keyboard focus too, because
+ *    called with the id of a row the reader opens: the shell opens its peek, or on a phone its page.
+ *    The view holds neither, so a row that moves to another group when its agent changes status
+ *    stays selected. It keeps keyboard focus too, because
  *    the rows are keyed by agent in one list, so React moves a row's element and never rebuilds it.
  *  - While the roster has no agent the empty space state stands in for the list.
  *  - When the observer's own presence watch is silent the header says how many agents were last seen,
