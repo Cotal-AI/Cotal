@@ -268,7 +268,8 @@ try {
     const five = await registeredWitness(ep);
     const s = source(five.witness);
     tokensSeen.push(await s.bearer());
-    const r = await call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: { kind: "owner", owner },
+    // A non-owner cause takes an operator granter (stock rule, service-host-ops.ts revoke V0).
+    const r = await call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: operator,
       input: { endpoint: ep, instanceId: five.instanceId, expectedAssignmentDigest: five.assignmentDigest, cause: "restore-quarantine" } });
     for (let i = 0; i < 20 && s.state().state !== "ended"; i++) {
       try { tokensSeen.push(await s.bearer()); } catch { /* the state says why */ }
