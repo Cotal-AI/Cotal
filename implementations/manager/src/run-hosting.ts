@@ -633,6 +633,10 @@ export class RunHosting {
       }
     }
     this.observeCancellation(input.runId);
+    if (slot?.outcome) {
+      this.clearObservedCancellation(input.runId);
+      return reply("stopped", slot.outcome);
+    }
     if (!slot || this.runs.get(input.runId) !== slot) {
       this.clearObservedCancellation(input.runId);
       return reply(slot && !slot.drive ? "launch-abandoned" : "not-driven-here");
@@ -640,6 +644,10 @@ export class RunHosting {
     // A preactivation slot may have activated while the marker was being written. Re-observe
     // before selecting its handle; an old holder observation cannot stop a superseded attempt.
     if (slot.activated) status = await readStatus();
+    if (slot.outcome) {
+      this.clearObservedCancellation(input.runId);
+      return reply("stopped", slot.outcome);
+    }
     if (!this.cancelEligible(slot, status)) return reply("not-driven-here");
     if (slot.drive) slot.drive.cancel(input.reason);
     while (performance.now() < endsAt) {
