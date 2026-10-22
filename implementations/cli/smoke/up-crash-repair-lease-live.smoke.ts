@@ -8,8 +8,8 @@
  *   M1  manager SIGKILLed, repair at once: the new manager waits out the dead pid's row, and `up` exits 0.
  *   M2  manager SIGKILLed while something keeps rewriting its row: the new manager refuses at the
  *       first rewrite, and `up` exits 1. A live holder is never waited past.
- *   D1  broker SIGKILLed, so the daemon exits on its own with its row held: the repair waits out the
- *       row, and `up` exits 0 with the daemon up.
+ *   D1  broker SIGKILLed just after the daemon renews its row, so the daemon exits on its own with
+ *       its row held: the repair waits out the row, and `up` exits 0 with the daemon up.
  *   D2  daemon SIGKILLed while something keeps rewriting shard 0 under its credential: the repair
  *       refuses at the first rewrite and starts no daemon.
  *
@@ -157,6 +157,25 @@ try {
 
   // D1
   const daemon = pidOf(DELIVERY_PIDFILE);
+  // The daemon renews its row every 15s and takes about 17s to exit once its broker is gone, so a
+  // row last renewed early in that window has outlived its 30s TTL by the time the repair reads it,
+  // and the repair finds the shard free. Kill the broker just after a renewal, so the repair meets a
+  // row that is still held.
+  const ownCreds = (await workspaceSecretStore(root).get(deliveryCredsKey(SPACE, { injected: false, root })))!;
+  const own = await connect({ servers: SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(ownCreds)), inboxPrefix: `_INBOX_${idFromCreds(ownCreds)}` });
+  try {
+    const kv = await new Kvm(own).open(deliveryBucket(SPACE));
+    const held = await kv.get(leaseKey(0));
+    ok("D1 the daemon holds shard 0 before the crash", held?.operation === "PUT", held?.operation);
+    let renewed = false;
+    for (const end = Date.now() + 20_000; !renewed && Date.now() < end; await sleep(50)) {
+      const row = await kv.get(leaseKey(0));
+      renewed = row !== null && row.revision > held!.revision;
+    }
+    ok("D1 the daemon renewed its row just before the crash", renewed);
+  } finally {
+    await own.close();
+  }
   await crash("nats.pid", "broker");
   ok("D1 the daemon exits on its own once its broker is gone", await until(() => !alive(daemon), 60_000), { daemon });
   const d1 = up();
