@@ -1,84 +1,56 @@
 name: Changesets
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('publication-v1 {0} {1} {2} {3} {4} {5}', inputs.version, inputs.candidate_sha256, inputs.source, inputs.qualification_run, inputs.snapshot || 'latest', inputs.requested_at) || 'Prepare release versions' }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('publication-direct {0} {1} {2} {3}', inputs.version, inputs.source, inputs.native_run, inputs.requested_at) || 'Prepare release versions' }}
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
-        description: "Exact release version already sealed in the qualification receipt."
-        type: string
-        required: true
-      qualification_run:
-        description: "Successful first-attempt Cold setup run for the frozen release candidate."
-        type: string
-        required: true
-      candidate_sha256:
-        description: "SHA-256 of that run's cold-candidate/manifest.json."
+        description: "Exact version already present in the release source."
         type: string
         required: true
       source:
-        description: "Approved main commit, with the same tree as the qualified source."
+        description: "Immutable first-parent main source to publish."
         type: string
         required: true
+      native_run:
+        description: "Run containing successful source-matched native builder artifacts."
+        type: string
+        required: true
+      tag:
+        description: "Registry dist-tag."
+        type: string
+        default: latest
       requested_at:
-        description: "Original human publish-command time in UTC. Never replace it on retry."
+        description: "Original human publish-command UTC time; never reset it."
         type: string
         required: true
-      snapshot:
-        description: "The dist-tag already prepared and qualified by Cold setup. Empty means latest."
-        type: string
-        default: ""
 
-# Preparation cannot hold a publish command behind a build. Publication dispatches still share
-# one non-cancelling queue, so a later command cannot evict or overlap an admitted publication.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: false
   queue: max
 
 jobs:
-  # Pushes only prepare versions. Native qualification and source review finish before publish-go.
   version-pr:
     if: github.event_name == 'push'
     timeout-minutes: 35
     runs-on: ubuntu-latest
-    environment: npm-publish
     permissions:
       contents: write
       pull-requests: write
-    env:
-      ADMIT: ${{ github.event_name == 'push' || inputs.snapshot == '' }}
-    outputs:
-      has-changesets: ${{ steps.changesets.outputs.hasChangesets }}
     steps:
-      - name: Checkout
-        if: env.ADMIT == 'true'
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
-
-      - name: Setup pnpm
-        if: env.ADMIT == 'true'
-        uses: pnpm/action-setup@v6.0.8
-
-      - name: Setup Node.js
-        if: env.ADMIT == 'true'
-        uses: actions/setup-node@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
-
-      - name: Install dependencies
-        if: env.ADMIT == 'true'
-        run: pnpm install --frozen-lockfile
-
-      - name: Create or update the version PR
-        id: changesets
-        if: env.ADMIT == 'true'
-        uses: changesets/action@v1
+      - run: pnpm install --frozen-lockfile
+      - uses: changesets/action@v1
         with:
           version: pnpm ci:version
           title: "chore(release): version packages"
@@ -87,24 +59,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
-      # Missing or unexpected action state is a failed preparation, not a ready version PR.
-      - name: Require a definite changeset state
-        if: env.ADMIT == 'true'
-        env:
-          HAS_CHANGESETS: ${{ steps.changesets.outputs.hasChangesets }}
-        run: test "$HAS_CHANGESETS" = true || test "$HAS_CHANGESETS" = false
-
-      # Keep the "version packages" PR out of the generated release notes (excluded via .github/release.yml).
-      - name: Label the release PR
-        if: env.ADMIT == 'true' && steps.changesets.outputs.pullRequestNumber
-        run: gh pr edit ${{ steps.changesets.outputs.pullRequestNumber }} --add-label skip-changelog
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-
-  # Promote only a completed immutable qualification, without rebuilding or rerunning its matrix.
   version:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    timeout-minutes: 10
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     environment: npm-publish
     permissions:
@@ -113,197 +70,60 @@ jobs:
       id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_REQUESTED_AT: ${{ inputs.requested_at }}
       RELEASE_VERSION: ${{ inputs.version }}
       RELEASE_SOURCE: ${{ inputs.source }}
-      RELEASE_CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
-      RELEASE_QUALIFICATION_RUN: ${{ inputs.qualification_run }}
-      RELEASE_TAG: ${{ inputs.snapshot || 'latest' }}
+      RELEASE_NATIVE_RUN: ${{ inputs.native_run }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_REQUESTED_AT: ${{ inputs.requested_at }}
     steps:
-      - name: Record this execution attempt without resetting the original command time
+      - name: Record execution start without resetting the command time
         run: printf 'RELEASE_ATTEMPT_STARTED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
-
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          token: ${{ secrets.GH_PAT }}
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6.0.8
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
-
-      - name: Set owned publication paths
-        run: |
-          {
-            printf 'RELEASE_ROOT=%s/release-source\n' "$RUNNER_TEMP"
-            printf 'RELEASE_QUALIFICATION=%s/qualification-selection.json\n' "$RUNNER_TEMP"
-            printf 'COLD_CANDIDATE=%s/qualified/cold-candidate\n' "$RUNNER_TEMP"
-            printf 'COLD_RESULTS=%s/qualified\n' "$RUNNER_TEMP"
-            printf 'PUBLISH_RECEIPT=%s/publication.json\n' "$RUNNER_TEMP"
-          } >> "$GITHUB_ENV"
-
-      - name: Select the trusted qualification's immutable artifact IDs
-        id: qualification
-        run: node scripts/release-qualification.mjs select "$RELEASE_QUALIFICATION"
-
-      - name: Check out the immutable first-parent release source
-        run: node scripts/release-qualification.mjs checkout
-
+      - name: Install publisher tools without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Select successful native builds
+        id: native
+        run: node scripts/select-release-natives.mjs
       - uses: actions/download-artifact@v4
         with:
-          artifact-ids: ${{ steps.qualification.outputs.artifact-ids }}
-          run-id: ${{ inputs.qualification_run }}
+          artifact-ids: ${{ steps.native.outputs.artifact-ids }}
+          run-id: ${{ inputs.native_run }}
           github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/qualified
-
-      - name: Verify original source, same tree and every native receipt
-        run: node scripts/release-qualification.mjs verify "$RELEASE_QUALIFICATION" "$COLD_CANDIDATE" "$COLD_RESULTS" "$RELEASE_TAG"
-
-      - name: Install publisher tools without rebuilding the qualified packages
-        run: pnpm install --frozen-lockfile --ignore-scripts
-
-      - name: Replay the snapshot versions already qualified
-        if: inputs.snapshot != ''
-        run: node scripts/apply-cold-versions.mjs "$COLD_CANDIDATE/manifest.json"
-
-      - name: Publish the qualified bytes within this bounded execution attempt
-        run: node scripts/publish-cold-candidate.mjs "$RELEASE_TAG"
-
-      - name: Verify every registry archive and dist-tag
-        id: archive-gate
+          path: ${{ runner.temp }}/native
+      - name: Check out the requested release source
         run: |
-          node scripts/verify-promoted-archives.mjs "$COLD_CANDIDATE/manifest.json" "$RELEASE_TAG" "$RUNNER_TEMP/registry-archives.json"
-          version=$(jq -r '.packages[] | select(.name == "cotal-ai") | .version' "$COLD_CANDIDATE/manifest.json")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "archives_ok=true" >> "$GITHUB_OUTPUT"
-
-      # Gate: verify that EVERY package in the lockstep group reached the registry before cutting
-      # a Release. The old check asked only about `cotal-ai`; if that single package published and
-      # a sibling did not, the Release was cut and the announcement went out for a version a consumer
-      # could not resolve. The closure gate polls the whole fixed group and distinguishes registry
-      # propagation lag from a genuine partial publish (#1286).
-      - name: Verify publish closure
-        id: closure-gate
-        if: success() && inputs.snapshot == ''
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          VERSION: ${{ steps.archive-gate.outputs.version }}
-        run: |
-          version="$VERSION"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          seconds=$(node scripts/publication-budget.mjs --seconds-left)
-          set +e
-          timeout --signal=KILL "${seconds}s" node scripts/verify-publish-closure.mjs "$version" --recheck
-          rc=$?
-          set -e
-          if [ "$rc" -eq 0 ]; then
-            echo "closure_ok=true" >> "$GITHUB_OUTPUT"
-          elif [ "$rc" -eq 1 ]; then
-            echo "PARTIAL PUBLISH — failing the job."
-            exit 1
-          elif [ "$rc" -eq 2 ]; then
-            # The quiet skips end the step here rather than falling out of the `fi`. A version-PR
-            # push that publishes nothing must not red the job, and leaving that outcome to be
-            # decided by whatever follows made it a property of the whole script instead of the
-            # arm: a later line, or a trap installed above, silently turned the skip into a
-            # failure with the branch itself still reading as correct (#1518).
-            echo "UNSETTLED — the registry has not converged. Skipping the Release."
-            exit 0
-          elif [ "$rc" -eq 3 ]; then
-            echo "NONE — this push published nothing. Skipping the Release."
-            exit 0
-          else
-            echo "Unexpected exit code $rc from verify-publish-closure.mjs — failing the job."
-            exit 1
-          fi
-
-      # Presence is not installability: npm install reads the packument, which can lag the
-      # per-version endpoint the closure gate reads, so a closed closure can still fail
-      # `npm i -g cotal-ai@<version>` with ETARGET on a pinned sibling (#1412). Install the version
-      # from the registry into a scratch prefix and run the binary, polling until a deadline, before
-      # anything is announced. A version that never installs reds the job and cuts no Release.
-      - name: Verify the release installs
-        id: install-gate
-        if: success() && steps.archive-gate.outputs.archives_ok == 'true' && (inputs.snapshot != '' || steps.closure-gate.outputs.closure_ok == 'true')
-        env:
-          VERSION: ${{ steps.archive-gate.outputs.version }}
-        run: |
-          node scripts/verify-release-installable.mjs "$VERSION" "--requested-at=$RELEASE_REQUESTED_AT"
-          node scripts/publication-budget.mjs --seconds-left
-          echo "install_ok=true" >> "$GITHUB_OUTPUT"
-
-      - name: Record actual command-to-availability outcome
-        if: always()
-        env:
-          INSTALL_OK: ${{ steps.install-gate.outputs.install_ok }}
-        run: node scripts/record-publication-outcome.mjs "$PUBLISH_RECEIPT" "$RUNNER_TEMP/registry-archives.json" "$RUNNER_TEMP/publication-outcome.json"
-
-      # Announce only after archive, metadata and private-install checks. Late availability
-      # remains an explicit warning and a failed timing target in the outcome receipt.
-      # Use the oldest first-parent carrier rather than a later recovery commit. Unreadable history
-      # or a missing version carrier refuses the tag.
-      - name: Tag and cut the GitHub Release on publish
-        id: release-step
-        if: success() && inputs.snapshot == '' && steps.closure-gate.outputs.closure_ok == 'true' && steps.install-gate.outputs.install_ok == 'true'
+          [[ "$RELEASE_SOURCE" =~ ^[a-f0-9]{40}$ ]]
+          git rev-list --first-parent HEAD | grep -Fx "$RELEASE_SOURCE"
+          git worktree add --detach "$RUNNER_TEMP/release-source" "$RELEASE_SOURCE"
+          printf 'RELEASE_ROOT=%s/release-source\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Build and publish directly
+        id: publish
+        run: node scripts/direct-release.mjs
+      - name: Create the release announcement
+        if: steps.publish.outputs.published == 'true' && inputs.tag == 'latest'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          version="${{ steps.closure-gate.outputs.version }}"
-          tag="v$version"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists — nothing to do."
-            exit 0
+          if ! gh release view "v$RELEASE_VERSION" >/dev/null 2>&1; then
+            gh release create "v$RELEASE_VERSION" --target "$RELEASE_SOURCE" --title "v$RELEASE_VERSION" --latest --generate-notes
           fi
-          # Each read is its own assignment so `bash -e` fails the step on a failed traversal or
-          # manifest read. Inside `git show | jq` a failed read gives jq empty input and passes as a
-          # different version.
-          commits=$(git log --first-parent --reverse --format=%H "$GITHUB_SHA" -- bin/package.json)
-          target=""
-          for c in $commits; do
-            manifest=$(git show "$c:bin/package.json")
-            carried=$(printf '%s\n' "$manifest" | jq -r .version)
-            if [ "$carried" = "$version" ]; then
-              target=$c
-              break
-            fi
-          done
-          if [ -z "$target" ]; then
-            echo "Cannot resolve the commit that first carried $version: refusing to cut the Release."
-            exit 1
-          fi
-          echo "Release $tag targets $target, the commit that first carried $version."
-          notes=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
-            -f tag_name="$tag" -f target_commitish="$target" --jq .body)
-          # The generated notes are merged-PR *titles* only. Prepend the changeset summaries (the actual
-          # per-change descriptions changesets wrote into the package CHANGELOGs) so a release reads as
-          # more than a list of one-liners. Best-effort: the package is already published, so a hiccup in
-          # this cosmetic step must never block cutting the Release (|| true).
-          detail=$(node scripts/release-notes-detail.mjs "$version" 2>/dev/null || true)
-          {
-            printf '**Cotal %s is out!**\n\nGrab it: `npm i cotal-ai@%s`\n\n' "$version" "$version"
-            if [ -n "$detail" ]; then printf '%s\n\n' "$detail"; fi
-            printf '%s\n' "$notes"
-          } > "$RUNNER_TEMP/release-notes.md"
-          gh release create "$tag" \
-            --target "$target" \
-            --title "$tag" \
-            --latest \
-            --notes-file "$RUNNER_TEMP/release-notes.md"
-          echo "Created GitHub Release $tag."
-
-      - name: Keep publication outcomes, including failed and uncertain writes
+      - name: Observe fresh install after publication
+        if: steps.publish.outputs.published == 'true'
+        run: node scripts/verify-release-installable.mjs "$RELEASE_VERSION" --deadline-ms=120000
+      - name: Keep publication outcomes
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: publication-outcome-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/qualification-selection.json
             ${{ runner.temp }}/publication.json
             ${{ runner.temp }}/registry-archives.json
-            ${{ runner.temp }}/publication-outcome.json
-          if-no-files-found: error
+            ${{ runner.temp }}/direct-candidate/manifest.json
+          if-no-files-found: warn

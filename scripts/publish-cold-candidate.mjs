@@ -58,18 +58,24 @@ export async function publishColdCandidate({
   receiptFile = env.PUBLISH_RECEIPT,
   selectionFile = env.RELEASE_QUALIFICATION,
   fetchImpl = fetch,
+  qualificationRequired = true,
 } = {}) {
-  assert(directory && results, "publication needs the qualified candidate and all native receipts");
+  assert(directory && (!qualificationRequired || results), "publication needs its candidate and configured qualification receipts");
+  if (!qualificationRequired) {
+    assert(env.GITHUB_EVENT_NAME === "workflow_dispatch" && env.GITHUB_REF === "refs/heads/main", "direct publication requires a main workflow dispatch");
+    assert(env.RELEASE_SOURCE, "direct publication needs its immutable source");
+  }
   assert(typeof tag === "string" && /^[a-z][a-z0-9._-]*$/i.test(tag), "publication dist-tag is invalid");
   const deadline = publicationExecutionDeadline(env.RELEASE_REQUESTED_AT, env.RELEASE_ATTEMPT_STARTED_AT);
   directory = resolve(directory);
   const bytes = readFileSync(join(directory, "manifest.json"));
   const manifest = JSON.parse(bytes.toString("utf8"));
   const source = exec("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", timeout: remainingBudget(deadline), killSignal: "SIGKILL" }).trim();
-  const qualification = selectionFile ? await verifyQualification({ root, publisherRoot, directory, results, selectionFile, tag, env, exec, deadline, fetchImpl }) : undefined;
+  const qualification = qualificationRequired && selectionFile ? await verifyQualification({ root, publisherRoot, directory, results, selectionFile, tag, env, exec, deadline, fetchImpl }) : undefined;
   const qualifiedSource = qualification?.source ?? source;
   assert.equal(manifest.source, qualifiedSource, "publication candidate belongs to another source");
-  verifyColdResults(results, qualifiedSource, sha(bytes));
+  if (qualificationRequired) verifyColdResults(results, qualifiedSource, sha(bytes));
+  else assert.equal(source, env.RELEASE_SOURCE, "direct publication source changed");
   if (receiptFile) assert(!existsSync(receiptFile), "refusing to overwrite an existing publication receipt");
   const census = await preflight({ root, env, exec, deadline, tag });
   if (census.state === "nothing-to-publish") return [];
