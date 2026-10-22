@@ -11,6 +11,8 @@ export async function runPersonalNativeAcceptance(input: {
   home: string; cwd: string; cli: string[]; sender: CotalEndpoint;
   peer: { roster(): Array<{ card: { id?: string; name: string } }> };
   env: NodeJS.ProcessEnv;
+  /** The fixture person approves the connection `name` asked for, once it is waiting. */
+  approve(name: string): Promise<void>;
   evidence?: string;
   transitionRace?: boolean;
   longBoundary?: boolean;
@@ -108,8 +110,15 @@ export async function runPersonalNativeAcceptance(input: {
   const passed: string[] = [];
   const markers: string[] = [];
   try {
-    prompt(`This is an isolated Cotal native acceptance test. Call mcp__cotal__cotal_connect with name ${name}. Do not call cotal_wait. Once connected, reply READY_NATIVE and its connection_id. A Cotal inline delivery contains the complete message: follow it without calling cotal_inbox. Only notification-only or explicitly incomplete deliveries require an inbox read using your own connection_id. Never inspect environment variables or login files.`);
-    await until(() => assistantSaid("READY_NATIVE") && input.peer.roster().some((row) => row.card.name === name), "native connect");
+    prompt(`This is an isolated Cotal native acceptance test. Call mcp__cotal__cotal_connect with name ${name}. If it says the person must approve, reply APPROVAL_PENDING and stop. Do not call cotal_wait. Once connected, reply READY_NATIVE and its connection_id. A Cotal inline delivery contains the complete message: follow it without calling cotal_inbox. Only notification-only or explicitly incomplete deliveries require an inbox read using your own connection_id. Never inspect environment variables or login files.`);
+    await until(() => assistantSaid("APPROVAL_PENDING") && rows.some((row) => row.value.type === "result"), "the native model reporting the pending approval");
+    assert(rows.some((row) => row.value.type === "user" && JSON.stringify(row.value).includes("Permission approval required")), "cotal_connect did not answer that the person must approve");
+    assert(!input.peer.roster().some((row) => row.card.name === name), "the native conversation joined before the person approved it");
+    await input.approve(name);
+    const approvedAt = sequence;
+    prompt(`The person approved this connection in Cotal. Call mcp__cotal__cotal_connect again with name ${name}, then reply READY_NATIVE and its connection_id.`);
+    await until(() => assistantSaid("READY_NATIVE", approvedAt) && input.peer.roster().some((row) => row.card.name === name), "native connect");
+    passed.push("native-connect-waits-for-the-person");
     const native = input.peer.roster().find((row) => row.card.name === name)!;
     assert(native.card.id, "native connection has no actual principal");
     nativePrincipal = native.card.id;

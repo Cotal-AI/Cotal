@@ -1,5 +1,7 @@
-/** Two personal native connections on a real isolated user-auth broker and auth service.
- * Native transcript/lifecycle inputs and the human session are fixtures, not hosted acceptance. */
+/** Two personal native connections on a real isolated user-auth broker and auth service. Each new
+ * connection waits for a person's approval at the mesh's HTTPS authority before anything is issued.
+ * That authority, the person who decides there, native transcript/lifecycle inputs and the human
+ * session are fixtures, not hosted acceptance. */
 import assert from "node:assert/strict";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -16,7 +18,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   }
 } else {
   const { spawn } = await import("node:child_process");
-  const { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
+  const { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } = await import("node:fs");
   const { createServer } = await import("node:http");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -30,10 +32,11 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     newIdentity, provisionAgent, serverConfig, setupSpaceStreams,
   } = await import("@cotal-ai/core");
   const { authDir, assertUserAuthInfo, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-  const { cotalAuthProvider, grantActor, loadAuthServiceInfo } = await import("@cotal-ai/auth");
+  const { cotalAuthProvider, grantActor, loadCalloutAuth } = await import("@cotal-ai/auth");
   const { saveIdpSession } = await import("../src/login.js");
   const { createAppHost } = await import("../../../extensions/connector-claude-code/src/app-host.js");
   const { pickFreePort } = await import("./_free-port.js");
+  const { EMPTY, startApprovalAuthority } = await import("./_approval-authority.js");
   const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
   const until = async (test: () => boolean | Promise<boolean>, message: string, ms = 15_000) => {
     const end = Date.now() + ms;
@@ -42,7 +45,9 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   };
   const space = `personal-${process.pid}`;
   const port = await pickFreePort();
+  const publicPort = await pickFreePort();
   const servers = `nats://127.0.0.1:${port}`;
+  const human = "isolated-human-session";
   const stateDir = userAuthStateDir(root, space);
   const store = workspaceSecretStore(root);
   const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end('{"keys":[]}'); });
@@ -52,7 +57,8 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   let authService: import("node:child_process").ChildProcess | undefined;
   let releaseBroker: (() => void) | undefined;
   const endpoints: InstanceType<typeof CotalEndpoint>[] = [];
-  const childEnv = { ...process.env, COTAL_HOME: home };
+  const authority = await startApprovalAuthority({ home, human });
+  const childEnv = { ...process.env, COTAL_HOME: home, NODE_EXTRA_CA_CERTS: authority.caFile };
   let host: ReturnType<typeof createAppHost> | undefined;
   let complete = false;
   const nativeAcceptance = process.argv.includes("--native-acceptance");
@@ -74,15 +80,12 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     await until(async () => broker!.exitCode === null && await isReachable(servers), "owned user-auth broker did not bind");
     await setupSpaceStreams({ space, servers, creds: await mintCreds(auth, newIdentity(), "provisioner") });
     recordMesh({ space, server: servers, root, mode: "user", policy: { events: "required" }, userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
-    saveIdpSession(home, idpUrl, { token: "isolated-human-session", sub: "personal-fixture-human", expiresAt: Math.floor(Date.now() / 1000) + 600 });
+    saveIdpSession(home, idpUrl, { token: human, sub: "personal-fixture-human", expiresAt: Math.floor(Date.now() / 1000) + 600 });
     const owner = await cotalAuthProvider.ownerForLogin({ store, dir: stateDir, space });
-    const parentGrant = grantActor(stateDir, { owner, actor: "cli", scope: ["spawn"], allowSubscribe: [], allowPublish: [], label: "isolated fixture operator" });
-    authService = spawn(process.execPath, [...process.execArgv, import.meta.filename, "auth-service", "--space", space, "--server", servers], { cwd: root, env: childEnv, stdio: "ignore" });
-    await until(async () => {
-      const info = loadAuthServiceInfo(stateDir);
-      if (!info) return false;
-      try { return (await fetch(`${info.url}/health`)).ok; } catch { return false; }
-    }, "isolated real auth service did not become ready");
+    grantActor(stateDir, { owner, actor: "cli", scope: ["spawn"], allowSubscribe: [], allowPublish: [`events.${owner}.>`], label: "isolated fixture operator" });
+    authService = spawn(process.execPath, [...process.execArgv, import.meta.filename, "auth-service", "--space", space, "--server", servers,
+      "--exchange-public-port", String(publicPort)], { cwd: root, env: childEnv, stdio: "ignore" });
+    await until(async () => { try { return (await fetch(`http://127.0.0.1:${publicPort}/health`)).ok; } catch { return false; } }, "isolated real auth service did not become ready");
     check("actual user-auth service and broker are live", authService.exitCode === null && broker.exitCode === null);
     host = createAppHost({ cotal: () => [process.execPath, ...process.execArgv, import.meta.filename], cwd: root, env: childEnv });
     await assert.rejects(host.open("local", "unbound", "native-unbound"), /not bound/);
@@ -94,36 +97,38 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
       writeFileSync(path, JSON.stringify({ type: "user", uuid: `before-${session}`, message: { role: "user", content: "PRIVATE_BEFORE_CONNECT" }, timestamp: new Date().toISOString() }) + "\n");
       await host.nativeEvent({ hook_event_name: "SessionStart", session_id: session, transcript_path: path, source: "startup", cwd: root });
     }
-    await assert.rejects(host.open("local", "personal_a", "native-a"), /would exceed its spawner's grant/);
-    check("local issuance respects the fixture parent's event ceiling", true);
-    grantActor(stateDir, { ...parentGrant, allowPublish: [`events.${owner}.>`] });
-    const { createHash } = await import("node:crypto");
-    const { provisionUserApp, retireUserApp } = await import("../../cli/src/lib/app-user-identity.js");
-    const { resolveTargetOrThrow } = await import("@cotal-ai/workspace");
-    const target = await resolveTargetOrThrow({ space });
-    const originalGrant = cotalAuthProvider.grantAgent;
-    let crashedActor: string | undefined;
-    cotalAuthProvider.grantAgent = async (options) => {
-      await originalGrant(options);
-      crashedActor = options.actor;
-      throw new Error("fixture interruption after the real grant committed");
+    // This machine holds the mesh's authority, so it has no page where a person approves anything.
+    await assert.rejects(host.open("local", "personal_a", "native-a"), /no human approval for a new conversation identity, so none was requested/);
+    check("a mesh whose authority this machine holds opens no identity and saves no request", readdirSync(join(home, "app-identities")).length === 0);
+
+    // The same mesh signed in through its HTTPS authority, where a person approves each connection.
+    const provisioner = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "provisioner"), channels: [], consume: false,
+      registerPresence: false, watchPresence: false, watchChannels: false, card: { name: "fixture-provisioner", kind: "endpoint" } });
+    endpoints.push(provisioner);
+    provisioner.on("error", () => {});
+    await provisioner.start();
+    authority.addMesh({ space, server: servers, root, owner, userAuth: assertUserAuthInfo(prepared.publicAuth),
+      sentinelCreds: (await loadCalloutAuth(store, space))!.sentinelCreds, exchange: `http://127.0.0.1:${publicPort}/exchange`,
+      local: { stateDir, provisioner, auth, servers } });
+    // The connector's ApprovalRequired, by name: this package does not depend on the connector.
+    const asking = async (name: string, session: string) => {
+      const error = await host!.open("local", name, session).then(() => undefined, (e: unknown) => e) as { name?: string; pending?: import("@cotal-ai/core").ConversationPending } | undefined;
+      assert(error?.name === "ApprovalRequired" && error.pending, `expected the person's approval, got ${String(error)}`);
+      return error.pending;
     };
-    try {
-      await assert.rejects(provisionUserApp(target, "crash_test", "native-crash", true), /fixture interruption/);
-    } finally { cotalAuthProvider.grantAgent = originalGrant; }
-    assert(crashedActor);
-    check("a committed grant survives the simulated post-grant interruption", await cotalAuthProvider.actorScope({ dir: stateDir, owner, actor: crashedActor }) !== undefined);
-    await assert.rejects(provisionUserApp(target, "crash_test", "native-crash", true), /unconfirmed secret/);
-    const crashDir = join(home, "app-identities", createHash("sha256").update(`${space}\0native-crash`).digest("hex"));
-    await retireUserApp(crashDir);
-    check("exact foreground retirement recovers a committed grant without its lost response secret", !existsSync(crashDir) && await cotalAuthProvider.actorScope({ dir: stateDir, owner, actor: crashedActor }) === undefined);
-    const fresh = await provisionUserApp(target, "crash_test", "native-crash", true);
-    if ("pending" in fresh) throw new Error("a local mesh has no approval page, so it never answers pending");
-    check("reconnect after confirmed crash cleanup gets a new actor", fresh.env.COTAL_ACTOR !== crashedActor);
-    await retireUserApp(fresh.retire.dir);
+    const pendingA = await asking("personal_a", "native-a");
+    check("a new connection waits for the person, and nothing is issued or granted",
+      pendingA.approval.url === `${authority.base}/approve/${pendingA.approval.id}` && pendingA.proposed === null &&
+      authority.counts.issues === 0 && !authority.requests.get(pendingA.requestId)!.actor);
+    // What the person types while deciding is not this connection's activity either.
+    appendFileSync(paths.get("native-a")!, JSON.stringify({ type: "user", uuid: "during-approval", message: { role: "user", content: "PRIVATE_DURING_APPROVAL" }, timestamp: new Date().toISOString() }) + "\n");
+    check("connecting again before the decision replays the same request", (await asking("personal_a", "native-a")).requestId === pendingA.requestId && authority.counts.issues === 0);
+    authority.decide(pendingA.requestId, { approve: EMPTY });
     const a = await host.open("local", "personal_a", "native-a");
+    const pendingB = await asking("personal_b", "native-b");
+    authority.decide(pendingB.requestId, { approve: EMPTY });
     const b = await host.open("local", "personal_b", "native-b");
-    check("two personal conversations join the real user-auth mesh", a.agent.connected && b.agent.connected);
+    check("two approved personal conversations join the real user-auth mesh", a.agent.connected && b.agent.connected && authority.counts.issues === 2);
     check("conversations have distinct actors and lifecycle UIDs", a.config.userAuth!.actor !== b.config.userAuth!.actor && a.config.lifecycleUid !== b.config.lifecycleUid);
     check("personal grants have no role, scope or ordinary channels", !a.config.role && !a.config.capabilities?.length && !a.config.subscribe.length && !a.config.allowSubscribe.length);
     const aChannel = eventChannel(a.config.userAuth!);
@@ -133,11 +138,6 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     check("one native session cannot acquire a second active path", a.agent.connected);
     await assert.rejects(host.nativeEvent({ hook_event_name: "Stop", session_id: "native-a", transcript_path: paths.get("native-b") }), /does not match/);
     check("foreign transcript binding is refused without stopping either conversation", a.agent.connected && b.agent.connected);
-    const provisioner = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "provisioner"), channels: [], consume: false,
-      registerPresence: false, watchPresence: false, watchChannels: false, card: { name: "fixture-provisioner", kind: "endpoint" } });
-    endpoints.push(provisioner);
-    provisioner.on("error", () => {});
-    await provisioner.start();
     const senderIdentity = newIdentity();
     const senderLifecycle = mintLifecycleUid();
     const senderCreds = await provisionAgent(provisioner, auth, senderIdentity, { lifecycleUid: senderLifecycle, subscribe: [], allowSubscribe: [] });
@@ -170,13 +170,21 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
       return frames.some((frame) => frame.includes("PERSONAL_ASSISTANT_EVENT"));
     }, "native personal transcript did not publish its own required events");
     check("real event recorder publishes own assistant activity through the user-auth grant", frames.some((frame) => frame.includes("RUN_STARTED")));
-    check("pre-connection transcript content is not published", frames.every((frame) => !frame.includes("PRIVATE_BEFORE_CONNECT")));
+    check("transcript content from before the approved connection is not published",
+      frames.every((frame) => !frame.includes("PRIVATE_BEFORE_CONNECT") && !frame.includes("PRIVATE_DURING_APPROVAL")));
     await assert.rejects(a.agent.ep.multicast("SIBLING_MUST_NOT_PUBLISH", { channel: bChannel }));
     check("sibling event publication is denied", frames.every((frame) => !frame.includes("SIBLING_MUST_NOT_PUBLISH")));
     if (nativeAcceptance) {
       const { runPersonalNativeAcceptance } = await import("./_personal-native-driver.js");
       const evidence = process.argv.includes("--native-evidence") ? process.argv[process.argv.indexOf("--native-evidence") + 1] : undefined;
-      const options = { home, cwd: root, cli: [process.execPath, ...process.execArgv, import.meta.filename], sender, peer: b.agent, env: childEnv,
+      // The fixture person approves each native conversation's request only after it asked, with
+      // nothing optional. The conversation must stay off the mesh until then.
+      const approve = async (name: string) => {
+        await until(() => authority.pending(name).length === 1, `${name} did not ask the person for approval`, 120_000);
+        assert(!b.agent.roster().some((row) => row.card.name === name), `${name} joined before the person approved it`);
+        authority.decide(authority.pending(name)[0]!.requestId, { approve: EMPTY });
+      };
+      const options = { home, cwd: root, cli: [process.execPath, ...process.execArgv, import.meta.filename], sender, peer: b.agent, env: childEnv, approve,
         transitionRace: process.argv.includes("--native-transition-race"), longBoundary: process.argv.includes("--native-long-boundary"),
         traceInline: process.argv.includes("--native-inline-trace") };
       if (process.argv.includes("--native-concurrent")) {
@@ -211,6 +219,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     await stopped(authService);
     await stopped(broker);
     releaseBroker?.();
+    await authority.close();
     await new Promise<void>((resolve) => idp.close(() => resolve()));
     if (complete || !nativeAcceptance) rmSync(home, { recursive: true, force: true });
     else console.error(`native acceptance fixture retained for diagnosis: ${home}`);
