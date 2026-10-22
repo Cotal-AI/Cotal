@@ -36,7 +36,7 @@ try {
   }
   const calls = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
   assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0], ["app-identity", "provision", "--name", "approval_probe", "--session", session, "--events"]);
+  assert.deepEqual(calls[0], ["app-identity", "provision", "--require-approval", "--name", "approval_probe", "--session", session, "--events"]);
   assert.deepEqual(calls[1], calls[0], "an approval retry preserves the native session and proposal");
   assert.equal(await host.find("local", "not-a-connection"), undefined);
   assert.equal(await host.close("local", "not-a-connection"), false);

@@ -107,7 +107,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       catch (error) { throw new Error(`this conversation's previous identity cleanup is not finished: ${reason(error)}. Call cotal_connect again to retry it`); }
       pending.delete(context!);
     }
-    const reply = await plumbing(["provision", "--name", name, ...(binding ? ["--session", binding.session, "--events"] : []),
+    const reply = await plumbing(["provision", "--require-approval", "--name", name, ...(binding ? ["--session", binding.session, "--events"] : []),
       ...(selection ? ["--selection", JSON.stringify(selection)] : [])]);
     if (!reply.ok) {
       if (reply.pending) throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed });
