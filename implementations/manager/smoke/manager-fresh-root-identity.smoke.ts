@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-i1263-home-"));
 process.env.COTAL_HOME = home;
@@ -91,20 +91,29 @@ try {
   });
   teardownOnSignal(second);
   kids.push(second);
+  let stderr = "";
+  second.stderr?.on("data", (c: Buffer) => { stderr += c.toString(); });
   const seqReport = await new Promise<{ ok: boolean; error?: string }>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("the sequential second start did not report")), 25_000);
+    let settled = false;
+    const settle = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(timer); fn(); };
+    const timer = setTimeout(() => settle(() => reject(new Error("the sequential second start did not report"))), 25_000);
     let buf = "";
     second.stdout?.on("data", (c: Buffer) => {
       buf += c.toString();
       // Only a complete line is a report; a chunk can end inside one.
       const line = buf.split("\n").slice(0, -1).find((l) => l.startsWith("{"));
       if (!line) return;
-      clearTimeout(timer);
-      try { resolve(JSON.parse(line)); } catch (e) { reject(e); }
+      settle(() => {
+        try {
+          const report = JSON.parse(line) as { ok?: unknown; error?: unknown };
+          if (typeof report.ok !== "boolean" || (report.ok === false && typeof report.error !== "string")) throw new Error(`malformed report: ${line}`);
+          resolve(report as { ok: boolean; error?: string });
+        } catch (e) { reject(e); }
+      });
     });
-  });
-  second.kill("SIGKILL");
-  if (second.exitCode === null && second.signalCode === null) await new Promise((r) => second.once("exit", r));
+    second.once("error", (e) => settle(() => reject(e)));
+    second.once("exit", (code, signal) => settle(() => reject(new Error(`the sequential second start exited before reporting (code ${code}, signal ${signal}): ${stderr.slice(-2000)}`))));
+  }).finally(() => killAndAwaitExit(second, "SIGKILL"));
   const seqErr = seqReport.ok ? "" : seqReport.error ?? "";
   check("sequential second start REFUSES with already-serves (fence after identity exists)",
     /already serves space/.test(seqErr), seqErr);
