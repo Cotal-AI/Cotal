@@ -743,6 +743,7 @@
     "smoke:join-external:live": "tsx implementations/cli/smoke/join-external-broker-live.smoke.ts",
     "smoke:join-durable-dedup:live": "tsx implementations/cli/smoke/join-durable-dedup-live.smoke.ts",
     "smoke:app-identity:live": "tsx implementations/cli/smoke/app-identity-live.smoke.ts",
+    "smoke:conversation-selection-live": "tsx implementations/cli/smoke/conversation-selection-live.smoke.ts",
     "smoke:claude-local:live": "tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
     "smoke:claude-desktop-config": "tsx extensions/connector-claude-code/smoke/desktop-config.smoke.ts",
     "smoke:claude-hook-weight": "tsx extensions/connector-claude-code/smoke/hook-weight.smoke.ts",
@@ -940,6 +941,7 @@
     "smoke:environment-manager-admission-index": "tsx implementations/auth/smoke/environment-manager-admission-index.smoke.ts",
     "smoke:environment-manager-bootstrap-mint": "tsx implementations/auth/smoke/environment-manager-bootstrap-mint.smoke.ts",
     "smoke:manager-run-owned-agents": "tsx implementations/manager/smoke/run-owned-agents.smoke.ts",
+    "smoke:native-conversation-capabilities": "tsx implementations/manager/smoke/native-conversation-capabilities.smoke.ts",
     "smoke:claude-mcp-default": "tsx extensions/connector-claude-code/smoke/mcp-default.smoke.ts",
     "smoke:presence-runtime": "tsx packages/core/smoke/presence-runtime.smoke.ts"
   },

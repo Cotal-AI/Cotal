@@ -417,7 +417,7 @@ The host implements `GatewayHost`:
 
 - `account(auth)` returns the account the request authenticated as, read from the SDK's `AuthInfo`.
   It throws when the request has none, and the tool then runs nothing.
-- `open(account, name)` issues and starts a new connection under that name. It throws `NameTaken`
+- `open(account, name, context?, selection?)` issues and starts a new connection under that name. It throws `NameTaken`
   only when the issuer reports that the name exists. `cotal_connect` then tries `name_2`, `name_3`
   and so on, up to `GATEWAY_NAME_ATTEMPTS` names. Any other error goes back to the caller and no
   other name is tried. The collision check and the issue must be one atomic step per account, so
@@ -427,9 +427,14 @@ The host implements `GatewayHost`:
 
 `cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. Its reply names
 the channels the new connection reads, may join and may post to, from the configuration its grant
-produced. `GATEWAY_TOOLS` names the mesh tools the gateway offers, `cotal_docs` included, so the
-docs the orientation card points to are reachable. Spawn, despawn, persona, run, yield and reconnect
-belong to a supervised local seat and are left out. One tool list serves every connection, so no
+produced. `GATEWAY_TOOLS` names the mesh tools the gateway offers, `cotal_docs` included. A native
+embedder whose host issues each conversation its own grant may pass `options.tools` from
+`NATIVE_GATEWAY_TOOLS`, which adds spawn, despawn, persona, run and reconnect but not yield.
+Registering a tool offers it to no connection by itself: a connection calls only the tools its
+host lists in `GatewayConnection.tools`, default `GATEWAY_TOOLS`, and only those its credential's
+capabilities allow. With `options.selection`, `cotal_connect` takes channels, a role and capabilities,
+builds the canonical selection with core's `conversationSelection`, and hands it to `open`. The
+host issues that selection as given or throws. One tool list serves every connection, so no
 advertised text names one connection's channels. Each call runs against that connection's own
 configuration. Authentication, credential issuance and revocation and durable connection records
 stay with the host.

@@ -24,6 +24,7 @@ import type {
   RemoteRunAttemptRequest,
   RemoteRunAttemptResult,
 } from "./remote-manager-authority.js";
+import type { ConversationSelection } from "./conversation-selection.js";
 import { assertLifecycleToken } from "./subjects.js";
 
 /** Who holds one managed lifecycle, recorded on its managed-agent grant row by the writer that
@@ -333,7 +334,7 @@ export interface AuthProvider extends Extension {
     url: string;
     idpUrl: string;
     method: "POST" | "DELETE";
-    body?: { v: 1; requestId: string; tokenHash: string; label?: string };
+    body?: { v: 1; requestId: string; tokenHash: string; label?: string; selection?: ConversationSelection };
   }): Promise<{ status: number; body: unknown }>;
   /**
    * CLIENT side of a REMOTE mesh's one-time enrollment redeem: GET the secret-bearing enrollment

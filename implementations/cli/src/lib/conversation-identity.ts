@@ -1,9 +1,14 @@
-import { assertLifecycleToken, eventChannel, principalKey } from "@cotal-ai/core";
+import {
+  assertLifecycleToken, canonicalJson, conversationGrant, principalKey,
+  type ConversationGrant, type ConversationSelection,
+} from "@cotal-ai/core";
 import { checkUserBundle, discoveryDocumentUrl, type MeshTarget, type UserBundle } from "@cotal-ai/workspace";
 
 export interface ConversationAuthority {
   url: string;
   bundle: UserBundle;
+  /** The authority advertises selection v1, so a request may carry a {@link ConversationSelection}. */
+  selection: boolean;
 }
 
 /** Discover without human proof, then bind every returned trust pin to the selected registration. */
@@ -22,13 +27,14 @@ export async function discoverConversationAuthority(target: MeshTarget): Promise
       bundle.userAuth.provider !== pinned.provider || bundle.userAuth.idp.url !== pinned.idp.url || bundle.userAuth.idp.issuer !== pinned.idp.issuer ||
       bundle.userAuth.idp.audience !== pinned.idp.audience || bundle.userAuth.endpoints?.url !== pinned.endpoints.url)
     throw new Error("conversation identity discovery changed the selected registration's trust pins");
-  const capability = JSON.parse(raw)?.cloudCapabilities?.conversationIdentity;
+  const capabilities = JSON.parse(raw)?.cloudCapabilities;
+  const capability = capabilities?.conversationIdentity;
   if (capability?.version !== 1 || typeof capability.url !== "string")
     throw new Error("the selected mesh does not advertise conversation identity v1; no identity was requested");
   const authority = secureUrl(capability.url);
   if (authority.origin !== url.origin || authority.pathname !== `/api/spaces/${encodeURIComponent(target.space)}/conversation-identities` || authority.search)
     throw new Error("conversation identity authority does not name the selected origin and space");
-  return { url: authority.href, bundle };
+  return { url: authority.href, bundle, selection: capabilities?.conversationIdentitySelection?.version === 1 };
 }
 
 export interface ConversationMaterial {
@@ -38,7 +44,7 @@ export interface ConversationMaterial {
   owner: string;
   actor: string;
   lifecycleUid: string;
-  grant: { scope: []; role: null; allowSubscribe: []; allowPublish: [string]; subscribe: [] };
+  grant: ConversationGrant;
   policy?: { events: "required" };
   sentinelCreds: string;
   exchangeUrl: string;
@@ -50,10 +56,6 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function empty(value: unknown): boolean {
-  return Array.isArray(value) && value.length === 0;
-}
-
 function secureUrl(value: string): URL {
   const url = new URL(value);
   if (url.protocol !== "https:" || url.username || url.password || url.hash || url.href !== value)
@@ -61,8 +63,9 @@ function secureUrl(value: string): URL {
   return url;
 }
 
-/** A successful HTTP status is not authority: require the accepted event-only grant and exact pins. */
-export function checkConversationMaterial(value: unknown, authority: ConversationAuthority, requestId: string): ConversationMaterial {
+/** A successful HTTP status is not authority: require exactly the grant the request implies, the
+ *  own-event-only grant without a selection, and the exact pins. */
+export function checkConversationMaterial(value: unknown, authority: ConversationAuthority, requestId: string, selection?: ConversationSelection): ConversationMaterial {
   const body = object(value);
   const known = ["v", "requestId", "space", "owner", "actor", "lifecycleUid", "grant", "policy", "sentinelCreds", "exchangeUrl", "retire"];
   if (Object.keys(body).some((key) => !known.includes(key)) || body.v !== 1 || body.requestId !== requestId ||
@@ -71,11 +74,9 @@ export function checkConversationMaterial(value: unknown, authority: Conversatio
     throw new Error("conversation identity response does not match the saved request");
   principalKey(body.owner, body.actor);
   assertLifecycleToken(body.lifecycleUid);
-  const channel = eventChannel({ owner: body.owner, actor: body.actor });
-  const grant = object(body.grant);
-  if (Object.keys(grant).length !== 5 || !empty(grant.scope) || grant.role !== null || !empty(grant.allowSubscribe) ||
-      !empty(grant.subscribe) || !Array.isArray(grant.allowPublish) || grant.allowPublish.length !== 1 || grant.allowPublish[0] !== channel)
-    throw new Error("conversation identity grant is not the exact own-event-only grant");
+  if (canonicalJson(object(body.grant)) !== canonicalJson(conversationGrant({ owner: body.owner, actor: body.actor }, selection)))
+    throw new Error(selection ? "conversation identity grant is not the exact grant its selection asked for"
+      : "conversation identity grant is not the exact own-event-only grant");
   if (JSON.stringify(body.policy ?? null) !== JSON.stringify(authority.bundle.policy ?? null))
     throw new Error("conversation identity response changed the selected event policy");
   if (body.sentinelCreds !== authority.bundle.sentinelCreds || body.exchangeUrl !== authority.bundle.userAuth.endpoints?.url)
@@ -86,6 +87,28 @@ export function checkConversationMaterial(value: unknown, authority: Conversatio
   expected.searchParams.set("lifecycleUid", body.lifecycleUid);
   if (secureUrl(retire.url).href !== expected.href) throw new Error("conversation identity retirement names another lifecycle");
   return body as unknown as ConversationMaterial;
+}
+
+/** How many refused items one refusal line names. */
+const REFUSED_SHOWN = 8;
+
+/** The items a 409 says exceed the caller's own access, as one bounded line, or undefined when the
+ *  answer is not that refusal. The authority wrote nothing for such a request. */
+export function selectionRefusal(status: number, value: unknown): string | undefined {
+  if (status !== 409 || !value || typeof value !== "object") return undefined;
+  const body = value as Record<string, unknown>;
+  if (body.error !== "selection exceeds your own access" || !Array.isArray(body.refused) || !body.refused.length) return undefined;
+  const text = (value: unknown) => JSON.stringify(typeof value === "string" ? value.slice(0, 160) : "");
+  const items = body.refused.slice(0, REFUSED_SHOWN).map((entry) => {
+    const { kind, item } = (entry ?? {}) as { kind?: unknown; item?: unknown };
+    if (kind === "channel" && item && typeof item === "object") {
+      const { channel, access } = item as { channel?: unknown; access?: unknown };
+      return `channel ${text(channel)} (${access === "read-post" ? "read-post" : "read"})`;
+    }
+    return `${kind === "role" ? "role" : "capability"} ${text(item)}`;
+  });
+  const more = body.refused.length - items.length;
+  return `the selection exceeds your own access: ${items.join(", ")}${more > 0 ? ` and ${more} more` : ""}`;
 }
 
 /** The phase a retirement reached, `terminal` once it is complete. Pending, malformed and unconfirmed

@@ -31,6 +31,7 @@ import {
   GATEWAY_CONNECTING,
   GATEWAY_INSTRUCTIONS,
   GATEWAY_LISTENING,
+  NATIVE_GATEWAY_TOOLS,
   serveGatewayStdio,
   DOCS_VERSION,
 } from "@cotal-ai/connector-core";
@@ -78,6 +79,8 @@ async function serveLocal(desktop: boolean): Promise<void> {
   const served = await serveGatewayStdio(host, {
     source: "claude-local",
     connectContext: !desktop,
+    // A signed-in Code conversation asks for its own grant and calls with it; see the host.
+    ...(desktop ? {} : { tools: NATIVE_GATEWAY_TOOLS, selection: true }),
     ...(feed
       ? {
           instructions: `${LOCAL}${GATEWAY_CONNECTING} ${CODE_LISTENING}`,

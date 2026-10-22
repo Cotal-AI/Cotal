@@ -3,8 +3,8 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { basename, isAbsolute } from "node:path";
-import { configFromEnv, eventPlaneArmed, MeshAgent, NameTaken, type GatewayConnection, type GatewayHost, type HookEvent } from "@cotal-ai/connector-core";
-import { runAgentBearer } from "@cotal-ai/core";
+import { configFromEnv, eventPlaneArmed, GATEWAY_TOOLS, MeshAgent, NameTaken, type GatewayConnection, type GatewayHost, type HookEvent } from "@cotal-ai/connector-core";
+import type { ConversationGrant, ConversationSelection } from "@cotal-ai/core";
 import { createClaudeHandle, type ClaudeHooks } from "./hooks.js";
 import { createClaudeEventPlane } from "./claude-events.js";
 import { createBoundClaudeTranscriptSource } from "./agui-source.js";
@@ -37,7 +37,18 @@ interface Held {
   unfinished?: string;
 }
 
-type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string } } | { ok: false; taken?: true; error?: string };
+type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant } | { ok: false; taken?: true; error?: string };
+
+/** The native tools a signed-in conversation's own grant can use. The manager that serves each
+ *  call still decides it from that grant. */
+function grantedTools(grant: ConversationGrant): ReadonlySet<string> {
+  return new Set([
+    ...GATEWAY_TOOLS,
+    "cotal_reconnect",
+    ...(grant.scope.includes("spawn") ? ["cotal_spawn", "cotal_persona", "cotal_personas", "cotal_despawn"] : []),
+    ...(grant.scope.includes("run") ? ["cotal_run"] : []),
+  ]);
+}
 
 const reason = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -81,7 +92,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       if (reapAgain) { reapAgain = false; reap(); }
     });
   };
-  const open = async (name: string, context?: string): Promise<GatewayConnection> => {
+  const open = async (name: string, context?: string, selection?: ConversationSelection): Promise<GatewayConnection> => {
     const binding = context ? bindings.get(context) : undefined;
     if (context && !binding) throw new Error("the native conversation has not bound its lifecycle and transcript; no identity was requested");
     const prior = context ? [...held].find(([, h]) => h.session === context) : undefined;
@@ -96,7 +107,8 @@ export function createAppHost(o: AppHostOptions): AppHost {
     }
     // Capture the personal privacy boundary before provisioning or waiting for a network connection.
     const source = binding ? await createBoundClaudeTranscriptSource(binding.path, "resume") : undefined;
-    const reply = await plumbing(["provision", "--name", name, ...(binding ? ["--session", binding.session, "--events"] : [])]);
+    const reply = await plumbing(["provision", "--name", name, ...(binding ? ["--session", binding.session, "--events"] : []),
+      ...(selection ? ["--selection", JSON.stringify(selection)] : [])]);
     if (!reply.ok) {
       if (reply.taken) throw new NameTaken(name);
       throw new Error(reply.error ?? "identity provisioning failed");
@@ -108,16 +120,9 @@ export function createAppHost(o: AppHostOptions): AppHost {
       const env = launchEnv(o.env, reply.env);
       const config = configFromEnv(env);
       config.connector = "claude";
+      // No run turn is addressed to a conversation. Its own bearer command exchanges its own
+      // secret for a manager-call view, so manager calls carry only what its grant holds.
       config.turnRelay = false;
-      if (config.userAuth?.bearerCmd) {
-        const { owner, actor, sentinelCreds, bearerCmd } = config.userAuth;
-        // A personal conversation has a leaf credential, not a manager-call instrument.
-        config.userAuth = { owner, actor, sentinelCreds, bearer: async () => {
-          const token = await runAgentBearer(bearerCmd, { env });
-          if (!token) throw new Error("the personal conversation's bearer command returned no token");
-          return token;
-        } };
-      }
       if (eventPlaneArmed(config, env) && !binding) throw new Error("this mesh requires a bound native event source");
       agent = new MeshAgent(config, env, { withholdProcessCwd: true });
       agent.on("error", () => process.stderr.write("[cotal-connector] personal connection error; inspect cotal_connection_status\n"));
@@ -129,7 +134,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       void agent.start();
       for (let waited = 0; !agent.connected && waited < JOIN_MS; waited += 100) await new Promise((resolve) => setTimeout(resolve, 100));
       if (!agent.connected) throw new Error(`the personal conversation did not join within ${JOIN_MS / 1000} s; its identity was retained for exact cleanup`);
-      const conn: GatewayConnection = { id: randomUUID(), agent, config };
+      const conn: GatewayConnection = { id: randomUUID(), agent, config, ...(reply.grant ? { tools: grantedTools(reply.grant) } : {}) };
       held.set(conn.id, { conn, dir, session: binding?.session, hooks, plane });
       if (binding && hooks) await hooks.handle(agent, binding.event);
       if (config.userAuth) reap();
@@ -164,8 +169,8 @@ export function createAppHost(o: AppHostOptions): AppHost {
   };
   return {
     account: () => "local",
-    open(_account, name, context) {
-      const next = opening.then(() => open(name, context));
+    open(_account, name, context, selection) {
+      const next = opening.then(() => open(name, context, selection));
       opening = next.catch(() => {});
       return next;
     },

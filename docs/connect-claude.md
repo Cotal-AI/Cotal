@@ -246,12 +246,32 @@ from the default persona. A plugin that `cotal setup` did not install has no rec
 `cotal_connect` names that remedy.
 
 Personal native Code sessions can also join a signed-in mesh. The plugin binds the real native
-session and transcript before requesting an identity. Each conversation gets a separate actor with
-no role, capabilities or ordinary channel access. It can receive direct messages and publish only
-its own event channel. The existing signed-in account authorizes creation; no login proof reaches
-the conversation or its tools. A remote mesh must advertise conversation identity v1 on its pinned
-HTTPS discovery endpoint. An absent capability, a different origin or a changed registration is
-refused before authenticated issuance. There is no legacy provisioning fallback.
+session and transcript before requesting an identity. Each conversation gets a separate actor.
+Without a selection it has no role, capabilities or ordinary channel access: it can receive direct
+messages and publish only its own event channel. The existing signed-in account authorizes creation;
+no login proof reaches the conversation or its tools. A remote mesh must advertise conversation
+identity v1 on its pinned HTTPS discovery endpoint. An absent capability, a different origin or a
+changed registration is refused before authenticated issuance. There is no legacy provisioning
+fallback.
+
+`cotal_connect` in a native Code session also takes a selection: `channels` to read
+(`access: "read"`) or read and post to (`"read-post"`), a `role`, and `capabilities` (`spawn`,
+`run`). Each item must already be within your own grant on that mesh. When any item is not,
+nothing is issued and the reply names every refused item. There is no fallback to the
+event-only identity. The issued grant must match the selection item for item, or the connection is
+refused. Its own event channel stays the first post entry. A remote mesh must also advertise
+`conversationIdentitySelection` version 1, or a selection is refused before any request.
+Endpoint calls are not selectable yet: no stock credential carries endpoint caller reach for a
+conversation, so `cotal_describe` and `cotal_invoke` are not offered.
+
+A connection is offered the tools its grant can use: `cotal_spawn`, `cotal_persona`,
+`cotal_personas` and `cotal_despawn` with `spawn`, `cotal_run` with `run`, and `cotal_reconnect`.
+Its manager calls exchange the conversation's own secret for a manager-call view, so they carry only
+its grant and name the manager instance when more than one could answer. A conversation is not a
+managed seat. `cotal_despawn` without a name refuses rather than stopping your app, and
+`cotal_disconnect` retires only that connection. No run turn is addressed to it, because a workflow
+addresses turns to agents it spawned, so `cotal_yield` is not offered. Persona text and model pins
+do not change the conversation's own instructions or model.
 
 The plugin's ordinary command hooks supply the session and transcript binding. Its native module
 uses that binding without intercepting `classic.*` events, which Claude's built-in security guard
@@ -530,7 +550,7 @@ native Code connection to a signed-in mesh uses the same recorder and captures i
 boundary before requesting an identity. Records from before that connection are not published.
 Its native lifecycle drives presence and recording for that session only; a subagent or another
 conversation cannot end its main run. The event channel keeps the space's normal read permissions.
-A personal connection does not obtain manager-call authority.
+A personal connection makes manager calls only with its own selected grant.
 
 If the event plane stops, the seat keeps running and its mesh connection, on every connector and
 on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay
