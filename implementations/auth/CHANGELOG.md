@@ -1,5 +1,48 @@
 # @cotal-ai/auth
 
+## 0.92.0
+
+### Minor Changes
+
+- 719ac35: Serve the public service endpoint authority route, `/service-endpoint-authority`, on both faces of a context opened with `serviceEndpoints` (still off by default, no CLI flag; without it the route answers 404). `GET` returns the receiver's account and space. `POST` takes one envelope whose IdP proof, under the pinned issuer and exact audience, derives the owner, who needs a current interactive cli or web row; the loopback capability is never read, and a service proof is refused. Register compiles the submitted closures against their content digests, admits ephemeral commands only and answers `approval-required`, or `pending` once approved; it never registers or issues a credential. Status reads the caller's own register operation. The full public idempotency key selects the engine binding, and the binding covers the public request digest, so a changed body is a conflict and another owner's equal request id is a separate request. The service endpoint host gains a create-only, operator-only `name-bind` written through the custody writer, and the host result parser gains its `bound` arm. A refused proof counts against the face's refusal budget.
+- e242d82: Add the dormant service host operations behind the service custody writer: register admission, approve, refuse, revoke and the operation and proposal reads, over closed per-key records in the auth store. Each invocation writes only the keys its discovery located, and holds before any other write. Its effect connection has its own credential, which publishes only those keys and expires at the invocation's original deadline, rounded up to the whole second, with no renewal or reconnect. The index does not export them. An authority plane or hosted auth service opened with `serviceEndpoints` (off by default, no CLI flag) hosts them and gains an in-process `serviceEndpointHost` for decide, revoke and the two reads; register admission stays internal, so nothing in the product creates a proposal, and the embedder must authenticate the granter it passes. The host shares the plane's claim hold, account and actor ledger, refuses a restore or missing startup, reads through an ordinary renewing read-only discovery connection, trips on both plane fatal paths (also while the plane closes), and on close refuses every call from the moment close begins, waits for every call that entered and closes again every effect connection that did not close, failing with the claim still held while one remains, before the claim is released. The service host contract gains the typed results and closed parsers these operations return. Once an operation is bound, `pending`, `held` and `refused` results name it, revoke results report whether deny-new landed when they have evidence for it (another assignment's endpoint gate is `unknown` on every path that reads the gate), and completed results say whether they were applied now or returned from the record. Proposal and operation reads gain separate terminal views that carry no commands or cluster digests.
+- 1db940e: Add authenticated cooperative workflow cancellation through the manager endpoint. The original caller can cancel under a live issued generation; signerless hosts also verify interactive owner or admin authority through the issuing host. Replies distinguish the durable revocation marker from an observed local drive outcome, preserve unknown write outcomes and retain the first marker. Read-only status inspection remains available after revocation without permitting new drive or checkpoint-answer authority. The run show view displays revocation separately from recorded state and returns a partial result with exit 4 when the marker cannot be read, in human and JSON output.
+
+  Breaking: embedded RunHostDrive implementations must supply cancel(reason) separately from release(reason). Both language engines and the worker bridge propagate cooperative root cancellation. This does not preempt external tools, stop agent processes or prove resource cleanup. No new CLI or MCP convenience command is added.
+
+- f276a46: Add distinct keyed workflow submission and caller-confined status contracts, immutable admission-store bindings, bounded original-callback admission attempts and pinned client helpers. Advance the manager cluster to revision 35 for the two new commands. Preserve legacy run-start behavior and retain incomplete submissions without later repair.
+  Keyed requests carry a deadline of at most 30 seconds, measured on the receiving process's
+  monotonic clock from the new `EpServeContext.receivedAtMonotonicMs`, with the caller's authority
+  expiry checked on the wall clock. Launch capacity is reserved before the binding, an unfingerprintable keyed request no longer stops the issuer's observation reader, and
+  the client helpers refuse a reply for other submission coordinates.
+- b3441b1: Breaking: a service endpoint authority status query now names the operation it reads, `target: { kind: "operation", operation, requestId }` with `operation` one of `register`, `activate`, `renew`, `ready` or `revoke`, through the exported `ServiceStatusTarget` type. The old `{ kind: "operation", requestId }` no longer parses, so code that builds `ServiceAuthorityRequest` status queries or calls `parseServiceAuthorityRequest` on them must add the operation.
+
+  The service endpoint authority route of a context opened with `serviceEndpoints` (still off by default, no CLI flag) now registers and serves an approved service. Once the owner's assignment is approved, the same register request publishes its contract artifacts and runs the native registration barrier, and answers `registered` with the witness and snapshot; a replay of a completed register answers from its registration stamp without another barrier. Activate (IdP or renewal proof) lands the activation fence and returns an access bearer of at most 60 s and a renewal proof of at most 24 h, never past the native root or approval; renew (renewal proof) returns fresh material; ready (access proof) records the service-reported status. Each of these requests first proves its caller, resolves the caller's own assignment and persists a nonsecret request intent before any effect, with at most 64 distinct requests per instance; a changed body under the same request id is a conflict. A register request id stays bound across both phases to the body and proposal it was admitted with, and material that cannot be minted before its expiry answers 503, so the replay mints it. Status reads the instance or any of these operations under a fixed precedence and answers 503 rather than guess. The context also composes the native service callout, so a current service's access bearer connects to the broker. Commands declaring a governed trait are refused as unsupported. Revoke, the Describe view, caller policy, terminal retirement and restore stay unsupported.
+
+### Patch Changes
+
+- 88cc5a1: Name the next step when an auth command has no space to act on or a grant cannot apply there.
+
+  - On a static or open space, `cotal auth grants`, `grant` and `revoke` and their `cotal actor` spellings refuse with `UNSUPPORTED` and say that actor grants apply only to a space started with `cotal up --user-auth`. On any other space the refusal still points to the machine and root that hold its ledger, and a refused revoke says nothing was revoked instead of "no inert grant was written".
+  - With no space to resolve, the auth grant commands and `cotal auth mint` refuse with a next step, such as `cotal up`. `cotal doctor auth` in a folder whose root holds no space adds a remedy to its partial result: run it in a space's root, which `cotal space` lists.
+  - Bare `cotal auth` fills its Next lines with the `--space` you gave or the space it resolves, and points to `cotal space` when there is none, instead of printing an unfilled `--space <space>`.
+  - The `cotal doctor` help line describes the report it prints, instead of promising it ends in `healthy` or a next command.
+
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [88cc5a1]
+- Updated dependencies [1db940e]
+- Updated dependencies [239d1c7]
+- Updated dependencies [f276a46]
+- Updated dependencies [c935e28]
+- Updated dependencies [588a5a7]
+- Updated dependencies [b3441b1]
+- Updated dependencies [03d9e7b]
+  - @cotal-ai/core@0.92.0
+  - @cotal-ai/workspace@0.92.0
+  - @cotal-ai/lang@0.92.0
+
 ## 0.91.0
 
 ### Minor Changes
