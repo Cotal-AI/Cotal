@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isMainEntry } from "./main-entry.mjs";
 import { coldOsEnvironment } from "./release-cold-environment.mjs";
-import { publicationDeadline } from "./publication-budget.mjs";
+import { publicationExecutionDeadline } from "./publication-budget.mjs";
 import { runPublicationChild } from "./publication-child.mjs";
 
 export const DEFAULTS = {
@@ -37,7 +37,7 @@ export const DEFAULTS = {
 };
 
 function parseArgs(argv) {
-  const opts = { ...DEFAULTS, version: "" };
+  const opts = { ...DEFAULTS, version: "", attemptStartedAt: process.env.RELEASE_ATTEMPT_STARTED_AT };
   const numeric = { "--poll-interval-ms": "pollIntervalMs", "--deadline-ms": "deadlineMs" };
   for (const arg of argv) {
     const [flag, raw] = arg.split(/=(.*)/s);
@@ -124,7 +124,7 @@ async function attempt({ version, registry }, deadline) {
 }
 
 export async function verifyInstallable(opts, log = (line) => process.stdout.write(`${line}\n`)) {
-  const deadline = Math.min(Date.now() + opts.deadlineMs, opts.requestedAt ? publicationDeadline(opts.requestedAt) : Infinity);
+  const deadline = Math.min(Date.now() + opts.deadlineMs, opts.requestedAt ? publicationExecutionDeadline(opts.requestedAt, opts.attemptStartedAt) : Infinity);
   for (let n = 1; ; n++) {
     const failure = await attempt(opts, deadline);
     if (failure === null && Date.now() <= deadline) {

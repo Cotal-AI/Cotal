@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { isMainEntry } from "./main-entry.mjs";
 import { preflightFromRepository } from "./preflight-npm-publish.mjs";
 import { verifyColdResults } from "./verify-cold-results.mjs";
-import { publicationDeadline, publicationMap, remainingBudget } from "./publication-budget.mjs";
+import { publicationExecutionDeadline, publicationMap, remainingBudget } from "./publication-budget.mjs";
 import { verifyQualification } from "./release-qualification.mjs";
 import { runPublicationChild } from "./publication-child.mjs";
 
@@ -61,7 +61,7 @@ export async function publishColdCandidate({
 } = {}) {
   assert(directory && results, "publication needs the qualified candidate and all native receipts");
   assert(typeof tag === "string" && /^[a-z][a-z0-9._-]*$/i.test(tag), "publication dist-tag is invalid");
-  const deadline = publicationDeadline(env.RELEASE_REQUESTED_AT);
+  const deadline = publicationExecutionDeadline(env.RELEASE_REQUESTED_AT, env.RELEASE_ATTEMPT_STARTED_AT);
   directory = resolve(directory);
   const bytes = readFileSync(join(directory, "manifest.json"));
   const manifest = JSON.parse(bytes.toString("utf8"));
@@ -77,7 +77,7 @@ export async function publishColdCandidate({
   // Validate the entire set before the first write, then recheck each archive at its write boundary.
   const inputs = coldPublicationInputs(manifest, census.rows, qualifiedSource, directory);
   const receipt = {
-    v: 1, source: qualifiedSource, promotionSource: source, publisherSource: qualification?.publisherSource, qualification, candidateSha256: sha(bytes), requestedAt: env.RELEASE_REQUESTED_AT, deadline: new Date(deadline).toISOString(), tag,
+    v: 1, source: qualifiedSource, promotionSource: source, publisherSource: qualification?.publisherSource, qualification, candidateSha256: sha(bytes), requestedAt: env.RELEASE_REQUESTED_AT, attemptStartedAt: env.RELEASE_ATTEMPT_STARTED_AT, deadline: new Date(deadline).toISOString(), tag,
     packages: inputs.map(({ name, version, sha256 }) => ({ name, version, sha256, state: "not-started" })),
   };
   if (receiptFile) mkdirSync(dirname(receiptFile), { recursive: true, mode: 0o700 });
