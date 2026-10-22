@@ -90,8 +90,12 @@ ok("the fonts are Inter Variable and the system mono stack",
 
 const app = read(join(src, "styles", "app.css"));
 const defined = new Set([...lightVars.keys(), ...[...app.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]!)]);
-const unknown = [...new Set([...app.matchAll(/var\((--[\w-]+)/g)].map((m) => m[1]!))].filter((v) => !defined.has(v));
-ok("every var() in app.css names a token", unknown.length === 0, unknown);
+// A component may set a custom property inline for app.css to read (IdentityBadge sets --bf from
+// its slot). The scan below finds those in the .tsx sources, so a var() that nothing defines and no
+// component sets still fails.
+const inline = new Set(sources.filter((f) => f.rel.endsWith(".tsx")).flatMap((f) => [...f.text.matchAll(/["'`](--[\w-]+)["'`]\s*:/g)].map((m) => m[1]!)));
+const unknown = [...new Set([...app.matchAll(/var\((--[\w-]+)/g)].map((m) => m[1]!))].filter((v) => !defined.has(v) && !inline.has(v));
+ok("every var() in app.css names a token or a property a component sets inline", unknown.length === 0, unknown);
 const literals = app.split("\n").filter((l) => !/mask-image/.test(l) && /#[0-9a-f]{3,8}\b|\brgba?\(/i.test(l));
 ok("app.css holds no colour literal, only tokens", literals.length === 0, literals);
 const scoped = app.split("\n").filter((l) => /(^|[\s,>+~])\.v3(?![\w-])/.test(l));
