@@ -185,6 +185,12 @@ function monitor(claudePid: number, extra: NodeJS.ProcessEnv = {}, native = fals
   return m;
 }
 const wakeFor = (id: string) => `Cotal: a new message for connection_id ${id}. Read it with cotal_inbox.`;
+/** A server's wake frame carries a bounded preview, which the monitor prints on the line before the wake. */
+const previewOf = (line: string | undefined, id: string): { unread: number; rows: string[] } | undefined => {
+  const prefix = `Cotal preview for connection_id ${id}: `;
+  try { return line?.startsWith(prefix) ? JSON.parse(line.slice(prefix.length)) as { unread: number; rows: string[] } : undefined; } catch { return undefined; }
+};
+const wakes = (m: Monitor, id: string) => m.lines.filter((l) => l === wakeFor(id)).length;
 
 /** `exited`, or "running" when it has not settled within `ms`. */
 const within = <T>(exited: Promise<T>, ms = 20_000): Promise<T | "running"> => Promise.race([exited, sleep(ms).then(() => "running" as const)]);
@@ -261,25 +267,27 @@ try {
   check("a DM lands while no monitor reads the feed", before1.status === 0, before1.stderr);
   await sleep(1_500);
   const mon = monitor(process.pid, {}, true);
+  const first = await until(() => mon.lines.length > 1);
+  const preview = previewOf(mon.lines[0], idA);
   check(
-    "a monitor that starts after the message still gets its wake, as one fixed line",
-    (await until(() => mon.lines.length > 0)) && mon.lines.length === 1 && mon.lines[0] === wakeFor(idA),
+    "a monitor that starts after the message still gets its wake, as its preview and one fixed line",
+    first && mon.lines.length === 2 && preview?.unread === 1 && preview.rows.length === 1 && preview.rows[0].endsWith(" m1") && mon.lines[1] === wakeFor(idA),
     mon.lines,
   );
   cotal(ROOT, "send", "--to", "claude_local", "m2");
   await sleep(3_000);
-  check("a second DM before the first is read adds no second wake", mon.lines.length === 1, mon.lines);
+  check("a second DM before the first is read adds no second wake", mon.lines.length === 2 && wakes(mon, idA) === 1, mon.lines);
   const read = await code.call("cotal_inbox", { connection_id: idA });
   check("  and cotal_inbox reads both", read.includes("m1") && read.includes("m2"), read);
   cotal(ROOT, "send", "--to", "claude_local", "m3");
-  check("after the read, the next DM wakes the session again", await until(() => mon.lines.length === 2), mon.lines);
+  check("after the read, the next DM wakes the session again", await until(() => wakes(mon, idA) === 2) && previewOf(mon.lines[2], idA) !== undefined, mon.lines);
   await code.call("cotal_inbox", { connection_id: idA });
   const held = code.call("cotal_wait", { connection_id: idA, seconds: 30 });
   await sleep(1_000);
   cotal(ROOT, "send", "--to", "claude_local", "m4");
   const got = await held;
   await sleep(1_500);
-  check("a DM that a held cotal_wait returns wakes nothing", got.includes("m4") && mon.lines.length === 2, { got, lines: mon.lines });
+  check("a DM that a held cotal_wait returns wakes nothing", got.includes("m4") && mon.lines.length === 4 && wakes(mon, idA) === 2, { got, lines: mon.lines });
   // A second server under the same Claude Code process, as a restart leaves one briefly: each keeps
   // a feed of its own, so neither loses the other's wakes.
   const twin = await serve(SERVER, ROOT);
