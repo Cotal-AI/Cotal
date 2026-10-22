@@ -34,6 +34,60 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Cooperative workflow cancellation in 0.92.0
+
+The manager adds the issued, instance-bound `run-cancel` command. Its cluster revision advances to
+37, retaining the vitals and keyed-submission commands. Cancellation is available through the
+generic endpoint client; this change adds no CLI or MCP cancellation shortcut.
+
+### What keeps working
+
+Existing run records, admissions, revocation markers and journals keep their formats. Upgrade does
+not rewrite them, cancel a run or remove a marker. A released run without a marker can still resume
+under its admission. A revoked run remains revoked. Manager shutdown still requests boundary
+release; it does not write a cancellation marker or prove an agent process stopped.
+
+### What needs an update
+
+- Custom `RunHost` implementations must return a drive with `cancel(reason)`, in addition to
+  `done` and `release(reason)`. It must propagate cooperative root cancellation to in-flight
+  effects. Do not substitute boundary release or process termination. Rebuild and qualify the
+  custom host against the new core contract before enabling it on an upgraded manager.
+- The built-in runtime and language packages carry the root signal through both engines and the
+  compiled worker. Keep core, auth, manager, runtime and language on the same release; copying one
+  source file or replacing only the manager does not supply the new protocol and worker code.
+- Existing caller credentials do not gain a new publish permission on installation. Obtain fresh
+  issued credentials through the supported issuer before using `run-cancel`. Static credentials
+  and caller generations must still meet the original lifecycle and grant checks. Never edit a
+  credential to add the permission.
+- The new command requires a fresh Describe-derived instance and epoch bind. An old issuer lacks
+  its independent request observer and inspect/commit path, so a new signerless manager cannot use
+  that issuer for cancellation. Do not treat missing support as a reason to bypass the issuer.
+
+### Order for a split topology
+
+Schedule a maintenance window for the version change; this is not a rolling-compatibility promise.
+Take the deployment's usual consistent backup of broker state, including run records, admissions
+and journals, and the issuer's private configuration. Upgrade the issuer, then the manager and its
+runtime dependencies to the same release, using their normal stop/start procedure. Reinstalling a
+package does not replace modules already loaded by a running process. Reconnect callers through
+the upgraded issuer and resolve the manager's current contract before invoking cancellation.
+There is no broker format migration for this command and no automatic cancellation during upgrade.
+
+### What the result establishes
+
+A durable marker denies future admission but is not proof of cessation. Only `stopped` with the
+captured drive outcome establishes that local drive's result. If the holder recheck fails or the
+request budget expires, a parked effect can remain running beside a committed marker. Preserve an
+unknown result; do not blindly resend it or declare cleanup complete. Pending cancellation intent
+can also block a local launch after a definite no-dispatch refusal if marker absence was not
+confirmed within the budget.
+
+`run show` now displays revocation independently of recorded state. An unreadable marker yields
+a partial result and exit 4 in human and JSON output, rather than an apparently complete view.
+Automation must handle that existing partial-result convention. None of these observations proves
+model or tool preemption, physical process cleanup or cessation on another host.
+
 ## Service authority status selector in 0.92.0
 
 A service endpoint authority status query that reads one operation now names that operation:

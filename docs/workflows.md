@@ -349,11 +349,13 @@ outcome was observed; `stop-requested` means it was not observed within the requ
 `duplicate` is false for a confirmed new marker, true for a confirmed existing one, and null after
 an unknown write followed by marker readback. Preserve unknown outcomes. Neither a marker nor a
 reply proves process cleanup or that another host stopped. Revoked runs remain readable through
-`run status`, but cannot receive new drive or answering authority. The endpoint's `run-status`
+`run show`, but cannot receive new drive or answering authority. The endpoint's `run-status`
 reply carries `revoked: { by, reason }` independently of the recorded run state. A running record
 with that marker is not proof of a stopped holder. `revocationUnreadable` means the marker could
 not be checked; do not read that as unrevoked or resumable. A released record without a marker can
-be resumed under its original admission; a released record with a marker cannot.
+be resumed under its original admission; a released record with a marker cannot. The human
+`run show` view displays admission revocation separately from recorded state. An unreadable marker
+produces a partial result with exit 4, in human and JSON output, as it does in the run list.
 
 A cancellation can retain a local pending intent even after a definite no-dispatch refusal if its
 budget ends before the manager can confirm marker absence. That intent blocks a new local launch
