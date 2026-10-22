@@ -14,7 +14,7 @@
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
-export const DAEMON_OPS = ["status", "login-start", "login-cancel", "connect-check"] as const;
+export const DAEMON_OPS = ["status", "login-start", "login-cancel", "connect-check", "register"] as const;
 export type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
@@ -23,13 +23,15 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "login-start": { required: ["idp"], optional: ["clientId"] },
   "login-cancel": { required: ["attempt"], optional: [] },
   "connect-check": { required: ["space"], optional: [] },
+  register: { required: ["space"], optional: [] },
 };
 
 export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "status" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-start"; readonly idp: string; readonly clientId?: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-cancel"; readonly attempt: string }
-  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "connect-check"; readonly space: string };
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "connect-check"; readonly space: string }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "register"; readonly space: string };
 
 export type ProtocolErrorCode =
   | "BAD_JSON" | "NOT_OBJECT" | "BAD_VERSION" | "UNKNOWN_FIELD" | "BAD_ID" | "UNKNOWN_OP" | "LINE_TOO_LONG"
@@ -72,9 +74,22 @@ export type ConnectCheckResult =
   | { readonly outcome: "account-mismatch"; readonly space: string; readonly pinnedAccountPublicKey: string; readonly observedAccountPublicKey: string; readonly message: string }
   | { readonly outcome: "ready-to-register"; readonly space: string; readonly endpoint: string; readonly instanceId: string; readonly accountPublicKey: string; readonly message: string };
 
+/** The answer to `register`: the stock registration answer for the daemon's own service. None of these
+ *  means connected; `registered` is not activated or serving. A readiness outcome other than
+ *  ready-to-register is passed through unchanged, with no request sent. */
+type RegisterIds = { readonly space: string; readonly requestId: string; readonly endpoint: string; readonly instanceId: string; readonly message: string };
+export type RegisterResult =
+  | Exclude<ConnectCheckResult, { outcome: "ready-to-register" }>
+  | (RegisterIds & { readonly outcome: "approval-required"; readonly proposalId: string })
+  | (RegisterIds & { readonly outcome: "pending"; readonly phase: string })
+  | (RegisterIds & { readonly outcome: "registered"; readonly witness: { readonly accountPublicKey: string; readonly space: string; readonly endpoint: string; readonly instanceId: string; readonly registrationRevision: number; readonly processEpoch: number } })
+  | (RegisterIds & { readonly outcome: "refused"; readonly reason: string })
+  | (RegisterIds & { readonly outcome: "unconfirmed" })
+  | { readonly outcome: "conflict"; readonly space: string; readonly requestId: string; readonly message: string };
+
 type Envelope = { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string | null };
 export type DaemonResponse =
-  | (Envelope & { readonly ok: true; readonly result: DaemonStatus | CancelResult | ConnectCheckResult })
+  | (Envelope & { readonly ok: true; readonly result: DaemonStatus | CancelResult | ConnectCheckResult | RegisterResult })
   | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode; readonly message: string } })
   | (Envelope & { readonly ok: true; readonly event: "login-prompt"; readonly attempt: string; readonly prompt: LoginPrompt })
   | (Envelope & { readonly ok: true; readonly event: "login-result"; readonly attempt: string; readonly result: LoginResult });
@@ -117,7 +132,7 @@ export function parseRequest(line: string): ParsedRequest {
     if (typeof obj.attempt !== "string" || !ATTEMPT_PATTERN.test(obj.attempt)) return bad(id, "attempt must be the 22-character attempt id from login-prompt");
     return { ok: true, request: { v, id, op, attempt: obj.attempt } };
   }
-  if (op === "connect-check") {
+  if (op === "connect-check" || op === "register") {
     if (typeof obj.space !== "string" || !SPACE_PATTERN.test(obj.space)) return bad(id, "space must be 1-64 characters of [A-Za-z0-9_-]");
     return { ok: true, request: { v, id, op, space: obj.space } };
   }
