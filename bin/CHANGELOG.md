@@ -1,5 +1,21 @@
 # cotal-ai
 
+## 0.95.1
+
+### Patch Changes
+
+- 3571fdf: `cotal daemon register` reports what actually happened when nothing reached the space. A sign-in the provider rejected is `AUTH_REQUIRED` with the sign-in step, and any other failure before sending is `DEPENDENCY_UNAVAILABLE`; only an answer that may have reached the space is `OPERATION_UNKNOWN`. A space refusal reason or pending phase the daemon does not recognize is reported as `UNRECOGNIZED`, and the space's own text is never shown.
+- 047d68f: Add `cotal daemon register --space <s>` on Linux. The running daemon requests its own service registration with a space through the space's stock service authority, signed in as this machine, and reports the answer: `approval-required`, `pending` or `registered`. Registration is not activation or serving, so the machine is not connected yet. The request ID is saved before the first send and replayed unchanged on every later call, including after a restart. A space without service endpoints, and every other readiness failure from `connect-check`, refuses without sending anything. A refusal by the space owner is reported with the space's reason. The daemon never approves itself, binds its own name, or touches a Manager.
+- @cotal-ai/connector-core@0.95.1
+  - @cotal-ai/auth@0.95.1
+  - @cotal-ai/cli@0.95.1
+  - @cotal-ai/delivery@0.95.1
+  - @cotal-ai/manager@0.95.1
+  - @cotal-ai/runtime@0.95.1
+  - @cotal-ai/core@0.95.1
+  - @cotal-ai/seat@0.95.1
+  - @cotal-ai/workspace@0.95.1
+
 ## 0.95.0
 
 ### Patch Changes
