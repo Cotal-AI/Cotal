@@ -45,15 +45,15 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
+import { emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
 import { loadIdpSession } from "@cotal-ai/auth";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
 import { createLoginCoordinator } from "../daemon/login.js";
 
-if (process.platform !== "linux") {
-  console.log("daemon-login smoke: Linux only; skipped on " + process.platform);
-  process.exit(0);
-}
+if (process.platform !== "linux") skipSuite(`daemon-login smoke: Linux only; skipped on ${process.platform}`);
+// The CLI children get no mesh identity or connection material from whatever runs this suite.
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
@@ -567,4 +567,5 @@ try {
 }
 
 console.log(`\nDAEMON LOGIN SMOKE ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);
+emitSentinel({ passed: pass, failed: fail });
 process.exit(fail === 0 ? 0 : 1);
