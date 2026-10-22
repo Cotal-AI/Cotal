@@ -417,12 +417,15 @@ The host implements `GatewayHost`:
 
 - `account(auth)` returns the account the request authenticated as, read from the SDK's `AuthInfo`.
   It throws when the request has none, and the tool then runs nothing.
-- `open(account, name, context?, selection?)` issues and starts a new connection under that name. It throws `NameTaken`
-  only when the issuer reports that the name exists. `cotal_connect` then tries `name_2`, `name_3`
-  and so on, up to `GATEWAY_NAME_ATTEMPTS` names. Any other error goes back to the caller and no
-  other name is tried. The collision check and the issue must be one atomic step per account, so
-  two conversations asking for one name at once get different names. Error messages reach the
-  caller and must not carry secrets.
+- `open(account, name, context?, selection?, approvalId?)` starts a connection only after the person
+  approves its permissions. `selection` is a proposal. Throw `ApprovalRequired` with the request ID,
+  approval page, expiry and proposal while they decide. The tool returns a structured pending result
+  and a readable link, with no connection handle. `approvalId` resumes one unchanged request when
+  `options.approvalResume` is enabled. It conveys no authority. Bind it to the authenticated account,
+  space, name and request generation. An issued approval cannot grant a replacement connection.
+  Throw `NameTaken` only for an authoritative name collision. A new request tries `name_2` and later
+  variants up to `GATEWAY_NAME_ATTEMPTS`; a resumed approval never renames. The collision check and
+  issue must be atomic. Other errors reach the caller without renaming and must not carry secrets.
 - `find(account, id)` and `close(account, id)` act only on a connection that account owns.
 
 `cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. Its reply names
@@ -433,8 +436,12 @@ embedder whose host issues each conversation its own grant may pass `options.too
 Registering a tool offers it to no connection by itself: a connection calls only the tools its
 host lists in `GatewayConnection.tools`, default `GATEWAY_TOOLS`, and only those its credential's
 capabilities allow. With `options.selection`, `cotal_connect` takes channels, a role and capabilities,
-builds the canonical selection with core's `conversationSelection`, and hands it to `open`. The
-host issues that selection as given or throws. One tool list serves every connection, so no
+builds a canonical proposal with core's `conversationSelection`, and hands it to `open`. Only the
+person's decision in the authority's authenticated UI is consent. The approved selection may differ
+from the proposal and must stay within their current authority. The empty approved selection still
+includes direct-message send and receive and own activity publication; disclose these before
+approval. A model flag, API bearer or ordinary tool approval cannot approve the request. Unsupported
+approval paths refuse before issuing a grant. One tool list serves every connection, so no
 advertised text names one connection's channels. Each call runs against that connection's own
 configuration. Authentication, credential issuance and revocation and durable connection records
 stay with the host.
@@ -454,7 +461,7 @@ when its connection closes, also while the broker is unreachable; it listens for
 since the last read, and a wait that starts after one returns it at once. Every other routed tool
 except `cotal_inbox` adds a line to its result when wake-worthy messages are waiting.
 
-`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, waitSeconds? })`
+`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, approvalResume?, waitSeconds? })`
 serves one HTTP request to the endpoint with the package's own MCP server, so the embedding service
 never imports an MCP SDK or a zod version of its own. The service authenticates the request, answers
 401 itself when that fails, and passes the result as `auth`. A framework that already parsed the JSON body passes it
