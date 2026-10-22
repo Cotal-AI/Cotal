@@ -27,12 +27,12 @@
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
     },
     {
-      "name": "P4 the fold stops marking a stream that never saw its END as cut, so the session view drops the trailing … both renderers print and a truncated paragraph reads as finished",
+      "name": "P4 the fold stops marking a stream that never saw its END as cut, so the work view drops the trailing … both renderers print and a truncated paragraph reads as finished",
       "file": "implementations/web/client/src/lib/session.ts",
       "find": "    for (const id of [...text.keys()]) flush(text, id, \"said\", true);",
       "replace": "    for (const id of [...text.keys()]) flush(text, id, \"said\", false);",
-      "expectRed": "fold parity: foldSession's steps project to the node renderer's facts on every frame in the corpus that carries events",
-      "cell": "fold parity: foldSession's steps project to the node renderer's facts on every frame in the corpus that carries events"
+      "expectRed": "fold parity: foldWork's turns and steps project to the node renderer's facts on every frame in the corpus that carries events",
+      "cell": "fold parity: foldWork's turns and steps project to the node renderer's facts on every frame in the corpus that carries events"
     },
     {
       "name": "P5 the browser draws the result marker as a custom line, so the dashboard prints `custom cotal.toolResult` where the console prints done or failed",
@@ -41,6 +41,14 @@
       "replace": "        emit(",
       "expectRed": "parity: a call with an error result marker",
       "cell": "parity: a call with an error result marker"
+    },
+    {
+      "name": "P6 foldWork reads failed from the wrong key, so a call whose marker says isError is drawn done while both renderers print failed",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "              latest.failed = marker.isError;",
+      "replace": "              latest.failed = e.isError === true;",
+      "expectRed": "the fold's results match the renderer's",
+      "cell": "the fold's results match the renderer's"
     }
   ],
   "suite": [

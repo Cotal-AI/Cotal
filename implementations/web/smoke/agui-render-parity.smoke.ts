@@ -43,10 +43,12 @@
  * delivery of the pixels, and the two failures look nothing alike.
  *
  * ── THE FOLD, A THIRD READER ─────────────────────────────────────────────────────────────────────
- * `client/src/lib/session.ts` folds the same events into session steps rather than lines. Its output
- * is not text, so it is held to the node renderer by projection: both sides are reduced to one list
- * of facts (said, tool, turn, end, error, unknown, reasoning) and compared, over every corpus entry
- * that is a frame carrying events. What the projection leaves out on purpose is printed on every run.
+ * `client/src/lib/session.ts` folds the same events into turns holding steps (`foldWork`) rather than
+ * lines. Its output is not text, so it is held to the node renderer by projection: both sides are
+ * reduced to one list of facts (said, tool, turn, end, error, unknown, reasoning) and compared, over
+ * every corpus entry that is a frame carrying events. The calls' results are compared separately,
+ * as counts of `  ↳ done` and `  ↳ failed` lines. What the projection leaves out on purpose is
+ * printed on every run.
  *
  * Run: pnpm smoke:agui-render-parity
  */
@@ -61,7 +63,7 @@ import { AGUI_EVENT_TYPE, AGUI_FRAME_KIND } from "@cotal-ai/core";
 import { aguiFramePartRenderer, LINE_START_SAFE } from "../../../extensions/connector-core/dist/agui-render.js";
 import { renderAguiFrame } from "../client/src/lib/aguiFrame.js";
 import { partsToText } from "../client/src/lib/parts.js";
-import { foldSession, framesOf, type SessionStep } from "../client/src/lib/session.js";
+import { foldWork, framesOf, type ToolCall, type Work, type WorkItem } from "../client/src/lib/session.js";
 import type { CotalMessage } from "../client/src/api/types.js";
 
 let cells = 0;
@@ -271,7 +273,7 @@ ok("CONTROL: the divergence report carries NO content from either string",
   !JSON.stringify(d).includes("abc") && !JSON.stringify(d).includes("abd"), Object.keys(d));
 
 // ── THE FOLD AGAINST THE NODE RENDERER, BY PROJECTION ────────────────────────────────────────────
-// `foldSession` draws steps, not lines, so both sides are projected to one fact list, written once
+// `foldWork` draws turns and steps, not lines, so both sides are projected to one fact list, written once
 // here. A tool fact is the name up to its first "(", from the name's first line, on both sides: the
 // renderer prints `name(args)` and continues a multi-line name under `  · `, so that is all of the
 // name its first line holds.
@@ -302,7 +304,7 @@ function factsFromLines(rendered: string): string[] {
 
 /** The fold's steps as facts. Prompt and said are both `» ` text to the renderer, a line per fact,
  *  and a cut stream carries the renderer's trailing " …". */
-function factsFromSteps(steps: SessionStep[]): string[] {
+function factsFromSteps(steps: readonly Exclude<WorkItem, { kind: "turn" }>[]): string[] {
   const facts: string[] = [];
   for (const s of steps) {
     switch (s.kind) {
@@ -313,7 +315,6 @@ function factsFromSteps(steps: SessionStep[]): string[] {
       case "tools":
         for (const c of s.calls) facts.push(toolFact(c.full));
         break;
-      case "turn": facts.push("turn"); break;
       case "turnEnd": facts.push("end"); break;
       case "runError": facts.push("error"); break;
       case "unknown": facts.push("unknown"); break;
@@ -324,9 +325,16 @@ function factsFromSteps(steps: SessionStep[]): string[] {
   return facts;
 }
 
+/** The fold's items as facts: a turn is a `turn` fact, then its steps, then `end` when it finished.
+ *  A failed turn's `runError` step is already its last, so its close is that `error` fact. */
+function factsFromWork(work: Work): string[] {
+  return work.items.flatMap((i) =>
+    i.kind === "turn" ? ["turn", ...factsFromSteps(i.steps), ...(i.outcome === "finished" ? ["end"] : [])] : factsFromSteps([i]));
+}
+
 /** A corpus part as the one message that carries it, folded with no posts. */
-const fold = (part: unknown, i: number): SessionStep[] =>
-  foldSession(framesOf({ id: `p${i}`, ts: 0, space: "s", from: { id: "x", name: "x" }, parts: [part], channel: "events.local.x" } as unknown as CotalMessage, false), []);
+const fold = (part: unknown, i: number): Work =>
+  foldWork(framesOf({ id: `p${i}`, ts: 0, space: "s", from: { id: "x", name: "x" }, parts: [part], channel: "events.local.x" } as unknown as CotalMessage, false), []);
 
 const carriesEvents = (part: unknown) => {
   const p = part as { kind?: unknown; events?: unknown };
@@ -335,7 +343,7 @@ const carriesEvents = (part: unknown) => {
 const folded = CORPUS.map((c, i) => ({ ...c, i })).filter((c) => carriesEvents(c.part));
 const foldMismatches = folded.flatMap(({ name, part, i }) => {
   const a = factsFromLines(node(part));
-  const b = factsFromSteps(fold(part, i));
+  const b = factsFromWork(fold(part, i));
   if (a.length === b.length && a.every((f, k) => f === b[k])) return [];
   let k = 0;
   while (k < a.length && k < b.length && a[k] === b[k]) k++;
@@ -343,10 +351,10 @@ const foldMismatches = folded.flatMap(({ name, part, i }) => {
   return [{ corpusIndex: i, corpusName: name, firstDifferingFact: k, nodeFacts: a.length, foldFacts: b.length,
     nodeDigest: digest(a.join("\n")), foldDigest: digest(b.join("\n")) }];
 });
-ok("fold parity: foldSession's steps project to the node renderer's facts on every frame in the corpus that carries events",
+ok("fold parity: foldWork's turns and steps project to the node renderer's facts on every frame in the corpus that carries events",
   foldMismatches.length === 0, foldMismatches);
 
-const foldFacts = folded.flatMap(({ part, i }) => factsFromSteps(fold(part, i)));
+const foldFacts = folded.flatMap(({ part, i }) => factsFromWork(fold(part, i)));
 const kinds = ["said", "tool", "turn", "end", "error", "unknown", "reasoning"];
 ok("CONTROL: the fold cell compared most of the corpus, and every fact kind, cut text included",
   folded.length >= CORPUS.length - 3 && kinds.every((k) => foldFacts.some((f) => f === k || f.startsWith(`${k} `))) &&
@@ -355,6 +363,28 @@ ok("CONTROL: the fold cell compared most of the corpus, and every fact kind, cut
 ok("CONTROL: the projection sees a dropped trailing ellipsis",
   factsFromSteps([{ kind: "said", key: "k", text: "x", cut: true, live: false }]).join() !==
     factsFromSteps([{ kind: "said", key: "k", text: "x", cut: false, live: false }]).join());
+
+// ── THE FOLD'S RESULTS AGAINST THE RENDERER'S ────────────────────────────────────────────────────
+// The fact projection skips every `  ↳ ` line, so the marker is compared here instead: per corpus
+// entry, the renderer's `  ↳ done` lines count the calls the fold holds with an end and not failed,
+// and its `  ↳ failed` lines count the calls the fold holds as failed. Counts, never content.
+const callsOf = (items: readonly WorkItem[]): ToolCall[] =>
+  items.flatMap((i) => (i.kind === "turn" ? callsOf(i.steps) : i.kind === "tools" ? i.calls : []));
+const results = CORPUS.map(({ name, part }, i) => {
+  const lines = node(part).split("\n");
+  const calls = callsOf(fold(part, i).items);
+  return {
+    name,
+    renderedDone: lines.filter((l) => l === "  ↳ done").length,
+    renderedFailed: lines.filter((l) => l === "  ↳ failed").length,
+    foldDone: calls.filter((c) => c.end !== undefined && c.failed !== true).length,
+    foldFailed: calls.filter((c) => c.failed === true).length,
+  };
+});
+const resultMismatches = results.filter((r) => r.renderedDone !== r.foldDone || r.renderedFailed !== r.foldFailed);
+ok("the fold's results match the renderer's",
+  resultMismatches.length === 0 && results.some((r) => r.foldDone > 0) && results.some((r) => r.foldFailed > 0),
+  { resultMismatches, done: results.reduce((n, r) => n + r.foldDone, 0), failed: results.reduce((n, r) => n + r.foldFailed, 0) });
 
 // ── The line-start invariant, on the BROWSER's output ─────────────────────────────────────────────
 // The predicate is IMPORTED from the node renderer rather than restated, so both surfaces are held
@@ -407,8 +437,15 @@ console.log(`
 ── what the fold cell leaves out, deliberately ─────────────────────────────────
   · Tool results (\`  ↳ \` lines) and tool arguments, on both sides. The event
     plane drops them, so the fold draws neither; if one arrives it is not drawn.
-    The result marker's \`  ↳ done\` and \`  ↳ failed\` lines are left out the
-    same way: the fold adds no step for a well-formed marker.
+    The result marker's \`  ↳ done\` and \`  ↳ failed\` lines are left out of
+    the facts too: the fold adds no step for a well-formed marker and sets its
+    call's end and failed instead, which the results cell counts.
+  · A marker for a call outside the window. The renderer prints its
+    \`  ↳ done\` or \`  ↳ failed\` line; the fold has no call to set and draws
+    nothing. No corpus frame holds one.
+  · Turns. The fold nests steps in the turn whose RUN_STARTED opened them; the
+    projection flattens a turn back to a turn fact, its steps, and an end fact
+    when it finished (a failed turn's last step is its error).
   · Where a call lands. The fold places a call where it starts and draws it once;
     the renderer prints it where it ends, prints an END with no START as "?()",
     and adds " …" to a call with no END. This is not hypothetical: the pi

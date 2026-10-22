@@ -62,7 +62,8 @@ const hm = (ts: number) => { const d = new Date(ts); return `${String(d.getHours
 const row = (over: Partial<RosterRow> = {}): RosterRow => ({ id: "local.engine", name: "engine", status: "working", ts: T, ...over });
 const msg = (id: string, body: string, ts = T) =>
   ({ id, ts, space: "main", from: { id: "local.engine", name: "engine" }, channel: "team", parts: [{ kind: "text", text: body }] }) as unknown as CotalMessage;
-const call = (name: string, ts = T): ToolCall => ({ name, full: name.startsWith("cotal_") ? `mcp__plugin_cotal_cotal__${name}` : name, ts });
+const call = (name: string, ts = T): ToolCall =>
+  ({ key: name, id: "", name, full: name.startsWith("cotal_") ? `mcp__plugin_cotal_cotal__${name}` : name, kind: "other", ts, live: false });
 
 // ── 1. The turn line ─────────────────────────────────────────────────────────────────────────────
 {
@@ -92,7 +93,7 @@ const call = (name: string, ts = T): ToolCall => ({ name, full: name.startsWith(
   ok("2.1 a said text with <img onerror> and a javascript: link renders sanitized",
     all(said, "img").length === 0 && !said.innerHTML.includes("onerror") && anchors.every((h) => h === null || !/^\s*javascript:/i.test(h)) && text(said).startsWith("Done"),
     { html: said.innerHTML });
-  const tool = draw("2.2", createElement(ToolRow, { call: { name: "<b>x</b>", full: "mcp__evil__<b>x</b>", ts: T } }));
+  const tool = draw("2.2", createElement(ToolRow, { call: { ...call("x"), name: "<b>x</b>", full: "mcp__evil__<b>x</b>" } }));
   const code = tool.querySelector(".ui-tc code");
   same("2.2 a tool name <b>x</b> renders as escaped text, with the full name as its title",
     [all(tool, "b").length, code?.textContent, code?.getAttribute("title")],

@@ -60,6 +60,54 @@
       "replace": "",
       "expectRed": "a message whose id is not a string gives no frames, so it can never share a key with another message",
       "cell": "a message whose id is not a string gives no frames, so it can never share a key with another message"
+    },
+    {
+      "name": "S8 the result marker is ignored, so a call that finished or failed never says so and every row reads as if the connector reported nothing",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "            const latest = calls.get(marker.toolCallId);",
+      "replace": "            const latest = undefined as ToolCall | undefined;",
+      "expectRed": "work: a marker sets end and failed on its call",
+      "cell": "work: a marker sets end and failed on its call"
+    },
+    {
+      "name": "S9 tool status is always reported, so an older connector's calls claim running, done or failed states the wire never carried",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  return { items, toolStatus: marked || !closedWithCall };",
+      "replace": "  return { items, toolStatus: true };",
+      "expectRed": "legacy: a closed turn of Write, Bash, Bash with no marker reads \"Called Write, Bash and Bash\"",
+      "cell": "legacy: a closed turn of Write, Bash, Bash with no marker reads \"Called Write, Bash and Bash\""
+    },
+    {
+      "name": "S10 the group counts distinct tool names instead of calls, so two edits read as one",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  for (const c of calls) counts.set(c.kind, (counts.get(c.kind) ?? 0) + 1);",
+      "replace": "  for (const c of new Map(calls.map((x) => [x.name, x])).values()) counts.set(c.kind, (counts.get(c.kind) ?? 0) + 1);",
+      "expectRed": "group title: two Edit calls read \"Made 2 edits\", counting calls, never files",
+      "cell": "group title: two Edit calls read \"Made 2 edits\", counting calls, never files"
+    },
+    {
+      "name": "S11 a call with no marker that something followed is left running, so a step the wire never said finished spins forever",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  if (!at.toolStatus || !at.trailing) return \"called\";",
+      "replace": "  if (!at.toolStatus) return \"called\";",
+      "expectRed": "call state: a call with no marker that something followed is called, never running",
+      "cell": "call state: a call with no marker that something followed is called, never running"
+    },
+    {
+      "name": "S12 the work fold appends posts at the end instead of merging them by time, so a post made inside a finished turn lands in the open one",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  for (const s of mergeByTime<WorkFlat>(flat, ordered)) {",
+      "replace": "  for (const s of [...flat, ...ordered] as WorkFlat[]) {",
+      "expectRed": "work post placement: a channel post and a DM land inside the turn whose events surround them, the DM with to",
+      "cell": "work post placement: a channel post and a DM land inside the turn whose events surround them, the DM with to"
+    },
+    {
+      "name": "S13 precise is ignored, so a call that took 0.4s reads 0s",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  if (s < 60) return precise ? ",
+      "replace": "  if (s < 60) return false ? ",
+      "expectRed": "formatDuration: 0.4s and 20.0s precise, 12s whole, 3m 2s, 1h 4m, and none for -1 or NaN",
+      "cell": "formatDuration: 0.4s and 20.0s precise, 12s whole, 3m 2s, 1h 4m, and none for -1 or NaN"
     }
   ]
 }

@@ -1,6 +1,7 @@
 /**
- * An agent's session, folded: `client/src/lib/session.ts` turns AG-UI frames and the agent's own
- * verified posts into the steps the session view draws.
+ * An agent's work, folded: `client/src/lib/session.ts` turns AG-UI frames and the agent's own
+ * verified posts and DMs into the flat steps the session view draws (`foldSession`) and into turns
+ * holding steps (`foldWork`), and gives each call, group and turn its state, words and duration.
  *
  * WHAT IT DRIVES. The module is imported by source path, as the client bundle imports it, and every
  * cell calls it on a small synthetic frame list. Core is imported here, and only here, to check that
@@ -17,15 +18,29 @@ import type { CotalMessage } from "../client/src/api/types.js";
 import type { StoredMessage } from "../client/src/state/types.js";
 import {
   SESSION_EVENT_CAP,
+  callDescription,
+  callState,
+  callTitle,
   eventChannelAgent,
   eventCount,
   foldSession,
+  foldWork,
+  formatDuration,
   framesOf,
+  groupDescription,
+  groupTitle,
   toolGroupLabel,
+  toolKind,
   toolShortName,
+  turnDescription,
+  turnTitle,
+  type CallState,
   type SessionFrame,
   type SessionStep,
   type ToolCall,
+  type Turn,
+  type WorkItem,
+  type WorkStep,
 } from "../client/src/lib/session.js";
 
 let cells = 0;
@@ -70,7 +85,8 @@ const post = (id: string, ts: number, body: string): StoredMessage => ({
 /** The steps as one short string: `tools(n)` for a group, `turn(<source>)` for a turn line. */
 const shape = (steps: SessionStep[]) =>
   steps.map((s) => (s.kind === "tools" ? `tools(${s.calls.length})` : s.kind === "turn" ? `turn(${s.source ?? ""})` : s.kind)).join(" ");
-const calls = (...names: string[]): ToolCall[] => names.map((n) => ({ name: n, full: n }));
+const calls = (...names: string[]): ToolCall[] =>
+  names.map((n, i) => ({ key: `k${i}`, id: `c${i}`, name: n, full: n, kind: toolKind(n), live: false }));
 
 // ── 1. The shape of a turn ───────────────────────────────────────────────────────────────────────
 {
@@ -363,6 +379,297 @@ ok("eventChannelAgent agrees with core's eventChannelPrincipal over the corpus",
 ok("CONTROL: the corpus holds channels on both sides of the line",
   CHANNELS.some((c) => eventChannelPrincipal(c) !== null) && CHANNELS.some((c) => eventChannelPrincipal(c) === null));
 ok("events.local.abc names local.abc", eventChannelAgent("events.local.abc") === "local.abc");
+
+// ── 12. foldWork: turns ──────────────────────────────────────────────────────────────────────────
+/** A time on the reader's own clock, so an expected `hh:mm` holds in any time zone. */
+const L = (h: number, m: number, s = 0) => new Date(2026, 9, 17, h, m, s).getTime();
+const marker = (id: string, isError: boolean, ts?: number) => ({ type: "CUSTOM", name: "cotal.toolResult", value: { toolCallId: id, isError }, ...stamp(ts) });
+const runError = (ts?: number) => ({ type: "RUN_ERROR", message: "run failed", ...stamp(ts) });
+const dm = (id: string, ts: number, to: string): StoredMessage => ({
+  msg: { id, ts, space: "s", from: { id: "local.engine", name: "engine" }, parts: [{ kind: "text", text: "a dm" }], to } as CotalMessage,
+  senderId: "local.engine",
+});
+
+/** Items as one short string; a turn shows its outcome and its steps in brackets. */
+const work = (items: readonly WorkItem[]): string =>
+  items.map((i) =>
+    i.kind === "turn" ? `turn(${i.outcome}${i.superseded ? ",superseded" : ""})[${work(i.steps)}]`
+      : i.kind === "tools" ? `tools(${i.calls.length})`
+        : i.kind).join(" ");
+const turns = (items: readonly WorkItem[]): Turn[] => items.filter((i): i is Turn => i.kind === "turn");
+const allCalls = (items: readonly WorkItem[]): ToolCall[] =>
+  items.flatMap((i) => (i.kind === "turn" ? allCalls(i.steps) : i.kind === "tools" ? i.calls : []));
+const allKeys = (items: readonly WorkItem[]): string[] =>
+  items.flatMap((i) => [i.key, ...(i.kind === "turn" ? allKeys(i.steps) : i.kind === "tools" ? i.calls.map((c) => `call ${c.key}`) : [])]);
+const toolsOf = (items: readonly WorkItem[]): (WorkStep & { kind: "tools" })[] =>
+  items.flatMap((i) => (i.kind === "turn" ? toolsOf(i.steps) : i.kind === "tools" ? [i] : []));
+
+{
+  const w = foldWork([frame("f1", [
+    started("human", L(10, 29)), ...text("a", "Drafting the API."), ...call("c1", "Write"), finished(L(10, 31)),
+    started("channel", L(10, 36)), ...call("c2", "Read"),
+  ])], []);
+  const [t1, t2] = turns(w.items);
+  ok("work: two turns, the second open, give turn(finished) turn(open) with their steps inside",
+    work(w.items) === "turn(finished)[said tools(1)] turn(open)[tools(1)]" &&
+      t1.start === L(10, 29) && t1.end === L(10, 31) && t1.source === "prompt" && t2.source === "mesh" && t2.end === undefined,
+    work(w.items));
+}
+{
+  const w = foldWork([frame("f1", [...text("a", "before"), ...call("c1", "Bash"), finished(), started("human"), ...text("b", "inside")])], []);
+  ok("work: steps before the first RUN_STARTED are loose, and a RUN_FINISHED with no turn is a loose turnEnd",
+    work(w.items) === "said tools(1) turnEnd turn(open)[said]", work(w.items));
+}
+{
+  const w = foldWork([frame("f1", [started("human"), ...call("c1", "Bash"), started("channel"), ...text("b", "next")])], []);
+  ok("work: a second RUN_STARTED marks the first turn superseded",
+    work(w.items) === "turn(open,superseded)[tools(1)] turn(open)[said]", work(w.items));
+}
+{
+  const w = foldWork([frame("f1", [started("human", L(10, 51)), ...call("c1", "Bash"), runError(L(10, 52)), ...text("a", "after")])], []);
+  const [t] = turns(w.items);
+  ok("work: RUN_ERROR closes the turn failed and puts runError last in it",
+    work(w.items) === "turn(failed)[tools(1) runError] said" && t.end === L(10, 52) && !JSON.stringify(w).includes("run failed"), work(w.items));
+  const loose = foldWork([frame("f1", [runError()])], []);
+  ok("work: a RUN_ERROR with no open turn is a loose runError", work(loose.items) === "runError", work(loose.items));
+}
+
+// ── 13. foldWork: the result marker ──────────────────────────────────────────────────────────────
+{
+  const w = foldWork([frame("f1", [
+    started("human", L(10, 38)),
+    ...call("c1", "Write", L(10, 38)), marker("c1", false, L(10, 38) + 200),
+    ...call("c2", "Bash", L(10, 39)), marker("c2", true, L(10, 39) + 1800),
+    finished(L(10, 40)),
+  ])], []);
+  const [write, bash] = allCalls(w.items);
+  ok("work: a marker sets end and failed on its call",
+    write.end === L(10, 38) + 200 && write.failed === false && bash.end === L(10, 39) + 1800 && bash.failed === true &&
+      work(w.items) === "turn(finished)[tools(2)]",
+    allCalls(w.items));
+}
+{
+  const w = foldWork([frame("f1", [...call("c1", "Bash", L(10, 0)), ...call("c1", "Bash", L(10, 1)), marker("c1", true, L(10, 2))])], []);
+  const [first, second] = allCalls(w.items);
+  ok("work: a marker sets the latest call with its id, not an earlier one",
+    first.failed === undefined && first.end === undefined && second.failed === true && second.end === L(10, 2), allCalls(w.items));
+}
+{
+  const w = foldWork([frame("f1", [started("human"), ...call("c1", "Bash"), marker("gone", true)])], []);
+  const [c] = allCalls(w.items);
+  ok("work: a marker for an id the window does not hold adds nothing",
+    work(w.items) === "turn(open)[tools(1)]" && c.end === undefined && c.failed === undefined, w);
+}
+{
+  const w = foldWork([frame("f1", [
+    ...call("c1", "Bash"),
+    { type: "CUSTOM", name: "cotal.toolResult", value: { toolCallId: "c1", isError: "yes" } },
+  ])], []);
+  const labels = w.items.map((i) => (i.kind === "unknown" ? i.label : i.kind));
+  ok("work: a malformed marker is named Custom event \"cotal.toolResult\" and sets nothing",
+    labels.join("|") === 'tools|Custom event "cotal.toolResult"' && allCalls(w.items)[0].failed === undefined, labels);
+}
+{
+  const marked = foldWork([frame("f1", [started(), ...call("c1", "Bash"), marker("c1", false), finished()])], []);
+  ok("toolStatus: true when a well-formed marker is held", marked.toolStatus === true, marked.toolStatus);
+  const legacy = foldWork([frame("f1", [started(), ...call("c1", "Bash"), finished()])], []);
+  ok("toolStatus: false with no marker and a finished turn holding a call", legacy.toolStatus === false, legacy.toolStatus);
+  const failed = foldWork([frame("f1", [started(), ...call("c1", "Bash"), runError()])], []);
+  ok("toolStatus: false with no marker and a failed turn holding a call", failed.toolStatus === false, failed.toolStatus);
+  const open = foldWork([frame("f1", [started(), ...call("c1", "Bash")])], []);
+  ok("toolStatus: true with no marker and only an open turn", open.toolStatus === true, open.toolStatus);
+}
+{
+  const w = foldWork([frame("f1", [
+    started("channel", L(10, 36)), ...call("c1", "Write", L(10, 38)), ...call("c2", "Bash", L(10, 41)), ...call("c3", "Bash", L(10, 43)), finished(L(10, 44)),
+  ])], []);
+  const [group] = toolsOf(w.items);
+  const title = group ? groupTitle(group.calls, w.toolStatus).title : "no group";
+  ok("legacy: a closed turn of Write, Bash, Bash with no marker reads \"Called Write, Bash and Bash\"",
+    title === "Called Write, Bash and Bash", { title, toolStatus: w.toolStatus });
+  const described = group ? groupDescription(group.calls, w.toolStatus) : "no group";
+  ok("legacy: its description is \"3 calls · 10:38 to 10:43\"", described === "3 calls · 10:38 to 10:43", described);
+}
+
+// ── 14. foldWork: posts and DMs, placed by time ──────────────────────────────────────────────────
+{
+  const frames = [frame("f1", [
+    started("channel", L(10, 40)), ...call("c1", "Bash", L(10, 41)), ...text("a", "Posting now.", { ts: L(10, 43) }), finished(L(10, 44)),
+    started("channel", L(10, 49)), ...call("c2", "cotal_inbox", L(10, 49)),
+  ], L(10, 49))];
+  const w = foldWork(frames, [post("m1", L(10, 42), "in #team"), dm("d1", L(10, 42) + 1, "local.lead")]);
+  const [first] = turns(w.items);
+  const [p, d] = first ? first.steps.filter((s) => s.kind === "post") : [];
+  ok("work post placement: a channel post and a DM land inside the turn whose events surround them, the DM with to",
+    work(w.items) === "turn(finished)[tools(1) post post said] turn(open)[tools(1)]" &&
+      p?.kind === "post" && p.channel === "team" && p.to === undefined && p.msg.id === "m1" &&
+      d?.kind === "post" && d.to === "local.lead" && d.channel === undefined && d.msg.id === "d1",
+    work(w.items));
+}
+{
+  const anycast = { msg: { id: "a1", ts: L(10, 0), space: "s", from: { id: "local.engine", name: "engine" }, parts: [], toService: "reviewer" } as CotalMessage, senderId: "local.engine" };
+  const w = foldWork([], [anycast]);
+  ok("work: a row with neither channel nor to is skipped", w.items.length === 0, w.items);
+}
+
+// ── 15. Group titles: counts of calls per kind ───────────────────────────────────────────────────
+ok("group title: two Edit calls read \"Made 2 edits\", counting calls, never files",
+  groupTitle(calls("Edit", "Edit"), true).title === "Made 2 edits", groupTitle(calls("Edit", "Edit"), true));
+ok("group title: Bash, cotal_inbox, Bash, cotal_inbox reads \"Ran 2 commands, checked the inbox 2 times\"",
+  groupTitle(calls("Bash", "cotal_inbox", "Bash", "cotal_inbox"), true).title === "Ran 2 commands, checked the inbox 2 times",
+  groupTitle(calls("Bash", "cotal_inbox", "Bash", "cotal_inbox"), true));
+ok("group title: cotal_inbox, cotal_inbox, Edit, Bash reads \"Checked the inbox 2 times, made an edit, ran a command\"",
+  groupTitle(calls("cotal_inbox", "cotal_inbox", "Edit", "Bash"), true).title === "Checked the inbox 2 times, made an edit, ran a command",
+  groupTitle(calls("cotal_inbox", "cotal_inbox", "Edit", "Bash"), true));
+ok("group title: legacy Write, Bash, Bash reads \"Called Write, Bash and Bash\"",
+  groupTitle(calls("Write", "Bash", "Bash"), false).title === "Called Write, Bash and Bash", groupTitle(calls("Write", "Bash", "Bash"), false));
+{
+  const got = [calls("Grep"), calls("Grep", "Glob"), calls("Bash", "Grep", "Glob"), calls("Write", "Bash")].map((c) => groupTitle(c, true).title);
+  ok("group title: other tools read \"called a tool\" alone and \"called n other tools\" beside other kinds",
+    got.join("|") === "Called a tool|Called 2 tools|Ran a command, called 2 other tools|Wrote a file, ran a command", got);
+}
+{
+  const c = calls("Write", "Bash", "Bash");
+  c[1].failed = true;
+  c[0].failed = false;
+  ok("group title: failed counts the failed calls", groupTitle(c, true).failed === 1 && groupTitle(calls("Bash"), true).failed === 0, groupTitle(c, true));
+}
+
+// ── 16. Call states (one cell per rule) ──────────────────────────────────────────────────────────
+const openTurn: Turn = { kind: "turn", key: "t", start: L(10, 49), outcome: "open", superseded: false, steps: [], live: false };
+const one = (over: Partial<ToolCall> = {}): ToolCall => ({ ...calls("Bash")[0], ts: L(10, 50), ...over });
+const state = (call: ToolCall, over: Partial<Parameters<typeof callState>[1]> = {}): CallState =>
+  callState(call, { turn: openTurn, trailing: true, status: "working", toolStatus: true, ...over });
+ok("call state: a marker gives done or failed, whatever follows it or presence says",
+  state(one({ end: L(10, 51), failed: false }), { trailing: false, status: "offline" }) === "done" &&
+    state(one({ end: L(10, 51), failed: true }), { turn: undefined }) === "failed");
+ok("call state: a call with no marker that something followed is called, never running",
+  state(one(), { trailing: false }) === "called", state(one(), { trailing: false }));
+ok("call state: with no tool status every call is called", state(one(), { toolStatus: false }) === "called");
+ok("call state: a trailing call with no turn has no result", state(one(), { turn: undefined }) === "noResult");
+ok("call state: a trailing call in a closed or superseded turn has no result",
+  state(one(), { turn: { ...openTurn, outcome: "finished" } }) === "noResult" &&
+    state(one(), { turn: { ...openTurn, outcome: "failed" } }) === "noResult" &&
+    state(one(), { turn: { ...openTurn, superseded: true } }) === "noResult");
+ok("call state: a trailing call in an open turn runs while presence says working", state(one(), { status: "working" }) === "running");
+ok("call state: a trailing call in an open turn is pending while presence says waiting", state(one(), { status: "waiting" }) === "pending");
+ok("call state: idle and offline give no result", state(one(), { status: "idle" }) === "noResult" && state(one(), { status: "offline" }) === "noResult");
+
+// ── 17. Every title for a command, and each turn title ───────────────────────────────────────────
+{
+  const states: CallState[] = ["running", "done", "failed", "pending", "noResult", "called"];
+  const got = states.map((s) => callTitle("command", s, "Bash"));
+  ok("call titles for a command follow the wording table",
+    got.join("|") === "Running a command|Ran a command|A command failed|A command hasn't finished|No result arrived for a command|Called Bash", got);
+  const parts = [groupTitle(calls("Bash"), true).title, groupTitle(calls("Bash", "Bash"), true).title];
+  ok("group parts for a command read \"Ran a command\" and \"Ran 2 commands\"", parts.join("|") === "Ran a command|Ran 2 commands", parts);
+  ok("callTitle names a called tool by its short name", callTitle("send", "called", "cotal_send") === "Called cotal_send");
+}
+{
+  const start = L(10, 36);
+  const failing = (...names: string[]): WorkStep[] => [{ kind: "tools", key: "g", calls: calls(...names).map((c) => ({ ...c, failed: true })), live: false }];
+  const finished7 = { ...openTurn, start, end: start + 7 * 60_000 + 48_000, outcome: "finished" as const, steps: failing("Bash") };
+  const t = turnTitle(finished7, "idle", start);
+  ok("turn title: finished reads \"Worked for 7m 48s\" with \"1 command failed\"", t.title === "Worked for 7m 48s" && t.failed === "1 command failed", t);
+  const mixed = turnTitle({ ...finished7, steps: failing("Bash", "Edit") }, "idle", start);
+  ok("turn title: failed calls of mixed kinds read \"2 calls failed\"", mixed.failed === "2 calls failed", mixed);
+  const twoBash = turnTitle({ ...finished7, steps: failing("Bash", "Bash") }, "idle", start);
+  ok("turn title: two failed commands read \"2 commands failed\"", twoBash.failed === "2 commands failed", twoBash);
+  const failedTurn = turnTitle({ ...openTurn, start, end: start + 72_000, outcome: "failed" }, "idle", start);
+  ok("turn title: failed reads \"Turn failed after 1m 12s\"", failedTurn.title === "Turn failed after 1m 12s" && failedTurn.failed === undefined, failedTurn);
+  const now = start + 182_400;
+  const live = (status: "working" | "waiting" | "idle" | "offline", over: Partial<Turn> = {}) => turnTitle({ ...openTurn, start, ...over }, status, now).title;
+  ok("turn title: open while working reads \"Working for 3m 2s\"", live("working") === "Working for 3m 2s", live("working"));
+  ok("turn title: open while waiting reads \"Open for 3m 2s\"", live("waiting") === "Open for 3m 2s", live("waiting"));
+  ok("turn title: open while idle or offline, or superseded, reads \"No end arrived for this turn\"",
+    [live("idle"), live("offline"), live("working", { superseded: true })].every((x) => x === "No end arrived for this turn"),
+    [live("idle"), live("offline"), live("working", { superseded: true })]);
+}
+
+// ── 18. Durations and descriptions ───────────────────────────────────────────────────────────────
+{
+  const got = [formatDuration(400, true), formatDuration(20_000, true), formatDuration(12_400, false), formatDuration(182_000, false),
+    formatDuration(3_840_000, false), formatDuration(-1, true), formatDuration(Number.NaN, false)];
+  ok("formatDuration: 0.4s and 20.0s precise, 12s whole, 3m 2s, 1h 4m, and none for -1 or NaN",
+    JSON.stringify(got) === JSON.stringify(["0.4s", "20.0s", "12s", "3m 2s", "1h 4m", undefined, undefined]), got);
+}
+{
+  const t = L(10, 50);
+  const got = [
+    callDescription(one({ ts: t, end: t + 1800, failed: false }), "done", t),
+    callDescription(one({ ts: t, end: t + 1800, failed: true }), "failed", t),
+    callDescription(one({ ts: t }), "running", t + 12_700),
+    callDescription(one({ ts: t }), "pending", t + 99_000),
+    callDescription(one({ ts: t }), "noResult", t + 99_000),
+    callDescription(one({ ts: L(10, 44), name: "cotal_send" }), "called", t),
+    callDescription(one({ ts: t, end: t - 5, failed: false }), "done", t),
+  ];
+  ok("call descriptions: the name with its precise, counting or start time, and only the time when called",
+    got.join("|") === "Bash · 1.8s|Bash · 1.8s|Bash · 12s|Bash · started 10:50|Bash · started 10:50|10:44|Bash", got);
+}
+{
+  const t = L(10, 38);
+  const pair = calls("Write", "Bash").map((c, i) => ({ ...c, ts: t + i * 200, end: t + i * 200 + (i === 0 ? 200 : 1800), failed: false }));
+  const half = [pair[0], { ...pair[1], end: undefined, failed: undefined }];
+  const same = calls("Bash", "Bash").map((c) => ({ ...c, ts: t }));
+  const got = [groupDescription(pair, true), groupDescription(half, true), groupDescription(same, false)];
+  ok("group descriptions: steps with the span when every call has both ends, else calls and their times",
+    got.join("|") === "2 steps · 2.0s|2 steps|2 calls · 10:38", got);
+}
+{
+  const w = foldWork([frame("f1", [
+    started("channel", L(10, 36)), ...text("a", "Rewriting to match."), ...call("c1", "Write"), ...call("c2", "Bash"),
+    ...text("b", "Checking with lead."), ...call("c3", "mcp__plugin_cotal_cotal__cotal_dm"), finished(L(10, 44)),
+  ])], []);
+  const [t] = turns(w.items);
+  const d = t ? turnDescription(t, L(11, 0)) : "no turn";
+  ok("turn description: the mock's second turn reads \"10:36 to 10:44 · started by a message from the mesh · 5 steps\"",
+    d === "10:36 to 10:44 · started by a message from the mesh · 5 steps", d);
+}
+{
+  const w = foldWork([frame("f1", [started("channel", L(10, 49)), ...call("c1", "cotal_inbox", L(10, 49)), ...text("a", "Returning { ate, dead }.", { ts: L(10, 50) })], L(10, 50))],
+    [post("m1", L(10, 49) + 30_000, "posted")]);
+  const [t] = turns(w.items);
+  const d = t ? turnDescription(t, L(10, 52)) : "no turn";
+  ok("turn description: an open turn reads \"since 10:49 · started by a message from the mesh · 3 steps · posted in #team\"",
+    d === "since 10:49 · started by a message from the mesh · 3 steps · posted in #team", d);
+}
+
+// ── 19. foldWork: keys, ids and live ─────────────────────────────────────────────────────────────
+{
+  const input = (): SessionFrame[] => [
+    frame("f1", [...text("x", "loose"), started("human"), ...call("c1", "Bash"), marker("c1", false), ...call("c2", "Edit"), ...text("a", "x", { end: false })]),
+    frame("f2", [null, { type: "CUSTOM", name: "n" }, finished(), runError()]),
+  ];
+  const posts = [post("m1", T0, "hi"), dm("d1", T0, "local.lead")];
+  const a = allKeys(foldWork(input(), posts).items);
+  const b = allKeys(foldWork(input(), posts).items);
+  ok("work: keys are equal across two folds and unique within one", a.join("|") === b.join("|") && new Set(a).size === a.length && a.length >= 10, [a, b]);
+}
+{
+  const w = foldWork([frame("f", [
+    started("human"),
+    ...text("10", "ten", { end: false }), ...text("2", "two", { end: false }), ...text("__proto__", "proto", { end: false }),
+    ...call("10", "Bash", L(10, 0)), ...call("2", "Edit", L(10, 0)), ...call("__proto__", "Read", L(10, 0)),
+    marker("__proto__", true, L(10, 3)), marker("2", false, L(10, 2)), marker("10", false, L(10, 1)),
+  ])], []);
+  const [t] = turns(w.items);
+  const said = t ? t.steps.filter((s) => s.kind === "said").map((s) => (s.kind === "said" ? s.text : "")) : [];
+  const ends = allCalls(w.items).map((c) => `${c.id}:${c.end === undefined ? "-" : new Date(c.end).getMinutes()}:${c.failed}`);
+  ok("work: ids \"2\", \"10\" and \"__proto__\" keep their order, and each marker finds its own call",
+    said.join(",") === "ten,two,proto" && ends.join(",") === "10:1:false,2:2:false,__proto__:3:true", { said, ends });
+}
+{
+  const w = foldWork([
+    frame("f1", [started("human"), ...call("c1", "Bash"), ...call("c2", "Bash")], T0, true),
+    frame("f2", [marker("c1", false)], T0, true),
+    frame("f3", [marker("c2", false), finished()], T0, false),
+  ], []);
+  const [t] = turns(w.items);
+  const [c1, c2] = allCalls(w.items);
+  ok("work: an item is live only when every frame it came from arrived live",
+    t?.live === false && c1.live === true && c2.live === false && toolsOf(w.items)[0]?.live === false, { turn: t?.live, c1: c1.live, c2: c2.live });
+}
 
 console.log(`\nsession: ${cells - failed} of ${cells} cells green`);
 if (failed > 0) process.exit(1);
