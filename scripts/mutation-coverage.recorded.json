@@ -63,10 +63,6 @@
     "sha256": "a539d7366aaea2dae98c51306aaba8ec501e0df17e3de09da4b52bb58f310fbc",
     "refusal": "mutation \"a deadline cancellation is treated as an ordinary supersession again\" targets scripts/live-job-conclusion.mjs, which none of [bin/smoke/live-job-conclusion.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in scripts/live-job-conclusion.mjs that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "bin/smoke/mutations/manager-log-guidance.json": {
-    "sha256": "11132c3b3324bf7c31f3a564dbe95081d03ccf076aded3207e9b9ee67a7b6423",
-    "refusal": "mutation \"the held-lease refusal goes back to the stale root-scoped manager log\" targets implementations/cli/src/commands/spawn-manifest.ts, which none of [bin/smoke/manager-log-guidance.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "bin/smoke/mutations/manager-runtime-deps.json": {
     "sha256": "b1348bbbaffb027e5ebde0c97ef3994554bf3ba3fa4d93226b7e4a8f13263b99",
     "refusal": "mutation \"M1 manager production dependencies move back to devDependencies\" is missing \"cell\""

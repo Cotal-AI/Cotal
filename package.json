@@ -418,7 +418,6 @@
     "smoke:spawn-from-anywhere:live": "tsx implementations/cli/smoke/spawn-from-anywhere-live.smoke.ts",
     "smoke:up-manifest:live": "tsx implementations/cli/smoke/up-manifest-live.smoke.ts",
     "smoke:ledger": "tsx implementations/cli/smoke/ledger.smoke.ts",
-    "smoke:spawn-manifest:live": "tsx implementations/cli/smoke/spawn-manifest-live.smoke.ts",
     "smoke:manager-singleton:live": "tsx implementations/cli/smoke/manager-singleton-live.smoke.ts",
     "smoke:component-health": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/component-health.smoke.ts",
     "smoke:liveness-peer": "tsx packages/core/smoke/liveness-peer.smoke.ts",
