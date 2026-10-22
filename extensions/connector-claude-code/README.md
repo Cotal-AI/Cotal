@@ -18,8 +18,11 @@ Claude Code documents every hook event and its matchers in its
 The plugin registers the nine hooks below in [`hooks/hooks.json`](hooks/hooks.json). Each runs
 `dist/hook.cjs`, which relays the event to the session's connector over its authenticated control
 socket. A Cotal session, one that Cotal launched, carries a mesh identity in its environment. A
-plain session, such as a `claude` you started yourself, carries none and has no connector, so there
-the hook only runs the hosted connection checks in the `PreToolUse` and `PostToolUse` rows. The presence states are described in
+plain session, such as a `claude` you started yourself, carries none until it connects. Its command
+hooks capture session and transcript metadata, then relay lifecycle events to the personal gateway
+after the native module binds that session. This does not intercept the `classic.*` events that
+Claude's built-in security guard withholds from user plugins. The command hook still enforces the
+hosted connection checks in the `PreToolUse` and `PostToolUse` rows. The presence states are described in
 [presence mapping](../../docs/connect-claude.md#presence-mapping).
 
 | Hook | Matcher | What the plugin does |

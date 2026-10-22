@@ -442,6 +442,32 @@ export const cotalAuthProvider: AuthProvider = {
     return body;
   },
 
+  async requestConversationIdentity({ url, idpUrl, method, body }) {
+    const endpoint = new URL(url);
+    if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.hash)
+      throw new Error("conversation identity authority must use HTTPS without userinfo or a fragment");
+    const session = requireIdpSession(homeCotalDir(), idpUrl);
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method,
+        redirect: "manual",
+        credentials: "omit",
+        headers: { authorization: `Bearer ${session.token}`, ...(body ? { "content-type": "application/json" } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      throw new Error("conversation identity request outcome is unknown; retain its saved request and retry that same lifecycle");
+    }
+    if (response.status >= 300 && response.status < 400)
+      throw new Error("conversation identity authority returned a redirect; no redirect was followed");
+    const parsed: unknown = await response.json().catch(() => undefined);
+    if (parsed === undefined)
+      throw new Error("conversation identity authority returned no JSON; retain its saved request for recovery");
+    return { status: response.status, body: parsed };
+  },
+
   /** Redeem one pre-minted remote enrollment. The URL itself carries the one-time secret, so this
    *  method names it nowhere, sends no Authorization header, and performs exactly one manual-redirect
    *  GET. A provider-level login conflict check runs before the GET so refusing the ambiguous input

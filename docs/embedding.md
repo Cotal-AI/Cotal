@@ -417,17 +417,31 @@ The host implements `GatewayHost`:
 
 - `account(auth)` returns the account the request authenticated as, read from the SDK's `AuthInfo`.
   It throws when the request has none, and the tool then runs nothing.
-- `open(account, name)` issues and starts a new connection under that name. It throws `NameTaken`
-  only when the issuer reports that the name exists. `cotal_connect` then tries `name_2`, `name_3`
-  and so on, up to `GATEWAY_NAME_ATTEMPTS` names. Any other error goes back to the caller and no
-  other name is tried. The collision check and the issue must be one atomic step per account, so
-  two conversations asking for one name at once get different names. Error messages reach the
-  caller and must not carry secrets.
+- `open(account, name, context?, selection?, approvalId?)` starts a connection only after the person
+  approves its permissions. `selection` is a proposal. Throw `ApprovalRequired` with the request ID,
+  approval page, expiry and proposal while they decide. The tool returns a structured pending result
+  and a readable link, with no connection handle. `approvalId` resumes one unchanged request when
+  `options.approvalResume` is enabled. It conveys no authority. Bind it to the authenticated account,
+  space, name and request generation. An issued approval cannot grant a replacement connection.
+  Throw `NameTaken` only for an authoritative name collision. A new request tries `name_2` and later
+  variants up to `GATEWAY_NAME_ATTEMPTS`; a resumed approval never renames. The collision check and
+  issue must be atomic. Other errors reach the caller without renaming and must not carry secrets.
 - `find(account, id)` and `close(account, id)` act only on a connection that account owns.
 
-`cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. `GATEWAY_TOOLS`
-names the mesh tools the gateway offers. Spawn, despawn, persona, run, yield and reconnect belong
-to a supervised local seat and are left out. One tool list serves every connection, so no
+`cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. Its reply names
+the channels the new connection reads, may join and may post to, from the configuration its grant
+produced. `GATEWAY_TOOLS` names the mesh tools the gateway offers, `cotal_docs` included. A native
+embedder whose host issues each conversation its own grant may pass `options.tools` from
+`NATIVE_GATEWAY_TOOLS`, which adds spawn, despawn, persona, run and reconnect but not yield.
+Registering a tool offers it to no connection by itself: a connection calls only the tools its
+host lists in `GatewayConnection.tools`, default `GATEWAY_TOOLS`, and only those its credential's
+capabilities allow. With `options.selection`, `cotal_connect` takes channels, a role and capabilities,
+builds a canonical proposal with core's `conversationSelection`, and hands it to `open`. Only the
+person's decision in the authority's authenticated UI is consent. The approved selection may differ
+from the proposal and must stay within their current authority. The empty approved selection still
+includes direct-message send and receive and own activity publication; disclose these before
+approval. A model flag, API bearer or ordinary tool approval cannot approve the request. Unsupported
+approval paths refuse before issuing a grant. One tool list serves every connection, so no
 advertised text names one connection's channels. Each call runs against that connection's own
 configuration. Authentication, credential issuance and revocation and durable connection records
 stay with the host.
@@ -447,7 +461,7 @@ when its connection closes, also while the broker is unreachable; it listens for
 since the last read, and a wait that starts after one returns it at once. Every other routed tool
 except `cotal_inbox` adds a line to its result when wake-worthy messages are waiting.
 
-`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, waitSeconds? })`
+`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, approvalResume?, waitSeconds? })`
 serves one HTTP request to the endpoint with the package's own MCP server, so the embedding service
 never imports an MCP SDK or a zod version of its own. The service authenticates the request, answers
 401 itself when that fails, and passes the result as `auth`. A framework that already parsed the JSON body passes it
@@ -462,13 +476,22 @@ and names the local user. A client that cancels a call aborts its signal, so a c
 listening. The streams default to the process's own, and stdout then carries only MCP.
 
 An embedder whose client can be woken passes `wake`, to `serveGatewayStdio` or in the options of
-`registerCotalGatewayTools`. The gateway calls `wake.signal(connection)` when a connection gets
-something that would end a `cotal_wait` while no wait holds it, and not again for that connection
-until `cotal_inbox` or `cotal_wait` reads. `signal` returns false when no client heard it. The
-gateway then signals that connection again when the embedder calls the function `wake.attach`
-received, which it does when a client starts listening. `cotal_connect` adds `wake.listening()` to
-its reply. `GATEWAY_INSTRUCTIONS` is `GATEWAY_CONNECTING` followed by `GATEWAY_LISTENING`, so an
-embedder can say how its conversations listen and keep how they connect.
+`registerCotalGatewayTools`. The gateway calls `wake.signal(connection, preview)` when a connection
+gets something that would end a `cotal_wait` while no wait holds it. A true result means a reader
+heard the signal, not that it received complete message content. The preview never consumes mail.
+`cotal_connect` adds `wake.listening(connection)` to its reply. An embedder delivering full content
+can return false from `wake.inboxNotice(connection)` to omit competing inbox-read advice from other
+tool results. Notification-only clients retain that advice.
+
+`wake.attach` receives a rearm callback. Call it without arguments when a replacement reader starts
+listening. Call it with one connection after confirmed inline delivery to reoffer that connection's
+remaining work. Pass `false` as its second argument to clear the latch without immediately retrying
+a refused handoff. Ordinary inbox reads and waits also clear the latch. An adapter offering complete
+inline messages can use `prepareInlineDelivery`: hold whole automatic messages, validate the final
+transport size, recheck the batch before admission, then settle it with the native result. A failed
+or unknown admission releases the hold without committing. Never settle successfully on a preview,
+socket write or queued native call. `GATEWAY_INSTRUCTIONS` combines `GATEWAY_CONNECTING` and
+`GATEWAY_LISTENING`, so an embedder can supply its own listening instructions.
 
 ### Private tool results
 

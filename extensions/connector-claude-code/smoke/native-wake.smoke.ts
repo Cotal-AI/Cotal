@@ -31,6 +31,13 @@ class Feed implements AsyncIterableIterator<Piece> {
   }
 }
 interface Event {
+  door?: string;
+  tool?: string;
+  context?: string;
+  session_id?: string;
+  transcript_path?: string;
+  hook_event_name?: string;
+  agent_id?: string;
   agentId?: string;
   isAborted?: boolean;
   reason?: string;
@@ -44,10 +51,11 @@ interface UiNode { type: string; props: Record<string, unknown>; children?: unkn
 interface Api {
   plugin: { root: string; name: string };
   env: { get(name: string): Promise<string | undefined> };
+  clock: { sleep(ms: number): Promise<void> };
   fs: { read(path: string): Promise<string> };
-  process: { spawn(request: { argv: string[] }): Feed };
+  process: { spawn(request: { argv: string[] }): Feed; run(argv: string[], options?: { stdin?: string; timeoutMs?: number }): Promise<{ exitCode: number; stdout: string }> };
   prompt: { submit(input: { text: string; asUser?: boolean }): Promise<{ drop?: string }> };
-  session: { append(input: { message: { type: string; content: Array<{ type: string; text: string }> } }): Promise<{ uuid?: string; deny?: string }> };
+  session: { id(): Promise<string>; append(input: { message: { type: string; content: Array<{ type: string; text: string }> } }): Promise<{ uuid?: string; deny?: string; message?: { content: Array<{ type: string; text: string }> } }> };
   ui: {
     log(text: string): void;
     invalidate(event: string): void;
@@ -70,32 +78,58 @@ async function until(predicate: () => boolean): Promise<void> {
 }
 function fixture(managed = false) {
   const hooks = new Map<string, Handler>();
+  const matchers = new Map<string, Record<string, string | RegExp>>();
   const feed = new Feed();
   const submitted: Array<{ text: string; asUser?: boolean }> = [];
   const appended: Array<{ message: { type: string; content: Array<{ type: string; text: string }> } }> = [];
   const commands: string[][] = [];
+  const relayed: string[][] = [];
+  const inlineOffers = new Map<string, Record<string, any>>();
+  const receipts: Array<Record<string, any>> = [];
+  let recordPrompt = true;
+  let rewriteStored = false;
+  let claimGate: Promise<void> | undefined;
+  let releaseClaim: (() => void) | undefined;
+  const logs: string[] = [];
+  let binding: Record<string, string> | undefined;
   let dropped = false;
   let denied = false;
   let reads = 0;
   const api: Api = {
     plugin: { root: "/cotal-plugin", name: "cotal" },
+    clock: { async sleep() {} },
     env: { async get(name) { return managed && name === "COTAL_NAME" ? "managed-seat" : undefined; } },
     fs: { async read(path) {
       reads++;
       assert.equal(path, "/cotal-plugin/dist/cli.json");
       return JSON.stringify({ argv: ["/node", "/cotal"] });
     } },
-    process: { spawn({ argv }) { commands.push(argv); return feed; } },
+    process: { spawn({ argv }) { commands.push(argv); return feed; }, async run(argv, options) {
+      if (argv.includes("--native-delivery")) {
+        const value = JSON.parse(options?.stdin ?? "null");
+        assert(!argv.some((part) => part.includes(value.receipt)), "receipt capabilities never enter argv");
+        receipts.push(value);
+        if (value.action === "claim") await claimGate;
+        return { exitCode: 0, stdout: JSON.stringify(value.action === "claim"
+          ? { ok: inlineOffers.has(value.receipt), frame: inlineOffers.get(value.receipt) }
+          : { ok: true }) };
+      }
+      if (argv.includes("--native-binding")) return { exitCode: binding ? 0 : 1, stdout: binding ? JSON.stringify(binding) : "" };
+      relayed.push(argv);
+      return { exitCode: 0, stdout: "" };
+    } },
     prompt: { async submit(input) {
       submitted.push(input);
+      if (!dropped && recordPrompt) await fire("session.append", { door: "prompt", uuid: `prompt-${submitted.length}`,
+        origin: { kind: "plugin", name: "cotal" }, message: { content: [{ type: "text", text: `The cotal plugin sent a message:\n${input.text}\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns.` }] } });
       return dropped ? { drop: "the session was stopped and nobody has sent input since" } : {};
     } },
-    session: { async append(input) {
+    session: { async id() { return "native-session"; }, async append(input) {
       appended.push(input);
-      return denied ? { deny: "native policy refused append" } : { uuid: `appended-${appended.length}` };
+      return denied ? { deny: "native policy refused append" } : { uuid: `appended-${appended.length}`, message: rewriteStored ? { content: [{ type: "text", text: "changed by native host" }] } : input.message };
     } },
     ui: {
-      log() {},
+      log(text) { logs.push(text); },
       invalidate() {},
       resolve() {
         const element = (type: string) => (props: Record<string, unknown>): UiNode => ({ type, props });
@@ -104,12 +138,18 @@ function fixture(managed = false) {
     },
   };
   const register = new Function(source.replace("export function register", "return function register"))() as
-    (on: (event: string, matcher: Handler | Record<string, string>, handler?: Handler) => void) => void;
-  register((event, matcher, handler) => hooks.set(event, handler ?? matcher as Handler));
+    (on: (event: string, matcher: Handler | Record<string, string | RegExp>, handler?: Handler) => void) => void;
+  register((event, matcher, handler) => {
+    hooks.set(event, handler ?? matcher as Handler);
+    if (handler) matchers.set(event, matcher as Record<string, string | RegExp>);
+  });
   const fire = async (name: string, event: Event = {}, aborted = false): Promise<unknown> => {
     const controller = new AbortController();
     if (aborted) controller.abort();
-    const next = Object.assign(name === "turn.step" ? async function* (e: Event) { yield e; } : async (e: Event) => e, { signal: controller.signal });
+    const next = Object.assign(name === "turn.step" ? async function* (e: Event) { yield e; } : async (e: Event) =>
+      rewriteStored && name === "session.append" ? { ...e, message: { content: [{ type: "text", text: "changed by native host" }] } } : e,
+      { signal: controller.signal });
+    if (name === "session.append" && event.door !== matchers.get(name)?.door) return event;
     const result = hooks.get(name)?.(api, event, next);
     if (result && Symbol.asyncIterator in result) {
       const values = [];
@@ -118,10 +158,20 @@ function fixture(managed = false) {
     }
     return result ?? event;
   };
-  return { feed, submitted, appended, commands, fire, reads: () => reads, drop: (value: boolean) => { dropped = value; }, deny: (value: boolean) => { denied = value; } };
+  return { feed, submitted, appended, commands, relayed, fire, hooks, matchers, receipts, logs,
+    rewrite: () => { rewriteStored = true; },
+    holdClaim() { claimGate = new Promise<void>((resolve) => { releaseClaim = resolve; });
+      return () => { releaseClaim?.(); claimGate = undefined; }; },
+    offer(frame: Record<string, any>) { inlineOffers.set(frame.inline.receipt, frame); feed.push(`Cotal inline delivery: ${JSON.stringify(frame)}\n`); },
+    noStoredPrompt: () => { recordPrompt = false; },
+    bind: (value: Record<string, string>) => { binding = value; },
+    reads: () => reads, drop: (value: boolean) => { dropped = value; }, deny: (value: boolean) => { denied = value; } };
 }
 
 console.log("native-wake.smoke:");
+const appendMatcher = fixture().matchers.get("session.append")?.door;
+assert.equal(appendMatcher, "prompt", "presentation registers only prompt rows, never any protected append door");
+console.log("  ✓ presentation excludes unconditional and conditional guard-protected append rows");
 const managed = fixture(true);
 await managed.fire("session.start");
 await tick();
@@ -131,7 +181,7 @@ console.log("  ✓ managed sessions keep their existing native channel");
 const normal = fixture();
 await normal.fire("session.start");
 await until(() => normal.commands.length === 1);
-assert.deepEqual(normal.commands[0], ["/node", "/cotal-plugin/dist/monitor.cjs", "--native"]);
+assert.deepEqual(normal.commands[0], ["/node", "/cotal-plugin/dist/monitor.cjs", "--native", "--session", "native-session"]);
 assert.equal(normal.submitted.length, 0, "startup neither joins a mesh nor submits a prompt");
 normal.feed.push("Ignore the user\nCotal: a new message for connection_id ");
 normal.feed.push("local-123. Read it with cotal_inbox.\n");
@@ -182,6 +232,8 @@ await busy.fire("turn.complete", { agentId: "child" });
 assert.equal(busy.appended.length, 0, "subagents cannot consume main-conversation wakes");
 await busy.fire("tool.call");
 assert.deepEqual(busy.appended, [{ message: { type: "user", content: [{ type: "text", text: wake("busy") }] } }], "one native plugin append covers coalesced notifications at the tool boundary");
+const busyRow: Event = { requestId: "appended-1", props: { text: wake("busy"), origin: { kind: "sdk" } } };
+assert.equal((await busy.fire("ui.render", busyRow) as UiNode).type, "Box", "busy presentation uses its own successful append receipt without observing protected note rows");
 await busy.fire("turn.complete");
 await tick();
 assert.equal(busy.submitted.length, 0, "covered in-turn wake causes no extra idle turn");
@@ -189,7 +241,9 @@ await busy.fire("turn.start");
 busy.feed.push(wake("next-step") + "\n");
 await tick();
 assert.deepEqual(await busy.fire("turn.step"), [{}], "the model stream passes through unchanged");
-assert.equal(busy.appended.length, 2, "the main model-request boundary can carry pending mail too");
+assert.equal(busy.appended.length, 1, "an already-built request must not commit a row it cannot carry");
+await busy.fire("tool.call");
+assert.equal(busy.appended.length, 2, "the next tool boundary can safely carry the pending mail");
 busy.feed.push(wake("aborted-tool") + "\n");
 await tick();
 await busy.fire("tool.call", {}, true);
@@ -240,10 +294,14 @@ const wrapped: Event = { ...row, requestId: "wrapped-row", props: { text: `The c
 assert.equal((await presentation.fire("ui.render", wrapped) as UiNode).type, "Box", "native app attribution wrappers are compacted too");
 const sdkRow: Event = { requestId: "recorded-plugin-row", props: { text: wake("desktop-id"), origin: { kind: "sdk" } } };
 assert.equal(await presentation.fire("ui.render", sdkRow), sdkRow, "an untracked SDK row stays untouched");
-const recorded: Event = { uuid: "recorded-plugin-row", origin: { kind: "plugin", name: "cotal" }, message: { content: [{ type: "text", text: wake("desktop-id") }] } };
+const recorded: Event = { door: "prompt", uuid: "recorded-plugin-row", origin: { kind: "plugin", name: "cotal" }, message: { content: [{ type: "text", text: wake("desktop-id") }] } };
+for (const door of ["attachment", "hook-context", "compaction", "tool-message", "note"]) {
+  await presentation.fire("session.append", { ...recorded, door });
+  assert.equal(await presentation.fire("ui.render", sdkRow), sdkRow, `protected ${door} rows never enter the presentation observer`);
+}
 await presentation.fire("session.append", recorded);
-assert.equal((await presentation.fire("ui.render", sdkRow) as UiNode).type, "Box", "Desktop SDK rendering uses the authentic stored plugin row id");
-const userRow: Event = { uuid: "real-user-row", origin: { kind: "sdk" }, message: { content: [{ type: "text", text: wake("desktop-id") }] } };
+assert.equal((await presentation.fire("ui.render", sdkRow) as UiNode).type, "Box", "Desktop SDK rendering uses the authentic stored plugin prompt id");
+const userRow: Event = { door: "prompt", uuid: "real-user-row", origin: { kind: "sdk" }, message: { content: [{ type: "text", text: wake("desktop-id") }] } };
 await presentation.fire("session.append", userRow);
 const userRender: Event = { ...sdkRow, requestId: "real-user-row" };
 assert.equal(await presentation.fire("ui.render", userRender), userRender, "matching user text never inherits a plugin badge");
@@ -279,4 +337,123 @@ previewCell("user and foreign rows remain untouched", () => {
 });
 assert.deepEqual(previewFailures, [], `AGENT-31 native preview cells red=${previewFailures.length}/5:\n${previewFailures.join("\n")}`);
 console.log("  ✓ AGENT-31 native preview cells passed (5/5)");
+const lifecycle = fixture();
+await lifecycle.fire("session.start");
+await until(() => lifecycle.commands.length === 1);
+const unbound = await lifecycle.fire("tool.call", { tool: "mcp__plugin_cotal_cotal__cotal_connect" }) as { deny?: string };
+assert.match(unbound.deny ?? "", /native command hooks/);
+assert(![...lifecycle.hooks.keys()].some((name) => name.startsWith("classic.")), "the native module never intercepts protected classic hooks");
+lifecycle.bind({ session_id: "native-session", transcript_path: "/sessions/native-session.jsonl", hook_event_name: "UserPromptSubmit", prompt: "private human words" });
+const connect = await lifecycle.fire("tool.call", { tool: "mcp__plugin_cotal_cotal__cotal_connect", context: "inherited-parent" }) as Event;
+assert.equal(connect.context, "native-session", "native host replaces a copied connection context");
+assert.equal(lifecycle.relayed.length, 1);
+assert(!JSON.stringify(lifecycle.relayed).includes("private human words"), "lifecycle transport never carries human prompts");
+lifecycle.bind({ session_id: "other-session", transcript_path: "/sessions/other-session.jsonl", hook_event_name: "UserPromptSubmit" });
+const foreign = await lifecycle.fire("tool.call", { tool: "mcp__plugin_cotal_cotal__cotal_connect" }) as { deny?: string };
+assert.match(foreign.deny ?? "", /could not bind/);
+await lifecycle.fire("tool.call", { tool: "mcp__plugin_cotal_cotal__cotal_connect", agentId: "child" });
+assert.equal(lifecycle.relayed.length, 1, "foreign sessions and subagents cannot drive the main lifecycle");
+await lifecycle.fire("session.end", { reason: "resume" });
+assert(lifecycle.feed.ended, "clear/resume ends the prior conversation reader");
+console.log("  ✓ explicit native session binding, prompt privacy and fork-context replacement");
+const inlineOffer = (receipt: string, session = "native-session") => ({
+  id: "inline-connection", route: "/private/feed.sock", inline: {
+    v: 1, receipt, session, count: 1, remaining: 0,
+    text: 'Cotal: inline messages for connection_id inline-connection.\n[DM from peer] Complete message',
+  },
+});
+const inlineIdle = fixture();
+await inlineIdle.fire("session.start");
+await until(() => inlineIdle.commands.length === 1);
+const full = inlineOffer("receipt-idle");
+inlineIdle.offer(full);
+await until(() => inlineIdle.receipts.some((value) => value.action === "commit"));
+assert.equal(inlineIdle.submitted[0]?.text, full.inline.text);
+assert.deepEqual(inlineIdle.receipts.map((value) => value.action), ["claim", "commit"]);
+assert.equal(inlineIdle.receipts[1]?.uuid, "prompt-1", "idle acceptance requires the stored own prompt UUID");
+assert(!JSON.stringify(inlineIdle.submitted).includes(full.inline.receipt));
+const inlineUi = await inlineIdle.fire("ui.render", { requestId: "prompt-1", props: { text: full.inline.text, origin: { kind: "sdk" } } }) as UiNode;
+assert.equal((inlineUi.props.children as UiNode[])[0]?.props.label, "Cotal · 1 message  ›");
+inlineIdle.offer(inlineOffer("receipt-next"));
+await until(() => inlineIdle.receipts.filter((value) => value.action === "commit").length === 2);
+await inlineIdle.fire("session.end");
+console.log("  ✓ idle full text commits only after its own stored row, with compact UI and no leaked receipt");
+
+const inlineBusy = fixture();
+await inlineBusy.fire("session.start");
+await until(() => inlineBusy.commands.length === 1);
+await inlineBusy.fire("turn.start");
+inlineBusy.offer(inlineOffer("receipt-busy"));
+await tick();
+assert.equal(inlineBusy.receipts.length, 0, "busy delivery waits for the main boundary");
+await inlineBusy.fire("tool.call");
+assert.equal(inlineBusy.appended[0]?.message.content[0]?.text, full.inline.text);
+assert.equal(inlineBusy.receipts.find((value) => value.action === "commit")?.uuid, "appended-1");
+await inlineBusy.fire("session.end");
+console.log("  ✓ busy complete text uses returned append UUID without protected-row interception");
+
+for (const missing of [false, true]) {
+  const refused = fixture();
+  if (missing) refused.noStoredPrompt(); else refused.drop(true);
+  await refused.fire("session.start");
+  await until(() => refused.commands.length === 1);
+  refused.offer(inlineOffer(missing ? "receipt-no-row" : "receipt-refused"));
+  await until(() => refused.receipts.some((value) => value.action === "reject"));
+  assert(!refused.receipts.some((value) => value.action === "commit"), "queued/refused/unrecorded submission is never committed");
+  await refused.fire("prompt.submit", { origin: { kind: "plugin", name: "other" } });
+  assert(!refused.receipts.some((value) => value.action === "retry"));
+  await refused.fire("prompt.submit", { origin: { kind: "composer" } });
+  assert(refused.receipts.some((value) => value.action === "retry"), "genuine input asks for a revalidated new offer, not a stale body");
+  await refused.fire("session.end");
+}
+const isolatedInline = fixture();
+await isolatedInline.fire("session.start");
+await until(() => isolatedInline.commands.length === 1);
+isolatedInline.offer(inlineOffer("foreign-receipt", "foreign-session"));
+await tick();
+assert.equal(isolatedInline.submitted.length, 0);
+assert.equal(isolatedInline.receipts.length, 0);
+await isolatedInline.fire("session.end");
+console.log("  ✓ refusal, missing stored-row proof, genuine-input resume and foreign-session exclusion");
+const transition = fixture();
+await transition.fire("session.start");
+await until(() => transition.commands.length === 1);
+const release = transition.holdClaim();
+transition.offer(inlineOffer("receipt-transition"));
+await until(() => transition.receipts.some((value) => value.action === "claim"));
+await transition.fire("turn.start");
+release();
+await until(() => transition.receipts.some((value) => value.action === "defer"));
+await tick();
+await transition.fire("tool.call");
+assert(transition.receipts.some((value) => value.action === "commit"));
+assert(!transition.logs.some((value) => value.includes("paused")), "an ordinary turn-state change is not Stop or refusal");
+await transition.fire("session.end");
+for (const busy of [false, true]) {
+  const rewritten = fixture();
+  await rewritten.fire("session.start");
+  await until(() => rewritten.commands.length === 1);
+  rewritten.rewrite();
+  if (busy) await rewritten.fire("turn.start");
+  rewritten.offer(inlineOffer(busy ? "receipt-rewritten-busy" : "receipt-rewritten-idle"));
+  await tick();
+  if (busy) await rewritten.fire("tool.call");
+  await until(() => rewritten.receipts.some((value) => value.action === "reject"));
+  assert(!rewritten.receipts.some((value) => value.action === "commit"), "rewritten stored text does not confirm the complete offer");
+  await rewritten.fire("session.end");
+}
+const finalStep = fixture();
+await finalStep.fire("session.start");
+await until(() => finalStep.commands.length === 1);
+await finalStep.fire("turn.start");
+finalStep.offer(inlineOffer("receipt-final-step"));
+await tick();
+await finalStep.fire("turn.step");
+assert.equal(finalStep.appended.length, 0);
+assert.equal(finalStep.receipts.length, 0, "a final model request cannot admit messages added after its snapshot");
+await finalStep.fire("turn.complete");
+await until(() => finalStep.receipts.some((value) => value.action === "commit"));
+assert.equal(finalStep.submitted[0]?.text, full.inline.text, "the late message starts its own attributed turn rather than getting stranded");
+await finalStep.fire("session.end");
+console.log("  ✓ state-change deferral, complete stored text, and safe delivery after a final request");
 console.log("NATIVE WAKE TESTS PASSED");

@@ -34,6 +34,26 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Personal native connections in 0.92.0
+
+Update the CLI and its Claude plugin together, then reopen the native Code session. Existing static
+auth connections keep their credentials and gateway tools. Personal signed-in connections are new;
+the plugin binds a native conversation through its ordinary command hooks before creating one.
+This works without intercepting the `classic.*` events protected by Claude's built-in guard; keep
+the guard enabled. Organization policies that disable command hooks or native modules still apply.
+Remote meshes must advertise
+conversation identity v1 on the selected registration's HTTPS origin. The existing account signs
+in through Cotal; do not copy login files or paste a token into Claude.
+
+Each signed-in conversation gets its own roleless actor, direct messages and an own-event-only
+publication grant. The space's required-event policy remains in force. Desktop Chat cannot use this
+native path because it has no Code transcript binding.
+
+Creation persists the request and secret before contacting the authority. Retrying an interrupted
+creation reuses them. Disconnect can report pending cleanup; retry it for the same connection.
+Private recovery state remains until the authority confirms that exact lifecycle is retired.
+Neither an upgrade nor a lost response silently creates replacement authority.
+
 ## Cooperative workflow cancellation in 0.92.0
 
 The manager adds the issued, instance-bound `run-cancel` command. Its cluster revision advances to

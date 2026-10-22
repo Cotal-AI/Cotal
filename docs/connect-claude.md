@@ -243,14 +243,75 @@ hosted connector offers: `cotal_connect`, `cotal_wait`, `cotal_disconnect` and t
 Nothing joins until the conversation calls `cotal_connect` with a name. The plugin's server then runs
 `cotal app-identity provision` with the CLI that `cotal setup` recorded beside the plugin
 (`dist/cli.json`), so it does not need `cotal` on `PATH`. Each conversation gets an identity of its
-own on the mesh a bare `cotal spawn` from the session's directory would pick. A name that a live peer
-holds moves to `<name>_2`, `<name>_3` and so on. The identity's channels and role come from the mesh's
-default persona. `cotal_disconnect`, the end of the session or a signal retires it, and the next
-provision retires one whose server was killed. A plugin that `cotal setup` did not install has no
-record, and `cotal_connect` names that remedy.
+own on the mesh a bare `cotal spawn` from the session's directory would pick, once a person approves
+it. A static-auth or open mesh has no page where a person approves a connection, so the plugin
+opens no identity there. A plugin that `cotal setup` did not install has no record, and
+`cotal_connect` names that remedy.
+
+Personal native Code sessions can join a signed-in mesh whose authority offers connection approval.
+The plugin binds the real native session and transcript before requesting an identity. Each
+conversation gets a separate actor. A new identity is issued only after a person approves it in the
+authority's signed-in web page. A model's tool arguments, a client flag or a native tool approval
+never approve it. The request first comes back pending with the page's address and its expiry, and
+nothing is issued yet. Connecting again sends the same request and secret: while it is pending it
+answers the same page, and once approved it issues the identity. A denial or an expiry drops the
+request, and the next connection asks again. No login proof reaches the conversation or its tools.
+A remote mesh must advertise conversation identity v1 and connection approval v1 on its pinned HTTPS
+discovery endpoint. An absent capability, a different origin or a changed registration is refused
+before authenticated issuance, for a request without a selection too. There is no immediate-grant
+fallback. A signed-in mesh whose authority this machine holds has no approval page, so it issues no
+new identity either.
+
+Every identity sends and receives direct messages and publishes its own activity on its own event
+channel. These come with the identity and are not optional, so the approval page shows them before
+the person decides. A request without a selection proposes nothing beyond them: no role,
+capabilities or ordinary channel reads.
+
+`cotal_connect` in a native Code session also takes a selection: `channels` to read
+(`access: "read"`) or read and post to (`"read-post"`), a `role`, and `capabilities` (`spawn`,
+`run`). The selection is a proposal. The person may approve it, change it within their own current
+access, or approve nothing beyond the identity's own permissions. The issued grant must match what
+the person approved item for item, or the connection is refused. When the authority refuses an item
+outside your own grant before asking anyone, nothing is issued and the reply names every refused
+item. There is no fallback to the event-only identity. Its own event channel stays the first post
+entry. A remote mesh must also advertise `conversationIdentitySelection` version 1, or a selection
+is refused before any request.
+Endpoint calls are not selectable yet: no stock credential carries endpoint caller reach for a
+conversation, so `cotal_describe` and `cotal_invoke` are not offered.
+
+A connection is offered the tools its grant can use: `cotal_spawn`, `cotal_persona`,
+`cotal_personas` and `cotal_despawn` with `spawn`, `cotal_run` with `run`, and `cotal_reconnect`.
+Its manager calls exchange the conversation's own secret for a manager-call view, so they carry only
+its grant and name the manager instance when more than one could answer. A conversation is not a
+managed seat. `cotal_despawn` without a name refuses rather than stopping your app, and
+`cotal_disconnect` retires only that connection. No run turn is addressed to it, because a workflow
+addresses turns to agents it spawned, so `cotal_yield` is not offered. Persona text and model pins
+do not change the conversation's own instructions or model.
+
+The plugin's ordinary command hooks supply the session and transcript binding. Its native module
+uses that binding without intercepting `classic.*` events, which Claude's built-in security guard
+withholds from user plugins. The guard stays enabled. If an organization disables command hooks or
+native modules, its administrator must permit them before this connection path can work. Command
+hooks still report lifecycle status and activity; the native module owns incoming message delivery.
+
+A signed-in identity keeps its request and secret in private local recovery state. A lost create
+response retries the same request without rotating its secret or allocating another identity.
+Retiring a request that is still pending drops it, and no identity is issued for it. An identity
+issued before connection approval keeps working, and its recovery stays exact. Another plugin server reuses that identity only after the process that held it no longer exists.
+`cotal_disconnect`, session end and a signal request retirement of that lifecycle only. Other
+conversations stay connected. When the mesh reports retirement pending or does not confirm it, the
+conversation stays disconnected and keeps its saved record. Every tool then reports the same
+unfinished cleanup with the mesh's retirement phase. Calling `cotal_disconnect` again retries it at
+once. `cotal_connect` retries it too, and connects with a new identity once the mesh confirms
+retirement. A restarted plugin server recovers the same way. After each connection, the plugin
+retires the same mesh's saved identities whose plugin server process no longer exists, such as one
+killed before it could retire them. This runs in the background, so the connection does not wait
+for it. A server process that still exists keeps its identity, and a retirement that does not finish
+stays saved for a later run. A mesh requiring events refuses a connection without a native
+transcript source.
 
 The gateway's MCP annotations distinguish read-only queries from updates. Orientation, connection
-status, the roster and channel information are read-only. Sending messages, connecting and joining
+status, the roster, the docs and channel information are read-only. Sending messages, connecting and joining
 channels are additive. Inbox reads and waits consume messages; status, channel mode, leaving and
 disconnecting can replace or remove state. These hints do not grant access or override Claude's
 permission settings or an organization's approval policy.
@@ -258,21 +319,40 @@ permission settings or an organization's approval policy.
 A message for a connected conversation starts a turn through the plugin's
 [native hooks module](https://code.claude.com/docs/en/plugins/mods/overview). This works in supported
 Claude Code hosts, including local sessions in the Desktop app's Code tab. The module runs a local
-wake reader as a child of the same host that runs the MCP server. Each server writes connection ids
-to its own socket in a private directory. The module submits the fixed notification
-`Cotal: a new message for connection_id <id>. Read it with cotal_inbox.` with Claude's plugin-sender
-attribution. It never submits it as the person's own words. While Claude is busy, the module appends
-the notification at the next main-conversation tool or model-request boundary instead of queuing a
-second turn after the work ends. Peer message contents stay in the inbox. Between turns, the
-transcript shows a compact **Cotal · new message** indicator; click it to inspect the full
-notification. This changes only the display, not the message Claude receives.
+wake reader as a child of the same host that runs the MCP server. Each server uses its own socket
+in a private directory. Short messages arrive in full with their sender, message ID and reply
+context. Claude can answer these without calling `cotal_inbox`. The module uses Claude's
+plugin-sender attribution, never the person's own identity. While Claude is busy, delivery happens
+at a main-conversation tool boundary before the next request. A request already being sent has a
+fixed message snapshot. A later arrival waits for another tool boundary or starts its own attributed
+turn when the current turn ends; storing a note alone does not count as delivery to that request.
 
-A wake follows the rule `cotal_wait` follows. It comes once until the conversation reads its messages,
-and not while a `cotal_wait` holds the connection. A replacement reader reoffers unread work.
-Claude's Stop and organization controls still apply. A refused wake stays pending without retrying
-on every new message. `cotal_connect` reports whether the incoming reader is attached; attachment
-alone does not prove that the host admitted a turn. When native modules are unavailable or blocked,
-the conversation can listen with `cotal_wait` instead.
+Each inline batch carries at most eight whole messages. Each rendered message must fit within
+1,024 Unicode code points, and the encoded socket frame must fit within 4,096 characters. Larger
+messages remain queued. A notification-only reader or an oversized message uses
+`Cotal: a new message for connection_id <id>. Read it with cotal_inbox.` and a bounded preview.
+A preview is incomplete; Claude reads its contents through the inbox. An inline batch also names
+how many other messages remain pending.
+
+The transcript shows a compact Cotal indicator. Expand it to inspect the delivery or preview.
+This changes only the display. Presentation observes only prompt rows; in-turn appends use their
+returned row ID, without observing protected notes or skill output.
+
+Socket writes and previews do not acknowledge messages. A complete inline batch is committed only
+after the native host confirms admission to the bound conversation. An idle prompt also needs its
+stored prompt row; a busy append needs its returned row ID and complete stored text. An offer waits
+for a busy conversation's next safe boundary while its reader remains connected. Admission after
+claim has its own deadline. This confirms host handoff, not that
+Claude understood or completed the work. Delivery remains at least once after an unknown result.
+Message IDs distinguish retries from new requests.
+
+A wake follows the rule `cotal_wait` follows and does not compete with an active wait. Confirmed
+inline delivery rearms the next wake without an inbox call. A replacement reader reoffers unread
+work. An offer from a closed connection cannot suppress its replacement connection's messages.
+Claude's Stop and organization controls still apply. Refused delivery stays pending without
+a retry loop; genuine person-origin input resumes it with a fresh offer. `cotal_connect` reports
+whether the incoming reader is attached; attachment alone does not prove native admission.
+When native modules are unavailable or blocked, the conversation can listen with `cotal_wait`.
 
 Claude Desktop chat does not run a plugin's local server. On macOS and Windows, where Claude Desktop
 is installed, `cotal setup` adds a `cotal` server to Desktop's own config,
@@ -283,7 +363,9 @@ the plugin copy under `~/.cotal/claude-plugin`. Quit and reopen Claude Desktop t
 file that is not valid JSON is refused and left as it was. Setup can use Desktop's bundled Code
 executable when there is no standalone `claude` CLI. Its installed MCP and command hooks use the
 recorded Node executable, so the app need not find Node on `PATH`. On Linux, setup writes nothing
-for Desktop Chat.
+for Desktop Chat. Desktop Chat supplies no native Code transcript binding, so this local server
+refuses its signed-in connection path before identity issuance. The hosted connector is a separate
+connection path; it does not supply autonomous chat wake.
 
 Desktop's working directory is not your project, so its mesh is the `cotal use` mesh, else the only
 one running. Desktop runs no monitor, so a Desktop conversation hears messages when it calls a tool,
@@ -480,8 +562,12 @@ read. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out
 space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
 private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
 A hand-driven user-mode session may carry the same decision as `COTAL_EVENTS_REQUIRED=1`. Its own
-publish grant must cover `events.<owner>.<actor>` or the connector refuses before joining. An unmanaged
-session with no launch material and no required-policy fallback keeps the generic default behavior.
+publish grant must cover `events.<owner>.<actor>` or the connector refuses before joining. A personal
+native Code connection to a signed-in mesh uses the same recorder and captures its transcript
+boundary before requesting an identity. Records from before that connection are not published.
+Its native lifecycle drives presence and recording for that session only; a subagent or another
+conversation cannot end its main run. The event channel keeps the space's normal read permissions.
+A personal connection makes manager calls only with its own selected grant.
 
 If the event plane stops, the seat keeps running and its mesh connection, on every connector and
 on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay
