@@ -30,7 +30,7 @@ const rosterLines = (state: ChatState) => (v: RosterView): string[] => {
   const shared = sharedWith(state, v.rows);
   return [
     ...(v.view === "current" ? [] : [`roster ${v.view}: this list may be incomplete`]),
-    ...v.rows.map((r) => `${oneLine(personLabel(r, shared))} · ${r.sessionKind === "chat" ? "human session" : oneLine(r.kind)}${r.role ? ` · ${oneLine(r.role)}` : ""} · ${r.status}${r.activity ? ` · ${oneLine(r.activity)}` : ""}`),
+    ...v.rows.map((r) => `${oneLine(personLabel(r, shared))} · ${r.sessionKind === "chat" ? "human session" : oneLine(r.kind)}${r.role ? ` · ${oneLine(r.role)}` : ""} · ${r.status === "working" ? "working · progress unknown" : r.status}${r.activity ? ` · ${oneLine(r.activity)}` : ""}`),
     ...(v.rows.length === 0 && v.view === "current" ? ["no one else is present"] : []),
   ];
 };

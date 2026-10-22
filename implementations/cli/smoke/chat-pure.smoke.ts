@@ -26,10 +26,11 @@ import {
   initialState, parseSlash, replyTo, replyToLatest, transcriptRows, type ChatState,
 } from "../src/chat/view.js";
 import { listChoices } from "../src/chat/picker.js";
+import { runSlash } from "../src/chat/controller.js";
 import { ParticipantEngine } from "../src/chat/engine.js";
 import { grantRefusal, resolveDmTarget } from "../src/chat/native-session.js";
 import type { Presence } from "@cotal-ai/core";
-import type { CloseReport, RosterView, SessionIdentity, SessionMessage } from "../src/chat/session.js";
+import type { AdmittedChatSession, CloseReport, RosterView, SessionIdentity, SessionMessage } from "../src/chat/session.js";
 
 let pass = 0, fail = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -354,6 +355,14 @@ const task = msg({ id: "t1", kind: "anycast", service: "reviewer", from: { id: "
   check("the picker shows a present peer's principal when a heard sender shares its name",
     choices.some((c) => c.label === "DM alice (u_c.alice)") && choices.some((c) => c.label === "DM bob"), choices);
   check("without such a sender the picker shows the name alone", listChoices(undefined, roster, identity.principal).some((c) => c.label === "DM alice"));
+}
+{
+  const working: RosterView = { view: "current", rows: [{ id: "o.carol", name: "carol", kind: "agent", status: "working", activity: "building" }] };
+  const choice = listChoices(undefined, working, identity.principal).find((c) => c.label === "DM carol");
+  check("the picker names a working peer's progress as unknown", choice?.detail === "agent · working · progress unknown", choice);
+  const session = { roster: async () => ({ outcome: "ok", value: working }) } as unknown as AdmittedChatSession;
+  const who = transcriptRows((await runSlash(session, s0(), { name: "who" })).state, 200).map((row) => row.text);
+  check("/who names a working peer's progress as unknown", who.some((text) => text.includes("carol · agent · working · progress unknown · building")), who);
 }
 {
   const roster = [presence("u_c.alice", "alice"), presence("o.bob", "bob")];

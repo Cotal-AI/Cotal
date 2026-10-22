@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 616,
-    "honest-text": 33,
+    "total": 618,
+    "honest-text": 35,
     "presence-only-glyph/count": 57,
     "command-ack": 10,
-    "non-render/control": 514
+    "non-render/control": 516
   },
   "renderers": [
     {
@@ -2996,6 +2996,24 @@
       "rationale": "Chat /status dispatch: applies the user's own requested status to the session; no rendering."
     },
     {
+      "path": "implementations/cli/src/chat/controller.ts",
+      "kind": "derived-output",
+      "anchor": "`${oneLine(personLabel(r, shared))} · ${r.sessionKind === \"chat\" ? \"human session\" : oneLine(r.kind)}${r.role ? ` · ${oneLine(r.role)}` : \"\"} · ${r.status === \"working\" ? \"working · progress unknown\" : r.status}${r.activity ? ` · ${oneLine(r.activity)}` : \"\"}`",
+      "class": "honest-text",
+      "rationale": "Chat /who roster line: a working peer reads \"working · progress unknown\"; the cited output assertion checks the rendered line.",
+      "proof": {
+        "path": "implementations/cli/smoke/chat-pure.smoke.ts",
+        "anchor": "check(\"/who names a working peer's progress as unknown\""
+      }
+    },
+    {
+      "path": "implementations/cli/src/chat/controller.ts",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "non-render/control",
+      "rationale": "Comparison operand that selects the /who roster line's working branch, whose text names unknown progress; the token itself is not rendered."
+    },
+    {
       "path": "implementations/cli/src/chat/native-session.ts",
       "kind": "status-token",
       "anchor": "pe: \"join\" | \"update\" | \"offline\"; presence: Presence }) ",
@@ -3043,6 +3061,24 @@
       "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Chat recipient picker filter: skips self and offline rows; the comparison token is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/picker.ts",
+      "kind": "derived-output",
+      "anchor": "`${row.sessionKind === \"chat\" ? \"human session\" : oneLine(row.kind)}${row.role ? ` · ${oneLine(row.role)}` : \"\"} · ${row.status === \"working\" ? \"working · progress unknown\" : row.status}`",
+      "class": "honest-text",
+      "rationale": "Chat recipient picker detail: a working peer reads \"working · progress unknown\"; the cited output assertion checks the rendered detail.",
+      "proof": {
+        "path": "implementations/cli/smoke/chat-pure.smoke.ts",
+        "anchor": "check(\"the picker names a working peer's progress as unknown\""
+      }
+    },
+    {
+      "path": "implementations/cli/src/chat/picker.ts",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "non-render/control",
+      "rationale": "Comparison operand that selects the picker detail's working branch, whose text names unknown progress; the token itself is not rendered."
     },
     {
       "path": "implementations/cli/src/chat/plain.ts",
