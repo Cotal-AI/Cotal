@@ -30,6 +30,12 @@ const { Manager } = await import("../src/manager.js");
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const HERE = fileURLToPath(import.meta.url);
+/** The ambient environment without this run's COTAL_ settings, for a worker to set its own. */
+const cleanEnv = (): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  return env;
+};
 const TSX = join(fileURLToPath(new URL("../../../", import.meta.url)), "node_modules", ".bin", "tsx");
 
 if (process.env.COTAL_I1263_WORKER === "1") {
@@ -75,14 +81,30 @@ try {
   const first = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: seqRoot });
   await first.start();
   const firstId = (first as unknown as { managerInstanceId: string }).managerInstanceId;
-  let seqErr = "";
-  const second = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: seqRoot });
-  try { await second.start(); } catch (e) { seqErr = (e as Error).message; }
+  // The second start runs in a process of its own, as a second manager does. In this process the
+  // lease names this pid, which a restart reads as its own crashed predecessor (#4092).
+  const seqBarrier = join(seqRoot, "go");
+  writeFileSync(seqBarrier, "go");
+  const second = spawnProc(TSX, [HERE], {
+    env: { ...cleanEnv(), COTAL_I1263_WORKER: "1", COTAL_I1263_ROOT: seqRoot, COTAL_I1263_SPACE: SPACE, COTAL_I1263_SERVER: SERVER, COTAL_I1263_BARRIER: seqBarrier },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  kids.push(second);
+  const seqReport = await new Promise<{ ok: boolean; error?: string }>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("the sequential second start did not report")), 25_000);
+    let buf = "";
+    second.stdout?.on("data", (c: Buffer) => {
+      buf += c.toString();
+      const line = buf.split("\n").find((l) => l.startsWith("{"));
+      if (line) { clearTimeout(timer); resolve(JSON.parse(line)); }
+    });
+  });
+  try { second.kill("SIGKILL"); } catch { /* already gone */ }
+  const seqErr = seqReport.ok ? "" : seqReport.error ?? "";
   check("sequential second start REFUSES with already-serves (fence after identity exists)",
     /already serves space/.test(seqErr), seqErr);
   check("sequential pair shares the persisted identity",
     loadManagerInstanceIdentity(seqRoot, SPACE)?.instanceId === firstId);
-  await second.stop({ withAgents: true }).catch(() => {});
   await first.stop({ withAgents: true }).catch(() => {});
 
   let raced = 0;
@@ -94,8 +116,7 @@ try {
     const barrier = join(root, "go");
     const workers: ChildProcess[] = [];
     const parsed: Array<{ ok: boolean; pid: number; instanceId?: string; error?: string }> = [];
-    const ambientEnv: NodeJS.ProcessEnv = { ...process.env };
-    for (const key of Object.keys(ambientEnv)) if (key.startsWith("COTAL_")) delete ambientEnv[key];
+    const ambientEnv = cleanEnv();
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("workers did not report")), 25_000);
       for (let i = 0; i < N; i++) {
