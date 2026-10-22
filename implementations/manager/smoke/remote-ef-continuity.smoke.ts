@@ -441,7 +441,7 @@ try {
     assert.equal(existsSync(join(wsDir, ".cotal", "auth")), false, "manager root must not contain local auth directory");
     const res = await runCli(["start", "--file", programFile]);
     assert.equal(res.code, 0, `cli run start failed: ${res.stderr}\nstdout: ${res.stdout}`);
-    const m = res.stdout.match(/started run (run-[0-9a-f]+) on the manager/);
+    const m = res.stdout.match(/^\s*Run:\s+(run-[0-9a-f]+)\s*$/m);
     assert.ok(m, `runId not found in output: ${res.stdout}`);
     activeRunId = m[1];
 
