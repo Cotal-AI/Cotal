@@ -18,6 +18,7 @@ import "@cotal-ai/delivery"; // self-registers `deliver` — the server-side Pla
 import "@cotal-ai/runtime"; // self-registers `run` — the workflow-run operator surface (start/resume/ps/journal/answer)
 import "@cotal-ai/auth"; // self-registers login / logout — per-user IdP sessions (device-code sign-in)
 import "./docs.js"; // self-registers `docs`; the docs bundle loads only when `docs` runs
+import "./daemon/command.js"; // self-registers `daemon`: the local machine daemon's authenticated control endpoint (Linux)
 // Self-registers the `ag-ui.frame` part renderer, so `cotal console` and `cotal join` draw an event
 // frame instead of `[unrenderable part kind "ag-ui.frame"]`.
 //

@@ -114,6 +114,9 @@ importers:
       '@cotal-ai/runtime':
         specifier: workspace:*
         version: link:../implementations/runtime
+      '@cotal-ai/seat':
+        specifier: workspace:*
+        version: link:../packages/seat
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../packages/workspace
