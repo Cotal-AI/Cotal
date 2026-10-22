@@ -10,8 +10,8 @@
       "file": "implementations/web/client/vite.config.ts",
       "find": "          if (p) found.set(p.name, p.root);",
       "replace": "          void p;",
-      "expectRed": "bundle-licenses.json names react",
-      "cell": "bundle-licenses.json names react",
+      "expectRed": "bundle-licenses.json names react, react-dom, the Inter font, marked, DOMPurify and the three d3 modules",
+      "cell": "bundle-licenses.json names react, react-dom, the Inter font, marked, DOMPurify and the three d3 modules",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
     },
     {
@@ -201,6 +201,15 @@
       "replace": "          if (p && !p.name.startsWith(\"@radix-ui/\")) found.set(p.name, p.root);",
       "expectRed": "bundle-licenses.json lists class-variance-authority, clsx, tailwind-merge and the Radix packages now bundled",
       "cell": "bundle-licenses.json lists class-variance-authority, clsx, tailwind-merge and the Radix packages now bundled",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "ToolLine imports the failed-call tooltip statically, so Radix's tooltip and floating-ui load with every page",
+      "file": "implementations/web/client/src/ui/work/ToolLine.tsx",
+      "find": "const FailedTip = lazy(() => import(\"./FailedTip.tsx\"));",
+      "replace": "import FailedTipNow from \"./FailedTip.tsx\";\nconst FailedTip = FailedTipNow;",
+      "expectRed": "no first-load chunk holds the tooltip, and a lazy chunk does",
+      "cell": "no first-load chunk holds the tooltip, and a lazy chunk does",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
     }
   ]

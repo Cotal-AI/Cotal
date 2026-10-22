@@ -1,10 +1,10 @@
 import { CancelCircleIcon, CommandLineIcon, File01Icon, FileEditIcon, HourglassIcon, InboxDownloadIcon, SentIcon, UnavailableIcon, Wrench01Icon } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
+import { lazy, Suspense } from "react";
 import { Icon } from "../../icons/Icon.tsx";
 import { callDescription, callTitle, shownName, type CallState, type ToolCall, type ToolKind } from "../../lib/session.js";
 import { useXfade } from "../session/xfade.js";
 import { Spinner } from "../shadcn/spinner.tsx";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../shadcn/tooltip.tsx";
 import { TraceDescription, TraceIcon, TraceLine, TraceTitle } from "../shadcn/trace.tsx";
 import { useNow } from "./useNow.ts";
 
@@ -27,6 +27,9 @@ export const kindIcon = (kind: ToolKind): IconSvgElement => KIND_ICON[kind];
 const FAILED_COMMAND = "The connector reports the call returned an error. It doesn't publish the error text or the command.";
 const FAILED_OTHER = "The connector reports the call returned an error. It doesn't publish the error text or the tool's input.";
 
+/** The failed call's tooltip, in its own chunk: Radix's tooltip loads when a failed call is drawn. */
+const FailedTip = lazy(() => import("./FailedTip.tsx"));
+
 /** The icon for a call in `state`: the spinner while it runs, the cross when it failed, the hourglass
  *  while it waits, the struck circle when no result arrived, and otherwise its kind's. */
 function callIcon(call: ToolCall, state: CallState) {
@@ -40,9 +43,11 @@ function callIcon(call: ToolCall, state: CallState) {
  *  the whole name in its `title`) and its time.
  *
  *  - running: the spinner, `status="running"` with the title's shimmer and `role="status"`, and the
- *    seconds counting. Only the latest running line of a list shimmers: the others pass
- *    `shimmer={false}` and keep the spinner and the count.
- *  - failed: the cross, `status="error"`, and a tooltip that says what the connector does not publish.
+ *    seconds counting, hidden from the live region so it announces the title and not every tick.
+ *    Only the latest running line of a list shimmers: the others pass `shimmer={false}` and keep the
+ *    spinner and the count.
+ *  - failed: the cross, `status="error"`, and a tooltip that says what the connector does not publish
+ *    (`FailedTip`, loaded on first use; the line draws at once and gains its tooltip then).
  *  - pending and noResult: the hourglass or the struck circle, `status="pending"`, and when it started.
  *  - done: the kind's icon and how long it took. called: `Called <name>` and its time only.
  *
@@ -62,18 +67,15 @@ export function ToolLine({ call, state, shimmer = true, className }: { call: Too
       {" "}
       {desc && (
         <TraceDescription>
-          {state === "called" ? desc : <><code title={call.full}>{name}</code>{desc.slice(name.length)}</>}
+          {state === "called" ? desc : <><code title={call.full}>{name}</code>{state === "running" ? <span aria-hidden="true">{desc.slice(name.length)}</span> : desc.slice(name.length)}</>}
         </TraceDescription>
       )}
     </TraceLine>
   );
   if (state !== "failed") return line;
   return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger type="button" className="ox-tip">{line}</TooltipTrigger>
-        <TooltipContent className="ox-tipc" sideOffset={4}>{call.kind === "command" ? FAILED_COMMAND : FAILED_OTHER}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Suspense fallback={line}>
+      <FailedTip line={line} words={call.kind === "command" ? FAILED_COMMAND : FAILED_OTHER} />
+    </Suspense>
   );
 }

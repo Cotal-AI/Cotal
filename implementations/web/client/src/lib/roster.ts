@@ -21,7 +21,6 @@ export interface RosterRow {
   /** Last heartbeat (Presence.ts), not work progress and not status-entered-at. */
   ts: number;
   statusSince?: number;
-  progress?: { kind: "unknown" };
   /** The card's `ai.cotal.events`: "on" or "off" when it says, absent when it does not. */
   events?: "on" | "off";
 }
@@ -64,7 +63,6 @@ export function rosterRows(roster: RosterEntry[], opts: { includeOffline?: boole
       model: metaText(p.card.meta, "model"),
       ts: p.ts,
       statusSince: p.statusSince,
-      progress: p.progress,
       ...eventsFlag(p.card.meta),
     }));
 }

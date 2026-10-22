@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 628,
+    "total": 631,
     "honest-text": 54,
     "presence-only-glyph/count": 107,
     "command-ack": 12,
-    "non-render/control": 455
+    "non-render/control": 458
   },
   "renderers": [
     {
@@ -3973,7 +3973,7 @@
       "kind": "derived-output",
       "anchor": "{working.name}",
       "class": "presence-only-glyph/count",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
+      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim. The dashboard shows no progress suffix: no surface can observe progress yet."
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
@@ -4013,14 +4013,14 @@
       "kind": "derived-output",
       "anchor": "{working.activity && <span>{working.activity}</span>}",
       "class": "presence-only-glyph/count",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
+      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim. The dashboard shows no progress suffix: no surface can observe progress yet."
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "derived-output",
       "anchor": "{working.activity}",
       "class": "presence-only-glyph/count",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
+      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim. The dashboard shows no progress suffix: no surface can observe progress yet."
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
@@ -4136,14 +4136,14 @@
       "kind": "status-token",
       "anchor": "\"working\"",
       "class": "non-render/control",
-      "rationale": "Routing: picks the session footer's branch for this status (activity and dots, the reported time, or the last heartbeat); the words themselves are statusLabel's."
+      "rationale": "Routing: picks what the footer says after the status (the activity and when it was reported, no current activity, or the last heartbeat); the status word is statusLabel's."
     },
     {
       "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
       "kind": "status-token",
       "anchor": "\"offline\"",
       "class": "non-render/control",
-      "rationale": "Routing: picks the session footer's branch for this status (activity and dots, the reported time, or the last heartbeat); the words themselves are statusLabel's."
+      "rationale": "Routing: picks what the footer says after the status (the activity and when it was reported, no current activity, or the last heartbeat); the status word is statusLabel's."
     },
     {
       "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
@@ -4213,7 +4213,7 @@
       "kind": "derived-output",
       "anchor": "  return (\n    <div key={row.status} className={fade ? `ox-f",
       "class": "honest-text",
-      "rationale": "The footer under an agent's work, <name> is <statusLabel> and what presence reported with it: the status presence reports and nothing more, with no moving dots; the cited assertion reads the words.",
+      "rationale": "The footer under an agent's work, <name> is <statusLabel> and what presence reported with it: the status presence reports and nothing more; the cited assertion reads the words.",
       "proof": {
         "path": "implementations/web/smoke/panel.smoke.ts",
         "anchor": "ok(\"8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size\""
@@ -4245,7 +4245,7 @@
       "kind": "derived-output",
       "anchor": "{` is ${status} `}",
       "class": "honest-text",
-      "rationale": "The footer under an agent's work, <name> is <statusLabel> and what presence reported with it: the status presence reports and nothing more, with no moving dots; the cited assertion reads the words.",
+      "rationale": "The footer under an agent's work, <name> is <statusLabel> and what presence reported with it: the status presence reports and nothing more; the cited assertion reads the words.",
       "proof": {
         "path": "implementations/web/smoke/panel.smoke.ts",
         "anchor": "ok(\"8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size\""
@@ -4256,7 +4256,7 @@
       "kind": "derived-output",
       "anchor": "` is ${status} `",
       "class": "honest-text",
-      "rationale": "The footer under an agent's work, <name> is <statusLabel> and what presence reported with it: the status presence reports and nothing more, with no moving dots; the cited assertion reads the words.",
+      "rationale": "The footer under an agent's work, <name> is <statusLabel> and what presence reported with it: the status presence reports and nothing more; the cited assertion reads the words.",
       "proof": {
         "path": "implementations/web/smoke/panel.smoke.ts",
         "anchor": "ok(\"8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size\""
@@ -4309,7 +4309,7 @@
       "kind": "derived-output",
       "anchor": "ry}</PlaneNote>\n        {list}\n      </div>\n    );\n  }",
       "class": "honest-text",
-      "rationale": "The session list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports, with moving dots only when progress is reported; the cited assertion reads the full footer.",
+      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
         "path": "implementations/web/smoke/panel.smoke.ts",
         "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
@@ -4320,7 +4320,7 @@
       "kind": "derived-output",
       "anchor": "<div className=\"ui-col\">{list}</div>;\n  }\n\n  return (\n",
       "class": "honest-text",
-      "rationale": "The session list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports, with moving dots only when progress is reported; the cited assertion reads the full footer.",
+      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
         "path": "implementations/web/smoke/panel.smoke.ts",
         "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
@@ -4377,7 +4377,7 @@
       "kind": "derived-output",
       "anchor": "{body}",
       "class": "honest-text",
-      "rationale": "The session list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports, with moving dots only when progress is reported; the cited assertion reads the full footer.",
+      "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
         "path": "implementations/web/smoke/panel.smoke.ts",
         "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
@@ -4533,9 +4533,30 @@
     {
       "path": "implementations/web/client/src/ui/work/ToolLine.tsx",
       "kind": "derived-output",
-      "anchor": "{line}",
+      "anchor": "fallback={line}",
       "class": "non-render/control",
-      "rationale": "Not presence: `status` is the trace line's prop for the call's own state from its result marker; the line names a call, never the agent's status."
+      "rationale": "Not presence: the failed call's line and its tooltip; `line` carries the trace line's own `status` prop, set from the call's result marker, never the agent's status."
+    },
+    {
+      "path": "implementations/web/client/src/ui/work/ToolLine.tsx",
+      "kind": "derived-output",
+      "anchor": "\n    <Suspense fallback={line}>\n      <FailedTip line=",
+      "class": "non-render/control",
+      "rationale": "Not presence: the failed call's line and its tooltip; `line` carries the trace line's own `status` prop, set from the call's result marker, never the agent's status."
+    },
+    {
+      "path": "implementations/web/client/src/ui/work/ToolLine.tsx",
+      "kind": "derived-output",
+      "anchor": "line={line}",
+      "class": "non-render/control",
+      "rationale": "Not presence: the failed call's line and its tooltip; `line` carries the trace line's own `status` prop, set from the call's result marker, never the agent's status."
+    },
+    {
+      "path": "implementations/web/client/src/ui/work/ToolLine.tsx",
+      "kind": "derived-output",
+      "anchor": ">\n      <FailedTip line={line} words={call.kind === \"c",
+      "class": "non-render/control",
+      "rationale": "Not presence: the failed call's line and its tooltip; `line` carries the trace line's own `status` prop, set from the call's result marker, never the agent's status."
     },
     {
       "path": "implementations/web/client/src/ui/work/Turn.tsx",
@@ -4548,13 +4569,6 @@
       "path": "implementations/web/client/src/ui/work/Turn.tsx",
       "kind": "status-token",
       "anchor": "rent && (row.status === \"working\" || row.status === \"wait",
-      "class": "non-render/control",
-      "rationale": "Routing: the turn's icon, its clock and its bold title follow presence: live while working, counting while working or waiting."
-    },
-    {
-      "path": "implementations/web/client/src/ui/work/Turn.tsx",
-      "kind": "status-token",
-      "anchor": "king\" || row.status === \"waiting\"));\n  const [chosen, set",
       "class": "non-render/control",
       "rationale": "Routing: the turn's icon, its clock and its bold title follow presence: live while working, counting while working or waiting."
     },
@@ -4622,14 +4636,21 @@
     {
       "path": "implementations/web/client/src/ui/work/Turn.tsx",
       "kind": "derived-output",
-      "anchor": "{failed !== undefined && (\n              <>\n                {\", \"}\n                <span className=\"ox-fail\"><Icon icon={CancelCircleIcon} size={16} />{failed}</span>\n              </>\n            )}",
+      "anchor": "{failed}",
       "class": "non-render/control",
       "rationale": "Not presence: the failed calls come from the result markers, read beside the title that turnTitle returns with them; no status word is drawn here."
     },
     {
       "path": "implementations/web/client/src/ui/work/Turn.tsx",
+      "kind": "status-token",
+      "anchor": "king\" || row.status === \"waiting\"));\n  const { title, fai",
+      "class": "non-render/control",
+      "rationale": "Routing: the turn's icon, its clock and its bold title follow presence: live while working, counting while working or waiting."
+    },
+    {
+      "path": "implementations/web/client/src/ui/work/Turn.tsx",
       "kind": "derived-output",
-      "anchor": "{failed}",
+      "anchor": "{failed !== undefined && (\n          <>\n            {\", \"}\n            <span className=\"ox-fail\"><Icon icon={CancelCircleIcon} size={16} />{failed}</span>\n          </>\n        )}",
       "class": "non-render/control",
       "rationale": "Not presence: the failed calls come from the result markers, read beside the title that turnTitle returns with them; no status word is drawn here."
     }

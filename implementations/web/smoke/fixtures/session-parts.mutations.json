@@ -30,7 +30,15 @@
       "cell": "1.3 waiting with an open call reads \"A command hasn't finished\" and \"Bash · started 10:50\" with no spinner, and offline \"No result arrived for a command\""
     },
     {
-      "name": "SP4 the group drops its failed count, so a failed command hides inside a closed group",
+      "name": "SP4 a tap on a failed call's line closes its tooltip as Radix does, so a phone never shows the words",
+      "file": "implementations/web/client/src/ui/work/FailedTip.tsx",
+      "find": "          onClick={(e) => {\n            e.preventDefault();\n            setOpen(!open);\n          }}\n",
+      "replace": "",
+      "expectRed": "1.4 a failed call's line is a button, so a tap or a click opens its tooltip and another closes it",
+      "cell": "1.4 a failed call's line is a button, so a tap or a click opens its tooltip and another closes it"
+    },
+    {
+      "name": "SP5 the group drops its failed count, so a failed command hides inside a closed group",
       "file": "implementations/web/client/src/ui/work/ToolGroup.tsx",
       "find": "{failed > 0 && (",
       "replace": "{false && (",
@@ -38,7 +46,7 @@
       "cell": "2.1 two finished calls draw one closed group titled \"Wrote a file, ran a command\" with \"2 steps · 2.0s\", and \", 1 failed\" when one failed"
     },
     {
-      "name": "SP5 any run of two or more calls is a group, so a call that is still running hides inside a closed group",
+      "name": "SP6 any run of two or more calls is a group, so a call that is still running hides inside a closed group",
       "file": "implementations/web/client/src/ui/work/Step.tsx",
       "find": "const grouped = step.calls.length >= 2 && states.every((s) => SETTLED.has(s));",
       "replace": "const grouped = step.calls.length >= 2;",
@@ -46,7 +54,7 @@
       "cell": "2.2 a run with a running call draws each call as its own line, never a group"
     },
     {
-      "name": "SP6 every running line shimmers, not only the latest",
+      "name": "SP7 every running line shimmers, not only the latest",
       "file": "implementations/web/client/src/ui/work/Step.tsx",
       "find": "shimmer={i === latest}",
       "replace": "shimmer={true}",
@@ -54,7 +62,7 @@
       "cell": "2.3 with two calls running only the latest line has data-status running, and both turn"
     },
     {
-      "name": "SP7 the open turn's clock never ticks, so Working for stands still",
+      "name": "SP8 the open turn's clock never ticks, so Working for stands still",
       "file": "implementations/web/client/src/ui/work/Turn.tsx",
       "find": "const now = useNow(current && (row.status === \"working\" || row.status === \"waiting\"));",
       "replace": "const now = useNow(false);",
@@ -62,7 +70,7 @@
       "cell": "3.1 the open working turn reads \"Working for 3m 2s\" in bold with the live spinner, never shimmers, and counts on"
     },
     {
-      "name": "SP8 the turn's title drops its failed calls",
+      "name": "SP9 the turn's title drops its failed calls",
       "file": "implementations/web/client/src/ui/work/Turn.tsx",
       "find": "{failed !== undefined && (",
       "replace": "{false && (",
@@ -70,7 +78,7 @@
       "cell": "3.2 a finished turn with a failed command reads \"Worked for 7m 48s, 1 command failed\", the failure in its own span with the cross"
     },
     {
-      "name": "SP9 with no open turn the first turn opens instead of the last",
+      "name": "SP10 with no open turn the first turn opens instead of the last",
       "file": "implementations/web/client/src/ui/work/WorkList.tsx",
       "find": "?? turns.at(-1);",
       "replace": "?? turns.at(0);",
@@ -78,7 +86,7 @@
       "cell": "3.3 the open turn starts open and finished turns closed, and with none open the last turn starts open"
     },
     {
-      "name": "SP10 a closed turn mounts its content, so a collapsed turn draws its code blocks and loads Shiki",
+      "name": "SP11 a closed turn mounts its content, so a collapsed turn draws its code blocks and loads Shiki",
       "file": "implementations/web/client/src/ui/work/Turn.tsx",
       "find": "<TraceCollapsibleContent className=\"ox-cc\">",
       "replace": "<TraceCollapsibleContent forceMount className=\"ox-cc\">",
@@ -86,7 +94,7 @@
       "cell": "3.4 a closed turn mounts none of its steps, so it draws no code block and loads no highlighter"
     },
     {
-      "name": "SP11 arriving at a post leaves the turn holding it closed",
+      "name": "SP12 arriving at a post leaves the turn holding it closed",
       "file": "implementations/web/client/src/ui/work/WorkList.tsx",
       "find": "return holder ?? turns.findLast(",
       "replace": "return turns.findLast(",
@@ -94,7 +102,7 @@
       "cell": "3.5 arriving at a post opens the turn holding it and marks the post"
     },
     {
-      "name": "SP12 the note for a connector without tool status is never drawn",
+      "name": "SP13 the note for a connector without tool status is never drawn",
       "file": "implementations/web/client/src/ui/work/WorkList.tsx",
       "find": "{!work.toolStatus && (",
       "replace": "{false && (",
@@ -102,7 +110,7 @@
       "cell": "4.1 a connector without tool status gets the note, and its calls read \"Called Write, Bash and Bash\" with \"3 calls · 10:38 to 10:43\""
     },
     {
-      "name": "SP13 prose skips the sanitizer, so an img with onerror and a javascript: link reach the page",
+      "name": "SP14 prose skips the sanitizer, so an img with onerror and a javascript: link reach the page",
       "file": "implementations/web/client/src/lib/md.ts",
       "find": "    const html = renderMarkdown(prose);",
       "replace": "    const html = prose;",
@@ -110,7 +118,7 @@
       "cell": "5.1 prose with <img onerror> and a javascript: link renders sanitized"
     },
     {
-      "name": "SP14 a tool name renders as HTML, so <b>x</b> becomes a bold element",
+      "name": "SP15 a tool name renders as HTML, so <b>x</b> becomes a bold element",
       "file": "implementations/web/client/src/ui/work/ToolLine.tsx",
       "find": "<code title={call.full}>{name}</code>",
       "replace": "<code title={call.full} dangerouslySetInnerHTML={{ __html: name }} />",
@@ -118,7 +126,7 @@
       "cell": "5.2 a tool name <b>x</b> renders as escaped text"
     },
     {
-      "name": "SP15 a tool name shows uncapped",
+      "name": "SP16 a tool name shows uncapped",
       "file": "implementations/web/client/src/ui/work/ToolLine.tsx",
       "find": "const name = shownName(call.name);",
       "replace": "const name = call.name;",
@@ -126,7 +134,7 @@
       "cell": "5.3 a 200-character tool name shows its first 64 characters and keeps the whole name in title"
     },
     {
-      "name": "SP16 a token's text goes in as HTML, so code that holds <b> draws a bold element",
+      "name": "SP17 a token's text goes in as HTML, so code that holds <b> draws a bold element",
       "file": "implementations/web/client/src/ui/work/Code.tsx",
       "find": "<span key={j} style={t.color === undefined ? undefined : { color: t.color }}>{t.content}</span>",
       "replace": "<span key={j} style={t.color === undefined ? undefined : { color: t.color }} dangerouslySetInnerHTML={{ __html: t.content }} />",
@@ -134,7 +142,7 @@
       "cell": "6.1 a js fence draws a code block with \"js\" and Copy, plain text first, then token spans coloured var(--shiki-…) with no element from Shiki's HTML"
     },
     {
-      "name": "SP17 a language outside the eight is highlighted as JavaScript",
+      "name": "SP18 a language outside the eight is highlighted as JavaScript",
       "file": "implementations/web/client/src/lib/highlight.ts",
       "find": "  if (name === undefined) return undefined;",
       "replace": "  if (name === undefined) return highlight(text, \"js\");",
@@ -142,7 +150,15 @@
       "cell": "6.2 a rust fence stays plain"
     },
     {
-      "name": "SP18 Open conversation drops the other side, so it opens the agent's direct messages rather than the conversation",
+      "name": "SP19 code of any size is highlighted, so an agent can stall the tab with one huge fence",
+      "file": "implementations/web/client/src/lib/highlight.ts",
+      "find": "  if (text.length > HIGHLIGHT_CAP) return undefined;\n",
+      "replace": "",
+      "expectRed": "6.3 code over 20,000 characters stays plain, and code under the cap is highlighted",
+      "cell": "6.3 code over 20,000 characters stays plain, and code under the cap is highlighted"
+    },
+    {
+      "name": "SP20 Open conversation drops the other side, so it opens the agent's direct messages rather than the conversation",
       "file": "implementations/web/client/src/ui/session/PostRow.tsx",
       "find": "formatRoute({ view: \"dm\", peer: agent, ...(to === undefined ? {} : { with: to }) })",
       "replace": "formatRoute({ view: \"dm\", peer: agent })",
@@ -150,7 +166,7 @@
       "cell": "7.1 a direct message reads \"Sent to lead\" with \"Open conversation\" to the conversation, and a channel post \"Posted in #team\" with \"Open in #team\""
     },
     {
-      "name": "SP19 the foot drops when presence reported the activity",
+      "name": "SP21 the foot drops when presence reported the activity",
       "file": "implementations/web/client/src/ui/session/SessionFoot.tsx",
       "find": "reported && `Reported ${reported}.`",
       "replace": "undefined",
@@ -158,7 +174,7 @@
       "cell": "8.1 the foot reads \"logic is working Running node app/snake.test.mjs. Reported 10:51.\" with no moving dots"
     },
     {
-      "name": "SP20 the idle foot says nothing after the status",
+      "name": "SP22 the idle foot says nothing after the status",
       "file": "implementations/web/client/src/ui/session/SessionFoot.tsx",
       "find": "said = \"No current activity.\";",
       "replace": "said = undefined;",
@@ -166,7 +182,7 @@
       "cell": "8.2 waiting says what it reported in the gold ink, idle says no current activity, and offline its last heartbeat"
     },
     {
-      "name": "SP21 every live step rises on the list's first draw, so a page that opens animates everything already there",
+      "name": "SP23 every live step rises on the list's first draw, so a page that opens animates everything already there",
       "file": "implementations/web/client/src/ui/work/WorkList.tsx",
       "find": "return (item) => now !== undefined && (now.rising.has(item.key) || (item.live && !now.known.has(item.key)));",
       "replace": "return (item) => item.live && (now === undefined || now.rising.has(item.key) || !now.known.has(item.key));",
@@ -174,7 +190,7 @@
       "cell": "9.1 nothing rises on the first draw, only a live step that arrives after it rises, and it keeps its class"
     },
     {
-      "name": "SP22 the run error draws the condition line with no condition",
+      "name": "SP24 the run error draws the condition line with no condition",
       "file": "implementations/web/client/src/ui/session/RunError.tsx",
       "find": "      {condition !== undefined && (\n        <span>\n          Presence reports <code>{condition.code}</code>\n          {wireDate(condition.since) && <> since <Time ts={condition.since} /></>}.",
       "replace": "      {(\n        <span>\n          Presence reports <code>{condition?.code}</code>\n          {wireDate(condition?.since) && <> since <Time ts={condition?.since} /></>}.",
@@ -182,7 +198,7 @@
       "cell": "10.1 the run error without a condition says the turn failed and that the plane doesn't say why, with no \"Presence reports\""
     },
     {
-      "name": "SP23 the condition's code goes in as HTML, so presence text could draw markup",
+      "name": "SP25 the condition's code goes in as HTML, so presence text could draw markup",
       "file": "implementations/web/client/src/ui/session/RunError.tsx",
       "find": "Presence reports <code>{condition.code}</code>",
       "replace": "Presence reports <code dangerouslySetInnerHTML={{ __html: condition.code }} />",
@@ -190,7 +206,7 @@
       "cell": "10.2 with a condition it quotes the code as text and when it began"
     },
     {
-      "name": "SP24 the condition goes on every failed turn, so an old failed turn reads as explained by what presence says now",
+      "name": "SP26 the condition goes on every failed turn, so an old failed turn reads as explained by what presence says now",
       "file": "implementations/web/client/src/ui/work/WorkList.tsx",
       "find": "condition={item === last ? condition : undefined} compact={compact} nameOf={nameOf} />",
       "replace": "condition={condition} compact={compact} nameOf={nameOf} />",
@@ -198,7 +214,7 @@
       "cell": "10.3 a failed turn carries presence's condition only when it is the list's last item"
     },
     {
-      "name": "SP25 a cut stream loses its trailing ellipsis, so a paragraph that never ended reads as finished",
+      "name": "SP27 a cut stream loses its trailing ellipsis, so a paragraph that never ended reads as finished",
       "file": "implementations/web/client/src/ui/session/SaidBlock.tsx",
       "find": "  if (!cut) return text;",
       "replace": "  return text;",
@@ -206,7 +222,7 @@
       "cell": "11.1 a cut paragraph ends with the trailing ellipsis"
     },
     {
-      "name": "SP26 a cut stream inside an open code fence keeps the ellipsis inside the fence, where it reads as the agent's own output",
+      "name": "SP28 a cut stream inside an open code fence keeps the ellipsis inside the fence, where it reads as the agent's own output",
       "file": "implementations/web/client/src/ui/session/SaidBlock.tsx",
       "find": "return open ? `${text}\\n\\`\\`\\`\\n …` : `${text} …`;",
       "replace": "return `${text} …`;",
@@ -214,7 +230,7 @@
       "cell": "11.2 a paragraph cut inside an open code fence closes the fence first, so the trailing ellipsis sits outside the code block"
     },
     {
-      "name": "SP27 the jump button drops the singular",
+      "name": "SP29 the jump button drops the singular",
       "file": "implementations/web/client/src/ui/session/JumpButton.tsx",
       "find": "{count === 1 ? \"1 new step\" : `${count} new steps`}",
       "replace": "{`${count} new steps`}",
@@ -222,7 +238,7 @@
       "cell": "11.3 the jump button reads \"1 new step\" and \"3 new steps\""
     },
     {
-      "name": "SP28 reasoning goes in as HTML, so its <b> becomes a bold element",
+      "name": "SP30 reasoning goes in as HTML, so its <b> becomes a bold element",
       "file": "implementations/web/client/src/ui/session/Reasoning.tsx",
       "find": "<div className=\"ox-think\">{withCut(text, cut)}</div>",
       "replace": "<div className=\"ox-think\" dangerouslySetInnerHTML={{ __html: withCut(text, cut) }} />",
@@ -230,7 +246,7 @@
       "cell": "11.4 reasoning is closed by default, and opened its body is plain text"
     },
     {
-      "name": "SP29 a long prompt never clamps",
+      "name": "SP31 a long prompt never clamps",
       "file": "implementations/web/client/src/ui/session/PromptBlock.tsx",
       "find": "const long = src.length > CLAMP;",
       "replace": "const long = false;",

@@ -139,8 +139,8 @@ const licenses = JSON.parse(readFileSync(join(out, "bundle-licenses.json"), "utf
 const names = licenses.bundled.map((b) => b.package);
 // marked and DOMPurify are bundled because the message rows render bodies as sanitized Markdown.
 // d3-force, d3-selection and d3-zoom are bundled because the topology graph lays out and pans with them.
-for (const want of ["react", "react-dom", "@fontsource-variable/inter", "marked", "dompurify", "d3-force", "d3-selection", "d3-zoom"])
-  ok(`bundle-licenses.json names ${want}`, names.includes(want), names);
+const missing = ["react", "react-dom", "@fontsource-variable/inter", "marked", "dompurify", "d3-force", "d3-selection", "d3-zoom"].filter((p) => !names.includes(p));
+ok("bundle-licenses.json names react, react-dom, the Inter font, marked, DOMPurify and the three d3 modules", missing.length === 0, { missing, names });
 // The shadcn parts and the utilities in shadcn.css are copied source, not a package any module id names.
 ok("bundle-licenses.json lists shadcn/ui with MIT and 4.22.1",
   licenses.bundled.some((b) => b.package === "shadcn/ui" && b.license === "MIT" && b.version === "4.22.1"), licenses.bundled);
@@ -165,6 +165,12 @@ const holdsShiki = (file: string) => readFileSync(join(out, "assets", file), "ut
 ok("no first-load chunk holds Shiki, and a lazy chunk does",
   firstLoad.length > 0 && firstLoad.every((f) => !holdsShiki(f)) && assets.some((a) => a.endsWith(".js") && !firstLoad.includes(a) && holdsShiki(a)),
   { firstLoad, shiki: assets.filter((a) => a.endsWith(".js") && holdsShiki(a)) });
+// The failed-call tooltip is Radix's, with its popper and floating-ui, and only a failed call draws
+// it, so it loads then. "TooltipContent" is a display name Radix sets as a string.
+const holdsTooltip = (file: string) => readFileSync(join(out, "assets", file), "utf8").includes("TooltipContent");
+ok("no first-load chunk holds the tooltip, and a lazy chunk does",
+  firstLoad.every((f) => !holdsTooltip(f)) && assets.some((a) => a.endsWith(".js") && !firstLoad.includes(a) && holdsTooltip(a)),
+  { firstLoad, tooltip: assets.filter((a) => a.endsWith(".js") && holdsTooltip(a)) });
 ok("the font ships as a local woff2 file", assets.some((a) => a.endsWith(".woff2")), assets);
 // The avatars draw through the art seam, which loads the brand's characters file at run time. A
 // bundle that left it out would build and then fail on the first avatar, so the built scripts must

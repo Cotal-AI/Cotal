@@ -18,7 +18,7 @@ import { createElement, useState, type ReactElement } from "react";
 import { renderToString } from "react-dom/server";
 import type { CotalMessage } from "../client/src/api/types.js";
 import { Icon } from "../client/src/icons/Icon.tsx";
-import { highlight } from "../client/src/lib/highlight.js";
+import { HIGHLIGHT_CAP, highlight } from "../client/src/lib/highlight.js";
 import { formatRoute } from "../client/src/lib/route.js";
 import type { RosterRow } from "../client/src/lib/roster.js";
 import { toolKind, type CallState, type ToolCall, type Turn, type Work, type WorkItem, type WorkStep } from "../client/src/lib/session.js";
@@ -113,17 +113,25 @@ const trigger = (root: ParentNode, title: string) => all(root, "[data-slot=trace
     { before: ["running", true, "Running a command"], after: [["Ran a command", "Bash · 1.8s", null]], spinners: 0 });
   await m.unmount();
 }
+/** A failed call's line mounted, once its lazily loaded tooltip has come in and made the line a
+ *  button. The line draws at once; the button is what the tooltip chunk adds. */
+const failedLine = async (c: ToolCall) => {
+  const m = await mount(createElement(ToolLine, { call: c, state: "failed" }));
+  for (let i = 0; i < 100 && m.container.querySelector("button") === null; i++) await m.run(() => sleep(50));
+  return { m, button: m.container.querySelector("button") as HTMLButtonElement };
+};
+/** The words the open tooltip shows: Radix repeats the content once, visually hidden, as the
+ *  role=tooltip element the line describes. */
+const tipWords = () => text(document.querySelector("[data-slot=tooltip-content] [role=tooltip]"));
 {
-  /** The words a failed call's tooltip shows once its line takes focus. */
+  /** The words a failed call's tooltip shows once its line takes keyboard focus. */
   const tip = async (c: ToolCall) => {
-    const m = await mount(createElement(ToolLine, { call: c, state: "failed" }));
-    const button = m.container.querySelector("button") as HTMLButtonElement;
+    const { m, button } = await failedLine(c);
     await m.run(() => {
       button.focus();
       button.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     });
-    // Radix repeats the content once, visually hidden, as the role=tooltip element the line describes.
-    const words = text(document.querySelector("[data-slot=tooltip-content] [role=tooltip]"));
+    const words = tipWords();
     const shown = { lines: lines(m.container), cross: glyph(m.container.querySelector("[data-slot=trace-icon]")) === CROSS };
     await m.unmount();
     return { ...shown, words };
@@ -144,6 +152,18 @@ const trigger = (root: ParentNode, title: string) => all(root, "[data-slot=trace
   same("1.3 waiting with an open call reads \"A command hasn't finished\" and \"Bash · started 10:50\" with no spinner, and offline \"No result arrived for a command\"",
     { waiting: lines(waiting).slice(1), spinners: all(waiting, "[data-slot=spinner]").length, offline: lines(offline).slice(1) },
     { waiting: [["A command hasn't finished", "Bash · started 10:50", "pending"]], spinners: 0, offline: [["No result arrived for a command", "Bash · started 10:50", "pending"]] });
+}
+
+{
+  const { m, button } = await failedLine(call("Bash", L(10, 40), { end: L(10, 40) + 1800, failed: true }));
+  const shut = tipWords();
+  await m.run(() => button.click());
+  const tapped = tipWords();
+  await m.run(() => button.click());
+  same("1.4 a failed call's line is a button, so a tap or a click opens its tooltip and another closes it",
+    [button.tagName, shut, tapped, tipWords()],
+    ["BUTTON", "", "The connector reports the call returned an error. It doesn't publish the error text or the command.", ""]);
+  await m.unmount();
 }
 
 // ── 2. Groups ────────────────────────────────────────────────────────────────────────────────────
@@ -279,6 +299,11 @@ const trigger = (root: ParentNode, title: string) => all(root, "[data-slot=trace
   same("6.2 a rust fence stays plain", [styled(blocks()[1]).length, await highlight("fn main() {}", "rust")], [0, undefined]);
   await m.unmount();
 }
+{
+  const big = "const a = 1;\n".repeat(Math.ceil((HIGHLIGHT_CAP + 1) / 13));
+  same("6.3 code over 20,000 characters stays plain, and code under the cap is highlighted",
+    [big.length > HIGHLIGHT_CAP, HIGHLIGHT_CAP, await highlight(big, "js"), (await highlight("const a = 1;", "js"))?.length], [true, 20_000, undefined, 1]);
+}
 
 // ── 7. Posts ─────────────────────────────────────────────────────────────────────────────────────
 {
@@ -296,7 +321,7 @@ const trigger = (root: ParentNode, title: string) => all(root, "[data-slot=trace
 // ── 8. The footer ────────────────────────────────────────────────────────────────────────────────
 {
   const foot = (r: RosterRow) => draw("8", createElement(SessionFoot, { row: r }));
-  const working = foot(row({ activity: "Running node app/snake.test.mjs", statusSince: L(10, 51), progress: { kind: "unknown" } }));
+  const working = foot(row({ activity: "Running node app/snake.test.mjs", statusSince: L(10, 51) }));
   same("8.1 the foot reads \"logic is working Running node app/snake.test.mjs. Reported 10:51.\" with no moving dots",
     [text(working.querySelector(".ox-foot")), all(working, ".ui-dots").length], ["logic is working Running node app/snake.test.mjs. Reported 10:51.", 0]);
   same("8.2 waiting says what it reported in the gold ink, idle says no current activity, and offline its last heartbeat",

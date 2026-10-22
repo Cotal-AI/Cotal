@@ -39,6 +39,12 @@ const NAMES = new Map<string, string>([
 
 const THEME = "cotal";
 
+/** Code longer than this many characters stays plain: Shiki tokenizes on the main thread, and an
+ *  agent's text is untrusted, so its size is too. */
+export const HIGHLIGHT_CAP = 20_000;
+/** A line longer than this is not tokenized past it. */
+const LINE_CAP = 1000;
+
 let core: Promise<HighlighterCore> | undefined;
 const loading = new Map<string, Promise<void>>();
 
@@ -72,14 +78,16 @@ function grammar(shiki: HighlighterCore, lang: string): Promise<void> {
 }
 
 /** Tokens for `text` in `lang`, loading Shiki and the language on first use, one array per line.
- *  Undefined for a language outside the eight, or when loading fails (the block stays plain). */
+ *  Undefined for a language outside the eight, for code over `HIGHLIGHT_CAP` characters (Shiki is
+ *  not loaded for it), or when loading fails: the block stays plain. */
 export async function highlight(text: string, lang: string): Promise<CodeToken[][] | undefined> {
   const name = NAMES.get(lang.toLowerCase());
   if (name === undefined) return undefined;
+  if (text.length > HIGHLIGHT_CAP) return undefined;
   try {
     const shiki = await highlighter();
     await grammar(shiki, name);
-    return shiki.codeToTokens(text, { lang: name, theme: THEME }).tokens.map((line) =>
+    return shiki.codeToTokens(text, { lang: name, theme: THEME, tokenizeMaxLineLength: LINE_CAP }).tokens.map((line) =>
       line.map((t) => (t.color === undefined ? { content: t.content } : { content: t.content, color: t.color })));
   } catch (err) {
     console.error("highlighting a code block failed, so it stays plain:", err);

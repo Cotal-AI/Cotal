@@ -105,9 +105,9 @@ const entry = (id: string, name: string, status: RosterEntry["status"], extra: P
   const all = rosterRows(roster, { includeOffline: true });
   ok("2.8 includeOffline keeps offline rows, last", all.length === 6 && all[5]?.name === "ann", all.map((r) => r.name));
   const bob = rows.find((r) => r.id === "local.bob");
-  ok("2.9 a row carries the card fields by the core names and the unknown-progress marker",
+  ok("2.9 a row carries the card fields by the core names, and not the server's unknown-progress marker, which nothing draws",
     bob?.harness === "claude-code" && bob?.host === "mbp" && bob?.model === "opus" && bob?.role === "agent"
-      && bob?.progress?.kind === "unknown" && bob?.ts === 1, bob);
+      && !("progress" in (bob ?? {})) && bob?.ts === 1, bob);
   const amy = rows.find((r) => r.id === "local.amy");
   ok("2.10 a row carries activity, attention and statusSince", amy?.activity === "reviewing" && amy?.attention === "focus" && amy?.statusSince === 5, amy);
   ok("2.11 statusCounts counts every status over the rows it is given",
@@ -124,7 +124,8 @@ const entry = (id: string, name: string, status: RosterEntry["status"], extra: P
   ok("2.13 oldestLiveBeat is the stalest heartbeat among live rows, never an offline one",
     oldestLiveBeat(all) === 1 && oldestLiveBeat(rosterRows([entry("local.o", "o", "offline")], { includeOffline: true })) === undefined,
     oldestLiveBeat(all));
-  const unknownProgress = (status: RosterRow["status"]): Pick<RosterRow, "status" | "progress"> => ({ status, progress: { kind: "unknown" } });
+  // The server's marker that a working peer reports no progress, beside the status it is read with.
+  const unknownProgress = (status: RosterRow["status"]): Pick<RosterRow, "status"> & { progress: { kind: "unknown" } } => ({ status, progress: { kind: "unknown" } });
   ok("2.14 statusLabel writes the presence status with no progress claim",
     statusLabel(unknownProgress("working")) === "working"
       && statusLabel({ status: "working" }) === "working"
