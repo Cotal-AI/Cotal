@@ -3026,27 +3026,29 @@ cotal daemon serve [--json|--plain]
 cotal daemon status [--json|--plain]
 ```
 
-The local machine daemon. This release serves only a local status endpoint: it does not sign in,
-start a Manager or install a system service. It runs on Linux only and refuses elsewhere with
-`UNSUPPORTED`.
+This release serves only a local status endpoint: it does not sign in, start a Manager or install
+a system service. It supports Linux only. On other platforms, an unset `XDG_RUNTIME_DIR` produces
+`TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`); with it set, the platform check refuses `UNSUPPORTED`.
 
-`serve` runs in the foreground until SIGTERM or SIGINT and prints `daemon ready at <socket>` once
-the endpoint is bound and checked. `status` asks the running daemon over that endpoint and prints
-its state, version, protocol, process ID, start time and uptime. `state: "ready"` means the local
-control listener is bound and verified. It says nothing about a mesh or Cloud connection.
+`serve` runs in the foreground and prints `daemon ready at <socket>` once the endpoint is bound
+and checked. That success line is plain text; `--json` shapes its refusals. `status` prints the
+state, version, protocol, process ID, start time and uptime. `state: "ready"` means only that the
+local control listener is bound and verified, not that a mesh or Cloud connection exists.
 
 The endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. Without `XDG_RUNTIME_DIR` both forms refuse
-with `TARGET_UNAVAILABLE`. The directory must be owned by you with mode `0700` and the socket with
-mode `0600`; anything else refuses with `PERMISSION_DENIED`, and the daemon never changes or
-removes what it finds. The daemon drops a connection from another user, and `status` refuses a
-daemon that runs as another user. The kernel separates users, not processes of one user: any
-process running as you can read the status.
+`TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`). Both refuse `PERMISSION_DENIED` for a runtime directory
+that is a symlink, not a directory, not owned by you, or not mode `0700`. `status` also refuses
+`PERMISSION_DENIED` for an endpoint entry that is not a socket, not yours, or not mode `0600`.
+The daemon drops connections from other users. The kernel separates users, not processes of one
+user: any process running as you can read the status.
 
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`). `serve` refuses
-`CONFLICT` (`ALREADY_RUNNING`) when anything already exists at the socket path, including a
-socket left by a daemon that was killed without cleanup. To recover, run `cotal daemon status`.
-If it reports `NOT_RUNNING`, confirm no `cotal daemon` process is running, then remove the socket
-path by hand and start again. A clean shutdown removes only the daemon's own socket.
+`CONFLICT` (`ALREADY_RUNNING`) for any existing socket, including one left after a crash, and
+`PERMISSION_DENIED` (`SOCKET_NOT_SOCKET`) for a non-socket entry. It removes neither.
+SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
+including closing the terminal, leaves a stale socket. To recover, run `cotal daemon status`.
+If it reports `NOT_RUNNING`, confirm no daemon process is running, then remove the named socket
+path by hand and start again.
 
 ## service
 
