@@ -547,6 +547,50 @@ try {
     && gate3.row.state === "open" && gate3.row.serviceAuthority.registration?.requestId === competitor.requestId && specWrites.revisions.length === 1,
     { publishHeld, competitor: competitorAnswer.status, first: overtakenAnswer.body, replay: overtakenReplay.status, stamped: gate3.row.serviceAuthority.registration?.requestId === competitor.requestId, specWrites: specWrites.revisions.length });
 
+  /** A sim-frozen register replayed twice: the first replay reads the gate frozen by its own
+   *  operation and waits at its first artifact publish while the second resumes and completes it;
+   *  `between` runs before the first is released. */
+  const lateResume = async (ep: string, between?: (stamped: ServiceRegistrationWitness) => Promise<ServiceAuthorityRequest>) => {
+    const x = cluster(ep, [cmd("lookup")]), s = await approved("a", ep, x), r = s.proposal;
+    await simFreeze(r, await simIntent(ownerA, r));
+    const specs = await writesTo(recordsKv, recordSpecKey(RECORD_KINDS.svc, [ep, s.instanceId]));
+    const hex = contractDigest(x.manifest).slice("sha256:".length);
+    const held = holdFirst((subject) => !subject.startsWith("$JS.") && subject.endsWith(`.epc.${hex}`), "before");
+    const late = raw(on.url, r, await idpProof("a"));
+    const waited = await held.hit, frozenWhileHeld = (await gate(ep, s.instanceId)).row.state === "frozen";
+    const resumed = await raw(on.url, r, await idpProof("a"));
+    const competitor = between && resumed.parsed?.state === "registered" ? await between(resumed.parsed.witness) : undefined;
+    const competing = competitor ? await raw(on.url, competitor, await idpProof("a")) : undefined;
+    held.release();
+    const answer = await late;
+    await new Promise((res) => setTimeout(res, 500));
+    await specs.stop();
+    return { r, competitor, waited, frozenWhileHeld, resumed, competing, answer, specWrites: specs.revisions.length, final: await gate(ep, s.instanceId) };
+  };
+  const g4 = await lateResume("org.example.late-overtaken", async (w) => registerReq("org.example.late-overtaken", w.instanceId, cluster("org.example.late-overtaken", [cmd("lookup")]), w));
+  c.check("G4 a replay that read the gate frozen by its own operation, released after it completed and a competitor expecting it registered, is a conflict (409) and the competitor stands",
+    g4.waited && g4.frozenWhileHeld && g4.resumed.status === 200 && g4.competing?.status === 200 && g4.answer.status === 409 && denied(g4.answer.parsed, "conflict")
+    && g4.final.row.serviceAuthority.registration?.requestId === g4.competitor?.requestId && g4.specWrites === 2,
+    { waited: g4.waited, frozen: g4.frozenWhileHeld, resumed: g4.resumed.status, competing: g4.competing?.status, answer: g4.answer.body, specWrites: g4.specWrites });
+  const g5 = await lateResume("org.example.late-resumed");
+  c.check("G5 the same late replay with no competitor answers registered from the stamp, with no second registration",
+    g5.waited && g5.frozenWhileHeld && g5.answer.status === 200 && g5.answer.parsed?.state === "registered"
+    && g5.final.row.serviceAuthority.registration?.requestId === g5.r.requestId && g5.specWrites === 1,
+    { answer: g5.answer.body, specWrites: g5.specWrites });
+  const twiceEp = "org.example.twice", twice = cluster(twiceEp, [cmd("lookup")]), sg6 = await approved("a", twiceEp, twice);
+  const twiceSpecs = await writesTo(recordsKv, recordSpecKey(RECORD_KINDS.svc, [twiceEp, sg6.instanceId]));
+  const twiceHex = contractDigest(twice.manifest).slice("sha256:".length);
+  const twiceHold = holdFirst((subject) => !subject.startsWith("$JS.") && subject.endsWith(`.epc.${twiceHex}`), "before");
+  const twiceLate = raw(on.url, sg6.proposal, await idpProof("a"));
+  const twiceWaited = await twiceHold.hit, twiceFirst = await raw(on.url, sg6.proposal, await idpProof("a"));
+  twiceHold.release();
+  const twiceAnswer = await twiceLate;
+  await new Promise((res) => setTimeout(res, 500));
+  await twiceSpecs.stop();
+  c.check("G6 two invocations of one register: the one released after the other completed answers registered, not a conflict",
+    twiceWaited && twiceFirst.status === 200 && twiceAnswer.status === 200 && twiceAnswer.parsed?.state === "registered" && twiceSpecs.revisions.length === 1,
+    { first: twiceFirst.status, late: twiceAnswer.body, specWrites: twiceSpecs.revisions.length });
+
   // Last: the latch stays set for the rest of this context.
   const latchedEp = "org.example.latched", latched = cluster(latchedEp, [cmd("lookup")]);
   const sg4 = await approved("a", latchedEp, latched), wg4 = await registered(sg4), credg4 = await credential("a", witnessReq("activate", wg4));
@@ -566,7 +610,7 @@ try {
   const latchedAnswer = await readyAnswer;
   await new Promise((r) => setTimeout(r, 800));
   await statusWrites.stop();
-  c.check("G4 a ready held at its status read across the engine latch issues no status write after the latch and answers unknown (503)",
+  c.check("G7 a ready held at its status read across the engine latch issues no status write after the latch and answers unknown (503)",
     unlatched.status === 200 && beforeLatch === 1 && readHeld && latchedAnswer.status === 503 && statusWrites.revisions.length === beforeLatch,
     { unlatched: unlatched.status, beforeLatch, readHeld, latched: latchedAnswer.status, writes: statusWrites.revisions.length });
 } finally {
