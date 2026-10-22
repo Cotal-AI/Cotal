@@ -23,6 +23,18 @@ export interface RenderedInboxPreview {
   rows: string[];
 }
 
+/**
+ * Control characters and lone surrogates a peer can put in a preview row, apart from the newline that
+ * `fmtBody` writes before each indented continuation.
+ *
+ * A preview row is drawn in the host's own UI, so ESC and the other C0/C1 controls would reach its
+ * terminal as commands. They also break the row bound: each is one code point but JSON writes it as
+ * a six-unit `\uXXXX` escape, so three short rows of them made a wake frame larger than the feed
+ * accepts, and the throw from that send lost the recipient's wake. After this replacement every
+ * remaining code point costs at most two JSON units, which is what keeps the frame bounded.
+ */
+const PREVIEW_CONTROL = /(?!\n)[\p{Cc}\p{Cs}]/gu;
+
 /** Bound one preview row by Unicode code points, preserving its connector-authored attribution. */
 function boundedRow(row: string, maxCodePoints: number): string {
   const points = Array.from(row);
@@ -33,7 +45,10 @@ function boundedRow(row: string, maxCodePoints: number): string {
 export function renderInboxPreview(snapshot: InboxSnapshot, maxRowCodePoints = 240): RenderedInboxPreview {
   if (!Number.isInteger(maxRowCodePoints) || maxRowCodePoints < 16 || maxRowCodePoints > 1_000)
     throw new Error(`inbox preview row bound must be a whole number from 16 to 1000, got ${maxRowCodePoints}`);
-  return { unread: snapshot.unread, rows: snapshot.items.map((item) => boundedRow(fmtItem(item), maxRowCodePoints)) };
+  return {
+    unread: snapshot.unread,
+    rows: snapshot.items.map((item) => boundedRow(fmtItem(item).replace(PREVIEW_CONTROL, "\uFFFD"), maxRowCodePoints)),
+  };
 }
 
 /**

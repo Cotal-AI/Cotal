@@ -1560,7 +1560,9 @@ export class MeshAgent extends EventEmitter {
 
   /**
    * Read a bounded presentation snapshot without draining, acknowledging, committing, holding or
-   * changing attention. The caller receives copies, so UI code cannot mutate the live inbox.
+   * changing attention. Each item is a shallow copy: reassigning its fields leaves the live inbox
+   * unchanged, but nested values such as `mentions` are shared, so callers must treat items as
+   * read-only.
    */
   inboxSnapshot(limit = 3): InboxSnapshot {
     if (!Number.isInteger(limit) || limit < 0 || limit > 8)
