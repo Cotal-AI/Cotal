@@ -72,7 +72,7 @@ function cotal(fixture: Fixture, args: string[]) {
 }
 
 async function stop(fixture: Fixture): Promise<boolean> {
-  const down = cotal(fixture, ["down", "manager", "nats"]);
+  const down = cotal(fixture, ["down"]);
   const stopped = down.status === 0 && !down.error && !down.signal;
   check("the isolated mesh stops cleanly", stopped, {
     status: down.status,
@@ -87,12 +87,21 @@ async function orderedRefresh(rootSpace: string, tenantSpace: string, expectedOr
   const fixture = await makeFixture(rootSpace);
   process.env.COTAL_HOME = fixture.home;
   process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
-  const { createBrokerAuth, createSpaceAccountAuth } = await import("@cotal-ai/core");
-  const { authDir, findMesh, loadMeshes, recordMesh, removeMesh, saveBrokerAuth, saveSpaceAccountAuth, spaceAccountPath } = await import("@cotal-ai/workspace");
+  const { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, mintConnectionEvictorCreds, mintMembershipObserverCreds, newIdentity } = await import("@cotal-ai/core");
+  const { authDir, connectionEvictorCredsKey, findMesh, loadMeshes, membershipObserverCredsKey, recordMesh, removeMesh, saveBrokerAuth, saveSpaceAccountAuth, spaceAccountPath, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const broker = await createBrokerAuth(`refresh-${rootSpace}`);
   saveBrokerAuth(authDir(fixture.root), broker);
-  saveSpaceAccountAuth(authDir(fixture.root), await createSpaceAccountAuth(broker, rootSpace));
+  const rootAccount = await createSpaceAccountAuth(broker, rootSpace);
+  saveSpaceAccountAuth(authDir(fixture.root), rootAccount);
   saveSpaceAccountAuth(authDir(fixture.root), await createSpaceAccountAuth(broker, tenantSpace));
+  // A fresh `up` writes the space's $SYS pair while the broker's signing seed is in memory. This
+  // fixture builds the trust chain itself, so it writes the pair too: without it the delivery daemon
+  // on a two-space broker refuses, and a first boot whose control plane does not come up exits 1.
+  const rootAuth = composeSpaceAuth(broker, rootAccount);
+  const composition = { injected: false as const, root: fixture.root };
+  const store = workspaceSecretStore(fixture.root);
+  await store.put(membershipObserverCredsKey(rootSpace, composition), await mintMembershipObserverCreds(rootAuth, newIdentity()));
+  await store.put(connectionEvictorCredsKey(rootSpace, composition), await mintConnectionEvictorCreds(rootAuth, newIdentity()));
   const removeTenantAccount = () => rmSync(spaceAccountPath(authDir(fixture.root), tenantSpace), { force: true });
   let started = false;
   try {
@@ -297,7 +306,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
   process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
   const { findMesh } = await import("@cotal-ai/workspace");
   const space = "fg-crash";
-  const child = spawn(TSX, [CLI, "up", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(TSX, [CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   child.stdout?.setEncoding("utf8");
@@ -338,7 +347,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
     // find, so `cotal down` here reports "Nothing running" and exits non-zero even though its
     // registry sweep (which runs unconditionally on a bare down, ahead of that exit) still clears
     // the crash-kept record — the real, documented effect this cell checks.
-    cotal(fixture, ["down", "manager", "nats"]);
+    cotal(fixture, ["down"]);
     check("`stop` (down) also removes the kept record", findMesh(space) === undefined, findMesh(space));
   } finally {
     if (child.exitCode === null) { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
@@ -346,7 +355,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
 
   // CONTROL: the same foreground `up`, ended with SIGINT (the intended stop) instead of SIGKILL,
   // exits 0 and drops the record — proving the crash branch above is the ONLY one that keeps it.
-  const control = spawn(TSX, [CLI, "up", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
+  const control = spawn(TSX, [CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
   try {
     let railsUp = false;
     for (let i = 0; i < 60 && !railsUp; i++) {
