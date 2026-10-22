@@ -47,6 +47,10 @@ concurrency:
 #             Windows, so each must pass on all three.
 # `ci-ok` fans them back in to one advisory status. A red `ci-ok` reports the result without
 # blocking a merge unless repository rules make it required.
+# The CLI runs for real in these jobs; its usage telemetry would count our runners as users.
+env:
+  COTAL_TELEMETRY: off
+
 jobs:
   unit:
     if: ${{ github.event_name != 'workflow_dispatch' }}

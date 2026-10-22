@@ -14,6 +14,10 @@ concurrency:
   cancel-in-progress: false
   queue: max
 
+# The CLI runs for real in these jobs; its usage telemetry would count our runners as users.
+env:
+  COTAL_TELEMETRY: off
+
 jobs:
   select:
     if: github.ref == 'refs/heads/main'
