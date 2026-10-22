@@ -148,19 +148,25 @@ try {
       return root?.properties?.config !== undefined;
     }).map((c) => c.name).sort();
     cell("census: every public config door is covered", JSON.stringify(configDoors) === JSON.stringify(["resolve-agent", "spawn"]), configDoors);
-    const results: Outcome[] = [];
+    const results: { command: string; result: Outcome }[] = [];
     for (const command of configDoors) {
       const paths = [["existing", outside], ["missing", missing], ["symlink", alias], ["file", file], ["file-symlink", fileAlias], ["relative", relative(delegatedRoot, outside)], ["named-config", "probe"], ["workspace-relative", ".cotal/agents/probe.md"]];
       for (const [label, config] of paths) {
         // cwd is an independent, later admission refusal on the old code, so even a valid config
         // cannot reach enrollment or a launch while the missing config guard is reproduced.
         const { result, reads } = await observed(() => call(delegatedCaller, command, { name: "probe", config, ...(command === "spawn" ? { events: false, cwd: outside } : {}) }));
-        results.push(result);
+        results.push({ command, result });
         cell(`${command}: ${label} config gets the fixed refusal`, refused(result), result);
         cell(`${command}: ${label} config causes zero persona-path filesystem operations`, reads === 0, reads);
       }
     }
-    cell("all public config doors and path classes return identical errors", results.every(refused) && new Set(results.map((r) => JSON.stringify(r))).size === 1);
+    // Within a door every path class gets the identical reply, so the refusal is no oracle on the
+    // manager host's filesystem. Across doors the code and message agree; `spawn` is an action, so
+    // its refusal also says `not-executed` (SPEC 13.3), which the `resolve-agent` read does not.
+    const replies = (command: string) => new Set(results.filter((r) => r.command === command).map((r) => JSON.stringify(r.result)));
+    cell("each public config door returns one identical error for every path class, with the same code and message on every door",
+      results.every((r) => refused(r.result)) && configDoors.every((command) => replies(command).size === 1),
+      configDoors.map((command) => [command, [...replies(command)]]));
     for (const [label, config] of [["existing", outside], ["missing", missing], ["symlink", alias]]) {
       const { result, reads } = await observed(() => delegated!.manager.startAgent({ name: "probe", config, events: false }));
       cell(`library startAgent: ${label} config gets the same refusal`, !result.ok && result.error === expectedMessage, result.error);
