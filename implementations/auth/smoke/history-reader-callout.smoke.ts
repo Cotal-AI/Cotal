@@ -157,7 +157,8 @@ try {
   const dashNc = (dash as unknown as { nc: NatsConnection }).nc;
   const cidBefore = dashNc.info?.client_id;
   await dashNc.reconnect();
-  for (let i = 0; i < 50 && dashNc.info?.client_id === cidBefore; i++) await wait(100);
+  // The client clears its INFO when it starts to dial and sets it again when the new server's INFO arrives.
+  for (let i = 0; i < 50 && (!dashNc.info || dashNc.info.client_id === cidBefore); i++) await wait(100);
   const seenBefore = seen.length;
   const again = await dash.channelHistory("general", { limit: 5 }).then((r) => r.length, (e: Error) => e.message);
   const afterReconnect = await count();
