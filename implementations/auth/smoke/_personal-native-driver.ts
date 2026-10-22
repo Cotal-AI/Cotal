@@ -112,7 +112,10 @@ export async function runPersonalNativeAcceptance(input: {
   try {
     prompt(`This is an isolated Cotal native acceptance test. Call mcp__cotal__cotal_connect with name ${name}. If it says the person must approve, reply APPROVAL_PENDING and stop. Do not call cotal_wait. Once connected, reply READY_NATIVE and its connection_id. A Cotal inline delivery contains the complete message: follow it without calling cotal_inbox. Only notification-only or explicitly incomplete deliveries require an inbox read using your own connection_id. Never inspect environment variables or login files.`);
     await until(() => assistantSaid("APPROVAL_PENDING") && rows.some((row) => row.value.type === "result"), "the native model reporting the pending approval");
-    assert(rows.some((row) => row.value.type === "user" && JSON.stringify(row.value).includes("Permission approval required")), "cotal_connect did not answer that the person must approve");
+    // Claude Code hands the model a tool's structured content, here the pending answer.
+    const results = rows.flatMap((row) => row.value.type === "user" ? (row.value.message?.content ?? []).filter((part: any) => part.type === "tool_result") : [])
+      .map((part: any) => typeof part.content === "string" ? part.content : (part.content ?? []).map((c: any) => c.text ?? "").join("\n"));
+    assert(results.some((text: string) => /"status":"pending"/.test(text) && text.includes(`"name":"${name}"`)), "cotal_connect did not answer that the person must approve");
     assert(!input.peer.roster().some((row) => row.card.name === name), "the native conversation joined before the person approved it");
     await input.approve(name);
     const approvedAt = sequence;
