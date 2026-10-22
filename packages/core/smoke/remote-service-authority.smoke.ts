@@ -1,4 +1,5 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { assertBoundedOwner, epRequestSubject } from "../src/endpoint-subjects.js";
 import { createAccount } from "@nats-io/nkeys";
 import { contractDigest } from "../src/canonical.js";
@@ -8,6 +9,9 @@ import {
   parseServiceRegistrationWitness, serviceAuthorityRequestDigest, serviceEndpointActor, serviceWitnessDigest,
   type ServiceAuthorityRequest, type ServiceRegistrationWitness,
 } from "../src/remote-service-authority.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const owner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
 const identity = {
@@ -144,3 +148,4 @@ for (const operation of ["status", "describe-view", "unknown"])
   assert.throws(() => parseServiceAuthorityRequest(opStatus({ kind: "operation", operation, requestId: "d".repeat(32) })), /unsupported status operation/, operation);
 assert.throws(() => parseServiceAuthorityRequest(opStatus({ kind: "operation", operation: "register", requestId: "d".repeat(32), extra: 1 })), /unsupported fields/);
 console.log("remote service authority: closed proof matrix, request/response binding and bounded identity passed");
+emitSentinel({ passed: counted.cells(), failed: 0 });
