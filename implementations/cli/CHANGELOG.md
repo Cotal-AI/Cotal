@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.94.5
+
+### Patch Changes
+
+- 2ff5fc8: `cotal completion install` no longer replaces a shell startup file its owner made read-only. It writes its stub, leaves the startup file unchanged, and fails, exit 5, naming the line to add yourself. `cotal completion uninstall` refuses such a file, exit 2, and changes nothing.
+- 4b64fe7: A manager that refuses a stop request after `cotal down` stopped waiting no longer blocks the stack. The manager refuses because the `down` that published the request has exited, and it keeps running. The next bare `up` or `down` now reads that `refused` receipt, removes the request, releases the stop reservation and returns the manager's record to `running`. `down` then stops the manager, and `up` reuses it.
+- Updated dependencies [4b64fe7]
+  - @cotal-ai/workspace@0.94.5
+  - @cotal-ai/core@0.94.5
+
 ## 0.94.4
 
 ### Patch Changes

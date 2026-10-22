@@ -1,6 +1,6 @@
 {
   "name": "cotal",
-  "version": "0.94.4",
+  "version": "0.94.5",
   "description": "Connect Claude Code to a Cotal mesh for presence, messaging and role requests. Includes MCP tools, lifecycle hooks and native incoming-message delivery in supported Code sessions. Each conversation joins only when it calls cotal_connect.",
   "author": {
     "name": "Cotal",
