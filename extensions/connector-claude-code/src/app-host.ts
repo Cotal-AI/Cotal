@@ -75,9 +75,13 @@ export function createAppHost(o: AppHostOptions): AppHost {
   let reapAgain = false;
   const plumbing = (args: string[]): Promise<Reply> => new Promise((resolve, reject) => {
     const cotal = o.cotal();
-    execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd: o.cwd, env: o.env, timeout: PLUMBING_MS }, (_error, stdout) => {
+    execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd: o.cwd, env: o.env, timeout: PLUMBING_MS }, (_error, stdout, stderr) => {
       try { resolve(JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as Reply); }
-      catch { reject(new Error("the Cotal CLI did not return an identity result; its saved request was retained for recovery")); }
+      catch {
+        reject(new Error(/Unknown option ['"]--require-approval['"]/.test(stderr)
+          ? "The recorded Cotal CLI cannot enforce permission approval. Update Cotal, run cotal setup, then reopen Claude. No connection was started."
+          : "the Cotal CLI did not return an identity result; any saved request was retained for recovery"));
+      }
     });
   });
   const retire = async (dir?: string): Promise<void> => {

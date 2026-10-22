@@ -43,6 +43,13 @@ try {
   assert.equal(host.sessionFor("not-a-connection"), undefined);
   await host.closeAll();
   console.log("  ✓ pending native approval survives CLI exit1 without a connection, transcript read, event source or retirement");
+  const oldCli = join(root, "old-identity-fixture.cjs");
+  writeFileSync(oldCli, `process.stderr.write("Unknown option '--require-approval'\\n"); process.exitCode = 1;`);
+  const oldHost = createAppHost({ cotal: () => [process.execPath, oldCli], cwd: root, env: {} });
+  try {
+    await assert.rejects(oldHost.open("local", "old_cli"), /Update Cotal.*cotal setup/);
+    console.log("  ✓ an older recorded CLI is refused with an upgrade remedy, not a permission fallback");
+  } finally { await oldHost.closeAll(); }
 } finally {
   await host.closeAll();
   rmSync(root, { recursive: true, force: true });
