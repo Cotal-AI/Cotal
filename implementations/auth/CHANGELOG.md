@@ -1,5 +1,21 @@
 # @cotal-ai/auth
 
+## 0.94.0
+
+### Minor Changes
+
+- 1caaf63: Add explicit standalone-broker payload bootstrap for service caller policy. Hosts supply fresh VARZ-only SYS observer credentials through a broker-owner helper, and broker configuration accepts an explicit maxPayload without changing its default. Assertions bind actual broker configuration, stream limits and the genuine plane claim. Caller issuance rechecks live evidence, exact assertion and effective authority before release, refuses stale prior-plane appends, and drains owned observations before shutdown. Clusters, gateway and leaf configurations remain unsupported. No production configuration is changed automatically.
+- 311a26e: The service endpoint host serves `caller-grant`, `caller-revoke`, `caller-policy-read` and `caller-policy-list` instead of answering `unsupported`. A grant needs an interactive owner who holds the approved instance and an interactive grantee with no parent. Its capabilities must be pinned to that instance with `instanceOnly`, carry no journal access and no `any` or `ledger` target, and sit within the approval's ceiling. It is recorded `active` with a host-derived id, source and parents. One instance indexes at most 256 grants. A revoke lands deny-new, then writes the grant's op-bound cutoff marker and a `notBefore` in epoch seconds from the marker's broker time. It answers `pending` and never `revoked`. Each operation record keeps the exact request and the grant's immutable fields, and a positive grant write is recorded before it is issued, so a replay never repeats a write whose outcome is unknown. Grants also need a payload precondition: every server's `max_payload` at least 2 MiB plus 1 KiB, an auth stream with no per-message limit, and an operator assertion recorded in the auth store. Stock records no assertion and its generated broker keeps the 1 MiB default, so a stock deployment answers `unsupported` to grants. A failed check or a revoke write that would not fit withdraws the assertion. The operation kind gains `grant`, operation views accept the caller target, and the result parser accepts the grant and caller-policy read and list results.
+- a0db172: Ordinary and managed user-auth callers now receive exact-lifecycle endpoint caller rows from native caller policy. Controlled owner grants to managed actors capture their actual current parent lifecycle and covering immutable grants. The callout checks current approval, root, name, assignment and ancestor policy, uses core's native row builders, and rechecks authority after signing and native-key recording. Revocation denies new issuance without claiming terminal connection removal. Applications still need service-host approval and the asserted payload prerequisite. Native control endpoints retain their existing authority contracts.
+
+### Patch Changes
+
+- a7aa9e0: An approval's caller ceiling now admits only entries pinned to the approved instance (`instanceId` with `instanceOnly`), on a declared command, with exactly the target presence and mode that command admits. `any` and `ledger` entries are refused because no operator target policy is wired. Any other entry answers `bad-request` before the decision binds, and an empty ceiling stays valid. The service host operations that take an approval are new in this release, so no released deployment is affected. The internal caller-policy storage also treats a stored grant whose fields other than status match as already present, so a replay after deny-new adopts the row and never reactivates the grant, and it gains the step that records a revocation's cutoff marker and deadline once, refusing other values or another operation's intent.
+- Updated dependencies [1caaf63]
+  - @cotal-ai/core@0.94.0
+  - @cotal-ai/workspace@0.94.0
+  - @cotal-ai/lang@0.94.0
+
 ## 0.93.0
 
 ### Minor Changes
