@@ -148,7 +148,7 @@ export function remoteManagerIssuerGrants(space: string, connId: string): { publ
       `$JS.API.STREAM.INFO.KV_${sessionsBucket(space)}`,
       `$JS.API.STREAM.MSG.GET.KV_${sessionsBucket(space)}`,
     ],
-    subscribe: [...base.subscribe, ...servedRunRequestSubjects(space)],
+    subscribe: [...base.subscribe, ...servedRunRequestSubjects(space), servedRunCancelRequestSubject(space)],
   };
 }
 
@@ -179,6 +179,11 @@ export function servedRunRequestSubjects(space: string): string[] {
     `${p}.ep.inst.${m}.*.run-answer.>`,
     `${p}.ep.one.${m}.run-answer.>`,
   ];
+}
+
+/** Cancellation observes only the issued untargeted exact-instance rail. */
+export function servedRunCancelRequestSubject(space: string): string {
+  return `${spacePrefix(space)}.ep.v1.inst.${endpointToken("manager")}.*.run-cancel.>`;
 }
 
 export { remoteManagerRegistrationProof };

@@ -112,6 +112,7 @@ export type WorkerRunFailed = {
  * variant requires its class's fields, so the host rebuilds it with nothing to default.
  */
 export type WorkerFailure =
+  | { readonly class: "cancelled"; readonly reason: string }
   | { readonly class: "released"; readonly reason: string }
   | { readonly class: "held"; readonly step: string; readonly reason: string; readonly pending: boolean }
   // `kind` is what failure handling branches on; `detail` is a recorded value, fenced at its throw site.
@@ -134,7 +135,14 @@ export interface WorkerRun {
    * is already in flight, and ends through its own cancellation path with the journal consistent.
    */
   stop(reason: string): void;
+  /** Cancel the root, including effects already parked on the bridge. First reason wins. */
+  cancel(reason: string): void;
 }
+
+/** The host-to-worker control rail is separate from the effect bridge and stop buffer. */
+export type WorkerRootControl =
+  | { readonly kind: "root-start"; readonly reason: string | null }
+  | { readonly kind: "root-cancel"; readonly reason: string };
 
 /**
  * What a stop with nothing to say arrives as.
@@ -240,9 +248,16 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
     throw e;
   }
 
+  let cancellationReason: string | undefined;
+  let ready = false;
   const done = new Promise<WorkerRunResult>((resolve, reject) => {
     let answered = false;
-    worker.on("message", (m: { kind: "log"; line: { scope: string; values: readonly unknown[] } } | { kind: "result"; result: WorkerRunResult }) => {
+    worker.on("message", (m: { kind: "ready" } | { kind: "log"; line: { scope: string; values: readonly unknown[] } } | { kind: "result"; result: WorkerRunResult }) => {
+      if (m.kind === "ready" && !ready) {
+        ready = true;
+        worker.postMessage({ kind: "root-start", reason: cancellationReason ?? null } satisfies WorkerRootControl);
+        return;
+      }
       if (m.kind === "log") {
         options.onLog?.(m.line);
         return;
@@ -271,5 +286,13 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
     void worker.terminate().finally(() => host?.close());
   });
 
-  return { done, stop: (reason) => publishStop(stop, reason) };
+  return {
+    done,
+    stop: (reason) => publishStop(stop, reason),
+    cancel: (reason) => {
+      if (cancellationReason !== undefined) return;
+      cancellationReason = reason;
+      if (ready) worker.postMessage({ kind: "root-cancel", reason } satisfies WorkerRootControl);
+    },
+  };
 }

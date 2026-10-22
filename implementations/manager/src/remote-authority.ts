@@ -4,6 +4,8 @@ import {
   admissionSnapshot,
   revocationSnapshot,
   type RemoteRunRevokeRequest,
+  type RemoteRunCancelRequest,
+  type RemoteRunCancelResult,
   type RemoteRunRevokeResult,
   accountFromCreds,
   managedRetirementOpId,
@@ -156,8 +158,9 @@ export function remoteRunHosting(args: {
   requestRunSubmission?: (request: import("@cotal-ai/core").RemoteRunSubmissionRequest) => Promise<import("@cotal-ai/core").RemoteRunSubmissionResult>;
   requestRunAttempt: (request: RemoteRunAttemptRequest) => Promise<RemoteRunAttemptResult>;
   requestRunRevoke?: (request: RemoteRunRevokeRequest) => Promise<RemoteRunRevokeResult>;
+  requestRunCancel?: (request: RemoteRunCancelRequest) => Promise<RemoteRunCancelResult>;
   call: (request: RemoteManagerAuthorityRequest) => Promise<RemoteManagerAuthorityMaterial>;
-}): Required<Pick<RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">> & Pick<RunHostingContext, "submitRun"> {
+}): Required<Pick<RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">> & Pick<RunHostingContext, "submitRun" | "cancelRun"> {
   const { state, owner, registrationProof, accountPublicKey, processEpoch } = args;
   return {
     submitRun: async ({ subject }) => {
@@ -171,6 +174,29 @@ export function remoteRunHosting(args: {
         || r.requestId !== request.requestId || typeof r.winner !== "boolean" || !r.view)
         throw new Error("invalid keyed submission issuer response");
       return { ...r, ...(r.admission ? { admission: admissionSnapshot(r.admission) } : {}) };
+    },
+    cancelRun: async ({ stage, subject, cancel }) => {
+      if (!args.requestRunCancel) throw new Error("issuing host does not implement observed run cancellation");
+      const request: RemoteRunCancelRequest = { ...runRequestBase(state, registrationProof, accountPublicKey, processEpoch), kind: "manager-run-cancel", stage, subject, cancel };
+      const result = await args.requestRunCancel(request);
+      exactKeys(result, ["v", "kind", "requestId", "runId", "stage", stage === "inspect" ? "authority" : "result"], "manager run cancel");
+      if (result.v !== 1 || result.kind !== request.kind || result.requestId !== request.requestId || result.runId !== cancel.runId || result.stage !== stage)
+        throw new Error("manager run cancel returned different request coordinates");
+      if (result.stage === "inspect") {
+        if (!["original", "owner-interactive", "admin"].includes(result.authority)) throw new Error("manager run cancel returned an unknown authority class");
+        return result;
+      }
+      const answer = result.result;
+      if (answer?.kind === "committed") {
+        exactKeys(answer, ["kind", "outcome", "revocation"], "manager run cancel committed");
+        if (answer.outcome !== "created" && answer.outcome !== "existed") throw new Error("manager run cancel returned an unknown write outcome");
+        return { ...result, result: { ...answer, revocation: revocationSnapshot(answer.revocation, cancel.runId) } };
+      }
+      exactKeys(answer, ["kind", "code"], "manager run cancel refusal");
+      if ((answer.kind !== "refused-before-dispatch" && answer.kind !== "outcome-unknown")
+        || !["permission-denied", "failed-precondition", "deadline-exceeded", "resource-exhausted", "unavailable"].includes(answer.code))
+        throw new Error("manager run cancel returned an unknown dispatch disposition");
+      return result;
     },
     revokeRun: async (revoke) => {
       if (args.requestRunRevoke === undefined) throw new Error("the issuing host supplies no closed run revoke request");

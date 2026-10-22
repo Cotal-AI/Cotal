@@ -333,6 +333,32 @@ without an issuance is refused with `permission-denied` and a detail naming the 
 whose caller had no channels can still sleep, checkpoint and turn agents; its `wait` on a channel
 is refused at the effect.
 
+The manager endpoint serves `run-cancel` with `{ runId, reason }`. Call it through an issued
+credential on a handle pinned to the manager instance, retaining the Describe-derived epoch bind.
+The reason must encode to 1 through 512 UTF-8 bytes, and the request deadline is at most 30 seconds.
+There is no new CLI or MCP convenience verb in this change.
+
+A signer-holding manager accepts the original caller's owner, actor and lifecycle under a live
+issued generation. On a signerless manager, the issuing host also accepts an interactive actor of
+that owner with `run`, or an interactive admin. It must observe the caller's request itself before
+a manager can forward it. Managed-agent names and platform assignments do not grant this authority.
+
+The reply separates the durable marker from the local observation: `stopped` means a local drive
+outcome was observed; `stop-requested` means it was not observed within the request budget.
+`launch-abandoned`, `terminal` and `not-driven-here` describe their respective local states.
+`duplicate` is false for a confirmed new marker, true for a confirmed existing one, and null after
+an unknown write followed by marker readback. Preserve unknown outcomes. Neither a marker nor a
+reply proves process cleanup or that another host stopped. Revoked runs remain readable through
+`run status`, but cannot receive new drive or answering authority.
+
+Embedding hosts can call a drive's `cancel(reason)` handle to signal cooperative root cancellation.
+The language's `RootCancellation` source carries the first reason through the walker and compiled
+worker to in-flight effect contexts. It is process-local and carries no authorization. The host must
+establish permission and observe the durable revocation marker before calling it. A root cancellation
+ends the drive as `released`; the status projection can lag if its write fails. Read the recorded
+state separately. A completion or failure that wins the race keeps its actual outcome. It does not stop an agent process or preempt already-pulled tool work.
+`release(reason)` remains a separate next-effect-boundary request, used for host shutdown.
+
 `cotal run revoke <runId> --local --by <who> --reason <text>` writes the run's revocation marker
 from the project folder. An empty `--by` or `--reason` is refused before anything is written. The
 admission itself is never rewritten. Every host reads the marker

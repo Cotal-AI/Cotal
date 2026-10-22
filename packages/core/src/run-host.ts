@@ -91,6 +91,8 @@ export type RunHostOutcome =
 export interface RunHostDrive {
   readonly done: Promise<RunHostOutcome>;
   release(reason: string): void;
+  /** Cooperatively cancel the root and in-flight effect contexts after the host establishes authority. */
+  cancel(reason: string): void;
 }
 
 /** The READ half of an answer: which pause, addressed by its step. */

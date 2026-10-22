@@ -1,5 +1,5 @@
 import type { RunHostPlanes, RunAdmissionView } from "@cotal-ai/core";
-import { digest, type EffectContext, type EffectHandler, type JournalEntry } from "@cotal-ai/lang";
+import { digest, type EffectContext, type EffectHandler, type JournalEntry, type RootCancellationSource } from "@cotal-ai/lang";
 import { MeshHandler, type MeshHandlerBinding } from "./mesh-handler.js";
 import { createRunPauseHost } from "./run-pause-host.js";
 import { createRunWaitHost } from "./run-wait-host.js";
@@ -20,10 +20,11 @@ export function createRunEffectHost(
   binding: MeshHandlerBinding,
   authority: RunScopeAuthority,
   admission: () => Promise<RunAdmissionView>,
+  cancellation?: RootCancellationSource,
 ): RunEffectHost {
   const pinned = structuredClone(binding);
   const pauses = createRunPauseHost(broker, pinned, authority);
-  const waits = createRunWaitHost(broker, authority, admission);
+  const waits = createRunWaitHost(broker, authority, admission, cancellation);
   const handler = new MeshHandler(broker.nc, broker.kv, broker.js, broker.jsm, pinned, {
     async awaitSettle(ref) {
       for (;;) {
@@ -32,7 +33,7 @@ export function createRunEffectHost(
         await delay(2_000);
       }
     },
-  }, Date.now, { pauses, waits, authority, admission });
+  }, Date.now, { pauses, waits, authority, admission, ...(cancellation !== undefined ? { cancellation } : {}) });
 
   async function dispatch<R, T>(kind: string, req: R, ctx: EffectContext, call: (request: R, context: EffectContext) => Promise<T>): Promise<T> {
     const request = structuredClone(req);

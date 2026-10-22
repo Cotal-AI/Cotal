@@ -570,7 +570,7 @@ export interface ManagerOptions {
     agentBearerExchangeUrl: string;
     /** The closed host run callbacks. Workflow runs are hosted only when ALL are supplied; a
      * partial set refuses at construction, and absent means run-start/resume stay unavailable. */
-    runHosting?: Pick<import("./run-hosting.js").RunHostingContext, "admitRun" | "submitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">;
+    runHosting?: Pick<import("./run-hosting.js").RunHostingContext, "admitRun" | "submitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun" | "cancelRun">;
     /** Host-owned execution of one admitted delegated user intent (SPEC 13.16). Absent: a delegated
      * spawn and a delegated retirement are refused before any request. */
     executeDelegatedUserIntent?: (
@@ -2171,6 +2171,7 @@ export class Manager {
         admitRun: remoteRuns.admitRun,
         submitRun: remoteRuns.submitRun,
         revokeRun: remoteRuns.revokeRun,
+        cancelRun: remoteRuns.cancelRun,
         issueAttempt: remoteRuns.issueAttempt,
         issueOperator: remoteRuns.issueOperator,
         renewRun: remoteRuns.renewRun,
@@ -4091,6 +4092,11 @@ export class Manager {
       runStartKeyed: (ctx) => this.serveGated(ctx, () => this.runHost().startKeyed(ctx, args(ctx) as { source: string; file?: string; timeout?: string })),
       runSubmissionStatus: (ctx) => this.serveGated(ctx, () => this.runHost().submissionStatus(ctx, String(args(ctx).submissionId))),
       runResume: (ctx) => this.serveGated(ctx, () => this.runHost().resume(args(ctx) as { runId: string; timeout?: string }, ctx)),
+      runCancel: (ctx) => {
+        const host = this.runHost();
+        host.validateCancellation(ctx, args(ctx));
+        return this.serveGated(ctx, () => host.cancel(ctx, args(ctx)));
+      },
       runAnswer: (ctx) => this.serveGated(ctx, () => {
         const input = args(ctx) as { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string; amend?: boolean };
         if (input.amend === true)

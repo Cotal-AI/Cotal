@@ -103,6 +103,7 @@ import {
   type AskRequest,
   type AgentHandleValue,
   type CancelSignal,
+  type RootCancellationSource,
   type ChannelHandleValue,
   type ConclaveRequest,
   type WaitRequest,
@@ -139,6 +140,7 @@ export interface RunMeshServices {
    * channel reads it mediates. A mediated run with no reader admits no channel effect.
    */
   readonly admission: () => Promise<RunAdmissionView>;
+  readonly cancellation?: RootCancellationSource;
 }
 
 /** Who this handler acts as, and where. All of it is the DRIVER's identity, not the program's. */
@@ -2240,6 +2242,8 @@ export class MeshHandler {
       // this handler runs as: that principal holds no chat row and would deny every conclave the
       // starting caller may in fact hold.
       const view = await this.services.admission();
+      if (view.revoked !== undefined && this.services.cancellation?.reason !== undefined)
+        throw new Cancelled(this.services.cancellation.reason);
       assertAdmittedPublish(view, plan.channel, view.admission.caller);
       assertAdmittedSubscribe(view, plan.channel);
     }

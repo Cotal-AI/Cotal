@@ -81,6 +81,8 @@ export {
 
 export {
   Cancelled,
+  RootCancellation,
+  type RootCancellationSource,
   RunReleased,
   EffectRefused,
   RunHeld,

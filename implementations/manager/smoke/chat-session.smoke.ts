@@ -138,7 +138,7 @@ console.log("4. the served contract");
   const shipped = managerShippedSurface();
   const doc = managerClusterDocument();
   const rows = doc.commands.filter((c) => c.name.startsWith("chat-session-"));
-  check("revision 35 serves chat-session-open and chat-session-retire", shipped.revision === 35 && shipped.names.includes("chat-session-open") && shipped.names.includes("chat-session-retire"));
+  check("revision 36 serves chat-session-open and chat-session-retire", shipped.revision === 36 && shipped.names.includes("chat-session-open") && shipped.names.includes("chat-session-retire"));
   check("both rows are untargeted, ephemeral and in the manager.chat class", rows.length === 2 && rows.every((r) => r.targeted === false && r.class === "ephemeral" && r.capability === "manager.chat" && r.modes === undefined), rows);
   const open = MANAGER_CONTRACTS["chat-session-open"];
   const retire = MANAGER_CONTRACTS["chat-session-retire"];

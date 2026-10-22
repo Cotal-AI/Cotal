@@ -227,6 +227,10 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteRunAttemptRequest;
   }): Promise<RemoteRunAttemptResult>;
+  /** Body-bound observed cancellation, separate from the holder's operator revoke. */
+  requestRemoteRunCancel?(opts: { store: SecretStore; dir: string;
+    request: import("./remote-manager-authority.js").RemoteRunCancelRequest;
+  }): Promise<import("./remote-manager-authority.js").RemoteRunCancelResult>;
   /** Revoke through the issuing host under the authenticated owner's fresh ledger grant. */
   requestRemoteRunRevoke?(opts: {
     store: SecretStore;

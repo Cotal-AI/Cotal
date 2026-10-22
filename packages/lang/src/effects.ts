@@ -398,6 +398,33 @@ export function applyCheckpointPolicy(
   );
 }
 
+/** A host's latched root cancellation. Subscriptions replay a latched reason and return a remover. */
+export interface RootCancellationSource {
+  readonly reason: string | undefined;
+  subscribe(fn: (reason: string) => void): () => void;
+}
+
+/** Process-local cancellation only. It carries no admission or permission. */
+export class RootCancellation implements RootCancellationSource {
+  private why: string | undefined;
+  private readonly listeners = new Set<(reason: string) => void>();
+
+  get reason(): string | undefined { return this.why; }
+
+  cancel(reason: string): void {
+    if (this.why !== undefined) return;
+    this.why = reason;
+    for (const listener of this.listeners) listener(reason);
+    this.listeners.clear();
+  }
+
+  subscribe(fn: (reason: string) => void): () => void {
+    if (this.why !== undefined) fn(this.why);
+    else this.listeners.add(fn);
+    return () => { this.listeners.delete(fn); };
+  }
+}
+
 export interface CancelSignal {
   readonly cancelled: boolean;
   readonly reason?: string;

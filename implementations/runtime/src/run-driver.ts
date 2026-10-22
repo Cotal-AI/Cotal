@@ -53,6 +53,8 @@ import {
   resume as resumeProgram,
   RunReleased,
   RunHeld,
+  Cancelled,
+  type RootCancellationSource,
   resolvePins,
   RuntimeFault,
   ENGINE_LANGUAGE_VERSION,
@@ -85,6 +87,7 @@ interface HostedEngineRequest {
     readonly runId: string;
     readonly handler: EffectHandler;
     readonly shouldStop: () => string | undefined;
+    readonly cancellation?: RootCancellationSource;
     readonly pins: RunPins;
     readonly seed?: string;
     readonly file?: string;
@@ -111,6 +114,7 @@ const hostedEngineRun = (r: HostedEngineRequest): Promise<RunResult> =>
     entries: r.entries,
     ...(r.resultBytes !== undefined ? { resultBytes: r.resultBytes } : {}),
     shouldStop: r.options.shouldStop,
+    ...(r.options.cancellation !== undefined ? { cancellation: r.options.cancellation } : {}),
     ...(r.options.file !== undefined ? { file: r.options.file } : {}),
     ...(r.options.seed !== undefined ? { seed: r.options.seed } : {}),
     ...(r.options.effectCeiling !== undefined ? { effectCeiling: r.options.effectCeiling } : {}),
@@ -297,6 +301,8 @@ export interface DriveRequest {
   readonly workExpiry?: number;
   /** An operator's pause, honoured at the next effect boundary. */
   readonly pause?: PauseToken;
+  /** Root cancellation established by the hosting manager after observing its durable marker. */
+  readonly cancellation?: RootCancellationSource;
   /**
    * Repair external state bound to the PREVIOUS holder, once this driver holds the run and before
    * the program is resumed.
@@ -632,6 +638,7 @@ async function drive(
     runId: req.runId,
     handler: req.handler,
     shouldStop,
+    ...(req.cancellation !== undefined ? { cancellation: req.cancellation } : {}),
     pins,
     ...(req.seed !== undefined ? { seed: req.seed } : {}),
     ...(req.file !== undefined ? { file: req.file } : {}),
@@ -727,7 +734,7 @@ async function drive(
     }
     // The host stopping is the same kind of answer: this driver no longer holds the run, and the
     // program has neither failed nor finished.
-    if (e instanceof RunReleased) {
+    if (e instanceof RunReleased || (e instanceof Cancelled && req.cancellation?.reason !== undefined)) {
       await noteFinal(req, "released", appender.journalHigh, specRevision, statusRevision);
       return { status: "released", reason: e };
     }
