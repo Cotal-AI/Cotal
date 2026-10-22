@@ -23,6 +23,22 @@ import * as remote from "../../manager/src/remote-authority.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 import "../../runtime/src/index.js";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(r => { resolve = r; });
+  return { promise, resolve };
+}
+async function bounded<T>(promise: Promise<T>, name: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${name} did not arrive`)), 10000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+let launchHold: { entered: ReturnType<typeof deferred<string>>; release: ReturnType<typeof deferred<void>>;
+  marker: ReturnType<typeof deferred<void>>; startSettled: ReturnType<typeof deferred<void>>;
+  beforeReply: boolean; runId?: string } | undefined;
 let passed = 0;
 async function cell(name: string, check: () => Promise<void>) {
   await check();
@@ -131,10 +147,27 @@ try {
     },
     runHosting: remote.remoteRunHosting({ state, owner, registrationProof: proof, accountPublicKey: account.accountPublicKey, processEpoch: registered.processEpoch,
       requestRunAdmission: request => post<RemoteRunAdmissionResult>("/manager-service-authority", { idpToken, request }),
-      requestRunAttempt: request => post<RemoteRunAttemptResult>("/manager-service-authority", { idpToken, request }),
+      requestRunAttempt: async request => {
+        const result = await post<RemoteRunAttemptResult>("/manager-service-authority", { idpToken, request });
+        const hold = launchHold;
+        if (request.attempt && hold) {
+          hold.runId = request.attempt.runId;
+          hold.entered.resolve(request.attempt.runId);
+          await hold.release.promise;
+        }
+        return result;
+      },
       requestRunCancel: async request => {
         stages.push({ stage: request.stage, runId: request.cancel.runId });
         const result = await post<RemoteRunCancelResult>("/manager-service-authority", { idpToken, request });
+        const hold = launchHold;
+        if (result.stage === "commit" && result.result.kind === "committed" && hold?.runId === request.cancel.runId) {
+          if (hold.beforeReply) {
+            hold.release.resolve();
+            await bounded(hold.startSettled.promise, "start response after pending cancellation");
+          }
+          hold.marker.resolve();
+        }
         if (request.stage === "commit" && loseCommitReply) {
           loseCommitReply = false;
           throw new Error("fixture loses the issuer reply after the real HTTP commit");
@@ -157,6 +190,9 @@ try {
     assert.equal(firstResult.duplicate, false);
     assert.deepEqual(stages.filter(s => s.runId === firstRun).map(s => s.stage), ["inspect", "commit"]);
     const final = await status(original, firstRun, "released");
+    console.log(`status marker observation: ${JSON.stringify({ recordedState: final.status?.state,
+      hasRevoked: Object.hasOwn(final, "revoked"), hasUnreadable: Object.hasOwn(final, "revocationUnreadable"),
+      cancellationObservedMarker: firstResult.revocation !== undefined })}`);
     assert.ok(!final.journal.some(r => r.kind === "step" && r.step.includes("log")));
   });
   await cell("fresh duplicate keeps the first marker", async () => {
@@ -224,6 +260,41 @@ try {
     assert.equal(result.revocation, undefined);
     assert.equal(result.duplicate, false);
     assert.deepEqual(stages.filter(s => s.runId === runId).map(s => s.stage), ["inspect"]);
+  });
+  for (const beforeReply of [false, true]) await cell(`admitted launch abandons ${beforeReply ? "before" : "after"} marker reply without creating a drive`, async () => {
+    const hold = { entered: deferred<string>(), release: deferred<void>(), marker: deferred<void>(), startSettled: deferred<void>(), beforeReply };
+    launchHold = hold;
+    const starting = call(original, "run-start", { source: 'await checkpoint("never-started", "Await input");' })
+      .then(value => { hold.startSettled.resolve(); return { status: "fulfilled" as const, value }; },
+        reason => { hold.startSettled.resolve(); return { status: "rejected" as const, reason }; });
+    try {
+      const runId = await bounded(hold.entered.promise, "actual attempt issuance");
+      const before = await call(original, "run-status", { runId });
+      assert.equal(before.ok, false);
+      assert.equal(before.error?.code, "not-found", "no drive has created a run record yet");
+      const cancelling = call(original, "run-cancel", { runId, reason: "cancel admitted launch" });
+      await bounded(hold.marker.promise, "actual issuer marker commit");
+      hold.release.resolve();
+      const reply = await cancelling;
+      assert.ok(reply.ok, reply.error?.message);
+      const result = reply.data as RunCancelResult;
+      assert.equal(result.observed.phase, "launch-abandoned");
+      assert.equal(result.observed.driveOutcome, undefined);
+      assert.equal(result.duplicate, false);
+      const startResult = await starting;
+      assert.equal(startResult.status, "fulfilled");
+      if (startResult.status === "fulfilled") {
+        assert.equal(startResult.value.ok, false);
+        assert.equal(startResult.value.error?.code, "failed-precondition");
+      }
+      const after = await call(original, "run-status", { runId });
+      assert.equal(after.ok, false);
+      assert.equal(after.error?.code, "not-found", "cancelled launch never creates a run record");
+    } finally {
+      hold.release.resolve();
+      launchHold = undefined;
+      await starting;
+    }
   });
 } finally {
   await manager?.stop();
