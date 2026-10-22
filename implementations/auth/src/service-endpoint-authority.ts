@@ -224,6 +224,7 @@ export async function answerServiceAuthority(door: ServiceAuthorityDoor, request
       target: target.kind === "instance" ? { kind: "instance" } : { kind: "operation", operation: target.operation as ServiceServeOperation, engineRequestId: engineRequestId(target.operation, target.requestId) } });
     if (answer.kind === "status") return status(answer.status);
     if (answer.kind === "not-found") return deny("not-found");
+    if (answer.kind === "denied") return deny(answer.reason);
     if (answer.kind === "unavailable") return unknown(answer.detail);
     // A register with no intent answers from its proposal-phase operation record.
     const operationId = serviceHostOperationId(door.space, engineRequestId("register", (target as { requestId: string }).requestId));

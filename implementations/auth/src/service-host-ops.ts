@@ -617,6 +617,8 @@ export type ServiceStatusAnswer =
   | { kind: "status"; status: ServiceAuthorityStatus }
   /** A register with no intent: its proposal-phase operation record answers. */
   | { kind: "proposal-phase" }
+  /** An owner reader without an interactive row. */
+  | { kind: "denied"; reason: "permission-denied" }
   | { kind: "not-found" }
   | { kind: "unavailable"; detail: string };
 export interface ServiceRegisterRequest {
@@ -726,9 +728,10 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     try {
       const opened = openServiceCustodyHost({ registry: effect.registry, hold: opts.hold, accountPublicKey, writes: keys }), host = opened.host;
       if (host.space !== space) throw new EpEnvelopeError("permission-denied", "the effect registry belongs to another space");
-      // A native registration writes through its own client, not the custody writer: a trip also
-      // closes its connection, so none of its requests is issued after the fence.
-      const native = target.operation === "serve" && target.serve === "register";
+      // A native registration and a ready status write through their own client, not the custody
+      // writer: a trip also closes their connection, so none of their requests is issued after the
+      // fence. A request already issued stays unknown.
+      const native = target.operation === "serve" && (target.serve === "register" || target.serve === "ready");
       const trip = (reason: string) => { opened.trip(reason); if (native) void effect.close().catch(() => {}); };
       live.add(trip);
       if (tripped !== undefined) trip(tripped);
@@ -1526,8 +1529,10 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
   }
   /** A witness is a public coordinate: it must name this selector, owner, actor and lifecycle. */
   const namesBinding = (w: ServiceRegistrationWitness, b: ServiceAssignmentBinding) =>
-    w.accountPublicKey === accountPublicKey && w.space === space && w.endpoint === b.endpoint && w.instanceId === b.instanceId
-    && w.principal.owner === b.owner && w.principal.actor === serviceEndpointActor(b) && w.principal.lifecycleUid === b.lifecycleUid;
+    namesSelector(w, b) && w.principal.actor === serviceEndpointActor(b) && w.principal.lifecycleUid === b.lifecycleUid;
+  /** The part of {@link namesBinding} a selector alone decides, before anything is read. */
+  const namesSelector = (w: ServiceRegistrationWitness, s: { owner: string; endpoint: string; instanceId: string }) =>
+    w.accountPublicKey === accountPublicKey && w.space === space && w.endpoint === s.endpoint && w.instanceId === s.instanceId && w.principal.owner === s.owner;
   /** The witness of a gate's current registration stamp, or undefined when the gate has none. A stamp
    *  whose coordinates disagree with the gate's is inconsistent and holds. */
   function stampWitness(ctx: Ctx, b: ServiceAssignmentBinding, row: EndpointRow): ServiceRegistrationWitness | undefined {
@@ -1719,11 +1724,14 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     const a = g.row.serviceAuthority, pending = a.pendingRegistration;
     if (a.activationIssued) return deniedServe("registration-active");
     const resuming = g.row.state === "frozen" && pending?.operationId === id && pending.requestId === req.requestId && pending.requestDigest === req.requestDigest;
+    const expected = req.witness === null ? undefined : serviceWitnessDigest(req.witness);
+    const expectationHolds = (row: EndpointRow) => {
+      const current = stampWitness(ctx, b.binding, row);
+      return current === undefined ? expected === undefined : serviceWitnessDigest(current) === expected;
+    };
     if (!resuming) {
       if (g.row.state !== "open") return deniedServe("registration-pending");
-      const current = stampWitness(ctx, b.binding, g.row);
-      const expected = req.witness === null ? undefined : serviceWitnessDigest(req.witness);
-      if ((current === undefined) !== (expected === undefined) || (current !== undefined && serviceWitnessDigest(current) !== expected)) return deniedServe("conflict");
+      if (!expectationHolds(g.row)) return deniedServe("conflict");
       if (!serviceGateApprovalLive(a, seconds(Date.now()))) return deniedServe("expired");
     }
     if (inv.contract === undefined) return held("unavailable", ctx.step, "the effect connection has no contract store");
@@ -1736,13 +1744,28 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     ctx.step = "R-register";
     const stores = registryStores(inv.h.registry), artifacts = new Map(r.artifacts.map((v) => [contractDigest(v), v] as const));
     // A service family is empty before activation, so the barrier keeps no repair cursor.
-    const { progress: _progress, ...barrier } = endpointRegistrationBarrier(stores.authKv, space,
+    const { progress: _progress, ...observed } = endpointRegistrationBarrier(stores.authKv, space,
       { endpoint: b.binding.endpoint, instanceId: b.binding.instanceId, opId: id, serviceRegistration: { requestId: req.requestId, requestDigest: req.requestDigest } });
     void _progress;
+    // The barrier freezes the gate revision it observes after the publishes above, and the checks
+    // ran on an earlier read. The expected witness is checked again on exactly the revision being
+    // frozen: a gate that moved is a definite refusal, with nothing frozen or written.
+    let refusal: string | undefined;
+    const barrier = resuming ? observed : { ...observed, freeze: async (revision: number) => {
+      const now = await servedGate(ctx, b);
+      if (now.kind === "revoked") refusal = "approval-revoked";
+      else if (now.revision !== revision || now.row.state !== "open" || !expectationHolds(now.row)) refusal = "conflict";
+      return refusal === undefined ? await observed.freeze(revision) : null;
+    } };
     await readyBefore(ctx);
-    await native(ctx, () => registerServiceInstance(stores.recordsKv, { space, instanceId: b.binding.instanceId, registrant: { owner: b.binding.owner },
-      spec: { endpoint: b.binding.endpoint, owner: b.binding.owner, clusterDigests: [...r.clusterDigests], protocol: { v: 1 } },
-      authority: nativeServiceNameAuthority(inv.h.registry, { space, accountPublicKey }), barrier, readClusterArtifact: (d) => artifacts.get(d) }));
+    try {
+      await native(ctx, () => registerServiceInstance(stores.recordsKv, { space, instanceId: b.binding.instanceId, registrant: { owner: b.binding.owner },
+        spec: { endpoint: b.binding.endpoint, owner: b.binding.owner, clusterDigests: [...r.clusterDigests], protocol: { v: 1 } },
+        authority: nativeServiceNameAuthority(inv.h.registry, { space, accountPublicKey }), barrier, readClusterArtifact: (d) => artifacts.get(d) }));
+    } catch (err) {
+      if (refusal !== undefined && err instanceof Held) return deniedServe(refusal);
+      throw err;
+    }
     await readyAfter(ctx);
     ctx.step = "R-confirm";
     const after = await recovered(await servedGate(ctx, b));
@@ -1809,6 +1832,10 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
 
   async function serveStatus(q: ServiceStatusQuery): Promise<ServiceStatusAnswer> {
     if (tripped !== undefined || closed) return { kind: "unavailable", detail: "the service host is fenced or closing" };
+    // An owner reads only while it holds an interactive row, as for every owner request; a service
+    // reads only its own selector. Both are refused before any read.
+    if (q.reader.kind === "owner" && !interactive(q.owner)) return { kind: "denied", reason: "permission-denied" };
+    if (q.reader.kind === "service" && !namesSelector(q.reader.witness, q)) return { kind: "not-found" };
     try { return await statusOf(discoveryCtx("T-read"), q); }
     catch (err) { if (err instanceof Held) return { kind: "unavailable", detail: `status held (${err.reason} at ${err.step})` }; throw err; }
   }
@@ -1831,12 +1858,14 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     }
     const b = await bindingOf(ctx, q.owner, q.endpoint, q.instanceId);
     if (b.state === "absent") return intent === undefined ? { kind: "not-found" } : unavailable("the intent's assignment is not readable");
+    // A service reader's own incarnation before any precedence rule. A fenced assignment keeps no
+    // lifecycle, so only the selector check above applies to it.
+    if (b.state === "bound" && q.reader.kind === "service" && !namesBinding(q.reader.witness, b.binding)) return { kind: "not-found" };
     // Rule 3: cancellation and revocation first.
     if (b.state === "fenced") return status({ state: "revoking", operationId: b.row.cancel.operationId, phase: "deny-new-landed" });
     const g = await endpoint(ctx, b);
     if (b.row.cancel !== null) return status({ state: "revoking", operationId: b.row.cancel.operationId, phase: g.kind === "revoked" ? "deny-new-landed" : "deny-new-pending" });
     if (g.kind === "revoked" || g.kind === "foreign") return unavailable(`the endpoint gate is ${g.kind} without a bound cancel`);
-    if (q.reader.kind === "service" && !namesBinding(q.reader.witness, b.binding)) return { kind: "not-found" };
     if (g.kind === "absent" || g.kind === "pending") {
       if (intent !== undefined) return unavailable("the intent's approval is not readable");
       return status({ state: "registering", operationId: b.row.creation.operationId, phase: "approving" });
