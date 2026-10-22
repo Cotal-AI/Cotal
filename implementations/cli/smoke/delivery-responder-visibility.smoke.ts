@@ -30,6 +30,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { DEFAULT_SPACE } from "@cotal-ai/core";
 import { emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { canonicalLocalProcessPath, DELIVERY_PIDFILE } from "@cotal-ai/workspace";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix } from "../src/lib/delivery-responder.js";
@@ -45,6 +46,8 @@ mkdirSync(join(root, ".cotal"), { recursive: true });
 // A folder that is not the mesh's project, as on a manager host apart from the broker (#1576).
 const elsewhere = join(home, "elsewhere");
 mkdirSync(elsewhere);
+// A machine with no registration at all, where `--server` alone names the broker's default space.
+const bareHome = mkdtempSync(join(tmpdir(), "cotal-responder-bare-home-"));
 // The record a delivery daemon writes for this space. Its name binds the folder to the space, so
 // status reads it as this space's process record.
 const DELIVERY_PID = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root, space: SPACE });
@@ -73,11 +76,13 @@ async function portOpen(port: number): Promise<boolean> {
     sock.setTimeout(250, () => done(false));
   });
 }
-function cliIn(cwd: string, ...args: string[]): { status: number | null; text: string } {
-  const r = spawnSync(TSX, [CLI, ...args], { cwd, env, encoding: "utf8", timeout: 60_000 });
+function cliIn(cwd: string, cmdEnv: NodeJS.ProcessEnv, ...args: string[]): { status: number | null; text: string } {
+  const r = spawnSync(TSX, [CLI, ...args], { cwd, env: cmdEnv, encoding: "utf8", timeout: 60_000 });
   return { status: r.status, text: strip(`${r.stdout ?? ""}${r.stderr ?? ""}`) };
 }
-const cli = (...args: string[]) => cliIn(root, ...args);
+const cli = (...args: string[]) => cliIn(root, env, ...args);
+const bareEnv = { ...env, COTAL_HOME: bareHome, XDG_CONFIG_HOME: join(bareHome, "xdg") };
+const unregisteredStatus = () => cliIn(elsewhere, bareEnv, "status", "--server", server);
 async function stop(child: ChildProcess | undefined): Promise<void> {
   if (!child?.pid) return;
   try { child.kill("SIGTERM"); } catch { /* gone */ }
@@ -98,8 +103,8 @@ function deliveryRow(text: string): string | undefined {
 function componentRow(text: string): string | undefined {
   return text.split("\n").map((l) => l.trim()).find((l) => /^delivery\s+(serving|not-serving|absent|refused|stopped)/.test(l));
 }
-async function startHolder(mode: "claim" | "ready", server: string): Promise<ChildProcess> {
-  const child = spawn(process.execPath, [HOLDER, server, SPACE, mode], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+async function startHolder(mode: "claim" | "ready", server: string, space = SPACE): Promise<ChildProcess> {
+  const child = spawn(process.execPath, [HOLDER, server, space, mode], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
   // OWN every holder. `startHolder` is called more than once and the previous holder is stopped on
   // the normal path, so no release handle is threaded back: an entry for an already-dead child is
   // inert (`killOwnedChild` swallows the kill) and owns no path, while an UNOWNED holder outlives a
@@ -111,13 +116,13 @@ async function startHolder(mode: "claim" | "ready", server: string): Promise<Chi
     child.stdout?.once("data", () => { clearTimeout(t); res(); });
   });
   assert.ok(child.pid, "holder received a pid");
-  writeFileSync(DELIVERY_PID, String(child.pid));
+  if (space === SPACE) writeFileSync(DELIVERY_PID, String(child.pid));
   return child;
 }
 
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
-let broker: ChildProcess | undefined, holder: ChildProcess | undefined;
+let broker: ChildProcess | undefined, holder: ChildProcess | undefined, defaultHolder: ChildProcess | undefined;
 let releaseBroker: () => void = () => {};
 try {
   broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", join(root, "jetstream")], { stdio: "ignore" });
@@ -133,6 +138,7 @@ try {
 
   // ---------- the reported state: lease claimed, responder NOT bound ----------
   holder = await startHolder("claim", server);
+  defaultHolder = await startHolder("claim", server, DEFAULT_SPACE);
   const unboundBare = cli("status", "--space", SPACE, "--server", server);
   const unboundRow = deliveryRow(unboundBare.text);
   check("CELL 1: bare `status` names the UNBOUND responder on the delivery row",
@@ -151,9 +157,12 @@ try {
     /^Delivery responder:\s+● NOT BOUND - no spawn, no retirement, no join until it binds/.test(responderRow(unboundBare.text) ?? ""), unboundBare.text);
   // From a folder that holds none of the mesh's process records, the selected space's row is the
   // only place bare status can say it (#1576's split broker and manager hosts).
-  const unboundElsewhere = cliIn(elsewhere, "status", "--space", SPACE, "--server", server);
+  const unboundElsewhere = cliIn(elsewhere, env, "status", "--space", SPACE, "--server", server);
   check("CELL 1: bare status from another folder has no delivery process row",
     deliveryRow(unboundElsewhere.text) === undefined, unboundElsewhere.text);
+  const unboundUnregistered = unregisteredStatus();
+  check("CELL 1: with no registration, bare status --server names the default space's unbound responder",
+    /^Delivery responder:\s+● NOT BOUND - no spawn, no retirement, no join until it binds/.test(responderRow(unboundUnregistered.text) ?? ""), unboundUnregistered.text);
   check("CELL 1: bare status from another folder still names the unbound responder",
     /^Delivery responder:\s+● NOT BOUND - no spawn, no retirement, no join until it binds/.test(responderRow(unboundElsewhere.text) ?? ""), unboundElsewhere.text);
 
@@ -169,11 +178,14 @@ try {
   // ---------- REFUSE CONTROL: the same fixture, responder BOUND ----------
   await stop(holder);
   holder = undefined;
+  await stop(defaultHolder);
+  defaultHolder = undefined;
   rmSync(DELIVERY_PID, { force: true });
   // The lease bucket has a 10s TTL; a fresh holder must CAS-create, so wait for the claim to expire
   // rather than racing it. Without this wait the `ready` leg would silently measure the old record.
   await sleep(11_000);
   holder = await startHolder("ready", server);
+  defaultHolder = await startHolder("ready", server, DEFAULT_SPACE);
 
   const boundBare = cli("status", "--space", SPACE, "--server", server);
   const boundRow = deliveryRow(boundBare.text);
@@ -183,7 +195,12 @@ try {
     /responder bound/.test(boundRow ?? ""), boundRow);
   check("CELL 2: the two delivery rows DIFFER (this is the 22-hour defect)",
     boundRow !== unboundRow, { unboundRow, boundRow });
-  const boundElsewhere = cliIn(elsewhere, "status", "--space", SPACE, "--server", server);
+  const boundElsewhere = cliIn(elsewhere, env, "status", "--space", SPACE, "--server", server);
+  const boundUnregistered = unregisteredStatus();
+  check("REFUSE CONTROL: with no registration, bare status --server says the default space's responder is bound",
+    /^Delivery responder:\s+● bound$/.test(responderRow(boundUnregistered.text) ?? ""), boundUnregistered.text);
+  await stop(defaultHolder);
+  defaultHolder = undefined;
   check("REFUSE CONTROL: bare status from another folder says the responder is bound",
     /^Delivery responder:\s+● bound$/.test(responderRow(boundElsewhere.text) ?? ""), responderRow(boundElsewhere.text));
 
@@ -279,8 +296,10 @@ try {
   // signal arriving mid-teardown still reaps. `killAndAwaitExit` returns only after exit, which is
   // what keeps the `rmSync` below from racing a broker still flushing JetStream state.
   if (holder) await killAndAwaitExit(holder);
+  if (defaultHolder) await killAndAwaitExit(defaultHolder);
   if (broker) await killAndAwaitExit(broker);
   releaseBroker();
   rmSync(root, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
+  rmSync(bareHome, { recursive: true, force: true });
 }

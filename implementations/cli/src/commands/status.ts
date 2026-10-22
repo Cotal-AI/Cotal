@@ -1227,7 +1227,8 @@ function brokerOverview(r: StatusResult): Section {
 function selectedOverview(r: StatusResult): Section | undefined {
   const s = r.selected;
   if (!s.resolved) return { title: "Selected space", blocks: [{ kind: "lines", lines: [stateCell(s.message, "failed")] }] };
-  if (!r.meshes.items.length && !r.meshes.currentPrepared && r.folder.auth.state === "none" && !r.folder.processes?.some((item) => item.pid !== null)) return undefined;
+  // A broker named with `--server` is reported even when nothing on this machine is registered.
+  if (s.source !== "flag-server" && !r.meshes.items.length && !r.meshes.currentPrepared && r.folder.auth.state === "none" && !r.folder.processes?.some((item) => item.pid !== null)) return undefined;
   const responder = responderText(s.deliveryResponder);
   const rows: [string, Cell][] = [
     ["Broker", s.server ?? stateCell("address unavailable", "failed")],
