@@ -9,7 +9,8 @@
  *
  * Layout under the cotal machine home: `linear/<name>.json` (0600, no secret), plus
  * `linear/<name>.token` when `--token-stdin` stored the token, or `linear/<name>.oauth.json` for an
- * OAuth login. All 0600.
+ * OAuth login. A per-user-auth endpoint served from this machine keeps its request identities in
+ * `linear/serve/<space>--<endpoint>.json`, which holds no secret. All 0600.
  */
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -44,6 +45,13 @@ function accountPath(name: string): string {
 export function storedTokenPath(name: string): string {
   assertAccountName(name);
   return join(linearDir(), `${name}.token`);
+}
+
+/** The request identities of the per-user-auth endpoint `endpoint` in `space`, as this machine
+ *  serves it. Both names are checked by the caller. */
+export function serveStatePath(space: string, endpoint: string): string {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(space)) throw new Error(`space "${space}" cannot name a Linear serve state file`);
+  return join(linearDir(), "serve", `${space}--${endpoint}.json`);
 }
 
 /** Refuse a credential file that another user could read or that is not a regular file. POSIX mode

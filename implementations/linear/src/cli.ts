@@ -1,14 +1,15 @@
 /** Operator frontend over the native Linear client. No request or authority is substituted. */
-import { lstatSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { acquireLock, credsClaims, writeSecretFileCreateOnly, type ParsedArgs, type SpaceAuth } from "@cotal-ai/core";
-import { CommandFailure, recordOperationSpace, assertExternalCredentialExport, getSpaceAuth, hasUserAuthState, inputDisabledByFlag, isCommandFailure, presentationOf, protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource, resolveMeshTarget, resolveNativeServiceTarget, workspaceSecretStore, writeResult, type MeshTarget, type Report } from "@cotal-ai/workspace";
-import { accountMissing, assertAccountName, loadAccount, saveAccount, storedTokenPath } from "./account.js";
+import { acquireLock, credsClaims, mkSecretDir, registry, writeSecretFileAtomic, writeSecretFileCreateOnly, type AuthProvider, type ParsedArgs, type SpaceAuth } from "@cotal-ai/core";
+import { CommandFailure, recordOperationSpace, assertExternalCredentialExport, getSpaceAuth, hasUserAuthState, inputDisabledByFlag, isCommandFailure, presentationOf, protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource, resolveMeshTarget, resolveNativeServiceTarget, userAuthStateDir, workspaceSecretStore, writeResult, type MeshTarget, type Report } from "@cotal-ai/workspace";
+import { accountMissing, assertAccountName, loadAccount, saveAccount, serveStatePath, storedTokenPath } from "./account.js";
 import { loginAccount } from "./oauth.js";
 import { isLinearMode } from "./origin.js";
 import { DEFAULT_LIMITS, LinearUpstream } from "./upstream.js";
 import { emitInventory, emitUpstream } from "./presentation.js";
 import { assertLinearEndpointName, provisionLinearCaller, registerLinearEndpoint, renewalDelayMs, runLinearEndpoint } from "./serve.js";
+import { parseLinearUserAuthKeys, startLinearUserAuthEndpoint, type LinearUserAuthKeyStore } from "./user-auth-serve.js";
 
 export const USAGE = `cotal linear account add <name> --mode <write|readonly> (--token-stdin | --token-file <path>)
 cotal linear account login <name> --mode <write|readonly>
@@ -143,8 +144,8 @@ async function forward(args: ParsedArgs, account: string, operation: string, run
 }
 
 /** The static-auth mesh and the operator's own space authority, or a loud refusal. A per-user-auth
- *  mesh issues endpoint credentials through its remote auth service, which this package has no
- *  client for, so it is refused rather than signed locally. */
+ *  mesh issues endpoint credentials through its remote auth service, so it is refused here rather
+ *  than signed locally; `serve` takes its own per-user-auth path before this. */
 async function staticAuthority(v: Record<string, unknown>, root?: string): Promise<{ target: MeshTarget; auth: SpaceAuth }> {
   const target = resolveMeshTarget(root ?? process.cwd(), { space: v.space as string | undefined, server: v.server as string | undefined, readOnly: true });
   recordOperationSpace(target.space);
@@ -225,6 +226,65 @@ export async function serveLinearAccount(account: string, endpoint: string, v: R
   const err = await handle.closed;
   if (!stopping) {
     console.error(lifecycle ? "the native Linear serve connection closed; no replacement was started" : `the serve connection closed${err ? `: ${err.message}` : ""}`);
+    await stop(1);
+  }
+}
+
+/** Serve on a per-user-auth mesh until SIGINT/SIGTERM, through the space's remote service
+ *  authority and this machine's login. The instance stays registered when serving stops: only its
+ *  owner revokes it, and starting again replays the recorded request identities. Serving does not
+ *  make the endpoint callable; this mesh issues no endpoint caller rows yet. */
+async function serveLinearUserAuth(account: string, endpoint: string, target: MeshTarget): Promise<void> {
+  const space = target.space;
+  recordOperationSpace(space);
+  const ua = target.userAuth;
+  const provider = ua ? registry.resolve<AuthProvider>("auth-provider", ua.provider) : undefined;
+  if (!provider?.serviceEndpointInfo || !provider.serviceEndpointAuthority) fail(`the auth provider of space "${space}" has no service endpoint authority client; nothing was registered`);
+  const store = workspaceSecretStore(target.root), dir = userAuthStateDir(target.root, space);
+  const statePath = serveStatePath(space, endpoint);
+  mkSecretDir(dirname(statePath));
+  const lock = acquireLock(`${statePath}.lock`, { label: "Linear serve state", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another Linear serve process holds this endpoint's request identities", { target: { space } }) });
+  const keys: LinearUserAuthKeyStore = {
+    read: () => (existsSync(statePath) ? parseLinearUserAuthKeys(JSON.parse(readFileSync(statePath, "utf8"))) : undefined),
+    write: (k) => writeSecretFileAtomic(statePath, `${JSON.stringify(k, null, 2)}\n`),
+  };
+  const upstream = new LinearUpstream(accountForRead(account));
+  const quit = async (msg: string): Promise<never> => {
+    await upstream.close();
+    lock.release();
+    fail(msg);
+  };
+  // Read the inventory first, so a broken account never becomes a registered endpoint.
+  const inv = await upstream.inventory().catch((e: unknown) => quit(`the Linear account "${account}" did not answer discovery: ${(e as Error).message}`));
+  const info = await provider!.serviceEndpointInfo!({ store, dir, space }).catch((e: unknown) => quit(`the service authority of space "${space}" did not answer its account metadata: ${(e as Error).message}`));
+  const start = await startLinearUserAuthEndpoint({
+    servers: target.server, space, tls: target.tlsRequired, endpoint, accountPublicKey: info.accountPublicKey, keys,
+    authority: (request, proof) => provider!.serviceEndpointAuthority!({ store, dir, request, ...(proof ? { proof } : {}) }),
+    onEvent: (e) => {
+      if (e.kind === "ready") console.log(`${endpoint} reported ready`);
+      else if (e.kind === "retry") console.error(`${e.operation} was not confirmed (${e.detail}); retrying with the same request identity`);
+      else console.error(`serving stopped: ${e.detail}`);
+    },
+  }, upstream).catch((e: unknown) => quit(`serving ${endpoint} did not start: ${(e as Error).message}; the recorded request identities in ${statePath} are kept for a replay`));
+  if (start.state === "approval-required")
+    return quit(`${endpoint} instance ${start.instanceId} awaits its owner's approval (proposal ${start.proposalId}${start.approvalUrl ? `, ${start.approvalUrl}` : ""}); run this command again after approval to replay the same registration`);
+  if (start.state === "pending")
+    return quit(`the service authority has ${endpoint} ${start.operation} in progress (${start.phase}); run this command again to replay the same request`);
+  const handle = start.handle;
+  console.log(`serving ${handle.endpoint} (instance ${handle.instanceId}, epoch ${handle.epoch}) for Linear account ${account} (${inv.mode}, ${inv.tools.length} tools, inventory ${inv.digest}); agents of this space cannot invoke it until caller issuance exists`);
+  let stopping = false;
+  const stop = async (code: number): Promise<void> => {
+    if (stopping) return;
+    stopping = true;
+    await handle.stop(10_000);
+    lock.release();
+    process.exit(code);
+  };
+  process.once("SIGINT", () => void stop(0));
+  process.once("SIGTERM", () => void stop(0));
+  const err = await handle.closed;
+  if (!stopping) {
+    console.error(`the serve connection closed${err ? `: ${err.message}` : ""}`);
     await stop(1);
   }
 }
@@ -332,7 +392,9 @@ export async function linear(args: ParsedArgs): Promise<void> {
     case "serve": {
       const [account] = rest;
       if (!account || typeof v.endpoint !== "string") fail(USAGE);
-      await serveLinearAccount(account, v.endpoint, v as Record<string, unknown>);
+      const target = resolveMeshTarget(process.cwd(), { space: v.space as string | undefined, server: v.server as string | undefined, readOnly: true });
+      if (target.mode === "user") await serveLinearUserAuth(account, v.endpoint, target);
+      else await serveLinearAccount(account, v.endpoint, v as Record<string, unknown>);
       return;
     }
     case "caller": {

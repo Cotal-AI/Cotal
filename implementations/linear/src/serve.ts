@@ -12,8 +12,8 @@
  *
  * The endpoint name comes from operator configuration and must be a reverse-DNS name in a namespace
  * the operator owns. The name authority authorizes exactly that name for the local owner, nothing
- * else. A per-user-auth mesh is refused: its serve credentials come from the remote issuer, which
- * this package has no client for.
+ * else. A per-user-auth mesh is refused here: its serve material comes from the space's remote
+ * service authority, which `user-auth-serve.ts` uses.
  */
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm, type KV } from "@nats-io/kv";
@@ -81,7 +81,7 @@ export interface LinearEndpointHandle {
   closed: Promise<Error | undefined>;
 }
 
-function within<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+export function within<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
   return Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms).unref())]);
 }
 

@@ -5,7 +5,7 @@
  * returned for the current registration. Revoke and the Describe view stay unsupported. */
 import { createHash, randomBytes } from "node:crypto";
 import {
-  EpEnvelopeError, GOVERNED_TRAIT_URNS, SERVICE_ACCESS_TTL_SECONDS, SERVICE_RENEWAL_TTL_SECONDS, canonicalJson, contractDigest,
+  EpEnvelopeError, GOVERNED_TRAIT_URNS, SERVICE_ACCESS_TTL_SECONDS, SERVICE_RENEWAL_TTL_SECONDS, canonicalJson, compileContract, contractDigest,
   serviceAuthorityRequestDigest, serviceWitnessDigest, verifyClusterManifest, verifyClusterRoot,
   type EpCommandAuthority, type ServiceAuthorityInfo, type ServiceAuthorityRequest, type ServiceAuthorityStatus, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
@@ -50,8 +50,11 @@ export class ServiceRegistrationRefusal extends Error {
 
 /** Compile the submitted closures into the proposal's command surface. Each cluster digest names its
  *  manifest artifact and that manifest's root names the cluster document, both verified by content
- *  digest. Every submitted artifact must belong to a declared closure, and the commands are only what
- *  the verified documents declare. This cut admits ephemeral commands without governed traits only. */
+ *  digest. A declared command's input or output schema closure may travel with them: its manifest at
+ *  the command's digest, its root and its members, compiled under the schema profile to exactly that
+ *  digest. A schema closure that is not submitted must already be in the contract store. Every
+ *  submitted artifact must belong to a declared closure, and the commands are only what the verified
+ *  documents declare. This cut admits ephemeral commands without governed traits only. */
 export function compileServiceRegistration(registration: { clusterDigests: string[]; contractArtifacts: unknown[] }): { clusterDigests: string[]; commands: Command[] } {
   const refuse = (reason: ServiceRegistrationRefusal["reason"], detail: string): never => { throw new ServiceRegistrationRefusal(reason, detail); };
   const byDigest = new Map(registration.contractArtifacts.map((a) => [contractDigest(a), a] as const));
@@ -79,6 +82,19 @@ export function compileServiceRegistration(registration: { clusterDigests: strin
       commands.push({ name: c.name, clusterDigest: closure, class: c.class, targeted: c.targeted, modes: [...(c.modes ?? [])], capability: c.capability,
         inputDigest: c.inputDigest, outputDigest: c.outputDigest, traits: [...(c.traits ?? [])] });
     }
+  }
+  for (const digest of new Set(commands.flatMap((c) => [c.inputDigest, c.outputDigest]))) {
+    const manifest = byDigest.get(digest) as { root?: unknown; members?: unknown } | undefined;
+    if (manifest === undefined) continue;
+    const refs = [manifest.root, ...(Array.isArray(manifest.members) ? manifest.members : [])];
+    if (refs.some((r) => typeof r !== "string" || !byDigest.has(r))) refuse("closure-invalid", `the schema closure ${digest} has no submitted root or member`);
+    try {
+      const members = Object.fromEntries((manifest.members as string[]).map((r) => [r, byDigest.get(r)]));
+      if (compileContract({ root: byDigest.get(manifest.root as string), members }).closureDigest !== digest) throw new Error(`its manifest does not name exactly its root and members`);
+    } catch (e) {
+      return refuse("closure-invalid", `the schema closure ${digest} does not compile: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    for (const r of [digest, ...refs]) used.add(r as string);
   }
   if (used.size !== byDigest.size) refuse("closure-invalid", "an artifact belongs to no declared closure");
   commands.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));

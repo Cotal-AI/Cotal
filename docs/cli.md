@@ -3789,6 +3789,32 @@ Linear session and removes the instance's service record, each within 10 seconds
 fails after registration removes the record before it exits and says whether that removal
 completed; a registration that fails part-way rolls its own record back and reports when it could not.
 
+On a per-user-auth mesh, `serve` holds no signer. It goes through the space's remote service
+authority, using this machine's login for registration and activation:
+
+- The first start submits a registration proposal for a new instance, prints the proposal and
+  exits. Run `serve` again after the owner approves it, and it replays the same registration.
+- Activation returns the serve material: an access bearer that lasts at most 60 seconds and a
+  renewal proof that lasts at most 24 hours. `serve` derives the serve grant from the registration
+  snapshot the authority returned, connects through the space's callout and reports ready.
+- The connection presents the current access bearer on every reconnect. `serve` renews at half
+  the bearer's remaining life, with the same renew request each time, because the authority keeps
+  at most 64 distinct requests per instance and never prunes them.
+- A renewal or ready report that is not confirmed is retried with the same request. A denial, a
+  renewal proof that expires first, or a connection that closes for good stops serving as Ctrl-C
+  does, and nothing is sent or reported after that. A request already sent is not withdrawn: when
+  its answer has not arrived, the stop message says its outcome is unknown. If serving stops
+  before it started, `serve` exits with the reason instead of reporting that it serves.
+- The request identities are kept in `linear/serve/<space>--<endpoint>.json` under the cotal home
+  (0600, no secret), and one `serve` process holds them at a time.
+- Ctrl-C stops serving and closes the Linear session. The instance stays registered, because only
+  its owner revokes it. The next start replays the recorded requests.
+
+This path needs the space's auth service to run with service endpoints enabled, the endpoint name
+bound to its owner, and the owner's approval of the instance. `serve` creates none of these.
+Agents on a per-user-auth mesh cannot invoke the endpoint yet, because that mesh issues no endpoint
+caller rows. `caller` and the `linear` service preset remain static-auth only.
+
 The endpoint serves five fixed commands: `inventory`, `call-tool`, `read-resource`, `get-prompt` and
 `complete`. Each needs the one `linear.mcp` capability. That capability is permission to call the
 endpoint; which tools a call can reach is decided by the Linear account and its mode. `inventory`

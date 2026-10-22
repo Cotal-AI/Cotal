@@ -58,3 +58,16 @@ export {
   type LinearRegistration,
   type LinearServeBundle,
 } from "./serve.js";
+export {
+  linearUserAuthRegistration,
+  linearUserAuthServeGrant,
+  parseLinearUserAuthKeys,
+  startLinearUserAuthEndpoint,
+  type LinearServiceAuthority,
+  type LinearServiceProof,
+  type LinearUserAuthEvent,
+  type LinearUserAuthKeys,
+  type LinearUserAuthKeyStore,
+  type LinearUserAuthOptions,
+  type LinearUserAuthStart,
+} from "./user-auth-serve.js";
