@@ -22,7 +22,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { assertValidName } from "@cotal-ai/core";
+import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
 import { cotalToolSpecs, parseToolArgs, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
 import type { MeshAgent } from "./agent.js";
@@ -45,6 +45,9 @@ export interface GatewayConnection {
   readonly id: string;
   readonly agent: MeshAgent;
   readonly config: AgentConfig;
+  /** The tools this connection may call, when its host grants it more than {@link GATEWAY_TOOLS}.
+   *  Only tools the embedder registers count (see {@link GatewayOptions.tools}). */
+  readonly tools?: ReadonlySet<string>;
 }
 
 /** What the embedding service supplies. Every method receives the authenticated account, never a
@@ -57,8 +60,9 @@ export interface GatewayHost {
    *  an authoritative name collision. The collision check and the issue must be one atomic step per
    *  account: an `open` racing another for the same name throws `NameTaken` rather than also
    *  succeeding, or two conversations end up sharing one name. Error messages reach the caller,
-   *  so they must not carry secrets. */
-  open(account: string, name: string, context?: string): Promise<GatewayConnection>;
+   *  so they must not carry secrets. A `selection` comes only from an embedder that enables
+   *  {@link GatewayOptions.selection}: issue exactly what it names or throw, never less or more. */
+  open(account: string, name: string, context?: string, selection?: ConversationSelection): Promise<GatewayConnection>;
   /** The connection `id` if `account` owns it, otherwise undefined. Never a default. */
   find(account: string, id: string): Promise<GatewayConnection | undefined>;
   /** Stop and release one connection `account` owns. False when it owns no such connection. */
@@ -66,7 +70,8 @@ export interface GatewayHost {
 }
 
 /** The mesh tools a remote conversation may call. Process and seat authority (spawn, despawn,
- *  persona, run, yield, reconnect) belongs to a supervised local seat and is not offered here. */
+ *  persona, run, yield, reconnect) belongs to a supervised local seat and is not offered here; a
+ *  native embedder may offer part of it per connection with {@link NATIVE_GATEWAY_TOOLS}. */
 export const GATEWAY_TOOLS: ReadonlySet<string> = new Set([
   "cotal_orientation",
   "cotal_connection_status",
@@ -81,6 +86,21 @@ export const GATEWAY_TOOLS: ReadonlySet<string> = new Set([
   "cotal_channel_mode",
   "cotal_join",
   "cotal_leave",
+]);
+
+/** What a native embedder may register beyond {@link GATEWAY_TOOLS}: process, workflow and
+ *  reconnect tools. A connection calls one only when its host lists it in
+ *  {@link GatewayConnection.tools}, and the manager or endpoint that serves the call still decides
+ *  it from the connection's own grant. `cotal_yield` is not here: a conversation is not a managed
+ *  seat, so no run turn is ever addressed to it. */
+export const NATIVE_GATEWAY_TOOLS: ReadonlySet<string> = new Set([
+  ...GATEWAY_TOOLS,
+  "cotal_spawn",
+  "cotal_persona",
+  "cotal_personas",
+  "cotal_despawn",
+  "cotal_run",
+  "cotal_reconnect",
 ]);
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false };
@@ -106,12 +126,44 @@ const GATEWAY_ANNOTATIONS: Readonly<Record<string, ToolAnnotations>> = {
   cotal_channel_mode: UPDATING,
   cotal_join: ADDITIVE,
   cotal_leave: UPDATING,
+  cotal_spawn: ADDITIVE,
+  cotal_persona: UPDATING,
+  cotal_personas: READ_ONLY,
+  cotal_despawn: UPDATING,
+  cotal_run: UPDATING,
+  cotal_reconnect: ADDITIVE,
 };
 
 function gatewayAnnotations(name: string): ToolAnnotations {
   const annotations = GATEWAY_ANNOTATIONS[name];
   if (!annotations) throw new Error(`Missing gateway tool annotations for ${name}`);
   return annotations;
+}
+
+/** What `cotal_connect` says about selection when the embedder enables it. */
+const SELECTION_TEXT =
+  "Without channels, role or capabilities the connection reads nothing and posts only to its own event " +
+  "channel. Each item you request must already be within your own access; if any is not, nothing is connected and " +
+  "the refused items are named. Ask for only what the person wants this conversation to have.";
+
+const SELECTION_SHAPE = {
+  channels: z
+    .array(z.strictObject({ channel: z.string().min(1), access: z.enum(["read", "read-post"]) }))
+    .max(SELECTION_MAX_ITEMS)
+    .optional()
+    .describe("Channels this connection may join and read, or read and post to. No wildcards."),
+  role: z.string().min(1).optional().describe("A role to hold, so role requests (cotal_anycast) reach this connection."),
+  capabilities: z
+    .array(z.enum(["spawn", "run"]))
+    .optional()
+    .describe("spawn: start and stop agents through a manager. run: start and manage workflow runs."),
+};
+
+/** The canonical selection a `cotal_connect` call names, or undefined when it names none. */
+function selectionOf(input: Record<string, unknown>): ConversationSelection | undefined {
+  const { channels, role, capabilities } = input as Parameters<typeof conversationSelection>[0];
+  if (channels === undefined && role === undefined && capabilities === undefined) return undefined;
+  return conversationSelection({ channels, role, capabilities });
 }
 
 /** How many names `cotal_connect` tries: the requested one, then `_2` up to this suffix. */
@@ -128,6 +180,12 @@ export interface GatewayOptions {
   /** A native embedder binds the connect call to a host-observed conversation. The value is only
    * a routing key, never authentication; the host must validate its own binding before issue. */
   connectContext?: boolean;
+  /** The tools to register, within {@link NATIVE_GATEWAY_TOOLS}. Defaults to {@link GATEWAY_TOOLS}.
+   *  Registering a tool offers it to no connection by itself: see {@link GatewayConnection.tools}. */
+  tools?: ReadonlySet<string>;
+  /** `cotal_connect` takes the channels, role and capabilities a connection requests
+   *  within the person's own access, and hands the canonical selection to {@link GatewayHost.open}. */
+  selection?: boolean;
   /** The longest `cotal_wait` may hold one call, in whole seconds. Defaults to
    *  {@link GATEWAY_WAIT_SECONDS}. Keep it under every proxy and client timeout on the path. */
   waitSeconds?: number;
@@ -292,6 +350,10 @@ export function registerCotalGatewayTools(
   if (!Number.isInteger(waitSeconds) || waitSeconds < 1) {
     throw new Error(`waitSeconds must be a whole number of seconds, at least 1; got ${waitSeconds}`);
   }
+  const offered = options.tools ?? GATEWAY_TOOLS;
+  for (const name of offered) if (!NATIVE_GATEWAY_TOOLS.has(name)) throw new Error(`the gateway cannot offer ${name}`);
+  // What one connection may call: what is registered and what its host granted it.
+  const toolsOf = (c: GatewayConnection) => new Set([...offered].filter((name) => (c.tools ?? GATEWAY_TOOLS).has(name)));
   const wake = options.wake;
   // Connections signalled and not read since, how many cotal_wait calls hold each one, and the
   // check for each watched connection, which the rewake runs again.
@@ -333,10 +395,12 @@ export function registerCotalGatewayTools(
         "Join the Cotal mesh as a new agent for THIS conversation and return its connection_id. Call it once per " +
         "conversation, keep the connection_id, and pass it on every other cotal_* call. If the name is taken, the " +
         "next free name is chosen (name_2, name_3, ...) and reported. Never reuse a connection_id from another " +
-        "conversation, and call this again if you no longer have this conversation's connection_id.",
+        "conversation, and call this again if you no longer have this conversation's connection_id." +
+        (options.selection ? ` ${SELECTION_TEXT}` : ""),
       inputSchema: z.strictObject({
         name: z.string().min(1).describe("The agent name to request, for example claude_web."),
         ...(options.connectContext ? { context: z.string().min(1).max(128).optional().describe("Conversation binding supplied by the native host.") } : {}),
+        ...(options.selection ? SELECTION_SHAPE : {}),
       }),
     },
     async ({ name, ...input }, extra) => {
@@ -346,6 +410,12 @@ export function registerCotalGatewayTools(
       } catch (e) {
         return refuse(`not authenticated: ${errorText(e)}`);
       }
+      let selection: ConversationSelection | undefined;
+      try {
+        selection = selectionOf(input);
+      } catch (e) {
+        return refuse(`cotal_connect: ${errorText(e)}. Nothing was connected.`);
+      }
       for (const candidate of gatewayNames(name)) {
         // A name the mesh would refuse is the caller's to fix, not a collision to rename around.
         try {
@@ -354,7 +424,8 @@ export function registerCotalGatewayTools(
           return refuse(`cotal_connect: ${errorText(e)}`);
         }
         try {
-          const c = await host.open(account, candidate, "context" in input && typeof input.context === "string" ? input.context : undefined);
+          const context = "context" in input && typeof input.context === "string" ? input.context : undefined;
+          const c = await host.open(account, candidate, context, selection);
           watch(c);
           const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
           const listening = wake ? `\n${wake.listening()}` : "";
@@ -421,7 +492,7 @@ export function registerCotalGatewayTools(
       }
       const c = await host.find(account, connection_id);
       if (!c) return refuse(CONNECTION_REQUIRED);
-      const inbox = cotalToolSpecs(c.config, source, undefined, GATEWAY_TOOLS).find((s) => s.name === "cotal_inbox");
+      const inbox = cotalToolSpecs(c.config, source, undefined, toolsOf(c)).find((s) => s.name === "cotal_inbox");
       if (!inbox) return refuse("cotal_wait is not available on this connection.");
       const limit = seconds ?? waitSeconds;
       holding.set(c.agent, (holding.get(c.agent) ?? 0) + 1);
@@ -444,7 +515,7 @@ export function registerCotalGatewayTools(
     },
   );
 
-  for (const spec of cotalToolSpecs(ADVERTISED, source, undefined, GATEWAY_TOOLS)) {
+  for (const spec of cotalToolSpecs(ADVERTISED, source, undefined, offered)) {
     const channel = spec.name === "cotal_send" ? (spec.schema.shape.channel as z.ZodType | undefined) : undefined;
     const shape = channel ? spec.schema.extend({ channel: channel.describe(SEND_CHANNEL) }) : spec.schema;
     server.registerTool(
@@ -465,8 +536,8 @@ export function registerCotalGatewayTools(
         }
         const c = await host.find(account, connection_id);
         if (!c) return refuse(CONNECTION_REQUIRED);
-        const own = cotalToolSpecs(c.config, source, undefined, GATEWAY_TOOLS).find((s) => s.name === spec.name);
-        // Unreachable while GATEWAY_TOOLS holds no capability-gated tool; a future one refuses here.
+        // A tool the host did not grant this connection, or whose capability its credential lacks.
+        const own = cotalToolSpecs(c.config, source, undefined, toolsOf(c)).find((s) => s.name === spec.name);
         if (!own) return refuse(`${spec.name} is not available on this connection.`);
         let result: ReturnType<typeof toContent>;
         if (spec.name === "cotal_inbox") signalled.delete(c.agent);
@@ -559,6 +630,10 @@ export interface GatewayStdio {
   instructions?: string;
   /** See {@link GatewayOptions.connectContext}. */
   connectContext?: boolean;
+  /** See {@link GatewayOptions.tools}. */
+  tools?: ReadonlySet<string>;
+  /** See {@link GatewayOptions.selection}. */
+  selection?: boolean;
   /** See {@link GatewayOptions.waitSeconds}. */
   waitSeconds?: number;
   /** See {@link GatewayOptions.wake}. */
@@ -575,6 +650,8 @@ export async function serveGatewayStdio(host: GatewayHost, o: GatewayStdio = {})
   const server = new McpServer({ name: "cotal", version: DOCS_VERSION }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });
   registerCotalGatewayTools(server, host, o.source, {
     ...(o.connectContext ? { connectContext: true } : {}),
+    ...(o.tools ? { tools: o.tools } : {}),
+    ...(o.selection ? { selection: true } : {}),
     ...(o.waitSeconds === undefined ? {} : { waitSeconds: o.waitSeconds }),
     ...(o.wake ? { wake: o.wake } : {}),
   });

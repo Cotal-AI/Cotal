@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   agentFilePath,
+  checkConversationSelection,
   CotalEndpoint,
   deprovisionAgent,
   isReachable,
@@ -12,6 +13,7 @@ import {
   newIdentity,
   provisionAgent,
   resolveReadAcl,
+  type ConversationGrant,
   type FlagSpec,
   type FlagValues,
   type ParsedArgs,
@@ -40,6 +42,7 @@ export const appIdentityFlags = [
   { name: "dir", type: "string", value: "<dir>", description: "retire: the credential directory provision returned" },
   { name: "session", type: "string", value: "<id>", description: "provision: the native conversation identity" },
   { name: "events", type: "boolean", description: "provision: a real native transcript source is bound" },
+  { name: "selection", type: "string", value: "<json>", description: "provision: channels, role and capabilities to request within your own grant" },
 ] as const satisfies readonly FlagSpec[];
 
 /** What the record in a credential directory says. `owner` is the process that ran provision. */
@@ -51,7 +54,7 @@ interface IdentityRecord {
 }
 
 export type AppIdentityReply =
-  | { ok: true; env: Record<string, string>; retire?: { dir: string } }
+  | { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant }
   | { ok: false; taken: true }
   | { ok: false; error: string };
 
@@ -95,9 +98,11 @@ function missingPersonaNext(persona: string, t: MeshTarget): string {
 async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<AppIdentityReply> {
   const name = values.name?.trim();
   if (!name) return { ok: false, error: "provision needs --name <name>" };
+  const selection = values.selection === undefined ? undefined : checkConversationSelection(JSON.parse(values.selection));
   const t = await target(values.space);
   if (t.mode === "user")
-    return { ok: true, ...await provisionUserApp(t, name, values.session, values.events === true) };
+    return { ok: true, ...await provisionUserApp(t, name, values.session, values.events === true, selection) };
+  if (selection) return { ok: false, error: `the mesh "${t.space}" has no signed-in identities, so a conversation cannot request a selection on it` };
   const taken = await liveMeshNames(t);
   if (!taken) return { ok: false, error: `the mesh "${t.space}" at ${t.server} is not answering. Start it with \`cotal up\`.` };
   if (taken.has(name)) return { ok: false, taken: true };

@@ -4605,7 +4605,9 @@ the identity, the mesh and the process that asked. `cotal app-identity retire --
 the identity's broker footprint, then the files and the directory. When the broker is not answering
 it keeps them. Each provision also retires the directories whose owning process has exited, which
 covers a host killed before it could retire. A mesh that uses per-user sign-in is refused. Like
-`agent-bearer`, it skips the connector-seed boot gate.
+`agent-bearer`, it skips the connector-seed boot gate. On a signed-in mesh, `--selection <json>`
+requests channels, a role and capabilities within your own grant for a native conversation. A
+selection on any other mesh is refused.
 
 ## watch
 

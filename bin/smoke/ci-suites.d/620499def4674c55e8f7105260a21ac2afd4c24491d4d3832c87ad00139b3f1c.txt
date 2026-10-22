@@ -1,0 +1,3 @@
+# Conversation identity selection v1 over real HTTPS discovery: canonical requests, exact grant
+# checks with no baseline fallback, denial and unsupported answers, replay and retirement.
+smoke:conversation-selection-live

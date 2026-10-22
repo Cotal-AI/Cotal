@@ -2315,8 +2315,13 @@ export class MeshAgent extends EventEmitter {
   async despawn(name?: string, opts?: { graceful?: boolean }): Promise<ControlReply> {
     await this.requireConnected();
     const graceful = opts?.graceful ?? true;
-    if (!name) // self-halt: the baseline `stop` command, authz-mode self (the caller triple IS the target)
+    if (!name) {
+      // A conversation's host is the person's own app. No manager holds it, and nothing may stop it.
+      if (this.config.turnRelay === false)
+        return { ok: false, error: "this connection belongs to a conversation, not a managed seat, so it has no self to stop; disconnecting retires only this connection" };
+      // self-halt: the baseline `stop` command, authz-mode self (the caller triple IS the target)
       return this.managerInvoke("stop", { graceful }, { target: { mode: "self" } });
+    }
     const resolved = await this.managerTargetFor(name);
     if ("error" in resolved) return resolved.error;
     return this.managerInvoke("despawn", { graceful }, { target: resolved.target });
