@@ -86,7 +86,8 @@ mkdirSync(join(shell, ".cotal"), { recursive: true });
 
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key === "FORCE_COLOR" || key === "NO_COLOR") delete cleanEnv[key];
-const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1" };
+// Usage telemetry is off: in a fresh home on a terminal it would also print its one-time notice.
+const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
 
 const run = (args: string[]): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
