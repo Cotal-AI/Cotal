@@ -117,7 +117,7 @@ try {
     ({ v: 1, kind: "service-endpoint-authority", operation, requestId, space, accountPublicKey, endpoint, instanceId, ...fields }) as ServiceAuthorityRequest;
   const register = (instanceId: string, reg = registration(orders), requestId = rid()) =>
     request("register", { registration: reg, expected: { state: "unregistered" } }, instanceId, requestId);
-  const status = (instanceId: string, requestId: string) => request("status", { target: { kind: "operation", requestId } }, instanceId);
+  const status = (instanceId: string, requestId: string) => request("status", { target: { kind: "operation", operation: "register", requestId } }, instanceId);
   const viaProvider = async (who: "a" | "b" | "c", r: ServiceAuthorityRequest): Promise<ServiceAuthorityResult> => {
     signIn(who);
     return (await cotalAuthProvider.serviceEndpointAuthority!({ store: clientStore, dir: clientDir, request: r })).result;

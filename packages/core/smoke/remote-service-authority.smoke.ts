@@ -135,4 +135,12 @@ for (const operation of ["ready", "revoke"] as const) {
     : { ...common, operation, state: "retired", witness: { ...witness, processEpoch: 2 }, operationId: "retirement1" };
   assert.throws(() => parseServiceAuthorityResult(response, request), /submitted witness/);
 }
+// The operation status selector names the mutation it reads; the earlier selector without it is refused.
+const opStatus = (target: unknown) => ({ ...common, operation: "status", target });
+for (const operation of ["register", "activate", "renew", "ready", "revoke"])
+  assert.doesNotThrow(() => parseServiceAuthorityRequest(opStatus({ kind: "operation", operation, requestId: "d".repeat(32) })), operation);
+assert.throws(() => parseServiceAuthorityRequest(opStatus({ kind: "operation", requestId: "d".repeat(32) })), /unsupported fields/);
+for (const operation of ["status", "describe-view", "unknown"])
+  assert.throws(() => parseServiceAuthorityRequest(opStatus({ kind: "operation", operation, requestId: "d".repeat(32) })), /unsupported status operation/, operation);
+assert.throws(() => parseServiceAuthorityRequest(opStatus({ kind: "operation", operation: "register", requestId: "d".repeat(32), extra: 1 })), /unsupported fields/);
 console.log("remote service authority: closed proof matrix, request/response binding and bounded identity passed");
