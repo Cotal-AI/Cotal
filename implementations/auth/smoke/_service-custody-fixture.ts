@@ -36,7 +36,7 @@ import {
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import type { ServiceWriteScope } from "../src/service-write.js";
-import { serviceHostDiscoveryGrants } from "../src/authority-client.js";
+import { serviceHostDiscoveryGrants, type ServiceHostEffectReads } from "../src/authority-client.js";
 import { S2A_INVOCATION_MS, openServiceHostEffect, type ServiceHostEffect } from "../src/service-host-ops.js";
 
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -289,16 +289,17 @@ export async function openFixture(space: string, opts: { endpoint?: string; owne
   };
   const limitedStack = () => { if (!stack) throw new Error("this fixture's broker grants nothing per connection; open it limited"); return stack; };
   /** One invocation's product effect connection for `writes`, expiring at `deadlineMs`, with its
-   *  registry instrumented; `via` reaches the broker through another address (a test relay). A
+   *  registry instrumented; `via` reaches the broker through another address (a test relay), and
+   *  `reads` is the scope's records and contract read grant, which a serving registration needs. A
    *  deferred write still in flight keeps it open until the write lands. */
-  const effect = async (writes: ServiceWriteScope, deadlineMs = Date.now() + S2A_INVOCATION_MS, via = server): Promise<ServiceHostEffect> => {
+  const effect = async (writes: ServiceWriteScope, deadlineMs = Date.now() + S2A_INVOCATION_MS, via = server, reads?: ServiceHostEffectReads): Promise<ServiceHostEffect> => {
     let lc: NatsConnection | undefined;
     const real = await openServiceHostEffect({ server: via, space, dataAccount: limitedStack().dataAccount, log: () => {},
-      onConnection: (nc) => { lc = nc; refusals("fixture-effect", nc); } }, { keys: writes, deadlineMs });
+      onConnection: (nc) => { lc = nc; refusals("fixture-effect", nc); } }, { keys: writes, deadlineMs, ...(reads ? { reads } : {}) });
     let pending = 0, closing = false;
     const shut = async () => { if (lc) limitedConns.delete(lc); await real.close(); };
     instrument(real.registry, { add: () => { pending++; }, done: () => { if (--pending === 0 && closing) void shut(); } });
-    return { registry: real.registry, gone: real.gone, close: async () => { if (pending > 0) closing = true; else await shut(); } };
+    return { registry: real.registry, gone: real.gone, ...(real.contract ? { contract: real.contract } : {}), close: async () => { if (pending > 0) closing = true; else await shut(); } };
   };
   /** A standing connection on the product discovery grant: the registry reads and no write. */
   const discovery = async (): Promise<{ registry: LifecycleRegistry; close(): Promise<void> }> => {

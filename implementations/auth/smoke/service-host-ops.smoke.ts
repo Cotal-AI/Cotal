@@ -13,17 +13,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
-  canonicalJson, contractDigest, epAuthBucket, epgateKey, lifecycleHeadKey, recordsBucket, serviceEndpointActor, uidReservationKey, type ServiceUidCustodyV1,
+  VOID_SCHEMA_DIGEST, canonicalJson, contractDigest, contractRefToHex, contractStoreContext, endpointToken, epAuthBucket, epgateKey, fetchContractArtifact,
+  lifecycleHeadKey, recordsBucket, serviceEndpointActor, serviceWitnessDigest, singleDocumentClosure, uidReservationKey,
+  type ServiceRegistrationWitness, type ServiceUidCustodyV1,
 } from "@cotal-ai/core";
 import { grantActor, revokeActor } from "../src/ledger.js";
 import { registryStores } from "../src/lifecycle-registry.js";
 import {
   cancelServiceCustody, openServiceCustodyHost, runServiceBootstrap, sealServiceBootstrapIntent, sealServiceCancelIntent, serviceCustodyKeys,
 } from "../src/service-custody.js";
+import { compileServiceRegistration, serviceAuthorityEngineRequestId } from "../src/service-endpoint-authority.js";
 import { parseServiceHostResult, type ServiceApprovalResult } from "../src/service-host-contract.js";
 import {
-  S2A_INVOCATION_MS, openServiceHostOperations, parseServiceAdmissionRecord, parseServiceAssignmentRecord, parseServiceCapacityRecord,
-  parseServiceHostOperationRecord, parseServiceProposalRecord, serviceHostOperationId, type ServiceHostOperations, type ServiceHostOperationsOptions,
+  S2A_INVOCATION_MS, S3_MAX_INTENTS_PER_INSTANCE, openServiceHostOperations, parseServiceAdmissionRecord, parseServiceAssignmentRecord,
+  parseServiceCapacityRecord, parseServiceHostOperationRecord, parseServiceProposalRecord, parseServiceRequestIntentIndexRecord, serviceHostOperationId,
+  serviceRegisterHostRequest, type ServiceHostOperations, type ServiceHostOperationsOptions, type ServiceServeOperation, type ServiceServeRequest,
 } from "../src/service-host-ops.js";
 import { bytesOf, checks, openFixture, type Fixture, type WriteCall } from "./_service-custody-fixture.js";
 
@@ -47,7 +51,7 @@ const discoveries = new WeakMap<Fixture, ReturnType<Fixture["discovery"]>>();
 async function engine(f: Fixture, dir: string, over: Partial<ServiceHostOperationsOptions> = {}): Promise<ServiceHostOperations> {
   let d = discoveries.get(f);
   if (d === undefined) discoveries.set(f, d = f.discovery());
-  return openServiceHostOperations({ discovery: (await d).registry, openEffect: (scope) => f.effect(scope.keys, scope.deadlineMs), hold: f.hold,
+  return openServiceHostOperations({ discovery: (await d).registry, openEffect: (scope) => f.effect(scope.keys, scope.deadlineMs, undefined, scope.reads), hold: f.hold,
     accountPublicKey: f.accountPublicKey, ledgerDir: dir, startup: { kind: "normal" }, ...over });
 }
 const parsesClosed = (label: string, r: unknown) => {
@@ -1740,6 +1744,91 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
     }
     const ok = approve([{ ...pin, command: "lookup" }, { ...pin, command: "poll", target: { mode: "self" } }]), r = await e.handle(ok);
     c.check("V2 instance-only entries pinned to this instance, in admitted modes, are approved", r.state === "approved" && r.outcome === "applied", r);
+  } finally { await f.close(); }
+}
+
+// ---- W: serving: request reuse and the per-instance intent bound -----------------------------------
+// The whole serving path through `serve`: the door's compiled registration, the approval, the native
+// registration, activation and renew. No material is minted here (the door does that over `current`),
+// so what these cells show is the engine: a reused request settles from its intent record every time
+// and takes no index slot; only fresh request ids fill the 64-entry index.
+{
+  const f = await fixture("s2a-serve-intents");
+  try {
+    const dir = ledger(f.owner), store = await contractStoreContext(f.conn, f.space);
+    const readContractArtifact = async (digest: string): Promise<unknown> => {
+      const bytes = await fetchContractArtifact(store, contractRefToHex(digest));
+      if (!bytes) throw new Error(`fixture: the contract artifact ${digest} is not readable`);
+      return JSON.parse(new TextDecoder().decode(bytes));
+    };
+    const e = await engine(f, dir, { serving: { readContractArtifact } });
+    // One self-contained cluster document, its closure, and the surface compiled as the door compiles it.
+    const document = { urn: f.endpoint, revision: 1, attributes: [], events: [],
+      commands: [{ name: "lookup", class: "ephemeral", targeted: false, capability: "read", inputDigest: VOID_SCHEMA_DIGEST, outputDigest: VOID_SCHEMA_DIGEST }] };
+    const { manifest, closureDigest } = singleDocumentClosure(document);
+    const compiled = compileServiceRegistration({ clusterDigests: [closureDigest], contractArtifacts: [manifest, document] });
+    const instanceId = rid(), sel = { owner: f.owner, endpoint: f.endpoint, instanceId };
+    const door = { space: f.space, accountPublicKey: f.accountPublicKey };
+    const engineId = (operation: ServiceServeOperation, requestId: string) => serviceAuthorityEngineRequestId(door, f.owner, sel, operation, requestId);
+    const indexOf = async () => {
+      const raw = await f.value(f.auth, `svcintx.${endpointToken(f.endpoint)}.${instanceId}`);
+      return raw === null ? [] : parseServiceRequestIntentIndexRecord(raw).intents;
+    };
+    const serve = (operation: ServiceServeOperation, requestId: string, witness: ServiceRegistrationWitness | null, extra: Partial<ServiceServeRequest> = {}) =>
+      e.serve({ operation, caller: operation === "renew" || operation === "ready" ? "service" : "owner", ...sel, requestId, requestDigest: D(`serve ${operation} ${requestId}`),
+        engineRequestId: engineId(operation, requestId), witness, ...extra });
+    // The proposal phase and the registration share one public request, as the door sends them.
+    const registerId = rid(), registerDigest = D(`serve register ${registerId}`);
+    const proposal = L(await e.register(serviceRegisterHostRequest({ ...sel, engineRequestId: engineId("register", registerId), requestId: registerId, requestDigest: registerDigest, ...compiled })));
+    const approval = L(await e.handle(approveReq(f, { proposalId: proposal.proposalId!, revision: proposal.revision! })));
+    if (proposal.state !== "registered" || approval.state !== "approved") throw new Error(`fixture approval failed: ${JSON.stringify({ proposal, approval })}`);
+    const registered = await serve("register", registerId, null, { register: { ...compiled, artifacts: [manifest, document] } });
+    const w = registered.state === "registered" ? registered.witness : undefined;
+    c.check("W0 the approved register replayed through serve registers natively and answers the witness", w !== undefined && w.registrationRequestId === registerId, registered);
+    if (w === undefined) throw new Error("fixture registration failed");
+    const activateId = rid(), activated = await serve("activate", activateId, w);
+    c.check("W0 activate lands the activation CAS and answers current with the root and approval bounds",
+      activated.state === "current" && serviceWitnessDigest(activated.witness) === serviceWitnessDigest(w) && activated.rootExpiresAt > Math.floor(Date.now() / 1000), activated);
+    const digestOf = (r: { state: string; witness?: ServiceRegistrationWitness }) => (r.witness ? serviceWitnessDigest(r.witness) : undefined);
+    const current = (r: { state: string; witness?: ServiceRegistrationWitness }) => r.state === "current" && digestOf(r) === serviceWitnessDigest(w);
+
+    await cell(f, "W1", async () => {
+      // One renew request, as a serving client keeps it: the same requestId and body, replayed on every refresh.
+      const renewId = rid(), renew = () => serve("renew", renewId, w);
+      const replies: string[] = [];
+      for (let n = 0; n < 80; n++) { const r = await renew(); replies.push(current(r) ? "current" : JSON.stringify(r)); }
+      const idx = await indexOf(), ids = new Set(idx.map((x) => x.operationId));
+      const expected = [["register", registerId], ["activate", activateId], ["renew", renewId]] as const;
+      c.check("W1 (serve) one renew request replayed 80 times answers current with the current witness every time", replies.every((r) => r === "current"),
+        replies.filter((r) => r !== "current").slice(0, 3));
+      c.check("W1 after 80 replays the instance index lists exactly the register, activate and renew ids: a reused request takes no slot",
+        idx.length === 3 && expected.every(([op, id]) => ids.has(serviceHostOperationId(f.space, engineId(op, id)))), idx);
+      // ready is reused the same way: the same request settles from its intent and writes the status again.
+      const readyId = rid(), ready = () => serve("ready", readyId, w);
+      const readies: string[] = [];
+      for (let n = 0; n < 10; n++) { const r = await ready(); readies.push(r.state === "ready" && digestOf(r) === serviceWitnessDigest(w) ? "ready" : JSON.stringify(r)); }
+      c.check("W1 one ready request replayed 10 times answers ready every time and adds one index entry", readies.every((r) => r === "ready") && (await indexOf()).length === 4,
+        { readies: readies.filter((r) => r !== "ready").slice(0, 3), n: (await indexOf()).length });
+    });
+
+    await cell(f, "W2", async () => {
+      // A client that draws a fresh requestId per refresh: every one takes a slot until the bound.
+      const fresh: string[] = [];
+      let count = (await indexOf()).length, last: unknown;
+      while (count < S3_MAX_INTENTS_PER_INSTANCE) {
+        const id = rid(), r = await serve("renew", id, w);
+        if (!current(r)) { last = r; break; }
+        fresh.push(id); count = (await indexOf()).length;
+      }
+      const b0 = await lastSeqs(f), overId = rid(), over = L(await serve("renew", overId, w));
+      const overIntent = await f.value(f.auth, `svcint.${serviceHostOperationId(f.space, engineId("renew", overId))}`);
+      c.check("W2 (serve) distinct renew requests fill the index to 64, each answering current", count === S3_MAX_INTENTS_PER_INSTANCE && last === undefined, { count, last });
+      c.check("W2 the 65th distinct request is denied resource-exhausted with zero writes: no intent and no effect", over.state === "denied" && over.reason === "resource-exhausted"
+        && (await writesSince(f, b0)) === 0 && overIntent === null && (await indexOf()).length === S3_MAX_INTENTS_PER_INSTANCE, over);
+      const listed = await serve("renew", fresh[0]!, w), reused = await serve("renew", fresh[fresh.length - 1]!, w);
+      c.check("W2 a listed request still replays from its intent record at the bound", current(listed) && current(reused) && (await indexOf()).length === S3_MAX_INTENTS_PER_INSTANCE,
+        { listed: listed.state, reused: reused.state });
+    });
   } finally { await f.close(); }
 }
 
