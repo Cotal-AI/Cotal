@@ -31,6 +31,7 @@ class Feed implements AsyncIterableIterator<Piece> {
   }
 }
 interface Event {
+  door?: string;
   tool?: string;
   context?: string;
   session_id?: string;
@@ -76,6 +77,7 @@ async function until(predicate: () => boolean): Promise<void> {
 }
 function fixture(managed = false) {
   const hooks = new Map<string, Handler>();
+  const matchers = new Map<string, Record<string, string | RegExp>>();
   const feed = new Feed();
   const submitted: Array<{ text: string; asUser?: boolean }> = [];
   const appended: Array<{ message: { type: string; content: Array<{ type: string; text: string }> } }> = [];
@@ -116,12 +118,16 @@ function fixture(managed = false) {
     },
   };
   const register = new Function(source.replace("export function register", "return function register"))() as
-    (on: (event: string, matcher: Handler | Record<string, string>, handler?: Handler) => void) => void;
-  register((event, matcher, handler) => hooks.set(event, handler ?? matcher as Handler));
+    (on: (event: string, matcher: Handler | Record<string, string | RegExp>, handler?: Handler) => void) => void;
+  register((event, matcher, handler) => {
+    hooks.set(event, handler ?? matcher as Handler);
+    if (handler) matchers.set(event, matcher as Record<string, string | RegExp>);
+  });
   const fire = async (name: string, event: Event = {}, aborted = false): Promise<unknown> => {
     const controller = new AbortController();
     if (aborted) controller.abort();
     const next = Object.assign(name === "turn.step" ? async function* (e: Event) { yield e; } : async (e: Event) => e, { signal: controller.signal });
+    if (name === "session.append" && event.door !== matchers.get(name)?.door) return event;
     const result = hooks.get(name)?.(api, event, next);
     if (result && Symbol.asyncIterator in result) {
       const values = [];
@@ -130,12 +136,15 @@ function fixture(managed = false) {
     }
     return result ?? event;
   };
-  return { feed, submitted, appended, commands, relayed, fire, hooks,
+  return { feed, submitted, appended, commands, relayed, fire, hooks, matchers,
     bind: (value: Record<string, string>) => { binding = value; },
     reads: () => reads, drop: (value: boolean) => { dropped = value; }, deny: (value: boolean) => { denied = value; } };
 }
 
 console.log("native-wake.smoke:");
+const appendMatcher = fixture().matchers.get("session.append")?.door;
+assert.equal(appendMatcher, "prompt", "presentation registers only prompt rows, never any protected append door");
+console.log("  ✓ presentation excludes unconditional and conditional guard-protected append rows");
 const managed = fixture(true);
 await managed.fire("session.start");
 await tick();
@@ -196,6 +205,8 @@ await busy.fire("turn.complete", { agentId: "child" });
 assert.equal(busy.appended.length, 0, "subagents cannot consume main-conversation wakes");
 await busy.fire("tool.call");
 assert.deepEqual(busy.appended, [{ message: { type: "user", content: [{ type: "text", text: wake("busy") }] } }], "one native plugin append covers coalesced notifications at the tool boundary");
+const busyRow: Event = { requestId: "appended-1", props: { text: wake("busy"), origin: { kind: "sdk" } } };
+assert.equal((await busy.fire("ui.render", busyRow) as UiNode).type, "Box", "busy presentation uses its own successful append receipt without observing protected note rows");
 await busy.fire("turn.complete");
 await tick();
 assert.equal(busy.submitted.length, 0, "covered in-turn wake causes no extra idle turn");
@@ -254,10 +265,14 @@ const wrapped: Event = { ...row, requestId: "wrapped-row", props: { text: `The c
 assert.equal((await presentation.fire("ui.render", wrapped) as UiNode).type, "Box", "native app attribution wrappers are compacted too");
 const sdkRow: Event = { requestId: "recorded-plugin-row", props: { text: wake("desktop-id"), origin: { kind: "sdk" } } };
 assert.equal(await presentation.fire("ui.render", sdkRow), sdkRow, "an untracked SDK row stays untouched");
-const recorded: Event = { uuid: "recorded-plugin-row", origin: { kind: "plugin", name: "cotal" }, message: { content: [{ type: "text", text: wake("desktop-id") }] } };
+const recorded: Event = { door: "prompt", uuid: "recorded-plugin-row", origin: { kind: "plugin", name: "cotal" }, message: { content: [{ type: "text", text: wake("desktop-id") }] } };
+for (const door of ["attachment", "hook-context", "compaction", "tool-message", "note"]) {
+  await presentation.fire("session.append", { ...recorded, door });
+  assert.equal(await presentation.fire("ui.render", sdkRow), sdkRow, `protected ${door} rows never enter the presentation observer`);
+}
 await presentation.fire("session.append", recorded);
-assert.equal((await presentation.fire("ui.render", sdkRow) as UiNode).type, "Box", "Desktop SDK rendering uses the authentic stored plugin row id");
-const userRow: Event = { uuid: "real-user-row", origin: { kind: "sdk" }, message: { content: [{ type: "text", text: wake("desktop-id") }] } };
+assert.equal((await presentation.fire("ui.render", sdkRow) as UiNode).type, "Box", "Desktop SDK rendering uses the authentic stored plugin prompt id");
+const userRow: Event = { door: "prompt", uuid: "real-user-row", origin: { kind: "sdk" }, message: { content: [{ type: "text", text: wake("desktop-id") }] } };
 await presentation.fire("session.append", userRow);
 const userRender: Event = { ...sdkRow, requestId: "real-user-row" };
 assert.equal(await presentation.fire("ui.render", userRender), userRender, "matching user text never inherits a plugin badge");

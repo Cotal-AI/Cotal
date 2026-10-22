@@ -280,7 +280,9 @@ attribution. It never submits it as the person's own words. While Claude is busy
 the notification at the next main-conversation tool or model-request boundary instead of queuing a
 second turn after the work ends. Peer message contents stay in the inbox. Between turns, the
 transcript shows a compact **Cotal · new message** indicator; click it to inspect the full
-notification. This changes only the display, not the message Claude receives.
+notification. This changes only the display, not the message Claude receives. Presentation observes
+only prompt rows; in-turn appends use their returned row ID, without observing protected notes or
+skill output.
 
 A wake follows the rule `cotal_wait` follows. It comes once until the conversation reads its messages,
 and not while a `cotal_wait` holds the connection. A replacement reader reoffers unread work.

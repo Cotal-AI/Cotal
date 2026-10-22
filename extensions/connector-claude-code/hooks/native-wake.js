@@ -40,6 +40,10 @@ async function submit($, inTurn = false) {
           pending.add(text);
           break;
         }
+        if (inTurn) {
+          wakeRows.add(result.uuid);
+          $.ui.invalidate('ui.render');
+        }
       } catch {
         paused = true;
         pending.add(text);
@@ -96,7 +100,7 @@ async function listen($) {
 }
 
 export function register(on) {
-  on('session.append', { door: /^(?!attachment$|hook-context$|compaction$).+/ }, async ($, e, next) => {
+  on('session.append', { door: 'prompt' }, async ($, e, next) => {
     const own = e.origin.kind === 'plugin' && e.origin.name === $.plugin.name && !e.origin.asUser;
     const text = e.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
     const result = await next(e);
