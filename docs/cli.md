@@ -880,7 +880,10 @@ Before a retained bare apply
 reaches its pidfile sweep, it now requires one locally started registration under
 a real isolated project root and refuses pending maintenance transitions, any valid or
 unreadable additive ledger or attempt under that root, or any other local registration at
-the exact recorded broker address. These are known-blocker
+the exact recorded broker address. It reads each record its sweep stops as the stopped-stack check
+above does. A record that check leaves unread, such as one behind a link, refuses `LIFECYCLE_BLOCKED`
+before the first stop and is named once, where reading stopped. No process behind it is read or
+signalled, and no record is removed. These are known-blocker
 checks, not a complete live broker-sharing or stop plan; aliases, remote tenants,
 agent impact and process identity remain unproved. These paths do not check full
 whole-stack target ownership, set exclusion, confirmed agent impact or schema

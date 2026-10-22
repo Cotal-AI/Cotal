@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve as resolvePath } from "node:path";
+import { join, relative, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -27,6 +27,7 @@ import {
   writeResult,
   type Report,
   readMaintenanceJournal,
+  readContainedRecord,
   readMaintenanceResumeDocument,
   readPreservationCommitIntent,
   readPreservationPrepareIntent,
@@ -93,6 +94,7 @@ import { processRecorded, stopLocalProcess } from "../lib/local-process-stop.js"
 import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, nothingRunning, stackDown, validateStackDownArguments } from "./stack-down.js";
+import { recordedProcessLine } from "../lib/stack-journal.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
  *  `ManagerResumeAgent`; the CLI never imports it, because implementations do not depend on each
@@ -318,6 +320,24 @@ function guardLegacyBareDown(): { space: string; services: BareDownService[] } {
   return { space: mesh.space, services };
 }
 
+/** Bare down reads each process record it stops where the record lies, as the stopped-stack census
+ *  does. A record that read leaves unread (a link on its path, a record that is not a regular file,
+ *  is larger than a record, cannot be opened or changes while it is read) refuses before the first
+ *  stop, naming where reading stopped: no process behind it is read, signalled or unrecorded. */
+function refuseUncontainedRecords(components: readonly LocalProcess[], context: LocalProcessContext): void {
+  const unread = new Map<string, string>();
+  for (const component of components) {
+    const record = readContainedRecord(context.root, localProcessPath(component.pidFile, context));
+    if (record.state === "unread" && !unread.has(record.at)) unread.set(record.at, recordedProcessLine({ name: component.name, path: relative(context.root, record.at), note: record.why }));
+  }
+  if (!unread.size) return;
+  const paths = [...unread.keys()].map((at) => relative(context.root, at));
+  throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `process records under this root cannot be read in place (${[...unread.values()].join("; ")}), so bare down stopped nothing; it does not read or signal through them`, {
+    target: { root: context.root, space: context.space, processes: [...unread.values()] },
+    remedy: `check ${paths.join(", ")}; stop each process where it was started, and replace a link with this stack's own record or remove it, then run \`cotal down\` again`,
+  });
+}
+
 /** One named service is a thin native-controller alias. The retained bare-stack and manifest
  *  paths below have not yet been replaced by the approved whole-stack controller. */
 export async function down(args: ParsedArgs): Promise<void> {
@@ -359,9 +379,6 @@ export async function down(args: ParsedArgs): Promise<void> {
       remedy: "run `cotal down` without --space from the stack's root; to stop one saved service, run `cotal service stop <service-name> --space <space>`",
     });
   const guarded = guardLegacyBareDown();
-  // Every dry run returned or was refused above, so from here on this is the whole-stack stop of
-  // this folder's root. Its services stop first, through the service controller.
-  await stopBareDownServices(guarded.space, guarded.services, { style: "rich", withAgents: values["with-agents"] === true });
   const selected = localProcessSurface()
     .sort((a, b) => Number(Boolean(a.stopLast)) - Number(Boolean(b.stopLast)) || (a.order ?? 50) - (b.order ?? 50));
   // A `down` that touches this folder's stack stops the shared broker and its per-space daemons;
@@ -370,6 +387,10 @@ export async function down(args: ParsedArgs): Promise<void> {
   assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
   let folderContext: LocalProcessContext | undefined;
   const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveRuntimeSpace(process.cwd()) });
+  refuseUncontainedRecords(selected, folderCtx());
+  // Every dry run returned or was refused above, so from here on this is the whole-stack stop of
+  // this folder's root. Its services stop first, through the service controller.
+  await stopBareDownServices(guarded.space, guarded.services, { style: "rich", withAgents: values["with-agents"] === true });
 
   let any = false;
   let allStopped = true;
