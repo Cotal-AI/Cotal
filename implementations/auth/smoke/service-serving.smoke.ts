@@ -8,10 +8,10 @@
  *
  * Sections E and F also exercise the named stop points. "sim stop" means the fixture writes the
  * durable state a stop at that point leaves, with the engine's own record shapes and the native
- * barrier and registration primitives, and then drives the real door. Section G holds one real
- * request in this process, through an in-memory patch of the nats.js prototype the live
- * connections use, to place a competitor or a latch inside an effect; it latches the engine last.
- * Nothing here is native, Cloud or production acceptance, and nothing proves a human decision. */
+ * barrier and registration primitives, and then drives the real door. Section G holds real
+ * requests in this process, through an in-memory patch of the nats.js prototype the live
+ * connections use, to place a competitor, a twin or a latch inside an effect; it latches the engine last.
+ * One G cell drives the door directly with an issuer this suite owns. Nothing here is native, Cloud or production acceptance, and nothing proves a human decision. */
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdirSync } from "node:fs";
@@ -28,6 +28,7 @@ import {
 import { openAuthorityClient } from "../src/authority-client.js";
 import { cotalAuthProvider } from "../src/provider.js";
 import { deriveOwnerForIdpSubject } from "../src/derive.js";
+import { createUserTokenIssuer } from "../src/issuer.js";
 import { grantActor, revokeActor } from "../src/ledger.js";
 import { fetchIdpJwt, saveIdpSession } from "../src/login.js";
 import { openLifecycleRegistry } from "../src/lifecycle-registry.js";
@@ -35,7 +36,7 @@ import { readNativeIssuance } from "../src/native-issuance.js";
 import { nativeServiceNameAuthority } from "../src/native-service-name.js";
 import { authClientSentinelKey, ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../src/store.js";
 import type { ServiceEndpointHost, ServiceHostRequest, ServiceHostResult } from "../src/service-host-contract.js";
-import { serviceAuthorityEngineRequestId } from "../src/service-endpoint-authority.js";
+import { answerServiceAuthority, serviceAuthorityEngineRequestId } from "../src/service-endpoint-authority.js";
 import { parseServiceRequestIntentIndexRecord, parseServiceRequestIntentRecord, serviceHostOperationId } from "../src/service-host-ops.js";
 import { serviceHostEngineOf, startAuthService, type AuthServiceHandle } from "../src/service.js";
 import { checks } from "./_service-custody-fixture.js";
@@ -591,6 +592,87 @@ try {
     twiceWaited && twiceFirst.status === 200 && twiceAnswer.status === 200 && twiceAnswer.parsed?.state === "registered" && twiceSpecs.revisions.length === 1,
     { first: twiceFirst.status, late: twiceAnswer.body, specWrites: twiceSpecs.revisions.length });
 
+  // The first invocation waits on the answer of its barrier's observe, the first read of the gate
+  // after both artifact publishes, while a second invocation of the same request freezes the gate
+  // and waits before its spec write.
+  const twinEp = "org.example.twin-running", twin = cluster(twinEp, [cmd("lookup")]), sg7 = await approved("a", twinEp, twin);
+  const twinSpecKey = recordSpecKey(RECORD_KINDS.svc, [twinEp, sg7.instanceId]), twinSpecs = await writesTo(recordsKv, twinSpecKey);
+  const twinHexes = [twin.manifest, twin.document].map((v) => contractDigest(v).slice("sha256:".length)), twinPublished = new Set<string>();
+  const twinGate = `$KV.${epAuthBucket(space)}.${epgateKey(twinEp, sg7.instanceId)}`;
+  const observeHold = holdFirst((subject, body) => {
+    for (const h of twinHexes) if (!subject.startsWith("$JS.") && subject.endsWith(`.epc.${h}`)) twinPublished.add(h);
+    return twinPublished.size === twinHexes.length && subject.startsWith("$JS.API.STREAM.MSG.GET.") && body.includes(twinGate);
+  }, "after");
+  const observedAnswer = raw(on.url, sg7.proposal, await idpProof("a"));
+  const observed = await observeHold.hit;
+  const specHold = holdFirst((subject) => subject === `$KV.${recordsBucket(space)}.${twinSpecKey}`, "before");
+  const freezingAnswer = raw(on.url, sg7.proposal, await idpProof("a"));
+  const specHeld = await specHold.hit, frozenByTwin = await gate(twinEp, sg7.instanceId);
+  observeHold.release();
+  const runningAnswer = await observedAnswer;
+  specHold.release();
+  const twinAnswer = await freezingAnswer, twinReplay = await raw(on.url, sg7.proposal, await idpProof("a"));
+  await new Promise((res) => setTimeout(res, 500));
+  await twinSpecs.stop();
+  c.check("G7 a register whose recheck finds the gate frozen by another invocation of the same request, not yet stamped, is held (503), not a conflict, and the request registers once",
+    observed && specHeld && frozenByTwin.row.state === "frozen" && frozenByTwin.row.serviceAuthority.pendingRegistration?.requestId === sg7.proposal.requestId
+    && runningAnswer.status === 503 && twinAnswer.status === 200 && twinAnswer.parsed?.state === "registered"
+    && twinReplay.status === 200 && twinReplay.parsed?.state === "registered" && twinSpecs.revisions.length === 1,
+    { observed, specHeld, frozen: frozenByTwin.row.state, running: runningAnswer.status, twin: twinAnswer.status, replay: twinReplay.status, specWrites: twinSpecs.revisions.length });
+
+  /** One owner's proposal-phase register of a fresh key for a selector, and a decision on a proposal. */
+  const propose = async (ep: string, iid: string, x: Cluster) => {
+    const r = registerReq(ep, iid, x), p = await viaProvider("a", r);
+    if (p.state !== "approval-required") throw new Error(`fixture proposal not admitted: ${JSON.stringify(p)}`);
+    return { r, proposalId: p.proposalId };
+  };
+  const decideOn = async (ep: string, proposalId: string, decision: "approve" | "refuse") => {
+    const p = await propRead(proposalId);
+    return call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "decide", granter: { kind: "owner", owner: ownerA },
+      input: { proposalId, expectedProposalRevision: p.state === "present" ? p.record.revision : 0, expectedNameRevision: names.get(ep)!, decision, callerCeiling: [] } });
+  };
+  const rekeyedEp = "org.example.rekeyed", rekeyed = cluster(rekeyedEp, [cmd("lookup")]), rekeyedIid = rid();
+  names.set(rekeyedEp, await bindName(rekeyedEp, "a"));
+  const refusedKey = await propose(rekeyedEp, rekeyedIid, rekeyed), refusedDecision = await decideOn(rekeyedEp, refusedKey.proposalId, "refuse");
+  const approvedKey = await propose(rekeyedEp, rekeyedIid, rekeyed), approvedDecision = await decideOn(rekeyedEp, approvedKey.proposalId, "approve");
+  const rekeyedSpecs = await writesTo(recordsKv, recordSpecKey(RECORD_KINDS.svc, [rekeyedEp, rekeyedIid]));
+  const refusedReplay = await raw(on.url, refusedKey.r, await idpProof("a")), refusedIndex = await indexOf(rekeyedEp, rekeyedIid);
+  const approvedReplay = await raw(on.url, approvedKey.r, await idpProof("a"));
+  await new Promise((res) => setTimeout(res, 500));
+  await rekeyedSpecs.stop();
+  const rekeyedGate = await gate(rekeyedEp, rekeyedIid);
+  c.check("G8 a key whose proposal was refused stays refused (409) once another key's proposal for the same selector is approved, writes nothing, and the approved key registers",
+    refusedDecision.state === "refused" && approvedDecision.state === "approved" && refusedReplay.status === 409 && denied(refusedReplay.parsed, "proposal-refused")
+    && refusedIndex === undefined && approvedReplay.status === 200 && approvedReplay.parsed?.state === "registered"
+    && rekeyedGate.row.serviceAuthority.registration?.requestId === approvedKey.r.requestId && rekeyedSpecs.revisions.length === 1,
+    { refused: refusedReplay.body, indexed: refusedIndex?.row.intents.length, approved: approvedReplay.status, specWrites: rekeyedSpecs.revisions.length });
+  const rebodiedEp = "org.example.rebodied", rebodied = cluster(rebodiedEp, [cmd("lookup")]), rebodiedIid = rid();
+  names.set(rebodiedEp, await bindName(rebodiedEp, "a"));
+  const bodyKey = await propose(rebodiedEp, rebodiedIid, rebodied);
+  await decideOn(rebodiedEp, bodyKey.proposalId, "approve");
+  const changedKey = { ...bodyKey.r, registration: { clusterDigests: [rebodied.closureDigest], contractArtifacts: [rebodied.document, rebodied.manifest] } } as ServiceAuthorityRequest;
+  const changedReplay = await raw(on.url, changedKey, await idpProof("a")), changedIndex = await indexOf(rebodiedEp, rebodiedIid);
+  const admittedReplay = await raw(on.url, bodyKey.r, await idpProof("a"));
+  c.check("G9 a key replayed in the serving phase with another body than its proposal phase admitted is a conflict (409) that writes nothing, and the admitted body registers",
+    serviceAuthorityRequestDigest(changedKey) !== serviceAuthorityRequestDigest(bodyKey.r) && changedReplay.status === 409 && denied(changedReplay.parsed, "conflict")
+    && changedIndex === undefined && admittedReplay.status === 200 && admittedReplay.parsed?.state === "registered",
+    { changed: changedReplay.body, indexed: changedIndex?.row.intents.length, admitted: admittedReplay.status });
+  // The suite's own issuer whose key cannot sign EdDSA: it fails after the activation lands.
+  const unmintedEp = "org.example.unminted", unminted = cluster(unmintedEp, [cmd("lookup")]);
+  const sg9 = await approved("a", unmintedEp, unminted), actg9 = witnessReq("activate", await registered(sg9));
+  const signer = await generateKeyPair("EdDSA"), wrongSigner = await generateKeyPair("ES256");
+  const ownedJwk = { ...await exportJWK(signer.publicKey), kid: "svserve-owned", alg: "EdDSA", use: "sig" };
+  const ownedDoor = (privateKey: CryptoKey) => ({ space, accountPublicKey, engine: serviceHostEngineOf(host)!,
+    material: createUserTokenIssuer({ issuer: "svserve-owned-issuer", key: { kid: "svserve-owned", privateKey, publicJwk: ownedJwk } }) });
+  const unmintedAnswer = await answerServiceAuthority(ownedDoor(wrongSigner.privateKey), actg9, { kind: "idp", owner: ownerA });
+  const unmintedLanded = (await gate(unmintedEp, sg9.instanceId)).row.serviceAuthority.activationIssued;
+  const mintedAnswer = await answerServiceAuthority(ownedDoor(signer.privateKey), actg9, { kind: "idp", owner: ownerA });
+  const hostedMinted = await raw(on.url, actg9, await idpProof("a"));
+  c.check("G10 an activate whose material fails to mint before its expiry answers unknown (503), not expired, and the same request replayed mints",
+    unmintedAnswer.status === 503 && unmintedLanded && mintedAnswer.status === 200 && (mintedAnswer.body as { state?: string }).state === "credential"
+    && hostedMinted.status === 200 && hostedMinted.parsed?.state === "credential",
+    { unminted: unmintedAnswer, landed: unmintedLanded, minted: mintedAnswer.status, hosted: hostedMinted.status });
+
   // Last: the latch stays set for the rest of this context.
   const latchedEp = "org.example.latched", latched = cluster(latchedEp, [cmd("lookup")]);
   const sg4 = await approved("a", latchedEp, latched), wg4 = await registered(sg4), credg4 = await credential("a", witnessReq("activate", wg4));
@@ -610,7 +692,7 @@ try {
   const latchedAnswer = await readyAnswer;
   await new Promise((r) => setTimeout(r, 800));
   await statusWrites.stop();
-  c.check("G7 a ready held at its status read across the engine latch issues no status write after the latch and answers unknown (503)",
+  c.check("G11 a ready held at its status read across the engine latch issues no status write after the latch and answers unknown (503)",
     unlatched.status === 200 && beforeLatch === 1 && readHeld && latchedAnswer.status === 503 && statusWrites.revisions.length === beforeLatch,
     { unlatched: unlatched.status, beforeLatch, readHeld, latched: latchedAnswer.status, writes: statusWrites.revisions.length });
 } finally {
