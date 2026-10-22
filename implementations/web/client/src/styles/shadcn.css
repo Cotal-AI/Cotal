@@ -151,9 +151,10 @@
 }
 
 /* Without preflight, Tailwind's border utilities set a width on a style of none, so shadcn borders
-   would vanish. This scoped reset gives the parts a solid style. It sits in the base layer so
-   Tailwind's own border utilities still win over it. */
-@layer base { :where([data-slot], [data-slot] *) { border: 0 solid; } }
+   would vanish. This scoped reset gives the parts a solid style in our border colour, as shadcn's own
+   base does. Without the colour, a border with no colour class takes the text colour. It sits in the
+   base layer so Tailwind's own border utilities still win over it. */
+@layer base { :where([data-slot], [data-slot] *) { border: 0 solid var(--border); } }
 
 /* shadcn's colour names, radii and fonts onto ours. tokens.css sets each shadcn name from one of our
    tokens on :root, so Night follows from its own blocks. */

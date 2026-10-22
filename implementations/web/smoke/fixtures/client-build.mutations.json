@@ -143,10 +143,19 @@
     {
       "name": "the [data-slot] border reset is written unlayered, so it beats every Tailwind border utility",
       "file": "implementations/web/client/src/styles/shadcn.css",
-      "find": "@layer base { :where([data-slot], [data-slot] *) { border: 0 solid; } }",
-      "replace": ":where([data-slot], [data-slot] *) { border: 0 solid; }",
+      "find": "@layer base { :where([data-slot], [data-slot] *) { border: 0 solid var(--border); } }",
+      "replace": ":where([data-slot], [data-slot] *) { border: 0 solid var(--border); }",
       "expectRed": "the [data-slot] border reset sits inside @layer base",
       "cell": "the [data-slot] border reset sits inside @layer base",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the [data-slot] reset drops its colour, so Trace's nested rule draws in the text colour",
+      "file": "implementations/web/client/src/styles/shadcn.css",
+      "find": "{ border: 0 solid var(--border); }",
+      "replace": "{ border: 0 solid; }",
+      "expectRed": "the [data-slot] border reset draws shadcn borders in our border colour",
+      "cell": "the [data-slot] border reset draws shadcn borders in our border colour",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
     },
     {

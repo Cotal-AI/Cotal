@@ -14,6 +14,7 @@ import { body } from "../client/src/art/index.ts";
 import { THEMES } from "../client/src/lib/theme.js";
 import { bootTheme } from "../client/src/lib/themeBoot.ts";
 import config from "../client/vite.config.js";
+import { cssRules } from "./css-rules.js";
 
 const pkg = join(dirname(fileURLToPath(import.meta.url)), "..");
 const out = join(pkg, "dist", "web");
@@ -107,46 +108,29 @@ ok("the built stylesheet's color-scheme follows the theme: light dark for system
   JSON.stringify(schemes) === JSON.stringify(["light dark", "light", "dark"]), schemes);
 
 // Tailwind comes in without its reset, so the existing screens keep app.css's own base.
-type CssRule = { selector: string; body: string; within: string[] };
-/** The style rules of the built stylesheet, each with the at-rules around it, outermost first. */
-const cssRules = (text: string, within: string[] = []): CssRule[] => {
-  const found: CssRule[] = [];
-  let i = 0;
-  while (i < text.length) {
-    const open = text.indexOf("{", i);
-    if (open < 0) break;
-    const semi = text.indexOf(";", i);
-    if (semi >= 0 && semi < open) { i = semi + 1; continue; } // a statement such as `@layer a,b;`
-    let depth = 0;
-    let close = open;
-    for (; close < text.length; close++) {
-      if (text[close] === "{") depth++;
-      else if (text[close] === "}" && --depth === 0) break;
-    }
-    const head = text.slice(i, open).trim();
-    const inner = text.slice(open + 1, close);
-    if (/^@(?:media|layer|supports)\b/.test(head)) found.push(...cssRules(inner, [...within, head]));
-    else if (!head.startsWith("@")) found.push({ selector: head.replace(/["']/g, "").replace(/\s+/g, " "), body: inner, within });
-    i = close + 1;
-  }
-  return found;
-};
 const rules = cssRules(css);
-const resets = rules.filter((r) => r.selector.includes("::backdrop") && /box-sizing|margin:0|border:0 solid/.test(r.body));
+const resets = rules.filter((r) => r.selectors.some((s) => s.includes("::backdrop")) && /box-sizing|margin:0|border:0 solid/.test(r.body));
 ok("the stylesheet carries no Tailwind preflight: no ::file-selector-button and no reset rule on *, ::after, ::before, ::backdrop",
-  !css.includes("::file-selector-button") && resets.length === 0, resets.map((r) => r.selector));
-// Without preflight, shadcn's borders need a border style. The scoped reset gives them one, and sits in
-// the base layer so Tailwind's own border utilities still override it.
-const slotResets = rules.filter((r) => r.selector === ":where([data-slot],[data-slot] *)" || r.selector === ":where([data-slot], [data-slot] *)");
+  !css.includes("::file-selector-button") && resets.length === 0, resets.map((r) => r.selectors));
+// Without preflight, shadcn's borders need a border style and colour. The scoped reset gives them both,
+// and sits in the base layer so Tailwind's own border utilities still override it.
+const SLOT = ":where([data-slot],[data-slot] *)";
+const slotResets = rules.filter((r) => r.selectors.includes(SLOT) && /(?:^|;)\s*border(?:-[a-z]+)?\s*:/.test(r.body));
 ok("the [data-slot] border reset sits inside @layer base",
   slotResets.length > 0 && slotResets.every((r) => r.within.length === 1 && /^@layer base$/.test(r.within[0]!)), slotResets.map((r) => r.within));
+// The mock draws the parts' default borders, Trace's nested rule among them, in --border. With no
+// colour here, border: 0 solid falls back to currentColor and the rule takes the text colour.
+ok("the [data-slot] border reset draws shadcn borders in our border colour",
+  slotResets.length > 0 && slotResets.some((r) => /(?:^|;)\s*border(?:-color)?\s*:[^;]*var\(--border\)/.test(r.body)), slotResets.map((r) => r.body));
 // The dark variant follows the theme the way tokens.css does: forced by data-theme="dark", and from
 // the OS setting when the theme is system or unset. Button's outline variant uses dark:bg-transparent.
-const darkRules = rules.filter((r) => r.selector.startsWith(".dark\\:bg-transparent:"));
+const DARK_BG = ".dark\\:bg-transparent:";
+const darkSelectors = rules.filter((r) => /(?:^|;)\s*background-color\s*:/.test(r.body))
+  .flatMap((r) => r.selectors.filter((s) => s.startsWith(DARK_BG)).map((selector) => ({ selector, within: r.within })));
 ok("a dark: utility from a shadcn file is emitted under [data-theme=dark] and inside @media (prefers-color-scheme: dark)",
-  darkRules.some((r) => r.selector.includes("[data-theme=dark]") && !r.within.some((w) => w.includes("prefers-color-scheme")))
-    && darkRules.some((r) => r.selector.includes(":root:not([data-theme=light])") && r.within.some((w) => /prefers-color-scheme:\s*dark/.test(w))),
-  darkRules);
+  darkSelectors.some((d) => d.selector.includes("[data-theme=dark]") && !d.within.some((w) => w.includes("prefers-color-scheme")))
+    && darkSelectors.some((d) => d.selector.includes(":root:not([data-theme=light])") && d.within.some((w) => /prefers-color-scheme:\s*dark/.test(w))),
+  darkSelectors);
 
 const licenses = JSON.parse(readFileSync(join(out, "bundle-licenses.json"), "utf8")) as {
   bundled: { package: string; version: string; license: string }[];

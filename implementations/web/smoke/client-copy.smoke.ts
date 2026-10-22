@@ -7,6 +7,7 @@ import { strict as assert } from "node:assert";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { cssRules, type CssRule } from "./css-rules.js";
 
 const src = join(dirname(fileURLToPath(import.meta.url)), "..", "client", "src");
 let n = 0;
@@ -127,36 +128,13 @@ ok("tokens.css's :root defines each bridged shadcn name as var(--ours) per the m
   unbridged.map(([name]) => ({ name, root: lightVars.get(name), night: nightVars.get(name), system: systemVars.get(name) })));
 
 // Every class rule in app.css that runs an animation is stopped under reduced motion.
-type CssRule = { selector: string; body: string; within: string[] };
-/** The style rules of `css`, comments removed, each with the at-rules around it, outermost first. */
-const cssRules = (css: string, within: string[] = []): CssRule[] => {
-  const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
-  const out: CssRule[] = [];
-  let i = 0;
-  while (i < text.length) {
-    const open = text.indexOf("{", i);
-    if (open < 0) break;
-    let depth = 0;
-    let close = open;
-    for (; close < text.length; close++) {
-      if (text[close] === "{") depth++;
-      else if (text[close] === "}" && --depth === 0) break;
-    }
-    const head = text.slice(i, open).trim();
-    const inner = text.slice(open + 1, close);
-    if (/^@(?:media|layer|supports)\b/.test(head)) out.push(...cssRules(inner, [...within, head]));
-    else if (!head.startsWith("@")) out.push({ selector: head, body: inner, within });
-    i = close + 1;
-  }
-  return out;
-};
 const appRules = cssRules(app);
 const reduced = (r: CssRule) => r.within.some((w) => /prefers-reduced-motion:\s*reduce/.test(w));
 const sets = (body: string) => /(?:^|;)\s*animation(?:-name)?\s*:\s*([^;]+)/.exec(body)?.[1]?.trim();
 const animated = appRules.filter((r) => !reduced(r) && sets(r.body) && sets(r.body) !== "none")
-  .flatMap((r) => r.selector.split(",").map((s) => s.trim())).filter((s) => s.includes("."));
+  .flatMap((r) => r.selectors).filter((s) => s.includes("."));
 const stopped = new Set(appRules.filter((r) => reduced(r) && sets(r.body) === "none")
-  .flatMap((r) => r.selector.split(",").map((s) => s.trim())));
+  .flatMap((r) => r.selectors));
 const moving = animated.filter((s) => !stopped.has(s));
 ok("every class rule in app.css with a running animation also has a reduced-motion rule",
   animated.length > 0 && moving.length === 0, moving);
