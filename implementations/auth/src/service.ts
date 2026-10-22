@@ -2351,7 +2351,7 @@ export interface AuthServiceHandle extends HostedServiceHandle {
     request: PlatformControlAuthorityRequest<R>,
   ): Promise<PlatformControlAuthorityResult<R>>;
   /** The service endpoint host (SPEC 13.1). Present only when `serviceEndpoints` was supplied to
-   *  {@link startAuthService}. In-process and typed: no route, no capability, no caller policy. The
+   *  {@link startAuthService}. In-process and typed: no route and no capability of its own. The
    *  embedder authenticates the granter it passes. Rejects `unavailable` while the context is not
    *  ready, before the host reads or writes anything. The owner-proved public register and status
    *  door is the separate `/service-endpoint-authority` route on both faces. */

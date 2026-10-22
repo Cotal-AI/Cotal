@@ -464,6 +464,7 @@
     "smoke:service-endpoint-authority:auth": "tsx implementations/auth/smoke/service-endpoint-authority.smoke.ts",
     "smoke:service-serving:auth": "tsx implementations/auth/smoke/service-serving.smoke.ts",
     "smoke:service-caller-policy": "tsx implementations/auth/smoke/service-caller-policy.smoke.ts",
+    "smoke:service-caller-host:auth": "tsx implementations/auth/smoke/service-caller-host.smoke.ts",
     "smoke:describe-observation": "tsx packages/core/smoke/describe-observation.smoke.ts",
     "smoke:service-access": "tsx implementations/auth/smoke/service-access.smoke.ts",
     "smoke:service-renewal": "tsx implementations/auth/smoke/service-renewal.smoke.ts",

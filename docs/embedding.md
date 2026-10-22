@@ -141,8 +141,9 @@ space and grantee UID. Grant ids are immutable; an append cannot replace or reac
 Initial writes require no prior native key history. A deletion arriving after an absence read
 cannot recreate a policy or a pending service gate.
 Revocation begins with a revision-pinned deny-new intent that unrelated appends preserve.
-These are storage operations, not entitlement checks. The effective policy resolver, host operations,
-cutoff evidence and terminal caller revocation are not implemented yet.
+These are storage operations, not entitlement checks; the service endpoint host below is their only
+writer. The effective policy resolver, issuance from caller policy, receipts and terminal caller
+revocation are not implemented yet.
 
 Scoped Describe callbacks also receive an optional immutable local context with the actual subject,
 complete-envelope fingerprint, serving identity and receive-relative deadline information.
@@ -1379,9 +1380,10 @@ are public.
 
 `openAuthAuthorityPlane` and `startAuthService` take `serviceEndpoints: { startup: { kind: "normal" } }`
 to host these operations; it is off by default and no CLI flag sets it. With it, the plane and the
-hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke`, `name-bind` and
-the two reads in process. A hosted context rejects it as `unavailable` while it is not ready. That
-function has no route, capability or caller policy; register admission is reachable only through the
+hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke`, `name-bind`, the
+four caller-policy operations and the two reads in process. A hosted context rejects it as
+`unavailable` while it is not ready. That function has no route or capability of its own; register
+admission is reachable only through the
 public route below. The host authenticates no caller: the embedder must authenticate the operator or
 owner granter it passes. `name-bind` needs an operator granter and `expectedRevision: 0`. It creates
 the endpoint's name binding once, with your `claimReference`, and only the identical request recovers
@@ -1437,8 +1439,33 @@ running, answers 503; replay the same request. Once a service has activated, its
 can no longer change. Commands must be ephemeral and declare
 no governed trait.
 
-This is registration and serving, not a complete service endpoint. Caller policy and scoped Describe
-are not available, so callers cannot yet be authorized against the service, and revoke, terminal
+`caller-grant` takes an owner granter with an interactive row who holds the approved instance, and a
+grantee that is an interactive actor with no parent, named by owner, actor and lifecycle UID. Every
+capability must name that instance with `instanceOnly: true`, carry no journal access and no `any` or
+`ledger` target, and sit within the approval's caller ceiling. The answer is `granted` with the grant
+as stored. An `active` grant is recorded, not effective: nothing issues rights from caller policy yet.
+One instance indexes at most 256 grants over its life, including attempts refused after indexing, and
+a full index answers `resource-exhausted`; a new instance is the remedy. `caller-revoke` admits the
+grant's source owner, its grantee owner and an operator. It answers `pending` with
+`denyNew: "landed"` and `notBefore`, in epoch seconds, 71 s after the broker time of the grant's
+cutoff marker. It never answers `revoked`, and the result parser refuses that arm.
+`caller-policy-read` gives an owner its own grantees, and another owner's grantee only filtered to a
+service it holds; `caller-policy-list` needs a service selector.
+
+Caller grants need a payload precondition: every broker server's `max_payload` of at least 2 MiB plus
+1 KiB, an auth stream with no per-message limit, and an operator's assertion of both recorded in the
+auth store. Cotal's generated broker configuration keeps the 1 MiB default and no command records the
+assertion yet, so on a stock deployment `caller-grant` answers `unsupported`. Reads and revokes do not
+need it. A revoke whose policy row would not fit holds `payload-precondition` and writes nothing, and
+a failed check withdraws the recorded assertion until an operator records it again.
+
+Give each caller operation a fresh random requestId, record it with the exact body before you send
+it, and replay that body after a lost reply, a 503 or a `held` answer. Never switch to a new requestId
+while an earlier answer is unknown. A settled `refused` or `expired` ends the attempt, and a grant
+replayed after its 10-minute window adopts a grant that landed and otherwise answers `expired`.
+
+This is registration and serving, not a complete service endpoint. Issuance from caller policy and
+scoped Describe are not available, so callers cannot yet be authorized against the service, and revoke, terminal
 retirement and restore stay unsupported: a host revoke refuses new activation, renewal, readiness
 and connections, but a connection already open keeps its original expiry of at most 60 s. Approval
 runs service bootstrap and revoke runs cancellation, while complete observer evidence and writer
