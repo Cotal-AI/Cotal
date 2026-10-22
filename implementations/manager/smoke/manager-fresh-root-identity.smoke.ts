@@ -89,17 +89,22 @@ try {
     env: { ...cleanEnv(), COTAL_I1263_WORKER: "1", COTAL_I1263_ROOT: seqRoot, COTAL_I1263_SPACE: SPACE, COTAL_I1263_SERVER: SERVER, COTAL_I1263_BARRIER: seqBarrier },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  teardownOnSignal(second);
   kids.push(second);
   const seqReport = await new Promise<{ ok: boolean; error?: string }>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("the sequential second start did not report")), 25_000);
     let buf = "";
     second.stdout?.on("data", (c: Buffer) => {
       buf += c.toString();
-      const line = buf.split("\n").find((l) => l.startsWith("{"));
-      if (line) { clearTimeout(timer); resolve(JSON.parse(line)); }
+      // Only a complete line is a report; a chunk can end inside one.
+      const line = buf.split("\n").slice(0, -1).find((l) => l.startsWith("{"));
+      if (!line) return;
+      clearTimeout(timer);
+      try { resolve(JSON.parse(line)); } catch (e) { reject(e); }
     });
   });
-  try { second.kill("SIGKILL"); } catch { /* already gone */ }
+  second.kill("SIGKILL");
+  if (second.exitCode === null && second.signalCode === null) await new Promise((r) => second.once("exit", r));
   const seqErr = seqReport.ok ? "" : seqReport.error ?? "";
   check("sequential second start REFUSES with already-serves (fence after identity exists)",
     /already serves space/.test(seqErr), seqErr);
