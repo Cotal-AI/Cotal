@@ -852,6 +852,47 @@ console.log("G) caller cancellation (AbortSignal): stops this local sign-in, rev
   }
   idp.close();
 }
+{
+  // 6 and 7. An error response whose body stalls: the IdP flushes non-OK headers, then never sends
+  // the body. A caller abort during that body read is a cancellation, on the first request and on
+  // a poll alike, never a generic error or an "unreachable".
+  let stallOn: "code" | "token" = "code";
+  const held = new Set<import("node:http").ServerResponse>();
+  const hits: Record<string, number> = {};
+  const stall = createServer((req, res) => {
+    const route = new URL(req.url!, "http://x").pathname;
+    hits[route] = (hits[route] ?? 0) + 1;
+    if (route === "/api/auth/device/code" && stallOn === "token") {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ device_code: "d", user_code: "u", verification_uri: "v", verification_uri_complete: "vc", expires_in: 60, interval: 1 }));
+      return;
+    }
+    res.writeHead(400, { "content-type": "application/json" });
+    res.flushHeaders();
+    held.add(res); // the body never comes
+  });
+  await new Promise<void>((r) => stall.listen(0, "127.0.0.1", r));
+  const sBase = `http://127.0.0.1:${(stall.address() as AddressInfo).port}/api/auth`;
+  const abortAfterHeaders = async (route: string): Promise<unknown> => {
+    const ac = new AbortController();
+    const p = deviceLogin({ idpUrl: sBase, clientId: CLIENT_ID, onPrompt: () => {}, signal: ac.signal }).then(() => undefined, (e) => e);
+    while ((hits[route] ?? 0) === 0) await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 30));
+    ac.abort();
+    return p;
+  };
+  const cancelledClass = (e: unknown) => e instanceof IdpLoginCancelled;
+
+  stallOn = "code";
+  const codeErr = await abortAfterHeaders("/api/auth/device/code");
+  check("abort while a /device/code error body stalls rejects as a cancellation", cancelledClass(codeErr), String(codeErr));
+
+  stallOn = "token";
+  const pollErr = await abortAfterHeaders("/api/auth/device/token");
+  check("abort while a /device/token error body stalls rejects as a cancellation", cancelledClass(pollErr), String(pollErr));
+
+  for (const r of held) r.destroy();
+  stall.close();
+}
 
 console.log(`\nlogin smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

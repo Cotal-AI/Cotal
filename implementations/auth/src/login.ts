@@ -123,10 +123,12 @@ interface OAuthError {
   error?: string;
   error_description?: string;
 }
-async function oauthError(res: Response): Promise<OAuthError> {
+async function oauthError(res: Response, cancel?: AbortSignal): Promise<OAuthError> {
   try {
     return (await res.json()) as OAuthError;
   } catch {
+    // An unreadable error body is treated as "no detail", unless the caller cancelled mid-read.
+    throwIfCancelled(cancel);
     return {};
   }
 }
@@ -252,7 +254,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     body: JSON.stringify({ client_id: opts.clientId }),
   }, opts.signal);
   if (!res.ok) {
-    const e = await oauthError(res);
+    const e = await oauthError(res, opts.signal);
     throw new Error(
       `idp login: ${base} refused the device authorization (${e.error ?? `HTTP ${res.status}`}: ${e.error_description ?? "no detail"})`,
     );
@@ -332,7 +334,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
         throw new Error(`idp login: ${base} returned a JWT as the device access token - the session token must be an opaque revocable handle, refusing to cache it; re-run \`cotal login\` after fixing the IdP`);
       return { token: tok.access_token, expiresAt: Math.floor(Date.now() / 1000) + tok.expires_in };
     }
-    const e = await oauthError(poll);
+    const e = await oauthError(poll, opts.signal);
     if (e.error === "authorization_pending") continue;
     if (e.error === "slow_down") {
       intervalSec += 5;
