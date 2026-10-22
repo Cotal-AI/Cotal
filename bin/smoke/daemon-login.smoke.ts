@@ -26,13 +26,18 @@
  *  L10 status still answers state "ready" (listener only, no connection claim) during a sign-in;
  *  L11 the daemon caps requests per connection and closes the connection past the cap;
  *  L12 `cotal daemon login --idp` through the composition root signs in against the real IdP and
- *      prints no session token.
+ *      prints no session token;
+ *  L13 a cancel of an attempt whose sign-in finished but whose result is still being delivered waits
+ *      for that delivery and answers completed; meanwhile a new login-start is refused, 0 IdP calls;
+ *  L14 a failed sign-in relays none of the provider's text (an error_description, a non-JSON token
+ *      body) in any frame, or on the CLI's stdout or stderr;
+ *  L15 a sign-in that fails after stock wrote the session does not make the CLI claim nothing was saved.
  *
  * Run: tsx bin/smoke/daemon-login.smoke.ts   (Linux only)
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, type AddressInfo, type Socket } from "node:net";
-import { mkdtempSync, chmodSync, readdirSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, chmodSync, readdirSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn } from "node:child_process";
@@ -42,6 +47,7 @@ import { peerCredentials } from "@cotal-ai/seat";
 import { loadIdpSession } from "@cotal-ai/auth";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
+import { createLoginCoordinator } from "../daemon/login.js";
 
 if (process.platform !== "linux") {
   console.log("daemon-login smoke: Linux only; skipped on " + process.platform);
@@ -69,6 +75,12 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const until = async (cond: () => boolean, what: string, ms = 10000) => {
+  const end = Date.now() + ms;
+  while (!cond()) { if (Date.now() > end) throw new Error(`timed out waiting for ${what}`); await sleep(20); }
+};
+/** A provider answer no daemon frame or CLI output may echo. Not a credential: a marker. */
+const SENTINEL = "SMOKESENTINELVALUE0123456789";
 /** Run one cell; a cell that throws counts as one failure and the next cell still runs. */
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
   console.log(title);
@@ -161,21 +173,38 @@ async function decide(userCode: string, verb: "approve" | "deny") {
 const hits: Record<string, number> = {};
 let approved = false;
 let tokenGate: Promise<void> | undefined;
+/** When set, /device/token answers exactly this, whatever `approved` says. */
+let tokenOverride: { status: number; body: string } | undefined;
 const fakeJwt = (sub: string) => `${Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url")}.${Buffer.from(JSON.stringify({ sub, iss: "x" })).toString("base64url")}.sig`;
 const scripted = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   const route = new URL(req.url!, "http://x").pathname;
   hits[route] = (hits[route] ?? 0) + 1;
   const send = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body)); };
   if (route === "/api/auth/device/code") return send(200, { device_code: "scripted-device-code", user_code: "SCRIPTED", verification_uri: "http://127.0.0.1/v", verification_uri_complete: "http://127.0.0.1/v?c=SCRIPTED", expires_in: 60, interval: 1 });
+  if (route === "/api/auth/device/token" && tokenOverride) return void res.writeHead(tokenOverride.status, { "content-type": "application/json" }).end(tokenOverride.body);
   if (route === "/api/auth/device/token") return approved ? send(200, { access_token: "scripted-session-token", expires_in: 3600 }) : send(400, { error: "authorization_pending" });
   if (route === "/api/auth/token") { if (tokenGate) await tokenGate; return send(200, { token: fakeJwt("scripted-user") }); }
   send(404, {});
 });
 await new Promise<void>((r) => scripted.listen(0, "127.0.0.1", r));
 const sBase = `http://127.0.0.1:${(scripted.address() as AddressInfo).port}/api/auth`;
-const resetScripted = () => { for (const k of Object.keys(hits)) delete hits[k]; approved = false; tokenGate = undefined; };
+const resetScripted = () => { for (const k of Object.keys(hits)) delete hits[k]; approved = false; tokenGate = undefined; tokenOverride = undefined; };
 const totalHits = () => Object.values(hits).reduce((a, b) => a + b, 0);
 const polls = () => hits["/api/auth/device/token"] ?? 0;
+/** The scripted IdP's session token reached the stock session file. */
+const sessionSaved = (home: string) => existsSync(join(home, "idp-sessions.json")) && readFileSync(join(home, "idp-sessions.json"), "utf8").includes("scripted-session-token");
+/** `cotal daemon login --idp <idp> --json` through the composition root, against the daemon at `rt`. */
+async function runCli(rt: string, idp: string): Promise<{ status: number | null; out: string; err: string }> {
+  const child = spawn(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "bin", "cotal.ts"), "daemon", "login", "--idp", idp, "--json"], {
+    cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rt, COTAL_HOME: join(root, "cli-home"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  const exited = new Promise<number | null>((r) => child.once("exit", (c) => r(c)));
+  let out = "", err = "";
+  child.stdout.on("data", (b) => { out += String(b); });
+  child.stderr.on("data", (b) => { err += String(b); });
+  const status = await Promise.race([exited, sleep(20000).then(() => { child.kill("SIGKILL"); return -1; })]);
+  return { status, out, err };
+}
 
 try {
   // ---- L1: approve against the real IdP ----
@@ -429,6 +458,78 @@ try {
       check("L12 exit 0 with a signed-in result for the IdP subject", status === 0 && JSON.stringify(doc).includes(userId), { status, out: out.slice(0, 400), err: err.slice(0, 400) });
       check("L12 the session landed in the DAEMON's session dir, not the CLI's COTAL_HOME", !!stored?.token && !existsSync(join(root, "cli-home", "idp-sessions.json")));
       check("L12 neither stdout nor stderr carries the session token", !!stored?.token && !out.includes(stored.token) && !err.includes(stored.token));
+    } finally { await d.close(); }
+  });
+
+  // ---- L13: a cancel waits for the result's delivery, even after the sign-in itself completed ----
+  await cell("L13 cancel while a completed result is still being delivered", async () => {
+    resetScripted();
+    const { home } = fresh();
+    approved = true;
+    const coord = createLoginCoordinator({ sessionDir: home });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let delivered = false;
+    try {
+      const started = coord.start({ idp: sBase, onPrompt: () => {}, onResult: async () => { await gate; delivered = true; } });
+      if (!started) throw new Error("instrument: the attempt did not start");
+      await until(() => sessionSaved(home), "the session to be written");
+      await sleep(300);
+      let answer: { outcome?: string; deliveredFirst?: boolean } | undefined;
+      const cancelling = coord.cancel(started.attempt).then((c) => { answer = { outcome: c.outcome, deliveredFirst: delivered }; });
+      const hitsBefore = totalHits();
+      const second = coord.start({ idp: sBase, onPrompt: () => {}, onResult: async () => {} });
+      await sleep(300);
+      check("L13 the cancel is not answered while the result is undelivered", answer === undefined, answer);
+      check("L13 a new sign-in is refused while the result is undelivered, with 0 IdP calls", second === undefined && totalHits() === hitsBefore, { second: second?.attempt, hitsBefore, now: totalHits() });
+      release();
+      await cancelling;
+      check("L13 the cancel then answers completed, after the result was delivered", answer?.outcome === "completed" && answer.deliveredFirst === true, answer);
+      check("L13 the session stays", sessionSaved(home));
+    } finally { release(); await coord.close(); }
+  });
+
+  // ---- L14: a failed sign-in relays no provider text, over the wire or to the terminal ----
+  await cell("L14 a failed sign-in relays no provider text", async () => {
+    resetScripted();
+    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+    const needle = SENTINEL.slice(0, 10);
+    try {
+      const cases: Array<[string, { status: number; body: string }]> = [
+        ["an IdP error_description", { status: 400, body: JSON.stringify({ error: "server_error", error_description: `detail-${SENTINEL}` }) }],
+        ["a 200 token body that is not JSON", { status: 200, body: SENTINEL }],
+      ];
+      for (const [name, override] of cases) {
+        tokenOverride = override;
+        const w = await wire(paths.socket);
+        w.send({ v: 1, id: rid(), op: "login-start", idp: sBase });
+        const r = resultOf(await w.next(isResult, 10000));
+        check(`L14 ${name}: the attempt fails`, r.outcome === "failed", r);
+        check(`L14 ${name}: no frame carries the provider's text`, !JSON.stringify(w.frames).includes(needle), w.frames);
+        w.end();
+        await w.closed;
+      }
+      tokenOverride = cases[0]![1];
+      const run = await runCli(rt, sBase);
+      check("L14 the CLI exits non-zero for the failure", run.status !== 0 && run.status !== -1, { status: run.status, out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
+      check("L14 neither stdout nor stderr carries the provider's text", !run.out.includes(needle) && !run.err.includes(needle), { out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
+    } finally { await d.close(); }
+  });
+
+  // ---- L15: a failure after the session was written claims nothing about persistence ----
+  await cell("L15 a failure after the session write", async () => {
+    resetScripted();
+    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    // Stock writes the session, then reads the catalog file; a malformed one fails the sign-in there.
+    mkdirSync(home, { mode: 0o700 });
+    writeFileSync(join(home, "space-catalogs.json"), "{not json", { mode: 0o600 });
+    approved = true;
+    const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+    try {
+      const run = await runCli(rt, sBase);
+      check("L15 instrument: the sign-in failed and the session was written", run.status !== 0 && run.status !== -1 && sessionSaved(home), { status: run.status, saved: sessionSaved(home), out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
+      check("L15 the CLI does not claim nothing was saved", !/no session was saved|nothing was saved/i.test(run.out + run.err), { out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
     } finally { await d.close(); }
   });
 } catch (e) {
