@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useContext, useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { dmPeers } from "./lib/dms.js";
 import { rosterRows, waiting } from "./lib/roster.js";
 import { formatRoute, type Route } from "./lib/route.js";
@@ -16,13 +16,32 @@ import { ActivityView } from "./ui/views/ActivityView.tsx";
 import { ChannelView } from "./ui/views/ChannelView.tsx";
 import { DmView } from "./ui/views/DmView.tsx";
 import { AgentsView } from "./ui/views/AgentsView.tsx";
-import { AgentPage } from "./ui/views/AgentPage.tsx";
 import { AgentPicker } from "./ui/panel/picker.js";
 import { BadgeOf, badgeLookup } from "./ui/identity.js";
 import { SheetMenu } from "./ui/sheet.js";
 import { panelShown, RightPanel, usePanel, type Panel } from "./ui/panel/RightPanel.tsx";
 import { SkeletonView } from "./ui/Skeleton.tsx";
+import { Navigate } from "./ui/navigate.js";
 import { TopologyView } from "./ui/views/TopologyView.tsx";
+
+type AgentPageModule = typeof import("./ui/views/AgentPage.tsx");
+/** The agent page's module once it has loaded. */
+let agentPageModule: AgentPageModule | undefined;
+
+/** Load the agent page's module, which is not in the first load: a secondary route should not make
+ *  every page open pay for Tabs and the message scroller. A suite awaits it before it draws an agent
+ *  route, so even a server render draws the page rather than its fallback. */
+export function loadAgentPage(): Promise<AgentPageModule> {
+  return import("./ui/views/AgentPage.tsx").then((m) => (agentPageModule = m));
+}
+
+/** The agent page, loaded on first use. Once the module is held the loader settles at once (a
+ *  thenable that calls back synchronously), so React draws the page in the same render. */
+const AgentPage = lazy((): Promise<{ default: AgentPageModule["AgentPage"] }> => {
+  const held = agentPageModule;
+  if (held) return { then: (done: (m: { default: AgentPageModule["AgentPage"] }) => void) => done({ default: held.AgentPage }) } as unknown as Promise<{ default: AgentPageModule["AgentPage"] }>;
+  return loadAgentPage().then((m) => ({ default: m.AgentPage }));
+}) as unknown as ComponentType<Parameters<AgentPageModule["AgentPage"]>[0]>;
 
 /** The line the dashboard owes its reader about what the event stream is missing. Plain on purpose;
  *  the feed views restyle it. */
@@ -69,6 +88,7 @@ function centreView(
       return <AgentsView store={store} group="status" focusWaiting selected={panel.agent} onPick={pick} clock={clock} />;
     case "agent":
       return (
+        <Suspense fallback={<SkeletonView />}>
         <AgentPage
           key={route.id}
           store={store}
@@ -81,6 +101,7 @@ function centreView(
           panelOpen={page.panelOpen}
           onTogglePanel={page.toggle}
         />
+        </Suspense>
       );
   }
 }
@@ -134,7 +155,8 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const shown = panelShown(panel, paneOpen);
   const seen: Panel = { ...panel, agent: shown && panel.tab === "agent" ? panel.agent : null };
   const back = useBack(route);
-  const pick = useMemo(() => (phone ? openPage : panel.selectAgent), [phone, panel.selectAgent]);
+  const navigate = useContext(Navigate);
+  const pick = useMemo(() => (phone ? (id: string) => navigate({ view: "agent", id, tab: "work" }) : panel.selectAgent), [phone, navigate, panel.selectAgent]);
   const page = { controller, phone, back, panelOpen: shown, toggle: panel.toggle };
   const view = loading.roster || loading.channels ? <SkeletonView /> : centreView(store, route, clock, seen, shown, pick, page);
   const panelBody = <RightPanel store={store} controller={controller} channel={route.view === "channel" ? route.channel : null} route={route} panel={panel} clock={clock} />;
@@ -196,11 +218,6 @@ function usePlaces(route: Route, channels: DashboardState["channels"], dms: Dash
   const newest = peers[0]?.conversations[0];
   const dm = seen.dm !== null && other !== null && peers.some((p) => p.id === seen.dm?.peer) ? { peer: seen.dm.peer, with: other } : peers[0] && newest ? { peer: peers[0].id, with: newest.with } : null;
   return { channel, dm };
-}
-
-/** Go to an agent's page, as a pick does on a phone. The address changes, so the route follows. */
-function openPage(id: string): void {
-  (globalThis as unknown as { location: { hash: string } }).location.hash = formatRoute({ view: "agent", id, tab: "work" });
 }
 
 /** What an agent's page calls the place it goes back to: the channel by name, any other view by

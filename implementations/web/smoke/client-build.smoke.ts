@@ -171,6 +171,12 @@ const holdsTooltip = (file: string) => readFileSync(join(out, "assets", file), "
 ok("no first-load chunk holds the tooltip, and a lazy chunk does",
   firstLoad.every((f) => !holdsTooltip(f)) && assets.some((a) => a.endsWith(".js") && !firstLoad.includes(a) && holdsTooltip(a)),
   { firstLoad, tooltip: assets.filter((a) => a.endsWith(".js") && holdsTooltip(a)) });
+// The agent page is a secondary route, so its Tabs and message scroller load when it opens. Radix
+// names its tab panel "TabsContent" as a string, which only the page's chunk holds.
+const holdsTabs = (file: string) => readFileSync(join(out, "assets", file), "utf8").includes("TabsContent");
+ok("no first-load chunk holds the agent page's tabs, and a lazy chunk does",
+  firstLoad.every((f) => !holdsTabs(f)) && assets.some((a) => a.endsWith(".js") && !firstLoad.includes(a) && holdsTabs(a)),
+  { firstLoad, tabs: assets.filter((a) => a.endsWith(".js") && holdsTabs(a)) });
 ok("the font ships as a local woff2 file", assets.some((a) => a.endsWith(".woff2")), assets);
 // The avatars draw through the art seam, which loads the brand's characters file at run time. A
 // bundle that left it out would build and then fail on the first avatar, so the built scripts must

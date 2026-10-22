@@ -4,7 +4,8 @@
  *  Section 1 pairs `openSession` with `closeSession`. Section 2 renders every Work state's words.
  *  Section 3 is the tabs: a tab change writes the route, Messages lists the agent's own posts and
  *  direct messages, and Profile says whether it publishes work events. Section 4 is Load earlier
- *  and the cap, section 5 the composer and the header, section 6 the arrival at a message, and
+ *  and the cap, section 5 the composer and the header, section 6 the arrival at a message and the
+ *  new-steps button, and
  *  section 7 which steps rise, fade or fold in. Section 8 mounts `App` with a fake address to read
  *  where the crumb goes back to and to see an old link rewritten. Section 9 mounts `Shell` to hold
  *  that the Agent tab keeps the agent's work open only while an open panel shows it.
@@ -22,7 +23,7 @@ import type { RouteHost } from "../client/src/routeWatch.js";
 import type { Controller } from "../client/src/state/controller.js";
 import { createStore, type Store } from "../client/src/state/store.js";
 import { initialState, type DashboardState, type SessionState, type StoredMessage } from "../client/src/state/types.js";
-import { Shell } from "../client/src/Shell.tsx";
+import { loadAgentPage, Shell } from "../client/src/Shell.tsx";
 import { Compose } from "../client/src/ui/Composer.tsx";
 import { AgentPage } from "../client/src/ui/views/AgentPage.tsx";
 import { mount } from "./mount.js";
@@ -130,6 +131,8 @@ const open = async (patch: Partial<DashboardState>, opts: { at?: string; tab?: A
 /** Replace engine's session in the store, as the controller would. */
 const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => SessionState) =>
   store.set((st) => ({ sessions: { ...st.sessions, [ENGINE]: edit(st.sessions[ENGINE]!) } }));
+// The shell loads the agent page on demand; sections 8 and 9 draw it through the shell.
+await loadAgentPage();
 /** The Work tab's panel. */
 const work = (root: ParentNode) => root.querySelector('[role=tabpanel][data-state=active]');
 
@@ -331,6 +334,18 @@ const messagesSeed = (): Partial<DashboardState> => ({
     { big: true, status: "Working", commands: ["cotal attach --name engine", "cotal stop --name engine"] });
   await m.unmount();
 }
+{
+  location.hash = "";
+  const { root, m } = await open(messagesSeed());
+  const tabs = all(root, "[role=tablist] [role=tab]");
+  await m.run(() => tabs[0]!.focus());
+  await m.run(() => { tabs[0]!.dispatchEvent(new (dom.window.KeyboardEvent as typeof KeyboardEvent)("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })); });
+  await m.run(() => new Promise<void>((done) => setTimeout(done, 20)));
+  same("3.7 an arrow key on the tabs moves focus to the next tab and writes no route, so it adds no history entry",
+    [text(document.activeElement), location.hash], ["Messages 3", ""]);
+  await m.unmount();
+  location.hash = "";
+}
 
 // ── 4. Load earlier and the cap ─────────────────────────────────────────────────────────────────
 {
@@ -423,42 +438,84 @@ const messagesSeed = (): Partial<DashboardState> => ({
   await m.unmount();
 }
 
-// ── 6. Arriving at a message ────────────────────────────────────────────────────────────────────
-{
-  // jsdom has no layout: each scrollIntoView is logged, by the post it was called on.
+// ── 6. Arriving at a message, and the new-steps button ──────────────────────────────────────────
+/** Run `fn` with jsdom given just enough layout: a scroll box 100px high over 1,000px of content.
+ *  Each scrollIntoView is logged by the post it was called on, and each scroll of the Work scroller
+ *  as `end:<top>:<behavior>`. `reduce` makes the page report reduced motion. */
+const withLayout = async (fn: (log: string[]) => Promise<void>, reduce = false) => {
   const log: string[] = [];
   const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
-  const saved = Object.getOwnPropertyDescriptor(proto, "scrollIntoView");
+  const g = globalThis as Record<string, unknown>;
+  const keys = ["scrollIntoView", "scrollTo", "scrollHeight", "clientHeight"];
+  const saved = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(proto, k)]));
+  const savedMedia = g.matchMedia;
   Object.defineProperty(proto, "scrollIntoView", { configurable: true, writable: true, value(this: HTMLElement, opts?: { block?: string }) { log.push(`${this.getAttribute("data-post")}:${opts?.block}`); } });
+  Object.defineProperty(proto, "scrollTo", { configurable: true, writable: true, value(this: HTMLElement, opts?: { top?: number; behavior?: string }) { if (this.classList.contains("ox-viewport")) log.push(`end:${opts?.top}:${opts?.behavior}`); } });
+  Object.defineProperty(proto, "scrollHeight", { configurable: true, get: () => 1000 });
+  Object.defineProperty(proto, "clientHeight", { configurable: true, get: () => 100 });
+  if (reduce) g.matchMedia = (media: string) => ({ matches: media.includes("reduce"), media, addEventListener: () => undefined, removeEventListener: () => undefined });
   try {
-    // Two turns: the post sits in the first, which is closed by default, and the second is the last.
-    const frames = [
-      started("r1", T - 10 * MIN), said("f1", "Telling the team", T - 9 * MIN), finished("r1", T - 7 * MIN),
-      started("r2", T - 5 * MIN), said("f2", "Next round", T - 4 * MIN), finished("r2", T - 3 * MIN),
-    ];
-    const { root, store, m } = await open(
-      { roster: [entry("working", "on")], sessions: { [ENGINE]: session({ load: "loading", frames, posts: [posted("m-1", "app/chess.js is ready", T - 8 * MIN)] }) } },
-      { at: "m-1" },
-    );
-    const loading = [...log];
-    await m.run(() => putSession(store, (s) => ({ ...s, load: "ok" })));
-    const marked = all(root, ".ox-post").map((p) => [p.getAttribute("data-post"), p.classList.contains("ox-post-hl")]);
-    const turns = all(root, ".ox-work > .ox-step > [data-slot=trace-collapsible]").map((c) => c.getAttribute("data-state"));
-    const arrived = [...log];
-    await m.run(() => putSession(store, (s) => ({ ...s, frames: [...s.frames, said("f3", "Arrived live", T, true)] })));
-    same("6.1 arriving with at waits for the read in flight, then opens that post's turn, marks the post and scrolls it to the middle once",
-      { loading, marked, turns, arrived, after: log },
-      { loading: [], marked: [["m-1", true]], turns: ["open", "closed"], arrived: ["m-1:center"], after: ["m-1:center"] });
-    ok("6.2 and following stops, so a live step after it raises the scroller's button", text(root.querySelector(".ox-newsteps")) === "1 new step", root.querySelector(".ox-newsteps")?.outerHTML);
-    await m.unmount();
+    await fn(log);
   } finally {
-    if (saved) Object.defineProperty(proto, "scrollIntoView", saved);
-    else delete proto.scrollIntoView;
+    for (const [k, d] of saved) {
+      if (d) Object.defineProperty(proto, k, d);
+      else delete proto[k];
+    }
+    g.matchMedia = savedMedia;
   }
-}
+};
+/** The log without the scroller's own scrolls to the end. */
+const posts = (log: string[]) => log.filter((l) => !l.startsWith("end:"));
+/** The new-steps button as a reader meets it: its words, whether it is live, and whether it is inert. */
+const newSteps = (root: ParentNode) => {
+  const b = root.querySelector(".ox-newsteps");
+  return { words: text(b), active: b?.getAttribute("data-active") ?? null, inert: b?.hasAttribute("inert") ?? null };
+};
+/** Two turns: the post sits in the first, which is closed by default, and the second is the last. */
+const twoTurns = () => [
+  started("r1", T - 10 * MIN), said("f1", "Telling the team", T - 9 * MIN), finished("r1", T - 7 * MIN),
+  started("r2", T - 5 * MIN), said("f2", "Next round", T - 4 * MIN), finished("r2", T - 3 * MIN),
+];
+await withLayout(async (log) => {
+  const { root, store, m } = await open(
+    { roster: [entry("working", "on")], sessions: { [ENGINE]: session({ load: "loading", frames: twoTurns(), posts: [posted("m-1", "app/chess.js is ready", T - 8 * MIN)] }) } },
+    { at: "m-1" },
+  );
+  const loading = posts(log);
+  await m.run(() => putSession(store, (s) => ({ ...s, load: "ok" })));
+  const marked = all(root, ".ox-post").map((p) => [p.getAttribute("data-post"), p.classList.contains("ox-post-hl")]);
+  const turns = all(root, ".ox-work > .ox-step > [data-slot=trace-collapsible]").map((c) => c.getAttribute("data-state"));
+  const arrived = posts(log);
+  await m.run(() => putSession(store, (s) => ({ ...s, frames: [...s.frames, said("f3", "Arrived live", T, true)] })));
+  same("6.1 arriving with at waits for the read in flight, then opens that post's turn, marks the post and scrolls it to the middle once",
+    { loading, marked, turns, arrived, after: posts(log) },
+    { loading: [], marked: [["m-1", true]], turns: ["open", "closed"], arrived: ["m-1:center"], after: ["m-1:center"] });
+  const raised = newSteps(root);
+  const before = log.length;
+  await m.run(() => click(root.querySelector(".ox-newsteps")));
+  same("6.2 and following stops, so a live step after it raises the new-steps button, live, whose click scrolls the work to its end",
+    { raised, clicked: log.slice(before) }, { raised: { words: "1 new step", active: "true", inert: false }, clicked: ["end:900:smooth"] });
+  await m.unmount();
+});
+await withLayout(async (log) => {
+  const frames = [started("r1", T - 10 * MIN), said("f1", "Telling the team", T - 9 * MIN), finished("r1", T - 7 * MIN)];
+  const { root, store, m } = await open(
+    { roster: [entry("working", "on")], sessions: { [ENGINE]: session({ frames, posts: [posted("m-1", "app/chess.js is ready", T - 8 * MIN)] }) } },
+    { at: "m-1" },
+  );
+  const arrived = posts(log);
+  await m.run(() => putSession(store, (s) => ({ ...s, frames: [...s.frames, said("f3", "Arrived live", T, true)] })));
+  const raised = newSteps(root);
+  const before = log.length;
+  await m.run(() => click(root.querySelector(".ox-newsteps")));
+  same("6.3 arriving at a post already held when the page opens, a live step raises the button, live, and under reduced motion its click scrolls to the end at once",
+    { arrived, raised, clicked: log.slice(before) },
+    { arrived: ["m-1:center"], raised: { words: "1 new step", active: "true", inert: false }, clicked: ["end:900:auto"] });
+  await m.unmount();
+}, true);
 {
   const { root, m } = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({ frames: [said("f1", "Hello")], posts: [posted("m-1", "A post")] }) } }, { at: "m-404" });
-  ok("6.3 with no such post the page opens on Work with nothing marked", root.querySelector(".ox-post-hl") === null && text(root.querySelector(".ox-work")).includes("Hello"));
+  ok("6.4 with no such post the page opens on Work with nothing marked", root.querySelector(".ox-post-hl") === null && text(root.querySelector(".ox-work")).includes("Hello"));
   await m.unmount();
 }
 
@@ -543,6 +600,15 @@ const rig = (hash: string) => {
   const m = await mount(createElement(App, { host: r.host, start: r.start }));
   same("8.5 an old link to a message is replaced in place by the new form, and opens Work",
     [r.replaced, text(m.container.querySelector("[role=tab][aria-selected=true]"))], [[`#/agent/${ENGINE}/work/m-1`], "Work"]);
+  await m.unmount();
+}
+{
+  location.hash = "";
+  const r = rig(`#/agent/${ENGINE}`);
+  const m = await mount(createElement(App, { host: r.host, start: r.start }));
+  await m.run(() => press(all(m.container, "[role=tab]").find((t) => text(t).startsWith("Messages"))));
+  same("8.6 inside App a tab change writes the address App was given, not the page's own",
+    [r.host.location.hash, location.hash], [`#/agent/${ENGINE}/messages`, ""]);
   await m.unmount();
 }
 

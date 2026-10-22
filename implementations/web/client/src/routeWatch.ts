@@ -30,3 +30,9 @@ export function settleAddress(host: RouteHost, route: Route): void {
   const hash = formatRoute(route);
   if (host.location.hash !== hash) host.history.replaceState(null, "", hash);
 }
+
+/** Go to `route` by writing its hash into `host`'s address: a new history entry, and a hash change
+ *  that the route follows. The one way the dashboard moves itself to another route. */
+export function goTo(host: Pick<RouteHost, "location">, route: Route): void {
+  host.location.hash = formatRoute(route);
+}

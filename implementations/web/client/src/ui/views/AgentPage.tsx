@@ -1,5 +1,5 @@
 import { ArrowDown02Icon, ArrowLeft01Icon, InformationCircleIcon, Message01Icon, SidebarRightIcon, SquareLock02Icon, Wrench01Icon } from "@hugeicons/core-free-icons";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../../icons/Icon.tsx";
 import { messageRoute, type ComposeTarget } from "../../lib/compose.js";
 import { displayNameOf, nameIndex } from "../../lib/names.js";
@@ -9,30 +9,34 @@ import { eventCount, foldWork, SESSION_EVENT_CAP, type SessionFrame, type Work, 
 import { SESSION_LIMIT_MAX, type Controller } from "../../state/controller.js";
 import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
-import type { DashboardState, SessionState, StoredMessage } from "../../state/types.js";
+import type { DashboardState, SessionState } from "../../state/types.js";
 import { AgentMessages, messageGroups } from "../agent/AgentMessages.tsx";
 import { AgentProfile } from "../agent/AgentProfile.tsx";
+import { conditionOf, useOwnMessages, useSession } from "../agent/work.ts";
 import { Avatar } from "../Avatar.tsx";
 import { Composer, focusComposer } from "../Composer.tsx";
 import { CopyCommand } from "../CopyCommand.tsx";
 import { useBadgeOf } from "../identity.js";
 import { harnessName } from "../MessageRow.tsx";
+import { Navigate } from "../navigate.js";
 import { PlaneNote } from "../session/PlaneNote.tsx";
-import type { RunErrorCondition } from "../session/RunError.tsx";
 import { SessionEmpty } from "../session/SessionEmpty.tsx";
 import { Badge } from "../shadcn/badge.tsx";
 import { Button } from "../shadcn/button.tsx";
-import { MessageScroller, MessageScrollerButton, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport, useMessageScrollerScrollable } from "../shadcn/message-scroller.tsx";
+import { MessageScroller, MessageScrollerContent, MessageScrollerProvider, MessageScrollerViewport, useMessageScroller, useMessageScrollerScrollable } from "../shadcn/message-scroller.tsx";
 import { Spinner } from "../shadcn/spinner.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../shadcn/tabs.tsx";
 import { STATUS_ICON, word } from "../Status.tsx";
 import { WorkList } from "../work/WorkList.tsx";
 
+// The page's work helpers live in `../agent/work.ts`, so the panel can use them without loading the
+// page; they are re-exported here as the page's own.
+export { conditionOf, useOwnMessages, useSession };
+
 /** A reader within this many pixels of the bottom is following the work again. */
 const PINNED_PX = 24;
 /** Stable empty lists, so the fold is not redone while nothing is held. */
 const NO_FRAMES: SessionFrame[] = [];
-const NO_POSTS: StoredMessage[] = [];
 
 /** One step of the work by key, whether it arrived live, and for a post its message id. */
 interface StepKey { key: string; live: boolean; post?: string }
@@ -56,36 +60,6 @@ type Scroller = {
   clientHeight: number;
   querySelectorAll(selector: string): ArrayLike<{ getAttribute(name: string): string | null; scrollIntoView?(opts?: { block?: string }): void }>;
 };
-
-/** One view of `id`'s work on this page: open on mount, closed on unmount, in the same effect, so the
- *  store's count of views stays paired however React runs it. */
-export function useSession(controller: Controller | null, id: string): void {
-  useEffect(() => {
-    if (!controller) return;
-    controller.openSession(id);
-    return () => controller.closeSession(id);
-  }, [controller, id]);
-}
-
-/** Presence's condition for the agent, taken only when its code is text: it is quoted on the page. */
-export function conditionOf(entry: DashboardState["roster"][number] | undefined): RunErrorCondition | undefined {
-  const c = (entry as { condition?: { code?: unknown; since?: unknown } } | undefined)?.condition;
-  if (typeof c !== "object" || c === null || typeof c.code !== "string") return undefined;
-  return typeof c.since === "number" ? { code: c.code, since: c.since } : { code: c.code };
-}
-
-/** The agent's own verified messages for its work: the channel posts its session holds, then its
- *  direct messages from the page's DMs (`senderId === id`), each message once. A history row carries
- *  no sender, so it never counts. */
-export function useOwnMessages(store: Store<DashboardState>, id: string): StoredMessage[] {
-  const posts = useStore(store, (s) => s.sessions[id]?.posts) ?? NO_POSTS;
-  const dms = useStore(store, (s) => s.dms);
-  return useMemo(() => {
-    const held = new Set(posts.map((p) => p.msg.id));
-    const sent = dms.filter((m) => m.senderId === id && typeof m.msg.to === "string" && !held.has(m.msg.id));
-    return sent.length === 0 ? posts : [...posts, ...sent];
-  }, [posts, dms, id]);
-}
 
 /** The status in the page's header (mock B1, `sh-badge`): shadcn's Badge in the status's colour, with
  *  its icon and word. The working icon turns. */
@@ -119,11 +93,14 @@ function WorkSkeleton() {
 }
 
 /** The scroller's button while the reader is away from the bottom: how many steps arrived live below
- *  since they left it, and a click back down. It draws only once one has. `away` says the page itself
- *  stopped following (an arrival at a message), which the scroller does not see as the reader's own
- *  scroll. */
+ *  since they left it, and a click back down through the scroller's `scrollToEnd`, at once under
+ *  reduced motion. It draws only once one has. `away` says the page itself stopped following (an
+ *  arrival at a message), which the scroller does not see as the reader's own scroll, so the button
+ *  is drawn from either and is the page's own rather than the scroller's, whose state would hold it
+ *  inert. */
 function NewSteps({ steps, away }: { steps: readonly StepKey[]; away: boolean }) {
   const { end } = useMessageScrollerScrollable();
+  const { scrollToEnd } = useMessageScroller();
   const [seen, setSeen] = useState<Set<string> | null>(null);
   const up = end || away;
   if (up && seen === null) setSeen(new Set(steps.map((s) => s.key)));
@@ -131,18 +108,16 @@ function NewSteps({ steps, away }: { steps: readonly StepKey[]; away: boolean })
   const fresh = seen ? steps.filter((s) => s.live && !seen.has(s.key)).length : 0;
   if (fresh === 0) return null;
   return (
-    <MessageScrollerButton variant="outline" size="sm" className="ox-newsteps">
+    <Button type="button" variant="outline" size="sm" className="ox-newsteps" data-active="true" onClick={() => scrollToEnd({ behavior: reducedMotion() ? "auto" : "smooth" })}>
       <Icon icon={ArrowDown02Icon} size={16} />
       {fresh === 1 ? "1 new step" : `${fresh} new steps`}
-    </MessageScrollerButton>
+    </Button>
   );
 }
 
-/** Go to another tab of this agent's page. Setting the hash adds a history entry, so back returns to
- *  the tab before and a reload keeps the tab. */
-function goTo(route: Route): void {
-  (globalThis as unknown as { location: { hash: string } }).location.hash = formatRoute(route);
-}
+/** Whether the reader asked for reduced motion. Read on a click only, so a server render never asks. */
+const reducedMotion = (): boolean =>
+  (globalThis as { matchMedia?: (q: string) => { matches: boolean } }).matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 
 /** One agent as a place (overhaul mock B1, C, D and E): `#/agent/<id>` with Work, Messages and
  *  Profile tabs.
@@ -151,7 +126,8 @@ function goTo(route: Route): void {
  *    and harness, the status Badge (the working icon turns), Message to the operator's conversation
  *    with the agent with its composer focused, and the panel button. On a phone the crumb is the back
  *    button, the role and harness are left out and Message is an icon.
- *  - The tabs are the route: a tab change writes `#/agent/<id>/<tab>`, so back and reload keep it.
+ *  - The tabs are the route: choosing a tab writes `#/agent/<id>/<tab>` through `Navigate`, so back
+ *    and reload keep it. Arrow keys only move focus (manual activation), so they add no history.
  *    Messages carries the count of the posts and direct messages it lists.
  *  - Work: the agent's work as turns (`WorkList`) over its frames and its own posts and DMs, in shadcn's
  *    Message Scroller. While the reader is at the bottom new steps scroll into view; scrolled up, the
@@ -180,6 +156,7 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
   onTogglePanel?: () => void;
 }) {
   useSession(controller, id);
+  const navigate = useContext(Navigate);
   const roster = useStore(store, (s) => s.roster);
   const self = useStore(store, (s) => s.operatorId);
   const post = useStore(store, (s) => s.post);
@@ -358,7 +335,7 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
           </>
         )}
       </header>
-      <Tabs value={tab} onValueChange={(next) => (next === "work" || next === "messages" || next === "profile") && goTo({ view: "agent", id, tab: next })} className="ox-tabs">
+      <Tabs value={tab} activationMode="manual" onValueChange={(next) => (next === "work" || next === "messages" || next === "profile") && navigate({ view: "agent", id, tab: next })} className="ox-tabs">
         <TabsList variant="line" aria-label={name} className="ox-tablist">
           <TabsTrigger value="work" className="ox-tab">Work</TabsTrigger>
           <TabsTrigger value="messages" className="ox-tab">Messages <span className="ox-n">{count}</span></TabsTrigger>

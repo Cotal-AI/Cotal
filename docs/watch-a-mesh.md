@@ -242,8 +242,9 @@ status, the attach and stop commands, its harness, model, host, heartbeat, chann
 whether it publishes work events.
 
 The dashboard reads an agent's events only while its page or its peek is open. The first read
-happens when an open panel shows the agent's Agent tab, or when its page opens; a closed panel, or
-one on another tab, reads nothing. It reads the newest 200 messages on the agent's event channel
+happens when an open panel shows the agent's Agent tab, or when its page opens, unless its card says
+it publishes no work events: then neither reads, and the peek shows only that note. A closed panel,
+or one on another tab, reads nothing. It reads the newest 200 messages on the agent's event channel
 first. Load earlier reads 200 more each time, up to 2,000. The browser keeps at most 2,000 events per
 agent and then says `Showing the newest 2,000 events`. While the page or the peek is open, the server
 sends that agent's new events to the browser as they arrive. Closing both stops them. One browser

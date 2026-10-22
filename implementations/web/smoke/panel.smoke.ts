@@ -19,7 +19,7 @@ import type { ChannelInfo, CotalMessage, MembershipSnapshot, RosterEntry } from 
 import { formatRoute, type Route } from "../client/src/lib/route.js";
 import type { SessionFrame } from "../client/src/lib/session.js";
 import { topologyModel, type TopoModel } from "../client/src/lib/topology.js";
-import { Shell } from "../client/src/Shell.tsx";
+import { loadAgentPage, Shell } from "../client/src/Shell.tsx";
 import type { Controller } from "../client/src/state/controller.js";
 import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState, type SessionState, type StoredMessage } from "../client/src/state/types.js";
@@ -480,6 +480,10 @@ const idle = async () => { for (let i = 0; i < 500 && frames.size > 0; i++) awai
     g.container.querySelector("svg")?.getAttribute("viewBox") === "0 0 1080 420" && Math.abs(narrow - 180) < 60 && Math.abs(wide - 540) < 60, { narrow, wide });
   await g.unmount();
 }
+
+// The shell loads the agent page on demand; 8.8, 8.9 and 8.11 draw it through the shell, the first
+// two on the server, which cannot wait for it.
+await loadAgentPage();
 
 // ── 8. The peek's Now, Open <name>'s page, and the work it holds open ─────────────────────────────
 /** reviewer's card saying its event plane is `events`, with the rest of its entry as above. */

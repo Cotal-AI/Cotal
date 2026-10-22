@@ -15,7 +15,7 @@ import { useBadgeOf } from "../identity.js";
 import { harnessName } from "../MessageRow.tsx";
 import { Button } from "../shadcn/button.tsx";
 import { StatusWord } from "../Status.tsx";
-import { useSession } from "../views/AgentPage.tsx";
+import { useSession } from "../agent/work.ts";
 import { SessionPreview } from "./SessionPreview.tsx";
 
 /** The Agent tab, a peek at one agent (overhaul mock W, `tpl-peek-logic`): who it is, what it says it

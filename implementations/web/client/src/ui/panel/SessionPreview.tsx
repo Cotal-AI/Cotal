@@ -8,7 +8,7 @@ import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
 import { PlaneNote } from "../session/PlaneNote.tsx";
-import { conditionOf, useOwnMessages } from "../views/AgentPage.tsx";
+import { conditionOf, useOwnMessages } from "../agent/work.ts";
 import { useNow } from "../work/useNow.ts";
 import { WorkList } from "../work/WorkList.tsx";
 

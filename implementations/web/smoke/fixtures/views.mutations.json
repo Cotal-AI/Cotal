@@ -928,7 +928,7 @@
     {
       "name": "PK1 a pick on a phone opens the panel, which covers the page",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": "const pick = useMemo(() => (phone ? openPage : panel.selectAgent), [phone, panel.selectAgent]);",
+      "find": "const pick = useMemo(() => (phone ? (id: string) => navigate({ view: \"agent\", id, tab: \"work\" }) : panel.selectAgent), [phone, navigate, panel.selectAgent]);",
       "replace": "const pick = panel.selectAgent;",
       "expectRed": "14.1 on a phone a sender's name goes to that agent's page",
       "cell": "14.1 on a phone a sender's name goes to that agent's page"

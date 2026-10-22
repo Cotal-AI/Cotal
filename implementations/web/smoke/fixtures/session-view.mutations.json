@@ -11,7 +11,7 @@
   "mutations": [
     {
       "name": "SV1 the page never closes its work on unmount, so the store's count of views leaks",
-      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "file": "implementations/web/client/src/ui/agent/work.ts",
       "find": "    return () => controller.closeSession(id);\n",
       "replace": "    return () => undefined;\n",
       "expectRed": "1.1 mounting calls openSession once and unmounting calls closeSession once",
@@ -108,14 +108,14 @@
     {
       "name": "SV13 a tab change writes no route, so back and reload lose the tab",
       "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
-      "find": "onValueChange={(next) => (next === \"work\" || next === \"messages\" || next === \"profile\") && goTo({ view: \"agent\", id, tab: next })}",
+      "find": "onValueChange={(next) => (next === \"work\" || next === \"messages\" || next === \"profile\") && navigate({ view: \"agent\", id, tab: next })}",
       "replace": "onValueChange={() => undefined}",
       "expectRed": "3.2 the tabs are Work, Messages with its count and Profile, named for the agent, and a tab change writes the route",
       "cell": "3.2 the tabs are Work, Messages with its count and Profile, named for the agent, and a tab change writes the route"
     },
     {
       "name": "SV14 a history direct message counts as the agent's own, by what its payload says",
-      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "file": "implementations/web/client/src/ui/agent/work.ts",
       "find": "m.senderId === id && typeof m.msg.to === \"string\"",
       "replace": "(m.senderId ?? m.msg.from?.id) === id && typeof m.msg.to === \"string\"",
       "expectRed": "3.1 Messages lists the agent's verified posts and direct messages by place, newest first, each linking where it went, and no history row",
@@ -246,8 +246,8 @@
       "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
       "find": "    arrived.current = at;\n    setFollowing(false);\n",
       "replace": "    arrived.current = at;\n",
-      "expectRed": "6.2 and following stops, so a live step after it raises the scroller's button",
-      "cell": "6.2 and following stops, so a live step after it raises the scroller's button"
+      "expectRed": "6.2 and following stops, so a live step after it raises the new-steps button, live, whose click scrolls the work to its end",
+      "cell": "6.2 and following stops, so a live step after it raises the new-steps button, live, whose click scrolls the work to its end"
     },
     {
       "name": "SV31 a run that folds into a group appears at once",
@@ -310,8 +310,48 @@
       "file": "implementations/web/client/src/ui/work/Step.tsx",
       "find": "highlight={ctx.highlight !== undefined && step.msg.id === ctx.highlight}",
       "replace": "highlight={ctx.highlight !== undefined}",
-      "expectRed": "6.3 with no such post the page opens on Work with nothing marked",
-      "cell": "6.3 with no such post the page opens on Work with nothing marked"
+      "expectRed": "6.4 with no such post the page opens on Work with nothing marked",
+      "cell": "6.4 with no such post the page opens on Work with nothing marked"
+    },
+    {
+      "name": "SV39 the button follows only the scroller's own state, so after an arrival it never shows",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "const up = end || away;",
+      "replace": "const up = end;",
+      "expectRed": "6.2 and following stops, so a live step after it raises the new-steps button, live, whose click scrolls the work to its end",
+      "cell": "6.2 and following stops, so a live step after it raises the new-steps button, live, whose click scrolls the work to its end"
+    },
+    {
+      "name": "SV40 the button's click does nothing",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "onClick={() => scrollToEnd({ behavior: reducedMotion() ? \"auto\" : \"smooth\" })}",
+      "replace": "onClick={undefined}",
+      "expectRed": "6.2 and following stops, so a live step after it raises the new-steps button, live, whose click scrolls the work to its end",
+      "cell": "6.2 and following stops, so a live step after it raises the new-steps button, live, whose click scrolls the work to its end"
+    },
+    {
+      "name": "SV41 the button scrolls smoothly under reduced motion",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "behavior: reducedMotion() ? \"auto\" : \"smooth\"",
+      "replace": "behavior: \"smooth\"",
+      "expectRed": "6.3 arriving at a post already held when the page opens, a live step raises the button, live, and under reduced motion its click scrolls to the end at once",
+      "cell": "6.3 arriving at a post already held when the page opens, a live step raises the button, live, and under reduced motion its click scrolls to the end at once"
+    },
+    {
+      "name": "SV42 the arrows select the tab they reach, so each press adds a history entry",
+      "file": "implementations/web/client/src/ui/views/AgentPage.tsx",
+      "find": "activationMode=\"manual\" ",
+      "replace": "",
+      "expectRed": "3.7 an arrow key on the tabs moves focus to the next tab and writes no route, so it adds no history entry",
+      "cell": "3.7 an arrow key on the tabs moves focus to the next tab and writes no route, so it adds no history entry"
+    },
+    {
+      "name": "SV43 App's tab writes go to the page's own address, past the one App was given",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "const navigate = useCallback((r: Route) => goTo(host, r), [host]);",
+      "replace": "const navigate = useCallback((r: Route) => goTo(globalThis as never, r), [host]);",
+      "expectRed": "8.6 inside App a tab change writes the address App was given, not the page's own",
+      "cell": "8.6 inside App a tab change writes the address App was given, not the page's own"
     }
   ]
 }
