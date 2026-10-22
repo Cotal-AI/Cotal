@@ -327,7 +327,7 @@ const messagesSeed = (): Partial<DashboardState> => ({
   const panel = work(root);
   same("3.6 Profile is the agent's card at reading width: the character at 88px, the status line and the commands to copy",
     {
-      big: panel?.querySelector(".ui-big .ui-av")?.getAttribute("style")?.includes("--s:88px"),
+      big: (panel?.querySelector(".ui-big .ui-av") as HTMLElement | null)?.style.getPropertyValue("--s") === "88px",
       status: text(panel?.querySelector(".ui-sline .v3-spill")),
       commands: all(panel ?? root, ".ui-actions .ui-cmd code").map(text),
     },
