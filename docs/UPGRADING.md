@@ -79,9 +79,10 @@ There is no broker format migration for this command and no automatic cancellati
 A durable marker denies future admission but is not proof of cessation. Only `stopped` with the
 captured drive outcome establishes that local drive's result. If the holder recheck fails or the
 request budget expires, a parked effect can remain running beside a committed marker. Preserve an
-unknown result; do not blindly resend it or declare cleanup complete. Pending cancellation intent
-can also block a local launch after a definite no-dispatch refusal if marker absence was not
-confirmed within the budget.
+unknown result; do not blindly resend it or declare cleanup complete. To continue cancellation,
+a caller can make a fresh explicit request, which observes the marker and current holder before
+reporting its own result. Pending cancellation intent can also block a local launch after a definite
+no-dispatch refusal if marker absence was not confirmed within the budget.
 
 `run show` now displays revocation independently of recorded state. An unreadable marker yields
 a partial result and exit 4 in human and JSON output, rather than an apparently complete view.

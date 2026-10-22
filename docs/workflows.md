@@ -359,9 +359,12 @@ produces a partial result with exit 4, in human and JSON output, as it does in t
 
 A cancellation can retain a local pending intent even after a definite no-dispatch refusal if its
 budget ends before the manager can confirm marker absence. That intent blocks a new local launch
-or resume; it does not stop an existing drive. A later observed marker reconciles the retained
-intent. An absent marker after an unknown write does not clear it. A `not-executed` write outcome
-therefore does not promise that a local launch is available.
+or resume; it does not stop an existing drive. A later cancellation that observes a marker reconciles
+the retained intent. Replaying the same request without a marker reports that it remains pending and
+does not dispatch again. A manager process restart loses the local intent, but does not settle the
+unknown write or prove cessation. An absent marker after an unknown write does not clear the intent
+in the running process. A `not-executed` write outcome therefore does not promise that a local launch
+is available.
 
 Issuer observation custody has finite lifetime budgets per caller, owner and issuer. Exhaustion
 logs the budget class once per issuer process, without caller identities or request contents.
