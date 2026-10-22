@@ -3,6 +3,11 @@ name: Cold setup
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      snapshot:
+        description: "Prepare a snapshot under this dist-tag without publishing it. Leave empty for a normal candidate."
+        type: string
+        default: ""
   workflow_call:
     inputs:
       snapshot:
@@ -85,6 +90,8 @@ jobs:
         env:
           WORKSPACE_NATIVE_X64: ${{ runner.temp }}/workspace-native-x64
           WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/workspace-native-arm64
+      - name: Probe package shape before publication is requested
+        run: node scripts/post-publish-install-probe.mjs
       - name: Pack every public candidate package
         run: node scripts/pack-cold-candidate.mjs cold-candidate
       - uses: actions/upload-artifact@v4
@@ -146,3 +153,12 @@ jobs:
           CANDIDATE: ${{ needs.candidate.result }}
           LIFECYCLE: ${{ needs.lifecycle.result }}
         run: test "$NATIVE" = success && test "$WORKSPACE_NATIVE" = success && test "$CANDIDATE" = success && test "$LIFECYCLE" = success
+      - name: Seal the completed qualification for promotion
+        env:
+          SNAPSHOT: ${{ inputs.snapshot || '' }}
+        run: node scripts/release-qualification.mjs record cold-candidate cold-results qualification.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cold-qualified
+          path: qualification.json
+          if-no-files-found: error

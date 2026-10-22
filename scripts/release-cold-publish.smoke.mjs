@@ -12,6 +12,8 @@ import { packColdCandidate } from "./pack-cold-candidate.mjs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { coldOsEnvironment } from "./release-cold-environment.mjs";
+import { checkoutReleaseSource, recordQualification, selectQualification, verifyQualification } from "./release-qualification.mjs";
+import { coldResultNames } from "./verify-cold-results.mjs";
 
 // Exercise the source imports through a real entrypoint in a fresh personal environment.
 if (!process.argv.includes("--contract-child")) {
@@ -123,12 +125,13 @@ try {
     ["omitted prepublish guard", (m) => { m.prepublishOnly.pop(); }],
   ]) await check(`publication refuses ${name}`, () => { const copy = structuredClone(manifest); mutate(copy); assert.throws(() => coldPublicationInputs(copy, rows, source, root)); });
   const calls = [];
-  const options = { root, directory: root, results: root, env: {}, exec: (file, args) => {
-    if (file === "git") { assert.deepEqual(args, ["rev-parse", "HEAD"]); return source + "\n"; }
-    assert.equal(file, "pnpm"); calls.push(args);
+  const options = { root, directory: root, results: root, env: { RELEASE_REQUESTED_AT: new Date().toISOString() }, exec: (file, args) => {
+    assert.equal(file, "git"); assert.deepEqual(args, ["rev-parse", "HEAD"]); return source + "\n";
+  }, publish: async (file, args, { timeout }) => {
+    assert.equal(file, "pnpm"); assert(timeout > 0 && timeout <= 180_000); calls.push(args);
   }, preflight: async () => ({ state: "ready", rows }) };
   await check("secure preflight refusal prevents every publication", async () => {
-    await assert.rejects(() => publishColdCandidate({ ...options, preflight: async () => { throw new Error("fixture authority refusal"); } }), /fixture authority refusal/);
+    await assert.rejects(() => publishColdCandidate({ ...options, preflight: async ({ tag }) => { assert.equal(tag, "latest"); throw new Error("fixture authority refusal"); } }), /fixture authority refusal/);
     assert.equal(calls.length, 0);
   });
   await check("publisher sends only qualified archive paths with provenance and no hooks", async () => {
@@ -148,13 +151,172 @@ try {
   });
   await check("archive changes between writes prevent the changed publication", async () => {
     try {
-      await assert.rejects(() => publishColdCandidate({ ...options, exec: (file, args) => {
-        const result = options.exec(file, args);
-        if (file === "pnpm") writeFileSync(last, "changed during synthetic first write");
-        return result;
+      await assert.rejects(() => publishColdCandidate({ ...options, concurrency: 1, publish: async (file, args, opts) => {
+        await options.publish(file, args, opts);
+        writeFileSync(last, "changed during synthetic first write");
       } }), /publication archive changed after preflight/);
       assert.equal(calls.length, 1);
     } finally { writeFileSync(last, originalArchive); calls.length = 0; }
+  });
+  await check("parallel archive uploads settle before completion and retain accepted outcomes", async () => {
+    const receiptFile = join(root, "accepted.json");
+    let active = 0, peak = 0;
+    await publishColdCandidate({ ...options, receiptFile, publish: async () => {
+      peak = Math.max(peak, ++active);
+      await new Promise((resolve) => setTimeout(resolve, 20)); active--;
+    } });
+    assert.equal(peak, 2); assert.equal(active, 0);
+    const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
+    assert.equal(receipt.complete, true);
+    assert.deepEqual(receipt.packages.map(({ state }) => state), ["accepted", "accepted"]);
+    await assert.rejects(() => publishColdCandidate({ ...options, receiptFile }), /overwrite an existing publication receipt/);
+  });
+  await check("a failed upload records uncertainty and settles admitted siblings", async () => {
+    const receiptFile = join(root, "partial.json");
+    let settled = false;
+    await assert.rejects(() => publishColdCandidate({ ...options, receiptFile, publish: async (_, args) => {
+      if (args[1].endsWith("one.tgz")) throw new Error("synthetic upload refusal");
+      await new Promise((resolve) => setTimeout(resolve, 20)); settled = true;
+    } }), /synthetic upload refusal/);
+    assert(settled);
+    const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
+    assert.equal(receipt.complete, false);
+    assert.deepEqual(receipt.packages.map(({ state }) => state), ["unknown", "accepted"]);
+  });
+  await check("expired publication requests reach neither preflight nor uploads", async () => {
+    await assert.rejects(() => publishColdCandidate({ ...options, env: { RELEASE_REQUESTED_AT: new Date(Date.now() - 600_001).toISOString() }, preflight: assert.fail }), /ten-minute deadline/);
+  });
+  const qualifiedDirectory = join(root, "cold-qualified"); mkdirSync(qualifiedDirectory);
+  const tree = "c".repeat(40), main = "d".repeat(40), head = "e".repeat(40);
+  const before = new Date(Date.now() - 2_000).toISOString();
+  const qualificationEnv = { GITHUB_SHA: source, GITHUB_REPOSITORY: "Cotal-AI/Cotal", GITHUB_RUN_ID: "123", GITHUB_RUN_ATTEMPT: "1" };
+  recordQualification({ root, directory: root, results: root, output: join(qualifiedDirectory, "qualification.json"), env: qualificationEnv,
+    exec: (_, args) => args[1] === "HEAD" ? source : tree });
+  const apiRun = { id: 123, path: ".github/workflows/cold-setup.yml", event: "pull_request", head_sha: head, run_attempt: 1, status: "completed", conclusion: "success", repository: { full_name: "Cotal-AI/Cotal" }, head_repository: { full_name: "Cotal-AI/Cotal" }, updated_at: before };
+  const artifactRows = ["cold-candidate", "cold-qualified", ...coldResultNames()].map((name, index) => ({ id: index + 1, name, digest: "sha256:" + "f".repeat(64), expired: false, created_at: before, workflow_run: { id: 123, head_sha: head } }));
+  const promotionEnv = { ...options.env, GITHUB_SHA: main, GITHUB_REPOSITORY: "Cotal-AI/Cotal", GITHUB_REF: "refs/heads/main", GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_RUN_ATTEMPT: "1", GH_TOKEN: "synthetic-not-a-credential", RELEASE_SOURCE: main, RELEASE_CANDIDATE_SHA256: sha(bytes), RELEASE_QUALIFICATION_RUN: "123" };
+  const fetchImpl = async (url) => ({ status: 200, json: async () => url.includes("/git/commits/") ? { sha: source, tree: { sha: tree }, parents: [{ sha: "f".repeat(40) }, { sha: head }] } : url.includes("/artifacts?") ? { total_count: artifactRows.length, artifacts: artifactRows } : apiRun });
+  const selectionFile = join(root, "selection.json");
+  const selection = await selectQualification({ runId: 123, env: promotionEnv, deadline: Date.now() + 10_000, fetchImpl });
+  writeFileSync(selectionFile, JSON.stringify(selection));
+  // Use the same layout that download-artifact produces, without moving the synthetic candidate.
+  const candidateDirectory = join(root, "cold-candidate"); mkdirSync(candidateDirectory);
+  writeFileSync(join(candidateDirectory, "manifest.json"), bytes);
+  const promotionOptions = { root, directory: candidateDirectory, results: root, selectionFile, tag: "latest", env: promotionEnv, deadline: Date.now() + 10_000, fetchImpl,
+    exec: (_, args) => args[1] === "HEAD" ? main : tree };
+  await check("same-tree promotion retains the original PR merge and native source", async () => {
+    const qualified = await verifyQualification(promotionOptions);
+    assert.equal(qualified.source, source); assert.equal(qualified.promotionSource, main);
+    assert.equal(qualified.artifacts.length, 20);
+  });
+  await check("the real publisher reaches same-tree promotion without relabelling its archives", async () => {
+    for (const pkg of manifest.packages) writeFileSync(join(candidateDirectory, pkg.archive), readFileSync(join(root, pkg.archive)));
+    const uploaded = [];
+    const result = await publishColdCandidate({ ...options, ...promotionOptions, publish: async (_, args) => { uploaded.push(args[1]); } });
+    assert.equal(result.length, 2);
+    assert.deepEqual(uploaded, manifest.packages.map(({ archive }) => join(candidateDirectory, archive)));
+    assert.equal(JSON.parse(readFileSync(join(candidateDirectory, "manifest.json"), "utf8")).source, source);
+  });
+  const publisherRoot = join(root, "publisher-controls"), advancedHead = "f".repeat(40);
+  const advancedEnv = { ...promotionEnv, GITHUB_SHA: advancedHead };
+  const advancedExec = (file, args, opts) => {
+    assert.equal(file, "git");
+    if (args[0] === "rev-list") {
+      assert.equal(opts.cwd, publisherRoot);
+      assert.deepEqual(args, ["rev-list", "--first-parent", `${main}^..${advancedHead}`]);
+      return `${advancedHead}\n${main}\n`;
+    }
+    assert.equal(args[0], "rev-parse");
+    return args[1] === "HEAD^{tree}" ? tree : opts.cwd === publisherRoot ? advancedHead : main;
+  };
+  await check("main can advance without changing the frozen release source or archives", async () => {
+    const receiptFile = join(root, "advanced-main-publication.json");
+    const result = await publishColdCandidate({ ...options, ...promotionOptions, publisherRoot, env: advancedEnv, exec: advancedExec, receiptFile, publish: async () => {} });
+    assert.equal(result.length, 2);
+    const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
+    assert.equal(receipt.source, source); assert.equal(receipt.promotionSource, main); assert.equal(receipt.publisherSource, advancedHead);
+    assert.equal(receipt.qualification.sourceTree, tree);
+  });
+  await check("a publication rerun refuses before inspecting authority or starting another write", async () => {
+    await assert.rejects(() => verifyQualification({ ...promotionOptions, env: { ...promotionEnv, GITHUB_RUN_ATTEMPT: "2" }, fetchImpl: async () => { assert.fail("must not start a new qualification or authority read"); } }), /reruns cannot retry unknown writes/);
+  });
+  await check("a merged side-branch head is not accepted as a first-parent main source", async () => {
+    await assert.rejects(() => verifyQualification({ ...promotionOptions, publisherRoot, env: advancedEnv,
+      exec: (file, args, opts) => args[0] === "rev-list" ? advancedHead : advancedExec(file, args, opts),
+      fetchImpl: async () => { assert.fail("must refuse before GitHub or registry work"); },
+    }), /not a first-parent main commit/);
+  });
+  await check("release checkout requests only its owned detached worktree and refuses an existing target", () => {
+    const runner = join(root, "owned-runner");
+    const target = join(runner, "release-source");
+    const env = { ...advancedEnv, RUNNER_TEMP: runner, RELEASE_ROOT: target };
+    const requested = [];
+    const exec = (file, args, opts) => {
+      if (args[0] === "worktree") { requested.push(args); return ""; }
+      return advancedExec(file, args, opts);
+    };
+    assert.equal(checkoutReleaseSource({ publisherRoot, env, exec, deadline: Date.now() + 10_000 }), target);
+    assert.deepEqual(requested, [["worktree", "add", "--detach", target, main]]);
+    mkdirSync(target, { recursive: true });
+    assert.throws(() => checkoutReleaseSource({ publisherRoot, env, exec, deadline: Date.now() + 10_000 }), /overwrite/);
+    assert.equal(requested.length, 1);
+  });
+  for (const [name, change] of [
+    ["another repository", (run) => { run.repository.full_name = "foreign/repo"; }],
+    ["a fork", (run) => { run.head_repository.full_name = "foreign/repo"; }],
+    ["another workflow", (run) => { run.path = ".github/workflows/other.yml"; }],
+    ["an unfinished qualification", (run) => { run.status = "in_progress"; }],
+    ["a partial rerun", (run) => { run.run_attempt = 2; }],
+    ["qualification after publish-go", (run) => { run.updated_at = new Date(Date.now() + 60_000).toISOString(); }],
+  ]) await check(`promotion refuses ${name}`, async () => {
+    const original = structuredClone(apiRun);
+    try { change(apiRun); await assert.rejects(() => verifyQualification(promotionOptions)); }
+    finally { Object.assign(apiRun, original); }
+  });
+  await check("promotion refuses a forged tree claim even with matching manifests", async () => {
+    await assert.rejects(() => verifyQualification({ ...promotionOptions, exec: (_, args) => args[1] === "HEAD" ? main : "f".repeat(40) }), /source tree differs/);
+  });
+  await check("promotion refuses an expired artifact and an incomplete immutable selection", async () => {
+    artifactRows[0].expired = true;
+    try { await assert.rejects(() => verifyQualification(promotionOptions), /expired/); }
+    finally { artifactRows[0].expired = false; }
+    const removed = artifactRows.pop();
+    try { await assert.rejects(() => verifyQualification(promotionOptions), /needs one immutable/); }
+    finally { artifactRows.push(removed); }
+  });
+  await check("the binary starts last and never starts after a sibling upload fails", async () => {
+    const path = join(root, "binary"); mkdirSync(path);
+    const pkg = { name: "cotal-ai", version: "1.0.0" };
+    writeFileSync(join(path, "package.json"), JSON.stringify(pkg));
+    const archive = "cotal-ai.tgz", archiveBytes = Buffer.from("synthetic binary archive");
+    writeFileSync(join(root, archive), archiveBytes);
+    const binary = { ...pkg, sourceManifest: JSON.stringify(pkg), archive, sha256: sha(archiveBytes) };
+    const preparedBytes = JSON.stringify({ ...manifest, packages: [binary, ...manifest.packages] });
+    const saved = coldResultNames().map((name) => {
+      const file = join(root, name, "cold-result.json");
+      const original = readFileSync(file);
+      writeFileSync(file, JSON.stringify({ ...JSON.parse(original), candidateSha256: sha(preparedBytes) }));
+      return [file, original];
+    });
+    writeFileSync(join(root, "manifest.json"), preparedBytes);
+    const preflight = async () => ({ state: "ready", rows: [{ ...pkg, path }, ...rows] });
+    try {
+      let settled = 0, binaryStarted = false;
+      const publish = async (_, args) => {
+        if (args[1].endsWith(archive)) { assert.equal(settled, 2); binaryStarted = true; return; }
+        await new Promise((resolve) => setTimeout(resolve, 10)); settled++;
+      };
+      await publishColdCandidate({ ...options, preflight, publish });
+      assert(binaryStarted); binaryStarted = false;
+      await assert.rejects(() => publishColdCandidate({ ...options, preflight, publish: async (file, args, opts) => {
+        if (args[1].endsWith("one.tgz")) throw new Error("synthetic sibling refusal");
+        return publish(file, args, opts);
+      } }), /synthetic sibling refusal/);
+      assert.equal(binaryStarted, false);
+    } finally {
+      writeFileSync(join(root, "manifest.json"), bytes);
+      for (const [file, original] of saved) writeFileSync(file, original);
+    }
   });
   await check("missing native receipt prevents preflight and publication", async () => {
     const receipt = readFileSync(firstReceipt); rmSync(firstReceipt);

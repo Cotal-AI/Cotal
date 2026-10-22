@@ -6,31 +6,38 @@ on:
       - main
   workflow_dispatch:
     inputs:
+      qualification_run:
+        description: "Successful first-attempt Cold setup run prepared before publish-go."
+        type: string
+        required: true
+      candidate_sha256:
+        description: "SHA-256 of that run's cold-candidate/manifest.json."
+        type: string
+        required: true
+      source:
+        description: "Approved main commit, with the same tree as the qualified source."
+        type: string
+        required: true
+      requested_at:
+        description: "Original human publish-command time in UTC. Never replace it on retry."
+        type: string
+        required: true
       snapshot:
-        description: "Snapshot release: publish <version>-<tag>-<datetime> under this npm dist-tag (e.g. next). Leave empty for the normal release flow."
+        description: "The dist-tag already prepared and qualified by Cold setup. Empty means latest."
         type: string
         default: ""
 
-# The release path, so a run is never superseded: a cancelled version run is a merge that silently
-# staged nothing, badged the same as a run somebody tidied up. The short form used here before was
-# not neutral, it selected `queue: single`, which holds ONE pending run and evicts it when the next
-# merge arrives. That is the #976 defect on the workflow that publishes.
-#
-# Neither key is conditional because there is no `pull_request` trigger to distinguish: an
-# expression here would carry a branch no event can reach.
+# Preparation cannot hold a publish command behind a build. Publication dispatches still share
+# one non-cancelling queue, so a later command cannot evict or overlap an admitted publication.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: false
   queue: max
 
 jobs:
-  # Version-only admission. The action decides from its own changeset state: with changesets it
-  # opens or updates the version PR, and without them it returns, because this step names no
-  # `publish` script and has no OIDC token. A version-only push can never publish, so it does not
-  # wait for the native cold matrix. `hasChangesets` decides whether this run publishes at all.
-  # The job always runs and a snapshot dispatch skips its steps, so a skipped job never sits
-  # upstream of cold-setup or the snapshot job.
+  # Pushes only prepare versions. Native qualification and source review finish before publish-go.
   version-pr:
+    if: github.event_name == 'push'
     timeout-minutes: 35
     runs-on: ubuntu-latest
     environment: npm-publish
@@ -75,8 +82,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
-      # An absent or unexpected output is a failure, never a state: publication is admitted only on
-      # an explicit `false`.
+      # Missing or unexpected action state is a failed preparation, not a ready version PR.
       - name: Require a definite changeset state
         if: env.ADMIT == 'true'
         env:
@@ -90,28 +96,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
 
-  # The packaged native cold matrix runs before every publication: a snapshot dispatch, or a normal
-  # push whose admission found no changesets left. With no status function here, version-pr must
-  # have succeeded, so a failed admission starts no matrix and an empty output admits nothing.
-  cold-setup:
-    needs: [version-pr]
-    if: (github.event_name == 'workflow_dispatch' && inputs.snapshot != '') || needs.version-pr.outputs.has-changesets == 'false'
-    uses: ./.github/workflows/cold-setup.yml
-    with:
-      snapshot: ${{ inputs.snapshot || '' }}
-
-  # The publication arm. With no status function in `if`, every need must have succeeded, so a
-  # skipped, failed or cancelled cold matrix leaves this job skipped.
+  # Promote only a completed immutable qualification, without rebuilding or rerunning its matrix.
   version:
-    if: needs.version-pr.outputs.has-changesets == 'false'
-    needs: [version-pr, cold-setup]
-    timeout-minutes: 35
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     environment: npm-publish
     permissions:
       contents: write
-      pull-requests: write
+      actions: read
       id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_REQUESTED_AT: ${{ inputs.requested_at }}
+      RELEASE_SOURCE: ${{ inputs.source }}
+      RELEASE_ROOT: ${{ runner.temp }}/release-source
+      RELEASE_CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
+      RELEASE_QUALIFICATION_RUN: ${{ inputs.qualification_run }}
+      RELEASE_QUALIFICATION: ${{ runner.temp }}/qualification-selection.json
+      RELEASE_TAG: ${{ inputs.snapshot || 'latest' }}
+      COLD_CANDIDATE: ${{ runner.temp }}/qualified/cold-candidate
+      COLD_RESULTS: ${{ runner.temp }}/qualified
+      PUBLISH_RECEIPT: ${{ runner.temp }}/publication.json
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -127,39 +133,40 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Select the trusted qualification's immutable artifact IDs
+        id: qualification
+        run: node scripts/release-qualification.mjs select "$RELEASE_QUALIFICATION"
+
+      - name: Check out the immutable first-parent release source
+        run: node scripts/release-qualification.mjs checkout
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: cold-result-*
-          path: ${{ runner.temp }}/cold-results
+          artifact-ids: ${{ steps.qualification.outputs.artifact-ids }}
+          run-id: ${{ inputs.qualification_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/qualified
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: cold-candidate
-          path: ${{ runner.temp }}/cold-candidate
+      - name: Verify original source, same tree and every native receipt
+        run: node scripts/release-qualification.mjs verify "$RELEASE_QUALIFICATION" "$COLD_CANDIDATE" "$COLD_RESULTS" "$RELEASE_TAG"
 
-      - name: Create versions and publish
-        id: changesets
-        uses: changesets/action@v1
-        with:
-          publish: pnpm ci:publish
-          version: pnpm ci:version
-          title: "chore(release): version packages"
-          commit: "chore(release): version packages"
-          setupGitUser: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          COLD_CANDIDATE: ${{ runner.temp }}/cold-candidate
-          COLD_RESULTS: ${{ runner.temp }}/cold-results
+      - name: Install publisher tools without rebuilding the qualified packages
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
-      # Keep the "version packages" PR out of the generated release notes (excluded via .github/release.yml).
-      - name: Label the release PR
-        if: steps.changesets.outputs.pullRequestNumber
-        run: gh pr edit ${{ steps.changesets.outputs.pullRequestNumber }} --add-label skip-changelog
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+      - name: Replay the snapshot versions already qualified
+        if: inputs.snapshot != ''
+        run: node scripts/apply-cold-versions.mjs "$COLD_CANDIDATE/manifest.json"
+
+      - name: Publish the qualified bytes with one original deadline
+        run: node scripts/publish-cold-candidate.mjs "$RELEASE_TAG"
+
+      - name: Verify every registry archive and dist-tag
+        id: archive-gate
+        run: |
+          node scripts/verify-promoted-archives.mjs "$COLD_CANDIDATE/manifest.json" "$RELEASE_TAG" "$RUNNER_TEMP/registry-archives.json"
+          version=$(jq -r '.packages[] | select(.name == "cotal-ai") | .version' "$COLD_CANDIDATE/manifest.json")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "archives_ok=true" >> "$GITHUB_OUTPUT"
 
       # Gate: verify that EVERY package in the lockstep group reached the registry before cutting
       # a Release. The old check asked only about `cotal-ai`; if that single package published and
@@ -168,14 +175,16 @@ jobs:
       # propagation lag from a genuine partial publish (#1286).
       - name: Verify publish closure
         id: closure-gate
-        if: success() && github.event_name == 'push'
+        if: success() && inputs.snapshot == ''
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
+          VERSION: ${{ steps.archive-gate.outputs.version }}
         run: |
-          version=$(git show "$GITHUB_SHA:bin/package.json" | jq -r .version)
+          version="$VERSION"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          seconds=$(node scripts/publication-budget.mjs --seconds-left)
           set +e
-          node scripts/verify-publish-closure.mjs "$version"
+          timeout --signal=KILL "${seconds}s" node scripts/verify-publish-closure.mjs "$version" --recheck
           rc=$?
           set -e
           if [ "$rc" -eq 0 ]; then
@@ -206,24 +215,26 @@ jobs:
       # anything is announced. A version that never installs reds the job and cuts no Release.
       - name: Verify the release installs
         id: install-gate
-        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true'
+        if: success() && steps.archive-gate.outputs.archives_ok == 'true' && (inputs.snapshot != '' || steps.closure-gate.outputs.closure_ok == 'true')
+        env:
+          VERSION: ${{ steps.archive-gate.outputs.version }}
         run: |
-          node scripts/verify-release-installable.mjs "${{ steps.closure-gate.outputs.version }}"
+          node scripts/verify-release-installable.mjs "$VERSION" "--requested-at=$RELEASE_REQUESTED_AT"
+          node scripts/publication-budget.mjs --seconds-left
           echo "install_ok=true" >> "$GITHUB_OUTPUT"
 
-      # Cut the GitHub Release only after the full closure gate passed and that version installed
-      # from the registry and ran. The closure gate exits non-zero on a partial publish, an unsettled
-      # registry, or a version nothing serves; the install gate fails when `cotal-ai@<version>` does
-      # not install and run before its deadline.
-      # Neither gate can tell which push published that version: a publishing run that ends UNSETTLED,
-      # or whose install gate fails, leaves the Release to a later push that published nothing. So the
-      # Release never targets $GITHUB_SHA. It targets the oldest commit on main's first-parent line
-      # whose bin/package.json carries the version, which is the tree the packages were built from,
-      # even when the version was reverted and carried again later. It refuses when that commit cannot
-      # be found or when any part of the history cannot be read (#1820).
+      - name: Record actual command-to-availability outcome
+        if: always()
+        env:
+          INSTALL_OK: ${{ steps.install-gate.outputs.install_ok }}
+        run: node scripts/record-publication-outcome.mjs "$PUBLISH_RECEIPT" "$RUNNER_TEMP/registry-archives.json" "$RUNNER_TEMP/publication-outcome.json"
+
+      # Announce a normal release only after archive, metadata, private-install and budget checks.
+      # Use the oldest first-parent carrier rather than a later recovery commit. Unreadable history
+      # or a missing version carrier refuses the tag.
       - name: Tag and cut the GitHub Release on publish
         id: release-step
-        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true' && steps.install-gate.outputs.install_ok == 'true'
+        if: success() && inputs.snapshot == '' && steps.closure-gate.outputs.closure_ok == 'true' && steps.install-gate.outputs.install_ok == 'true'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
@@ -270,100 +281,14 @@ jobs:
             --notes-file "$RUNNER_TEMP/release-notes.md"
           echo "Created GitHub Release $tag."
 
-  # Post-publish installability probe (#1412). Pack the workspace cotal-ai package, extract the
-  # tarball, verify the bin entry exists, and run the binary (`--version`, `--help`). A broken
-  # tarball or a version mismatch reds this job. The probe is a LEAF job: it runs after `version`
-  # completes, so `gh release create` has already run, and nothing depends on this job. It reds the
-  # overall workflow but does NOT gate the GitHub Release (which is gated by the closure gate from
-  # #1502 and the registry install gate). It validates the SHAPE of cotal-ai's packed artifact
-  # (structure, binary presence, startup) and each runtime sibling's own tarball entry points. The
-  # binary still runs against workspace-resolved siblings, and the probe does not cover registry
-  # propagation or native assets.
-  install-probe:
-    if: github.event_name == 'push' || inputs.snapshot == ''
-    needs: [version]
-    timeout-minutes: 10
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6.0.8
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Keep publication outcomes, including failed and uncertain writes
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm build
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: workspace-native-x64
-          path: ${{ runner.temp }}/workspace-native-x64
-      - uses: actions/download-artifact@v4
-        with:
-          name: workspace-native-arm64
-          path: ${{ runner.temp }}/workspace-native-arm64
-      - name: Assemble source-matched Windows identity bindings for the probe
-        run: node scripts/workspace-assemble-natives.mjs
-        env:
-          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/workspace-native-x64
-          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/workspace-native-arm64
-
-      - name: Run install probe
-        run: node scripts/post-publish-install-probe.mjs
-
-  # Snapshot release — publishes <version>-<tag>-<datetime> under the given npm dist-tag.
-  # Bound to the npm-publish Environment; the operator's deployment branch policy controls
-  # which refs can request an OIDC token. If the policy allows only main, snapshots from
-  # other branches are refused by the Environment gate before the OIDC exchange.
-  snapshot:
-    if: github.event_name == 'workflow_dispatch' && inputs.snapshot != ''
-    needs: [cold-setup]
-    timeout-minutes: 20
-    runs-on: ubuntu-latest
-    environment: npm-publish
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v6.0.8
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: cold-result-*
-          path: ${{ runner.temp }}/cold-results
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: cold-candidate
-          path: ${{ runner.temp }}/cold-candidate
-
-      - name: Use the snapshot versions qualified on every platform
-        run: node scripts/apply-cold-versions.mjs "$RUNNER_TEMP/cold-candidate/manifest.json"
-
-      - name: Preflight and publish the qualified snapshot archives
-        env:
-          COLD_CANDIDATE: ${{ runner.temp }}/cold-candidate
-          COLD_RESULTS: ${{ runner.temp }}/cold-results
-          SNAPSHOT: ${{ inputs.snapshot }}
-        run: node scripts/publish-cold-candidate.mjs "$SNAPSHOT"
+          name: publication-outcome-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/qualification-selection.json
+            ${{ runner.temp }}/publication.json
+            ${{ runner.temp }}/registry-archives.json
+            ${{ runner.temp }}/publication-outcome.json
+          if-no-files-found: error
