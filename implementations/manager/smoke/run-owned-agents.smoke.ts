@@ -752,30 +752,36 @@ try {
   check("inventory MCP emits one bounded diagnostic page", toolPage?.isError !== true && typeof toolPage?.text === "string" && Buffer.byteLength(toolPage.text) <= 65536 && JSON.parse(toolPage.text).semantics === "diagnostic");
   successful(await endpoint.invokeService("manager", "run-answer", { runId: inventoryRun, stepKey: "/checkpoint:inventory-hold#0", value: "release" }));
   await until(async () => ((await status(inventoryRun)).status as { state?: string }).state === "completed", "inventory checkpoint released after observation");
-  // An attach whose link heals while its manager-caller exchange does not answer keeps reconnecting.
-  // `cotal attach` mints that view again on every re-establishment, after the base bearer exchange,
-  // and an exchange that did not answer once may answer the next time. The CLI's broker link runs
-  // through a TCP proxy this cell severs and heals, and its exchanges through an HTTP proxy that drops
-  // only the manager-caller view while `dropManagerCaller` is set.
+  // An attach whose link heals while its manager-caller exchange fails keeps reconnecting. `cotal
+  // attach` mints that view again on every re-establishment, after the base bearer exchange, and
+  // neither an exchange that did not answer nor one the auth service refused (its refusals include a
+  // pinned manager that is not live, as during a manager restart) means asking again cannot help.
+  // The CLI's broker link runs through a TCP proxy this cell severs and heals, and its exchanges
+  // through an HTTP proxy that, for the manager-caller view only, drops the request or forwards it
+  // pinned to an absent instance, which the real auth service refuses with 401.
   {
     const serviceInfo = loadAuthServiceInfo(hostDir)!;
-    let dropManagerCaller = false, dropped = 0;
+    const absentInstance = `${"z".repeat(4)}${state.instanceId.slice(4)}`;
+    let managerCaller: "forward" | "drop" | "refuse" = "forward";
+    let dropped = 0, refused = 0;
     const exchangeProxy = createServer((req, res) => {
       let body = "";
       req.on("data", (chunk: Buffer) => { body += chunk.toString("utf8"); });
       req.on("end", () => {
-        let view: unknown;
-        try { view = (JSON.parse(body) as { view?: unknown }).view; } catch { /* not an exchange body */ }
-        if (dropManagerCaller && view === "manager-caller") { dropped++; req.socket.destroy(); return; }
+        let parsed: Record<string, unknown> | undefined;
+        try { parsed = JSON.parse(body) as Record<string, unknown>; } catch { /* not an exchange body */ }
+        const isManagerCaller = parsed?.view === "manager-caller";
+        if (isManagerCaller && managerCaller === "drop") { dropped++; req.socket.destroy(); return; }
+        const sent = isManagerCaller && managerCaller === "refuse" ? JSON.stringify({ ...parsed, managerInstanceId: absentInstance }) : body;
         const headers: Record<string, string> = {};
         for (const key of ["content-type", "authorization"]) { const v = req.headers[key]; if (typeof v === "string") headers[key] = v; }
-        fetch(`${serviceInfo.url}${req.url}`, { method: req.method, headers, ...(body ? { body } : {}) }).then(async (up) => {
+        fetch(`${serviceInfo.url}${req.url}`, { method: req.method, headers, ...(sent ? { body: sent } : {}) }).then(async (up) => {
+          if (isManagerCaller && managerCaller === "refuse" && up.status === 401) refused++;
           res.writeHead(up.status, { "content-type": up.headers.get("content-type") ?? "application/json" });
           res.end(await up.text());
         }, () => { req.socket.destroy(); });
       });
     });
-    await new Promise<void>((r) => exchangeProxy.listen(0, "127.0.0.1", () => r()));
     const linkPort = await freePort();
     const linkSockets = new Set<Socket>();
     let link: TcpServer | undefined;
@@ -802,36 +808,41 @@ try {
       try { recordMesh({ space, server, root: hostRoot, mode: "user", policy: { events: "required" }, userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() }); }
       finally { process.env.COTAL_HOME = home; }
     };
-    writeFileSync(join(root, ".cotal", "agents", "attachseat.md"), "---\nname: attachseat\nagent: u4-seat\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nA seat to attach to.\n");
-    assert.equal((await manager!.startAgent({ name: "attachseat" }, `${owner}.cli`)).ok, true);
-    await healLink();
-    recordCliMesh(`nats://127.0.0.1:${linkPort}`);
-    saveAuthServiceInfo(hostDir, { ...serviceInfo, url: `http://127.0.0.1:${(exchangeProxy.address() as { port: number }).port}` });
+    let attach: ChildProcess | undefined;
     let out = "";
-    const attach = spawn(process.execPath, [...process.execArgv, cotalBin, "attach", "--name", "attachseat", "--space", space],
-      { cwd: hostRoot, env: { ...cliEnv, COTAL_HOME: cliHome, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["pipe", "pipe", "pipe"] });
-    for (const stream of [attach.stdout, attach.stderr]) stream!.on("data", (d) => { out += d.toString(); });
-    const running = () => attach.exitCode === null && attach.signalCode === null;
+    const running = () => attach !== undefined && attach.exitCode === null && attach.signalCode === null;
     const settle = async (fn: () => boolean, ms: number) => { const end = Date.now() + ms; while (!fn() && running() && Date.now() < end) await wait(100); };
     try {
+      await new Promise<void>((r) => exchangeProxy.listen(0, "127.0.0.1", () => r()));
+      writeFileSync(join(root, ".cotal", "agents", "attachseat.md"), "---\nname: attachseat\nagent: u4-seat\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nA seat to attach to.\n");
+      assert.equal((await manager!.startAgent({ name: "attachseat" }, `${owner}.cli`)).ok, true);
+      await healLink();
+      recordCliMesh(`nats://127.0.0.1:${linkPort}`);
+      saveAuthServiceInfo(hostDir, { ...serviceInfo, url: `http://127.0.0.1:${(exchangeProxy.address() as { port: number }).port}` });
+      attach = spawn(process.execPath, [...process.execArgv, cotalBin, "attach", "--name", "attachseat", "--space", space],
+        { cwd: hostRoot, env: { ...cliEnv, COTAL_HOME: cliHome, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["pipe", "pipe", "pipe"] });
+      for (const stream of [attach.stdout, attach.stderr]) stream!.on("data", (d) => { out += d.toString(); });
       await settle(() => /attached to attachseat/.test(out), 60_000);
       cell("attach over the healable link opens a session", /attached to attachseat/.test(out) && running(), out.slice(-800));
-      dropManagerCaller = true;
+      managerCaller = "drop";
       await severLink();
       await settle(() => /connection lost, reconnecting/.test(out), 60_000);
       cell("...and says it is reconnecting when its link dies", /connection lost, reconnecting/.test(out) && running(), out.slice(-800));
       await healLink();
       await settle(() => dropped >= 2, 60_000);
       cell("a reconnect whose manager-caller exchange does not answer keeps the attach running and tries again", dropped >= 2 && running(), { dropped, exit: attach.exitCode, out: out.slice(-800) });
-      dropManagerCaller = false;
-      await settle(() => /\[cotal: reconnected\]/.test(out), 60_000);
-      cell("...and reconnects once the exchange answers", /\[cotal: reconnected\]/.test(out) && running(), out.slice(-800));
+      managerCaller = "refuse";
+      await settle(() => refused >= 2, 90_000);
+      cell("a reconnect whose manager-caller exchange the auth service refuses keeps the attach running and tries again", refused >= 2 && running(), { refused, exit: attach.exitCode, out: out.slice(-800) });
+      managerCaller = "forward";
+      await settle(() => /\[cotal: reconnected\]/.test(out), 90_000);
+      cell("...and reconnects once the exchange succeeds", /\[cotal: reconnected\]/.test(out) && running(), out.slice(-800));
     } finally {
-      await killAndAwaitExit(attach).catch(() => {});
+      if (attach) await killAndAwaitExit(attach);
       saveAuthServiceInfo(hostDir, serviceInfo);
       recordCliMesh(servers);
       await severLink();
-      await new Promise<void>((r) => exchangeProxy.close(() => r()));
+      if (exchangeProxy.listening) await new Promise<void>((r) => exchangeProxy.close(() => r()));
     }
   }
   console.log(`INVENTORY_SCOPE: ${pageCount} pages, ${observedRuns.size} observed records, max reply ${Math.max(...wireLengths)} bytes; synthetic fixture records are not active lanes. No absence, restore or ownership proof.`);
