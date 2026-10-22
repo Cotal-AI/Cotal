@@ -43,6 +43,7 @@ export class RunCancelObservations {
   private readonly callers = new Map<string, number>();
   private readonly owners = new Map<string, number>();
   private readonly limits: Readonly<RunCancelLimits>;
+  private readonly warnedBudgets = new Set<keyof RunCancelLimits>();
 
   constructor(private readonly space: string, limits: RunCancelLimits = { caller: 64, owner: 256, total: 10_000 }, private readonly now = () => performance.now()) {
     if (![limits.caller, limits.owner, limits.total].every(n => Number.isSafeInteger(n) && n > 0)
@@ -89,15 +90,24 @@ export class RunCancelObservations {
       } else this.expire(prior);
       return;
     }
-    if (this.full(coordinates)) return;
+    const budget = this.full(coordinates);
+    if (budget) {
+      if (!this.warnedBudgets.has(budget)) {
+        this.warnedBudgets.add(budget);
+        console.warn(`run-cancel custody: ${budget} lifetime budget exhausted; new observations refused`);
+      }
+      return;
+    }
     this.entries.set(subject, { fingerprint, requestEndsAt: observation.requestEndsAt, state: "available", observation, mayHaveDispatched: false });
     this.callers.set(coordinates.caller, (this.callers.get(coordinates.caller) ?? 0) + 1);
     this.owners.set(coordinates.owner, (this.owners.get(coordinates.owner) ?? 0) + 1);
   }
 
-  private full(coordinates: { caller: string; owner: string }): boolean {
-    return this.entries.size >= this.limits.total || (this.callers.get(coordinates.caller) ?? 0) >= this.limits.caller
-      || (this.owners.get(coordinates.owner) ?? 0) >= this.limits.owner;
+  private full(coordinates: { caller: string; owner: string }): keyof RunCancelLimits | undefined {
+    if (this.entries.size >= this.limits.total) return "total";
+    if ((this.callers.get(coordinates.caller) ?? 0) >= this.limits.caller) return "caller";
+    if ((this.owners.get(coordinates.owner) ?? 0) >= this.limits.owner) return "owner";
+    return undefined;
   }
 
   private expire(entry: Entry): void {

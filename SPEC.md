@@ -5799,6 +5799,14 @@ handle. The manager rechecks an activated slot's recorded epoch, fencing token a
 selecting that handle. A marker observed for a run promotes all its lingering local cancellation
 intents; keys are not aliased. A read failure or unknown write does not clear a pending intent.
 A definite no-dispatch refusal can clear only its own intent after confirming marker absence.
+If its budget expires before that confirmation, the local launch block can remain even though
+no write was dispatched.
+
+At a channel effect, a fresh revoked admission together with the same manager-local
+marker-observed intent raises `Cancelled` rather than the ordinary revocation failure. This
+classification does not signal the root or replace the current-holder check. Pending intent
+alone cannot reclassify a refusal; a local operator revoke without a cancellation intent keeps
+its existing failure behavior.
 
 Cancellation reaches the root signal in both language engines and the compiled worker bridge,
 including a cancellation latched before worker startup. It is separate from boundary release at

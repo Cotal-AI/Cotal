@@ -355,6 +355,16 @@ with that marker is not proof of a stopped holder. `revocationUnreadable` means 
 not be checked; do not read that as unrevoked or resumable. A released record without a marker can
 be resumed under its original admission; a released record with a marker cannot.
 
+A cancellation can retain a local pending intent even after a definite no-dispatch refusal if its
+budget ends before the manager can confirm marker absence. That intent blocks a new local launch
+or resume; it does not stop an existing drive. A later observed marker reconciles the retained
+intent. An absent marker after an unknown write does not clear it. A `not-executed` write outcome
+therefore does not promise that a local launch is available.
+
+Issuer observation custody has finite lifetime budgets per caller, owner and issuer. Exhaustion
+logs the budget class once per issuer process, without caller identities or request contents.
+Repeated refusals do not repeat that diagnostic. Custody entries are not evicted to make room.
+
 Embedding hosts can call a drive's `cancel(reason)` handle to signal cooperative root cancellation.
 The language's `RootCancellation` source carries the first reason through the walker and compiled
 worker to in-flight effect contexts. It is process-local and carries no authorization. The host must
