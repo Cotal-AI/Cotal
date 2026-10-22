@@ -513,6 +513,7 @@ try {
       tokenOverride = cases[0]![1];
       const run = await runCli(rt, sBase);
       check("L14 the CLI exits non-zero for the failure", run.status !== 0 && run.status !== -1, { status: run.status, out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
+      check("L14 instrument: the CLI reported the failed sign-in", /"daemon login"|daemon login/.test(run.out + run.err) && /fail|refus|denied/i.test(run.out + run.err), { out: run.out.slice(0, 600), err: run.err.slice(0, 600) });
       check("L14 neither stdout nor stderr carries the provider's text", !run.out.includes(needle) && !run.err.includes(needle), { out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
     } finally { await d.close(); }
   });
@@ -529,6 +530,7 @@ try {
     try {
       const run = await runCli(rt, sBase);
       check("L15 instrument: the sign-in failed and the session was written", run.status !== 0 && run.status !== -1 && sessionSaved(home), { status: run.status, saved: sessionSaved(home), out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
+      check("L15 instrument: the CLI reported the failed sign-in", /"daemon login"|daemon login/.test(run.out + run.err) && /fail|refus/i.test(run.out + run.err), { out: run.out.slice(0, 600), err: run.err.slice(0, 600) });
       check("L15 the CLI does not claim nothing was saved", !/no session was saved|nothing was saved/i.test(run.out + run.err), { out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
     } finally { await d.close(); }
   });
