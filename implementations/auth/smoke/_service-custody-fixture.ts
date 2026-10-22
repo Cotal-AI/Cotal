@@ -110,7 +110,9 @@ export async function openFixture(space: string, opts: { endpoint?: string; owne
   if (opts.maxPayload !== undefined && !opts.limited) throw new Error("fixture sets max_payload only in operator mode");
   const stack = opts.limited ? await operatorStack(dir, port, opts.maxPayload) : undefined;
   const server = `nats://127.0.0.1:${port}`;
-  const broker = spawn("nats-server", stack ? ["-c", stack.config] : ["-js", "-sd", dir, "-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" });
+  // Both argv carry a path under the tokened `dir`: the store, or the operator config written into it.
+  const argv = stack ? ["-c", stack.config] : ["-js", "-sd", dir, "-p", String(port), "-a", "127.0.0.1"];
+  const broker = spawn("nats-server", argv, { stdio: "ignore" });
   const releaseBroker = teardownOnSignal(broker, dir);
   let nc: NatsConnection | undefined;
   const limitedConns = new Set<NatsConnection>();
