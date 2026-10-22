@@ -9,7 +9,7 @@
 import { connect as netConnect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, assertLinux, checkDir, checkSocket, type DaemonPaths, type PeerUid } from "./endpoint.js";
-import { encode, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type LoginPrompt, type LoginResult } from "./protocol.js";
+import { encode, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type LoginPrompt, type LoginResult, type RegisterResult } from "./protocol.js";
 
 /** Ask the daemon whether it could register with `space`. Nothing is registered either way. */
 export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "uid"> & { readonly space: string }): Promise<
@@ -21,7 +21,23 @@ export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "
     const reply = JSON.parse(await readLine(sock, 35_000)) as DaemonResponse;
     if (!reply.ok) return { ok: false, code: reply.error.code, message: reply.error.message };
     if ("event" in reply || !("outcome" in reply.result) || !("space" in reply.result)) return { ok: false, code: "BAD_REPLY", message: "the daemon answered the connect check with something else" };
-    return { ok: true, result: reply.result };
+    return { ok: true, result: reply.result as ConnectCheckResult };
+  } finally {
+    sock.destroy();
+  }
+}
+
+/** Ask the daemon to submit its own service registration for `space` and report the space's answer. */
+export async function registerViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "uid"> & { readonly space: string }): Promise<
+  { readonly ok: true; readonly result: RegisterResult } | { readonly ok: false; readonly code: string; readonly message: string }> {
+  const sock = await openVerified({ ...opts, timeoutMs: 5000 });
+  try {
+    sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: "register", space: opts.space }));
+    // Readiness read plus the stock register call, each bounded by the stock client (30 s).
+    const reply = JSON.parse(await readLine(sock, 65_000)) as DaemonResponse;
+    if (!reply.ok) return { ok: false, code: reply.error.code, message: reply.error.message };
+    if ("event" in reply || !("outcome" in reply.result) || !("space" in reply.result)) return { ok: false, code: "BAD_REPLY", message: "the daemon answered the registration with something else" };
+    return { ok: true, result: reply.result as RegisterResult };
   } finally {
     sock.destroy();
   }

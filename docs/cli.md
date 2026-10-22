@@ -229,7 +229,7 @@ failure.
 | Agents & personas | [`persona`](#persona) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Deprecated and hidden from help: run a manager daemon; use the `manager` service preset |
 | Agents & personas | [`service`](#service) | Save, start, stop and inspect owned local services, from a preset or a definition file |
-| Agents & personas | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in, check whether it can connect to a space |
+| Agents & personas | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in, check and request its own registration with a space |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Agents & personas | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
 | Agents & personas | [`endpoint deregister`](#endpoint-deregister) | Remove the service registration of an instance whose host is gone, when the broker affirms nothing is subscribed on its rail |
@@ -3045,11 +3045,12 @@ cotal daemon serve [--json|--plain]
 cotal daemon status [--json|--plain]
 cotal daemon login --idp <auth base URL> [--client-id <id>] [--json|--plain]
 cotal daemon connect-check --space <s> [--json|--plain]
+cotal daemon register --space <s> [--json|--plain]
 ```
 
-This release serves a local endpoint for status, sign-in and a connection check only: it does not
-register with a space, start a Manager, connect to a mesh or Cloud, or install a system service. It
-supports Linux only. On other
+This release serves a local endpoint for status, sign-in, a connection check and a registration
+request only. It does not activate or serve a registration, start a Manager, connect to a mesh or
+Cloud, or install a system service. It supports Linux only. On other
 platforms, an unset `XDG_RUNTIME_DIR` produces
 `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`); with it set, the platform check refuses `UNSUPPORTED`.
 
@@ -3112,6 +3113,36 @@ success creates the daemon's identity for that space at
 and the account, and no credential. Later checks reuse it. If the space later answers with a
 different account, the check refuses `CONFLICT` (`ACCOUNT_MISMATCH`) and changes nothing: confirm
 the space was not replaced before you remove that file by hand.
+
+`register` asks the running daemon to request its own service registration with a space. It first
+runs `connect-check` and returns any outcome other than `ready-to-register` unchanged, without
+contacting the space again. Otherwise it sends one registration request for the daemon's instance
+with this machine's sign-in, through the space's stock service authority. The daemon never sees or
+relays that sign-in proof. The request ID is saved before the first send, at
+`<COTAL_HOME>/daemon/<space segment>/register-request.json`, and every later `register`, including
+after a restart, replays the same request unchanged. The stock writer does not guarantee durability
+across power loss.
+
+The fixed service name binds to one owner per space. Different owners in a shared space need distinct
+operator-approved endpoint names; this command does not yet select one. The operator must verify or
+delegate the namespace before binding it.
+
+The space answers in one of three ways, each reported with exit 0:
+
+- `approval-required`: the space owner must approve this daemon and the space operator must bind its
+  service name `ai.cotal.machine`.
+- `pending`: the space is processing an approved registration.
+- `registered`: the registration is recorded. It is not activated or serving, so the machine is
+  still not connected.
+
+No release ships a command or page that lets an owner approve the daemon or an operator bind its
+name. A refusal by the space is `PERMISSION_DENIED` with the space's reason as the native code, such
+as `PROPOSAL_REFUSED`. A reason the daemon does not recognize is reported as `UNRECOGNIZED`, and the
+space's own text is never shown. A new proposal after a refusal needs a new request, which `register`
+does not send. A sign-in the provider rejects (expired or revoked) is `AUTH_REQUIRED`: run
+`cotal daemon login` again. A failure before anything was sent is `DEPENDENCY_UNAVAILABLE`. Only a
+request whose outcome is unconfirmed is `OPERATION_UNKNOWN`: run the same command again
+to replay it. A changed registration for the same instance is refused `CONFLICT` and nothing is sent.
 
 ## service
 
