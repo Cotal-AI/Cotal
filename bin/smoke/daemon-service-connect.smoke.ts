@@ -30,7 +30,13 @@
  *      `service-disconnect` answers disconnected;
  *  C12 a connection held past two 60 s access-bearer lifetimes stays connected or connecting (never
  *      unavailable or ended), is connected for at least 80% of 1 s samples and at the end, and the
- *      space still reads it ready. The sample counts are printed, so each documented reconnect is visible.
+ *      space still reads it ready. The sample counts are printed, so each documented reconnect is visible;
+ *  C13 broker loss while connected: with the broker stopped and unreachable, no 500 ms sample over
+ *      8 s says connected (all say connecting); after the broker returns it is connected again and the
+ *      space reads ready;
+ *  C14 the SHIPPED binary (`node bin/dist/cotal.js daemon serve`) with its 0600 ready record corrupted:
+ *      the connect answers unavailable with fixed text, status agrees (nothing left running), the
+ *      process keeps running, and with the record restored the same daemon connects.
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
  */
@@ -340,6 +346,23 @@ try {
       check("C12 the space still reads the instance as ready", (await instanceStatus(ON)) === "ready");
     });
 
+    await cell("C13 broker loss: connected is withdrawn at once and reclaimed only after the broker and a fresh ready", async () => {
+      check("C13 instrument: connected before the broker stops", stateOf(await statusS(ON)) === "connected");
+      await killAndAwaitExit(nats!, "SIGTERM");
+      const gone = !(await isReachable(`nats://127.0.0.1:${port}`));
+      const during: string[] = [];
+      const t0 = Date.now();
+      while (Date.now() - t0 < 8000) { during.push(String(stateOf(await statusS(ON)))); await sleep(500); }
+      console.log(`  C13 broker down: ${during.length} samples, ${during.filter((s) => s === "connected").length} connected, states ${[...new Set(during)].join(",")}`);
+      check("C13 instrument: the broker is unreachable", gone);
+      check("C13 no sample after the broker stopped says connected", during.length >= 12 && during.every((s) => s !== "connected"), during);
+      check("C13 the state is connecting while the broker is down (not ended)", during.every((s) => s === "connecting"), [...new Set(during)]);
+      nats = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
+      for (let i = 0; i < 50 && !(await isReachable(`nats://127.0.0.1:${port}`)); i++) await sleep(200);
+      const back = await waitState(ON, (s) => s === "connected", 60_000);
+      check("C13 after the broker returns, connected again and the space reads ready", back === "connected" && (await instanceStatus(ON)) === "ready", back);
+    });
+
     await cell("C7 outage: not connected while the door is gone, connected again after", async () => {
       relayDown.add(ON);
       try {
@@ -351,7 +374,41 @@ try {
       check("C7 once the door is back, connected again", stateOf(back) === "connected", back);
     });
 
+    await cell("C14 the shipped daemon survives a corrupt ready record and leaves nothing running", async () => {
+      // The shipped binary, as `cotal daemon serve` runs it: no handler of this suite in its process.
+      await d.close();
+      const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), "daemon", "serve"], {
+        env: { PATH: process.env.PATH ?? "", HOME: home, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+      let childErr = ""; child.stderr!.on("data", (b) => { childErr += String(b); });
+      const childExit = new Promise<number | null>((r) => child.once("exit", (code) => r(code)));
+      try {
+        for (let i = 0; i < 100 && !existsSync(paths.socket); i++) await sleep(100);
+        const readyFiles = filesUnder(daemonDir).filter((p) => p.includes("daemon-ready") && p.endsWith(".json"));
+        const target = readyFiles.length === 1 ? join(daemonDir, readyFiles[0]!) : "";
+        const original = target ? readFileSync(target, "utf8") : "";
+        if (target) writeFileSync(target, "not-json", { mode: 0o600 });
+        let r: Frame = {}, s: Frame = {};
+        try {
+          r = await connectS(ON);
+          s = await statusS(ON);
+        } finally { if (target) writeFileSync(target, original, { mode: 0o600 }); }
+        const exited = await Promise.race([childExit, sleep(5000).then(() => "running" as const)]);
+        console.log(`  C14 frame ${String(stateOf(r))}, status ${String(stateOf(s))}, process ${String(exited)}`);
+        check("C14 instrument: exactly one ready record was corrupted", readyFiles.length === 1, readyFiles);
+        check("C14 the connect is not connected, with fixed text", stateOf(r) === "unavailable" && !String(resultOf(r).message).includes("not-json"), r);
+        check("C14 status agrees: no live connection left behind", stateOf(s) === stateOf(r), { frame: stateOf(r), status: stateOf(s) });
+        check("C14 the shipped daemon process is still running", exited === "running", { exited, err: childErr.split("\n").filter((x) => /Error|Unexpected/.test(x)).slice(0, 2) });
+        const again = await connectS(ON);
+        check("C14 with the record restored, the same daemon connects", stateOf(again) === "connected", again);
+        check("C14 the daemon wrote nothing secret to stderr", ![SESSION, ...jwtsIssued].some((t) => childErr.includes(t)) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(childErr));
+      } finally {
+        if (child.exitCode === null) { child.kill("SIGTERM"); await childExit; }
+      }
+      d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+    });
+
     await cell("C8 the owner revokes: ended, never connected again", async () => {
+      check("C8 instrument: connected before the revoke", stateOf(await connectS(ON)) === "connected");
       const id = identityOf(ON)!;
       const rv = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: { kind: "owner", owner: fixture.owner },
         input: { endpoint: id.endpoint, instanceId: id.instanceId, expectedAssignmentDigest: assignmentDigest, cause: "owner-request" } } as never) as { state: string };
