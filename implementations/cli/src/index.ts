@@ -379,7 +379,7 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "doctor",
     group: "Mesh",
-    summary: "credential-health diagnosis + repair - `doctor auth [--fix]` lists every local cred's state (healthy/near-expiry/expired/unbounded) and the native guidance for each finding",
+    summary: "credential-health diagnosis + repair - `doctor auth [--fix]` lists every local cred's state (healthy, near-expiry, expired or unbounded) and the native guidance for each finding",
     positionals: "auth",
     flagNames: ["space", "json", "plain"],
     flags: doctorFlags,
