@@ -184,7 +184,7 @@ try {
     onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
   });
   check("device login established", sub === userId, { sub, userId });
-  // The operator actor needs scope "admin": `channels set` rides the "channel-writer" view and the
+  // The operator actor needs scope "admin": `channel set` rides the "channel-writer" view and the
   // preserve cut speaks ctl.admin. EVERY ledger write happens BEFORE the backup — the ledger is an
   // authority input, so a re-grant after the artifact would itself be trust drift.
   await must("actor grant cli (scope incl. admin)",
@@ -222,7 +222,7 @@ try {
   check("the retained agent's ledger row carries the lifecycle uid THIS grant minted",
     retainedRow?.lifecycleUid === RETAINED_UID, { row: retainedRow?.lifecycleUid, minted: RETAINED_UID });
   await must("seed channel registry",
-    ["channels", "set", "preserved", "--desc", "survives user-mode restore", "--space", SPACE]);
+    ["channel", "set", "preserved", "--desc", "survives user-mode restore", "--space", SPACE]);
   await must("user-mode send seeds a CHAT message", ["send", "msg", CHANNEL, SEEDED_TEXT, "--space", SPACE]);
   const seededTexts = textsOf(await chatHistory());
   check("the seeded message is on the wire before the cut", seededTexts.includes(SEEDED_TEXT), seededTexts);
@@ -270,7 +270,7 @@ try {
     /^u_[a-z2-7]{26}\.cli$/.test(afterFrame?.from.id ?? ""), afterFrame?.from);
   check("…and that principal is the logged-in owner's cli actor",
     afterFrame?.from.id === principalKey(OWNER, "cli").key, { got: afterFrame?.from.id, want: principalKey(OWNER, "cli").key });
-  const listed = await must("channels list on the restored mesh", ["channels", "list", "--space", SPACE]);
+  const listed = await must("the channel list on the restored mesh", ["channel", "--space", SPACE]);
   check("the seeded channel registry entry survived the restore", /#preserved/.test(listed.out), listed.out);
 
   // Same-principal resume of the retained agent's AUTHORITY: the preserved material must still

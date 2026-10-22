@@ -253,10 +253,10 @@ try {
   const CH = `survive-${RUN}`;
   const sent = cotal(["send", "msg", "general", NONCE, "--space", SPACE, "--server", SERVERS]);
   check("`cotal send msg` exits 0 on the expiring mesh", sent.code === 0, sent.out.slice(-400));
-  const set = cotal(["channels", "set", CH, "--desc", NONCE, "--space", SPACE, "--server", SERVERS]);
-  check("`cotal channels set` writes durable registry state", set.code === 0, set.out.slice(-400));
-  const list1 = cotal(["channels", "list", "--space", SPACE, "--server", SERVERS]);
-  check("`cotal channels list` reads it back before the rotation", list1.out.includes(CH) && list1.out.includes(NONCE), list1.out.slice(-400));
+  const set = cotal(["channel", "set", CH, "--desc", NONCE, "--space", SPACE, "--server", SERVERS]);
+  check("`cotal channel set` writes durable registry state", set.code === 0, set.out.slice(-400));
+  const list1 = cotal(["channel", "--space", SPACE, "--server", SERVERS]);
+  check("`cotal channel` reads it back before the rotation", list1.out.includes(CH) && list1.out.includes(NONCE), list1.out.slice(-400));
   const chatBefore = await chatState(preReader);
   check("the message landed on the CHAT stream", chatBefore.messages > 0 && chatBefore.last_seq > 0, chatBefore);
 
@@ -329,7 +329,7 @@ try {
   check("an AGENT cred minted before the rotation still connects", await accepts(preAgent));
   const chatAfter = await chatState(preReader);
   check("the CHAT stream came back at the same sequence, count and start (not recreated)", JSON.stringify(chatAfter) === JSON.stringify(chatBefore), `${JSON.stringify(chatBefore)} vs ${JSON.stringify(chatAfter)}`);
-  const list2 = cotal(["channels", "list", "--space", SPACE, "--server", SERVERS]);
+  const list2 = cotal(["channel", "--space", SPACE, "--server", SERVERS]);
   check("durable registry state written before the rotation reads back byte-for-byte after it", list2.out.includes(CH) && list2.out.includes(NONCE), list2.out.slice(-400));
 
   const down3 = await settleThenDown();

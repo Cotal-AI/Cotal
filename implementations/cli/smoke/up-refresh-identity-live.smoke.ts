@@ -192,11 +192,11 @@ async function storeRecordRepair(): Promise<void> {
 
     let railsUp = false;
     for (let i = 0; i < 6 && !railsUp; i++) {
-      const set = cotal(fixture, ["channels", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
+      const set = cotal(fixture, ["channel", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
       if (set.status === 0) railsUp = true;
       else await sleep(5_000);
     }
-    check("(2) the manager answers channels set within the poll budget", railsUp);
+    check("(2) the manager answers channel set within the poll budget", railsUp);
 
     const pidPath = join(fixture.root, ".cotal", "nats.pid");
     const pid = Number(readFileSync(pidPath, "utf8").trim());
@@ -215,8 +215,8 @@ async function storeRecordRepair(): Promise<void> {
     const log = readFileSync(join(fixture.root, ".cotal", "nats.log"), "utf8");
     const lastStoreLine = log.split("\n").filter((l) => l.includes("Store Directory:")).pop() ?? "";
     check("(4) the log's last Store Directory: line names store-a/jetstream", lastStoreLine.includes(join("store-a", "jetstream")), lastStoreLine);
-    const list = cotal(fixture, ["channels", "list", "--server", fixture.server, "--space", space]);
-    check("(4) channels list still shows the pre-crash channel", /#probe/.test(`${list.stdout}${list.stderr}`), `${list.stdout}${list.stderr}`);
+    const list = cotal(fixture, ["channel", "--server", fixture.server, "--space", space]);
+    check("(4) the channel list still shows the pre-crash channel", /#probe/.test(`${list.stdout}${list.stderr}`), `${list.stdout}${list.stderr}`);
 
     const pid2 = Number(readFileSync(pidPath, "utf8").trim());
     process.kill(pid2, "SIGKILL");
@@ -307,11 +307,11 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
   try {
     let railsUp = false;
     for (let i = 0; i < 60 && !railsUp; i++) {
-      const set = cotal(fixture, ["channels", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
+      const set = cotal(fixture, ["channel", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
       if (set.status === 0) railsUp = true;
       else await sleep(1_000);
     }
-    check("the foreground fixture answers channels set within the poll budget", railsUp);
+    check("the foreground fixture answers channel set within the poll budget", railsUp);
     let recorded = false;
     for (let i = 0; i < 30 && !recorded; i++) {
       if (findMesh(space) !== undefined) recorded = true;
@@ -350,11 +350,11 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
   try {
     let railsUp = false;
     for (let i = 0; i < 60 && !railsUp; i++) {
-      const set = cotal(fixture, ["channels", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
+      const set = cotal(fixture, ["channel", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
       if (set.status === 0) railsUp = true;
       else await sleep(1_000);
     }
-    check("(control) the second foreground fixture answers channels set within the poll budget", railsUp);
+    check("(control) the second foreground fixture answers channel set within the poll budget", railsUp);
     control.kill("SIGINT");
     const controlExit = await new Promise<number | null>((res) => control.once("exit", (code) => res(code)));
     check("(control) SIGINT (intended stop) exits 0", controlExit === 0, controlExit);

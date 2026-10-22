@@ -349,7 +349,7 @@ async function conservationScenario(): Promise<void> {
   const artifact = join(mesh.root, "full-backup");
   try {
     must("up", run("up", "--detach", "--server", mesh.server, "--space", mesh.space));
-    must("seed registry", run("channels", "set", CHANNEL, "--desc", "conserved", "--space", mesh.space));
+    must("seed registry", run("channel", "set", CHANNEL, "--desc", "conserved", "--space", mesh.space));
     const auth = loadSoleSpaceAuth(authDir(mesh.root));
     assert.ok(auth, "an auth mesh retains its SpaceAuth");
 
@@ -451,7 +451,7 @@ async function restoredMeshWorksScenario(): Promise<void> {
   const artifact = join(mesh.root, "full-backup");
   try {
     must("up", run("up", "--detach", "--server", mesh.server, "--space", mesh.space));
-    must("seed registry", run("channels", "set", CHANNEL, "--desc", "restored", "--space", mesh.space));
+    must("seed registry", run("channel", "set", CHANNEL, "--desc", "restored", "--space", mesh.space));
     const auth = loadSoleSpaceAuth(authDir(mesh.root));
     assert.ok(auth, "an auth mesh retains its SpaceAuth");
 
@@ -473,7 +473,7 @@ async function restoredMeshWorksScenario(): Promise<void> {
     assert.equal(restored.state, "active");
 
     // The restored registry is the one that was backed up.
-    const listed = run("channels", "list", "--space", mesh.space);
+    const listed = run("channel", "--space", mesh.space);
     must("list restored registry", listed);
     assert.match(listed.stdout, new RegExp(`#${CHANNEL}`));
 
