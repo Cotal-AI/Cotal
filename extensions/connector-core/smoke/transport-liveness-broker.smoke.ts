@@ -168,13 +168,18 @@ try {
   // the terminal-close cell. It returns the moment the bind arrives, so the cost is only paid
   // when the bind never gets there, and then the cell fails loudly rather than passing empty.
   const reachedFinalStep = await until(() => bindAtFinalStep, 30_000);
-  await raceAgent.stop();
+  // stop() waits for an in-flight initial bind to finish its stopped teardown, so awaiting it before
+  // the release would wait on the gate this cell holds. Release once the endpoint itself has begun
+  // stopping, which keeps the order the cell is about: the stop lands first, the bind ends after it.
+  const raceStopping = raceAgent.stop();
+  const raceEndpointStopping = await until(() => (raceAgent.ep as unknown as { stopped?: boolean }).stopped === true, 30_000);
   releaseBind();
+  await raceStopping;
   await raceStart;
   check(
     "stop during a REAL initial bind never announces the connection it then tears down",
-    reachedFinalStep && !raceEdges.some((event) => event.connected === true) && raceAgent.connected === false,
-    { reachedFinalStep, raceEdges, ready: raceAgent.connected },
+    reachedFinalStep && raceEndpointStopping && !raceEdges.some((event) => event.connected === true) && raceAgent.connected === false,
+    { reachedFinalStep, raceEndpointStopping, raceEdges, ready: raceAgent.connected },
   );
 
   // A sibling of the readiness race, raised in review. watchStatus seeds `transport: true` as soon as
@@ -251,16 +256,21 @@ try {
     reachedRebuildFinalStep,
     { reachedRebuildFinalStep, rebuildBindAtFinalStep },
   );
-  await rebuildAgent.stop();
+  // As in the initial-bind cell: stop() waits for the held bind, so release it once the endpoint has
+  // begun stopping rather than after stop() returns.
+  const rebuildStopping = rebuildAgent.stop();
+  const rebuildEndpointStopping = await until(() => (rebuildAgent!.ep as unknown as { stopped?: boolean }).stopped === true, 30_000);
   releaseRebuildBind();
+  await rebuildStopping;
   await rebuildWork;
   const rebuildNcAfterStop = (rebuildAgent.ep as unknown as { nc?: unknown }).nc;
   check(
     "stop during a REAL rebuild bind never announces the connection it then tears down",
     reachedRebuildFinalStep
+      && rebuildEndpointStopping
       && !rebuildEdges.slice(rebuildEdgesBeforeReconnect).some((event) => event.connected === true)
       && rebuildAgent.connected === false,
-    { reachedRebuildFinalStep, afterReconnect: rebuildEdges.slice(rebuildEdgesBeforeReconnect), ready: rebuildAgent.connected },
+    { reachedRebuildFinalStep, rebuildEndpointStopping, afterReconnect: rebuildEdges.slice(rebuildEdgesBeforeReconnect), ready: rebuildAgent.connected },
   );
   check(
     "stop during a REAL rebuild bind tears the just-bound connection rather than leaving nc live",
@@ -326,6 +336,10 @@ try {
     staleErr.push(String(chunk));
     return (realWrite as unknown as (c: unknown, ...r: unknown[]) => boolean)(chunk, ...rest);
   };
+  // start() is single-flight: a second call returns the settled first connect, so it no longer
+  // reruns the loop on this object. Clear the settled flight, through the same kind of door as the
+  // `servers` override above, so start() drives connectLoop again as it did when this cell was written.
+  (staleAgent as unknown as { connectFlight?: Promise<void> }).connectFlight = undefined;
   const staleLoop = staleAgent.start(100).catch(() => {});
   await sleep(900);
   (process.stderr as unknown as { write: unknown }).write = realWrite;
