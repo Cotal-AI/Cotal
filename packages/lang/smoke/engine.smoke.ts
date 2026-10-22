@@ -2878,7 +2878,9 @@ let n = 1;
     const hostSrc = readFileSync(fileURLToPath(new URL("../src/engine/worker.ts", import.meta.url)), "utf8");
     // EVERY NAME BELOW IS THE DECLARED SIDE, never the found side: a cell that reports what it found
     // renames itself under exactly the mutant meant to red it, and the config can no longer name it.
-    const KINDS = ["log", "result"];
+    // `ready` is the boot handshake the host waits on before it posts a root cancellation; its
+    // behaviour is celled by root-cancellation.smoke.ts's worker boot and parked cells.
+    const KINDS = ["log", "ready", "result"];
     const REQUEST_FIELDS = ["cutAt", "effectCeiling", "entries", "file", "handler", "module", "pins", "resultBytes", "runId", "seed", "source", "stepBudget"];
     const WORKER_DATA = ["bridge", "request", "stop"];
     const posted = [...new Set([...entrySrc.matchAll(/postMessage\(\{\s*kind: "(\w+)"/g)].map((m) => m[1] as string))].sort();
