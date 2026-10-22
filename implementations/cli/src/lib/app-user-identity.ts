@@ -26,9 +26,9 @@ interface SavedIdentity {
   consumer: { pid: number; start?: string };
   /** What the identity was requested with beyond its own event channel. Fixed at creation. */
   selection?: ConversationSelection;
-  /** `approval` is present when the authority runs connection approval for this request: always for
-   *  a request made by this version, and from its first pending answer for one saved before. Its
-   *  issued answer must then carry the person's decision. */
+  /** `approval` marks a request under connection approval: always one made by this version, and one
+   *  saved before with no issued identity from before it is sent again. Its issued answer must
+   *  carry the person's decision. */
   remote?: { url: string; idpUrl: string; material?: ConversationMaterial; approval?: { pending?: ConversationApprovalPending } };
   /** Issued before connection approval. A new local identity is refused: no human approval exists here. */
   local?: { owner: string; actor: string; lifecycleUid: string; sentinelCreds?: string };
@@ -89,10 +89,19 @@ function creationBody(record: SavedIdentity) {
     ...(record.selection ? { selection: record.selection } : {}) };
 }
 
-/** An issued answer for a request under approval must carry the decision on the approval it saw. */
+/** An issued answer must carry the person's decision on the approval the request saw. Only the exact
+ *  replay of an identity saved as issued before connection approval may carry none. */
 function approvalExpectation(remote: NonNullable<SavedIdentity["remote"]>): { required: true; id?: string } | undefined {
-  if (!remote.approval) return undefined;
-  return { required: true, ...(remote.approval.pending ? { id: remote.approval.pending.id } : {}) };
+  if (remote.material && !remote.approval) return undefined;
+  return { required: true, ...(remote.approval?.pending ? { id: remote.approval.pending.id } : {}) };
+}
+
+/** Mark a request with no issued identity as under approval before it is sent, so every answer to it
+ *  from then on, including one replayed after a crash, needs the person's decision. */
+function markUnderApproval(dir: string, record: SavedIdentity): void {
+  if (record.remote!.material || record.remote!.approval) return;
+  record.remote!.approval = {};
+  save(dir, record);
 }
 
 /** What one creation answer proves. A selection refusal, a recorded denial or expiry, and a pending
@@ -199,6 +208,7 @@ export async function provisionUserApp(
       // Only an exact replay of an issued identity may go to an authority without approval.
       if (!record.remote.material && !authority.approval)
         throw new Error("the selected mesh does not advertise connection approval v1; the saved request was retained and not sent");
+      markUnderApproval(dir, record);
       const response = await request(provider)({ url: authority.url, idpUrl: record.remote.idpUrl, method: "POST", body: creationBody(record) });
       const outcome = creationOutcome(record, authority, response, "creation");
       if ("refused" in outcome) {
@@ -305,6 +315,7 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean): P
           throw new Error("the selected mesh no longer offers selection for conversation identities; recovery was not sent");
         if (!authority.approval)
           throw new Error("the selected mesh does not advertise connection approval v1; recovery was not sent");
+        markUnderApproval(dir, record);
         const replay = await request(provider)({ url: authority.url, idpUrl: record.remote.idpUrl, method: "POST", body: creationBody(record) });
         const outcome = creationOutcome(record, authority, replay, "recovery");
         // Refused, or still pending: the authority issued nothing, so there is nothing to retire.

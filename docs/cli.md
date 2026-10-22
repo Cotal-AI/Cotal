@@ -4608,6 +4608,10 @@ approved, which can differ from the request. A denial or an expiry drops the rec
 provision makes a new request. `--selection <json>` proposes channels, a role and capabilities for
 that conversation. A mesh with static credentials, an open mesh, and a signed-in mesh whose
 authority this machine holds have no approval page, so provision opens no identity on them.
+The connector passes `--require-approval`. Every provision needs approval with or without it, and
+an earlier CLI that opened identities without approval refuses the unknown flag before doing
+anything. A saved request that was never issued needs the person's decision even when an earlier
+version saved it.
 `cotal app-identity retire --dir <dir>` still removes an identity an earlier version opened on a
 static mesh: its broker footprint, then its files and directory. When the broker is not answering it
 keeps them. Each provision also retires those directories whose owning process has exited. For a

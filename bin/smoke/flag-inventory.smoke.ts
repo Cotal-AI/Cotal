@@ -333,7 +333,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   // `app-identity` (2026-10, #4082): hidden plumbing the Claude connector's local server runs to
   // open (`provision`) or retire one Claude app conversation's identity on a local mesh.
-  "app-identity": { flags: ["dir:string", "events:boolean", "name:string", "selection:string", "session:string", "space:string"], positionals: true },
+  "app-identity": { flags: ["dir:string", "events:boolean", "name:string", "require-approval:boolean", "selection:string", "session:string", "space:string"], positionals: true },
   // The children `service start` execs under controller custody, the owned user-unit entry and the
   // startup child `setup --start` execs. Each takes only the arguments its launcher writes.
   "__service-auth": {
