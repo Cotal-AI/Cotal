@@ -10,7 +10,7 @@ import {
   issuedUserCaller, mintCreds, mintLifecycleUid, mintGeneration, mintAcceptedToken, newIdentity, setupSpaceStreams,
   withIssuerSession, standaloneConnectOpts,
   resolveService, invokeCommand, registry, type RuntimeProvider, type IssuedCaller,
-  RUN_HOST_KIND, COTAL_LANG_RUN_HOST, recordsBucket, recordStatusKey, RECORD_KINDS, type RunHost,
+  RUN_HOST_KIND, COTAL_LANG_RUN_HOST, recordsBucket, recordStatusKey, RECORD_KINDS, admissionBucket, revocationKey, type RunHost,
   type RemoteManagerAuthorityMaterial, type RemoteRunAdmissionResult, type RemoteRunAttemptResult,
   type RemoteRunCancelResult, type RunCancelResult, type RunStatusView, type EndpointReply,
 } from "@cotal-ai/core";
@@ -44,6 +44,7 @@ let launchHold: { entered: ReturnType<typeof deferred<string>>; release: ReturnT
 let completionHold: { entered: ReturnType<typeof deferred<string>>; release: ReturnType<typeof deferred<void>> } | undefined;
 let postMarkerHold: { entered: ReturnType<typeof deferred<void>>; release: ReturnType<typeof deferred<void>> } | undefined;
 let nextOperatorHold: typeof postMarkerHold;
+let failStatusMarkerRead = false;
 const realHost = registry.resolve<RunHost>(RUN_HOST_KIND, COTAL_LANG_RUN_HOST);
 registry.unregister(RUN_HOST_KIND, COTAL_LANG_RUN_HOST);
 const observedHost: RunHost = { ...realHost, drive: (planes, request, mediator) => {
@@ -63,6 +64,20 @@ const observedHost: RunHost = { ...realHost, drive: (planes, request, mediator) 
     };
   }
   return realHost.drive(planes, request, mediator);
+}, status: async (planes, request) => {
+  if (!failStatusMarkerRead) return realHost.status(planes, request);
+  const read = planes.jsm.streams.getMessage.bind(planes.jsm.streams);
+  const bucket = admissionBucket(planes.space);
+  const subject = `$KV.${bucket}.${revocationKey(request.endpoint, request.runId)}`;
+  planes.jsm.streams.getMessage = async (stream, query) => {
+    if (stream === `KV_${bucket}` && "last_by_subj" in query && query.last_by_subj === subject) {
+      failStatusMarkerRead = false;
+      throw new Error("fixture marker read unavailable");
+    }
+    return read(stream, query);
+  };
+  try { return await realHost.status(planes, request); }
+  finally { planes.jsm.streams.getMessage = read; }
 } };
 registry.register(observedHost);
 let passed = 0;
@@ -260,6 +275,21 @@ try {
     assert.deepEqual(final.revoked, { by: firstResult.revocation!.by, reason: firstResult.revocation!.reason });
     assert.equal(final.revocationUnreadable, undefined);
     assert.ok(!final.journal.some(r => r.kind === "step" && r.step.includes("log")));
+  });
+  await cell("status reports an unreadable marker without claiming it absent", async () => {
+    failStatusMarkerRead = true;
+    try {
+      const reply = await call(original, "run-status", { runId: firstRun });
+      assert.ok(reply.ok, reply.error?.message);
+      const view = reply.data as RunStatusView;
+      assert.equal(failStatusMarkerRead, false, "the actual status marker reader reached the injected failure");
+      assert.equal(view.status?.state, "released");
+      assert.equal(view.revoked, undefined);
+      assert.equal(view.revocationUnreadable, "fixture marker read unavailable");
+    } finally { failStatusMarkerRead = false; }
+    const recovered = await status(original, firstRun, "released");
+    assert.deepEqual(recovered.revoked, { by: firstResult!.revocation!.by, reason: firstResult!.revocation!.reason });
+    assert.equal(recovered.revocationUnreadable, undefined);
   });
   await cell("fresh duplicate keeps the first marker", async () => {
     const reply = await call(original, "run-cancel", { runId: firstRun, reason: "later reason" });
