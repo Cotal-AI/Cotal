@@ -559,7 +559,13 @@ export class RunHosting {
         ...(status ? { recordedState: status.state, holder: status.holder, runEpoch: status.epoch, fencingToken: status.fencingToken } : {}),
         ...(driveOutcome ? { driveOutcome } : {}) },
     });
-    if (status?.state === "completed" || status?.state === "failed") return reply("terminal");
+    if (status?.state === "completed" || status?.state === "failed") {
+      if (marker) {
+        this.observeCancellation(input.runId);
+        this.clearObservedCancellation(input.runId);
+      }
+      return reply("terminal");
+    }
     const slot = this.runs.get(input.runId);
     if ((!slot || !this.cancelEligible(slot, status)) && status?.state === "running") {
       if (!marker) throw new EpEnvelopeError("failed-precondition", "run is not driven by this manager's current attempt");
