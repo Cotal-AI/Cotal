@@ -3161,8 +3161,13 @@ does not reconnect it. A space or broker that cannot be reached is `DEPENDENCY_U
 connecting again retries the same requests. Without a register request the answer is
 `TARGET_NOT_FOUND`.
 
-The connection renews itself and reconnects on its own. The access bearer lives at most 60 seconds,
-so the broker drops the connection when each one expires and the daemon reconnects with the next.
+While the daemon runs, the connection renews itself and reconnects on its own. The access bearer
+lives at most 60 seconds, so the broker drops the connection when each one expires and the daemon
+reconnects with the next. While the broker connection is down, for that reason or any other, the
+answer is `connecting`, not connected; it is connected again only after the broker is back and the
+space accepts the daemon as ready again. This is not a persistent service: a restarted daemon starts
+with no service connection and stays disconnected until you run `service-connect` again, and an
+ended connection is remembered only until the daemon stops.
 `service-status` reads the daemon's current answer without contacting the space. `service-disconnect`
 closes the connection, and stopping the daemon closes all of them. The daemon does not answer any
 command on its service yet.

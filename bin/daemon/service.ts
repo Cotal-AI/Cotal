@@ -12,7 +12,10 @@
  * - The connection is a real `CotalEndpoint` with the source as its bearer function, admitted by the
  *   space's native service callout. Its reconnect and refresh schedule is the endpoint's own.
  * - `connected` means both: the endpoint reports its broker connection up, and the space answered
- *   stock `ready` for this witness. A dropped connection is `connecting` until both hold again.
+ *   stock `ready` for this witness. The broker connection is read from the endpoint's `transport`
+ *   edge (a transient loss while nats.js reconnects) and its `connection` edge (a rebuild, teardown
+ *   or close). Either going down withdraws `connected` at once, as `connecting`; it is claimed again
+ *   only after the broker is back and the space answers a fresh `ready`.
  *
  * No liveness command is served: the registered `machine-status` command has void output and a
  * service connection gets no stock serve grant (see the connect contract). No token, proof or
@@ -60,6 +63,29 @@ function daemonServiceStore(home: string, space: string, workspace: SecretStore)
     create: (k, v) => { if (!ownKey(k)) throw new Error("the daemon writes only its own service records"); return own.create(k, v); },
     delete: (k) => { if (!ownKey(k)) throw new Error("the daemon writes only its own service records"); return own.delete(k); },
   };
+}
+
+const HEX32 = /^[0-9a-f]{32}$/;
+const readyKey = (witness: ServiceRegistrationWitness) => `daemon-ready/${serviceWitnessDigest(witness).slice("sha256:".length)}.json`;
+const readyId = (raw: string | undefined): string | undefined => {
+  if (raw === undefined) return undefined;
+  try {
+    const o = JSON.parse(raw) as { v?: unknown; requestId?: unknown };
+    return o.v === 1 && typeof o.requestId === "string" && HEX32.test(o.requestId) ? o.requestId : undefined;
+  } catch { return undefined; }
+};
+
+/** The one persisted ready request id for `witness`, minted and created before its first use.
+ *  `undefined` when the store fails or holds a record that is not one (never its text). */
+async function readyRequestId(store: SecretStore, witness: ServiceRegistrationWitness): Promise<string | undefined> {
+  const key = readyKey(witness);
+  try {
+    const stored = await store.get(key);
+    if (stored !== undefined) return readyId(stored);
+    const minted = randomBytes(16).toString("hex");
+    if (await store.create(key, JSON.stringify({ v: 1, requestId: minted }))) return minted;
+    return readyId(await store.get(key));
+  } catch { return undefined; }
 }
 
 interface Live {
@@ -129,14 +155,8 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
    *  one persisted ready request per witness. Sets `connected` only if the broker is still up. */
   async function ready(l: Live, space: string, witness: ServiceRegistrationWitness, store: SecretStore, dir: string): Promise<void> {
     const provider = resolveAuthProvider();
-    const key = `daemon-ready/${serviceWitnessDigest(witness).slice("sha256:".length)}.json`;
-    let requestId: string;
-    const stored = await store.get(key);
-    if (stored !== undefined) requestId = (JSON.parse(stored) as { requestId: string }).requestId;
-    else {
-      const minted = randomBytes(16).toString("hex");
-      requestId = (await store.create(key, JSON.stringify({ v: 1, requestId: minted }))) ? minted : (JSON.parse((await store.get(key))!) as { requestId: string }).requestId;
-    }
+    const requestId = await readyRequestId(store, witness);
+    if (requestId === undefined) { l.state = "unavailable"; return; }
     let token: string;
     try { token = await l.source!.bearer(); } catch { return sourceFailed(l); }
     let answer;
@@ -156,13 +176,32 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     await teardown(l);
   }
 
+  /** Start a `ready` for the current broker connection, at most one at a time. Never rejects: a
+   *  failure leaves the state not connected. */
+  function readyOnce(l: Live, space: string, witness: ServiceRegistrationWitness, store: SecretStore, dir: string): Promise<void> {
+    l.readying ??= ready(l, space, witness, store, dir)
+      .catch(() => { if (l.state !== "ended") l.state = "unavailable"; })
+      .finally(() => { l.readying = undefined; });
+    return l.readying;
+  }
+
   function sourceFailed(l: Live): void {
     const s = l.source?.state();
     if (s?.state === "ended") { l.state = "ended"; l.reason = ENDED.has(s.reason) ? s.reason : "unrecognized"; }
     else l.state = "unavailable";
   }
 
+  /** Any throw inside a connect leaves nothing running: the endpoint and source are torn down and
+   *  the answer is a fixed `unavailable`. */
   async function connectOnce(space: string): Promise<ServiceConnectionResult> {
+    try { return await connectInner(space); } catch {
+      const l = live.get(space);
+      if (l) { await teardown(l).catch(() => {}); if (l.state !== "ended") l.state = "unavailable"; }
+      return result(space);
+    }
+  }
+
+  async function connectInner(space: string): Promise<ServiceConnectionResult> {
     if (closed) return { space, state: "disconnected", message: SENTENCE.disconnected };
     const current = live.get(space);
     if (current?.state === "ended") return result(space);
@@ -201,16 +240,23 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     // carry provider wording. State below is derived from the connection edge and the space's answers.
     endpoint.on("warning", () => {});
     endpoint.on("error", () => {});
+    // The broker edge while nats.js reconnects on its own: no claim while it is down.
+    endpoint.on("transport", (e: { connected: boolean }) => {
+      if (l.endpoint !== endpoint) return;
+      l.brokerUp = e.connected;
+      if (!e.connected) { if (l.state === "connected") l.state = "connecting"; return; }
+      if (l.state !== "ended") void readyOnce(l, space, witness, store, dir);
+    });
     endpoint.on("connection", (e: { connected: boolean }) => {
       if (l.endpoint !== endpoint) return;
       l.brokerUp = e.connected;
       if (!e.connected) { if (l.state === "connected") l.state = "connecting"; return; }
-      if (l.state !== "ended") l.readying ??= ready(l, space, witness, store, dir).finally(() => { l.readying = undefined; });
+      if (l.state !== "ended") void readyOnce(l, space, witness, store, dir);
     });
     l.endpoint = endpoint;
     try { await endpoint.start(); } catch { if (stateOf(l) !== "ended") l.state = "unavailable"; await teardown(l); return result(space); }
     l.brokerUp = true;
-    await (l.readying ?? (l.readying = ready(l, space, witness, store, dir).finally(() => { l.readying = undefined; })));
+    await readyOnce(l, space, witness, store, dir);
     const after = stateOf(l);
     if (after !== "connected" && after !== "ended") { await teardown(l); }
     return result(space);
