@@ -97,6 +97,29 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     await assert.rejects(host.open("local", "personal_a", "native-a"), /would exceed its spawner's grant/);
     check("local issuance respects the fixture parent's event ceiling", true);
     grantActor(stateDir, { ...parentGrant, allowPublish: [`events.${owner}.>`] });
+    const { createHash } = await import("node:crypto");
+    const { provisionUserApp, retireUserApp } = await import("../../cli/src/lib/app-user-identity.js");
+    const { resolveTargetOrThrow } = await import("@cotal-ai/workspace");
+    const target = await resolveTargetOrThrow({ space });
+    const originalGrant = cotalAuthProvider.grantAgent;
+    let crashedActor: string | undefined;
+    cotalAuthProvider.grantAgent = async (options) => {
+      await originalGrant(options);
+      crashedActor = options.actor;
+      throw new Error("fixture interruption after the real grant committed");
+    };
+    try {
+      await assert.rejects(provisionUserApp(target, "crash_test", "native-crash", true), /fixture interruption/);
+    } finally { cotalAuthProvider.grantAgent = originalGrant; }
+    assert(crashedActor);
+    check("a committed grant survives the simulated post-grant interruption", await cotalAuthProvider.actorScope({ dir: stateDir, owner, actor: crashedActor }) !== undefined);
+    await assert.rejects(provisionUserApp(target, "crash_test", "native-crash", true), /unconfirmed secret/);
+    const crashDir = join(home, "app-identities", createHash("sha256").update(`${space}\0native-crash`).digest("hex"));
+    await retireUserApp(crashDir);
+    check("exact foreground retirement recovers a committed grant without its lost response secret", !existsSync(crashDir) && await cotalAuthProvider.actorScope({ dir: stateDir, owner, actor: crashedActor }) === undefined);
+    const fresh = await provisionUserApp(target, "crash_test", "native-crash", true);
+    check("reconnect after confirmed crash cleanup gets a new actor", fresh.env.COTAL_ACTOR !== crashedActor);
+    await retireUserApp(fresh.retire.dir);
     const a = await host.open("local", "personal_a", "native-a");
     const b = await host.open("local", "personal_b", "native-b");
     check("two personal conversations join the real user-auth mesh", a.agent.connected && b.agent.connected);
