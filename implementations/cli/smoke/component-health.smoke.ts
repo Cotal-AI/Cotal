@@ -51,7 +51,7 @@ import {
   writeServiceStatus,
 } from "@cotal-ai/core";
 import { MANAGER_PIDFILE, WEB_PIDFILE, WEB_SESSION_FILE, canonicalLocalProcessPath, renewalRecordPath, writeRenewalRecord } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -70,9 +70,11 @@ const webRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-healt
 const credsDir = mkdtempSync(join(tmpdir(), "cotal-component-health-creds-"));
 // `cotal up` and `cotal service start` below leave the stack and the dashboard in `webRoot` but
 // outside the runner's process group, and a killed run never reaches `finally`, so the watchdog that
-// recording starts is what stops them.
-recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome });
-recordSmokeSandbox({ root: webRoot, cotalHome: home, xdgConfigHome });
+// recording starts is what stops them. `cliIn` guards each `down` with the anchor of the root it runs in.
+const sandboxes = new Map([
+  [root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome })],
+  [webRoot, recordSmokeSandbox({ root: webRoot, cotalHome: home, xdgConfigHome })],
+]);
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -102,6 +104,7 @@ function cli(...args: string[]) {
 }
 
 function cliIn(cwd: string, args: string[], timeout = 30_000) {
+  assertSmokeSandboxDown(sandboxes.get(cwd), args, { cwd, env });
   return spawnSync(TSX, [CLI, ...args], { cwd, env, encoding: "utf8", timeout });
 }
 
