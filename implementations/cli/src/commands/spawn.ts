@@ -96,6 +96,7 @@ import {
 import { c } from "../ui.js";
 import { liveMeshNames } from "../lib/live-names.js";
 import { displayCmd } from "../lib/self-exec.js";
+import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { askManager, failIfNotOk, onInstance, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
@@ -1599,11 +1600,13 @@ async function provisionRemoteUserForeground(
     rmSync(healthPath, { force: true });
     provenance.wrote(`remote actor material ${material.owner}.${name} (user mode)`, tokenPath);
     // The bearer preflight — the same one-shot proof the local path runs, pointed at the pinned
-    // exchange instead of a local service. A dead auth chain stops the spawn here.
+    // exchange instead of a local service. A dead auth chain stops the spawn here. The agent runs
+    // this command for every renewal, so it names the resolved entry: an install can replace the
+    // bin link meanwhile (get.cotal.ai writes a shell launcher over `~/.local/bin/cotal`).
     const bearerCmd = [
       process.execPath,
       ...process.execArgv,
-      process.argv[1],
+      entryScript(),
       provider.agentBearerCommand,
       "--exchange-url", exchangeUrl,
       "--space", space,
@@ -1767,10 +1770,11 @@ async function provisionUserForeground(
     await materializeSecretToFile(store, agentSentinelCredsKey(space, name, composition), sentinelPath);
     rmSync(healthPath, { force: true });
     provenance.wrote(`actor grant ${owner}.${name} (user mode)`, tokenPath);
+    // The resolved entry, for the same reason as the remote arm above.
     const bearerCmd = [
       process.execPath,
       ...process.execArgv,
-      process.argv[1],
+      entryScript(),
       provider.agentBearerCommand,
       "--dir", dir,
       "--space", space,
