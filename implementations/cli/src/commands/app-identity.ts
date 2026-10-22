@@ -36,6 +36,9 @@ export const appIdentityFlags = [
   { name: "session", type: "string", value: "<id>", description: "provision: the native conversation identity" },
   { name: "events", type: "boolean", description: "provision: a real native transcript source is bound" },
   { name: "selection", type: "string", value: "<json>", description: "provision: channels, role and capabilities to request within your own grant" },
+  // Every provision here needs a person's approval, with or without this flag. A caller passes it so
+  // that an earlier CLI, which opened identities without approval, refuses the unknown flag first.
+  { name: "require-approval", type: "boolean", description: "provision: the caller accepts only an identity a person approved" },
 ] as const satisfies readonly FlagSpec[];
 
 /** What the record in a credential directory says. `owner` is the process that ran provision. */

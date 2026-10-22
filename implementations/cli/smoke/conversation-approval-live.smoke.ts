@@ -5,13 +5,14 @@
  * Run: pnpm smoke:conversation-approval-live
  */
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { rootCertificates, setDefaultCACertificates } from "node:tls";
+import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-conversation-approval-"));
@@ -131,6 +132,11 @@ async function cli(values: Record<string, unknown>): Promise<{ code: number; out
   const out = chunks.join("");
   return { code, out, reply: JSON.parse(out) };
 }
+/** The real `cotal` binary in a child, through the dispatcher's strict flag parse. */
+const cotal = (args: string[]) => new Promise<{ code: number; out: string }>((resolve) =>
+  execFile(process.execPath, ["--import", "tsx", "bin/cotal.ts", ...args],
+    { cwd: fileURLToPath(new URL("../../../", import.meta.url)), env: { ...process.env, NODE_EXTRA_CA_CERTS: join(home, "server.crt") } },
+    (error, stdout) => resolve({ code: error ? Number(error.code) : 0, out: stdout })));
 const identities = () => existsSync(join(home, "app-identities")) ? readdirSync(join(home, "app-identities")).filter((n) => /^[a-f0-9]{64}$/.test(n)) : [];
 const pendingOf = async (p: ReturnType<typeof provisionUserApp>) => {
   const r = await p;
@@ -195,6 +201,14 @@ try {
     assert.deepEqual(posts[1], posts[0]);
     assert.equal(issued, 0);
   });
+  await check("the connector's --require-approval passes the CLI's own parser and the request still waits for the person", async () => {
+    const r = await cotal(["app-identity", "provision", "--name", "fence", "--space", SPACE, "--session", "session-fence", "--events", "--require-approval"]);
+    assert.equal(r.code, 1);
+    assert.equal(r.out.split("\n").filter(Boolean).length, 1);
+    const reply = JSON.parse(r.out);
+    assert.equal(reply.pending, true);
+    assert.equal(approvals.get(reply.requestId)?.state, "pending");
+  });
   decide(saved.requestId, { approve: edited });
   const approved = await connected(provisionUserApp(target, "sel", "session-sel", true, proposal));
   await check("the person's edited selection, not the proposal, becomes the exact grant", () => {
@@ -244,6 +258,35 @@ try {
   }
   await check("a denial with extra fields is an unknown outcome and the request is kept", () =>
     tampered("loose-deny", "session-loose", (requestId) => decide(requestId, "deny"), /answered HTTP 403; its original request was retained/));
+
+  // A request saved before approval existed carries no approval marker and no issued identity. Sent
+  // to a host with approval, its issued answer must still carry the person's decision.
+  const unmarked = async (session: string) => {
+    const pending = await pendingOf(provisionUserApp(target, "u", session, true, proposal));
+    decide(pending.requestId, { approve: proposal });
+    const file = identities().map((name) => join(home, "app-identities", name, "identity.json"))
+      .find((f) => JSON.parse(readFileSync(f, "utf8")).requestId === pending.requestId)!;
+    const record = JSON.parse(readFileSync(file, "utf8"));
+    delete record.remote.approval;
+    writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
+    return file;
+  };
+  await check("an unissued request saved before approval is refused an identity without the person's decision", async () => {
+    const file = await unmarked("session-unmarked");
+    tamper = "null-approval";
+    await assert.rejects(provisionUserApp(target, "u", "session-unmarked", true, proposal), /without a recorded approval/);
+    tamper = "";
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).remote, { url: `${base}/api/spaces/${SPACE}/conversation-identities`, idpUrl: `${base}/idp`, approval: {} });
+    const decided = await connected(provisionUserApp(target, "u", "session-unmarked", true, proposal));
+    assert.deepEqual(decided.grant, contractGrant(decided.env.COTAL_ACTOR!, proposal));
+  });
+  await check("its recovery is refused the same answer and keeps the request", async () => {
+    const file = await unmarked("session-unmarked-retire");
+    tamper = "pre-contract";
+    await assert.rejects(retireUserApp(dirname(file)), /without a recorded approval/);
+    tamper = "";
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).remote.approval, {});
+  });
 
   for (const [decision, pattern] of [["deny", /person denied this connection; no identity was issued/], ["expire", /approval expired .*no identity was issued/]] as const) {
     await check(`${decision === "deny" ? "a denial" : "an expiry"} discards the request and the next connect asks again`, async () => {
@@ -314,7 +357,7 @@ try {
     assert(!existsSync(approved.retire.dir) && !existsSync(plain.retire.dir));
     assert.equal(deletes, 2);
   });
-  assert.equal(assertions, 27);
+  assert.equal(assertions, 30);
   console.log(`conversation-approval-live: ${assertions} checks passed; isolated HTTPS fixture authority and fixture human decision, not hosted acceptance`);
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
