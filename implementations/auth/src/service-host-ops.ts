@@ -27,10 +27,10 @@ import {
 import { SERVICE_HOST_INVOCATION_MS, openAuthorityClient, serviceHostEffectGrants, serviceHostEffectLabel, type ServiceHostEffectReads } from "./authority-client.js";
 import { callerParentRefs } from "./service-caller-ancestry.js";
 import { findActorUnified, findInteractiveActor } from "./ledger.js";
-import { openLifecycleRegistry, registryMaxPayload, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
+import { openLifecycleRegistry, registryMaxPayload, registryServerId, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { activatedServiceGateRow, approvedServiceGateRow, assertApprovableServiceGate, type ServiceAssignmentBinding, type ServiceGateRows } from "./native-service-gate.js";
 import { nativeServiceNameAuthority, readNativeServiceName, serviceNameKey, serviceNameRowBytes } from "./native-service-name.js";
-import type { PlaneClaimHold } from "./plane-claim.js";
+import { genuinePlaneHold, readPlaneClaim, type PlaneClaimHold } from "./plane-claim.js";
 import {
   SERVICE_CALLER_PAYLOAD_KEY, parseServiceCallerPayloadRecord, serviceCallerPayloadCheck, serviceCallerWriteFits,
   type ServiceCallerPayloadLimits, type ServiceCallerPayloadRecord,
@@ -1621,6 +1621,14 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
   /** Whether the payload precondition holds now, from its durable record and this connection's live limits. */
   async function payloadHolds(ctx: Ctx, operationId: string | null): Promise<boolean> {
     const rec = await readPayload(ctx), check = serviceCallerPayloadCheck(rec.state === "value" ? rec.row : undefined, await payloadLimits(ctx));
+    if (check.holds && rec.state === "value" && rec.row.state === "asserted" && rec.row.broker) {
+      const broker = rec.row.broker, proof = genuinePlaneHold(opts.hold);
+      if (!proof || broker.serverId !== registryServerId(ctx.h.registry)) return false;
+      const observed = await bounded(ctx, () => readPlaneClaim(registryStores(ctx.h.registry).authKv, space));
+      if (!observed.ok || !observed.value || observed.value.state !== "held" || observed.value.claimId !== broker.claimId || observed.value.generation !== broker.claimGeneration) return false;
+      const held = await bounded(ctx, () => proof.assertHeld("after"));
+      if (!held.ok) return false;
+    }
     if (!check.holds && (check.why === "server-limit" || check.why === "stream-limit")) await withdrawPayload(ctx, rec, "live-check", operationId);
     return check.holds;
   }
@@ -1649,9 +1657,9 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
   type GrantOut = Arms | { state: "granted"; grant: ServiceCallerGrant; revision: number };
   const grantedArm = (r: OpResult): GrantOut => { const g = r as GrantResult; return { state: "granted", grant: structuredClone(g.grant), revision: g.revision }; };
 
-  /** caller-grant (G1-G6): an interactive owner grants one interactive, parentless grantee rights on
-   *  its own approved instance, within the approval's ceiling. A grant is recorded `active`; nothing
-   *  in this host issues rights from it. */
+  /** caller-grant (G1-G6): an interactive owner grants a current exact-lifecycle grantee rights on
+   *  its own approved instance, within the approval's ceiling and covering managed ancestry. A grant
+   *  records policy only; the separately composed callout establishes effective authority. */
   async function callerGrant(req: Extract<ServiceHostRequest, { operation: "caller-grant" }>, authorized: boolean): Promise<GrantOut> {
     // Authorization precedes every request-key read, and its refusal is one answer whether or not the request is bound.
     if (!authorized) return unread(req.requestId, "permission-denied", "authorize");

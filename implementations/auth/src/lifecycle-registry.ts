@@ -110,6 +110,8 @@ interface RegistryInternals {
   work: WorkPoolContext;
   /** The connection's current `max_payload` from the server INFO it last received; undefined when absent. */
   maxPayload(): number | undefined;
+  /** Live broker incarnation used by a payload assertion, never an argv-derived identity. */
+  serverId(): string | undefined;
   /** The SEALED auth-ledger scanner (SPEC 13.9): the ONLY holder of `CONSUMER.CREATE` on the auth
    *  stream, on its own dedicated credential+connection ({@link openAuthLedgerScanner}). The
    *  barrier reaches enumeration through its CLOSED ops only ({@link registryScanner}); the raw
@@ -184,7 +186,7 @@ export async function openLifecycleRegistry(nc: NatsConnection, space: string, s
   // declare quiescence over live obligations it never read.
   if (recordsScanner !== undefined) assertRecordsScannerSpace(recordsScanner, space);
   const reg: LifecycleRegistry = Object.freeze({ space });
-  REGISTRIES.set(reg, { space, recordsKv, authKv, jsm, js: jetstream(nc), work: await workPoolContext(nc, space), maxPayload: () => nc.info?.max_payload, scanner, recordsScanner });
+  REGISTRIES.set(reg, { space, recordsKv, authKv, jsm, js: jetstream(nc), work: await workPoolContext(nc, space), maxPayload: () => nc.info?.max_payload, serverId: () => nc.info?.server_id, scanner, recordsScanner });
   return reg;
 }
 
@@ -251,6 +253,9 @@ function transportOf(reg: LifecycleRegistry): LifecycleStateTransport {
 export function registryStores(reg: LifecycleRegistry): { space: string; recordsKv: KV; authKv: KV; jsm: JetStreamManager; js: JetStreamClient; work: WorkPoolContext } {
   return internals(reg);
 }
+
+/** PACKAGE-INTERNAL: the registry connection's current broker incarnation. */
+export function registryServerId(reg: LifecycleRegistry): string | undefined { return internals(reg).serverId(); }
 
 /** PACKAGE-INTERNAL: the registry connection's live `max_payload`. One connection's INFO describes
  *  one server only; it never stands in for a cluster-wide assertion. */

@@ -1,6 +1,7 @@
 /** Real owned broker/callout acceptance for generic user-auth endpoint caller issuance.
  * Fixture IdP and endpoint, no provider/Cloud traffic. --baseline expects missing caller reach.
- * This suite changes no shipped implementation and performs no mutation/reversion. */
+ * This suite changes no shipped implementation and performs no mutation/reversion.
+ * Boundary flags change only owned fixture authority while an actual observer callback is awaited. */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
@@ -13,6 +14,7 @@ import { authorizeServeGrant, compileContract, contractArtifactCanonicalBytes, c
   invokeCommand, mintCreds, newIdentity, publishContractArtifact, recordSpecKey, RECORD_KINDS, resolveService, serveEndpoint,
   setupSpaceStreams, singleDocumentClosure, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
+import { mintServiceCallerPayloadObserverCreds } from "../src/service-caller-payload-bootstrap.js";
 import { SERVICE_CALLER_PAYLOAD_FLOOR } from "../src/service-caller-payload.js";
 import { createHash } from "node:crypto";
 import { grantActor, findInteractiveActor, revokeActor, grantManagedActor } from "../src/ledger.js";
@@ -42,17 +44,18 @@ const idpToken = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: j
 let service: AuthServiceHandle | undefined, admin: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
 const connections: NatsConnection[] = [];
 let serve: ReturnType<typeof serveEndpoint> | undefined, runs = 0;
+let beforeObserver: (() => Promise<void>) | undefined;
 try {
   await setupSpaceStreams({ servers: fx.servers, space: a.space, creds: await mintCreds(a.auth, newIdentity(), "provisioner") });
   service = await startAuthService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: "caller-fixture" }, space: a.space,
-    servers: fx.servers, store: a.store, storeIdentity: a.store.identity, stateDir, serviceEndpoints: { startup: { kind: "normal" } } });
+    servers: fx.servers, store: a.store, storeIdentity: a.store.identity, stateDir, serviceEndpoints: { startup: { kind: "normal" }, ...(!baseline ? { callerPayload: { observerCreds: async () => { await beforeObserver?.(); return mintServiceCallerPayloadObserverCreds({ pub: a.auth.sys.pub, signingSeed: a.auth.sys.signingSeed! }); } } } : {}) } });
   const post = async (path: string, body: unknown) => {
     const r = await fetch(`${service!.url}${path}`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${service!.cap}` }, body: JSON.stringify(body) });
     const out = await r.json() as Record<string, any>;
     if (!r.ok) throw new Error(`${path}: HTTP ${r.status} ${out.error ?? out.reason ?? "refused"}`);
     return out;
   };
-  const host = service.serviceEndpointHost!;
+  let host = service.serviceEndpointHost!;
   const endpoint = second ? "org.example.calculator" : "org.example.generic-caller", instanceId = rid(), command = second ? "square" : "ping";
   const schemaRoot = second ? { type: "object", additionalProperties: false, properties: { n: { type: "number" } }, required: ["n"] }
     : { type: "object", additionalProperties: false };
@@ -103,9 +106,25 @@ try {
       grantId, endpoint, instanceId, serviceApprovalDigest: witness.approvalDigest, capabilities: [capability], parentRefs: [], status: { state: "active" },
       source: { kind: "service-owner", owner, approvalDigest: witness.approvalDigest, nameAuthorityRevision: witness.nameAuthorityRevision } }] })));
   } else {
-    // Labelled fixture operator assertion, not a product assertion pass or Cloud prerequisite closure.
-    await authKv.create("svchost.payload", enc.encode(JSON.stringify({ v: 1, kind: "service-caller-payload", state: "asserted",
-      floor: SERVICE_CALLER_PAYLOAD_FLOOR, assertedAtMs: Date.now(), evidenceDigest: contractDigest({ ownedSingleBroker: fx.servers }) })));
+    const asserted = await authKv.get("svchost.payload");
+    const proof = asserted && JSON.parse(new TextDecoder().decode(asserted.value));
+    c.check("actual host bootstrap records broker/config/claim-bound payload assertion", proof?.state === "asserted"
+      && proof?.broker?.serverId === admin.nc.info?.server_id && typeof proof?.broker?.configDigest === "string");
+    if (process.argv.includes("--reopen-payload")) {
+      await service.close();
+      service = await startAuthService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: "caller-fixture" }, space: a.space,
+        servers: fx.servers, store: a.store, storeIdentity: a.store.identity, stateDir, serviceEndpoints: { startup: { kind: "normal" } } });
+      host = service.serviceEndpointHost!;
+      const stale = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "caller-grant", granter: { kind: "owner", owner }, input: {
+        grantee, service: { endpoint, instanceId, approvalDigest: witness.approvalDigest }, capabilities: [capability], expectedPolicyRevision: 0 } });
+      c.check("reopened plane without bootstrap cannot append from prior-plane assertion", stale.state !== "granted" && await authKv.get(`servicepolicy.${grantee.lifecycleUid}`) === null, stale);
+      assert.notEqual(stale.state, "granted", "prior-plane assertion unexpectedly authorized append");
+      await service.close();
+      service = await startAuthService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: "caller-fixture" }, space: a.space,
+        servers: fx.servers, store: a.store, storeIdentity: a.store.identity, stateDir, serviceEndpoints: { startup: { kind: "normal" },
+          callerPayload: { observerCreds: () => mintServiceCallerPayloadObserverCreds({ pub: a.auth.sys.pub, signingSeed: a.auth.sys.signingSeed! }) } } });
+      host = service.serviceEndpointHost!;
+    }
     const granted = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "caller-grant", granter: { kind: "owner", owner }, input: {
       grantee, service: { endpoint, instanceId, approvalDigest: witness.approvalDigest }, capabilities: [capability], expectedPolicyRevision: 0 } });
     assert.equal(granted.state, "granted", JSON.stringify(granted)); if (granted.state !== "granted") throw new Error("caller grant"); grantId = granted.grant.grantId;
@@ -146,6 +165,31 @@ try {
     const expectedRuns = runs;
     let refused = false; try { await invoke("stranger", strangerRow.lifecycleUid!); } catch { refused = true; }
     c.check("ungranted lifecycle cannot invoke and handler count unchanged", refused && runs === expectedRuns);
+    const boundary = process.argv.includes("--payload-withdraw") ? "withdrawal" : process.argv.includes("--policy-during-observe") ? "policy" : process.argv.includes("--close-during-observe") ? "close" : undefined;
+    if (boundary) {
+      let observations = 0;
+      let closeFlight: Promise<void> | undefined;
+      beforeObserver = async () => {
+        if (++observations !== 2) return;
+        if (boundary === "withdrawal") {
+          const row = (await authKv.get("svchost.payload"))!;
+          await authKv.update("svchost.payload", enc.encode(JSON.stringify({ v: 1, kind: "service-caller-payload", state: "withdrawn", reason: "live-check", operationId: null, atMs: Date.now() })), row.revision);
+        } else if (boundary === "close") {
+          let ended = false;
+          closeFlight = service!.close().then(() => { ended = true; });
+          await new Promise(r => setTimeout(r, 150));
+          const claim = JSON.parse(new TextDecoder().decode((await authKv.get("plane"))!.value));
+          c.check("shutdown owns in-flight payload verification before plane claim release", !ended && claim.state === "held");
+        } else {
+          const revision = (await authKv.get(`servicepolicy.${grantee.lifecycleUid}`))!.revision;
+          const revoked = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "caller-revoke", granter: { kind: "owner", owner }, input: { grantee, grantId, expectedPolicyRevision: revision } });
+          assert.equal("denyNew" in revoked && revoked.denyNew, "landed");
+        }
+      };
+      let refused = false; try { await invoke("caller", callerRow.lifecycleUid!); } catch { refused = true; }
+      await closeFlight;
+      c.check(`${boundary} during final actual SYS observation denies native JWT release`, observations >= 2 && refused && runs === expectedRuns);
+    } else {
     const revision = (await authKv.get(`servicepolicy.${grantee.lifecycleUid}`))!.revision;
     const revoked = await host({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "caller-revoke", granter: { kind: "owner", owner }, input: { grantee, grantId, expectedPolicyRevision: revision } });
     c.check("controlled revoke confirms deny-new without claiming retirement", "denyNew" in revoked && revoked.denyNew === "landed", revoked);
@@ -161,6 +205,7 @@ try {
     assert.notEqual(successor.lifecycleUid, grantee.lifecycleUid);
     refused = false; try { await invoke("caller", successor.lifecycleUid!); } catch { refused = true; }
     c.check("same-alias successor lifecycle does not inherit predecessor policy", refused && runs === expectedRuns);
+    }
   }
 } finally {
   await serve?.stop().catch(() => {});

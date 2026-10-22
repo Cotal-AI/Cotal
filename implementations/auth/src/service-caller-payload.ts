@@ -4,11 +4,10 @@
  * the write's header block, and the auth stream sets no smaller per-message limit.
  *
  * The precondition has one durable record in the auth store, read by every caller-policy writer and
- * by any later issuance path. Only the operator's cluster-wide assertion pass may record it as
- * asserted; stock builds no such pass, so stock never asserts it. Any writer that sees a live check
- * fail, or holds a write that would not fit, withdraws the record, and it stays withdrawn until an
- * operator asserts it again. One connection's INFO describes one server only, so a live check
- * complements the assertion and never replaces it. */
+ * by any later issuance path. Only a trusted complete broker observation may assert it. The stock
+ * standalone host bootstrap authenticates native VARZ and binds the row to its broker and plane
+ * claim. Any writer that sees a live check fail withdraws the record until explicit reassertion.
+ * One connection's INFO is not complete topology evidence and never replaces the observation. */
 import { EpEnvelopeError, SERVICE_AUTHORITY_MAX_BYTES, isContractDigest } from "@cotal-ai/core";
 
 export const SERVICE_CALLER_PAYLOAD_KEY = "svchost.payload";
@@ -21,7 +20,7 @@ export const SERVICE_CALLER_PAYLOAD_FLOOR = SERVICE_AUTHORITY_MAX_BYTES + SERVIC
 
 export type ServiceCallerPayloadRecord =
   /** `floor` is the smallest `max_payload` the operator's complete per-server assertion observed. */
-  | { v: 1; kind: "service-caller-payload"; state: "asserted"; floor: number; assertedAtMs: number; evidenceDigest: string }
+  | { v: 1; kind: "service-caller-payload"; state: "asserted"; floor: number; assertedAtMs: number; evidenceDigest: string; broker?: { serverId: string; configDigest: string; claimId: string; claimGeneration: number } }
   | { v: 1; kind: "service-caller-payload"; state: "withdrawn"; reason: "live-check" | "payload-precondition"; operationId: string | null; atMs: number };
 
 function bad(): never { throw new EpEnvelopeError("bad-request", "invalid service caller payload precondition"); }
@@ -37,9 +36,17 @@ const uint = (raw: unknown) => { if (typeof raw !== "number" || !Number.isSafeIn
 export function parseServiceCallerPayloadRecord(raw: unknown): ServiceCallerPayloadRecord {
   const o = raw as Record<string, unknown>;
   if (o?.state === "asserted") {
-    closed(raw, ["v", "kind", "state", "floor", "assertedAtMs", "evidenceDigest"]);
+    const fields = ["v", "kind", "state", "floor", "assertedAtMs", "evidenceDigest"];
+    closed(raw, Object.hasOwn(o, "broker") ? [...fields, "broker"] : fields);
     if (o.v !== 1 || o.kind !== "service-caller-payload" || typeof o.evidenceDigest !== "string" || !isContractDigest(o.evidenceDigest)) bad();
-    return { v: 1, kind: "service-caller-payload", state: "asserted", floor: uint(o.floor), assertedAtMs: uint(o.assertedAtMs), evidenceDigest: o.evidenceDigest };
+    let broker: Extract<ServiceCallerPayloadRecord, { state: "asserted" }>["broker"];
+    if (o.broker !== undefined) {
+      const b = closed(o.broker, ["serverId", "configDigest", "claimId", "claimGeneration"]);
+      if (typeof b.serverId !== "string" || !/^N[A-Z2-7]{55}$/.test(b.serverId) || typeof b.configDigest !== "string" || !b.configDigest
+        || b.configDigest.length > 128 || typeof b.claimId !== "string" || !b.claimId || b.claimId.length > 128 || uint(b.claimGeneration) < 1) bad();
+      broker = { serverId: b.serverId, configDigest: b.configDigest, claimId: b.claimId, claimGeneration: b.claimGeneration as number };
+    }
+    return { v: 1, kind: "service-caller-payload", state: "asserted", floor: uint(o.floor), assertedAtMs: uint(o.assertedAtMs), evidenceDigest: o.evidenceDigest, ...(broker ? { broker } : {}) };
   }
   closed(raw, ["v", "kind", "state", "reason", "operationId", "atMs"]);
   if (o.v !== 1 || o.kind !== "service-caller-payload" || o.state !== "withdrawn" || (o.reason !== "live-check" && o.reason !== "payload-precondition")) bad();
