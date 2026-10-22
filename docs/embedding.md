@@ -1418,6 +1418,16 @@ responder, calls `ready`, and renews before the bearer expires. The auth provide
 `serviceEndpointInfo` and `serviceEndpointAuthority` hooks are the client, and accept a service proof
 as well as the signed-in login.
 
+For a serving connection, `serviceEndpointRenewal({ store, dir, witness })` returns that loop as a
+bearer function: pass its `bearer` as `EndpointOptions.bearer` and its `sentinelCreds` with it. The
+first pull activates on the signed-in login and every later pull renews on the stored renewal proof.
+It keeps one activate and one renew requestId per witness, written to `store` before the first send,
+and replays them, with fresh material each time, for as long as the root and the approval allow.
+Concurrent pulls share one request. It owns no timer. A transport failure or `rate-limited` leaves it
+`unavailable`, and the next pull replays the same request; any other denial, or renewal material
+already past its expiry, ends it, and later pulls send nothing. `state()` reports expiries only, and
+`close()` aborts a pull in flight.
+
 Every effectful request is keyed by its requestId and body. Keep one requestId per operation and
 witness, store it with the witness and the renewal material before you send it, and reuse it with
 the same body after a restart: a replay is safe, a changed body under the same requestId is a
