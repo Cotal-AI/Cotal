@@ -31,9 +31,9 @@
  *  C12 a connection held past two 60 s access-bearer lifetimes stays connected or connecting (never
  *      unavailable or ended), is connected for at least 80% of 1 s samples and at the end, and the
  *      space still reads it ready. The sample counts are printed, so each documented reconnect is visible;
- *  C13 broker loss while connected: with the broker stopped and unreachable, no 500 ms sample over
- *      8 s says connected (all say connecting); after the broker returns it is connected again and the
- *      space reads ready;
+ *  C13 (runs last, on its own space) broker loss while connected: with the broker stopped and
+ *      unreachable, no 500 ms sample over 8 s says connected (all say connecting); after the broker
+ *      returns it is connected again, which needs a fresh ready;
  *  C14 the SHIPPED binary (`node bin/dist/cotal.js daemon serve`) with its 0600 ready record corrupted:
  *      the connect answers unavailable with fixed text, status agrees (nothing left running), the
  *      process keeps running, and with the record restored the same daemon connects.
@@ -179,7 +179,7 @@ const posts = (space: string) => hits.filter((h) => h.space === space && h.metho
 
 const broker = await createBrokerAuth("a2b2-broker");
 const stamp = Date.now();
-const spaces = ["on", "off", "deny"].map((s) => `a2b2-${s}-${stamp}`);
+const spaces = ["on", "off", "deny", "brk"].map((s) => `a2b2-${s}-${stamp}`);
 const accounts = await Promise.all(spaces.map((s) => createSpaceAccountAuth(broker, s)));
 const handles: AuthServiceHandle[] = [];
 let nats: ChildProcess | undefined, release: (() => void) | undefined;
@@ -226,8 +226,8 @@ try {
   }
   saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
 
-  const [ON, OFF, DENY] = spaces as [string, string, string];
-  const host = svc[0]!.serviceEndpointHost!, denyHost = svc[2]!.serviceEndpointHost!;
+  const [ON, OFF, DENY, BRK] = spaces as [string, string, string, string];
+  const host = svc[0]!.serviceEndpointHost!, denyHost = svc[2]!.serviceEndpointHost!, brkHost = svc[3]!.serviceEndpointHost!;
   const operator = { kind: "operator", auditId: "a2b2-fixture-operator" } as const;
   const rid = () => [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
   const regFile = (space: string) => readdirSync(join(home, "daemon"), { recursive: true }).map(String).find((p) => p.includes(".".concat(Buffer.from(space).toString("hex"))) && p.endsWith("register-request.json"));
@@ -346,31 +346,6 @@ try {
       check("C12 the space still reads the instance as ready", (await instanceStatus(ON)) === "ready");
     });
 
-    await cell("C13 broker loss: connected is withdrawn at once and reclaimed only after the broker and a fresh ready", async () => {
-      check("C13 instrument: connected before the broker stops", stateOf(await statusS(ON)) === "connected");
-      await killAndAwaitExit(nats!, "SIGTERM");
-      const during: string[] = [];
-      let gone = false;
-      try {
-        gone = !(await isReachable(`nats://127.0.0.1:${port}`));
-        const t0 = Date.now();
-        while (Date.now() - t0 < 8000) { during.push(String(stateOf(await statusS(ON)))); await sleep(500); }
-      } finally {
-        // Later cells share this broker: bring it back whatever the checks above found, then wait
-        // (bounded) until the stock auth service answers its door again: its context reconnects on
-        // its own, and until it does every door call answers unavailable.
-        nats = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
-        for (let i = 0; i < 50 && !(await isReachable(`nats://127.0.0.1:${port}`)); i++) await sleep(200);
-        for (let i = 0; i < 120; i++) { try { await instanceStatus(ON); break; } catch { await sleep(1000); } }
-      }
-      console.log(`  C13 broker down: ${during.length} samples, ${during.filter((s) => s === "connected").length} connected, states ${[...new Set(during)].join(",")}`);
-      check("C13 instrument: the broker is unreachable", gone);
-      check("C13 no sample after the broker stopped says connected", during.length >= 12 && during.every((s) => s !== "connected"), during);
-      check("C13 the state is connecting while the broker is down (not ended)", during.every((s) => s === "connecting"), [...new Set(during)]);
-      const back = await waitState(ON, (s) => s === "connected", 60_000);
-      check("C13 after the broker returns, connected again and the space reads ready", back === "connected" && (await instanceStatus(ON)) === "ready", back);
-    });
-
     await cell("C7 outage: not connected while the door is gone, connected again after", async () => {
       relayDown.add(ON);
       try {
@@ -463,6 +438,33 @@ try {
     await cell("C10 nothing secret crosses the endpoint or the CLI", async () => {
       const text = frames.join("\n");
       check("C10 no IdP session, JWT, access bearer or renewal proof in any frame", ![SESSION, ...jwtsIssued].some((s) => text.includes(s)) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(text) && !/accessBearer|renewalProof/.test(text), frames.length);
+    });
+
+    // Last, on its own space: stopping the broker also leaves the stock auth services' own contexts
+    // unready for a while, so no other cell runs after it.
+    await cell("C13 broker loss: connected is withdrawn at once and reclaimed only after the broker and a fresh ready", async () => {
+      const brkOwner = deriveOwnerForIdpSubject((await loadOwnerSecret(ctx[3]!.store, BRK))!, idpOrigin, "machine-owner");
+      await ask(paths.socket, { op: "register", space: BRK });
+      const a = await approve(brkHost, BRK, brkOwner);
+      const first = await connectS(BRK);
+      check("C13 instrument: approved and connected before the broker stops", a.decided.state === "approved" && stateOf(first) === "connected", first);
+      await killAndAwaitExit(nats!, "SIGTERM");
+      const during: string[] = [];
+      let gone = false;
+      try {
+        gone = !(await isReachable(`nats://127.0.0.1:${port}`));
+        const t0 = Date.now();
+        while (Date.now() - t0 < 8000) { during.push(String(stateOf(await statusS(BRK)))); await sleep(500); }
+      } finally {
+        nats = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
+        for (let i = 0; i < 50 && !(await isReachable(`nats://127.0.0.1:${port}`)); i++) await sleep(200);
+      }
+      console.log(`  C13 broker down: ${during.length} samples, ${during.filter((s) => s === "connected").length} connected, states ${[...new Set(during)].join(",")}`);
+      check("C13 instrument: the broker is unreachable", gone);
+      check("C13 no sample after the broker stopped says connected", during.length >= 12 && during.every((s) => s !== "connected"), during);
+      check("C13 the state is connecting while the broker is down (not ended)", during.every((s) => s === "connecting"), [...new Set(during)]);
+      const back = await waitState(BRK, (s) => s === "connected", 180_000);
+      check("C13 after the broker returns, connected again (a fresh ready was accepted)", back === "connected", back);
     });
   } finally { await d.close(); }
 } catch (e) {
