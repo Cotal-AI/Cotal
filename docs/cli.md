@@ -229,6 +229,7 @@ failure.
 | Agents & personas | [`persona`](#persona) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Deprecated and hidden from help: run a manager daemon; use the `manager` service preset |
 | Agents & personas | [`service`](#service) | Save, start, stop and inspect owned local services, from a preset or a definition file |
+| Agents & personas | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, and read its status |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Agents & personas | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
 | Agents & personas | [`endpoint deregister`](#endpoint-deregister) | Remove the service registration of an instance whose host is gone, when the broker affirms nothing is subscribed on its rail |
@@ -3017,6 +3018,35 @@ the authority service and grant `supervise` for detached agents. If a running re
 renewal, it reports degraded state and refuses unsafe new starts and restarts; live agents are not
 silently replaced. Do not run `cotal down` or `cotal up` on a participant machine to repair this
 condition.
+
+## daemon
+
+```bash
+cotal daemon serve [--json|--plain]
+cotal daemon status [--json|--plain]
+```
+
+The local machine daemon. This release serves only a local status endpoint: it does not sign in,
+start a Manager or install a system service. It runs on Linux only and refuses elsewhere with
+`UNSUPPORTED`.
+
+`serve` runs in the foreground until SIGTERM or SIGINT and prints `daemon ready at <socket>` once
+the endpoint is bound and checked. `status` asks the running daemon over that endpoint and prints
+its state, version, protocol, process ID, start time and uptime. `state: "ready"` means the local
+control listener is bound and verified. It says nothing about a mesh or Cloud connection.
+
+The endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. Without `XDG_RUNTIME_DIR` both forms refuse
+with `TARGET_UNAVAILABLE`. The directory must be owned by you with mode `0700` and the socket with
+mode `0600`; anything else refuses with `PERMISSION_DENIED`, and the daemon never changes or
+removes what it finds. The daemon drops a connection from another user, and `status` refuses a
+daemon that runs as another user. The kernel separates users, not processes of one user: any
+process running as you can read the status.
+
+`status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`). `serve` refuses
+`CONFLICT` (`ALREADY_RUNNING`) when anything already exists at the socket path, including a
+socket left by a daemon that was killed without cleanup. To recover, run `cotal daemon status`.
+If it reports `NOT_RUNNING`, confirm no `cotal daemon` process is running, then remove the socket
+path by hand and start again. A clean shutdown removes only the daemon's own socket.
 
 ## service
 
