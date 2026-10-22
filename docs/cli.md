@@ -924,7 +924,7 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | Flag | Default | Meaning |
 |---|---|---|
 | `--file <cotal.yaml>`, `-f` | none | Tear down this manifest's deploy |
-| `--run <id>` | none | Tear down one `spawn -f` run by id |
+| `--run <id>` | none | Tear down one additive ledger, written by the retired `spawn -f` deploy, by its run id |
 | `--space <name>` | current space | With service names: the space whose saved definitions to stop. With bare `--dry-run`: confirm that space belongs to this root. A bare stop refuses it |
 | `--dry-run` | off | Print the manifest teardown, the named service stop or the bare stack preview, mutate nothing |
 | `--with-agents` | off | Bare whole stack only: also stop and deprovision every managed agent |
@@ -2776,8 +2776,8 @@ bare `cotal supervise` and an embedded manager stay machine-local. Set it direct
 
 That address is **recorded on the mesh** and carried forward, because it is a decision rather than
 something later commands can work out for themselves (a broker dial address is not a manager bind
-address). Every later manager launch for the same mesh reuses it, including a same-root `cotal up` repair,
-an adopted preserved or restored listener, and a `spawn -f` manifest deploy. A manager replacement
+address). Every later manager launch for the same mesh reuses it, including a same-root `cotal up` repair
+and an adopted preserved or restored listener. A manager replacement
 does not quietly move a reachable attach face back to loopback. Passing `--host` again overrides it,
 so you can widen or narrow exposure whenever you like; a mesh that never asked stays loopback-only
 and records nothing.
@@ -2912,9 +2912,9 @@ starts runs the same code through a hidden entry and prints no warning.
 | `--execution runtime|none` | `runtime` | NONE is a genuine hosting user-auth control instance with no Runtime, connector inspection, workload or terminal execution |
 | `--console-port <n>` | none | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets the browser console reach this manager from another machine. `cotal attach` does not use this face: it redeems a mesh session grant over the broker |
-| `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair or `spawn -f` keeps it |
+| `--max-sessions <n>` | 64 | Live-session ceiling. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. A capacity refusal names this flag. `cotal up --max-sessions` records the same number on the mesh so a later `supervise` started by repair keeps it |
 | `--roster <file>` | none | Declarative roster to boot at startup. See [Roster files](define-a-team.md#roster-files) |
-| `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `spawn -f`) |
+| `--launch <spec>` | none | Resolved manifest launch spec (from `up -f` / `team boot`) |
 | `--spawn <names>` | none | Comma-separated personas to pre-spawn at startup |
 
 `--ws-port`, `--resume-attempt` and `--resume-commit-token` are passed by `cotal up` when it starts
@@ -4146,23 +4146,24 @@ plaintext. A `ws://` address uses plaintext WebSocket. Use `wss://` for TLS.
 ## Manifest deploys
 
 A `cotal.yaml` manifest declares a whole mesh (channels, personas, roles, and ACLs) in one file.
-Three commands consume it, plus a read-only validator:
+These commands consume it:
 
 ```bash
-cotal up -f cotal.yaml         # boot a fresh mesh from the manifest
-cotal spawn -f cotal.yaml      # deploy the manifest additively onto a running mesh
-cotal down -f cotal.yaml       # tear that deploy down (or --run <id> for one run)
+cotal up -f cotal.yaml              # boot a fresh mesh from the manifest
+cotal team deploy cotal.yaml        # deploy the manifest additively onto a running mesh
+cotal team remove <deployment-id>   # retire a returned deployment
 cotal topology view -f cotal.yaml   # validate + view the access graph, change nothing
 ```
 
-`up -f` and `spawn -f` differ in target: `up -f` brings up a new broker and applies the manifest;
-`spawn -f` requires an already-reachable mesh and applies additively (ownership-scoped). On a
-user-auth mesh, `spawn -f` deploys over your own login (the deployer view, gated on ledger scope
-`spawn`): the manifest's agents land under your owner, a manifest claiming another owner is
-refused, and seeding new channels additionally needs scope `admin`. Both take
-`--dry-run` to print the plan without mutating anything. `topology` validates the manifest and
-renders its channel / role / ACL graph. See [Define a team](define-a-team.md) and the
-[manifest reference](manifest.md).
+`up -f` brings up a new broker and applies the manifest. `team deploy` requires a registered,
+running mesh and applies additively: all-new live channel-only manifests, or bounded all-new agent
+and mixed manifests on static-auth or open meshes through one native manager. It does not launch
+user-auth agents. `team remove` retires a returned deployment by its full ID within the limits in
+[Recorded team views](#recorded-team-views). `spawn -f` no longer deploys a manifest; an additive
+ledger written by that older path is torn down with `cotal down -f <file> --run <id>`. `up -f`,
+`team deploy` and `team remove` take `--dry-run` to print the plan without mutating anything.
+`topology` validates the manifest and renders its channel / role / ACL graph. See
+[Define a team](define-a-team.md) and the [manifest reference](manifest.md).
 
 ## ext
 
@@ -4775,7 +4776,8 @@ is not enough.
 
 `--harness/-H`, `--model/-m`, `--name/-n`, `--prompt/-p` and `--cwd/-C` retain their declared
 meanings. The legacy `--agent` spelling remains accepted; using both harness spellings refuses.
-Persona/file and manifest launches do not use this route.
+A `--file <persona-file>` launch uses this route too unless `--foreground` is given. A manifest is
+deployed with `cotal team deploy <file>`, not `spawn`.
 
 `--foreground` runs the native application directly. It does not support a structured receipt,
 manager pin or manager control credential. Native exit or terminal loss may end that process;

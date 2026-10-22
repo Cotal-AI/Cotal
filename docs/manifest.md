@@ -8,7 +8,7 @@ channels, and under each one name the agents that may read and post; Cotal inver
 into one least-privilege credential per agent. The manifest is a convenience over the CLI;
 it adds no wire concepts. Today it is **single-space** (one `space:` per file).
 
-The lifecycle (`cotal topology view -f` / `up -f` / `spawn -f` / `down -f`), ownership,
+The lifecycle (`cotal topology view -f` / `up -f` / `team deploy` / `team remove` / `down`), ownership,
 and teardown behavior are in the guide: [Define a team](define-a-team.md).
 
 ## Top level
@@ -141,7 +141,8 @@ the resolved graph, inherited scopes included.
 ---
 
 For implementers: the channel-centric → per-agent inversion lives in
-[`resolve.ts`](../implementations/cli/src/lib/manifest/resolve.ts); the `spawn -f`
-classification and teardown in
-[`spawn-plan.ts`](../implementations/cli/src/lib/manifest/spawn-plan.ts) and
+[`resolve.ts`](../implementations/cli/src/lib/manifest/resolve.ts); the `team deploy`
+classification in [`spawn-plan.ts`](../implementations/cli/src/lib/manifest/spawn-plan.ts) and
+[`team-deploy-inspection.ts`](../implementations/cli/src/lib/team-deploy-inspection.ts); the
+teardown of an older `spawn -f` ledger in
 [`down-manifest.ts`](../implementations/cli/src/commands/down-manifest.ts).
