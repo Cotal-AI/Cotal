@@ -1693,7 +1693,12 @@ assignment at the selector before any read by request key, so another owner or a
 assignment answers `permission-denied` (a revoked one `approval-revoked`) and any witness the request
 carries must name that assignment's selector, owner, serving actor and lifecycle UID; reads its
 intent `svcint.<id>`, where `id` is the engine's operation id of the request's engine requestId; and,
-only when no intent exists, checks the state the request needs. A registration needs a bound
+only when no intent exists, checks the state the request needs. A register key keeps the binding its
+proposal phase gave it: the operation record of the same id, when one exists, must be a register
+admitted with this body, else `conflict`, and must name the approved proposal; a key whose proposal
+was refused or has expired answers `proposal-refused` or `proposal-expired`, as its proposal-phase
+replay does, and any other proposal is `conflict`. Both are decided before the state check and before
+anything is written. A registration needs a bound
 assignment with no cancel identity, an approved gate without `activationIssued`, a recompiled surface
 whose proposal digest equals the approved proposal's, and an `expected` that matches the current
 registration stamp exactly (no stamp for `unregistered`); refusals are `approval-revoked`,
@@ -1722,15 +1727,22 @@ before activation). The barrier freezes the gate revision it observes after thos
 whenever the gate is not frozen by this request's operation, which includes a request that read it
 frozen and finds it reopened, and the request checks again on exactly that revision before anything
 is frozen or written: a stamp that already names this request answers as a replay does, and a gate
-that moved answers `conflict`, or `approval-revoked` once revoked. It answers `registered` only once
-the stamp names this request. A first
+that moved answers `conflict`, or `approval-revoked` once revoked; those answers are definite. A
+gate the recheck finds frozen by this request's own operation with no stamp yet is another
+invocation of the request still running, so this one is held and answers 503, and its replay resumes
+or recovers it. A request whose barrier observes the gate already frozen by its own operation
+resumes with no recheck. A refusal the native barrier makes itself, such as a gate it observes
+frozen by another operation or a freeze it loses after the recheck held, is a held step that answers
+503. It answers `registered` only once the stamp names this request. A first
 registration keeps process epoch 0; a pre-activation re-registration advances it. Activate requires
 the gate open with a live approval and native root, the request witness to be the current stamp's,
 and then lands the monotonic `activationIssued` CAS unless it already holds. Renew requires the same
 and an activated gate, and writes nothing. Both answer `credential` with a fresh access bearer and
 renewal proof whose expiries are fixed when the door admits the request: at most 60 s and 24 h, and
-never past the native root's or the approval's expiry. A replay of either mints replacement material
-for the same current registration; earlier material keeps its own expiry. Ready requires the same as
+never past the native root's or the approval's expiry. Material that cannot be minted is `expired`
+only once its fixed access expiry has passed; any other failure answers 503, and the replay mints.
+A replay of either mints replacement material for the same current registration; earlier material
+keeps its own expiry. Ready requires the same as
 renew, plus the native name binding at the witness's revision, and writes the service-reported status
 `ready` at the witness's process epoch and spec revision, with `reportedAt` in Unix seconds, fenced on
 the gate's epoch. It answers `ready`. Every write of a serving request goes through its own

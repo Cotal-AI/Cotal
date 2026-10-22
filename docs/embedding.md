@@ -1352,7 +1352,9 @@ Every effectful request is keyed by its requestId and body. Keep one requestId p
 witness, store it with the witness and the renewal material before you send it, and reuse it with
 the same body after a restart: a replay is safe, a changed body under the same requestId is a
 `conflict`, and one instance accepts at most 64 distinct requests, so fresh keys per refresh or
-restart exhaust it. A 503 means the request may be bound: replay the same request, or read its
+restart exhaust it. A register requestId stays bound to the body and proposal its first answer
+admitted: after approval, replay that exact request, and after a refusal or expiry, propose again
+under a new requestId. A 503 means the request may be bound: replay the same request, or read its
 status with `target: { kind: "operation", operation, requestId }`; the selector names the operation
 since this release, and the old `{ kind: "operation", requestId }` no longer parses. An owner reads
 status only while it holds an interactive row, and a service proof reads only its own instance.
