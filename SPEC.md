@@ -1718,10 +1718,12 @@ Otherwise it requires the gate open, or frozen by this same request's operation,
 `expected` to match the stamp; and a live approval. It then publishes each submitted artifact
 create-only to the contract store and runs the native registration barrier and spec registration
 under the request's operation id, with no repair cursor (a service's credential family is empty
-before activation). The barrier freezes the gate revision it observes after those publishes, so a
-request that did not resume checks `expected` again on exactly that revision: a gate that moved
-answers `conflict`, or `approval-revoked` once revoked, and nothing is frozen or written. It
-answers `registered` only once the stamp names this request. A first
+before activation). The barrier freezes the gate revision it observes after those publishes
+whenever the gate is not frozen by this request's operation, which includes a request that read it
+frozen and finds it reopened, and the request checks again on exactly that revision before anything
+is frozen or written: a stamp that already names this request answers as a replay does, and a gate
+that moved answers `conflict`, or `approval-revoked` once revoked. It answers `registered` only once
+the stamp names this request. A first
 registration keeps process epoch 0; a pre-activation re-registration advances it. Activate requires
 the gate open with a live approval and native root, the request witness to be the current stamp's,
 and then lands the monotonic `activationIssued` CAS unless it already holds. Renew requires the same
@@ -1734,8 +1736,11 @@ renew, plus the native name binding at the witness's revision, and writes the se
 the gate's epoch. It answers `ready`. Every write of a serving request goes through its own
 invocation, whose effect credential publishes exactly its intent and index keys and that operation's
 effect keys (the endpoint gate for register and activate, the spec and governance head for register,
-the status for ready), reads those records keys by Direct Get, and publishes and reads back exactly
-the submitted artifacts. The native registration and the ready status write through their own
+the status for ready), and publishes and reads back exactly the submitted artifacts. The
+credential also grants an exact Direct Get on each records key the operation reads, but the
+registry's KV handles are bound without Direct Get: every auth and records read of a serving
+effect is a leader message get (`STREAM.MSG.GET` last by subject) under the base read grant. The
+native registration and the ready status write through their own
 client on that connection, and a fatal latch closes the connection, so none of their requests is
 issued after the fence; a request already issued stays unknown.
 

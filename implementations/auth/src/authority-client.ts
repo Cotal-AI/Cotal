@@ -422,9 +422,10 @@ export function serviceHostEffectGrants(space: string, connId: string, keys: Ser
   };
 }
 
-/** What a native registration reads and publishes beyond its writes: exact records keys read by
- *  Direct Get (the records store serves its native readers that way), and exact contract
- *  artifacts it publishes create-only and reads back after a lost create. */
+/** What a serving effect reads and publishes beyond its writes: exact records keys, granted by
+ *  Direct Get, and exact contract artifacts it publishes create-only and reads back after a lost
+ *  create. The registry's KV handles are bound without Direct Get, so their reads of those records
+ *  keys are leader message gets (`STREAM.MSG.GET` last by subject) under the base grant. */
 export interface ServiceHostEffectReads { readonly records: readonly string[]; readonly contract: readonly string[] }
 const NO_EFFECT_READS: ServiceHostEffectReads = Object.freeze({ records: Object.freeze([]), contract: Object.freeze([]) });
 
