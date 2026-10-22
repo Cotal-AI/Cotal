@@ -8,8 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-plugin-concurrent-")));
-for (const key of Object.keys(process.env))
-  if (key.startsWith("COTAL_") || key.startsWith("CLAUDE_") || key === "CLAUDECODE") delete process.env[key];
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_") || key.startsWith("CLAUDE_") || key === "CLAUDECODE") delete process.env[key];
 Object.assign(process.env, {
   HOME: root, CLAUDE_CONFIG_DIR: join(root, ".claude"), COTAL_HOME: join(root, ".cotal"),
   XDG_CONFIG_HOME: join(root, ".config"), XDG_DATA_HOME: join(root, ".local", "share"), XDG_CACHE_HOME: join(root, ".cache"),
