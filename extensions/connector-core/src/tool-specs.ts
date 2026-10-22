@@ -14,7 +14,8 @@ import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
 import { attributionSafe, fmtBody, fmtItem, fmtFrom } from "./framing.js";
-import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, isAuthed, type AgentConfig } from "./config.js";
+import { isAuthed, type AgentConfig } from "./config.js";
+import { submitFeedback, type FeedbackInput } from "./feedback.js";
 import { buildOrientation, presenceLiveness, renderOrientation, type OrientationTool } from "./orientation.js";
 import { runDocs } from "./docs.js";
 
@@ -1452,36 +1453,11 @@ export function cotalToolSpecs(
       },
       async run(_agent, _config, args: Record<string, unknown>) {
         const { email, ...payload } = args;
-        const url = config.feedbackUrl ?? (config.feedbackKey ? FEEDBACK_URL : PUBLIC_FEEDBACK_URL);
-        const headers: Record<string, string> = { "content-type": "application/json" };
-        const body: Record<string, unknown> = { ...payload, source };
-        if (config.feedbackKey) {
-          headers.authorization = `Bearer ${config.feedbackKey}`;
-        } else {
-          const contact = resolveFeedbackEmail(email as string | undefined, env);
-          if (!contact)
-            return err(
-              "Keyless feedback goes to the public cotal.ai intake, which requires a traceable contact email — ask the user for one and retry with the email argument (or set COTAL_FEEDBACK_EMAIL).",
-            );
-          body.email = contact;
-        }
-        try {
-          const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
-          const raw = await res.text();
-          let reply: { id?: string; error?: string; published?: boolean } = {};
-          if (raw)
-            try {
-              reply = JSON.parse(raw);
-            } catch {
-              reply = { error: raw };
-            }
-          if (!res.ok)
-            return err(`Feedback rejected (${res.status}${reply.error ? `: ${reply.error}` : ""}).`);
-          const note = reply.published === false ? " (stored, but the internal feedback channel publish failed)" : "";
-          return ok(`Feedback sent${reply.id ? ` (id ${reply.id})` : ""}${note}. Thanks!`);
-        } catch (e) {
-          return err(`Couldn't reach the feedback intake at ${url}: ${(e as Error).message}`);
-        }
+        const contact = config.feedbackKey ? undefined : resolveFeedbackEmail(email as string | undefined, env);
+        return submitFeedback(
+          { ...payload, source } as unknown as FeedbackInput,
+          { key: config.feedbackKey, url: config.feedbackUrl, email: contact },
+        );
       },
     },
     {
