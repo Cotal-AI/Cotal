@@ -3129,7 +3129,7 @@ name. A refusal by the space is `PERMISSION_DENIED` with the space's reason as t
 as `PROPOSAL_REFUSED`. A reason the daemon does not recognize is reported as `UNRECOGNIZED`, and the
 space's own text is never shown. A new proposal after a refusal needs a new request, which `register`
 does not send. A sign-in the provider rejects (expired or revoked) is `AUTH_REQUIRED`: run
-`cotal daemon login` again. A failure before anything was sent is `DEPENDENCY_UNAVAILABLE`. Only an
+`cotal daemon login` again. A failure before anything was sent is `DEPENDENCY_UNAVAILABLE`. Only a
 request whose outcome is unconfirmed is `OPERATION_UNKNOWN`: run the same command again
 to replay it. A changed registration for the same instance is refused `CONFLICT` and nothing is sent.
 
