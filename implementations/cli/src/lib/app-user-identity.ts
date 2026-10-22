@@ -116,7 +116,7 @@ function creationOutcome(
     if (refusal) return { refused: `${refusal}; no identity was issued` };
     const decided = conversationApprovalRefusal(response.status, response.body);
     if (decided === "denied") return { refused: "the person denied this connection; no identity was issued" };
-    if (decided === "expired") return { refused: "the approval expired before anyone decided; no identity was issued. Connect again to ask again" };
+    if (decided === "expired") return { refused: "the approval expired before this connection was issued; no identity was issued. Connect again to ask again" };
     if (response.status === 202) {
       const pending = checkConversationPendingAnswer(response.body,
         { requestId: record.requestId, authorityOrigin: new URL(authority.url).origin, proposed: record.selection ?? null });

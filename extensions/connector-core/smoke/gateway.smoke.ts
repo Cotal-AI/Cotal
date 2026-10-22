@@ -288,6 +288,10 @@ try {
     approvalBody.status === "pending" && approvalBody.name === "approval_probe" &&
     approvalBody.requestId === pendingApproval.requestId && !("connection_id" in approvalBody) &&
     approvalText.includes(pendingApproval.approval.url) && approvalText.includes("not connected") && live.size === beforeApproval);
+  check("structured-only clients receive the same person-only approval and retry instructions", typeof approvalBody.message === "string" &&
+    approvalBody.message.includes("do not open the decision page or approve on their behalf") &&
+    approvalBody.message.includes("retry cotal_connect") && approvalBody.message.includes("Do not poll") &&
+    approvalBody.message.includes(pendingApproval.approval.id));
   check("pending approval never renames or issues", opened.filter((o) => o === "acct_a/approval_probe").length === 1 &&
     !opened.includes("acct_a/approval_probe_2") && !reserved.has("acct_a/approval_probe"));
   const resume = await call(a, "cotal_connect", { name: "approval_probe", approval_id: pendingApproval.approval.id });
