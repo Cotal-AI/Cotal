@@ -15,7 +15,7 @@
     {
       "name": "a stack its own down stopped takes the full stop again",
       "file": "implementations/cli/src/commands/stack-down.ts",
-      "find": "  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && values[\"dry-run\"] !== true);\n",
+      "find": "  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents);\n",
       "replace": "",
       "expectRed": "a second bare down without --yes says the stack is not running, names cotal up, and exits 0",
       "cell": "a second bare down without --yes says the stack is not running, names cotal up, and exits 0",
