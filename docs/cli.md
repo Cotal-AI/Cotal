@@ -3109,7 +3109,12 @@ contacting the space again. Otherwise it sends one registration request for the 
 with this machine's sign-in, through the space's stock service authority. The daemon never sees or
 relays that sign-in proof. The request ID is saved before the first send, at
 `<COTAL_HOME>/daemon/<space segment>/register-request.json`, and every later `register`, including
-after a restart, replays the same request unchanged.
+after a restart, replays the same request unchanged. The stock writer does not guarantee durability
+across power loss.
+
+The fixed service name binds to one owner per space. Different owners in a shared space need distinct
+operator-approved endpoint names; this command does not yet select one. The operator must verify or
+delegate the namespace before binding it.
 
 The space answers in one of three ways, each reported with exit 0:
 
@@ -3125,7 +3130,7 @@ as `PROPOSAL_REFUSED`. A reason the daemon does not recognize is reported as `UN
 space's own text is never shown. A new proposal after a refusal needs a new request, which `register`
 does not send. A sign-in the provider rejects (expired or revoked) is `AUTH_REQUIRED`: run
 `cotal daemon login` again. A failure before anything was sent is `DEPENDENCY_UNAVAILABLE`. Only an
-answer that may have reached the space unconfirmed is `OPERATION_UNKNOWN`: run the same command again
+request whose outcome is unconfirmed is `OPERATION_UNKNOWN`: run the same command again
 to replay it. A changed registration for the same instance is refused `CONFLICT` and nothing is sent.
 
 ## service
