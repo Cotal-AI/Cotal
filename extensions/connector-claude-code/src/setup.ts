@@ -332,8 +332,8 @@ function verify(name: string, scope: string, expectedVersion?: string): void {
   if (!match) throw new Error(`plugin ${name}@${MARKETPLACE} (${where}) is not installed`);
   if (match.enabled !== true || (match as { errors?: unknown[] }).errors?.length)
     throw new Error(`plugin ${name}@${MARKETPLACE} (${where}) did not load: ${JSON.stringify({ enabled: match.enabled, errors: match.errors })}`);
-  if (expectedVersion && (match as { version?: unknown }).version !== expectedVersion)
-    throw new Error(`plugin ${name}@${MARKETPLACE} loaded version ${String((match as { version?: unknown }).version)}; expected ${expectedVersion}`);
+  if (expectedVersion && !resolvedPluginCurrent(match, expectedVersion, name))
+    throw new Error(`plugin ${name}@${MARKETPLACE} resolved payload does not match version ${expectedVersion}`);
 }
 
 function install(name: string, scope: string, expectedVersion?: string): void {
@@ -357,17 +357,17 @@ function refreshInstalls(name: string, entries: PluginEntry[], version: string):
     const cwd = scope === "user" ? cotalHome() : entry.projectPath;
     if (typeof cwd !== "string") throw new Error(`${name}@${MARKETPLACE} (${scope} scope) has no project path`);
     if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) continue;
-    if (entry.version === version && resolvedPluginCurrent(entry, version, name)) continue;
+    if (resolvedPluginCurrent(entry, version, name)) continue;
     const update = commandIn(cwd, "plugin", "update", `${name}@${MARKETPLACE}`, "--scope", scope);
     if (update.status !== 0) throw new Error(`plugin update failed (${name}, ${scope} scope):\n${update.output}`);
     const current = listPlugins(cwd).find((candidate) => candidate.id === entry.id && candidate.scope === scope &&
       (scope === "user" || candidate.projectPath === entry.projectPath));
-    if (!current || current.version !== version || !resolvedPluginCurrent(current, version, name))
+    if (!current || !resolvedPluginCurrent(current, version, name))
       throw new Error(`${name}@${MARKETPLACE} (${scope} scope) did not load the updated plugin ${version}`);
   }
 }
 
-/** Check the copy Claude resolves, not the marketplace or a stale cache registration alone. */
+/** Check the resolved manifest and bytes. Folder-backed installs can retain an older record version. */
 function resolvedPluginCurrent(entry: PluginEntry, version: string, name = "cotal"): boolean {
   const sourceRoot = name === "cotal" ? PACKAGE_ROOT : join(marketplaceDir(), name);
   const assets = name === "cotal" ? COTAL_ASSETS : [".claude-plugin", "skills"];
@@ -445,7 +445,7 @@ function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }
   if (!match || match.enabled === false) return row("off", `not installed · ${skillsRemedy}`);
   const errors = (match.errors ?? match.error) as unknown;
   if (Array.isArray(errors) ? errors.length > 0 : Boolean(errors)) return row("error", `load error · ${skillsRemedy}`);
-  if (match.version === version) return row("ok", "current");
+  if (resolvedPluginCurrent(match, version, "cotal-skills")) return row("ok", "current");
   return row("warn", `${typeof match.version === "string" ? `v${match.version} ≠ v${version} · ` : ""}stale · ${skillsRemedy}`);
 }
 
@@ -466,7 +466,7 @@ function pluginRow(entries: PluginEntry[] | undefined, { version }: ConnectorSta
   if (typeof materialized !== "string" || !materialized.startsWith(`${version}+`)) return row("warn", "stale · run `cotal setup`");
   const active = installs.filter((entry) => entry.scope === "user" || typeof entry.projectPath !== "string" ||
     statSync(entry.projectPath, { throwIfNoEntry: false })?.isDirectory());
-  if (active.some((entry) => entry.version !== materialized || !resolvedPluginCurrent(entry, materialized)))
+  if (active.some((entry) => !resolvedPluginCurrent(entry, materialized)))
     return row("warn", "stale · run `cotal setup`");
   if (installs.some((entry) => entry.scope === "user")) return row("ok", "current (user scope)");
   return row("ok", `current (${installs.length} install${installs.length === 1 ? "" : "s"})`);
