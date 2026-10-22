@@ -4875,7 +4875,7 @@
     {
       "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
       "kind": "derived-output",
-      "anchor": "{row.status === \"working\" ? <Spinner role={undefined} aria-hidden=\"true\" /> : icon && <Icon icon={icon} size={16} />}",
+      "anchor": "{row.status === \"working\" ? <Spinner /> : icon && <Icon icon={icon} size={16} />}",
       "class": "presence-only-glyph/count",
       "rationale": "The header Badge's icon: the turning spinner while presence says working, else the status's own icon; a glyph with no textual progress claim."
     },
