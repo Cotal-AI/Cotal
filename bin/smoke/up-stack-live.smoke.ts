@@ -116,6 +116,14 @@ try {
     manager: true,
     machineHome: true,
   }) === "✓ running in the background: nats-server (pid 42), delivery daemon, manager - stop with: cotal down --preserve-state");
+  // With no manager, --preserve-state refuses until one serves the space, so the summary names both steps.
+  ok("a machine-home summary with no manager names cotal up before down --preserve-state", renderDetachedSummary({
+    pid: 42,
+    delivery: true,
+    authService: false,
+    manager: false,
+    machineHome: true,
+  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: cotal up to start its manager, then cotal down --preserve-state");
 
   // Default-port collision: `up` without an explicit `--server` should allocate a free port and
   // record it, not fail with "use --server ...:<port>". If the developer already has a real :4222
@@ -309,6 +317,18 @@ try {
   pids.push(boDeliveryPid);
   ok("the delivery daemon is up and alive under the flag", Number.isFinite(boDeliveryPid) && alive(boDeliveryPid), boDeliveryPid);
   ok("the broker still answers under the flag", await portOpen());
+  // --preserve-state takes its inventory from a manager. With none serving the space it refuses
+  // before any stop, where it used to stop the delivery daemon and then wait on a manager that never ran.
+  const preserveStarted = Date.now();
+  const noManagerPreserve = cli("down", "--preserve-state");
+  const noManagerPreserveOut = plain(noManagerPreserve.stdout + noManagerPreserve.stderr);
+  ok("a broker-only down --preserve-state refuses TARGET_UNAVAILABLE, exit 2, naming cotal up first",
+    noManagerPreserve.status === 2 && /no manager serves this space/.test(noManagerPreserveOut) && /Code:\s+TARGET_UNAVAILABLE/.test(noManagerPreserveOut)
+      && /start this stack's manager with `cotal up`, then run `cotal down --preserve-state` again/.test(noManagerPreserveOut) && Date.now() - preserveStarted < 9_000,
+    { status: noManagerPreserve.status, ms: Date.now() - preserveStarted, out: noManagerPreserveOut });
+  const maintenanceFiles = ["journal.json", "resume.json", "prepare-intent.json", "commit-intent.json"].filter((name) => existsSync(join(root, ".cotal", "maintenance", "v1", name)));
+  ok("that refusal stopped nothing: delivery and the broker still run, and no maintenance journal or intent was written",
+    alive(boDeliveryPid) && await portOpen() && maintenanceFiles.length === 0, { boDeliveryPid, maintenanceFiles });
   const brokerOnlyDown = cli("down");
   ok("broker-only down exits 0", brokerOnlyDown.status === 0, brokerOnlyDown.stdout + brokerOnlyDown.stderr);
   let boDead = false;

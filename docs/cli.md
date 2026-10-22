@@ -508,7 +508,8 @@ host and run [`supervise`](#supervise) against the remote broker; see
 [Run a mesh](run-a-mesh.md). `cotal up --detach` prints `✓ running in the background:` with
 `manager` listed (pidfile liveness, not a teardown boundary); with `--no-manager` the line lists
 only what actually started. Started from the machine home, the line names `cotal down --preserve-state`,
-because bare `down` refuses the home stack. On POSIX, a foreground broker has its own session and process group.
+because bare `down` refuses the home stack. With `--no-manager` it names `cotal up` first, because
+`--preserve-state` needs a manager. On POSIX, a foreground broker has its own session and process group.
 Terminal Ctrl-C reaches the CLI owner, which stops the manager through the same stop as bare
 `cotal down` (see [`down`](#down)), then the rest of the stack, and reports managed agents under
 the same rule. When the manager stop is refused, Ctrl-C prints the refusal with the reap route and
@@ -891,7 +892,10 @@ bare `down`. The other root, ownership, sharing and native process guards still 
 stopping leaves the restore journal and fallback store unchanged.
 The machine home is not an isolated project root, so bare `down` refuses the home stack. Stop it
 with `cotal down --preserve-state`, which keeps its state for the next `cotal up`. The refusal names
-that command.
+that command. `--preserve-state` takes its agent inventory from the manager that serves the space.
+When no manager holds the space's lease, as on a stack started with `--no-manager`, it refuses
+`TARGET_UNAVAILABLE`, exit 2, before it stops anything or writes a maintenance record. Start the
+manager with `cotal up`, then run `cotal down --preserve-state` again.
 
 After those checks, a retained bare apply stops the selected space's service instances before its
 pidfile sweep. Each goes through the service controller with the checks and receipt of
