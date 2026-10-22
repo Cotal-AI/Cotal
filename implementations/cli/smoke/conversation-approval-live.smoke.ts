@@ -301,6 +301,24 @@ try {
     });
   }
 
+  await check("an approved but unissued expiry explains reapproval without claiming the person never decided", async () => {
+    const pending = await pendingOf(provisionUserApp(target, "late", "session-approved-expired", true, proposal));
+    decide(pending.requestId, { approve: EMPTY });
+    const approval = approvals.get(pending.requestId)!;
+    approval.expiresAt = new Date(Date.now() - 1_000).toISOString();
+    approval.state = "expired";
+    const before = issued;
+    await assert.rejects(provisionUserApp(target, "late", "session-approved-expired", true, proposal), (error: unknown) => {
+      assert(error instanceof Error);
+      assert.match(error.message, /approval expired .*no identity was issued/);
+      assert.doesNotMatch(error.message, /before anyone decided/);
+      return true;
+    });
+    assert.equal(issued, before);
+    const next = await pendingOf(provisionUserApp(target, "late", "session-approved-expired", true, proposal));
+    assert.notEqual(next.requestId, pending.requestId);
+  });
+
   const plainPending = await pendingOf(provisionUserApp(target, "plain", "session-plain", true));
   decide(plainPending.requestId, { approve: EMPTY });
   const plain = await connected(provisionUserApp(target, "plain", "session-plain", true));
@@ -357,7 +375,7 @@ try {
     assert(!existsSync(approved.retire.dir) && !existsSync(plain.retire.dir));
     assert.equal(deletes, 2);
   });
-  assert.equal(assertions, 30);
+  assert.equal(assertions, 31);
   console.log(`conversation-approval-live: ${assertions} checks passed; isolated HTTPS fixture authority and fixture human decision, not hosted acceptance`);
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
