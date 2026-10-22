@@ -42,7 +42,9 @@ then installs the published CLI into an isolated prefix and runs it. Check that 
 relevant existing-installation upgrade before reporting the fix delivered.
 
 An accepted upload and a successful install are separate observations. npm may temporarily return
-cached missing-package responses after an upload. If an observation fails, inspect the registry and
+cached missing-package responses after an upload, and the large `cotal-ai` tarball has taken up to
+twenty minutes to become installable, so the workflow waits up to twenty-five minutes for that
+install. If an observation fails, inspect the registry and
 the published-package output before retrying. Never blindly repeat an upload whose outcome is unknown.
 
 Keep the original publish-command time. The target is verified availability within ten minutes;

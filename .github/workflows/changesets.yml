@@ -154,4 +154,4 @@ jobs:
         if: steps.publish.outputs.published == 'true'
         run: |
           version=$(node --print "require('./bin/package.json').version")
-          node scripts/verify-release-installable.mjs "$version" --deadline-ms=600000
+          node scripts/verify-release-installable.mjs "$version" --deadline-ms=1500000
