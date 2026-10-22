@@ -133,7 +133,7 @@ offline caller.
 (`implementations/cli/src/commands/mint.ts`); `up` (provisioner, membership-rw, control-caller-admin);
 `spawn` (operator, provisioner, deprovisioner); `join` (provisioner); `status` (observer, deployer);
 `agents` (session-caller); `down-manifest` (`teardown`); `backup` / restore; `delivery-proc`
-(`delivery`); `spawn-manifest` (`channel-writer`); attach scatter probe
+(`delivery`); `team-deploy-apply` and `team-agent-apply` (`channel-writer`); attach scatter probe
 (`implementations/cli/src/lib/control.ts`, `control-caller-privileged`). They run as a uid on the
 signer allowlist after §6, never as `cotal-agent`.
 

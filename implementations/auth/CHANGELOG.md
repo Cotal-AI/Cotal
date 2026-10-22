@@ -1,5 +1,50 @@
 # @cotal-ai/auth
 
+## 0.94.0
+
+### Minor Changes
+
+- 1caaf63: Add explicit standalone-broker payload bootstrap for service caller policy. Hosts supply fresh VARZ-only SYS observer credentials through a broker-owner helper, and broker configuration accepts an explicit maxPayload without changing its default. Assertions bind actual broker configuration, stream limits and the genuine plane claim. Caller issuance rechecks live evidence, exact assertion and effective authority before release, refuses stale prior-plane appends, and drains owned observations before shutdown. Clusters, gateway and leaf configurations remain unsupported. No production configuration is changed automatically.
+- 311a26e: The service endpoint host serves `caller-grant`, `caller-revoke`, `caller-policy-read` and `caller-policy-list` instead of answering `unsupported`. A grant needs an interactive owner who holds the approved instance and an interactive grantee with no parent. Its capabilities must be pinned to that instance with `instanceOnly`, carry no journal access and no `any` or `ledger` target, and sit within the approval's ceiling. It is recorded `active` with a host-derived id, source and parents. One instance indexes at most 256 grants. A revoke lands deny-new, then writes the grant's op-bound cutoff marker and a `notBefore` in epoch seconds from the marker's broker time. It answers `pending` and never `revoked`. Each operation record keeps the exact request and the grant's immutable fields, and a positive grant write is recorded before it is issued, so a replay never repeats a write whose outcome is unknown. Grants also need a payload precondition: every server's `max_payload` at least 2 MiB plus 1 KiB, an auth stream with no per-message limit, and an operator assertion recorded in the auth store. Stock records no assertion and its generated broker keeps the 1 MiB default, so a stock deployment answers `unsupported` to grants. A failed check or a revoke write that would not fit withdraws the assertion. The operation kind gains `grant`, operation views accept the caller target, and the result parser accepts the grant and caller-policy read and list results.
+- a0db172: Ordinary and managed user-auth callers now receive exact-lifecycle endpoint caller rows from native caller policy. Controlled owner grants to managed actors capture their actual current parent lifecycle and covering immutable grants. The callout checks current approval, root, name, assignment and ancestor policy, uses core's native row builders, and rechecks authority after signing and native-key recording. Revocation denies new issuance without claiming terminal connection removal. Applications still need service-host approval and the asserted payload prerequisite. Native control endpoints retain their existing authority contracts.
+
+### Patch Changes
+
+- a7aa9e0: An approval's caller ceiling now admits only entries pinned to the approved instance (`instanceId` with `instanceOnly`), on a declared command, with exactly the target presence and mode that command admits. `any` and `ledger` entries are refused because no operator target policy is wired. Any other entry answers `bad-request` before the decision binds, and an empty ceiling stays valid. The service host operations that take an approval are new in this release, so no released deployment is affected. The internal caller-policy storage also treats a stored grant whose fields other than status match as already present, so a replay after deny-new adopts the row and never reactivates the grant, and it gains the step that records a revocation's cutoff marker and deadline once, refusing other values or another operation's intent.
+- Updated dependencies [1caaf63]
+  - @cotal-ai/core@0.94.0
+  - @cotal-ai/workspace@0.94.0
+  - @cotal-ai/lang@0.94.0
+
+## 0.93.0
+
+### Minor Changes
+
+- 6703917: Connect personal native Claude conversations to signed-in meshes with separate identities, real lifecycle and own-event publication, durable request recovery, and exact-lifecycle retirement. Bind native wake readers to their conversation while retaining immediate idle and busy-boundary delivery. Capture lifecycle metadata through ordinary command hooks so the native connection does not depend on intercepting the built-in guard's protected events. Keep notification presentation off protected notes and skill output while retaining native sender attribution.
+
+### Patch Changes
+
+- babeb0c: A spawner whose grant covers its own event channel may now hand each child that child's own event channel, `events.<owner>.<child>`, and no other.
+  
+  The ledger's delegation rule checked a child's event channel against the spawner's post list like any other channel. A spawner that holds only its own event channel, such as a signed-in native conversation, could therefore never spawn on a mesh that requires events: the Manager adds each child's own event channel, and the ledger refused it. The spawner's own event channel is still checked against its parent up to the root, so a parent that may not post events still cannot pass them down, and a sibling's event channel is still refused.
+- Updated dependencies [e27c44c]
+- Updated dependencies [69b0538]
+- Updated dependencies [6703917]
+  - @cotal-ai/core@0.93.0
+  - @cotal-ai/workspace@0.93.0
+  - @cotal-ai/lang@0.93.0
+
+## 0.92.2
+
+### Patch Changes
+
+- 736207e: `cotal spawn --foreground` on a remote user-auth mesh with no sign-in now exits 2 with `AUTH_REQUIRED`, before any request is sent. Before, it was reported as an unknown outcome (`OPERATION_UNKNOWN`, exit 3), which told a script the agent might have been provisioned. Any failure after the provisioning request, an endpoint 401 or 403 included, is still an unknown outcome.
+- Updated dependencies [43a5715]
+- Updated dependencies [736207e]
+  - @cotal-ai/core@0.92.2
+  - @cotal-ai/workspace@0.92.2
+  - @cotal-ai/lang@0.92.2
+
 ## 0.92.1
 
 ### Patch Changes

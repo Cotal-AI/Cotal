@@ -1711,6 +1711,38 @@ async function cell(f: Fixture, label: string, run: () => Promise<void>) {
   } finally { await f.close(); }
 }
 
+// ---- V: an approval's caller ceiling pins its instance and admits only declared targets ----------
+{
+  const f = await fixture("s2a-ceiling");
+  try {
+    const dir = ledger(f.owner), e = await engine(f, dir);
+    const poll = { ...command, name: "poll", targeted: true, modes: ["self"] };
+    const base = reg(f), instanceId = base.input.instanceId;
+    const p = await e.register({ ...base, input: { ...base.input, commands: [command, poll] } });
+    if (p.state !== "registered") throw new Error(`fixture register failed: ${JSON.stringify(p)}`);
+    const approve = (callerCeiling: unknown[]) => {
+      const d = decide(p.proposalId, p.revision, f.name.revision, "approve", ownerOf(f));
+      return { ...d, input: { ...d.input, callerCeiling } };
+    };
+    const pin = { endpoint: f.endpoint, instanceId, instanceOnly: true };
+    for (const [label, entry] of [
+      ["an entry without an instance", { endpoint: f.endpoint, command: "lookup" }],
+      ["an entry pinned to another instance", { ...pin, instanceId: rid(), command: "lookup" }],
+      ["an entry on this instance with class routes", { endpoint: f.endpoint, instanceId, command: "lookup" }],
+      ["a target on an untargeted command", { ...pin, command: "lookup", target: { mode: "self" } }],
+      ["no target on a targeted command", { ...pin, command: "poll" }],
+      ["an owner-mode entry on a self-only command", { ...pin, command: "poll", target: { mode: "owner", tOwner: f.owner } }],
+      ["an any entry", { ...pin, command: "poll", target: { mode: "any", tOwner: "*" } }],
+      ["an undeclared command", { ...pin, command: "other" }],
+    ] as const) {
+      const d = approve([entry]), r = await e.handle(d);
+      c.check(`V1 ${label} is refused bad-request before binding`, r.state === "denied" && r.reason === "bad-request" && (await opRecord(f, d.requestId)) === null, r);
+    }
+    const ok = approve([{ ...pin, command: "lookup" }, { ...pin, command: "poll", target: { mode: "self" } }]), r = await e.handle(ok);
+    c.check("V2 instance-only entries pinned to this instance, in admitted modes, are approved", r.state === "approved" && r.outcome === "applied", r);
+  } finally { await f.close(); }
+}
+
 c.check("S (broker grants) no effect or discovery connection of this suite was refused a publish", fixtures.every((f) => f.violations.length === 0),
   fixtures.flatMap((f) => f.violations));
 for (const d of ledgers) rmSync(d, { recursive: true, force: true });

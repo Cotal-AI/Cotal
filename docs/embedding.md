@@ -141,8 +141,9 @@ space and grantee UID. Grant ids are immutable; an append cannot replace or reac
 Initial writes require no prior native key history. A deletion arriving after an absence read
 cannot recreate a policy or a pending service gate.
 Revocation begins with a revision-pinned deny-new intent that unrelated appends preserve.
-These are storage operations, not entitlement checks. The effective policy resolver, host operations,
-cutoff evidence and terminal caller revocation are not implemented yet.
+These are storage operations, not entitlement checks; the service endpoint host below is their only
+writer. The effective resolver and native caller issuance are described under the service endpoint
+host below. Receipts and terminal caller revocation remain unsupported.
 
 Scoped Describe callbacks also receive an optional immutable local context with the actual subject,
 complete-envelope fingerprint, serving identity and receive-relative deadline information.
@@ -1379,9 +1380,10 @@ are public.
 
 `openAuthAuthorityPlane` and `startAuthService` take `serviceEndpoints: { startup: { kind: "normal" } }`
 to host these operations; it is off by default and no CLI flag sets it. With it, the plane and the
-hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke`, `name-bind` and
-the two reads in process. A hosted context rejects it as `unavailable` while it is not ready. That
-function has no route, capability or caller policy; register admission is reachable only through the
+hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke`, `name-bind`, the
+four caller-policy operations and the two reads in process. A hosted context rejects it as
+`unavailable` while it is not ready. That function has no route or capability of its own; register
+admission is reachable only through the
 public route below. The host authenticates no caller: the embedder must authenticate the operator or
 owner granter it passes. `name-bind` needs an operator granter and `expectedRevision: 0`. It creates
 the endpoint's name binding once, with your `claimReference`, and only the identical request recovers
@@ -1437,9 +1439,68 @@ running, answers 503; replay the same request. Once a service has activated, its
 can no longer change. Commands must be ephemeral and declare
 no governed trait.
 
-This is registration and serving, not a complete service endpoint. Caller policy and scoped Describe
-are not available, so callers cannot yet be authorized against the service, and revoke, terminal
-retirement and restore stay unsupported: a host revoke refuses new activation, renewal, readiness
+`caller-grant` takes an owner granter with an interactive row who holds the approved instance, and a
+grantee is a current exact owner, actor and lifecycle UID. A managed grantee also needs its actual
+same-owner parent chain, with each current ancestor holding active covering grants for the same
+service approval. The operation records those immutable grant ids and lifecycle UIDs in `parentRefs`
+and rechecks them before append. An admin scope never substitutes for endpoint caller rights. Every
+capability must name that instance with `instanceOnly: true`, carry no journal access and no `any` or
+`ledger` target, and sit within the approval's caller ceiling. The answer is `granted` with the grant
+as stored. Ordinary user-auth agent connects now derive their endpoint rows from this policy through
+core's native grant builder, including reserved Describe for each authorized exact instance. The
+callout rechecks grantee lifecycle, named ancestor grants, current name, assignment, root, activation,
+approval and ceiling, then checks the policy evidence again after signing and native-key recording.
+The original connection expiry is at most 60 seconds from issuance, and capped by root and approval
+expiry. These are fresh leader reads,
+not a linearized revoke fence. Existing issued connections keep their original expiry, and caller
+revocation remains deny-new, not terminal absence proof.
+One instance indexes at most 256 grants over its life, including attempts refused after indexing, and
+a full index answers `resource-exhausted`; a new instance is the remedy. `caller-revoke` admits the
+grant's source owner, its grantee owner and an operator. It answers `pending` with
+`denyNew: "landed"` and `notBefore`, in epoch seconds, 71 s after the broker time of the grant's
+cutoff marker. It never answers `revoked`, and the result parser refuses that arm.
+`caller-policy-read` gives an owner its own grantees, and another owner's grantee only filtered to a
+service it holds; `caller-policy-list` needs a service selector.
+
+Caller grants need `max_payload >= 2098176` (2 MiB plus 1 KiB), `max_control_line >= 4096`,
+and an auth stream with `max_msg_size: -1`. Broker generation accepts an explicit
+`serverConfig(broker, accounts, { ...options, maxPayload: 2098176 })`; omission leaves the native
+1 MiB default unchanged. No startup path raises limits automatically.
+
+For a **standalone broker only**, pass `serviceEndpoints.callerPayload.observerCreds` to
+`startAuthService` (or the corresponding authority-plane option). The callback returns fresh
+host-private credentials from the broker owner's
+`mintServiceCallerPayloadObserverCreds({ pub: broker.sys.pub, signingSeed: broker.sys.signingSeed })`.
+Keep that registered SYS signer with the broker owner, never in the data account, a sandbox or a
+participant client. The helper returns an in-memory, at-most-60-second VARZ-only credential.
+The callback only supplies credentials, owns no authority resource, and may finish after its
+10-second observation deadline has refused the operation. It is not a cancellation callback.
+
+Startup authenticates native VARZ, matches the observer and data connection's broker incarnation,
+checks config/system-account evidence and live stream limits, then writes an exact-key assertion
+bound to that broker, configuration and genuine plane claim. Configured clusters, gateways and
+leaf links refuse, regardless of connected peer count. This is not multi-broker proof. A default
+1 MiB broker fails startup with the required byte limit and creates no assertion.
+
+Positive caller issuance repeats the observation and checks the exact assertion revision, complete
+plane hold and effective authority again before native JWT release. Withdrawal, config changes or
+claim loss refuse new issuance. Reopening needs an explicit bootstrap to reassert for the new claim;
+a prior-plane broker-bound assertion cannot authorize another append. Legacy assertion syntax still
+parses for existing trusted storage fixtures but alone never enables production caller issuance.
+Shutdown drains in-flight observations and closes their owned connections before releasing the claim.
+Reads and revokes do not need a positive assertion. A revoke whose policy row would not fit holds
+`payload-precondition` without writing it, and a failed live-limit check withdraws the assertion.
+
+Give each caller operation a fresh random requestId, record it with the exact body before you send
+it, and replay that body after a lost reply, a 503 or a `held` answer. Never switch to a new requestId
+while an earlier answer is unknown. A settled `refused` or `expired` ends the attempt, and a grant
+replayed after its 10-minute window adopts a grant that landed and otherwise answers `expired`.
+
+Caller issuance is generic, not tied to Linear: the same provider-independent contract discovery and
+invoke path works for ordinary and managed user-auth callers. Controlled policy append currently
+requires the application's approved service-host instance. Native control endpoints retain their
+existing ledger/scope and typed authority contracts, not fabricated application approvals. Scoped
+Describe is not available, and complete terminal retirement and restore remain unsupported. A host revoke refuses new activation, renewal, readiness
 and connections, but a connection already open keeps its original expiry of at most 60 s. Approval
 runs service bootstrap and revoke runs cancellation, while complete observer evidence and writer
 exclusion remain unavailable. Do not seed service reservations in an existing space, adopt old

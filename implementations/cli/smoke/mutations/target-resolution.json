@@ -83,15 +83,6 @@
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
-      "name": "spawn -f does not compare --space with the manifest",
-      "file": "implementations/cli/src/commands/spawn-manifest.ts",
-      "find": "  refuseManifestSpaceMismatch(prepared, flags.space);\n",
-      "replace": "",
-      "expectRed": "spawn -f with a --space naming another space refuses before it connects",
-      "cell": "spawn -f with a --space naming another space refuses before it connects",
-      "afterRestore": "pnpm --filter cotal-ai... build"
-    },
-    {
       "name": "up -f prepares the root before the mismatch is refused",
       "file": "implementations/cli/src/commands/up.ts",
       "find": "if (values.space === undefined || values.space === prepared.manifest.space) ensureRootForSpace(prepared.manifest.space);",
