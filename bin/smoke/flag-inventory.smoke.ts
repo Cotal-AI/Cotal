@@ -94,8 +94,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Named owned services or the recorded whole stack. `--instance` qualifies one name, `--yes` and
   // `--dry-run` confirm or preview the reviewed scope. `--session-store` (2026-09) is the repeatable
   // harness transcript store a preserve-state cut captures. `--file`/`--run` are the historical
-  // `spawn -f` teardown, which the redesign moves to `team remove <deployment-id>`.
-  down: { flags: ["dry-run:boolean", "file:string:f", "instance:string", "json:boolean:j", "plain:boolean", "preserve-state:boolean", "run:string", "session-store:string", "space:string:s", "store-dir:string", "with-agents:boolean", "yes:boolean:y"], positionals: true },
+  // `spawn -f` teardown, which the redesign moves to `team remove <deployment-id>`. `--abandon-stop`
+  // (2026-10) names the one member stop request a controller stack's down abandons.
+  down: { flags: ["abandon-stop:string", "dry-run:boolean", "file:string:f", "instance:string", "json:boolean:j", "plain:boolean", "preserve-state:boolean", "run:string", "session-store:string", "space:string:s", "store-dir:string", "with-agents:boolean", "yes:boolean:y"], positionals: true },
   backup: { flags: ["accept-missing-source:boolean", "dry-run:boolean", "json:boolean:j", "only:string", "plain:boolean", "store-dir:string", "yes:boolean:y"], positionals: true },
   reset: { flags: ["dry-run:boolean", "json:boolean:j", "plain:boolean", "yes:boolean:y"], positionals: true },
   // `space` (2026-10): the registered spaces and one in full, on the structured output contract.

@@ -147,7 +147,9 @@ files are create-only, and accepted/returned evidence plus the original process 
 for a stopped record. A missing terminal remains unknown; generic signal escalation is not a
 native stop substitute. Reservations are not reclaimed. The adapter releases one only after its own
 completed receipt with the original process exit, or a refused receipt as the only one, settles the
-request, and only once the process that took it has exited. Lease, registration and family cleanup
+request, and only once the process that took it has exited. A request with neither is cleared only
+when an operator abandons it by its ID, after the original process and the process that took the
+reservation have both exited, and the record is then recorded failed. Lease, registration and family cleanup
 still remain not checked in the receipt. The service layer stays workstation-local and adds no
 wire authority. See [CLI services](cli.md#owned-process-services).
 

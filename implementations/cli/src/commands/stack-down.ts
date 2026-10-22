@@ -11,7 +11,7 @@ import { DEFAULT_SPACE, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, canonicalRoot, deliveryCredsKey, isCommandFailure, isConnectRefusal, oneLine, presentationOf,
   releaseMaintenanceLock, removeMeshesByRoot, recordPreparedSpace, renderReport, terminalWidth, workspaceSecretStore, writeResult,
-  type MaintenanceLock, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopPlan,
+  type MaintenanceLock, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
   recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { ConfirmationRequired } from "../lib/confirmation-required.js";
@@ -20,7 +20,7 @@ import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
-import { acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -33,10 +33,15 @@ export function controllerStackRecorded(root: string): boolean {
 
 export function validateStackDownArguments(root: string, values: ParsedArgs["values"]): void {
   const preserve = values["preserve-state"] === true;
-  const allowed = new Set(preserve ? ["space", "yes", "json", "plain", "preserve-state", "store-dir", "session-store"] : ["space", "yes", "dry-run", "json", "plain", "with-agents"]);
+  const allowed = new Set(preserve ? ["space", "yes", "json", "plain", "preserve-state", "store-dir", "session-store"] : ["space", "yes", "dry-run", "json", "plain", "with-agents", "abandon-stop"]);
   const unsupported = Object.keys(values).filter((name) => !allowed.has(name) && values[name] !== undefined && !(Array.isArray(values[name]) && (values[name] as unknown[]).length === 0));
-  if (unsupported.length) throw new CommandFailure("refused", "USAGE_INVALID", preserve ? "a controller stack's preserve accepts only --space, --store-dir, --session-store, --yes and presentation flags; it is exclusive with --with-agents and --dry-run" : "a controller stack's bare down accepts only --space, --with-agents, --yes, --dry-run and presentation flags; no other option was ignored", { target: { options: unsupported } });
+  if (unsupported.length) throw new CommandFailure("refused", "USAGE_INVALID", preserve ? "a controller stack's preserve accepts only --space, --store-dir, --session-store, --yes and presentation flags; it is exclusive with --with-agents and --dry-run" : "a controller stack's bare down accepts only --space, --with-agents, --abandon-stop, --yes, --dry-run and presentation flags; no other option was ignored", { target: { options: unsupported } });
   if (values["dry-run"] === true && values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
+  if (values["abandon-stop"] !== undefined) {
+    if (values["dry-run"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-stop removes a retained stop request, so a read-only preview cannot take it");
+    if (values["with-agents"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-stop cannot be combined with --with-agents: the abandoned stop's manager has exited, so no manager can stop the agents");
+    if (values.yes !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--abandon-stop needs --yes, because it gives up the only record of what that stop did");
+  }
   if (preserve) refuseControllerCut(root, "down --preserve-state");
 }
 
@@ -57,7 +62,7 @@ function readMembers(journal: StackJournal): Member[] {
     const retained = retainedStopRequest(instance.record.value);
     if (instance.record.value.state === "stopping" || retained) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", retained?.publication === "unknown"
       ? "a recorded stack member's stop request file does not read as its own, so whether a stop was published is unknown; nothing was resubmitted and no member was stopped"
-      : "a recorded stack member retains an unconfirmed stop request; it was not resubmitted and no member was stopped", { target: { ...instanceProjection(instance), ...(retained ? { requestId: retained.requestId, stopPublication: retained.publication } : {}) }, remedy: inspect });
+      : "a recorded stack member retains an unconfirmed stop request; it was not resubmitted and no member was stopped", { target: { ...instanceProjection(instance), ...(retained ? { requestId: retained.requestId, stopPublication: retained.publication } : {}) }, remedy: retained?.publication === "published" ? `${inspect}; ${abandonRemedy(retained.requestId)}` : inspect });
     assertNoServiceUnitAttempts(journal.space, row.definition);
     members.push({ role: row.role, definition, instance, live: state === "running" });
   }
@@ -104,8 +109,8 @@ function alreadyStopped(journal: StackJournal, members: readonly Member[]): bool
  *  record and its pid in the message and the remedy, because no command shows another space's
  *  records; nothing is stopped, adopted or removed. A real --with-agents refuses too, because no
  *  running manager can stop the agents; its preview shows the no-op. The legacy route answers the
- *  same way. */
-export function nothingRunning(presentation: Presentation, target: { root: string; space?: string; server?: string }, withAgents: boolean): void {
+ *  same way. `warnings` report what this command changed before it found nothing running. */
+export function nothingRunning(presentation: Presentation, target: { root: string; space?: string; server?: string }, withAgents: boolean, warnings: readonly OutputWarning[] = []): void {
   // A root that names no space resolves to the default one, as `resolveSpace` answers.
   const remaining = recordedProcessesUnder(target.root, [target.space ?? DEFAULT_SPACE]);
   if (remaining.length) {
@@ -117,10 +122,16 @@ export function nothingRunning(presentation: Presentation, target: { root: strin
     });
   }
   if (withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's running manager, and this folder's stack is not running; nothing was stopped", { target, remedy: "start it with `cotal up`, then run `cotal down --with-agents`" });
-  writeResult(presentation, { command: "down", target, result: { kind: "stack-not-running", ...target }, noOp: true }, () => ({ sections: [
+  writeResult(presentation, { command: "down", target, result: { kind: "stack-not-running", ...target }, noOp: true, ...(warnings.length ? { warnings } : {}) }, () => ({ sections: [
     { title: `The stack in ${target.root} is not running`, blocks: [{ kind: "lines", lines: ["Nothing was stopped."] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it" }] }] },
   ] }));
+}
+
+/** What an abandoned member stop leaves unconfirmed. */
+function abandonNotice(role: StackRole, abandonment: ServiceAdapterStopAbandonment): string {
+  const receipts = abandonment.receipts.length ? `only ${abandonment.receipts.join(" and ")} receipts` : "no receipt";
+  return `stop request ${abandonment.requestId} of the ${role} was abandoned: its process exited with ${receipts}, and the down that sent it has exited. Whether the ${role} ${abandonment.withAgents ? "stopped and deprovisioned its agents" : "stopped or released its agents' seats"} is not confirmed; a seat that runs outside the ${role} process may still run`;
 }
 
 /** The retained active restore an admitted stop names. */
@@ -194,9 +205,13 @@ function previewStackStop(root: string, values: ParsedArgs["values"], presentati
 async function applyStackStop(root: string, values: ParsedArgs["values"], presentation: ReturnType<typeof presentationOf>, interactive: boolean, withAgents: boolean, lock: MaintenanceLock): Promise<void> {
   // A member stop an earlier down could not confirm in time is settled from its own receipt first.
   const recorded = readStackJournal(root)?.journal;
-  if (recorded && (values.space === undefined || values.space === recorded.space)) await settleRetainedStackStops(recorded);
+  const ours = recorded && (values.space === undefined || values.space === recorded.space) ? recorded : undefined;
+  if (ours) await settleRetainedStackStops(ours);
+  // A stop no receipt can settle is abandoned only when the operator names its request.
+  const abandoned = ours && typeof values["abandon-stop"] === "string" ? await abandonRetainedStackStop(ours, values["abandon-stop"]) : undefined;
+  const abandonWarnings: OutputWarning[] = abandoned ? [{ code: "STOP_ABANDONED", target: { ...instanceProjection(abandoned.row), role: abandoned.role, requestId: abandoned.abandonment.requestId, receipts: abandoned.abandonment.receipts }, message: abandonNotice(abandoned.role, abandoned.abandonment) }] : [];
   const { previous, journal0, settlement, members, target } = stopTarget(root, values);
-  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents);
+  if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents, abandonWarnings);
   const admittedRestore = scopeRefusals(journal0);
   if (!values.yes && !interactive) throw new ConfirmationRequired("stopping the whole controller stack requires --yes outside an interactive terminal", { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
   // Complete native impact before confirmation. The broker's own kernel scope cannot be prepared
@@ -282,7 +297,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
     }
   }
   settle(failure ? (failure.outcome === "unknown" ? "unknown" : failure.outcome === "partial" ? "partial" : failure.outcome === "failed" ? "failed" : "refused") : "completed");
-  writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, operation: journal.operation, withAgents, members: journal.members, changed, managerImpact: manager?.native ?? null, atomic: false, cleanup: failure ? "not-confirmed" : journal.mode === "open" ? "registration-removed-no-delivery-credential" : "delivery-credential-and-registration-removed", admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null }, ...(settled ? { warnings: [{ code: "OPERATION_SETTLED", target: { ...target, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] } : {}), ...(failure ? { failure, completeness: "partial" as const } : changed.length ? {} : { noOp: true }) }, (result) => ({ sections: [...restoreNotice(admittedRestore), { title: failure ? "Controller stack stop incomplete" : changed.length ? "Controller stack stopped" : "Controller stack was not running; nothing was stopped", blocks: [
+  writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, operation: journal.operation, withAgents, members: journal.members, changed, managerImpact: manager?.native ?? null, atomic: false, cleanup: failure ? "not-confirmed" : journal.mode === "open" ? "registration-removed-no-delivery-credential" : "delivery-credential-and-registration-removed", admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null }, ...(settled || abandoned ? { warnings: [...abandonWarnings, ...(settled ? [{ code: "OPERATION_SETTLED", target: { ...target, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : [])] } : {}), ...(failure ? { failure, completeness: "partial" as const } : changed.length ? {} : { noOp: true }) }, (result) => ({ sections: [...restoreNotice(admittedRestore), { title: failure ? "Controller stack stop incomplete" : changed.length ? "Controller stack stopped" : "Controller stack was not running; nothing was stopped", blocks: [
     { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: result.members.filter((row) => row.instanceId !== null).map((row) => ({ role: row.role, instance: row.instanceId ?? "none", state: { text: row.state.replaceAll("-", " "), tone: ["stopped", "already-stopped"].includes(row.state) ? "ok" as const : ["refused", "failed"].includes(row.state) ? "failed" as const : "waiting" as const } })) },
     { kind: "lines", lines: ["A returned native manager stop and an observed broker exit are not proof of authority, lease, store or descendant cleanup. A member already gone was recorded without a signal. The stack journal and the saved definitions remain; the next bare cotal up reuses them."] },
   ] }] }));

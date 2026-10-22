@@ -41,6 +41,7 @@ const downOptions: ParseArgsOptionsConfig = {
   "dry-run": { type: "boolean" },
   "preserve-state": { type: "boolean" },
   "with-agents": { type: "boolean" },
+  "abandon-stop": { type: "string" },
   "store-dir": { type: "string" },
   "session-store": { type: "string", multiple: true },
 };

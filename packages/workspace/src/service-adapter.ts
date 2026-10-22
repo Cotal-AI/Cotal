@@ -121,6 +121,17 @@ export interface ServiceAdapterStopRefusal {
   readonly observedAt: string;
 }
 
+/** A native stop an operator abandoned: no receipt settles it, and its process and the stopper that
+ *  published it have both exited. `receipts` are the phases the child wrote before it exited. What it
+ *  stopped, agents included, is not confirmed. */
+export interface ServiceAdapterStopAbandonment {
+  readonly requestId: string;
+  readonly nativeStop: "abandoned";
+  readonly receipts: readonly ("accepted" | "failed")[];
+  readonly withAgents: boolean;
+  readonly cleanup: "not-checked";
+}
+
 /** The exact local broker configuration a kernel-exit stop is bound to. It names no mesh endpoint,
  *  principal or epoch, because a broker process has none. */
 export interface ServiceAdapterBrokerBinding {
@@ -170,6 +181,11 @@ export interface ServiceAdapterHooks {
    *  removed. Either answer comes after releasing the reservation that request took. Undefined
    *  retains both. */
   readonly settleServiceStop?: (context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly requestId: string }) => ServiceAdapterStopResult | ServiceAdapterStopRefusal | undefined;
+  /** An operator's abandon of a native stop request no receipt settles. Only once its exact process
+   *  and the stopper that published it have both exited, this releases the reservation, removes the
+   *  request and anything else that request armed, and returns the abandonment. Otherwise it throws
+   *  a refusal and changes nothing. */
+  readonly abandonServiceStop?: (context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly requestId: string }) => ServiceAdapterStopAbandonment;
   readonly buildServiceLaunch?: (context: ServiceAdapterContext) => ServiceAdapterLaunch | Promise<ServiceAdapterLaunch>;
   readonly checkServiceReadiness?: (context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly signal: AbortSignal }) => Promise<ServiceAdapterReadiness>;
 }
@@ -379,6 +395,13 @@ export function serviceAdapterStopRefusal(input: unknown): ServiceAdapterStopRef
   if (!plainObject(input) || Object.keys(input).length !== 3 || Object.keys(input).some((key) => !["requestId", "nativeStop", "observedAt"].includes(key)) || input.nativeStop !== "refused" || typeof input.observedAt !== "string" || !Number.isFinite(Date.parse(input.observedAt))) invalid("the native stop refusal must name only its request, the refused outcome and its observation time");
   serviceOperationId((input as Record<string, unknown>).requestId);
   return input as unknown as ServiceAdapterStopRefusal;
+}
+
+export function serviceAdapterStopAbandonment(input: unknown): ServiceAdapterStopAbandonment {
+  const receipts = plainObject(input) ? input.receipts : undefined;
+  if (!plainObject(input) || Object.keys(input).length !== 5 || Object.keys(input).some((key) => !["requestId", "nativeStop", "receipts", "withAgents", "cleanup"].includes(key)) || input.nativeStop !== "abandoned" || typeof input.withAgents !== "boolean" || input.cleanup !== "not-checked" || !Array.isArray(receipts) || !["", "accepted", "accepted,failed"].includes(receipts.join(","))) invalid("the native stop abandonment must name only its request, the abandoned outcome, the receipts it found, its agent policy and unchecked cleanup");
+  serviceOperationId((input as Record<string, unknown>).requestId);
+  return input as unknown as ServiceAdapterStopAbandonment;
 }
 
 export function serviceAdapterStopResult(input: unknown): ServiceAdapterStopResult {
