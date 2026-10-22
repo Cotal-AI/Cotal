@@ -71,20 +71,17 @@ check(
   "build must come before probe",
 );
 
-// E. The version job cuts the GitHub Release
-const versionBody = csJobs.get("version") ?? "";
+const publishBody = csJobs.get("publish") ?? "";
 check(
-  "the version job cuts the GitHub Release",
-  /gh release create/.test(versionBody),
-  versionBody.slice(0, 200),
+  "the maintained publisher creates the GitHub Release",
+  /uses: changesets\/action\/publish@/.test(publishBody) && /create-github-releases: true/.test(publishBody),
+  publishBody.slice(0, 200),
 );
-
-// F. The version job has a closure gate that invokes verify-publish-closure.mjs
 check(
-  "the version job verifies publish closure before the Release",
-  /node scripts\/verify-publish-closure\.mjs/.test(versionBody) &&
-    versionBody.indexOf("node scripts/verify-publish-closure") < versionBody.indexOf("gh release create"),
-  "closure gate must come before release",
+  "a successful publication is followed by a fresh install check",
+  /if: steps\.publish\.outputs\.published == 'true'/.test(publishBody) &&
+    publishBody.indexOf("verify-release-installable.mjs") > publishBody.indexOf("changesets/action/publish@"),
+  "the install observation must follow publication",
 );
 
 const EXPECTED = 6;
