@@ -9,10 +9,10 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: false
-  queue: max
+# Serialization is per job, not per run: the version-pr and publish jobs each hold their own queue,
+# so a publication waits only for the previous upload, tags and release, not for the install check
+# that follows them. One publication's twenty-five-minute install check used to hold the next
+# publication past its ten-minute target.
 
 # The CLI runs for real in these jobs; its usage telemetry would count our runners as users.
 env:
@@ -46,6 +46,10 @@ jobs:
     needs: select
     if: github.event_name == 'push' && needs.select.outputs.mode == 'version'
     runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-version-pr
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
       pull-requests: write
@@ -136,6 +140,12 @@ jobs:
     needs: pack
     runs-on: ubuntu-latest
     environment: npm-publish
+    concurrency:
+      group: ${{ github.workflow }}-publish
+      cancel-in-progress: false
+      queue: max
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
     permissions:
       contents: write
       actions: read
@@ -181,8 +191,21 @@ jobs:
             printf '\n%s\n' "$notes"
           } > "$RUNNER_TEMP/release-notes.md"
           gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --latest --notes-file "$RUNNER_TEMP/release-notes.md"
+
+  # Outside the publish queue on purpose: this observes the registry and must not delay the next
+  # publication. Its result is reported on the run, not used as a gate.
+  verify-install:
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
       - name: Verify the published CLI installs and runs
-        if: steps.publish.outputs.published == 'true'
         run: |
           version=$(node --print "require('./bin/package.json').version")
           node scripts/verify-release-installable.mjs "$version" --deadline-ms=1500000

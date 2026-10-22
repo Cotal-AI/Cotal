@@ -40,14 +40,15 @@ workflow so publication has the configured identity and the native binaries are 
 The publish action reports the packages published and pushes one git tag per package. The workflow
 then cuts one GitHub Release for the version, tagged `v<version>`: its notes open with the install
 command, continue with the changeset summaries of what changed, and end with the merged pull
-requests since the previous version release. The Discord announcement follows that release. The
-workflow then installs the published CLI into an isolated prefix and runs it. Check that result and the
-relevant existing-installation upgrade before reporting the fix delivered.
+requests since the previous version release. The Discord announcement follows that release. A
+separate job then installs the published CLI into an isolated prefix and runs it. Check that result
+and the relevant existing-installation upgrade before reporting the fix delivered.
 
 An accepted upload and a successful install are separate observations. npm may temporarily return
 cached missing-package responses after an upload, and the large `cotal-ai` tarball has taken up to
-twenty minutes to become installable, so the workflow waits up to twenty-five minutes for that
-install. If an observation fails, inspect the registry and
+twenty minutes to become installable, so the install job waits up to twenty-five minutes for that
+install. Only the publish job itself is serialized across runs, so that wait never holds the next
+publication. If an observation fails, inspect the registry and
 the published-package output before retrying. Never blindly repeat an upload whose outcome is unknown.
 
 Keep the original publish-command time. The target is verified availability within ten minutes;
