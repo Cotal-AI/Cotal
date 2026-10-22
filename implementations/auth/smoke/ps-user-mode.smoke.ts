@@ -56,6 +56,11 @@ let establishIdpSession!: typeof import("../src/index.js").establishIdpSession;
 // have launched detached processes, and those are exactly the ones whose pidfiles must survive.
 // Attribution evidence is earned by the attempt, not by the outcome.
 let upAttempted = false;
+// Step 3b replaces the stack's own registry entry with a discovered one and records other entries on
+// the same root and broker. `cotal down` stops a stack only through its one owned registration, and
+// leaves a broker running while another registered space names its address, so teardown puts the
+// original entry back and removes the rest first.
+let restoreStackRegistration: (() => void) | undefined;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
 
 let pass = 0, fail = 0;
@@ -302,7 +307,7 @@ try {
     onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
   });
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "ps human"]);
-  check("actor grant succeeds", grant.status === 0 && /granted/i.test(grant.out), grant.out.slice(-300));
+  check("actor grant succeeds", grant.status === 0 && /^Actor grant stored$/m.test(grant.out), grant.out.slice(-300));
 
   console.log("3) cotal ps under user-mode admin bearer (C: ep.one)");
   const ps = await cotal(["ps", "--space", SPACE], 20_000);
@@ -327,7 +332,7 @@ try {
 
   console.log("3a history) native user-auth reads through its channel grant");
   const historyText = `native history ${Date.now()}`;
-  const sentHistory = await cotal(["send", "msg", "general", historyText, "--space", SPACE], 20_000);
+  const sentHistory = await cotal(["send", "-c", "general", historyText, "--space", SPACE], 20_000);
   check("the native history fixture sends a channel message through the CLI", sentHistory.status === 0, sentHistory.out.slice(-500));
   const nativeHistory = await cotal(["history", "general", "--json", "--space", SPACE], 20_000);
   const historyEnvelope = (() => { try { return JSON.parse(nativeHistory.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { result: { kind: string; items: { channel: string | null; text: string; seq: number | null }[] } | null }; } catch { return undefined; } })();
@@ -393,7 +398,7 @@ try {
       check("a copied predecessor bearer cannot reconnect after the native re-grant",
         /authoriz|authentic|denied|revok|retir/i.test(copiedError), copiedError);
       const nextText = `successor history ${Date.now()}`;
-      const nextSent = await cotal(["send", "msg", "history.next", nextText, "--space", SPACE], 20_000);
+      const nextSent = await cotal(["send", "-c", "history.next", nextText, "--space", SPACE], 20_000);
       const nextHistory = await cotal(["history", "history.next", "--json", "--space", SPACE], 20_000);
       check("the successor reads only its newly granted channel through the real CLI",
         nextSent.status === 0 && nextHistory.status === 0 && nextHistory.out.includes(nextText) && !nextHistory.out.includes(historyText), nextHistory.out.slice(-800));
@@ -436,10 +441,14 @@ try {
 
   console.log("3b) empty registry discovers the user-mode space, then ps/status resolve it");
   const { prepareCatalogTargets, validateCatalogSnapshot } = await import("../../cli/src/commands/sync.js");
-  const { findMesh, removeMesh, targetFromEntry, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+  const { findMesh, loadMeshes, removeMesh, removeMeshes, recordMesh, setCurrent, canonicalRoot, targetFromEntry, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const { loadCalloutAuth } = await import("../src/index.js");
   const original = findMesh(SPACE);
   if (!original?.userAuth) throw new Error("fixture has no user-auth registry entry to advertise");
+  restoreStackRegistration = () => {
+    removeMeshes(loadMeshes().filter((m) => m.space !== SPACE && (m.server === original.server || canonicalRoot(m.root ?? "") === canonicalRoot(root))).map((m) => m.space));
+    recordMesh(original);
+  };
   const callout = await loadCalloutAuth(workspaceSecretStore(root), SPACE);
   if (!callout) throw new Error("fixture has no callout sentinel credential");
   let catalogFails = false;
@@ -514,7 +523,8 @@ try {
   const discoveredPs = await cotal(["ps", "--space", SPACE], 20_000);
   const discoveredStatus = await cotal(["status", "--space", SPACE], 20_000);
   check("ps succeeds against the discovered space with no meshes add", discoveredPs.status === 0, discoveredPs.out.slice(-300));
-  check("status resolves the discovered space and names its catalog snapshot", discoveredStatus.status === 0 && discoveredStatus.out.includes("catalog snapshot"), discoveredStatus.out.slice(-600));
+  check("status resolves the discovered space and names it a saved catalog entry",
+    discoveredStatus.status === 0 && new RegExp(`^ +→ ${SPACE} .*· saved catalog entry$`, "m").test(discoveredStatus.out), discoveredStatus.out.slice(-600));
   // #1832: a discovered user-mode space's user-auth material is the REGISTRY ENTRY (origin
   // "catalog", userAuth.remote + pins + sentinel file), not a local provisioning, so the login
   // `ps` uses must answer status too. The verbatim base behaviour is recorded in the lane notes:
@@ -529,7 +539,7 @@ try {
   // and the snapshot defers. Asserting a roster here would demand status connect on an ungranted
   // bearer, which the renderer deliberately does not do.
   check("discovered space: bare status names the grant as not checkable (no local ledger) rather than demanding a login",
-    discoveredStatus.out.includes("grant not checkable on this machine (no local ledger)") && !discoveredStatus.out.includes("no user-auth material"),
+    /^ +Grant: +○ not checkable on this machine$/m.test(discoveredStatus.out) && !discoveredStatus.out.includes("no user-auth material"),
    discoveredStatus.out.slice(-600));
   const discoveredHistory = await cotal(["history", "general", "--json", "--space", SPACE], 20_000);
   check("the native remote-catalog history path reads the same message without local grant lookup",
@@ -573,8 +583,8 @@ try {
       signedOutStatus.out.split("\n").filter((l) => /login|live snapshot/.test(l.replace(/\x1b\[[0-9;]*m/g, ""))).map((l) => `   | ${l}`).join("\n"));
     check("discovered space, signed out: status says not signed in with the exact login command",
       signedOutStatus.status === 0 &&
-        signedOutStatus.out.includes("not signed in -") &&
-        signedOutStatus.out.includes(`login --idp ${base}`) &&
+        /^ +Account: +● not signed in$/m.test(signedOutStatus.out) &&
+        new RegExp(`^Next\n(?: .*\n)* +cotal login --idp ${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +Sign in to the selected space$`, "m").test(signedOutStatus.out) &&
         !signedOutStatus.out.includes("no user-auth material"),
       signedOutStatus.out.slice(-600));
     const signedOutPs = await cotal(["ps", "--json", "--space", signedOutSpace], 30_000);
@@ -605,7 +615,6 @@ try {
     catalogRequests === beforeSuperviseRefresh + 1 && findMesh("supervise_new")?.origin === "catalog" &&
       discoveredSupervise.out.includes('does not match registered space "supervise_new"') && !discoveredSupervise.out.includes("neither hosting"),
     { status: discoveredSupervise.status, out: discoveredSupervise.out.slice(-400), catalogRequests, beforeSuperviseRefresh });
-  const { recordMesh, setCurrent } = await import("@cotal-ai/workspace");
   recordMesh({ space: "manual-current", server: original.server, root, mode: "open", origin: "manual", ts: new Date().toISOString() });
   setCurrent("manual-current");
   includeListed = true;
@@ -694,6 +703,7 @@ try {
             : `. Nothing was started.`),
       );
     }
+    restoreStackRegistration?.();
     const down = await cotal(["down", "--with-agents"], 60_000);
     // The same standard the graded cells get: `cotal()` resolves for a timeout, a signal death and a
     // launch failure alike, so an unchecked `await` treats every one of those as a successful stop.
