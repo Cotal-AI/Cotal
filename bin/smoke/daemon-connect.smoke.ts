@@ -26,7 +26,11 @@
  *  C11 closed contract: connect-check without space, with an unknown field, or with a malformed
  *      space is refused with its typed code and 0 fixture requests;
  *  C12 `cotal daemon connect-check --space <s> --json` through the composition root prints the
- *      daemon's outcome and no secret.
+ *      daemon's outcome and no secret;
+ *  C13 a daemon closed and started again on the same machine home reuses the identity: same instance
+ *      id and account, the record byte-identical and still the only one, 0 POST;
+ *  C14 N concurrent first checks for one space through one daemon yield one instance id and exactly
+ *      one new identity record, 0 POST.
  *
  * Run: tsx bin/smoke/daemon-connect.smoke.ts   (Linux only)
  */
@@ -269,6 +273,38 @@ try {
       check("C12 no session handle in stdout or stderr", !out.includes("smoke-session-handle") && !err.includes("smoke-session-handle"));
     });
   } finally { await d.close(); }
+
+  // C13: a daemon stopped and started again on the same machine home reuses its identity.
+  await cell("C13 a restarted daemon reuses the identity", async () => {
+    resetHits();
+    answer = { status: 200, body: { v: 1, kind: "service-endpoint-authority-info", space: "ready", accountPublicKey: ACCOUNT_A } };
+    const recordBefore = readFileSync(join(daemonStateDir, identityFiles()[0]!), "utf8");
+    check("C13 instrument: the first daemon's socket is gone after close", !existsSync(paths.socket), paths.socket);
+    const d2 = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+    try {
+      const r = await ask(paths.socket, { op: "connect-check", space: "ready" });
+      check("C13 the new daemon answers ready-to-register with the first daemon's instance id and account", resultOf(r).outcome === "ready-to-register" && resultOf(r).instanceId === firstInstance && resultOf(r).accountPublicKey === ACCOUNT_A, r);
+      check("C13 the identity record is byte-identical and still the only one; 1 GET, 0 POST", identityFiles().length === 1 && readFileSync(join(daemonStateDir, identityFiles()[0]!), "utf8") === recordBefore && gets() === 1 && posts() === 0, { ids: identityFiles(), hits });
+    } finally { await d2.close(); }
+  });
+
+  // C14: concurrent first checks for one space create exactly one identity.
+  await cell("C14 concurrent first checks create one identity", async () => {
+    const N = 8;
+    recordMesh(userMesh("burst", base));
+    resetHits();
+    answer = { status: 200, body: { v: 1, kind: "service-endpoint-authority-info", space: "burst", accountPublicKey: ACCOUNT_A } };
+    const before = identityFiles().length;
+    const d3 = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+    try {
+      const replies = await Promise.all(Array.from({ length: N }, () => ask(paths.socket, { op: "connect-check", space: "burst" })));
+      const ids = new Set(replies.map((r) => resultOf(r).instanceId));
+      check(`C14 all ${N} answer ready-to-register`, replies.every((r) => resultOf(r).outcome === "ready-to-register"), replies.map((r) => resultOf(r).outcome));
+      check(`C14 the ${N} answers name exactly one instance id`, ids.size === 1 && typeof [...ids][0] === "string", [...ids]);
+      check("C14 exactly one new identity record for the space", identityFiles().length === before + 1, identityFiles());
+      check(`C14 ${N} GETs reached the space and 0 POST`, gets() === N && posts() === 0, hits);
+    } finally { await d3.close(); }
+  });
 } catch (e) {
   fail++;
   console.error("  ✗ smoke crashed:", e instanceof Error ? (e.stack ?? e.message) : e);
