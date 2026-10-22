@@ -25,6 +25,7 @@ const FILES = [
   "transform",
   "differential",
   "engine",
+  "root-cancellation",
 ].map((n) => `${n}.smoke.ts`);
 
 const { ok } = await runFiles({

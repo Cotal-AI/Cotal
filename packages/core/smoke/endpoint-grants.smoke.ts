@@ -140,9 +140,9 @@ c("the spawn capability grants NO `input` row in either mode: seat input is oper
 // seat writes, granted nowhere else; the run driver submits its turns under this instrument), and
 // the untargeted `manager.admin` family.
 c("the privileged instrument set: reads + spawn + resolve-agent + define-persona + the chat-session pair + the run family with the keyed pair, with run-answer self-targeted",
-  operatorInstrumentCapabilities("privileged").length === 20
+  operatorInstrumentCapabilities("privileged").length === 21
   && operatorInstrumentCapabilities("privileged").filter((cap) => cap.target !== undefined).every((cap) => cap.command === "run-answer" && cap.target?.mode === "self")
-  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,resolve-agent,define-persona,chat-session-open,chat-session-retire,run-status,run-ps,run-start,run-resume,run-start-keyed,run-submission-status,run-answer");
+  && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,slots,inspect,models,list-personas,show-persona,goal-result,spawn,resolve-agent,define-persona,chat-session-open,chat-session-retire,run-status,run-ps,run-start,run-resume,run-start-keyed,run-submission-status,run-cancel,run-answer");
 // The chat-session pair mints or ends a credential for a fresh session principal, so it rides the
 // operator instruments only. A spawn-capable or run-capable agent must never carry it.
 c("chat-session-open/retire are untargeted operator rows and absent from the spawn and run capability sets",
@@ -154,19 +154,19 @@ c("chat-session-open/retire are untargeted operator rows and absent from the spa
 // test's broker refusal on a static mesh: the CLI scatters it like `ps`.
 c("the instrument's `ps` and `slots` rows are the only reads minted on the scatter rail",
   operatorInstrumentCapabilities("privileged").filter((cap) => cap.routes?.includes("all")).map((cap) => cap.command).join(",") === "ps,slots");
-// The `run` capability (SPEC 14.3): six untargeted run-* rows (the keyed `run-start-keyed` and
-// `run-submission-status` pair included), self-targeted run-answer, PLUS the whole spawn set, and
+// The `run` capability (SPEC 14.3): seven untargeted run-* rows (the keyed pair and run-cancel
+// included), self-targeted run-answer, PLUS the whole spawn set, and
 // nothing targeted beyond what spawn already carries. The implication is one-way: a spawn-only
 // caller gains no run row.
-c("the run capability set: run-start/run-resume/run-start-keyed/run-submission-status/run-status/run-ps untargeted, run-answer self-targeted + the spawn set",
-  runCallerCapabilities("u_abc").length === 16
-  && runCallerCapabilities("u_abc").slice(0, 7).map((cap) => cap.command).join(",") === "run-start,run-resume,run-start-keyed,run-submission-status,run-answer,run-status,run-ps"
-  && runCallerCapabilities("u_abc").slice(0, 7).every((cap) => cap.command === "run-answer" ? cap.target?.mode === "self" : cap.target === undefined)
-  && JSON.stringify(runCallerCapabilities("u_abc").slice(7)) === JSON.stringify(spawnCallerCapabilities("u_abc"))
+c("the run capability set: run-start/run-resume/run-start-keyed/run-submission-status/run-cancel/run-status/run-ps untargeted, run-answer self-targeted + the spawn set",
+  runCallerCapabilities("u_abc").length === 17
+  && runCallerCapabilities("u_abc").slice(0, 8).map((cap) => cap.command).join(",") === "run-start,run-resume,run-start-keyed,run-submission-status,run-cancel,run-answer,run-status,run-ps"
+  && runCallerCapabilities("u_abc").slice(0, 8).every((cap) => cap.command === "run-answer" ? cap.target?.mode === "self" : cap.target === undefined)
+  && JSON.stringify(runCallerCapabilities("u_abc").slice(8)) === JSON.stringify(spawnCallerCapabilities("u_abc"))
   && !spawnCallerCapabilities("u_abc").some((cap) => cap.command.startsWith("run-")));
 const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
 c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input and turn + the manager.admin family",
-  adminCaps.length === 35
+  adminCaps.length === 36
   && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input,turn"
   && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")

@@ -20,10 +20,11 @@ export function createRunEffectHost(
   binding: MeshHandlerBinding,
   authority: RunScopeAuthority,
   admission: () => Promise<RunAdmissionView>,
+  cancellationObserved?: () => string | undefined,
 ): RunEffectHost {
   const pinned = structuredClone(binding);
   const pauses = createRunPauseHost(broker, pinned, authority);
-  const waits = createRunWaitHost(broker, authority, admission);
+  const waits = createRunWaitHost(broker, authority, admission, cancellationObserved);
   const handler = new MeshHandler(broker.nc, broker.kv, broker.js, broker.jsm, pinned, {
     async awaitSettle(ref) {
       for (;;) {
@@ -32,7 +33,7 @@ export function createRunEffectHost(
         await delay(2_000);
       }
     },
-  }, Date.now, { pauses, waits, authority, admission });
+  }, Date.now, { pauses, waits, authority, admission, ...(cancellationObserved !== undefined ? { cancellationObserved } : {}) });
 
   async function dispatch<R, T>(kind: string, req: R, ctx: EffectContext, call: (request: R, context: EffectContext) => Promise<T>): Promise<T> {
     const request = structuredClone(req);

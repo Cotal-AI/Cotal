@@ -866,6 +866,24 @@ export interface RemoteRunSubmissionResult {
   admission?: import("./run-admission.js").RunAdmission;
 }
 
+/** Inspect or commit one exact issuer-observed served cancellation. Inspection is not a grant. */
+export interface RemoteRunCancelRequest extends Omit<RemoteRunAdmissionRequest, "kind" | "run"> {
+  kind: "manager-run-cancel";
+  stage: "inspect" | "commit";
+  subject: string;
+  cancel: import("./run-cancel.js").RunCancelInput;
+}
+
+export type RemoteRunCancelResult = {
+  v: 1;
+  kind: "manager-run-cancel";
+  requestId: string;
+  runId: string;
+} & (
+  | { stage: "inspect"; authority: import("./run-cancel.js").RunCancelAuthority }
+  | { stage: "commit"; result: import("./run-cancel.js").RunCancelCommit }
+);
+
 /** Revoke one admitted run through its issuing host. The authenticated holder, never the body,
  * supplies the owner and attribution. The admission supplies the run's owner. */
 export interface RemoteRunRevokeRequest extends Omit<RemoteRunAdmissionRequest, "kind" | "run"> {

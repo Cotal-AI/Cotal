@@ -508,7 +508,7 @@ try {
   c("unrecorded run without admission record refuses",
     unadmitRes.status === 403 && String(unadmitRes.body.error).includes("no admission record"), unadmitRes);
 
-  // 18. Revoked admission refuses attempt and read operator (403)
+  // 18. Revocation refuses new attempts but leaves the read-only status operator available.
   const revRun = newRun();
   await admit(revRun);
   await revokeRunAdmission(admissions, "manager", { version: 1, runId: revRun, by: "suite", reason: "revoked", revokedAt: Date.now() });
@@ -524,9 +524,9 @@ try {
     registrationProof: proof,
     operator: { id: newIdentity().id, takeoverId: "o".repeat(16), runId: revRun },
   });
-  c("revoked run refuses attempt and read operator",
+  c("revoked run refuses attempt and permits read-only operator",
     revAttemptRes.status === 403 && String(revAttemptRes.body.error).includes("revoked") &&
-    revOpRes.status === 403 && String(revOpRes.body.error).includes("revoked"), { revAttemptRes, revOpRes });
+    revOpRes.status === 200, { attemptStatus: revAttemptRes.status, operatorStatus: revOpRes.status });
 
   // 19. Run admitted on another manager instance refuses (403)
   const foreignInstRun = newRun();

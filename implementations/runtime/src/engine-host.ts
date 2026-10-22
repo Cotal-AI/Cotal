@@ -35,6 +35,8 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   EffectError,
+  Cancelled,
+  type RootCancellationSource,
   EffectResultTooLarge,
   Journal,
   JournalAppendRejected,
@@ -81,6 +83,7 @@ export interface EngineHostRequest {
   /** The journal's result bound (L5006). The journal it bounds is built in the thread, so it crosses as data. */
   readonly resultBytes?: number;
   readonly shouldStop: () => string | undefined;
+  readonly cancellation?: RootCancellationSource;
   readonly file?: string;
   readonly seed?: string;
   readonly effectCeiling?: number;
@@ -145,6 +148,8 @@ function rehydrate(failed: WorkerRunFailed, store: WitnessedStore): Error {
       return new JournalAppendRejected(journalEntryKeyString(store.failure.entry), store.failure.entry.state, store.failure.reason);
     case "too-large":
       return new EffectResultTooLarge(failed.stepKey, failed.bytes, failed.bound);
+    case "cancelled":
+      return new Cancelled(failed.reason);
     case "released":
       return new RunReleased(failed.reason);
     case "held":
@@ -195,6 +200,7 @@ export async function runOnHostedEngine(req: EngineHostRequest): Promise<RunResu
     { entry, bridge: { handler: req.handler, store } },
   );
   publish = (reason) => worker.stop(reason);
+  const unsubscribe = req.cancellation?.subscribe((reason) => worker.cancel(reason));
 
   // A horizon that passed before the run began is published before the thread's first pre-effect
   // check, so the run stops with ZERO effects — the same answer the walker gives.
@@ -232,6 +238,7 @@ export async function runOnHostedEngine(req: EngineHostRequest): Promise<RunResu
       steps: result.steps,
     };
   } finally {
+    unsubscribe?.();
     clearInterval(poll);
   }
 }

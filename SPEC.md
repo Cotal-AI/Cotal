@@ -5185,11 +5185,12 @@ broker connection lives until its capped expiry: its gate row is writable under 
 a client that bypasses stock registration can still rewrite that one row. Live eviction remains the
 host's retirement barrier.
 
-**Compatibility.** A command whose semantics require the binding (this revision: `run-start`,
-§14.8, and `run-start-keyed` and `run-submission-status`, §14) MUST refuse a legacy-rail request
+**Compatibility.** A command whose semantics require the binding (this revision: `run-start`
+and `run-cancel`, §14.8, and `run-start-keyed` and `run-submission-status`, §14) MUST refuse a legacy-rail request
 with `permission-denied` carrying the detail kind
 `ai.cotal.ep.unbound-caller-authority` naming the caller triple, never route it through the
-host's own authority. Every other command serves both rails unchanged. Origin (that a request on
+host's own authority. The signerless resume and answer restrictions in §14.8 also apply, including
+the managed-seat legacy answer exception. Commands without these restrictions serve both rails. Origin (that a request on
 a generation-pinned subject was published by the grant holder) is a property of the grant set,
 not of this section: no peer-held profile pairs a write with a raw stream read on one stream, and
 mediated reads remain the remedy.
@@ -6040,11 +6041,107 @@ the existing marker, including its original attribution and time, without an ove
 | `manager-run-admission` | `run: { runId, subject }` | the immutable admission and revision |
 | `manager-run-attempt` | one `attempt` or `operator` | fixed JWTs for manager-held public nkeys |
 | `manager-run-revoke` | `revoke: { runId, reason }`, with non-empty reason | `{ v: 1, kind, requestId, runId, revocation }`, naming the stored marker |
+| `manager-run-cancel` | `stage: "inspect"` or `"commit"`, `subject`, `cancel: { runId, reason }` | `{ v: 1, kind, requestId, runId, stage }` plus `authority` for inspect or `result` for commit |
 
 Each request carries the same registered-manager envelope: `v`, `kind`, `space`, `actor`,
 `instanceId`, `managerLifecycleUid`, `requestId`, `registrationProof`, `accountPublicKey`,
 `processEpoch` and public `identities`. Unknown fields refuse. These are issuing-host requests,
 not endpoint commands. CLI and MCP revoke verbs require a separate served-command path.
+
+**Cooperative cancellation.** The ephemeral, untargeted `manager.run` command `run-cancel` accepts
+only `{ runId, reason }`. The reason MUST be well-formed Unicode encoding to 1 through 512 UTF-8
+bytes. The request MUST ride the issued v1 instance rail and carry a bind naming the receiving
+instance and current process epoch. Its deadline MUST be positive and at most 30,000 ms, measured
+from the original receive observation. A missing or different bind refuses; no epoch is repinned.
+
+A signer-holding manager accepts only the original admission's owner, actor and lifecycle UID,
+resolved under a currently live issued generation that permits this request subject. The generation
+need not equal the admitting generation. A signerless manager asks its issuing host to inspect the
+request the host itself observed. That host accepts the original triple, or an independently
+attested interactive actor of the admitted owner with `run`, or an interactive actor with `admin`.
+An actor name, managed seat, platform assignment or manager forward is not interactive authority.
+The issuer checks current source liveness and issued permissions in every case. The local operator
+revoke path above is separate.
+
+The admission MUST be readable before cancellation. An absent admission yields an undetailed
+`permission-denied`; an unreadable admission or torn run record yields `unavailable`. Reads of the
+admission, marker and run holder are leader-served. The manager's existing endpoint inventory
+reader supplies these reads even after revocation; it holds no checkpoint-answer writes. A
+run-scoped read-only operator also remains issuable for status inspection after revocation, with
+the admission's instance and endpoint checks unchanged. Revoked runs receive no new drive or
+answering authority. A
+terminal completed or failed record returns an observation without writing a marker. A running
+record held elsewhere refuses before a write unless a marker already exists, in which case the
+reply reports `not-driven-here` without stopping a local handle. An absent run record, a spec
+without status, and a released run remain distinct from another holder's running attempt.
+
+The closed `run-status` view also carries optional `revoked: { by, reason }` and
+`revocationUnreadable: string`, with the same meaning as the run list. The marker is read
+independently of the recorded state. A running record with a marker does not prove cessation;
+a released record with a marker cannot resume. A failed marker read MUST be reported as unreadable,
+not as marker absence or permission to resume. A terminal record remains terminal whether or not
+it has a marker.
+
+Each cancellation intent is keyed by the full served subject, not just the envelope id. A pending
+intent prevents a new local launch but does not stop an existing drive. Only an observed durable
+marker permits the manager to call the current eligible drive's cooperative `cancel(reason)`
+handle. The manager rechecks an activated slot's recorded epoch, fencing token and holder before
+selecting that handle. A marker observed for a run promotes all its lingering local cancellation
+intents; keys are not aliased. A read failure or unknown write does not clear a pending intent.
+A definite no-dispatch refusal can clear only its own intent after confirming marker absence.
+If its budget expires before that confirmation, the local launch block can remain even though
+no write was dispatched.
+
+At a channel effect, a fresh revoked admission together with the same manager-local
+marker-observed intent raises `Cancelled` rather than the ordinary revocation failure. This
+classification does not signal the root or replace the current-holder check. Pending intent
+alone cannot reclassify a refusal; a local operator revoke without a cancellation intent keeps
+its existing failure behavior. If the required post-marker holder read fails or its original
+budget expires, the manager MUST NOT signal a handle without the holder check or infer a stopped
+drive from the marker alone. The marker can remain beside a running parked effect. The outcome remains unknown; a
+later explicit cancellation request makes its own current observations.
+
+Cancellation reaches the root signal in both language engines and the compiled worker bridge,
+including a cancellation latched before worker startup. It is separate from boundary release at
+manager shutdown. A cancelled runtime drive reports `released` with a `Cancelled` reason; its
+status projection can lag its journal and handle outcome. Cancellation is cooperative: it does
+not prove model or tool preemption, process interruption, resource cleanup or another host's
+cessation. Already-started external effects can still complete.
+
+The reply contains `runId`, `authority` (`original`, `owner-interactive` or `admin`), optional
+`revocation: { by, reason, revokedAt }`, `duplicate` and `observed`. `duplicate` is false for a
+confirmed new marker, true for a confirmed existing marker, and null when the write outcome was
+lost but a marker was subsequently read. The original stored marker is never overwritten.
+`observed` contains `processEpoch` and `phase`: `terminal`, `launch-abandoned`, `stop-requested`,
+`stopped` or `not-driven-here`. When read, it includes `recordedState`, `runEpoch`, `fencingToken`
+and `holder`; `driveOutcome` appears only when the local handle's outcome was observed. Budget
+expiry after a stop request is not proof of cessation.
+
+**Issuer cancellation custody.** Inspection grants no later commit. The issuer independently
+observes issued, untargeted instance requests for `run-cancel`, checks their closed input, and
+retains the original body fingerprint and deadline. The fingerprint includes the envelope id,
+arguments, class, operation contract digests, bind and deadline. Identical redelivery does not
+extend that deadline. A different valid body under the same subject poisons that observation.
+The manager's forward MUST match the observed body, instance, epoch and registered command.
+
+Commit atomically claims the observation before asynchronous authorization and store preparation,
+then rechecks it at the actual marker dispatch boundary. The marker writer issues one conditional
+put, not a create helper that can retry after a deletion read. The closed commit result is one of:
+
+- `{ kind: "committed", outcome: "created" | "existed", revocation }`;
+- `{ kind: "refused-before-dispatch", code }`;
+- `{ kind: "outcome-unknown", code }`.
+
+The code is `permission-denied`, `failed-precondition`, `deadline-exceeded`, `resource-exhausted`
+or `unavailable`. A lost transport result is unknown. The manager's earlier unknown history stays
+unknown even if a restarted or different issuer reports no observation. There is no cross-restart
+or multi-issuer exactly-once guarantee.
+
+Observation tombstones last for the issuer process lifetime, with no eviction. The default limits
+are 64 per caller triple, 256 per owner and 10,000 total; configuration MUST keep caller capacity
+at most owner capacity and owner capacity below the total. Static-addressed observations count
+too. Exhaustion refuses new identities rather than forgetting existing uncertainty. Inspection,
+claims and equal redelivery cannot replenish these lifetime counters.
 
 **Resume, fork, local, restore.** A resume, takeover or reconcile continues under the ORIGINAL
 admission and the current marker; the resuming caller's own authority is not consulted and cannot

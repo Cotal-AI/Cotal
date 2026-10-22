@@ -352,6 +352,10 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
             return provider.requestRemoteRunSubmission({ ...providerCall, request });
           },
           requestRunAttempt: (request) => provider.requestRemoteRunAttempt!({ ...providerCall, request }),
+          requestRunCancel: async (request) => {
+            if (!provider.requestRemoteRunCancel) throw new Error("auth provider does not implement the observed run-cancel protocol");
+            return provider.requestRemoteRunCancel({ ...providerCall, request });
+          },
           requestRunRevoke: async (request) => {
             if (provider.requestRemoteRunRevoke === undefined) throw new Error(`the registered auth provider "${provider.name}" does not implement closed hosted-run revoke`);
             return provider.requestRemoteRunRevoke({ ...providerCall, request });

@@ -73,6 +73,9 @@ export interface RunHostDriveRequest {
    *  every channel effect. A drive without one performs no channel effect: the host refuses at
    *  the boundary rather than running the effect under the mediator's own authority. */
   readonly admission: RunAdmissionView;
+  /** The host's observed local cancellation intent. Classification only: this does not signal
+   *  the root or replace the current-holder check before calling the drive's cancel handle. */
+  readonly cancellationObserved?: () => string | undefined;
 }
 
 /** How a drive attempt ended. `released` is the driver saying the run is not its to continue (a
@@ -91,6 +94,8 @@ export type RunHostOutcome =
 export interface RunHostDrive {
   readonly done: Promise<RunHostOutcome>;
   release(reason: string): void;
+  /** Cooperatively cancel the root and in-flight effect contexts after the host establishes authority. */
+  cancel(reason: string): void;
 }
 
 /** The READ half of an answer: which pause, addressed by its step. */
@@ -265,6 +270,10 @@ export interface RunStatusView {
   readonly endpoint: string;
   readonly spec: RunSpecValue;
   readonly status?: RunStatusValue;
+  /** The independently observed marker, not proof that the recorded holder has stopped. */
+  readonly revoked?: { readonly by: string; readonly reason: string };
+  /** A failed marker read is unknown, not an absent marker or a resumable run. */
+  readonly revocationUnreadable?: string;
   readonly journal: RunJournalRow[];
 }
 

@@ -358,6 +358,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "cotal.d32m.ep.v1.one.manager.run-submission-status.>",
     "cotal.d32m.ep.inst.manager.*.run-answer.>",
     "cotal.d32m.ep.one.manager.run-answer.>",
+    "cotal.d32m.ep.v1.inst.manager.*.run-cancel.>",
   ] },
   "auth-barrier": { publish: [
     "$JS.API.INFO",

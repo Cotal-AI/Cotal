@@ -77,7 +77,7 @@ import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, validateUserToken, ty
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions, type UserCallerIssuer } from "./permissions.js";
-import { admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
+import { handleRemoteRunCancel, parseRemoteRunCancelRequest, admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
@@ -85,7 +85,7 @@ import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
-import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
+import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
 import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { chatAwareAclResolver, openChatSessionAuthority, type ChatAdmissionRequest, type ChatRetireRequest, type ChatRetireResult, type ChatSessionAdmitted } from "./chat-session-authority.js";
@@ -105,6 +105,8 @@ import { resumeAgentRetirement, runAgentRetirementBarrier, type RetirementDeps }
 import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
 import { serializedFor } from "./serialized.js";
+import { RunCancelObservations, type RunCancelLimits } from "./run-cancel-observation.js";
+import { readCancellationAdmission } from "@cotal-ai/core";
 import type { DelegatedUserIntentIncarnation } from "./delegated-user-intent.js";
 import { joinOrStartRetirement, openAuthAdminListener, type RetirementFlights } from "./auth-admin.js";
 import { AUTH_SERVICE_ENDPOINT, authClusterArtifacts, authContractArtifactValues } from "./auth-service-contract.js";
@@ -334,6 +336,7 @@ export interface AuthAuthorityPlane {
     request: unknown;
   }) => Promise<import("@cotal-ai/core").RemoteRunAdmissionResult>;
   submitManagerRun: (args: ManagerAuthorityHolder & { request: unknown }) => Promise<import("@cotal-ai/core").RemoteRunSubmissionResult>;
+  cancelManagerRun: (args: ManagerAuthorityHolder & { request: unknown }) => Promise<import("@cotal-ai/core").RemoteRunCancelResult>;
   /** Revoke under the authenticated holder and the recorded admission owner. */
   revokeManagerRun: (args: ManagerAuthorityHolder & { request: unknown }) => Promise<import("@cotal-ai/core").RemoteRunRevokeResult>;
   /** First-attempt/resume or operator issuance for one hosted run, asked by a registered signerless manager.
@@ -463,6 +466,8 @@ async function supervisorGeneration(session: IssuerSession, space: string, owner
  *  flag sets it. The local-primary policy refuses an unavailable local Manager without substitution. */
 export interface AuthServiceRuntimeOptions {
   interactiveManagerSelection?: "local-primary";
+  /** Process-lifetime cancellation custody quotas. No eviction or automatic restart on exhaustion. */
+  runCancelLimits?: RunCancelLimits;
 }
 
 function runtimeSelection(options: AuthServiceRuntimeOptions): AuthServiceRuntimeOptions["interactiveManagerSelection"] {
@@ -578,6 +583,7 @@ async function openAuthAuthorityPlaneWithCustody(opts: OpenAuthAuthorityPlaneOpt
 async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwind: (() => Promise<unknown>)[], onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"]): Promise<AuthAuthorityPlane> {
   const interactiveManagerSelection = runtimeSelection(opts);
   const { server, space, dataAccount, log } = opts;
+  const cancelObservations = new RunCancelObservations(space, opts.runCancelLimits);
   const standingTtl = opts.standingRenewableTtlSeconds ?? STANDING_RENEWABLE_TTL_SEC;
   if (!Number.isSafeInteger(standingTtl) || standingTtl < 5 || standingTtl > STANDING_RENEWABLE_TTL_SEC) {
     throw new Error(`standingRenewableTtlSeconds must be an integer between 5 and ${STANDING_RENEWABLE_TTL_SEC} seconds (got ${standingTtl})`);
@@ -986,6 +992,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // envelope asked (SPEC 14.8): the forward's coordinates are the manager's word. The manager
   // forwards from inside the handler serving the request, so an observation older than the window
   // has no forward left to bind; the window also bounds the table.
+  remoteIssuer.nc.subscribe(servedRunCancelRequestSubject(space), {
+    callback: (error, message) => {
+      if (!error) cancelObservations.observe(message.subject, message.data);
+    },
+  });
   const observedRunRequests = new Map<string, { expires: number; request: ObservedRunRequest }>();
   for (const subject of servedRunRequestSubjects(space))
     remoteIssuer.nc.subscribe(subject, {
@@ -1873,6 +1884,39 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         }
       });
     },
+    cancelManagerRun: async ({ request, ...holder }) => {
+      refuseIfFenced();
+      const req = parseRemoteRunCancelRequest(request);
+      requireManagerAuthorityHolder(holder, req.instanceId, 'manager run cancellation needs scope "supervise"');
+      return withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, session => handleRemoteRunCancel({
+        request: req, owner: holder.owner, space, endpoint: "manager", accountPublicKey: dataAccount.pub,
+        proofSecret: dataAccount.signingSeed, observeManagerGate: observeLegacyManagerGate,
+        observations: cancelObservations, flush: () => remoteIssuer.nc.flush(), assertServing: refuseIfFenced,
+        issued: session.store, sourceIsLive: composedSourceIsLive(session),
+        interactiveScope: async (caller, sources) => {
+          if (sources.length !== 1 || sources[0]!.space !== space) return undefined;
+          const source = parseActorLedgerSource(sources[0]!);
+          if (!source || source.owner !== caller.owner || source.actor !== caller.actor || source.lifecycleUid !== caller.uid) return undefined;
+          const row = findActorUnified(opts.dir, caller.owner, caller.actor);
+          return row?.kind === "interactive" && row.lifecycleUid === caller.uid ? [...row.scope] : undefined;
+        },
+        registeredCommand: async (instanceId, registrationRevision, command) => {
+          const registered = remoteManagerSurface(await registeredManagerCluster(holder.owner, instanceId, { registrationRevision }))[command];
+          if (!registered) throw new EpEnvelopeError("failed-precondition", "registered manager has no run-cancel contract");
+          return registered;
+        },
+        readAdmission: runId => readCancellationAdmission(recordsJsm, space, "manager", runId),
+        readRevocation: runId => readRunRevocation(recordsJsm, space, "manager", runId),
+        withStore: async (runId, work) => {
+          const nc = await connect({ servers: server, ...standaloneConnectOpts({
+            creds: await mintCreds(issuerAuth(), newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId }, expiresInSeconds: 60 }), tls: false,
+          }), maxReconnectAttempts: 0 });
+          onConnection?.(nc, `cotal:run-cancel:${space}`);
+          try { return await work(await new Kvm(nc).open(admissionBucket(space))); }
+          finally { await nc.drain().catch(() => nc.close()); }
+        },
+      }));
+    },
     revokeManagerRun: async ({ request, ...holder }) => {
       refuseIfFenced();
       const req = parseRemoteRunRevokeRequest(request);
@@ -2233,6 +2277,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
     // selection exactly as before. A hosted context passes no local manager at all.
     localManager: () => loadManagerInstanceIdentity(root, space),
     ...(interactiveManagerSelection !== undefined ? { interactiveManagerSelection } : {}),
+    ...(options.runCancelLimits !== undefined ? { runCancelLimits: options.runCancelLimits } : {}),
   });
 
   // All planes bound — NOW write the discovery file (its existence is the readiness signal).
@@ -2515,6 +2560,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     log: (l) => console.error(l),
     localManager: o.localManager,
     ...(o.interactiveManagerSelection !== undefined ? { interactiveManagerSelection: o.interactiveManagerSelection } : {}),
+    ...(o.runCancelLimits !== undefined ? { runCancelLimits: o.runCancelLimits } : {}),
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
     ...(o.serviceEndpoints !== undefined ? { serviceEndpoints: o.serviceEndpoints } : {}),
   }, onConnection);
@@ -2605,6 +2651,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       admitManagerRun: plane.admitManagerRun,
       submitManagerRun: plane.submitManagerRun,
       revokeManagerRun: plane.revokeManagerRun,
+      cancelManagerRun: plane.cancelManagerRun,
       issueManagerRunAttempt: plane.issueManagerRunAttempt,
       secrets,
       retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
@@ -2878,6 +2925,7 @@ interface HandlerCtx {
   admitManagerRun: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["admitManagerRun"]>;
   submitManagerRun?: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["submitManagerRun"]>;
   revokeManagerRun?: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["revokeManagerRun"]>;
+  cancelManagerRun?: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["cancelManagerRun"]>;
   issueManagerRunAttempt: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["issueManagerRunAttempt"]>;
   secrets: SecretStore;
   retireInteractiveLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
@@ -2899,7 +2947,7 @@ interface HandlerCtx {
   retireChatSession: AuthAuthorityPlane["retireChatSession"];
 }
 
-type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "submitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun">;
+type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "submitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun" | "cancelManagerRun">;
 
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 export async function dispatchManagerAuthorityRequest(
@@ -2950,6 +2998,10 @@ export async function dispatchManagerAuthorityRequest(
   if (request.kind === "manager-run-submission") {
     if (!ctx.submitManagerRun) throw new EpEnvelopeError("unimplemented", "issuing host has no keyed submission handler");
     return ctx.submitManagerRun({ owner, scope: row.scope ?? [], request: body.request });
+  }
+  if (request.kind === "manager-run-cancel") {
+    if (!ctx.cancelManagerRun) throw new EpEnvelopeError("unimplemented", "this issuing host has no run-cancel handler");
+    return ctx.cancelManagerRun({ owner, scope: row.scope ?? [], request: body.request });
   }
   if (request.kind === "manager-run-revoke") {
     if (ctx.revokeManagerRun === undefined) throw new EpEnvelopeError("unimplemented", "this issuing host has no run revoke handler");
