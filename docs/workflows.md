@@ -379,6 +379,11 @@ the manager is still reading the current holder before signalling the root. Pend
 never do this. An ordinary local revoke without a cancellation intent keeps its existing failure
 behavior. The shared observation neither signals the root nor replaces the holder check.
 
+If the post-marker holder read fails or exceeds the original budget, the command does not signal
+the root without that check and returns no stopped receipt. A parked checkpoint or sleep can
+remain running beside the marker. Preserve the unknown outcome. A later explicit cancellation
+request can read the same marker and a current holder, then report its own observed result.
+
 `cotal run revoke <runId> --local --by <who> --reason <text>` writes the run's revocation marker
 from the project folder. An empty `--by` or `--reason` is refused before anything is written. The
 admission itself is never rewritten. Every host reads the marker

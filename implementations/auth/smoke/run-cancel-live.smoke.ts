@@ -30,11 +30,11 @@ function deferred<T>() {
   const promise = new Promise<T>(r => { resolve = r; });
   return { promise, resolve };
 }
-async function bounded<T>(promise: Promise<T>, name: string): Promise<T> {
+async function bounded<T>(promise: Promise<T>, name: string, timeoutMs = 10000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([promise, new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`${name} did not arrive`)), 10000);
+      timer = setTimeout(() => reject(new Error(`${name} did not arrive`)), timeoutMs);
     })]);
   } finally { clearTimeout(timer); }
 }
@@ -216,7 +216,7 @@ try {
           const hold = nextOperatorHold;
           nextOperatorHold = undefined;
           hold.entered.resolve();
-          await bounded(hold.release.promise, "post-marker holder reader release");
+          await bounded(hold.release.promise, "post-marker holder reader release", 20000);
         }
         if (request.operator && failNextOperatorReads > 0) {
           failNextOperatorReads--;
@@ -462,6 +462,45 @@ try {
       await cancelling;
     }
   });
+  for (const failure of ["read", "budget"] as const) {
+    await cell(`post-marker holder ${failure} failure preserves uncertainty until a fresh cancellation`, async () => {
+      const runId = await start(original, 'await checkpoint("reader", "Await input");');
+      const hold = { entered: deferred<void>(), release: deferred<void>() };
+      postMarkerHold = hold;
+      const cancelling = call(original, "run-cancel", { runId, reason: `holder ${failure} fixture` })
+        .then(value => ({ status: "fulfilled" as const, value }), reason => ({ status: "rejected" as const, reason }));
+      try {
+        await bounded(hold.entered.promise, "post-marker failing holder read");
+        if (failure === "read") {
+          failNextOperatorReads = 1;
+          hold.release.resolve();
+        }
+        const result = await cancelling;
+        hold.release.resolve();
+        assert.ok(result.status === "rejected" || !result.value.ok, "no stopped receipt is invented without the required holder read");
+        const error = result.status === "rejected" ? result.reason : result.value.error;
+        // SPEC 13.3 reads an omitted wire outcome as unknown too.
+        assert.equal(error?.outcome ?? "unknown", "unknown");
+        console.log(`holder failure observation: ${JSON.stringify({ failure, code: error?.code,
+          wireOutcome: error?.outcome ?? null, interpretedOutcome: error?.outcome ?? "unknown" })}`);
+        const pending = await status(original, runId, "pending");
+        assert.equal(pending.status?.state, "running", "the parked checkpoint was not signalled before the holder fence");
+        assert.equal(pending.revoked?.reason, `holder ${failure} fixture`);
+        const retry = await call(original, "run-cancel", { runId, reason: "fresh observed-holder cancellation" });
+        assert.ok(retry.ok, retry.error?.message);
+        const receipt = retry.data as RunCancelResult;
+        assert.equal(receipt.duplicate, true);
+        assert.equal(receipt.revocation?.reason, `holder ${failure} fixture`);
+        assert.equal(receipt.observed.phase, "stopped");
+        assert.equal(receipt.observed.driveOutcome?.status, "released");
+      } finally {
+        hold.release.resolve();
+        postMarkerHold = undefined;
+        nextOperatorHold = undefined;
+        await cancelling;
+      }
+    });
+  }
   await cell("issuer quota refusal names its local budget without caller data", async () => {
     const warnings: string[] = [];
     const warn = console.warn;

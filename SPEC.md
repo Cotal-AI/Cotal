@@ -5806,7 +5806,10 @@ At a channel effect, a fresh revoked admission together with the same manager-lo
 marker-observed intent raises `Cancelled` rather than the ordinary revocation failure. This
 classification does not signal the root or replace the current-holder check. Pending intent
 alone cannot reclassify a refusal; a local operator revoke without a cancellation intent keeps
-its existing failure behavior.
+its existing failure behavior. If the required post-marker holder read fails or its original
+budget expires, the manager MUST NOT signal a handle without the holder check or infer a stopped
+drive from the marker alone. The marker can remain beside a running parked effect. The outcome remains unknown; a
+later explicit cancellation request makes its own current observations.
 
 Cancellation reaches the root signal in both language engines and the compiled worker bridge,
 including a cancellation latched before worker startup. It is separate from boundary release at
