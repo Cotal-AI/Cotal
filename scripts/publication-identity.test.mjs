@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { verifyBuildAttestation, verifyPublicationRequest } from "./release-qualification.mjs";
+import { publicationDeadline } from "./publication-budget.mjs";
 
 const repository = "Cotal-AI/Cotal", publisher = "d".repeat(40);
 const scope = { RELEASE_CANDIDATE_SHA256: "a".repeat(64), RELEASE_SOURCE: "b".repeat(40), RELEASE_QUALIFICATION_RUN: "123", RELEASE_TAG: "latest" };
@@ -68,7 +69,10 @@ test("a fresh attempt-1 dispatch cannot renew an expired version's original cloc
     current.display_title = title("1.2.3", replacement, changed);
     await assert.rejects(() => verifyPublicationRequest({ ...options, env: { ...options.env, ...changed } }), /cannot replace the original command timestamp/);
     current.display_title = title("1.2.3", original);
-    await assert.rejects(() => verifyPublicationRequest({ ...options, env: { ...options.env, RELEASE_REQUESTED_AT: original } }), /ten-minute deadline/);
+    const late = await verifyPublicationRequest({ ...options, env: { ...options.env, RELEASE_REQUESTED_AT: original } });
+    assert.equal(late.requestedAt, original, "the original command timestamp is retained");
+    assert.equal(late.firstRunId, first.id, "the first run keeps the request identity");
+    assert.throws(() => publicationDeadline(late.requestedAt), /ten-minute deadline/, "its original publication deadline is still expired");
   });
 });
 
