@@ -9,7 +9,7 @@
 import { connect as netConnect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, assertLinux, checkDir, checkSocket, type DaemonPaths, type PeerUid } from "./endpoint.js";
-import { encode, type DaemonResponse } from "./protocol.js";
+import { encode, type DaemonResponse, type DaemonStatus, type LoginPrompt, type LoginResult } from "./protocol.js";
 
 export interface ClientCounters {
   bytesWritten: number;
@@ -69,12 +69,29 @@ function readLine(sock: Socket, timeoutMs: number): Promise<string> {
   });
 }
 
+/** The only replies `queryDaemon` sees: it sends status (or a raw contract probe), never login-start,
+ *  so no sign-in event can arrive on its connection. */
+export type QueryReply = Extract<DaemonResponse, { ok: false }> | { readonly v: DaemonResponse["v"]; readonly id: string | null; readonly ok: true; readonly result: DaemonStatus };
+
 /** Send one request and return the daemon's parsed reply. */
-export async function queryDaemon(opts: QueryOptions): Promise<DaemonResponse> {
+export async function queryDaemon(opts: QueryOptions): Promise<QueryReply> {
+  const sock = await openVerified(opts);
+  try {
+    const line = opts.rawLine !== undefined ? `${opts.rawLine}\n` : encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: "status" });
+    (opts.counters ?? { bytesWritten: 0 }).bytesWritten += Buffer.byteLength(line, "utf8");
+    sock.write(line);
+    const reply = await readLine(sock, opts.timeoutMs ?? 5000);
+    return JSON.parse(reply) as QueryReply;
+  } finally {
+    sock.destroy();
+  }
+}
+
+/** Connect only after the directory and socket checks pass, and keep the connection only when the
+ *  kernel reports the listener as this same uid. Nothing is written before both. */
+async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" | "uid" | "timeoutMs">): Promise<Socket> {
   assertLinux();
   const uid = opts.uid ?? process.geteuid!();
-  const timeoutMs = opts.timeoutMs ?? 5000;
-  const counters = opts.counters ?? { bytesWritten: 0 };
   const { paths } = opts;
   try {
     checkDir(paths.dir, uid);
@@ -83,20 +100,71 @@ export async function queryDaemon(opts: QueryOptions): Promise<DaemonResponse> {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new EndpointRefusal("NOT_RUNNING", `no daemon endpoint at ${paths.socket}`);
     throw e;
   }
-  const sock = await connectTo(paths.socket, timeoutMs);
+  const sock = await connectTo(paths.socket, opts.timeoutMs ?? 5000);
+  let peer: number;
   try {
-    let peer: number;
-    try {
-      peer = opts.peerUid(sock);
-    } catch (e) {
-      throw new EndpointRefusal("PEER_UID_MISMATCH", `could not read the daemon's peer credentials: ${(e as Error).message}`);
-    }
-    if (peer !== uid) throw new EndpointRefusal("PEER_UID_MISMATCH", `the process answering at ${paths.socket} runs as uid ${peer}, not ${uid}; nothing was sent`);
-    const line = opts.rawLine !== undefined ? `${opts.rawLine}\n` : encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: "status" });
-    counters.bytesWritten += Buffer.byteLength(line, "utf8");
-    sock.write(line);
-    const reply = await readLine(sock, timeoutMs);
-    return JSON.parse(reply) as DaemonResponse;
+    peer = opts.peerUid(sock);
+  } catch (e) {
+    sock.destroy();
+    throw new EndpointRefusal("PEER_UID_MISMATCH", `could not read the daemon's peer credentials: ${(e as Error).message}`);
+  }
+  if (peer !== uid) {
+    sock.destroy();
+    throw new EndpointRefusal("PEER_UID_MISMATCH", `the process answering at ${paths.socket} runs as uid ${peer}, not ${uid}; nothing was sent`);
+  }
+  return sock;
+}
+
+export interface LoginOptions extends Pick<QueryOptions, "paths" | "peerUid" | "uid"> {
+  readonly idp: string;
+  readonly clientId?: string;
+  readonly onPrompt: (prompt: LoginPrompt) => void;
+  /** Aborting sends login-cancel for this attempt and waits for the daemon's answer. */
+  readonly signal?: AbortSignal;
+}
+
+export type LoginReply =
+  | { readonly ok: true; readonly attempt: string; readonly result: LoginResult }
+  | { readonly ok: false; readonly code: string; readonly message: string }
+  /** Aborted before the daemon named an attempt. The connection was closed, which makes the daemon
+   *  cancel whatever it had started; no daemon outcome was received. */
+  | { readonly ok: false; readonly code: "ABANDONED"; readonly message: string };
+
+/** Ask the daemon to sign in, show its prompt, and return its single result. */
+export async function loginViaDaemon(opts: LoginOptions): Promise<LoginReply> {
+  const sock = await openVerified(opts);
+  try {
+    const id = randomUUID().replaceAll("-", "");
+    return await new Promise<LoginReply>((resolve, reject) => {
+      let buf = "";
+      let attempt: string | undefined;
+      const cleanup = () => { sock.removeAllListeners("data"); sock.removeAllListeners("end"); sock.removeAllListeners("error"); opts.signal?.removeEventListener("abort", onAbort); };
+      const finish = (r: LoginReply | Error) => { cleanup(); if (r instanceof Error) reject(r); else resolve(r); };
+      const abandoned = { ok: false as const, code: "ABANDONED" as const, message: "stopped before the daemon showed a prompt; the connection was closed, which cancels the sign-in on the daemon" };
+      const onAbort = () => {
+        if (!attempt) return finish(abandoned);
+        sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id: `${id}c`.slice(0, 64), op: "login-cancel", attempt }));
+      };
+      sock.setEncoding("utf8");
+      sock.on("data", (chunk: string) => {
+        buf += chunk;
+        if (Buffer.byteLength(buf, "utf8") > MAX_LINE_BYTES && !buf.includes("\n")) return finish(new Error("daemon reply exceeds the line limit"));
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) !== -1) {
+          const msg = JSON.parse(buf.slice(0, nl)) as DaemonResponse;
+          buf = buf.slice(nl + 1);
+          if (msg.id !== id) continue;
+          if (!msg.ok) return finish({ ok: false, code: msg.error.code, message: msg.error.message });
+          if ("event" in msg && msg.event === "login-prompt") { attempt = msg.attempt; opts.onPrompt(msg.prompt); }
+          else if ("event" in msg && msg.event === "login-result") return finish({ ok: true, attempt: msg.attempt, result: msg.result });
+        }
+      });
+      sock.once("end", () => finish(new Error("the daemon closed the connection before the sign-in finished")));
+      sock.once("error", (e) => finish(e));
+      if (opts.signal?.aborted) return finish(abandoned);
+      opts.signal?.addEventListener("abort", onAbort, { once: true });
+      sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "login-start", idp: opts.idp, ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}) }));
+    });
   } finally {
     sock.destroy();
   }

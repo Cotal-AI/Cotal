@@ -14,6 +14,11 @@ import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, assertLinux, checkSocket, ensureDir, refuseExisting, type DaemonPaths, type PeerUid } from "./endpoint.js";
 import { encode, parseRequest, type DaemonResponse, type DaemonStatus } from "./protocol.js";
+import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
+import { homeCotalDir } from "@cotal-ai/workspace";
+
+/** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
+export const MAX_REQUESTS_PER_CONNECTION = 64;
 
 /** Counters a test or `status` can read. Every security decision increments exactly one. */
 export interface ServerCounters {
@@ -22,6 +27,9 @@ export interface ServerCounters {
   framesDecoded: number;
   requestsRefused: number;
   statusAnswered: number;
+  loginsStarted: number;
+  loginsRefused: number;
+  cancelsAnswered: number;
 }
 
 export interface RunningDaemon {
@@ -38,6 +46,11 @@ export interface ServeOptions {
   readonly peerUid: PeerUid;
   readonly uid?: number;
   readonly log?: (line: string) => void;
+  /** Where a sign-in persists its session. Defaults to the machine-home Cotal directory, where
+   *  `cotal login` keeps it. */
+  readonly sessionDir?: string;
+  /** Test hook: the stock sign-in to drive. */
+  readonly login?: LoginCoordinator;
 }
 
 function listen(server: Server, path: string): Promise<void> {
@@ -64,7 +77,8 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
   const dirOutcome = ensureDir(paths.dir, uid);
   refuseExisting(paths.socket);
 
-  const counters: ServerCounters = { accepted: 0, peerRejected: 0, framesDecoded: 0, requestsRefused: 0, statusAnswered: 0 };
+  const counters: ServerCounters = { accepted: 0, peerRejected: 0, framesDecoded: 0, requestsRefused: 0, statusAnswered: 0, loginsStarted: 0, loginsRefused: 0, cancelsAnswered: 0 };
+  const login = opts.login ?? createLoginCoordinator({ sessionDir: opts.sessionDir ?? homeCotalDir() });
   const startedAt = new Date();
   const status = (): DaemonStatus => ({
     state: "ready",
@@ -98,6 +112,62 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
     counters.accepted++;
     let buf = "";
     let bufBytes = 0;
+    let requests = 0;
+    // Sign-in attempts this connection started that have not settled. Closing the connection
+    // before the result cancels them through the stock fence, so nothing is persisted for a
+    // requester that went away. Once the result is delivered the attempt is no longer here, so a
+    // close after it changes nothing.
+    const owned = new Set<string>();
+    const write = (r: DaemonResponse): Promise<void> => new Promise((resolve) => {
+      if (sock.destroyed || !sock.writable) return resolve();
+      sock.write(encode(r), () => resolve());
+    });
+    const refuse = (id: string | null, code: "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS", message: string) => {
+      counters.requestsRefused++;
+      return write({ v: DAEMON_PROTOCOL_VERSION, id, ok: false, error: { code, message } });
+    };
+    sock.once("close", () => {
+      for (const attempt of owned) void login.cancel(attempt);
+      owned.clear();
+    });
+    const handle = (line: string): void => {
+      counters.framesDecoded++;
+      const parsed = parseRequest(line);
+      if (!parsed.ok) {
+        counters.requestsRefused++;
+        void write({ v: DAEMON_PROTOCOL_VERSION, id: parsed.id, ok: false, error: { code: parsed.code, message: parsed.message } });
+        return;
+      }
+      const req = parsed.request;
+      if (req.op === "status") {
+        counters.statusAnswered++;
+        void write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result: status() });
+        return;
+      }
+      if (req.op === "login-cancel") {
+        void login.cancel(req.attempt).then((result) => {
+          counters.cancelsAnswered++;
+          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
+        });
+        return;
+      }
+      const started = login.start({
+        idp: req.idp,
+        ...(req.clientId !== undefined ? { clientId: req.clientId } : {}),
+        onPrompt: (attempt, prompt) => void write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "login-prompt", attempt, prompt }),
+        onResult: async (attempt, result) => {
+          owned.delete(attempt);
+          await write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "login-result", attempt, result });
+        },
+      });
+      if (!started) {
+        counters.loginsRefused++;
+        void refuse(req.id, "LOGIN_IN_PROGRESS", "a sign-in is already in progress on this daemon; cancel it or wait for its result");
+        return;
+      }
+      counters.loginsStarted++;
+      owned.add(started.attempt);
+    };
     sock.setEncoding("utf8");
     sock.on("data", (chunk: string) => {
       buf += chunk;
@@ -119,15 +189,15 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         bufBytes = Buffer.byteLength(buf, "utf8");
-        counters.framesDecoded++;
-        const parsed = parseRequest(line);
-        if (!parsed.ok) {
-          counters.requestsRefused++;
-          sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id: parsed.id, ok: false, error: { code: parsed.code, message: parsed.message } }));
-          continue;
+        if (++requests > MAX_REQUESTS_PER_CONNECTION) {
+          // Bounded per connection: one refusal, then the connection closes and its unread input is dropped.
+          sock.removeAllListeners("data");
+          buf = "";
+          bufBytes = 0;
+          void refuse(null, "TOO_MANY_REQUESTS", `a connection may send at most ${MAX_REQUESTS_PER_CONNECTION} requests`).then(() => sock.end());
+          return;
         }
-        counters.statusAnswered++;
-        sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id: parsed.request.id, ok: true, result: status() }));
+        handle(line);
       }
     });
     sock.resume();
@@ -173,6 +243,8 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
   let closed: Promise<void> | undefined;
   const close = (): Promise<void> => {
     closed ??= (async () => {
+      // An in-flight sign-in is cancelled through the stock fence before the listener goes away.
+      await login.close();
       for (const s of sockets) s.destroy();
       await new Promise<void>((r) => server.close(() => r()));
       // Remove the public socket only if it is still the exact file (dev + ino) this process
