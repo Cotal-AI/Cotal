@@ -339,7 +339,8 @@ try {
     if (pid !== null) process.kill(pid, "SIGCONT");
     const receipt = (phase: string) => states !== undefined && readdirSync(states).some((name) => name.endsWith(`.${phase}.json`));
     if (freezeOn === ".accepted.json") {
-      const exitedLate = pid !== null && await until(() => !alive(pid), 30_000);
+      // A resumed manager's stop has taken over 30 s while another stack suite ran alongside.
+      const exitedLate = pid !== null && await until(() => !alive(pid), 90_000);
       check(`${space}: the resumed manager records its stop completed and exits`, exitedLate && receipt("completed"), { exitedLate, completed: receipt("completed") });
     } else {
       const refused = await until(() => receipt("refused"), 30_000);
