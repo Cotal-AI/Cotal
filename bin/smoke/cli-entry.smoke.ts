@@ -98,11 +98,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
 {
   const fresh = cotal([]);
   local("bare cotal prints the entry screen and writes nothing", fresh);
-  check("a fresh machine is pointed to setup", fresh.stdout.includes("No space is selected. Run cotal setup"), shown(fresh));
-  check("the entry screen names common commands and where the rest are", /Common commands/.test(fresh.stdout) && /\bspawn\b/.test(fresh.stdout) && fresh.stdout.includes("cotal help"), shown(fresh));
+  check("a fresh machine is pointed to setup", /^No space is selected\.$/m.test(fresh.stdout) && /^Start here\n  cotal setup  /m.test(fresh.stdout), shown(fresh));
+  check("the entry screen names common commands and where the rest are", /^Everyday\n  cotal ps  /m.test(fresh.stdout) && /^More\n  cotal help --all  /m.test(fresh.stdout), shown(fresh));
   const ghost = cotal([], (home) => writeFileSync(join(home, "current-mesh"), "ghost\n"));
   local("bare cotal with a selected space writes nothing", ghost);
-  check("the entry screen names the selected space, and says when it is not recorded here", ghost.stdout.includes("Selected space: ghost (not recorded on this machine)"), shown(ghost));
+  check("the entry screen names the selected space, and says when it is not recorded here", ghost.stdout.startsWith("ghost · not recorded · "), shown(ghost));
 }
 
 // ── Help ───────────────────────────────────────────────────────────────────────────────────────────
@@ -118,11 +118,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`help lists alias ${alias} beside ${cmd.name}`, new RegExp(`^\\s+${cmd.name}(, [^ ]+)*, ${alias}(,|\\s)`, "m").test(all.stdout), shown(all));
   const spawnHelp = cotal(["help", "spawn"]);
   local("help spawn writes nothing", spawnHelp);
-  check("command help shows the usage and the aliases", /usage: /.test(spawnHelp.stdout) && /aliases: sp/.test(spawnHelp.stdout), shown(spawnHelp));
+  check("command help shows the usage and the aliases", /^Usage\n  spawn /m.test(spawnHelp.stdout) && /^Shorthands\n  cotal sp$/m.test(spawnHelp.stdout), shown(spawnHelp));
   check("help sp, spawn --help and sp -h print the same help", same(spawnHelp, cotal(["help", "sp"])) && same(spawnHelp, cotal(["spawn", "--help"])) && same(spawnHelp, cotal(["sp", "-h"])));
   const subHelp = cotal(["help", "ext", "remove"]);
   local("help ext remove writes nothing", subHelp);
-  check("subcommand help names its path and alias", /cotal ext remove/.test(subHelp.stdout) && /aliases: rm/.test(subHelp.stdout), shown(subHelp));
+  check("subcommand help names its path and alias", /^cotal ext remove$/m.test(subHelp.stdout) && /^Shorthands\n  cotal ext rm$/m.test(subHelp.stdout), shown(subHelp));
   check(
     "a subcommand resolves by alias and by its command's alias, in help and in --help",
     same(subHelp, cotal(["help", "x", "rm"])) && same(subHelp, cotal(["ext", "rm", "--help"])) && same(subHelp, cotal(["x", "remove", "-h"])),
@@ -192,7 +192,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("an unexpected argument under -j is a USAGE_INVALID envelope", envelopes(extra)[0]?.error?.code === "USAGE_INVALID", shown(extra));
   const human = cotal(["version", "--bogus"]);
   refused("a usage error without --json is refused", human, /Unknown option '--bogus'/);
-  check("a usage error without --json writes no envelope and prints the help on stderr", envelopes(human).length === 0 && human.stdout === "" && /usage: /.test(human.stderr), shown(human));
+  check("a usage error without --json writes no envelope and prints the help on stderr", envelopes(human).length === 0 && human.stdout === "" && /^Usage\n  cotal version /m.test(human.stderr), shown(human));
   const helpJson = cotal(["help", "--json"]);
   refused("a command with no JSON output refuses --json", helpJson, /Unknown option '--json'/);
   check("a command with no JSON output writes no envelope for it", !helpJson.stdout.startsWith("{"), shown(helpJson));
