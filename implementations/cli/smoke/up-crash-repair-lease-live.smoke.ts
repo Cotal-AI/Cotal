@@ -1,6 +1,6 @@
 /**
- * LIVE e2e for #4092: a repair `cotal up` that runs while a crashed control-plane process's lease is
- * still inside its TTL. The manager and the delivery daemon each take their lease by atomic create,
+ * LIVE e2e for #4092 and #4155: repair `cotal up` before and after a crashed control-plane process's
+ * lease expires. The manager and the delivery daemon each take their lease by atomic create,
  * and a holder killed without releasing it leaves the row until the bucket TTL removes it. Before the
  * fix, the repair launched a replacement that lost the create, and `up` exited 1.
  *
@@ -8,8 +8,10 @@
  *   M1  manager SIGKILLed, repair at once: the new manager waits out the dead pid's row, and `up` exits 0.
  *   M2  manager SIGKILLed while something keeps rewriting its row: the new manager refuses at the
  *       first rewrite, and `up` exits 1. A live holder is never waited past.
- *   D1  broker SIGKILLed, so the daemon exits on its own with its row held: the repair waits out the
- *       row, and `up` exits 0 with the daemon up.
+ *   D1  broker SIGKILLed, so the daemon exits on its own: `up` restores the daemon whether its row
+ *       is still held or has expired during shutdown.
+ *   D1-held / D1-expired  daemon SIGKILLed with a fresh lease: repair before and after observed
+ *       expiry. Only the held row requires a wait message; both repairs exit 0 with the daemon up.
  *   D2  daemon SIGKILLed while something keeps rewriting shard 0 under its credential: the repair
  *       refuses at the first rewrite and starts no daemon.
  *
@@ -23,7 +25,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { CotalEndpoint, deliveryBucket, idFromCreds, leaseKey, mintCreds, newIdentity } from "@cotal-ai/core";
+import { CotalEndpoint, deliveryBucket, deliveryLeaseHolderFor, idFromCreds, LEASE_TTL_MS, leaseKey, mintCreds, newIdentity } from "@cotal-ai/core";
 import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_LOGFILE, DELIVERY_PIDFILE, getSpaceAuth, MANAGER_LOGFILE, MANAGER_PIDFILE, parsePid, workspaceSecretStore } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
@@ -81,8 +83,8 @@ const readLog = (file: string) => {
   const p = canonicalLocalProcessPath(file, ctx);
   return existsSync(p) ? readFileSync(p, "utf8") : "";
 };
-const until = async (cond: () => boolean, ms: number) => {
-  for (const end = Date.now() + ms; Date.now() < end; await sleep(200)) if (cond()) return true;
+const until = async (cond: () => boolean | Promise<boolean>, ms: number) => {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(200)) if (await cond()) return true;
   return cond();
 };
 /** SIGKILL the pid this root recorded for `file`, and wait until it is gone. */
@@ -155,13 +157,50 @@ try {
   const restored = up();
   ok("the manager comes back once the rewritten row expires", restored.status === 0 && alive(pidOf(MANAGER_PIDFILE)), restored.out);
 
-  // D1
+  // D1-held / D1-expired. Run these before the broker crash so the wait-bypass mutation always
+  // reaches its named held-lease cell, regardless of how long a broker-loss shutdown takes.
+  {
+    const previous = (await workspaceSecretStore(root).get(deliveryCredsKey(SPACE, { injected: false, root })))!;
+    const nc = await connect({ servers: SERVER, authenticator: credsAuthenticator(new TextEncoder().encode(previous)), inboxPrefix: `_INBOX_${idFromCreds(previous)}` });
+    try {
+      const kv = await new Kvm(nc).open(deliveryBucket(SPACE));
+      for (const state of ["held", "expired"] as const) {
+        const holder = deliveryLeaseHolderFor((await workspaceSecretStore(root).get(deliveryCredsKey(SPACE, { injected: false, root })))!);
+        ok(`D1-${state} the running daemon has a fresh lease`, await until(async () => {
+          const row = await kv.get(leaseKey(0));
+          return row?.operation === "PUT" && row.json<{ holder: string }>().holder === holder
+            && Date.now() - row.created.getTime() < 5_000;
+        }, LEASE_TTL_MS));
+        const crashedDaemon = await crash(DELIVERY_PIDFILE, "delivery daemon");
+        const held = await kv.get(leaseKey(0));
+        ok(`D1-${state} the crashed daemon's lease is still held`, held?.operation === "PUT" && held.json<{ holder: string }>().holder === holder);
+        if (state === "expired") {
+          ok("D1-expired the broker expires the dead daemon's lease", await until(async () =>
+            (await kv.get(leaseKey(0)))?.operation !== "PUT", LEASE_TTL_MS + 5_000));
+        }
+        const repaired = up();
+        ok(`D1-${state} repair up after a daemon SIGKILL exits 0`, repaired.status === 0, repaired.out);
+        const waited = /shard 0 is still leased to this folder's previous delivery daemon.*which is not running; waiting \d+s for the lease to expire/.test(repaired.out);
+        ok(`D1-${state} repair waits only when the lease is still held`, waited === (state === "held"), repaired.out);
+        const replacementPid = pidOf(DELIVERY_PIDFILE);
+        ok(`D1-${state} the delivery daemon is up after that one run`, alive(replacementPid) && replacementPid !== crashedDaemon, { crashedDaemon, replacementPid });
+        const replacement = deliveryLeaseHolderFor((await workspaceSecretStore(root).get(deliveryCredsKey(SPACE, { injected: false, root })))!);
+        const row = await kv.get(leaseKey(0));
+        const ready = row?.operation === "PUT" ? row.json<{ holder: string; ready: boolean }>() : undefined;
+        ok(`D1-${state} the replacement owns a ready lease`, replacement !== holder && ready?.holder === replacement && ready.ready === true);
+      }
+    } finally {
+      await nc.close();
+    }
+  }
+
+  // D1. Broker-loss detection and shutdown can outlast the lease, so this scenario does not
+  // require a wait message. The cases above check waiting against the broker's observed row.
   const daemon = pidOf(DELIVERY_PIDFILE);
   await crash("nats.pid", "broker");
   ok("D1 the daemon exits on its own once its broker is gone", await until(() => !alive(daemon), 60_000), { daemon });
   const d1 = up();
   ok("D1 repair up after a broker SIGKILL exits 0", d1.status === 0, d1.out);
-  ok("D1 the repair waited out the dead daemon's lease", /shard 0 is still leased to this folder's previous delivery daemon.*which is not running; waiting \d+s for the lease to expire/.test(d1.out), d1.out);
   ok("D1 the delivery daemon is up after that one run", /delivery daemon/.test(d1.out) && alive(pidOf(DELIVERY_PIDFILE)), d1.out);
 
   // D2
