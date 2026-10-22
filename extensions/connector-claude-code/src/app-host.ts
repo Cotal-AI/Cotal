@@ -95,7 +95,9 @@ export function createAppHost(o: AppHostOptions): AppHost {
       agent = new MeshAgent(config, env, { withholdProcessCwd: true });
       agent.on("error", () => process.stderr.write("[cotal-connector] personal connection error; inspect cotal_connection_status\n"));
       if (eventPlaneArmed(config, env)) plane = createClaudeEventPlane(agent, config, env, source);
-      const hooks = binding ? createClaudeHandle({ env, events: () => plane?.events }) : undefined;
+      // Native ingress owns messages. Lifecycle forwarding has no command-hook reply consumer,
+      // so it must not acquire a second delivery hold for context that nobody can receive.
+      const hooks = binding ? createClaudeHandle({ env, events: () => plane?.events, delivery: false }) : undefined;
       hooks?.adoptTranscript(binding!.path, "resume");
       void agent.start();
       for (let waited = 0; !agent.connected && waited < JOIN_MS; waited += 100) await new Promise((resolve) => setTimeout(resolve, 100));

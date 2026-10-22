@@ -85,6 +85,9 @@ async function serveLocal(desktop: boolean): Promise<void> {
             signal(c, preview) {
               const session = host.sessionFor(c.id);
               if (session && feed.supportsInline(session)) {
+                // A prior handoff rearms this connection when it settles. Never turn a second
+                // short arrival into a competing inbox notification while that handoff is open.
+                if (feed.inlinePending(session)) return true;
                 const batch = prepareInlineDelivery(c.agent, {
                   connectionId: c.id,
                   fits: (payload) => feed.fitsInline(c.id, session, payload),

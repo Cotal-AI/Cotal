@@ -14,6 +14,7 @@ export async function runPersonalNativeAcceptance(input: {
   evidence?: string;
   transitionRace?: boolean;
   longBoundary?: boolean;
+  traceInline?: boolean;
   onConnected?(principal: string, session: string): Promise<void>;
 }): Promise<{ principal: string; markers: string[]; stdout: string }> {
   const session = randomUUID();
@@ -34,6 +35,21 @@ export async function runPersonalNativeAcceptance(input: {
     writeFileSync(module, text.replace(marker, `  $.ui.log('NATIVE_CLAIM_STARTED');\n${marker}`));
     const helper = join(plugin, "dist/monitor.cjs");
     writeFileSync(helper, `if(process.argv.includes('--native-delivery')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1000);\n${readFileSync(helper, "utf8")}`);
+  }
+  if (input.traceInline) {
+    const module = join(plugin, "hooks/native-wake.js");
+    let text = readFileSync(module, "utf8");
+    const trace = (anchor: string, replacement: string) => {
+      assert.equal(text.split(anchor).length, 2, `trace anchor must be unique: ${anchor}`);
+      text = text.replace(anchor, replacement);
+    };
+    trace("  const result = await $.process.run(\n", "  $.ui.log('INLINE_RECEIPT_START ' + action);\n  const result = await $.process.run(\n");
+    trace("  return JSON.parse(result.stdout);", "  $.ui.log('INLINE_RECEIPT_END ' + action + ' ' + result.exitCode + ' ' + String(JSON.parse(result.stdout).ok));\n  return JSON.parse(result.stdout);");
+    trace("  if (submitting || paused || active !== inTurn) return;", "  $.ui.log('INLINE_SUBMIT ' + JSON.stringify({submitting,paused,active,inTurn,offers:offers.size}));\n  if (submitting || paused || active !== inTurn) return;");
+    trace("    reader = $.process.spawn(", "    $.ui.log('INLINE_READER_START');\n    reader = $.process.spawn(");
+    trace("    active = false;", "    active = false;\n    $.ui.log('INLINE_COMPLETE ' + JSON.stringify({aborted:e.isAborted,paused,submitting,offers:offers.size}));");
+    trace("      if (matches.length === 1) {", "      $.ui.log('INLINE_STORED_MATCHES ' + matches.length);\n      if (matches.length === 1) {");
+    writeFileSync(module, text);
   }
   const name = `native_real_${session.slice(0, 8)}`;
   const env: NodeJS.ProcessEnv = { ...input.env, CLAUDE_CONFIG_DIR: join(fixture, "config") };
@@ -189,7 +205,7 @@ export async function runPersonalNativeAcceptance(input: {
       const files = ["hooks/native-wake.js", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"];
       writeFileSync(join(input.evidence, "receipt.json"), JSON.stringify({ model: "claude-sonnet-5-5", session, principal: nativePrincipal,
         passed, markers, hostedAcceptance: false, loginCacheCopied: false, childExited: child.exitCode !== null || child.signalCode !== null,
-        fixtureInstrumentation: input.transitionRace ? "claim-boundary log and one-second receipt-helper delay; delivery logic unchanged" : null,
+        fixtureInstrumentation: { delayedClaim: input.transitionRace === true, receiptAndBoundaryTrace: input.traceInline === true, deliveryLogicUnchanged: true },
         longBoundary: input.longBoundary === true, productBeforeInstrumentation: productHashes,
         receivedReplyContexts: receivedReplies.map(({ message }) => ({ id: message.id, replyTo: message.replyTo, contextId: message.contextId })),
         source: Object.fromEntries(files.map((file) => [file, createHash("sha256").update(readFileSync(join(plugin, file))).digest("hex")])) }, null, 2) + "\n", { flag: "wx", mode: 0o600 });

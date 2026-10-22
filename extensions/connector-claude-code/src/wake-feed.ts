@@ -69,6 +69,7 @@ export interface WakeFeed {
   /** Write one bounded preview + `id` to every monitor reading the feed. False when none is. */
   send(id: string, preview: RenderedInboxPreview, session?: string): boolean;
   supportsInline(session: string): boolean;
+  inlinePending(session: string): boolean;
   fitsInline(id: string, session: string, payload: InlineDeliveryPayload): boolean;
   sendInline(id: string, session: string, batch: InlineDeliveryBatch, settled: (delivered: boolean) => void, retry: () => void): boolean;
   /** Native lifecycle frames are routed by their explicit session identity, never reader order. */
@@ -149,6 +150,7 @@ export async function openWakeFeed(claudePid: number): Promise<WakeFeed> {
   return {
     onNative: (fn) => { native = fn; },
     supportsInline: (session) => [...readers.values()].some((reader) => reader.session === session && reader.inline),
+    inlinePending: (session) => deliveries.pending(session),
     fitsInline: (id, session, payload) => deliveries.fits(id, session, payload),
     sendInline(id, session, batch, settled, retry) {
       const reader = [...readers].find(([, owner]) => owner.session === session && owner.inline)?.[0];

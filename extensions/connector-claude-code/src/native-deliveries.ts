@@ -40,6 +40,8 @@ export class NativeDeliveries {
 
   constructor(private readonly route: string, private readonly timeoutMs = 30_000) {}
 
+  pending(session: string): boolean { return this.sessions.has(session); }
+
   fits(id: string, session: string, payload: InlineDeliveryPayload): boolean {
     return isNativeInlineFrame({ id, inline: { ...payload, v: 1, receipt: "0".repeat(36), session }, route: this.route });
   }

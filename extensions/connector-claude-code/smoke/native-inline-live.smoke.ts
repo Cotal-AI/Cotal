@@ -6,6 +6,7 @@ import type { CotalMessage } from "@cotal-ai/core";
 import { NativeDeliveries, isNativeInlineFrame } from "../src/native-deliveries.js";
 import type { NativeInlineFrame } from "../src/native-deliveries.js";
 import { openWakeFeed, wakeSocketPath } from "../src/wake-feed.js";
+import { createClaudeHandle } from "../src/hooks.js";
 
 const agent = new MeshAgent({ space: "inline", name: "inline", id: "inline_self", kind: "agent",
   servers: "nats://127.0.0.1:1", subscribe: [], allowSubscribe: [], allowPublish: [], tls: false });
@@ -56,10 +57,20 @@ const send = () => {
 try {
   await until(() => feed.supportsInline(session));
   incoming("first", "Complete short text");
+  const event = { hook_event_name: "UserPromptSubmit" };
+  const observed = await createClaudeHandle({ delivery: false }).handle(agent, event);
+  assert.deepEqual(observed, {});
+  assert(!agent.isInFlight("first"), "native lifecycle observation must not create an ignored command-hook delivery hold");
+  const managed = createClaudeHandle();
+  await managed.handle(agent, event);
+  assert(agent.isInFlight("first"), "managed hooks retain their existing delivery owner");
+  managed.onReply(event, false);
+  assert(!agent.isInFlight("first"));
   const batch = send();
   const frame = await nextFrame();
   assert.equal(acked.length, 0, "socket/monitor parsing cannot acknowledge anything");
   assert(agent.isInFlight("first"));
+  assert(feed.inlinePending(session), "new arrivals coalesce behind the open handoff rather than falling back to inbox cues");
   assert.equal((await helper(frame, "commit", { uuid: "native-row" })).ok, false, "commit without claim is refused");
   assert.equal((await helper(frame, "claim", { id: "foreign" })).ok, false);
   assert.equal((await helper(frame, "claim")).ok, true);
@@ -69,6 +80,7 @@ try {
   assert(!agent.isInFlight("first") && !batch.current());
   assert.equal((await helper(frame, "commit", { uuid: "native-row" })).ok, true, "same receipt is idempotent");
   assert.equal(settled, 1);
+  assert(!feed.inlinePending(session));
   assert.equal(agent.peekInbox().length, 1);
   console.log("  ✓ real monitor/helper sockets enforce claim, native receipt, exact ACK and idempotence");
 
