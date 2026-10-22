@@ -1,0 +1,3 @@
+# Dormant service host operations: register admission, approve, refuse, revoke and the reads over
+# the shared custody writer, with partial-approval, expiry and debt cells, on an owned loopback broker.
+smoke:service-host-ops:auth

@@ -1276,7 +1276,8 @@ sufficient *authority* identity on this surface. Two further identity components
   authorize through this active-only reader. It confers no writer, bootstrap, abort, rotation
   or terminal authority and makes no atomic multi-key snapshot claim. Ordinary readers stay
   closed to every marked service row.
-  A package-internal dormant custody writer, with no product caller, may advance one sealed
+  A package-internal custody writer, reached in the product only through the service endpoint
+  host's decide and revoke (whose proposals nothing in the product creates), may advance one sealed
   reservation. Bootstrap order is reservation, pending-root endpoint gate, `service-creating`
   head, native gate created frozen at generation0 under the creation operation and opened at
   generation1, RootPlan `{credentialId,expMs}` fixed once by head CAS at
@@ -1570,6 +1571,293 @@ policies: their bytes and grant history remain unchanged, append refuses insuffi
 and revocation can still fail the byte bound. Such residue blocks service writer/admission
 enablement pending a separately authorized compatibility protocol. No cap raise, pruning,
 reactivation or terminal absence claim follows from the headroom check.
+
+Native service host operations keep five closed record families in the primary auth store:
+`svcop.<operationId>` (one request's binding), `svcprop.<proposalId>` (a proposal),
+`svccap.space` (the space's pending-proposal capacity), `svcasg.<endpointToken>.<instanceId>`
+(one selector's assignment) and `svchost.admission`. The operationId is the first 32 lowercase hex
+characters of SHA-256 over `cotal-service-host-op`, NUL, space, NUL and requestId, so one id
+namespace covers every host request in a space. A binding stores the canonical request digest; a
+reused requestId with any other body is a conflict and is never rebound. Every create requires zero
+retained key history, and a deletion or purge marker at any of these keys refuses and is never
+recreated. No record carries a TTL, and none is deleted or purged. A live operation or proposal
+becomes terminal only by a CAS on the same key, after every write it depends on is durable.
+
+Each write is one create or one exact-revision CAS on one key; there are no multi-key batches.
+An invocation writes only its scope: the exact keys its discovery read located before the
+invocation's effect connection opened, which are its own records and, for a located reservation, the
+native custody keys of that one reservation. Only an approval's scope holds the reservation's UID
+key; a revoke's never does. A step that needs a key outside the scope holds as `scope-mismatch`
+before anything is issued, including before native custody of a reservation the scope does not name.
+A replay of the same request discovers the stored binding and assignment and scopes them.
+Each invocation's effect connection is a fresh self-minted data-account identity named
+`cotal:service-host-effect:<space>`. Its credential publishes exactly the scope's keys as `$KV`
+subjects, and one more token under each auth family, beside the leader reads both stores need;
+discovery's credential publishes no `$KV` subject at all. That grant confines publish subjects only;
+it does not restrict what a publish on a granted subject does, and the engine's own writes are only
+creates and exact-revision CASes on those keys. Reads are not confined: the leader reads
+are stream-wide on both stores. The effect credential never renews or reconnects. Its one expiry is
+the invocation's original deadline, at most 60 s ahead, rounded up to the whole second. The broker
+checks expiry in whole seconds against its own clock: it admits no connect once its current second
+is past that expiry, and it closes a live connection with one whole-second timer armed at connect.
+With a broker clock that agrees with the host's and timely broker and client scheduling, that close
+comes within the second after the expiry, up to about 1999 ms after the deadline. This is timer
+granularity, not a guaranteed close time: a skewed clock or a paused or late broker or client moves
+the close either way. Neither the expiry nor the close is proof that an earlier write cannot still
+settle. Losing the effect connection fences the invocation: a later write holds, and a write
+in flight across the loss reports held. An effect connection that does not open holds as
+`unavailable` at `effect-open` with nothing written.
+Register reads admission, capacity, the selector's assignment and the name binding first. An initial
+refusal writes nothing and binds nothing. Otherwise the binding is created before the capacity CAS
+and the zero-history proposal create, whose times are fixed once in the binding. A refusal found
+after the binding exists is recorded on it. Capacity counts entries whose `expiresAtMs` is still in
+the future: at most 256 per space, 32 per owner and one per selector. Clock skew between writers
+can under-count that bound; it never extends authority. Past a register's own bound an absent
+proposal key is fenced with a terminal `expired` tombstone, so a delayed create loses. Every close
+writes the proposal's terminal record before it releases capacity. An unobserved release stays as
+recorded debt until a later read observes it.
+
+An approval binds before its first effect, then moves the proposal to `approving` at the admitted
+revision, creates the assignment, runs native custody bootstrap and writes the endpoint-gate approval
+CAS. No authority-increasing step starts at or after the operation's original deadline, which is at
+most ten minutes after admission and never past the proposal's expiry. An endpoint gate carrying
+the approval's digest, approved or later revoked, proves that approval landed; a landing observed
+after the deadline is recorded as a historical result, not current readiness. An expired approval
+that holds an assignment binds its own cancel identity in that assignment, or adopts the one
+already bound, and cancels natively.
+The assignment record carries the complete native cancel identity `{operationId, requestDigest,
+cause}`. Any authorized revoker can cancel from that record alone, and the first binding wins.
+Deny-new has landed exactly when the endpoint gate reads `revoked` for this assignment. After that, an
+`approving` proposal of the assignment closes as `approved` when the gate carries an approval digest
+and as refused otherwise. A gate row at the key that belongs to another assignment is no evidence
+either way: every revoke path that reads the gate reports deny-new `unknown` for it, as for a failed
+read; an already fenced assignment is its own evidence and reports `landed`. Revocation stays
+nonterminal. Owner-scoped reads authorize against the subject owner fixed at binding, and terminal views carry no commands or cluster digests. None of these
+records proves a human decision, broker writer exclusion, restore readiness or terminal retirement.
+
+An authority plane opened with `serviceEndpoints` hosts these operations; without it, the default,
+the plane opens no service host, no discovery connection and no `svchost.admission` write. The host
+uses the plane's own claim hold, data account and actor ledger directory. Its startup MUST be named
+`normal`: a restore or a missing startup refuses the whole plane open, which unwinds what it opened
+and releases the claim. If that unwind cannot close an effect connection, for instance the startup
+admission write's, it stops there. The open still refuses, but with the close failure; the claim stays
+held; the cleanup timer, discovery, both scanners and every client opened so far stay live; and no
+handle exists to retry. Until the process exits, a successor cannot reclaim the claim while those
+scanners live; after exit, the existing crash reclaim applies. Discovery is one standing connection named
+`cotal:service-host-discovery:<space>` on the ordinary renewing profile with the read-only grant. A
+broker loss makes its reads fail until the stock client reconnects; a read that fails answers as
+`unavailable` within its invocation's own limit, with nothing written. A renewal failure closes it
+for good, and every later read through it fails until the plane is opened again; nothing reopens it.
+Both plane fatal paths, a scanner death and a failed native-issuance cleanup, trip the host's fatal
+latch, and a fence that lands while the host is opening latches it once it exists. A scanner death
+or a failed cleanup while the plane closes still trips the host, so a call close is draining stops at its next step, but
+it does not make the plane fatal. From the moment
+plane close is called it refuses every host call, before it waits for anything. It then waits until
+every call that entered before it has returned, including one still reading discovery or opening its
+effect connection. An effect connection whose close failed stays owned by the plane after its call
+has settled, and that call rejects with the failure. Close closes every such connection again and,
+while one remains open, rejects with the claim still held, so a later close retries it; a request
+that was only rejected does not hold close. A close rejected that way has already stopped the
+cleanup and sweep timers, but discovery, the administrative rail, both scanners and the remaining
+clients stay live, so no successor can reclaim the claim until a later close succeeds or the process
+exits. Only then does close close discovery, and only after that does it release the claim. Close
+itself trips no call it waits for: each ends under its own discovery-read bound and invocation
+deadline, each at most 60 s. Its own scanner teardown, after that wait, does trip the host, which by
+then has no call in flight, and does not make the plane fatal.
+
+The plane and a hosted context expose `decide`, `revoke`, `name-bind`, `operation-read` and
+`proposal-read` as one in-process function; a hosted context refuses it as `unavailable` while it is
+not ready. That function has no route, capability, CLI flag or caller policy. The host checks an
+owner granter's current interactive row but authenticates no caller: the embedder MUST authenticate
+the granter it passes, operator or owner.
+
+`name-bind` is create-only and needs an operator granter. Its `expectedRevision` MUST be 0; any other
+value answers `unsupported`, and a native control endpoint name is refused. It issues one
+zero-history create of `servicename.<endpointToken>` through its invocation's custody host, whose
+scope and effect credential hold only that key. The row binds account, space, endpoint, owner, the
+operator's `claimReference`, requestId and the canonical request digest. Only the identical request
+recovers an existing row; the same requestId with another body is a `conflict`, and any other request
+for a bound name is `name-bound`. Nothing updates, transfers or releases a binding. The host verifies
+no domain control: the claim reference is the operator's assertion, and an unused name is no proof.
+A `held` name binding names its requestId's deterministic operation coordinate, which no operation
+record carries; it recovers only by replaying the same request.
+
+The public route `/service-endpoint-authority` exists only with `serviceEndpoints`, on both faces;
+without it the route answers 404. `GET` returns `{v:1, kind:"service-endpoint-authority-info", space,
+accountPublicKey}` for the receiver's own account with `cache-control: no-store`. `POST` takes one
+envelope of at most 2 MiB. The proof is the credential on either face; the loopback capability is
+never read. A request naming another account or space is refused before its proof is used. The proof
+kinds each operation admits are fixed: register needs IdP; activate needs IdP or a renewal proof;
+renew needs a renewal proof; ready needs an access proof; status admits all three. Any other pairing
+is bad shape (400). An IdP proof verifies under the pinned issuer and exact audience, and its subject
+derives the owner, who also needs a current interactive cli or web row. A renewal or access proof
+verifies against this context's own issuer keys and yields its signed witness, never an owner's
+authority: its owner is the witness's, and a request that carries a witness must carry the proof's.
+Status carries none, so a renewal proof's own witness is the expected one. A refused proof counts
+against the face's refusal budget and answers 401, or 429 once that budget is spent; a valid proof
+never consumes it. Protocol answers are 200 for `registered`, `credential`, `ready` and `status`, 202
+for `approval-required` and `pending`, and for `denied` 409 on a conflict, a closed proposal or a
+moved registration, 422 on refused input, 429 on a bound and 403 otherwise. An answer that cannot be
+completed after the proof, an unread, unknown or inconsistent record, or a `held` engine answer is a
+503 with no protocol echo, because the request may already be bound.
+
+Register compiles the submitted closures in memory. Each cluster digest names a submitted manifest
+whose root names a submitted cluster document, each verified against its content digest, and every
+artifact must belong to a declared closure. The proposal's commands are exactly those documents'
+declarations; a journal-class command, or one declaring a governed trait (`ai.cotal.guarded`,
+`ai.cotal.priced`), is refused as `unsupported-runtime`, in the proposal phase and the registration
+phase alike. A native control endpoint name (`auth`, `delivery`, `manager`) is refused as
+`permission-denied` before any effect and binds nothing. The engine requestId is the first 32 lowercase hex
+characters of SHA-256 over the canonical JSON `["cotal-service-endpoint-authority", 1, account,
+space, owner, endpoint, instanceId, operation, requestId]`, with the derived owner, so the full public
+idempotency key selects the binding. That binding's request digest covers the public request's
+canonical digest, which excludes the proof: a changed public body under the same key is a
+`conflict`.
+
+Register has two phases, chosen by the derived owner's assignment at the selector. Until that
+assignment's endpoint gate carries an approval (no assignment, or one whose approval is still
+settling), register is in its proposal phase, which takes only `expected:{state:"unregistered"}` and
+answers `conflict` for any other. A first admission answers `approval-required` with the proposal id
+and digest. A replay answers from the proposal as it is now: `approval-required` while it is live and
+unexpired, also while its approval is in progress; `pending` at phase `approved-unregistered` if its
+approval landed after the phase was read; and `denied` once the proposal is refused or expired or its
+approval revoked. An undecided proposal reads as expired once the whole second of its expiry has
+passed, before any tombstone closes it. The door never answers expired before the host would refuse
+its approval, but its other answers can trail the expiry: an undecided proposal can still read
+`approval-required` or `proposed` for up to one second after it; a proposal whose approval is in
+progress answers `approval-required` to a replay and `proposed` to status, with no expiry mapping on
+either, until that decision settles; and a first admission's `approval-required` is computed when the
+proposal is created, so an admission that was held and settles on a later replay can produce it after
+the expiry, not only deliver it late.
+
+Once the gate carries an approval, register is in its registration phase, and so are activate, renew
+and ready. Each of these requests, in order: proves its caller as above; resolves the caller's own
+assignment at the selector before any read by request key, so another owner or a selector with no
+assignment answers `permission-denied` (a revoked one `approval-revoked`) and any witness the request
+carries must name that assignment's selector, owner, serving actor and lifecycle UID; reads its
+intent `svcint.<id>`, where `id` is the engine's operation id of the request's engine requestId; and,
+only when no intent exists, checks the state the request needs. A register key keeps the binding its
+proposal phase gave it: the operation record of the same id, when one exists, must be a register
+admitted with this body, else `conflict`, and must name the approved proposal; a key whose proposal
+was refused or has expired answers `proposal-refused` or `proposal-expired`, as its proposal-phase
+replay does, and any other proposal is `conflict`. Both are decided before the state check and before
+anything is written. A registration needs a bound
+assignment with no cancel identity, an approved gate without `activationIssued`, a recompiled surface
+whose proposal digest equals the approved proposal's, and an `expected` that matches the current
+registration stamp exactly (no stamp for `unregistered`); refusals are `approval-revoked`,
+`registration-active`, `approval-mismatch` and `conflict`. Activate, renew and ready need their
+witness to be the current stamp's, else `stale-witness`. A new admission then lists its id in the
+instance's index `svcintx.<endpointToken>.<instanceId>`, which is created with the assignment's owner
+and checked against it on every read; an id already listed takes no slot, and a 65th id is
+`resource-exhausted` (429) before any effect. It then creates its intent with zero history. The
+intent records the operation, account, owner, selector, the public requestId and digest, the
+registration the request names (register's expected one, or the request witness's) with that
+witness's digest, and its admission time. No proof, token or reply is ever stored. An existing intent
+with another digest is a `conflict` before any state check, and a create that loses to an equal
+intent is a replay. Intents and the index are never updated, pruned or deleted in this cut: they
+stay for the assignment's lifetime, and an id listed without an intent (a stop between the two
+writes) stays listed.
+
+Every effect is then evaluated against current native state. A registration answers
+`approval-revoked` first if the assignment is revoked. Otherwise, when the current stamp names this
+request (requestId and digest), it answers the top-level `registered` with that witness and snapshot,
+before or after activation and readiness: no barrier, no epoch advance and no artifact publish.
+Otherwise it requires the gate open, or frozen by this same request's operation, which resumes;
+`expected` to match the stamp; and a live approval. It then publishes each submitted artifact
+create-only to the contract store and runs the native registration barrier and spec registration
+under the request's operation id, with no repair cursor (a service's credential family is empty
+before activation). The barrier freezes the gate revision it observes after those publishes
+whenever the gate is not frozen by this request's operation, which includes a request that read it
+frozen and finds it reopened, and the request checks again on exactly that revision before anything
+is frozen or written: a stamp that already names this request answers as a replay does, and a gate
+that moved answers `conflict`, or `approval-revoked` once revoked; those answers are definite. A
+gate the recheck finds frozen by this request's own operation with no stamp yet is another
+invocation of the request still running, so this one is held and answers 503, and its replay resumes
+or recovers it. A request whose barrier observes the gate already frozen by its own operation
+resumes with no recheck. A refusal the native barrier makes itself, such as a gate it observes
+frozen by another operation or a freeze it loses after the recheck held, is a held step that answers
+503. It answers `registered` only once the stamp names this request. A first
+registration keeps process epoch 0; a pre-activation re-registration advances it. Activate requires
+the gate open with a live approval and native root, the request witness to be the current stamp's,
+and then lands the monotonic `activationIssued` CAS unless it already holds. Renew requires the same
+and an activated gate, and writes nothing. Both answer `credential` with a fresh access bearer and
+renewal proof whose expiries are fixed when the door admits the request: at most 60 s and 24 h, and
+never past the native root's or the approval's expiry. Material that cannot be minted is `expired`
+only once its fixed access expiry has passed; any other failure answers 503, and the replay mints.
+A replay of either mints replacement material for the same current registration; earlier material
+keeps its own expiry. Ready requires the same as
+renew, plus the native name binding at the witness's revision, and writes the service-reported status
+`ready` at the witness's process epoch and spec revision, with `reportedAt` in Unix seconds, fenced on
+the gate's epoch. It answers `ready`. Every write of a serving request goes through its own
+invocation, whose effect credential publishes exactly its intent and index keys and that operation's
+effect keys (the endpoint gate for register and activate, the spec and governance head for register,
+the status for ready), and publishes and reads back exactly the submitted artifacts. The
+credential also grants an exact Direct Get on each records key the operation reads, but the
+registry's KV handles are bound without Direct Get: every auth and records read of a serving
+effect is a leader message get (`STREAM.MSG.GET` last by subject) under the base read grant. The
+native registration and the ready status write through their own
+client on that connection, and a fatal latch closes the connection, so none of their requests is
+issued after the fence; a request already issued stays unknown.
+
+A serving client keeps one requestId per (operation, witness), persisted with the witness and its
+renewal material in its single-owner store before dispatch, and reuses it, with an unchanged body,
+after a restart. Only a pre-activation re-registration produces a new witness and so new keys. An
+activated instance therefore needs a handful of keys for its life, and the 64-intent bound is
+reached only by a client that draws fresh keys.
+
+Status takes `target:{kind:"instance"}` or `target:{kind:"operation", operation, requestId}`, where
+`operation` is one of `register`, `activate`, `renew`, `ready` and `revoke`; this selector replaced
+`{kind:"operation", requestId}`, which no longer parses. An owner's IdP proof reads that owner's own
+requests and assignment, and only while the owner holds an interactive row, as for every owner
+request: without one it is `denied` `permission-denied` (403) before any read. A renewal or access
+proof reads only intents whose witness digest is its own, and the instance only as its own
+incarnation; a register with no intent is not readable by it. A witness naming another selector
+reads `not-found` before any read, and on a bound assignment a witness that does not name the
+binding reads `not-found` before the precedence below, so another instance's revocation is never
+visible to it.
+Another owner's request reads `not-found`. `revoke` answers `denied` `unsupported`. Every required
+record that is unreadable, missing where it must exist, or inconsistent with another answers 503,
+never `not-found` and never a `superseded` whose ids were not read from records. An operation status
+follows this precedence:
+- an id listed in the index without its intent answers 503; it stays 503 if a later replay is
+  refused, because no effect ran or can run and status never guesses absence;
+- with neither record, a register is in its proposal phase (below) and anything else is `not-found`;
+- a bound cancel identity or a fenced assignment answers `revoking` first, with phase
+  `deny-new-landed` once the gate reads revoked and `deny-new-pending` before;
+- a register intent answers, first match wins: `registered` or `ready` when the stamp is this
+  request; `superseded` with this request's id and the stamp's when the stamp names neither this
+  request nor its expected registration, or names the expected one after activation; `registering`
+  at phase `barrier` when the gate's pending registration is this request; `registering` at phase
+  `admitted` when there is no stamp and nothing was expected, or the stamp is the expected one before
+  activation, with the gate open or frozen by another request; otherwise 503;
+- an activate, renew or ready intent answers `superseded` with its registration's id and the stamp's
+  when the stamp moved on, `registering` at phase `barrier` with the other operation's id while the
+  gate is frozen, and `registered` or `ready` when the current witness is the intent's; otherwise 503.
+
+A register with no intent answers from its proposal-phase operation record: `registering` while that
+register is in flight, `refused` for a refused register or a closed proposal, which stays refused and
+never reads another proposal's assignment, `proposed` while its proposal is live and unexpired or its
+approval is in progress, `revoking` once the assignment it approved has a cancel identity, and, once
+approved, `approved-unregistered` with the gate's approval digest while no registration exists, or
+`superseded` with the current stamp's request id once another request registered: this request can
+never register, because its replay would expect no registration. Instance status answers the
+caller's assignment as it is: `revoking`, `registering` at phase `approving` while its approval
+settles, `approved-unregistered`, `registering` at phase `barrier` while the gate is frozen,
+`registered` or `ready`, and for a service proof whose registration was replaced, `superseded`.
+`registered` and `ready` say only that the request's registration is current; neither says whether a
+reply was delivered or whether an activation landed, and the recovery is always to replay the same
+request.
+
+An authority plane opened with `serviceEndpoints` also composes the native service callout. A
+connection presenting a service access bearer is minted only for the current bound assignment its
+witness names, which the service host reads, on its own writer connection
+`cotal:service-callout:<space>`. That writer adds the endpoint gate and endpoint credential families
+to the base writer grant; a broker grant cannot confine those families to service assignments, and
+the native mint writes only the bearer's own rows. A fenced plane or a latched host refuses the
+mint. Registered closures are read back from the contract store on the issuer connection's
+exact-subject Direct Get. Revocation, the Describe view, caller policy, terminal retirement and
+restore remain unsupported: a revoked assignment's bearer is refused at its next connect, but a
+connection already open keeps its original expiry of at most 60 s.
 
 A local scoped Describe callback may receive immutable request context alongside the caller.
 Its subject comes from actual dispatch, and its fingerprint is the canonical digest of

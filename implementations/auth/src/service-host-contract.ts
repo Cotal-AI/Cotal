@@ -1,6 +1,6 @@
 import {
-  EpEnvelopeError, assertDerivedOwnerToken, assertLifecycleToken, assertBoundedOwner,
-  endpointToken, isContractDigest, parseEndpointCapabilities,
+  EpEnvelopeError, assertCommandToken, assertDerivedOwnerToken, assertLifecycleToken, assertBoundedOwner,
+  endpointToken, isAccountNkey, isContractDigest, isEpAuthzMode, parseEndpointCapabilities,
   type EpCapability, type EpCommandAuthority, type ServicePrincipal, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 
@@ -58,7 +58,25 @@ export interface ServiceProposalView {
   clusterDigests: string[];
   commands: Array<EpCommandAuthority & { name: string }>;
   nameBinding: ServiceNameView | null;
+  /** The approving operation and its immutable assignment coordinate, or null while proposed. */
+  decision: { operationId: string; assignmentDigest: string } | null;
 }
+
+/** A terminal proposal: the compact retained tombstone. It carries no commands or cluster digests. */
+export interface ServiceProposalTombstoneView {
+  proposalId: string;
+  proposalDigest: string;
+  owner: string;
+  endpoint: string;
+  instanceId: string;
+  register: { requestId: string; requestDigest: string; operationId: string };
+  state: "approved" | "refused" | "expired";
+  operationId: string | null;
+  approvalDigest: string | null;
+  reason: ServiceProposalCloseReason | null;
+  at: number;
+}
+export type ServiceProposalCloseReason = "owner" | "operator" | "revoked" | "expired" | "selector-bound" | "restore" | "custody-refused";
 
 export interface ServiceInstanceView {
   assignmentDigest: string;
@@ -79,18 +97,54 @@ export const SERVICE_HOST_REASONS = Object.freeze([
   "bad-request", "unauthenticated", "permission-denied", "conflict", "not-found", "expired",
   "resource-exhausted", "unsupported", "unavailable", "admission-held", "name-bound",
   "name-claim-required", "registration-active", "stale-witness",
+  "admission-closed", "selector-pending", "selector-bound", "name-owned", "approval-in-progress",
 ] as const);
 export type ServiceHostReason = (typeof SERVICE_HOST_REASONS)[number];
+
+/** Why a bound operation ended without its effect. A closed proposal's reason is carried through. */
+export const SERVICE_OPERATION_REFUSALS = Object.freeze([
+  "conflict", "expired", "revoked", "superseded", "custody-refused", "admission-closed",
+  "resource-exhausted", "selector-pending", "selector-bound", "name-owned", "restore", "owner", "operator",
+] as const);
+export type ServiceOperationRefusal = (typeof SERVICE_OPERATION_REFUSALS)[number];
+/** Whether this assignment's endpoint gate shows committed deny-new, from a leader read; unknown when that read
+ *  failed or found another assignment's gate row at the key. An already fenced assignment reports landed. */
+export type ServiceDenyNew = "landed" | "not-landed" | "unknown";
+/** A bookkeeping write whose outcome was not observed. Replays retry it; only a read clears it. */
+export type ServiceHostDebt = { kind: "capacity-release" | "proposal-close"; proposalId: string };
+/** `applied` when this invocation observed the effect land; `recorded` when it returns a stored result. */
+export type ServiceHostOutcome = "applied" | "recorded";
+
+/** The immutable subject an operation was admitted for; owner-scoped reads authorize against it. */
+export interface ServiceOperationProjection { subjectOwner: string; endpoint: string; instanceId: string; proposalId: string | null }
+export type ServiceOperationKind = "register" | "decide" | "revoke";
 
 export interface ServiceOperationView {
   operationId: string;
   requestDigest: string;
-  target: ({ kind: "service" } & ServiceSelector) | { kind: "caller"; grantee: ServicePrincipal } |
+  operation: ServiceOperationKind;
+  target: ({ kind: "service"; assignmentDigest: string | null } & ServiceSelector) | { kind: "caller"; grantee: ServicePrincipal } |
     { kind: "restore"; restoreId: string } | { kind: "name"; endpoint: string };
+  projection: ServiceOperationProjection;
   progress:
     | { state: "pending"; phase: string; notBefore?: number }
+    | { state: "held"; reason: string; phase: string }
     | { state: "complete"; resultDigest: string }
-    | { state: "refused"; reason: ServiceHostReason };
+    | { state: "refused"; reason: ServiceOperationRefusal }
+    | { state: "superseded"; boundOperationId: string };
+  debt: ServiceHostDebt[];
+}
+
+/** A compacted operation: its binding, subject and outcome. The plan is gone and nothing revives it. */
+export interface ServiceOperationTerminalView {
+  operationId: string;
+  requestDigest: string;
+  operation: ServiceOperationKind;
+  projection: ServiceOperationProjection;
+  outcome:
+    | { state: "complete"; resultDigest: string }
+    | { state: "refused"; reason: ServiceOperationRefusal }
+    | { state: "superseded"; boundOperationId: string };
 }
 
 export interface ServiceCallerPolicyView {
@@ -131,18 +185,36 @@ export type ServiceHostRequest = { [K in ServiceHostOperation]: {
 type Versioned<T> = { value: T; revision: number };
 type ReadResult<T> = { state: "present"; record: Versioned<T> } | { state: "absent" };
 type PageResult<T> = { state: "page"; records: Versioned<T>[]; nextCursor: string | null };
-export type DecideResult = { state: "approved"; instance: ServiceInstanceView; revision: number } |
-  { state: "refused"; proposal: ServiceProposalView; revision: number };
+/** The immutable facts an approval fixed. `approvedGateRevision` is the endpoint-gate revision
+ *  this approval's own CAS wrote, or null when that write was not observed; a later revision
+ *  never stands in for it. Current instance state is a separate read. */
+export interface ServiceApprovalResult {
+  proposalId: string;
+  proposalDigest: string;
+  operationId: string;
+  assignment: { endpoint: string; instanceId: string; assignmentDigest: string; lifecycleUid: string };
+  approvalDigest: string;
+  approvalExpiresAt: number | null;
+  callerCeiling: EpCapability[];
+  nameAuthorityRevision: number;
+  rootCredentialId: string;
+  rootExpiresAt: number;
+  approvedGateRevision: number | null;
+}
+/** The decision's own completion. A bound decide that ended without its effect is the separate
+ *  `refused` arm, which always carries `operationId` and `reason`. */
+export type DecideResult = { state: "approved"; outcome: ServiceHostOutcome; approval: ServiceApprovalResult; debt?: ServiceHostDebt[] } |
+  { state: "refused"; outcome: ServiceHostOutcome; proposal: ServiceProposalTombstoneView; revision: number; debt?: ServiceHostDebt[] };
 export type NameBindResult = { state: "bound"; binding: ServiceNameView };
 export type RevokeResult = { state: "retired"; assignmentDigest: string; operationId: string };
 export type QuarantineRestoredResult = { state: "quarantined"; restoreId: string; revision: number;
   proposals: number; instances: number; callerGrants: number; inventoryDigest: string };
 interface ServiceHostOutputs {
-  "proposal-read": ReadResult<ServiceProposalView>;
+  "proposal-read": ReadResult<ServiceProposalView | ServiceProposalTombstoneView>;
   "proposal-list": PageResult<ServiceProposalView>;
   "instance-read": ReadResult<ServiceInstanceView>;
   "instance-list": PageResult<ServiceInstanceView>;
-  "operation-read": ReadResult<ServiceOperationView>;
+  "operation-read": ReadResult<ServiceOperationView | ServiceOperationTerminalView>;
   "name-read": ReadResult<ServiceNameView>;
   "decide": DecideResult;
   "name-bind": NameBindResult;
@@ -154,10 +226,22 @@ interface ServiceHostOutputs {
   "quarantine-restored": QuarantineRestoredResult;
   "admission-open": { state: "open"; restoreId: string; revision: number };
 }
+/** Non-completion arms. `denied` means this invocation wrote nothing and no operation is bound to
+ *  the request (or the request conflicts with one): either the request can never bind, or this
+ *  invocation's own read found no binding. That read is point-in-time; another invocation of the
+ *  same request already in flight can still bind it later. Every other arm names the operation the
+ *  request is or may be bound to; `held` by itself implies neither a binding nor an authorized
+ *  granter, and none of them means the request was not executed. */
+export type ServiceHostPending = { state: "pending"; operationId: string; phase: string; notBefore?: number;
+  assignmentDigest?: string; denyNew?: ServiceDenyNew; root?: "none" | "revoked" | "retained-stamped"; debt?: ServiceHostDebt[] };
+export type ServiceHostHeld = { state: "held"; operationId: string; reason: string; phase: string;
+  assignmentDigest?: string; denyNew?: ServiceDenyNew; debt?: ServiceHostDebt[] };
+export type ServiceHostRefused = { state: "refused"; operationId: string; reason: ServiceOperationRefusal;
+  boundOperationId?: string; debt?: ServiceHostDebt[] };
+export type ServiceHostDenied = { state: "denied"; reason: ServiceHostReason; boundOperationId?: string };
 export type ServiceHostResult = { [K in ServiceHostOperation]: {
   v: 1; kind: "service-endpoint-host"; operation: K; requestId: string; space: string; accountPublicKey: string;
-} & (ServiceHostOutputs[K] | { state: "pending"; operationId: string; phase: string; notBefore?: number } |
-  { state: "denied"; reason: ServiceHostReason }) }[ServiceHostOperation];
+} & (ServiceHostOutputs[K] | ServiceHostPending | ServiceHostHeld | ServiceHostRefused | ServiceHostDenied) }[ServiceHostOperation];
 
 export type ServiceEndpointHost = (request: ServiceHostRequest) => Promise<ServiceHostResult>;
 
@@ -237,4 +321,177 @@ export function parseServiceHostRequest(raw: unknown): ServiceHostRequest {
     default: bad("unsupported operation");
   }
   return structuredClone(o) as unknown as ServiceHostRequest;
+}
+
+// ---- closed result and view parsers ---------------------------------------------------------------
+// Each returns a structured copy only when every field is known and well formed; an encoder's
+// output round-trips through the matching parser.
+
+type Rec = Record<string, unknown>;
+function badResult(detail: string): never { throw new EpEnvelopeError("bad-request", `service host result: ${detail}`); }
+/** A plain object with exactly `required` plus any of `optional`. */
+function closed(raw: unknown, required: readonly string[], optional: readonly string[] = []): Rec {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) badResult("expected an object");
+  const proto = Object.getPrototypeOf(raw);
+  if (proto !== Object.prototype && proto !== null) badResult("expected a plain object");
+  const o = raw as Rec;
+  if (required.some((k) => !Object.hasOwn(o, k)) || Reflect.ownKeys(o).some((k) => typeof k !== "string" || (!required.includes(k) && !optional.includes(k))))
+    badResult("missing or unsupported fields");
+  return o;
+}
+const hex = (raw: unknown, n: number, what: string) => { if (typeof raw !== "string" || !new RegExp(`^[0-9a-f]{${n}}$`).test(raw)) badResult(`${what} must be ${n} lowercase hex characters`); };
+const dig = (raw: unknown, what: string) => { if (typeof raw !== "string" || !isContractDigest(raw)) badResult(`${what} must be a canonical digest`); };
+const nat = (raw: unknown, what: string) => { if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 0) badResult(`${what} must be an unsigned safe integer`); };
+const text = (raw: unknown, what: string, max = 256) => { if (typeof raw !== "string" || !raw || raw.length > max || /[\u0000-\u001f]/.test(raw)) badResult(`${what} must be bounded text`); };
+const oneOf = (raw: unknown, values: readonly string[], what: string) => { if (typeof raw !== "string" || !values.includes(raw)) badResult(`unknown ${what}`); };
+const nullable = (raw: unknown, check: (v: unknown) => void) => { if (raw !== null) check(raw); };
+function grammar(check: () => void, what: string): void { try { check(); } catch { badResult(`invalid ${what}`); } }
+const ownerTok = (raw: unknown) => { if (typeof raw !== "string") badResult("invalid owner"); grammar(() => assertDerivedOwnerToken(raw as string), "owner"); };
+const endpointName = (raw: unknown) => { if (typeof raw !== "string") badResult("invalid endpoint"); grammar(() => endpointToken(raw as string), "endpoint"); };
+const lifecycleTok = (raw: unknown, what: string) => { if (typeof raw !== "string") badResult(`invalid ${what}`); grammar(() => assertLifecycleToken(raw as string, what), what); };
+const capabilities = (raw: unknown) => grammar(() => parseEndpointCapabilities(raw), "capability list");
+const DENY_NEW = ["landed", "not-landed", "unknown"] as const;
+const OUTCOMES = ["applied", "recorded"] as const;
+const CLOSE_REASONS = ["owner", "operator", "revoked", "expired", "selector-bound", "restore", "custody-refused"] as const;
+
+function debtList(raw: unknown): void {
+  if (!Array.isArray(raw) || raw.length > 2) badResult("invalid debt");
+  for (const d of raw) { const o = closed(d, ["kind", "proposalId"]); oneOf(o.kind, ["capacity-release", "proposal-close"], "debt kind"); hex(o.proposalId, 64, "proposalId"); }
+}
+function projection(raw: unknown): void {
+  const o = closed(raw, ["subjectOwner", "endpoint", "instanceId", "proposalId"]);
+  ownerTok(o.subjectOwner); endpointName(o.endpoint); lifecycleTok(o.instanceId, "instanceId"); nullable(o.proposalId, (v) => hex(v, 64, "proposalId"));
+}
+function finalOutcome(raw: unknown): void {
+  const o = raw as Rec;
+  if (o?.state === "complete") { closed(raw, ["state", "resultDigest"]); dig(o.resultDigest, "resultDigest"); }
+  else if (o?.state === "refused") { closed(raw, ["state", "reason"]); oneOf(o.reason, SERVICE_OPERATION_REFUSALS, "refusal"); }
+  else if (o?.state === "superseded") { closed(raw, ["state", "boundOperationId"]); hex(o.boundOperationId, 32, "boundOperationId"); }
+  else badResult("unknown outcome");
+}
+function nameView(raw: unknown): void {
+  const o = closed(raw, ["endpoint", "owner", "claimReference", "requestId", "requestDigest", "revision"]);
+  endpointName(o.endpoint); ownerTok(o.owner); text(o.claimReference, "claimReference", 512); hex(o.requestId, 32, "requestId"); dig(o.requestDigest, "requestDigest"); nat(o.revision, "revision");
+}
+function command(raw: unknown): void {
+  const o = closed(raw, ["name", "clusterDigest", "class", "targeted", "modes", "capability", "inputDigest", "outputDigest", "traits"]);
+  if (typeof o.name !== "string") badResult("invalid command name"); grammar(() => assertCommandToken(o.name as string), "command name");
+  dig(o.clusterDigest, "clusterDigest"); oneOf(o.class, ["ephemeral", "journal"], "command class");
+  if (typeof o.targeted !== "boolean" || !Array.isArray(o.modes) || !o.modes.every((m) => typeof m === "string" && isEpAuthzMode(m))
+    || new Set(o.modes).size !== o.modes.length || (o.modes.length === 0) === o.targeted) badResult("invalid command authorization modes");
+  text(o.capability, "capability"); dig(o.inputDigest, "inputDigest"); dig(o.outputDigest, "outputDigest");
+  if (!Array.isArray(o.traits) || o.traits.length > 32) badResult("invalid traits"); for (const t of o.traits) text(t, "trait");
+}
+/** Commands of one proposal: well formed, at most 128, unique and sorted by name. */
+export function parseServiceProposalCommands(raw: unknown): Array<EpCommandAuthority & { name: string }> {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 128) badResult("a proposal carries 1 to 128 commands");
+  raw.forEach(command);
+  const names = raw.map((c) => (c as Rec).name as string);
+  if (names.some((n, i) => i > 0 && !(names[i - 1] < n))) badResult("commands must be unique and sorted by name");
+  return structuredClone(raw) as Array<EpCommandAuthority & { name: string }>;
+}
+/** Cluster digests of one proposal: canonical, at most 32, unique, in submitted order. */
+export function parseServiceProposalClusters(raw: unknown): string[] {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 32) badResult("a proposal carries 1 to 32 cluster digests");
+  raw.forEach((d) => dig(d, "clusterDigest"));
+  if (new Set(raw).size !== raw.length) badResult("cluster digests must be unique");
+  return [...raw] as string[];
+}
+
+export function parseServiceProposalView(raw: unknown): ServiceProposalView {
+  const o = closed(raw, ["proposalId", "proposalDigest", "owner", "endpoint", "instanceId", "state", "createdAt", "expiresAt", "clusterDigests", "commands", "nameBinding", "decision"]);
+  hex(o.proposalId, 64, "proposalId"); dig(o.proposalDigest, "proposalDigest"); ownerTok(o.owner); endpointName(o.endpoint); lifecycleTok(o.instanceId, "instanceId");
+  oneOf(o.state, ["proposed", "approving"], "live proposal state"); nat(o.createdAt, "createdAt"); nat(o.expiresAt, "expiresAt");
+  parseServiceProposalClusters(o.clusterDigests); parseServiceProposalCommands(o.commands); nullable(o.nameBinding, nameView);
+  nullable(o.decision, (v) => { const d = closed(v, ["operationId", "assignmentDigest"]); hex(d.operationId, 32, "operationId"); dig(d.assignmentDigest, "assignmentDigest"); });
+  if ((o.state === "approving") !== (o.decision !== null)) badResult("an approving proposal names its decision, and only then");
+  return structuredClone(o) as unknown as ServiceProposalView;
+}
+
+export function parseServiceProposalTombstoneView(raw: unknown): ServiceProposalTombstoneView {
+  const o = closed(raw, ["proposalId", "proposalDigest", "owner", "endpoint", "instanceId", "register", "state", "operationId", "approvalDigest", "reason", "at"]);
+  hex(o.proposalId, 64, "proposalId"); dig(o.proposalDigest, "proposalDigest"); ownerTok(o.owner); endpointName(o.endpoint); lifecycleTok(o.instanceId, "instanceId");
+  const r = closed(o.register, ["requestId", "requestDigest", "operationId"]); hex(r.requestId, 32, "requestId"); dig(r.requestDigest, "requestDigest"); hex(r.operationId, 32, "operationId");
+  oneOf(o.state, ["approved", "refused", "expired"], "terminal proposal state"); nullable(o.operationId, (v) => hex(v, 32, "operationId"));
+  nullable(o.approvalDigest, (v) => dig(v, "approvalDigest")); nullable(o.reason, (v) => oneOf(v, CLOSE_REASONS, "close reason")); nat(o.at, "at");
+  if ((o.state === "approved") !== (o.approvalDigest !== null) || (o.state === "approved" && (o.operationId === null || o.reason !== null))
+    || (o.state !== "approved" && o.reason === null)) badResult("terminal proposal fields do not match its state");
+  return structuredClone(o) as unknown as ServiceProposalTombstoneView;
+}
+
+function operationTarget(raw: unknown): void {
+  const o = raw as Rec;
+  if (o?.kind !== "service") badResult("unsupported operation target");
+  closed(raw, ["kind", "endpoint", "instanceId", "assignmentDigest"]); endpointName(o.endpoint); lifecycleTok(o.instanceId, "instanceId");
+  nullable(o.assignmentDigest, (v) => dig(v, "assignmentDigest"));
+}
+export function parseServiceOperationView(raw: unknown): ServiceOperationView {
+  const o = closed(raw, ["operationId", "requestDigest", "operation", "target", "projection", "progress", "debt"]);
+  hex(o.operationId, 32, "operationId"); dig(o.requestDigest, "requestDigest"); oneOf(o.operation, ["register", "decide", "revoke"], "operation");
+  operationTarget(o.target); projection(o.projection); debtList(o.debt);
+  const p = o.progress as Rec;
+  if (p?.state === "pending") { closed(p, ["state", "phase"], ["notBefore"]); text(p.phase, "phase", 64); if (Object.hasOwn(p, "notBefore")) nat(p.notBefore, "notBefore"); }
+  else if (p?.state === "held") { closed(p, ["state", "reason", "phase"]); text(p.reason, "reason", 64); text(p.phase, "phase", 64); }
+  else finalOutcome(p);
+  return structuredClone(o) as unknown as ServiceOperationView;
+}
+export function parseServiceOperationTerminalView(raw: unknown): ServiceOperationTerminalView {
+  const o = closed(raw, ["operationId", "requestDigest", "operation", "projection", "outcome"]);
+  hex(o.operationId, 32, "operationId"); dig(o.requestDigest, "requestDigest"); oneOf(o.operation, ["register", "decide", "revoke"], "operation");
+  projection(o.projection); finalOutcome(o.outcome);
+  return structuredClone(o) as unknown as ServiceOperationTerminalView;
+}
+
+export function parseServiceApprovalResult(raw: unknown): ServiceApprovalResult {
+  const o = closed(raw, ["proposalId", "proposalDigest", "operationId", "assignment", "approvalDigest", "approvalExpiresAt", "callerCeiling",
+    "nameAuthorityRevision", "rootCredentialId", "rootExpiresAt", "approvedGateRevision"]);
+  hex(o.proposalId, 64, "proposalId"); dig(o.proposalDigest, "proposalDigest"); hex(o.operationId, 32, "operationId");
+  const a = closed(o.assignment, ["endpoint", "instanceId", "assignmentDigest", "lifecycleUid"]);
+  endpointName(a.endpoint); lifecycleTok(a.instanceId, "instanceId"); dig(a.assignmentDigest, "assignmentDigest"); lifecycleTok(a.lifecycleUid, "lifecycleUid");
+  dig(o.approvalDigest, "approvalDigest"); nullable(o.approvalExpiresAt, (v) => nat(v, "approvalExpiresAt")); capabilities(o.callerCeiling);
+  nat(o.nameAuthorityRevision, "nameAuthorityRevision"); lifecycleTok(o.rootCredentialId, "rootCredentialId"); nat(o.rootExpiresAt, "rootExpiresAt");
+  nullable(o.approvedGateRevision, (v) => nat(v, "approvedGateRevision"));
+  return structuredClone(o) as unknown as ServiceApprovalResult;
+}
+
+const SUPPORTED_RESULTS = new Set(["decide", "revoke", "name-bind", "operation-read", "proposal-read"]);
+/** Closed parser for the results of the operations this slice serves (decide, revoke, name-bind,
+ *  operation-read, proposal-read) and for the shared arms of every operation. */
+export function parseServiceHostResult(raw: unknown): ServiceHostResult {
+  const env = ["v", "kind", "operation", "requestId", "space", "accountPublicKey", "state"];
+  const o = raw as Rec, state = o?.state;
+  let keys: Rec;
+  if (state === "denied") { keys = closed(raw, [...env, "reason"], ["boundOperationId"]); oneOf(o.reason, SERVICE_HOST_REASONS, "reason"); if (Object.hasOwn(o, "boundOperationId")) hex(o.boundOperationId, 32, "boundOperationId"); }
+  else if (state === "pending") {
+    keys = closed(raw, [...env, "operationId", "phase"], ["notBefore", "assignmentDigest", "denyNew", "root", "debt"]);
+    hex(o.operationId, 32, "operationId"); text(o.phase, "phase", 64); if (Object.hasOwn(o, "notBefore")) nat(o.notBefore, "notBefore");
+    if (Object.hasOwn(o, "assignmentDigest")) dig(o.assignmentDigest, "assignmentDigest"); if (Object.hasOwn(o, "denyNew")) oneOf(o.denyNew, DENY_NEW, "denyNew");
+    if (Object.hasOwn(o, "root")) oneOf(o.root, ["none", "revoked", "retained-stamped"], "root"); if (Object.hasOwn(o, "debt")) debtList(o.debt);
+  } else if (state === "held") {
+    keys = closed(raw, [...env, "operationId", "reason", "phase"], ["assignmentDigest", "denyNew", "debt"]);
+    hex(o.operationId, 32, "operationId"); text(o.reason, "reason", 64); text(o.phase, "phase", 64);
+    if (Object.hasOwn(o, "assignmentDigest")) dig(o.assignmentDigest, "assignmentDigest"); if (Object.hasOwn(o, "denyNew")) oneOf(o.denyNew, DENY_NEW, "denyNew"); if (Object.hasOwn(o, "debt")) debtList(o.debt);
+  } else if (state === "refused" && Object.hasOwn(o, "operationId")) {
+    keys = closed(raw, [...env, "operationId", "reason"], ["boundOperationId", "debt"]);
+    hex(o.operationId, 32, "operationId"); oneOf(o.reason, SERVICE_OPERATION_REFUSALS, "refusal");
+    if (Object.hasOwn(o, "boundOperationId")) hex(o.boundOperationId, 32, "boundOperationId"); if (Object.hasOwn(o, "debt")) debtList(o.debt);
+  } else {
+    if (!SUPPORTED_RESULTS.has(o?.operation as string)) badResult("unsupported operation result");
+    if (o.operation === "decide" && state === "approved") { keys = closed(raw, [...env, "outcome", "approval"], ["debt"]); oneOf(o.outcome, OUTCOMES, "outcome"); parseServiceApprovalResult(o.approval); if (Object.hasOwn(o, "debt")) debtList(o.debt); }
+    else if (o.operation === "decide" && state === "refused") { keys = closed(raw, [...env, "outcome", "proposal", "revision"], ["debt"]); oneOf(o.outcome, OUTCOMES, "outcome"); parseServiceProposalTombstoneView(o.proposal); nat(o.revision, "revision"); if (Object.hasOwn(o, "debt")) debtList(o.debt); }
+    else if (o.operation === "name-bind" && state === "bound") { keys = closed(raw, [...env, "binding"]); nameView(o.binding); }
+    else if (o.operation === "revoke" && state === "retired") { keys = closed(raw, [...env, "assignmentDigest", "operationId"]); dig(o.assignmentDigest, "assignmentDigest"); hex(o.operationId, 32, "operationId"); }
+    else if ((o.operation === "operation-read" || o.operation === "proposal-read") && state === "absent") keys = closed(raw, env);
+    else if ((o.operation === "operation-read" || o.operation === "proposal-read") && state === "present") {
+      keys = closed(raw, [...env, "record"]); const r = closed(o.record, ["value", "revision"]); nat(r.revision, "revision");
+      const v = r.value as Rec;
+      if (o.operation === "operation-read") (v && Object.hasOwn(v, "outcome") ? parseServiceOperationTerminalView : parseServiceOperationView)(v);
+      else (v && Object.hasOwn(v, "register") ? parseServiceProposalTombstoneView : parseServiceProposalView)(v);
+    } else badResult("unknown result state");
+  }
+  if (keys.v !== 1 || keys.kind !== "service-endpoint-host") badResult("unknown version or kind");
+  hex(keys.requestId, 32, "requestId"); text(keys.space, "space"); if (typeof keys.accountPublicKey !== "string" || !isAccountNkey(keys.accountPublicKey)) badResult("invalid account public key");
+  if (!["proposal-read", "proposal-list", "instance-read", "instance-list", "operation-read", "name-read", "decide", "name-bind", "revoke",
+    "caller-policy-read", "caller-policy-list", "caller-grant", "caller-revoke", "quarantine-restored", "admission-open"].includes(keys.operation as string)) badResult("unknown operation");
+  return structuredClone(raw) as ServiceHostResult;
 }

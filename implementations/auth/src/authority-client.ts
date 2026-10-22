@@ -31,10 +31,16 @@ import { EpEnvelopeError, admissionBucket, sessionsBucket, assertInboxConnId, en
 import { chatAuthorityWriteSubjects } from "./chat-session-store.js";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 import { environmentManagerAdmissionIndexBucket } from "./environment-manager-admission-index.js";
+import type { ServiceWriteScope } from "./service-write.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
  *  in-memory credential that closes with the service — never an unbounded persisted one). */
 export const AUTHORITY_CLIENT_TTL_SEC = 15 * 60;
+
+/** The longest window one service host effect credential covers: one service host invocation. */
+export const SERVICE_HOST_INVOCATION_MS = 60_000;
+/** The fixed CONNZ name of every service host effect connection in `space`. */
+export const serviceHostEffectLabel = (space: string) => `cotal:service-host-effect:${space}`;
 
 /**
  * The MINT WRITER's scoped credential grant (SPEC 13.9): the exchange-time issuance executor.
@@ -365,6 +371,76 @@ export function barrierExecutorSettlementGrants(space: string, endpoint: string,
   return { publish };
 }
 
+/** The SERVICE HOST DISCOVERY reader: `STREAM.INFO` and leader-served `STREAM.MSG.GET` on both
+ *  authority KV streams, and its own inbox. It publishes no `$KV` subject at all.
+ *
+ *  Named residual: `MSG.GET` is body-selected, so its reads are stream-wide on both stores. The
+ *  same reads ride every effect credential; write confinement is exact-key, read confinement is
+ *  not offered. */
+export function serviceHostDiscoveryGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const auth = `KV_${epAuthBucket(space)}`;
+  const records = `KV_${recordsBucket(space)}`;
+  return {
+    publish: ["$JS.API.INFO", `$JS.API.STREAM.INFO.${auth}`, `$JS.API.STREAM.INFO.${records}`,
+      `$JS.API.STREAM.MSG.GET.${auth}`, `$JS.API.STREAM.MSG.GET.${records}`],
+    subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`],
+  };
+}
+
+const KV_KEY = /^[-/=\w]+(\.[-/=\w]+)*$/;
+const KV_FAMILY = /^([-/=\w]+\.)+$/;
+function scopeKey(pattern: RegExp, key: string, what: string): string {
+  if (typeof key !== "string" || !pattern.test(key))
+    throw new EpEnvelopeError("bad-request", `a service host effect grant names ${what} ${JSON.stringify(key)} that is not plain dotted key tokens`);
+  return key;
+}
+
+/** One service host invocation's EFFECT credential: the discovery reads, plus a `$KV` publish on
+ *  exactly each key of `keys` and on exactly one more token under each auth family (a root
+ *  credential id minted during the write). No key carries a wildcard, so the grant's subjects can
+ *  never be wider than the scope the engine guards every write with.
+ *
+ *  Named residual: this is publish-subject confinement only. Broker permissions do not restrict
+ *  what a publish on a granted subject does; the engine's own writes are only creates and
+ *  exact-revision CASes. */
+export function serviceHostEffectGrants(space: string, connId: string, keys: ServiceWriteScope, reads: ServiceHostEffectReads = NO_EFFECT_READS): { publish: string[]; subscribe: string[] } {
+  const base = serviceHostDiscoveryGrants(space, connId);
+  const auth = epAuthBucket(space);
+  const records = recordsBucket(space);
+  const epc = epcStreamName(space), prefix = spacePrefix(space);
+  return {
+    publish: [...base.publish,
+      ...keys.records.map((k) => `$KV.${records}.${scopeKey(KV_KEY, k, "the records key")}`),
+      ...keys.auth.map((k) => `$KV.${auth}.${scopeKey(KV_KEY, k, "the auth key")}`),
+      ...keys.authFamilies.map((f) => `$KV.${auth}.${scopeKey(KV_FAMILY, f, "the auth family")}*`),
+      ...reads.records.map((k) => `$JS.API.DIRECT.GET.KV_${records}.$KV.${records}.${scopeKey(KV_KEY, k, "the records read")}`),
+      ...reads.contract.flatMap((hex) => {
+        if (!/^[0-9a-f]{64}$/.test(hex)) throw new EpEnvelopeError("bad-request", "a service host effect grant names a contract artifact that is not a sha256 hex digest");
+        return [`${prefix}.epc.${hex}`, `$JS.API.DIRECT.GET.${epc}.${prefix}.epc.${hex}`];
+      })],
+    subscribe: base.subscribe,
+  };
+}
+
+/** What a serving effect reads and publishes beyond its writes: exact records keys, granted by
+ *  Direct Get, and exact contract artifacts it publishes create-only and reads back after a lost
+ *  create. The registry's KV handles are bound without Direct Get, so their reads of those records
+ *  keys are leader message gets (`STREAM.MSG.GET` last by subject) under the base grant. */
+export interface ServiceHostEffectReads { readonly records: readonly string[]; readonly contract: readonly string[] }
+const NO_EFFECT_READS: ServiceHostEffectReads = Object.freeze({ records: Object.freeze([]), contract: Object.freeze([]) });
+
+/** The SERVICE CALLOUT writer: the base writer, plus the endpoint gate and endpoint credential
+ *  families a native service connection's mint stages and touches.
+ *
+ *  Named residual: a broker ACL cannot confine one endpoint-token key family to service
+ *  assignments, so these families also cover native control endpoints' rows. The native service
+ *  mint writes only the bearer's own assignment rows, and every service gate parse refuses another
+ *  authority family. */
+export function serviceCalloutWriterGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const base = baseAuthorityWriterGrants(space, connId), auth = epAuthBucket(space);
+  return { publish: [...base.publish, `$KV.${auth}.epgate.*.*`, `$KV.${auth}.epcred.*.*.*`], subscribe: base.subscribe };
+}
+
 export interface AuthorityClientOpts {
   /** Package-internal connection custody for an embedded auth context. */
   onConnection?: (nc: NatsConnection, label: string) => void;
@@ -423,6 +499,22 @@ export interface AuthorityClientOpts {
    * A copied JWT plus identity seed loses the old 900-second leak bound: it remains usable
    * until signing-key removal. Service stop closes owned sockets, not an exfiltrated copy. */
   toolResultCustody?: boolean;
+  /** One service host invocation's effect connection only: label {@link serviceHostEffectLabel},
+   *  `noReconnect` required, never a plane, custody or renewing profile. `deadlineMs` is the
+   *  invocation's ORIGINAL deadline: a safe integer after now and at most
+   *  {@link SERVICE_HOST_INVOCATION_MS} ahead. The credential's one fixed `exp` is
+   *  `ceil(deadlineMs / 1000)` whole seconds, so `exp * 1000` is never earlier than that deadline;
+   *  it is never renewed, the connect is bounded by the remaining window, and {@link AuthorityClient.gone}
+   *  resolves when the connection is gone.
+   *
+   *  Broker granularity, disclosed: nats-server checks `exp` in whole seconds against its own clock,
+   *  refuses a connect once its current second is past `exp`, and arms one whole-second timer at
+   *  connect to close a live connection. With a broker clock that agrees with this process's and
+   *  timely broker and client scheduling, that timer fires inside the second after `exp`, up to
+   *  about `deadlineMs + 1999` ms (observed on 2.12.12 and 2.14.0). That is timer granularity, not a
+   *  guaranteed close time: a skewed clock or a paused or late broker or client moves the close
+   *  either way. No close, at any time, proves that an earlier write cannot still settle. */
+  serviceHostInvocation?: { deadlineMs: number };
 }
 
 export interface AuthorityClient {
@@ -435,11 +527,32 @@ export interface AuthorityClient {
   /** planeCandidate only: this connection's broker identity, captured from the protocol INFO at
    *  connect — what the plane claim row pins ({@link PlaneConnTuple}). */
   tuple?: PlaneConnTuple;
-  /** planeCandidate only: resolves when the NON-RECONNECTING connection is permanently gone (the
-   *  plane's fencing signal — close() also resolves it; the composition's `closing` flag tells a
-   *  deliberate teardown from a mid-life death). */
+  /** planeCandidate and serviceHostInvocation only: resolves when the NON-RECONNECTING connection
+   *  is permanently gone (the plane's fencing signal and the invocation's latch — close() also
+   *  resolves it; the composition's `closing` flag tells a deliberate teardown from a mid-life
+   *  death). */
   gone?: Promise<void>;
   close(): Promise<void>;
+}
+
+function refuseServiceHostEffect(detail: string): never {
+  throw new EpEnvelopeError("failed-precondition", `a service host effect credential ${detail}`);
+}
+
+/** The service host effect profile's one fixed `exp`, derived from the original deadline alone. */
+function serviceHostInvocationExpiry(opts: AuthorityClientOpts): { exp: number; deadlineMs: number } {
+  if (opts.label !== serviceHostEffectLabel(opts.space)) refuseServiceHostEffect(`requires the label ${serviceHostEffectLabel(opts.space)}`);
+  if (opts.noReconnect !== true) refuseServiceHostEffect("requires noReconnect");
+  if (opts.planeCandidate || opts.toolResultCustody || opts.probeRenewal !== undefined || opts.onRenewalFailure !== undefined)
+    refuseServiceHostEffect("is never a plane, custody or renewing profile");
+  const deadlineMs: unknown = opts.serviceHostInvocation?.deadlineMs, now = Date.now();
+  if (typeof deadlineMs !== "number" || !Number.isSafeInteger(deadlineMs)) refuseServiceHostEffect("requires a safe-integer original deadline in milliseconds");
+  if (deadlineMs <= now || deadlineMs > now + SERVICE_HOST_INVOCATION_MS)
+    refuseServiceHostEffect(`requires an original deadline after now and at most ${SERVICE_HOST_INVOCATION_MS} ms ahead`);
+  // Whole seconds, never milliseconds: a millisecond-valued exp would pass the broker as a far-future second.
+  const exp = Math.ceil(deadlineMs / 1000);
+  if (!Number.isSafeInteger(exp) || exp * 1000 < deadlineMs || exp * 1000 - deadlineMs >= 1000) refuseServiceHostEffect("has no exact whole-second expiry");
+  return { exp, deadlineMs };
 }
 
 /**
@@ -451,6 +564,8 @@ export interface AuthorityClient {
 export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<AuthorityClient> {
   if (opts.toolResultCustody && (opts.planeCandidate || !["cotal:tool-result-snapshot", "cotal:tool-result-revocation"].includes(opts.label)))
     throw new Error("tool-result custody requires its dedicated internal reader or writer profile");
+  // Checked before any identity, grant or connection exists.
+  const invocation = opts.serviceHostInvocation === undefined ? undefined : serviceHostInvocationExpiry(opts);
   const uninterrupted = Boolean(opts.planeCandidate || opts.toolResultCustody);
   const identity = newIdentity();
   const grants = opts.grants(identity.id);
@@ -462,17 +577,21 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
       fromPublic(opts.dataAccount.pub),
       { pub: { allow: grants.publish }, sub: { allow: grants.subscribe },
         ...(opts.principal ? { tags: principalTags(opts.principal.owner, opts.principal.actor) } : {}) },
-      // Plane scanners and the separate custody profile require uninterrupted identities.
-      // Every other authority connection keeps short expiry and half-life renewal.
-      uninterrupted ? { signer } : { signer, exp: Math.floor(Date.now() / 1000) + AUTHORITY_CLIENT_TTL_SEC },
+      // Plane scanners and the separate custody profile require uninterrupted identities. A
+      // service host effect expires at its invocation's original deadline. Every other authority
+      // connection keeps short expiry and half-life renewal.
+      uninterrupted ? { signer } : { signer, exp: invocation ? invocation.exp : Math.floor(Date.now() / 1000) + AUTHORITY_CLIENT_TTL_SEC },
     );
   let currentJwt = await mint();
   const renew = async (): Promise<string> => {
     if (opts.probeRenewal?.fail) throw new Error("probe-forced renewal failure");
     return mint();
   };
-  // Neither uninterrupted profile can present renewal without its forbidden reconnect.
-  const renewal = uninterrupted ? undefined : setInterval(() => {
+  // No uninterrupted profile can present renewal without its forbidden reconnect, and a service
+  // host effect never outlives its one fixed expiry.
+  const remaining = invocation ? invocation.deadlineMs - Date.now() : undefined;
+  if (remaining !== undefined && remaining <= 0) refuseServiceHostEffect("its original deadline passed before the connect");
+  const renewal = uninterrupted || invocation ? undefined : setInterval(() => {
     void renew().then(
       (jwt) => { currentJwt = jwt; },
       (e) => {
@@ -491,6 +610,8 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
       // Custody, plane candidates and per-call repairs never reconnect. Other standing
       // authority connections use stock renewal/reconnect semantics.
       ...(uninterrupted || opts.noReconnect ? { reconnect: false, maxReconnectAttempts: 0 } : { maxReconnectAttempts: -1 }),
+      // A service host effect's handshake never outlasts its invocation.
+      ...(remaining !== undefined ? { timeout: remaining } : {}),
     });
   } catch (e) {
     if (renewal !== undefined) clearInterval(renewal);
@@ -509,8 +630,8 @@ export async function openAuthorityClient(opts: AuthorityClientOpts): Promise<Au
       throw new EpEnvelopeError("unavailable", `${opts.label}: the broker INFO carries no usable (server_id, client_id) for the plane claim (got server_id=${JSON.stringify(info?.server_id)}, client_id=${JSON.stringify(info?.client_id)}); an ownership-bearing scanner connection must be claim-pinnable (SPEC 13.13)`);
     }
     tuple = { serverId: info.server_id, cid: info.client_id, userNkey: identity.id };
-    gone = nc.closed().then(() => undefined, () => undefined);
   }
+  if (opts.planeCandidate || invocation) gone = nc.closed().then(() => undefined, () => undefined);
   return {
     nc,
     connId: identity.id,
