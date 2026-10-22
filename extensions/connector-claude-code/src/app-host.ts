@@ -58,6 +58,8 @@ export function createAppHost(o: AppHostOptions): AppHost {
   const bindings = new Map<string, NativeBinding>();
   const pending = new Map<string, string>();
   let opening: Promise<unknown> = Promise.resolve();
+  let reaping: Promise<void> | undefined;
+  let reapAgain = false;
   const plumbing = (args: string[]): Promise<Reply> => new Promise((resolve, reject) => {
     const cotal = o.cotal();
     execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd: o.cwd, env: o.env, timeout: PLUMBING_MS }, (_error, stdout) => {
@@ -69,6 +71,15 @@ export function createAppHost(o: AppHostOptions): AppHost {
     if (!dir) return;
     const reply = await plumbing(["retire", "--dir", dir]);
     if (!reply.ok) throw new Error(reply.error ?? "identity retirement is unconfirmed");
+  };
+  // Retiring other conversations' dead identities runs after a connection and never delays one. A
+  // request made while a run is in flight starts one more run when it ends.
+  const reap = (): void => {
+    if (reaping) { reapAgain = true; return; }
+    reaping = plumbing(["reap"]).then(() => {}, () => {}).finally(() => {
+      reaping = undefined;
+      if (reapAgain) { reapAgain = false; reap(); }
+    });
   };
   const open = async (name: string, context?: string): Promise<GatewayConnection> => {
     const binding = context ? bindings.get(context) : undefined;
@@ -121,6 +132,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       const conn: GatewayConnection = { id: randomUUID(), agent, config };
       held.set(conn.id, { conn, dir, session: binding?.session, hooks, plane });
       if (binding && hooks) await hooks.handle(agent, binding.event);
+      if (config.userAuth) reap();
       return conn;
     } catch (error) {
       plane?.stop();

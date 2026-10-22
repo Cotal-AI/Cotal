@@ -80,26 +80,33 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
   });
 
   // The fixture authority: create is idempotent per request; retirement revokes access first and
-  // finishes the broker footprint only once `driverRan` says the later driver has run.
-  interface Issued { requestId: string; tokenHash: string; actor: string; lifecycleUid: string; material: Record<string, unknown>; phase: "live" | "retired" | "terminal" }
+  // finishes the broker footprint only once `driverRan` says the later driver has run. A second,
+  // foreign mesh has no broker; its identities are only ever issued and retired by request.
+  interface Issued { space: string; requestId: string; tokenHash: string; actor: string; lifecycleUid: string; material: Record<string, unknown>; phase: "live" | "retired" | "terminal" }
   const issued = new Map<string, Issued>();
-  let driverRan = false, creates = 0, deletes = 0, base = "";
-  const collection = `/api/spaces/${space}/conversation-identities`;
-  let owner = "", auth: Awaited<ReturnType<typeof createSpaceAuth>>, bundle: Record<string, unknown> = {};
+  const meshes = new Map<string, { bundle: Record<string, unknown>; local: boolean }>();
+  const foreign = `recovery-foreign-${process.pid}`;
+  let driverRan = false, creates = 0, deletes = 0, foreignDeletes = 0, slowDeletes = 0, slowServed = 0, base = "";
+  let owner = "", auth: Awaited<ReturnType<typeof createSpaceAuth>>;
   let provisioner: InstanceType<typeof CotalEndpoint>;
   const body = async (req: import("node:http").IncomingMessage) => { let raw = ""; for await (const chunk of req) raw += chunk; return raw; };
   const authority = createHttpsServer({ key: readFileSync(join(home, "authority.key")), cert: readFileSync(join(home, "authority.crt")) }, (req, res) => {
     const send = (status: number, value: unknown) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)); };
     void (async () => {
       const url = new URL(req.url!, base);
-      if (req.method === "GET" && url.pathname === `/s/${space}/.well-known/cotal-mesh`) return send(200, bundle);
+      const discovery = /^\/s\/([^/]+)\/\.well-known\/cotal-mesh$/.exec(url.pathname);
+      if (req.method === "GET" && discovery && meshes.has(discovery[1]!)) return send(200, meshes.get(discovery[1]!)!.bundle);
       if (req.method === "POST" && url.pathname === `/s/${space}/exchange`) {
         const answer = await fetch(`http://127.0.0.1:${publicPort}/exchange`, { method: "POST", headers: { "content-type": "application/json" }, body: await body(req) });
         res.writeHead(answer.status, { "content-type": "application/json" });
         return res.end(await answer.text());
       }
       if (req.headers.authorization !== `Bearer ${human}`) return send(401, { error: "unauthenticated" });
-      if (req.method === "POST" && url.pathname === collection) {
+      const route = /^\/api\/spaces\/([^/]+)\/conversation-identities(?:\/([^/]+))?$/.exec(url.pathname);
+      const mesh = route ? meshes.get(route[1]!) : undefined;
+      if (!route || !mesh) return send(404, {});
+      const at = route[1]!;
+      if (req.method === "POST" && !route[2]) {
         const request = JSON.parse(await body(req)) as { requestId: string; tokenHash: string; label: string };
         let row = issued.get(request.requestId);
         if (row && row.tokenHash !== request.tokenHash) return send(409, { error: "request replay changed its secret" });
@@ -107,28 +114,34 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
           const actor = `pa_${Array.from(randomBytes(26), (byte) => "abcdefghijklmnopqrstuvwxyz234567"[byte % 32]).join("")}`;
           const lifecycleUid = mintLifecycleUid();
           const channel = eventChannel({ owner, actor });
-          grantManagedActor(stateDir, { owner, actor, scope: [], allowSubscribe: [], allowPublish: [channel], parent: `${owner}.cli`,
-            label: request.label, tokenHash: request.tokenHash, lifecycleUid, custody: { kind: "foreground" } });
-          await provisionAgentDurables(provisioner, { owner, actor, lifecycleUid }, { subscribe: [], allowSubscribe: [] });
-          row = { requestId: request.requestId, tokenHash: request.tokenHash, actor, lifecycleUid, phase: "live", material: {
-            v: 1, requestId: request.requestId, space, owner, actor, lifecycleUid,
+          if (mesh.local) {
+            grantManagedActor(stateDir, { owner, actor, scope: [], allowSubscribe: [], allowPublish: [channel], parent: `${owner}.cli`,
+              label: request.label, tokenHash: request.tokenHash, lifecycleUid, custody: { kind: "foreground" } });
+            await provisionAgentDurables(provisioner, { owner, actor, lifecycleUid }, { subscribe: [], allowSubscribe: [] });
+          }
+          row = { space: at, requestId: request.requestId, tokenHash: request.tokenHash, actor, lifecycleUid, phase: "live", material: {
+            v: 1, requestId: request.requestId, space: at, owner, actor, lifecycleUid,
             grant: { scope: [], role: null, allowSubscribe: [], allowPublish: [channel], subscribe: [] },
-            policy: { events: "required" }, sentinelCreds: bundle.sentinelCreds, exchangeUrl: `${base}/s/${space}`,
-            retire: { url: `${base}${collection}/${actor}?lifecycleUid=${lifecycleUid}` } } };
+            policy: { events: "required" }, sentinelCreds: mesh.bundle.sentinelCreds, exchangeUrl: `${base}/s/${at}`,
+            retire: { url: `${base}/api/spaces/${at}/conversation-identities/${actor}?lifecycleUid=${lifecycleUid}` } } };
           issued.set(request.requestId, row);
           creates++;
         }
         return send(200, row.material);
       }
-      if (req.method === "DELETE" && url.pathname.startsWith(`${collection}/`)) {
-        const row = [...issued.values()].find((r) => url.pathname === `${collection}/${r.actor}` && url.searchParams.get("lifecycleUid") === r.lifecycleUid);
+      if (req.method === "DELETE" && route[2]) {
+        const row = [...issued.values()].find((r) => r.space === at && r.actor === route[2] && url.searchParams.get("lifecycleUid") === r.lifecycleUid);
         if (!row) return send(404, { error: "unknown lifecycle" });
-        deletes++;
-        if (row.phase === "live") { revokeManagedActor(stateDir, owner, row.actor); row.phase = "retired"; }
+        if (mesh.local) deletes++; else foreignDeletes++;
+        // A slow route answers after the client's own 30 s request deadline.
+        if (slowDeletes > 0) { slowDeletes--; await wait(35_000); slowServed++; }
+        if (row.phase === "live") { if (mesh.local) revokeManagedActor(stateDir, owner, row.actor); row.phase = "retired"; }
         if (row.phase === "retired" && driverRan) {
-          const target = principalKey(owner, row.actor).key;
-          const creds = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: target, lifecycleUid: row.lifecycleUid } });
-          await deprovisionAgent({ servers, space, targetId: target, lifecycleUid: row.lifecycleUid, creds });
+          if (mesh.local) {
+            const target = principalKey(owner, row.actor).key;
+            const creds = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: target, lifecycleUid: row.lifecycleUid } });
+            await deprovisionAgent({ servers, space, targetId: target, lifecycleUid: row.lifecycleUid, creds });
+          }
           row.phase = "terminal";
         }
         return row.phase === "terminal"
@@ -136,7 +149,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
           : send(202, { v: 1, actor: row.actor, lifecycleUid: row.lifecycleUid, phase: "retired", complete: false });
       }
       send(404, {});
-    })().catch((error) => { console.error("fixture authority failed:", error); send(500, { error: "fixture failure" }); });
+    })().catch((error) => { console.error("fixture authority failed:", error); if (!res.headersSent) send(500, { error: "fixture failure" }); });
   });
 
   // One gateway process speaking MCP over stdio, as Claude Code runs the plugin's server.
@@ -175,10 +188,21 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     };
     return { child, call, connect };
   };
-  const recordDir = (session: string) => join(home, "app-identities", createHash("sha256").update(`${space}\0${session}`).digest("hex"));
-  const record = (session: string) => existsSync(join(recordDir(session), "identity.json"))
-    ? JSON.parse(readFileSync(join(recordDir(session), "identity.json"), "utf8")) as { state: string; requestId: string; remote: { material: { actor: string } } }
+  const recordDir = (session: string, at = space) => join(home, "app-identities", createHash("sha256").update(`${at}\0${session}`).digest("hex"));
+  const record = (session: string, at = space) => existsSync(join(recordDir(session, at), "identity.json"))
+    ? JSON.parse(readFileSync(join(recordDir(session, at), "identity.json"), "utf8")) as { state: string; requestId: string; consumer: { pid: number; start?: string }; remote: { material: { actor: string } } }
     : undefined;
+  const settled = (test: () => boolean | Promise<boolean>, ms = 30_000) => until(test, "not settled", ms).then(() => true, () => false);
+  // The CLI under a short shell, so the saved consumer is that shell: gone when it exits, or kept
+  // alive as a sleep when `hold` is set.
+  const holders: Child[] = [];
+  const cliVia = async (args: string[], hold = false) => {
+    const quoted = [process.execPath, ...process.execArgv, import.meta.filename, "app-identity", ...args].map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
+    const child = spawn("sh", ["-c", `${quoted} >/dev/null 2>&1; ${hold ? "exec sleep 600" : "true"}`], { cwd: root, env: childEnv, stdio: "ignore" });
+    if (hold) holders.push(child);
+    else await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    return child;
+  };
   const actorOf = (session: string) => record(session)?.remote.material.actor;
   const granted = async (actor: string) => await cotalAuthProvider.actorScope({ dir: stateDir, owner, actor }) !== undefined;
   const footprint = (actor: string) => [...issued.values()].find((row) => row.actor === actor)?.phase;
@@ -207,15 +231,18 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     await until(async () => { try { return (await fetch(`http://127.0.0.1:${publicPort}/health`)).ok; } catch { return false; } }, "auth service public exchange did not become ready");
     await new Promise<void>((resolve) => authority.listen(0, "127.0.0.1", resolve));
     base = `https://127.0.0.1:${(authority.address() as import("node:net").AddressInfo).port}`;
-    const userAuth = { ...assertUserAuthInfo(prepared.publicAuth), endpoints: { url: `${base}/s/${space}` } };
-    bundle = { space, server: servers, tlsRequired: false, userAuth, policy: { events: "required" },
-      sentinelCreds: (await loadCalloutAuth(store, space))!.sentinelCreds,
-      cloudCapabilities: { conversationIdentity: { version: 1, url: `${base}${collection}` } } };
-    recordMesh({ space, server: servers, root, mode: "user", origin: "manual", policy: { events: "required" }, userAuth: { ...userAuth, remote: true }, ts: new Date().toISOString() });
-    for (let n = 1; n <= 5; n++) {
-      const session = `recovery-session-${n}`;
+    const sentinelCreds = (await loadCalloutAuth(store, space))!.sentinelCreds;
+    for (const [at, server, local] of [[space, servers, true], [foreign, "nats://127.0.0.1:1", false]] as const) {
+      const userAuth = { ...assertUserAuthInfo(prepared.publicAuth), endpoints: { url: `${base}/s/${at}` } };
+      meshes.set(at, { local, bundle: { space: at, server, tlsRequired: false, userAuth, policy: { events: "required" }, sentinelCreds,
+        cloudCapabilities: { conversationIdentity: { version: 1, url: `${base}/api/spaces/${at}/conversation-identities` } } } });
+      const meshRoot = local ? root : join(home, "foreign-workspace");
+      mkdirSync(meshRoot, { recursive: true });
+      recordMesh({ space: at, server, root: meshRoot, mode: "user", origin: "manual", policy: { events: "required" }, userAuth: { ...userAuth, remote: true }, ts: new Date().toISOString() });
+    }
+    for (const session of [1, 2, 3, 4, 5, 6].map((n) => `recovery-session-${n}`).concat("recovery-orphan-a", "recovery-orphan-b")) {
       sessions.set(session, join(home, `${session}.jsonl`));
-      writeFileSync(sessions.get(session)!, JSON.stringify({ type: "user", uuid: `before-${n}`, message: { role: "user", content: "PRIVATE_BEFORE_CONNECT" }, timestamp: new Date().toISOString() }) + "\n");
+      writeFileSync(sessions.get(session)!, JSON.stringify({ type: "user", uuid: `before-${session}`, message: { role: "user", content: "PRIVATE_BEFORE_CONNECT" }, timestamp: new Date().toISOString() }) + "\n");
     }
     check("real broker, auth-service exchange and isolated HTTPS authority are live", broker.exitCode === null && authService.exitCode === null);
 
@@ -262,7 +289,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     check("after a gateway restart, reconnect succeeds once retirement is terminal",
       !recovered.error && actorOf("recovery-session-2") !== otherActor && footprint(otherActor) === "terminal", recovered.text);
     check("the restarted gateway reconciles the dead gateway's other pending retirement",
-      record("recovery-session-1") === undefined && !existsSync(recordDir("recovery-session-1")));
+      await settled(() => record("recovery-session-1") === undefined && !existsSync(recordDir("recovery-session-1"))));
 
     // Dead-consumer reconciliation: a crashed gateway leaves a ready identity; a live one keeps its own.
     const live = await g2.connect("recover_live", "recovery-session-3");
@@ -274,17 +301,57 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     check("a crashed gateway leaves a ready saved identity behind", !crashed.error && !live.error && record("recovery-session-4")?.state === "ready");
     driverRan = false;
     const fifth = await g2.connect("recover_five", "recovery-session-5");
-    check("a provably dead consumer is retired on the next connection without blocking it",
-      !fifth.error && !await granted(crashedActor) && record("recovery-session-4")?.state === "retiring", fifth.text);
+    check("a provably dead consumer is retired after the next connection without blocking it",
+      !fifth.error && await settled(async () => !await granted(crashedActor) && record("recovery-session-4")?.state === "retiring"), fifth.text);
     check("live consumers and their saved identities are untouched",
       record("recovery-session-3")?.state === "ready" && await granted(liveActor) && footprint(liveActor) === "live" &&
       !(await g2.call("cotal_connection_status", { connection_id: live.id })).error);
     driverRan = true;
     await g2.call("cotal_disconnect", { connection_id: fifth.id });
     const again = await g2.connect("recover_five", "recovery-session-5");
-    check("a retained dead-consumer retirement completes on a later connection",
-      !again.error && record("recovery-session-4") === undefined && footprint(crashedActor) === "terminal", again.text);
+    check("a retained dead-consumer retirement completes after a later connection",
+      !again.error && await settled(() => record("recovery-session-4") === undefined && footprint(crashedActor) === "terminal"), again.text);
 
+    // Reconciliation stays off the connect path and retires only provably dead identities of this
+    // mesh. Controls: a foreign mesh's dead identity, a live consumer, and a live consumer whose saved
+    // start token reads differently. macOS reads that token through `ps` in the reader's locale and
+    // time zone, so this fixture rewrites it as such a reader would see it.
+    await cliVia(["provision", "--name", "live_ctl", "--session", "recovery-live-ctl", "--events"], true);
+    await cliVia(["provision", "--name", "unknown_ctl", "--session", "recovery-unknown-ctl", "--events"], true);
+    await until(() => record("recovery-live-ctl")?.state === "ready" && record("recovery-unknown-ctl")?.state === "ready", "control identities were not saved");
+    const unknownFile = join(recordDir("recovery-unknown-ctl"), "identity.json");
+    const unknownSaved = JSON.parse(readFileSync(unknownFile, "utf8"));
+    unknownSaved.consumer.start = "jeu. 22 oct. 04:54:02 2026";
+    writeFileSync(unknownFile, JSON.stringify(unknownSaved));
+    await cliVia(["provision", "--space", foreign, "--name", "foreign_ctl", "--session", "recovery-foreign-ctl", "--events"]);
+    const g4 = await gateway(["recovery-orphan-a", "recovery-orphan-b"]);
+    const orphans = [await g4.connect("orphan_a", "recovery-orphan-a"), await g4.connect("orphan_b", "recovery-orphan-b")];
+    await stopped(g4.child, "SIGKILL");
+    check("two dead identities of this mesh and a dead foreign identity are saved",
+      orphans.every((o) => !o.error) && record("recovery-orphan-a")?.state === "ready" && record("recovery-orphan-b")?.state === "ready" &&
+      record("recovery-foreign-ctl", foreign)?.state === "ready");
+    const g5 = await gateway(["recovery-session-6"]);
+    slowDeletes = 2;
+    const started = Date.now();
+    const quick = await g5.connect("recover_six", "recovery-session-6");
+    const took = Date.now() - started;
+    console.log(`    connect with two slow dead identities pending cleanup took ${took} ms`);
+    check("a connection does not wait for slow cleanup of unrelated dead identities", !quick.error && took < 20_000, { took, text: quick.text });
+    await until(() => slowServed === 2, "the slow retirements were never requested", 150_000);
+    await g5.call("cotal_disconnect", { connection_id: quick.id });
+    const sixth = await g5.connect("recover_six", "recovery-session-6");
+    check("dead identities of this mesh retire after a later connection once the authority answers",
+      !sixth.error && await settled(() => record("recovery-orphan-a") === undefined && record("recovery-orphan-b") === undefined, 60_000));
+    check("a foreign mesh's dead identity is never retired from this mesh", record("recovery-foreign-ctl", foreign)?.state === "ready" && foreignDeletes === 0);
+    check("a live consumer keeps its identity, also when its saved start token reads differently",
+      record("recovery-live-ctl")?.state === "ready" && record("recovery-unknown-ctl")?.state === "ready" &&
+      await granted(actorOf("recovery-live-ctl")!) && await granted(actorOf("recovery-unknown-ctl")!));
+    for (const holder of holders) await stopped(holder, "SIGKILL");
+    for (const [session, at] of [["recovery-live-ctl", space], ["recovery-unknown-ctl", space], ["recovery-foreign-ctl", foreign]] as const)
+      await cliVia(["retire", "--dir", recordDir(session, at)]);
+
+    assert(!(await g5.call("cotal_disconnect", { connection_id: sixth.id })).error);
+    await stopped(g5.child);
     for (const id of [recovered.id, live.id, again.id]) {
       const result = await g2.call("cotal_disconnect", { connection_id: id });
       assert(!result.error, result.text);
@@ -293,7 +360,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     check("every fixture identity reached terminal retirement", [...issued.values()].every((row) => row.phase === "terminal"), [...issued.values()].map((row) => row.phase));
     console.log(`personal-native-recovery: ${checks} real-broker gateway checks passed; isolated HTTPS authority only, no hosted acceptance claimed`);
   } finally {
-    for (const child of gateways) await stopped(child, "SIGKILL");
+    for (const child of [...gateways, ...holders]) await stopped(child, "SIGKILL");
     for (const endpoint of endpoints.reverse()) await endpoint.stop().catch(() => {});
     await stopped(authService);
     await stopped(broker);

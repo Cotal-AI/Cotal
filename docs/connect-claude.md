@@ -266,10 +266,11 @@ conversations stay connected. When the mesh reports retirement pending or does n
 conversation stays disconnected and keeps its saved record. Every tool then reports the same
 unfinished cleanup with the mesh's retirement phase. Calling `cotal_disconnect` again retries it at
 once. `cotal_connect` retries it too, and connects with a new identity once the mesh confirms
-retirement. A restarted plugin server recovers the same way. Each connection also retires the same
-mesh's saved identities whose plugin server has provably exited, such as one killed before it could
-retire them. A live or unknown server keeps its identity, and a retirement that does not finish
-stays saved for a later connection. A mesh requiring events refuses a connection without a native
+retirement. A restarted plugin server recovers the same way. After each connection, the plugin
+retires the same mesh's saved identities whose plugin server process no longer exists, such as one
+killed before it could retire them. This runs in the background, so the connection does not wait
+for it. A server process that still exists keeps its identity, and a retirement that does not finish
+stays saved for a later run. A mesh requiring events refuses a connection without a native
 transcript source.
 
 The gateway's MCP annotations distinguish read-only queries from updates. Orientation, connection

@@ -62,6 +62,13 @@ function read(dir: string): SavedIdentity {
   return record;
 }
 
+/** Only the kernel's "no such process" proves a consumer gone. A live pid whose start token reads
+ *  differently is not proof: macOS reads that token through `ps` in the reader's locale and time zone. */
+function consumerGone(consumer: SavedIdentity["consumer"]): boolean {
+  try { process.kill(consumer.pid, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+}
+
 function consumerAlive(consumer: SavedIdentity["consumer"]): boolean {
   try { process.kill(consumer.pid, 0); }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
@@ -90,7 +97,6 @@ export async function provisionUserApp(target: MeshTarget, name: string, session
   mkSecretDir(root);
   privateDir(root);
   const dir = join(root, hash(`${target.space}\0${session}`));
-  await retireDeadConsumers(target, dir);
   // A reconnect first finishes the previous explicit departure. Only a confirmed terminal
   // retirement can release this session key for a new request and a new secret.
   if (existsSync(join(dir, RECORD)) && read(dir).state === "retiring") {
@@ -190,15 +196,17 @@ export function retireUserApp(dir: string): Promise<void> {
   return retire(dir);
 }
 
-/** Retire this mesh's other saved conversations whose consumer is provably gone, such as a gateway
- *  killed before it could retire them. A live, reused or unknown consumer keeps its identity, and a
- *  retirement that does not finish stays saved for a later connection. */
-async function retireDeadConsumers(target: MeshTarget, own: string): Promise<void> {
-  for (const name of readdirSync(identityRoot())) {
-    const dir = join(identityRoot(), name);
-    if (dir === own || !isUserAppDir(dir) || !existsSync(join(dir, RECORD))) continue;
-    try { await retire(dir, (record) => record.trust === trust(target) && !consumerAlive(record.consumer)); }
-    catch { /* retained for a later connection */ }
+/** Retire this mesh's saved conversations whose consumer process is provably gone, such as a
+ *  gateway killed before it could retire them. A live or unknown consumer keeps its identity, and a
+ *  retirement that does not finish stays saved for a later run. A live record is never locked. */
+export async function retireDeadUserApps(target: MeshTarget): Promise<void> {
+  const root = identityRoot();
+  if (!existsSync(root)) return;
+  const dead = (record: SavedIdentity) => record.trust === trust(target) && consumerGone(record.consumer);
+  for (const name of readdirSync(root)) {
+    const dir = join(root, name);
+    try { if (isUserAppDir(dir) && existsSync(join(dir, RECORD)) && dead(read(dir))) await retire(dir, dead); }
+    catch { /* retained for a later run */ }
   }
 }
 
