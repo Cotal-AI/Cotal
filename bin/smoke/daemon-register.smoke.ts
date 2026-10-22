@@ -65,15 +65,15 @@ import {
   saveServiceKeys, startAuthService, type AuthServiceHandle,
 } from "@cotal-ai/auth";
 import { recordMesh, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
-import { freePort, killAndAwaitExit, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
+import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
 import { registerAnswer } from "../daemon/register.js";
 
-if (process.platform !== "linux") {
-  console.log("daemon-register smoke: Linux only; skipped on " + process.platform);
-  process.exit(0);
-}
+if (process.platform !== "linux") skipSuite(`daemon-register smoke: Linux only; skipped on ${process.platform}`);
+const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
+// The CLI children get no mesh identity or connection material from whatever runs this suite.
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
@@ -129,7 +129,7 @@ class MemoryStore implements SecretStore {
 }
 
 // ---------- owned sandbox ----------
-const root = mkdtempSync(join(process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir(), "cdr-"));
+const root = mkdtempSync(join(scratchParent, "cdr-"));
 chmodSync(root, 0o700);
 const home = join(root, "home"), participant = join(root, "participant"), rtDir = join(root, "rt"), jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}a2b2-js-`));
 for (const d of [home, participant, rtDir]) mkdirSync(d, { mode: 0o700 });
