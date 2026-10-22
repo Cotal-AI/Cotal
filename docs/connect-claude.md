@@ -38,7 +38,9 @@ needed for this native plugin path. It also shares your own MCP servers with spa
 `cotal spawn --detach` / `cotal_spawn` work right away. Re-running either is idempotent.
 A repeat `cotal setup` and `cotal update` refresh the copy under `~/.cotal/claude-plugin` and update
 existing Claude plugin registrations, including older cached installations. After an npm upgrade,
-the first regular Cotal command also refreshes these copies before accepting the new generation. Disabled installations
+the first regular Cotal command also refreshes these copies before accepting the new generation. Setup,
+skills installation and refresh share a machine-local lock through the final plugin check, so simultaneous
+commands cannot overwrite a generation while another command verifies it. Disabled installations
 stay disabled during an update. `cotal status` checks the resolved payload and its recorded version,
 so a current marketplace cannot hide an outdated or incomplete plugin. Running sessions keep the
 code they loaded; reload plugins or reopen Claude to load the update.
