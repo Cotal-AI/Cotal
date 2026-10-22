@@ -414,9 +414,14 @@ try {
         marker: observed?.revoked !== undefined, outcome: observed?.journal.filter(r => r.kind === "step").at(-1)?.outcome })}`);
       hold.release.resolve();
       const result = await cancelling;
-      assert.equal(result.status, "fulfilled");
+      assert.ok(result.status === "fulfilled");
+      assert.ok(result.value.ok, result.value.error?.message);
+      const receipt = result.value.data as RunCancelResult;
+      console.log(`ended drive receipt: ${JSON.stringify(receipt.observed)}`);
       assert.equal(observed?.status?.state, "released", "an observed cancellation marker must classify the channel exit as cancellation");
       assert.equal(observed?.journal.filter(r => r.kind === "step").at(-1)?.outcome, "cancelled");
+      assert.equal(receipt.observed.phase, "stopped", "a captured drive that ended during holder read must report its observed outcome");
+      assert.equal(receipt.observed.driveOutcome?.status, "released");
     } finally {
       hold.release.resolve();
       postMarkerHold = undefined;
