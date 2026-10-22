@@ -23,6 +23,7 @@ import { displayNameOf, nameIndex } from "../client/src/lib/names.js";
 import { oldestLiveBeat, presenceViewMark, rosterRows, STATUS_ORDER, statusCounts, statusLabel, waiting, type RosterRow } from "../client/src/lib/roster.js";
 import type { CotalMessage, PresenceView, RosterEntry } from "../client/src/api/types.js";
 import type { StoredMessage } from "../client/src/state/types.js";
+import { writeOpening } from "../src/web.js";
 import { bootReads, harness } from "./controller-harness.js";
 
 const webSrc = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
@@ -76,8 +77,20 @@ ok("1.3 Monitor: the endpoint's unpopulated state marks the roster unknown while
 
 ok("2.2 the server broadcasts presence-view from the endpoint event (not a restated poll)",
   /ep\.on\("presence-view"/.test(webTs) && /broadcast\("presence-view"/.test(webTs));
-ok("2.3 a new /feed client is seeded with the current view, not only the roster",
-  /send\(res, "presence-view", ep\.presenceView\(\)\)/.test(webTs));
+{
+  // A new feed's opening carries the presence view after the roster, and the route hands it the
+  // endpoint's current view rather than a placeholder.
+  const opened: Array<[string, unknown, string]> = [];
+  await writeOpening((event, data, kind) => { opened.push([event, data, kind]); }, {
+    feed: "f", roster: [{ id: "a" }], presenceView: { state: "current", fresh: true }, membership: async () => ({ members: [] }),
+  });
+  const names = opened.map(([event]) => event);
+  const view = opened.find(([event]) => event === "presence-view");
+  ok("2.3 a new /feed client is seeded with the current view, not only the roster",
+    view !== undefined && JSON.stringify(view[1]) === JSON.stringify({ state: "current", fresh: true })
+      && view[2] === "snapshot" && names.indexOf("presence-view") > names.indexOf("roster")
+      && /presenceView: ep\.presenceView\(\)/.test(webTs), names);
+}
 ok("2.4 roster pushes are trailing-edge debounced so a replay burst is one render",
   /const pushRoster = debounce\(\(\) => broadcast\("roster", rosterSnapshot\(\)\), 150\)/.test(webTs)
     && /ep\.on\("presence", \(\) => pushRoster\(\)\)/.test(webTs));
