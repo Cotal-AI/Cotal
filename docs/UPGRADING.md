@@ -34,6 +34,86 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Service authority status selector in 0.92.0
+
+A service endpoint authority status query that reads one operation now names that operation:
+`target: { kind: "operation", operation, requestId }`, where `operation` is `register`,
+`activate`, `renew`, `ready` or `revoke`. `@cotal-ai/core` exports the operation names as
+`ServiceStatusOperation` and the whole selector as `ServiceStatusTarget`. The 0.91.0 selector,
+`{ kind: "operation", requestId }`, no longer parses. The change is in `parseServiceAuthorityRequest`,
+`parseServiceAuthorityEnvelope` and the `ServiceAuthorityRequest` type, so it reaches every client
+and server built on them.
+
+### What keeps working
+
+- Every running mesh. 0.91.0 shipped the request types and the client (the auth provider's
+  `serviceEndpointAuthority` hook and its HTTP client), but no 0.91.0 auth service serves
+  `/service-endpoint-authority`, so no deployment has status traffic on this route to lose. In
+  0.92.0 only a context opened with `serviceEndpoints` serves the route. That option is off by
+  default and has no CLI flag; without it the route answers 404.
+- `target: { kind: "instance" }` is unchanged, and so are the register, activate, renew, ready and
+  revoke requests themselves.
+- No credential, broker or connection is involved. Nothing needs reminting and no broker restarts.
+
+### What does not migrate
+
+- **Code that builds an operation status query without `operation`.** The 0.92.0 provider hook and
+  client parse each request before sending it, so the query fails locally with a `bad-request`
+  error, `service-endpoint authority: <detail>`, whose detail is
+  `object has missing or unsupported fields`, and nothing is sent. A 0.91.0 client that sends the
+  old selector to a 0.92.0 auth service gets HTTP 400 with the same message, and the service reads
+  and writes nothing for it. An operation name outside the five gets the detail
+  `unsupported status operation`.
+- **No legacy operation is inferred.** Neither the client nor the service maps an old selector onto
+  `register` or any other operation. One requestId can key a different request under each
+  operation, so a guessed operation could answer with another request's status. Send the operation
+  the request was made as; the requestId you stored with it stays the same.
+
+### Durable data
+
+Nothing stored changes on upgrade, and nothing is rewritten. The selector is a request shape and is
+never stored. 0.91.0 wrote no service authority request intents or operation records, so there is
+nothing to convert. A 0.92.0 context opened with `serviceEndpoints` writes its own records from the
+moment it is enabled: an admission record when it first opens, then request intents, the
+per-instance intent index, operation, proposal and assignment records, and endpoint gates. Each
+intent already records its operation. Without `serviceEndpoints` it writes none of them.
+
+### Order for a split topology
+
+Upgrade every client that builds status queries together with, or before, the first auth service
+you open with `serviceEndpoints`. That means code using `ServiceAuthorityRequest` or
+`parseServiceAuthorityRequest`, and every process that calls the auth provider's
+`serviceEndpointAuthority`. This change adds no ordering for brokers, managers or connectors;
+order those as their own sections say.
+
+There is no compatibility window to schedule. A 0.92.0 auth service never accepts the old selector,
+and a 0.91.0 auth service has no handler for the route at all, so a mixed pool is not partly
+working: every 0.92.0 auth service refuses an old client's operation status queries with 400.
+Nothing else is interrupted, so the change has no outage window of its own.
+
+### Before the upgrade
+
+- Nothing needs a snapshot for this change, because it writes nothing. If the same upgrade first
+  enables `serviceEndpoints`, take the deployment's usual consistent backup of broker JetStream
+  state and the auth host's private configuration before that step, because the service endpoint
+  host then starts writing to the auth bucket.
+- Find the old selectors in your code, then name the operation in each:
+
+```sh
+grep -rn 'kind: "operation"' --include='*.ts' --include='*.js' src/
+```
+
+```ts
+// 0.91.0
+{ ...coordinates, operation: "status", target: { kind: "operation", requestId } }
+// 0.92.0
+{ ...coordinates, operation: "status", target: { kind: "operation", operation: "register", requestId } }
+```
+
+What this section measured, and what it did not: the local refusal and the accepted and refused
+selectors are covered by the core parser's own test. The 400 answer is read from the auth service's
+source. No mixed-version deployment was run.
+
 ## History reader deletes after 0.86.0
 
 Observer and admin credentials now carry a `CONSUMER.DELETE` row for each of the connection's eight

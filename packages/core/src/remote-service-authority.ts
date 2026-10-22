@@ -83,8 +83,14 @@ export type ServiceAuthorityRequest = ServiceAuthorityCoordinates & (
       | { state: "registered"; witness: ServiceRegistrationWitness } }
   | { operation: "activate" | "renew" | "ready" | "revoke"; witness: ServiceRegistrationWitness }
   | { operation: "describe-view"; witness: ServiceRegistrationWitness; observation: ServiceDescribeObservation }
-  | { operation: "status"; target: { kind: "instance" } | { kind: "operation"; requestId: string } }
+  | { operation: "status"; target: ServiceStatusTarget }
 );
+
+/** Effectful operations a status query can name; status and Describe queries write nothing to look up. */
+export type ServiceStatusOperation = "register" | "activate" | "renew" | "ready" | "revoke";
+export type ServiceStatusTarget =
+  | { kind: "instance" }
+  | { kind: "operation"; operation: ServiceStatusOperation; requestId: string };
 
 export type ServiceAuthorityProof =
   | { kind: "idp"; token: string }
@@ -124,6 +130,7 @@ export type ServiceAuthorityResult = ServiceAuthorityCoordinates & { operation: 
 const COMMON = ["v", "kind", "operation", "requestId", "space", "accountPublicKey", "endpoint", "instanceId"] as const;
 const WITNESS = ["accountPublicKey", "space", "endpoint", "instanceId", "principal", "rootCredentialId", "approvalDigest", "processEpoch", "registrationRevision", "nameAuthorityRevision", "registrationRequestId", "registrationProof"] as const;
 const OPERATIONS = ["register", "activate", "renew", "ready", "revoke", "status", "describe-view"] as const;
+const STATUS_OPERATIONS: readonly ServiceStatusOperation[] = ["register", "activate", "renew", "ready", "revoke"];
 const RESULT_STATES: Record<ServiceAuthorityRequest["operation"], readonly string[]> = {
   register: ["approval-required", "pending", "registered", "denied"],
   activate: ["credential", "denied"],
@@ -293,7 +300,8 @@ export function parseServiceAuthorityRequest(raw: unknown): ServiceAuthorityRequ
       const target = record(o.target, "status target");
       if (target.kind === "instance") closed(target, ["kind"]);
       else if (target.kind === "operation") {
-        closed(target, ["kind", "requestId"]);
+        closed(target, ["kind", "operation", "requestId"]);
+        if (!STATUS_OPERATIONS.includes(target.operation as ServiceStatusOperation)) invalid("unsupported status operation");
         requestId(target.requestId);
       } else invalid("unsupported status target");
       break;
