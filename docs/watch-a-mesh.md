@@ -219,8 +219,8 @@ members too. All of this follows presence alone, so waiting, idle and offline ag
 and nothing moves while the dashboard only has a last-seen roster.
 The Agents view also shows each working agent's running step. To do that it reads the event plane of
 at most 12 working agents while it is on screen, and it drops each read when that agent stops working,
-the roster goes stale or the view closes. With your system set to reduce motion, nothing turns, breathes, shimmers or
-circles, and every shape and word stays.
+the roster goes stale or the view closes. With your system set to reduce motion, nothing turns,
+breathes, shimmers or circles, and every shape and word stays.
 
 **An agent's page.** Each agent has a page at `#/agent/<id>` with three tabs: Work, Messages and
 Profile. The address names the tab (`#/agent/<id>/messages`, `#/agent/<id>/profile`), so back and

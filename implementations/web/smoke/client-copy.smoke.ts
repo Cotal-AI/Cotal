@@ -139,6 +139,10 @@ ok("under reduced motion the working dot stops breathing and keeps a still 2.5px
 ok("under reduced motion the topology arc, the working spokes and the working line's shimmer stop",
   [".ui-orbit", ".ox-spin", ".ox-shimmer"].every((sel) => sets(reducedBody(sel)) === "none"),
   [".ui-orbit", ".ox-spin", ".ox-shimmer"].map((sel) => [sel, reducedBody(sel)]));
+const TRANSITION_OFF = ["[data-slot]", "[data-slot] *", "[data-slot]::before", "[data-slot]::after", "[data-slot] *::before", "[data-slot] *::after", ".ox-code-acts"];
+ok("under reduced motion the short transitions stop: the copied parts' own, their pseudo-elements and the code block's Copy button",
+  TRANSITION_OFF.every((sel) => /(?:^|;)\s*transition\s*:\s*none\s*(?:;|$)/.test(reducedBody(sel))),
+  TRANSITION_OFF.map((sel) => [sel, reducedBody(sel)]));
 /** The declarations app.css gives `selector` while the shell says the roster is stale, joined. */
 const staleBody = (selector: string) => appRules.filter((r) => r.selectors.includes(`[data-presence=stale] ${selector}`)).map((r) => r.body).join(";");
 ok("while the roster is only last seen nothing moves: the spokes, the copied spinner and the arc stop, the dot keeps its still halo, and both shimmers are plain",

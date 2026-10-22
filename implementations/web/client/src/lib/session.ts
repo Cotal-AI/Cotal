@@ -535,12 +535,12 @@ const plural = (n: number, one: string, many: string): string => `${n} ${n === 1
 /** The most characters of a tool name any title or description shows. */
 export const TOOL_NAME_CAP = 64;
 
-/** A tool name as titles and descriptions show it: its first `TOOL_NAME_CAP` characters, and "…" when
- *  it is longer. The harness names its tools, so a name can be any length; the whole name stays on
- *  `ToolCall.full` for a `title` attribute. */
-export function shownName(name: string): string {
+/** A tool name as titles and descriptions show it: its first `cap` characters (`TOOL_NAME_CAP` unless
+ *  given), and "…" when it is longer. The harness names its tools, so a name can be any length; the
+ *  whole name stays on `ToolCall.full` for a `title` attribute. */
+export function shownName(name: string, cap = TOOL_NAME_CAP): string {
   const chars = Array.from(name);
-  return chars.length > TOOL_NAME_CAP ? `${chars.slice(0, TOOL_NAME_CAP).join("")}…` : name;
+  return chars.length > cap ? `${chars.slice(0, cap).join("")}…` : name;
 }
 
 /** A call's title: the wording table's, or `Called <short name>` for a call in the `called` state. */

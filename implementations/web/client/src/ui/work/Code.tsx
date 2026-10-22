@@ -2,6 +2,7 @@ import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../../icons/Icon.tsx";
 import { highlight, type CodeToken } from "../../lib/highlight.js";
+import { shownName } from "../../lib/session.js";
 import { copy } from "../CopyCommand.tsx";
 import { Button } from "../shadcn/button.tsx";
 import { CodeBlock, CodeBlockActions, CodeBlockContent, CodeBlockHeader, CodeBlockLine } from "../shadcn/code-block.tsx";
@@ -10,6 +11,10 @@ import { CodeBlock, CodeBlockActions, CodeBlockContent, CodeBlockHeader, CodeBlo
  *  because the suites typecheck the components that render on the server with no DOM lib. */
 type Watcher = { observe(el: unknown): void; disconnect(): void };
 type WatcherClass = new (cb: (entries: { isIntersecting: boolean }[]) => void) => Watcher;
+
+/** The most characters of a fence's language word the header draws. The word is agent text of any
+ *  length, so it is cut here and the whole word stays in the label's `title`. */
+export const LANG_CAP = 24;
 
 /** A fenced block from an agent's prose (mock B1 and C, `sh-code`): its language as text, a Copy
  *  button, and the code capped in height and scrolling. The text renders plain at once. Once the block
@@ -45,7 +50,7 @@ export function Code({ lang, text }: { lang: string; text: string }) {
   return (
     <CodeBlock ref={ref} size="sm" className="ox-code">
       <CodeBlockHeader className="ox-code-h">
-        {lang && <span>{lang}</span>}
+        {lang && <span title={lang}>{shownName(lang, LANG_CAP)}</span>}
         {" "}
         <CodeBlockActions className="ox-code-acts">
           <Button type="button" variant="ghost" size="xs" className="ox-copy" onClick={() => copy(text)}>

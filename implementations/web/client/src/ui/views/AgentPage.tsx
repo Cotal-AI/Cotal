@@ -29,10 +29,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../shadcn/tabs.tsx";
 import { STATUS_ICON, word } from "../Status.tsx";
 import { WorkList } from "../work/WorkList.tsx";
 
-// The page's work helpers live in `../agent/work.ts`, so the panel can use them without loading the
-// page; they are re-exported here as the page's own.
-export { conditionOf, useOwnMessages, useSession };
-
 /** A reader within this many pixels of the bottom is following the work again. */
 const PINNED_PX = 24;
 /** Stable empty lists, so the fold is not redone while nothing is held. */
@@ -68,7 +64,7 @@ function StatusBadge({ row }: { row: RosterRow }) {
   return (
     <Badge variant="secondary" className={`ox-badge ox-badge-${row.status}`}>
       <span className="ox-badge-i">
-        {row.status === "working" ? <Spinner role={undefined} aria-hidden="true" /> : icon && <Icon icon={icon} size={16} />}
+        {row.status === "working" ? <Spinner /> : icon && <Icon icon={icon} size={16} />}
       </span>
       {word(statusLabel(row))}
     </Badge>

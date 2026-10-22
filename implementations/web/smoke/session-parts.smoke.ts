@@ -165,6 +165,21 @@ const tipWords = () => text(document.querySelector("[data-slot=tooltip-content] 
   await m.unmount();
 }
 
+{
+  const root = draw("1.5", list(work([turn({ outcome: "open", end: undefined, steps: [tools(call("Bash", Date.now() - 3000))] })])));
+  const spinners = all(root, "[data-slot=spinner]");
+  same("1.5 a spinner is decorative: no role and no Loading label, so a turn's button holds no live region and a running line holds only its own",
+    {
+      spinners: spinners.length,
+      announced: spinners.filter((s) => s.getAttribute("role") !== null || s.getAttribute("aria-label") !== null).length,
+      hidden: spinners.every((s) => s.getAttribute("aria-hidden") === "true"),
+      inButton: all(root, "button [role=status]").length,
+      nested: all(root, "[role=status] [role=status]").length,
+      lines: all(root, "[role=status]").map((l) => l.getAttribute("data-slot")),
+    },
+    { spinners: 2, announced: 0, hidden: true, inButton: 0, nested: 0, lines: ["trace-line"] });
+}
+
 // ── 2. Groups ────────────────────────────────────────────────────────────────────────────────────
 {
   const pair = (failed: boolean) => {
@@ -302,6 +317,14 @@ const tipWords = () => text(document.querySelector("[data-slot=tooltip-content] 
   const big = "const a = 1;\n".repeat(Math.ceil((HIGHLIGHT_CAP + 1) / 13));
   same("6.3 code over 20,000 characters stays plain, and code under the cap is highlighted",
     [big.length > HIGHLIGHT_CAP, HIGHLIGHT_CAP, await highlight(big, "js"), (await highlight("const a = 1;", "js"))?.length], [true, 20_000, undefined, 1]);
+}
+
+{
+  const long = "x".repeat(200);
+  const root = draw("6.4", createElement(Prose, { src: `A block:\n\`\`\`${long}\nplain\n\`\`\``, className: "ox-said" }));
+  const label = root.querySelector("[data-slot=code-block-header] > span");
+  same("6.4 a 200-character language word shows its first 24 characters as text and keeps the whole word in title",
+    [label?.textContent, label?.getAttribute("title")], [`${"x".repeat(24)}…`, long]);
 }
 
 // ── 7. Posts ─────────────────────────────────────────────────────────────────────────────────────

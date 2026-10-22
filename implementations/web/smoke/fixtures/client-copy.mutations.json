@@ -180,6 +180,14 @@
       "replace": "",
       "expectRed": "the composer's pickers and a phone header's title shrink rather than push the page sideways",
       "cell": "the composer's pickers and a phone header's title shrink rather than push the page sideways"
+    },
+    {
+      "name": "reduced motion leaves the short transitions running",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": ", .ox-code-acts { transition: none; }",
+      "replace": ", .ox-code-acts { transition-delay: 0s; }",
+      "expectRed": "under reduced motion the short transitions stop: the copied parts' own, their pseudo-elements and the code block's Copy button",
+      "cell": "under reduced motion the short transitions stop: the copied parts' own, their pseudo-elements and the code block's Copy button"
     }
   ]
 }

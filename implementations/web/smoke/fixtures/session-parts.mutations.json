@@ -244,6 +244,22 @@
       "replace": "const long = false;",
       "expectRed": "11.4 a long prompt clamps with Show more, and opens with Show less",
       "cell": "11.4 a long prompt clamps with Show more, and opens with Show less"
+    },
+    {
+      "name": "SP32 the copied spinner carries role=status and a Loading label again, so a turn's button and a running line announce it",
+      "file": "implementations/web/client/src/ui/shadcn/spinner.tsx",
+      "find": "data-slot=\"spinner\" aria-hidden=\"true\" className",
+      "replace": "data-slot=\"spinner\" role=\"status\" aria-label=\"Loading\" className",
+      "expectRed": "1.5 a spinner is decorative: no role and no Loading label, so a turn's button holds no live region and a running line holds only its own",
+      "cell": "1.5 a spinner is decorative: no role and no Loading label, so a turn's button holds no live region and a running line holds only its own"
+    },
+    {
+      "name": "SP33 the code block draws the language word whole, so an agent's long word fills the header",
+      "file": "implementations/web/client/src/ui/work/Code.tsx",
+      "find": "{lang && <span title={lang}>{shownName(lang, LANG_CAP)}</span>}",
+      "replace": "{lang && <span title={lang}>{lang}</span>}",
+      "expectRed": "6.4 a 200-character language word shows its first 24 characters as text and keeps the whole word in title",
+      "cell": "6.4 a 200-character language word shows its first 24 characters as text and keeps the whole word in title"
     }
   ]
 }
