@@ -333,6 +333,62 @@ without an issuance is refused with `permission-denied` and a detail naming the 
 whose caller had no channels can still sleep, checkpoint and turn agents; its `wait` on a channel
 is refused at the effect.
 
+The manager endpoint serves `run-cancel` with `{ runId, reason }`. Call it through an issued
+credential on a handle pinned to the manager instance, retaining the Describe-derived epoch bind.
+The reason must encode to 1 through 512 UTF-8 bytes, and the request deadline is at most 30 seconds.
+There is no new CLI or MCP convenience verb in this change.
+
+A signer-holding manager accepts the original caller's owner, actor and lifecycle under a live
+issued generation. On a signerless manager, the issuing host also accepts an interactive actor of
+that owner with `run`, or an interactive admin. It must observe the caller's request itself before
+a manager can forward it. Managed-agent names and platform assignments do not grant this authority.
+
+The reply separates the durable marker from the local observation: `stopped` means a local drive
+outcome was observed; `stop-requested` means it was not observed within the request budget.
+`launch-abandoned`, `terminal` and `not-driven-here` describe their respective local states.
+`duplicate` is false for a confirmed new marker, true for a confirmed existing one, and null after
+an unknown write followed by marker readback. Preserve unknown outcomes. Neither a marker nor a
+reply proves process cleanup or that another host stopped. Revoked runs remain readable through
+`run show`, but cannot receive new drive or answering authority. The endpoint's `run-status`
+reply carries `revoked: { by, reason }` independently of the recorded run state. A running record
+with that marker is not proof of a stopped holder. `revocationUnreadable` means the marker could
+not be checked; do not read that as unrevoked or resumable. A released record without a marker can
+be resumed under its original admission; a released record with a marker cannot. The human
+`run show` view displays admission revocation separately from recorded state. An unreadable marker
+produces a partial result with exit 4, in human and JSON output, as it does in the run list.
+
+A cancellation can retain a local pending intent even after a definite no-dispatch refusal if its
+budget ends before the manager can confirm marker absence. That intent blocks a new local launch
+or resume; it does not stop an existing drive. A later cancellation that observes a marker reconciles
+the retained intent. Replaying the same request without a marker reports that it remains pending and
+does not dispatch again. A manager process restart loses the local intent, but does not settle the
+unknown write or prove cessation. An absent marker after an unknown write does not clear the intent
+in the running process. A `not-executed` write outcome therefore does not promise that a local launch
+is available.
+
+Issuer observation custody has finite lifetime budgets per caller, owner and issuer. Exhaustion
+logs the budget class once per issuer process, without caller identities or request contents.
+Repeated refusals do not repeat that diagnostic. Custody entries are not evicted to make room.
+
+Embedding hosts can call a drive's `cancel(reason)` handle to signal cooperative root cancellation.
+The language's `RootCancellation` source carries the first reason through the walker and compiled
+worker to in-flight effect contexts. It is process-local and carries no authorization. The host must
+establish permission and observe the durable revocation marker before calling it. A root cancellation
+ends the drive as `released`; the status projection can lag if its write fails. Read the recorded
+state separately. A completion or failure that wins the race keeps its actual outcome. It does not stop an agent process or preempt already-pulled tool work.
+`release(reason)` remains a separate next-effect-boundary request, used for host shutdown.
+
+The host also supplies `cancellationObserved` for channel-effect classification. A fresh revocation
+read together with an observed local cancellation intent ends that effect as cancelled, even while
+the manager is still reading the current holder before signalling the root. Pending intents alone
+never do this. An ordinary local revoke without a cancellation intent keeps its existing failure
+behavior. The shared observation neither signals the root nor replaces the holder check.
+
+If the post-marker holder read fails or exceeds the original budget, the command does not signal
+the root without that check and returns no stopped receipt. A parked checkpoint or sleep can
+remain running beside the marker. Preserve the unknown outcome. A later explicit cancellation
+request can read the same marker and a current holder, then report its own observed result.
+
 `cotal run revoke <runId> --local --by <who> --reason <text>` writes the run's revocation marker
 from the project folder. An empty `--by` or `--reason` is refused before anything is written. The
 admission itself is never rewritten. Every host reads the marker

@@ -1,5 +1,6 @@
 {
   "bin/smoke/backup-conservation-live.smoke.ts": 1,
+  "bin/smoke/run-cancel-live.smoke.ts": 2,
   "bin/smoke/run-host-live.smoke.ts": 7,
   "extensions/connector-core/smoke/user-manager-transport.smoke.ts": 7,
   "extensions/connector-core/src/manager-call.ts": 1,
@@ -21,9 +22,10 @@
   "implementations/auth/smoke/remote-exchange.smoke.ts": 1,
   "implementations/auth/smoke/remote-run-attempt-route.smoke.ts": 4,
   "implementations/auth/smoke/remote-run-revoke.smoke.ts": 1,
+  "implementations/auth/smoke/run-cancel-live.smoke.ts": 1,
   "implementations/auth/smoke/user-spawn.smoke.ts": 6,
   "implementations/auth/src/handle-verification.ts": 1,
-  "implementations/auth/src/service.ts": 5,
+  "implementations/auth/src/service.ts": 6,
   "implementations/cli/smoke/bind-fence-live.smoke.ts": 1,
   "implementations/cli/smoke/scatter-pinned-probe.smoke.ts": 1,
   "implementations/cli/smoke/seed-task-durable.ts": 1,

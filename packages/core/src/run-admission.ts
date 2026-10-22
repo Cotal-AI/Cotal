@@ -192,9 +192,47 @@ export async function revokeRunAdmission(kv: KV, endpoint: string, revocation: R
   }
 }
 
+/** One create-only cancellation dispatch. Unlike KV.create, put with expected sequence zero never
+ *  follows a failed create with a tombstone read and another write. The caller owns the guard and
+ *  records possible dispatch there; no awaited preparation follows it. */
+export async function commitRunCancellation(
+  kv: KV,
+  endpoint: string,
+  revocation: RunRevocation,
+  beforeDispatch: () => void,
+): Promise<"created" | "existed"> {
+  const snap = revocationSnapshot(revocation, revocation.runId);
+  if (snap.by.length === 0 || snap.reason.length === 0)
+    throw new Error("run cancellation must name who revoked it and why");
+  const key = revocationKey(endpoint, snap.runId);
+  const bytes = enc.encode(canonicalJson(snap));
+  beforeDispatch();
+  try {
+    await kv.put(key, bytes, { previousSeq: 0 });
+    return "created";
+  } catch (error) {
+    if (isCasLoss(error)) return "existed";
+    throw error;
+  }
+}
+
 export interface RunAdmissionView {
   readonly admission: RunAdmission;
   readonly revoked: RunRevocation | undefined;
+}
+
+/** Cancellation distinguishes absent authority from unreadable trusted state without parsing messages. */
+export async function readCancellationAdmission(jsm: JetStreamManager, space: string, endpoint: string, runId: string): Promise<RunAdmissionView> {
+  let entry: Awaited<ReturnType<typeof readLeader>>;
+  try { entry = await readLeader(jsm, space, admissionKey(endpoint, runId)); }
+  catch { throw new EpEnvelopeError("unavailable", "run-cancel admission is unreadable"); }
+  if (!entry) throw new EpEnvelopeError("permission-denied", "run-cancel request is not authorized");
+  try {
+    const admission = admissionSnapshot(entry.value);
+    if (admission.space !== space || admission.endpoint !== endpoint || admission.runId !== runId) throw new Error("coordinates differ");
+    const marker = await readLeader(jsm, space, revocationKey(endpoint, runId));
+    return { admission, revoked: marker ? revocationSnapshot(marker.value, runId) : undefined };
+  } catch { throw new EpEnvelopeError("unavailable", "run-cancel admission or marker is unreadable"); }
 }
 
 /** The admission a host acts on: the record must exist, match its coordinates, and carry no

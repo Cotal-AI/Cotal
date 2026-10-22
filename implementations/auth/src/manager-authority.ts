@@ -16,6 +16,13 @@ import {
   type RemoteRunSubmissionResult,
   type RemoteRunAttemptRequest,
   type RemoteRunRevokeRequest,
+  type RemoteRunCancelRequest,
+  type RemoteRunCancelResult,
+  type RunCancelAuthority,
+  type RunCancelCommitCode,
+  type IssuedCaller,
+  readRunCancelInput,
+  commitRunCancellation,
   type RemoteRunRevokeResult,
   type RunRevocation,
   type RunAdmissionView,
@@ -51,6 +58,7 @@ import { timingSafeEqual } from "node:crypto";
 import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
+import { RunCancelObservations, type RunCancelObservation, type RunCancelClaim } from "./run-cancel-observation.js";
 
 /** The run attempt the host observes for itself. A null answer is a run with no record or status. */
 export type ObserveManagerRun = (runId: string) => Promise<HostedRunAttempt | null>;
@@ -456,6 +464,112 @@ export async function admitRemoteRun(args: {
 
 const ID_TOKEN = /^[A-Za-z0-9_-]{1,64}$/;
 
+/** The cancellation door accepts only a stage and the exact observed body and subject. */
+export function parseRemoteRunCancelRequest(raw: unknown): RemoteRunCancelRequest {
+  const registered = parseRegisteredRunRequest(raw, "manager-run-cancel", "manager run cancel", ["stage", "subject", "cancel"]);
+  const input = raw as Record<string, unknown>;
+  if ((input.stage !== "inspect" && input.stage !== "commit") || typeof input.subject !== "string")
+    runRequestError("manager run cancel", "requires inspect or commit and an observed subject");
+  return { v: 1, kind: "manager-run-cancel", ...registered, stage: input.stage as "inspect" | "commit",
+    subject: input.subject as string, cancel: readRunCancelInput(input.cancel) };
+}
+
+/** Inspect never grants a later commit. A commit owns its immutable observation before caller
+ *  authorization and store preparation, and checks it again at the native dispatch boundary. */
+export async function handleRemoteRunCancel(args: {
+  request: unknown; owner: string; space: string; endpoint: string; accountPublicKey: string;
+  proofSecret: string | Uint8Array; observeManagerGate: ObserveManagerGate;
+  observations: RunCancelObservations; flush: () => Promise<void>;
+  issued: IssuedStore; sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>;
+  interactiveScope: (caller: IssuedCaller, sources: readonly IssuedSourceRef[]) => Promise<readonly string[] | undefined>;
+  registeredCommand: (instanceId: string, revision: number, command: string) => Promise<Pick<EpCommandAuthority, "class" | "inputDigest" | "outputDigest">>;
+  readAdmission: (runId: string) => Promise<RunAdmissionView>;
+  readRevocation: (runId: string) => Promise<RunRevocation | undefined>;
+  withStore: <T>(runId: string, work: (kv: KV) => Promise<T>) => Promise<T>;
+  assertServing: () => void;
+}): Promise<RemoteRunCancelResult> {
+  const request = parseRemoteRunCancelRequest(args.request);
+  const common = { v: 1 as const, kind: "manager-run-cancel" as const, requestId: request.requestId, runId: request.cancel.runId };
+  // Authenticate the manager before its forward can consume another caller's observation.
+  await authenticateRegisteredManager(request, args, "run cancel");
+  const parsed = parseEpSubject(request.subject);
+  if (!request.subject.startsWith(`cotal.${args.space}.`) || !parsed || parsed.plane !== "request" || parsed.rail !== "v1"
+    || parsed.route !== "inst" || parsed.instanceId !== request.instanceId || parsed.endpoint !== args.endpoint
+    || parsed.command !== "run-cancel" || parsed.target !== null || !isIssuedCaller(parsed.caller))
+    throw new EpEnvelopeError("permission-denied", "run-cancel forward does not name this registered manager's issued request");
+  const caller = parsed.caller;
+  const authorize = async (observation: RunCancelObservation): Promise<{ authority: RunCancelAuthority; view: RunAdmissionView }> => {
+    args.assertServing();
+    if (observation.runId !== request.cancel.runId || observation.reason !== request.cancel.reason
+      || observation.instanceId !== request.instanceId || observation.processEpoch !== request.processEpoch)
+      throw new EpEnvelopeError("permission-denied", "run-cancel forward differs from the observed request");
+    if (performance.now() >= observation.requestEndsAt)
+      throw new EpEnvelopeError("deadline-exceeded", "run-cancel original observed deadline expired");
+    const gate = await authenticateRegisteredManager(request, args, "run cancel recheck");
+    const registered = await args.registeredCommand(request.instanceId, gate.registrationRevision, "run-cancel");
+    if (registered.class !== "ephemeral" || registered.class !== observation.class
+      || registered.inputDigest !== observation.inputDigest || registered.outputDigest !== observation.outputDigest)
+      throw new EpEnvelopeError("permission-denied", "run-cancel observation does not pin the registered contract");
+    const resolved = await args.issued.resolve({ space: args.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation }, args.sourceIsLive);
+    if (!issuedPermitsSubject(resolved.evidence.permissions.publish, request.subject))
+      throw new EpEnvelopeError("permission-denied", "run-cancel issued authority does not permit its subject");
+    const view = await args.readAdmission(request.cancel.runId);
+    if (view.admission.space !== args.space || view.admission.endpoint !== args.endpoint || view.admission.runId !== request.cancel.runId)
+      throw new EpEnvelopeError("unavailable", "run-cancel admission names other coordinates");
+    const original = view.admission.caller;
+    let authority: RunCancelAuthority;
+    if (caller.owner === original.owner && caller.actor === original.actor && caller.uid === original.uid) authority = "original";
+    else {
+      const scope = await args.interactiveScope(caller, resolved.evidence.sources);
+      if (scope?.includes("admin")) authority = "admin";
+      else if (caller.owner === original.owner && scope?.includes("run")) authority = "owner-interactive";
+      else throw new EpEnvelopeError("permission-denied", "run-cancel request is not authorized");
+    }
+    args.assertServing();
+    if (performance.now() >= observation.requestEndsAt)
+      throw new EpEnvelopeError("deadline-exceeded", "run-cancel original observed deadline expired");
+    return { authority, view };
+  };
+  if (request.stage === "inspect") {
+    await args.flush();
+    const observation = args.observations.inspect(request.subject);
+    const { authority } = await authorize(observation);
+    // A redelivery may have conflicted during the reads. Inspection still grants nothing.
+    if (args.observations.inspect(request.subject) !== observation)
+      throw new EpEnvelopeError("permission-denied", "run-cancel observation changed");
+    return { ...common, stage: "inspect", authority };
+  }
+  let claim: RunCancelClaim | undefined;
+  try {
+    await args.flush();
+    claim = args.observations.claim(request.subject);
+    const first = await authorize(claim.observation);
+    claim.assertCurrent();
+    if (first.view.revoked) return { ...common, stage: "commit", result: { kind: "committed", outcome: "existed", revocation: first.view.revoked } };
+    const result = await args.withStore(request.cancel.runId, async kv => {
+      const fresh = await authorize(claim!.observation);
+      claim!.assertCurrent();
+      if (fresh.view.revoked) return { kind: "committed" as const, outcome: "existed" as const, revocation: fresh.view.revoked };
+      const revocation: RunRevocation = { version: 1, runId: request.cancel.runId, by: `${caller.owner}.${caller.actor}`, reason: request.cancel.reason, revokedAt: Date.now() };
+      const outcome = await commitRunCancellation(kv, args.endpoint, revocation, () => {
+        args.assertServing();
+        claim!.dispatch();
+      });
+      if (outcome === "created") return { kind: "committed" as const, outcome, revocation };
+      const stored = await args.readRevocation(request.cancel.runId);
+      if (!stored) throw new EpEnvelopeError("unavailable", "run-cancel marker could not be read after an existing write");
+      return { kind: "committed" as const, outcome, revocation: stored };
+    });
+    return { ...common, stage: "commit", result };
+  } catch (error) {
+    claim?.finish();
+    const refusal = args.observations.refusal(request.subject);
+    const allowed = new Set<RunCancelCommitCode>(["permission-denied", "failed-precondition", "deadline-exceeded", "resource-exhausted", "unavailable"]);
+    const code = error instanceof EpEnvelopeError && allowed.has(error.code as RunCancelCommitCode) ? error.code as RunCancelCommitCode : "unavailable";
+    return { ...common, stage: "commit", result: { kind: refusal.kind, code } };
+  } finally { claim?.finish(); }
+}
+
 /** Closed parser for the issuing-host revoke. It carries no asserted owner or attribution. */
 export function parseRemoteRunRevokeRequest(raw: unknown): RemoteRunRevokeRequest {
   const what = "manager run revoke";
@@ -677,7 +791,8 @@ export type RemoteRunAttemptGrant =
 
 /**
  * Host-only authorization for {@link RemoteRunAttemptRequest}. Every coordinate the returned grant
- * pins is derived from host stores: the admission must exist unrevoked on this instance, the
+ * pins is derived from host stores: the admission must exist on this instance and be unrevoked
+ * for an attempt or answer. A read-only operator can inspect a revoked run. The
  * attempt must be exactly the next epoch/fencing token the run record implies (1/1 for a first
  * attempt with no record, as stock `start` launches), and an answer pins the pause the named run's
  * journal records at the named step, which must be waiting. Refuses before the host signs anything.
@@ -710,8 +825,8 @@ export async function authorizeRemoteRunAttempt(args: {
   const gate = await authenticateRegisteredManager(r, args, "run attempt");
   const admitted = async (runId: string) => {
     const view = await args.readAdmission(runId);
-    if (view.revoked !== undefined)
-      throw new EpEnvelopeError("permission-denied", `run ${runId} was revoked; a revoked run is issued nothing (SPEC 14.8)`);
+    if (view.revoked !== undefined && (r.attempt !== undefined || r.operator?.answers !== undefined))
+      throw new EpEnvelopeError("permission-denied", `run ${runId} was revoked; no attempt or answering authority is issued (SPEC 14.8)`);
     if (view.admission.instanceId !== r.instanceId || view.admission.endpoint !== args.endpoint || view.admission.space !== r.space)
       throw new EpEnvelopeError("permission-denied", `run ${runId} was admitted on another manager instance or endpoint`);
     return view.admission;

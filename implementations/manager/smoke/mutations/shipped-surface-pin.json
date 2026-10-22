@@ -10,8 +10,8 @@
     "Reached suites used to pin 18 while the shipped document served 20. Restating the count is the",
     "defect class: correct the day it is written, wrong after the next served command.",
     "",
-    "M2 restores revision 35 after the vitals addition changes the shipped surface.",
-    "The new command ships with revision 36, so 35 would name the preceding surface. The",
+    "M2 restores revision 36 after workflow cancellation joins the vitals surface.",
+    "The new command ships with revision 37, so 36 would name the preceding surface. The",
     "named revision cell runs after the service has published and a generic client has resolved the",
     "actual shipped document.",
     "",
@@ -31,12 +31,12 @@
       "cell": "the resolved surface matches the shipped cluster document"
     },
     {
-      "name": "M2 keep revision 35 after the vitals addition lands",
+      "name": "M2 keep revision 36 after workflow cancellation lands",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "    revision: 36,",
-      "replace": "    revision: 35,",
-      "expectRed": "the vitals addition advances the manager cluster revision and retains chat sessions, cancel, transcript-receive, goal-result and resolve-cwd",
-      "cell": "the vitals addition advances the manager cluster revision and retains chat sessions, cancel, transcript-receive, goal-result and resolve-cwd"
+      "find": "    revision: 37,",
+      "replace": "    revision: 36,",
+      "expectRed": "workflow cancellation advances the manager cluster revision and retains vitals, keyed submission and existing commands",
+      "cell": "workflow cancellation advances the manager cluster revision and retains vitals, keyed submission and existing commands"
     },
     {
       "name": "M3 compile every contract pair at module scope again",

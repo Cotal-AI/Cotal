@@ -35,7 +35,7 @@ import {
   type RunStatusView,
   type RunValidation,
 } from "@cotal-ai/core";
-import { CATALOG, codeFrame, primitiveDoc, validate, LangErrors, journalEntryKeyString, programHashOf, stepPauseToken, type JournalEntry } from "@cotal-ai/lang";
+import { CATALOG, codeFrame, primitiveDoc, validate, LangErrors, RootCancellation, journalEntryKeyString, programHashOf, stepPauseToken, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, PauseToken, type DriveOutcome } from "./run-driver.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
@@ -262,6 +262,8 @@ export const cotalLangRunHost: RunHost = {
 
   drive(planes: RunHostPlanes, req: RunHostDriveRequest, mediator: RunHostPlanes): RunHostDrive {
     const pause = new PauseToken();
+    const cancellation = new RootCancellation();
+    const cancellationObserved = () => req.cancellationObserved?.() ?? cancellation.reason;
     if (mediator === undefined || mediator.nc === planes.nc || mediator.space !== planes.space)
       throw new Error("a hosted run requires a separate trusted mediator connection in the same space");
     const authority = createRunScopeAuthority(mediator, req.runId, req.lease);
@@ -276,7 +278,7 @@ export const cotalLangRunHost: RunHost = {
       space: planes.space, endpoint: req.endpoint, runId: req.runId,
       caller: runDriverCaller(req.runId, admitted.caller.owner), instanceId: req.instanceId, epoch: req.epoch,
       holder: req.holder, defaultCheckpointTimeout: req.defaultCheckpointTimeout,
-    }, authority, admission);
+    }, authority, admission, cancellationObserved);
     const records = createRunRecordHost(mediator, req.endpoint, req.runId);
     const driveReq = {
       space: planes.space,
@@ -287,6 +289,8 @@ export const cotalLangRunHost: RunHost = {
       lease: req.lease,
       handler,
       pause,
+      cancellation,
+      cancellationObserved,
       ...(req.file !== undefined ? { file: req.file } : {}),
       ...(req.resultBytes !== undefined ? { resultBytes: req.resultBytes } : {}),
     };
@@ -294,7 +298,11 @@ export const cotalLangRunHost: RunHost = {
     // an outcome, never as its own crash.
     const done = (req.mode === "new" ? startRun(planes.js, planes.jsm, driveReq) : driveRun(planes.js, planes.jsm, driveReq))
       .then(outcomeOf, failureOf);
-    return { done, release: (reason: string) => pause.pause(reason) };
+    return {
+      done,
+      release: (reason: string) => pause.pause(reason),
+      cancel: (reason: string) => cancellation.cancel(reason),
+    };
   },
 
   async locate(planes: RunHostPlanes, req: RunHostLocateRequest): Promise<RunHostOpenPause> {
@@ -343,9 +351,17 @@ export const cotalLangRunHost: RunHost = {
     // The replay durable is named by the caller's takeover id (its credential's row); the read
     // half of that row is what a status view rides.
     const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, req.runId, req.takeoverId);
+    let revocation: Pick<RunStatusView, "revoked" | "revocationUnreadable"> = {};
+    try {
+      const marker = await readRunRevocation(planes.jsm, planes.space, req.endpoint, req.runId);
+      if (marker) revocation = { revoked: { by: marker.by, reason: marker.reason } };
+    } catch (error) {
+      revocation = { revocationUnreadable: (error as Error).message };
+    }
     return {
       runId: req.runId,
       endpoint: req.endpoint,
+      ...revocation,
       spec: record.spec.value,
       ...(record.status !== undefined ? { status: record.status.value } : {}),
       journal: await journalRows(planes.kv, req.endpoint, replay.records),

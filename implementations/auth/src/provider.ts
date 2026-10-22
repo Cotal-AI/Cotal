@@ -104,6 +104,10 @@ export const cotalAuthProvider: AuthProvider = {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "issuing hosted run credentials");
     return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run issuance") as Promise<RemoteRunAttemptResult>;
   },
+  async requestRemoteRunCancel({ store, dir, request }) {
+    const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "cancelling a hosted run");
+    return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run cancel") as Promise<import("@cotal-ai/core").RemoteRunCancelResult>;
+  },
   async requestRemoteRunRevoke({ store, dir, request }) {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "revoking a hosted run");
     return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run revoke") as Promise<import("@cotal-ai/core").RemoteRunRevokeResult>;

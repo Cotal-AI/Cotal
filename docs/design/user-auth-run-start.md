@@ -509,7 +509,7 @@ interactive path.
 | A served resume or answer the issuing host did not observe on the broker, or a second forward of one it did | issuing host | `permission-denied`, not observed |
 | A forwarded resume naming another run than the observed request, or an answer naming another endpoint or amendment | issuing host | `permission-denied`, another operation |
 | An amendment for a pause that has no accepted answer | issuing host | `failed-precondition` |
-| A boot-reconcile attempt for a revoked run | issuing host | existing refusal, `run <runId> was revoked; a revoked run is issued nothing (SPEC 14.8)` |
+| A boot-reconcile attempt for a revoked run | issuing host | existing refusal, `run <runId> was revoked; no attempt or answering authority is issued (SPEC 14.8)` |
 
 ## 8. Residual risk
 

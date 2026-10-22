@@ -912,6 +912,38 @@ const RUN_SUBMISSION_OUTPUT_SCHEMA = { type: "object", additionalProperties: fal
     instanceId: { type: "string" }, processEpoch: { type: "integer", minimum: 0 }, runId: { type: "string" },
     fingerprint: { type: "string" }, callbackDeadline: { type: "integer", minimum: 1 }, reason: { type: "string" },
   } } as const;
+const RUN_CANCEL_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId", "reason"],
+  properties: { runId: { type: "string", minLength: 1 }, reason: { type: "string", minLength: 1, maxLength: 512 } },
+} as const;
+const RUN_CANCEL_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["runId", "duplicate", "authority", "observed"],
+  properties: {
+    runId: { type: "string" }, duplicate: { type: ["boolean", "null"] },
+    authority: { enum: ["original", "owner-interactive", "admin"] },
+    revocation: { type: "object", additionalProperties: false, required: ["by", "reason", "revokedAt"],
+      properties: { by: { type: "string" }, reason: { type: "string" }, revokedAt: { type: "integer" } } },
+    observed: { type: "object", additionalProperties: false, required: ["processEpoch", "phase"], properties: {
+      processEpoch: { type: "integer", minimum: 0 },
+      phase: { enum: ["terminal", "launch-abandoned", "stop-requested", "stopped", "not-driven-here"] },
+      recordedState: { enum: ["running", "released", "completed", "failed"] },
+      runEpoch: { type: "integer", minimum: 0 }, fencingToken: { type: "integer", minimum: 0 }, holder: { type: "string" },
+      driveOutcome: { anyOf: [
+        { type: "object", additionalProperties: false, required: ["status", "steps"], properties: {
+          status: { const: "completed" }, steps: { type: "integer", minimum: 0 }, value: {},
+        } },
+        { type: "object", additionalProperties: false, required: ["status", "reason"], properties: {
+          status: { const: "released" }, reason: { type: "object", additionalProperties: false, required: ["name", "message"],
+            properties: { name: { type: "string" }, message: { type: "string" } } },
+        } },
+        { type: "object", additionalProperties: false, required: ["status", "error"], properties: {
+          status: { const: "failed" }, error: { type: "object", additionalProperties: false, required: ["name", "message"],
+            properties: { name: { type: "string" }, message: { type: "string" }, code: { type: "string" } } },
+        } },
+      ] },
+    } },
+  },
+} as const;
 const RUN_ID_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["runId"],
   properties: { runId: { type: "string", minLength: 1 }, endpoint: { type: "string", minLength: 1 } },
@@ -1002,6 +1034,8 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
   properties: {
     runId: { type: "string" },
     endpoint: { type: "string" },
+    revoked: RUN_ROW_SCHEMA.properties.revoked,
+    revocationUnreadable: RUN_ROW_SCHEMA.properties.revocationUnreadable,
     // The record halves are core's own closed shapes; they ride here as the values the store holds.
     spec: { type: "object" },
     status: { type: "object" },
@@ -1130,6 +1164,7 @@ const ROWS: CommandRow[] = [
   { name: "run-start-keyed", capability: "manager.run", input: RUN_START_INPUT_SCHEMA, output: RUN_SUBMISSION_OUTPUT_SCHEMA, targeted: false, handler: "runStartKeyed" },
   { name: "run-submission-status", capability: "manager.run", input: RUN_SUBMISSION_INPUT_SCHEMA, output: RUN_SUBMISSION_OUTPUT_SCHEMA, targeted: false, handler: "runSubmissionStatus" },
   { name: "run-resume", capability: "manager.run", input: RUN_RESUME_INPUT_SCHEMA, output: RUN_ID_OUTPUT_SCHEMA, targeted: false, handler: "runResume" },
+  { name: "run-cancel", capability: "manager.run", input: RUN_CANCEL_INPUT_SCHEMA, output: RUN_CANCEL_OUTPUT_SCHEMA, targeted: false, handler: "runCancel" },
   { name: "run-answer", capability: "manager.run", input: RUN_ANSWER_INPUT_SCHEMA, output: RUN_ANSWER_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "runAnswer" },
   { name: "run-status", capability: "manager.read", input: RUN_ID_INPUT_SCHEMA, output: RUN_STATUS_OUTPUT_SCHEMA, targeted: false, handler: "runStatus" },
   { name: "run-ps", capability: "manager.read", input: RUN_PS_INPUT_SCHEMA, output: RUN_PS_OUTPUT_SCHEMA, targeted: false, handler: "runPs" },
@@ -1293,7 +1328,10 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  The status output schema is closed, so a revision-32 contract rejects it.
  *
  *  34 = `chat-session-open` and `chat-session-retire`: a static manager admits and retires a chat
- *  session. New served commands cannot fold into 33. */
+ *  session. New served commands cannot fold into 33.
+ *
+ *  35 = keyed workflow submission and submission-status.
+ *  36 = authenticated workflow cancellation with observed local stop results. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1311,7 +1349,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 36,
+    revision: 37,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -1398,6 +1436,7 @@ export interface ManagerServiceHandlers {
   runStartKeyed(ctx: EpServeContext): unknown | Promise<unknown>;
   runSubmissionStatus(ctx: EpServeContext): unknown | Promise<unknown>;
   runResume(ctx: EpServeContext): unknown | Promise<unknown>;
+  runCancel(ctx: EpServeContext): unknown | Promise<unknown>;
   runAnswer(ctx: EpServeContext): unknown | Promise<unknown>;
   runStatus(ctx: EpServeContext): unknown | Promise<unknown>;
   runPs(ctx: EpServeContext): unknown | Promise<unknown>;

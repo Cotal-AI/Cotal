@@ -25,8 +25,16 @@ export function printRunList(space: string | undefined, items: readonly RunListR
 export function printRunDetail(space: string, view: RunStatusView, values: OutputValues): void {
   const shown = view.journal.slice(-20);
   const needsAnswer = view.journal.filter((row) => row.kind === "step" && row.state === "pending" && row.asks !== undefined);
-  writeResult(presentationOf(values), { command: "run", target: { space, endpoint: view.endpoint, run: view.runId, requestedManagerInstance: values.on ?? null }, result: { kind: "run", view } }, (): Report => ({ sections: [
-    { title: "Workflow", blocks: [{ kind: "fields", rows: [["Run", view.runId], ["Space", space], ["Endpoint", view.endpoint], ...(values.on ? [["Requested manager", values.on]] as [string, string][] : []), ["Recorded state", recordedState(view.status?.state)], ["Journal rows", String(view.journal.length)]] }] },
+  const unreadable = view.revocationUnreadable !== undefined;
+  writeResult(presentationOf(values), {
+    command: "run", target: { space, endpoint: view.endpoint, run: view.runId, requestedManagerInstance: values.on ?? null }, result: { kind: "run", view },
+    warnings: unreadable ? [{ code: "REVOCATION_NOT_CHECKED", target: { run: view.runId, endpoint: view.endpoint }, message: "The revocation marker could not be read; the recorded state does not establish that this run may continue." }] : [],
+    ...(unreadable ? { completeness: "partial" as const, partial: { message: "The run revocation marker could not be read." } } : {}),
+  }, (): Report => ({ sections: [
+    { title: "Workflow", blocks: [{ kind: "fields", rows: [["Run", view.runId], ["Space", space], ["Endpoint", view.endpoint], ...(values.on ? [["Requested manager", values.on]] as [string, string][] : []), ["Recorded state", recordedState(view.status?.state)],
+      ...(view.revoked ? [["Admission", { text: "admission revoked", tone: "failed" }], ["Revoked by", view.revoked.by], ["Revocation reason", view.revoked.reason]] as [string, string | Styled][] : []),
+      ...(unreadable ? [["Revocation", { text: "revocation not checked", tone: "waiting" }]] as [string, Styled][] : []),
+      ["Journal rows", String(view.journal.length)]] }] },
     ...(needsAnswer.length ? [{ title: "Needs an answer", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "asks", label: "Request" }], rows: needsAnswer.map((row) => row.kind === "step" ? { step: row.step, asks: row.asks ?? "" } : { step: "", asks: "" }) }] }] : []),
     { title: `Journal · last ${shown.length} of ${view.journal.length}`, blocks: [shown.length ? { kind: "table", columns: [{ key: "number", label: "Entry" }, { key: "step", label: "Step" }, { key: "outcome", label: "Recorded outcome" }], rows: shown.map((row) => ({ number: String(row.n), step: row.kind === "activation" ? "holder activation" : row.step, outcome: row.kind === "activation" ? `epoch ${row.epoch}` : row.outcome })) } : { kind: "lines", lines: ["No journal entries in this view."] }, { kind: "lines", lines: [{ text: "Use --json for the full returned journal. A step outcome is not proof that every external task succeeded.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal r answer ${runToken(view.runId)} '<step-key>' --value '<json>'${managerPin(values)}`, description: "Answer an open request under the native caller policy" }, { command: `cotal r show ${runToken(view.runId)} --json${managerPin(values)}`, description: "Read the complete returned status and journal" }] }] },
