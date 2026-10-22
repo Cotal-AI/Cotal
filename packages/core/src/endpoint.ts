@@ -7962,10 +7962,13 @@ export async function isReachable(
  *  registry prune (the D5 credential-death event). `unreachable` means nothing usable answered and
  *  the cred is not provably dead (refused / timeout / a stale registry entry). `timeout` means the
  *  dial ran out of its own budget before anything conclusive came back — never a trust or credential
- *  verdict, just "try again with more time" (#851). */
+ *  verdict, just "try again with more time" (#851). `inferred` marks an `auth-required` read from
+ *  the broker's greeting rather than from a rejection: the greeting asked for auth and the handshake
+ *  was then reset. The greeting is unauthenticated, so that verdict may name a failure but must never
+ *  be grounds for deleting state. */
 export type ProbeResult =
   | { ok: true }
-  | { ok: false; reason: "auth-required" }
+  | { ok: false; reason: "auth-required"; inferred?: true }
   | { ok: false; reason: "stale-auth" }
   | { ok: false; reason: "unreachable" }
   | { ok: false; reason: "timeout" };
@@ -8039,9 +8042,10 @@ function classifyProbeFailure(e: unknown, opts: AuthOpts, authRequired = false):
   // and grading it `unreachable` made a TLS-required target read as a trust failure (#851). Only
   // nats-core's TimeoutError means that: a peer's `-ERR` that mentions a timeout answered at once.
   if (e instanceof TimeoutError) return { ok: false, reason: "timeout" };
-  // A broker that greeted us asking for auth and then reset the handshake refused it. Windows can
-  // discard its `-ERR 'Authorization Violation'` when the reset lands, so the client sees only
-  // ECONNRESET, and a running auth broker used to read as gone.
-  if (authRequired && (e as { code?: unknown } | undefined)?.code === "ECONNRESET") return { ok: false, reason: "auth-required" };
+  // A broker that greeted us asking for auth and then reset the handshake most likely refused it.
+  // Windows can discard its `-ERR 'Authorization Violation'` when the reset lands, so the client
+  // sees only ECONNRESET, and a running auth broker used to read as gone. No rejection was read, so
+  // the verdict is marked inferred.
+  if (authRequired && (e as { code?: unknown } | undefined)?.code === "ECONNRESET") return { ok: false, reason: "auth-required", inferred: true };
   return { ok: false, reason: "unreachable" };
 }

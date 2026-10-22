@@ -282,9 +282,9 @@ try {
     await new Promise<void>((resolve) => resetter.close(() => resolve()));
     check(
       authRequired
-        ? "probeConnect grades a reset after an auth-required greeting as auth-required, not a dead broker"
+        ? "probeConnect grades a reset after an auth-required greeting as an inferred auth-required, not a dead broker"
         : "probeConnect still grades a reset after an open greeting as unreachable",
-      !resetProbe.ok && resetProbe.reason === (authRequired ? "auth-required" : "unreachable"),
+      !resetProbe.ok && (authRequired ? resetProbe.reason === "auth-required" && resetProbe.inferred === true : resetProbe.reason === "unreachable"),
       resetProbe,
     );
   }
