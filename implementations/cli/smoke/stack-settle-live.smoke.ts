@@ -338,7 +338,7 @@ try {
     const completed = states !== undefined && readdirSync(states).some((name) => name.endsWith(".completed.json"));
     check(`${space}: the resumed manager records its stop completed and exits`, exitedLate && completed, { exitedLate, completed });
     const settled = (row = serviceInstances(space, "stack-manager").find((entry) => entry.name === manager?.name)) => row?.record.value.state === "stopped" && row.record.value.nativeStop?.requestId === request && row.record.value.nativeStop?.nativeStop === "returned";
-    return { root, request, markerHeld, settled };
+    return { root, pid, markerHeld, settled };
   };
   {
     const { root, markerHeld, settled } = await completeLate("latedown");
@@ -346,11 +346,13 @@ try {
     check("bare down settles the late-completed manager stop from its receipt and stops the rest of the stack", recovered.status === 0 && recovered.env?.outcome === "ok" && settled() && !markerHeld() && gone("latedown", "stack-delivery") && gone("latedown", "stack-broker") && findMesh("latedown") === undefined, { ...shown(recovered), settled: settled(), marker: markerHeld() });
   }
   {
-    const { root, markerHeld, settled } = await completeLate("lateup");
+    const { root, pid, markerHeld } = await completeLate("lateup");
     const recovered = cli(root, "up", "--json");
     track("lateup");
-    const relaunched = serviceInstances("lateup", "stack-manager").some((row) => observeServiceProcess(row.record.value) === "running");
-    check("bare up settles the late-completed manager stop from its receipt and starts a manager", recovered.status === 0 && settled() && !markerHeld() && relaunched, { ...shown(recovered), settled: settled(), marker: markerHeld(), relaunched });
+    // The up relaunches the settled instance, so its record is running again; the settlement shows
+    // as the earlier operation settled, the released reservation and a manager under a new pid.
+    const relaunched = pidOf("lateup", "stack-manager");
+    check("bare up settles the late-completed manager stop from its receipt and starts a manager", recovered.status === 0 && recovered.env?.outcome === "ok" && Boolean(recovered.env.warnings?.some((warning) => warning.code === "OPERATION_SETTLED")) && !markerHeld() && relaunched !== null && relaunched !== pid && alive(relaunched), { ...shown(recovered), warnings: recovered.env?.warnings, marker: markerHeld(), relaunched, pid });
     const stopped = cli(root, "down", "--yes", "--json");
     check("down then stops the relaunched manager under a new reservation", stopped.status === 0 && stopped.env?.outcome === "ok" && gone("lateup", "stack-manager") && !markerHeld(), shown(stopped));
   }
