@@ -98,7 +98,8 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 // SET BEFORE ANY `recordMesh`: the mesh registry is written under COTAL_HOME, and this suite must
 // never touch the operator's real `~/.cotal`. The child inherits the same value.
 const home = join(dir, "home");
-mkdirSync(home, { recursive: true });
+// Private, as cotal creates its own home: the local-record store refuses a group- or world-readable one.
+mkdirSync(home, { recursive: true, mode: 0o700 });
 process.env.COTAL_HOME = home;
 const mkRoot = (tag: string): string => {
   const r = join(dir, tag);
@@ -287,13 +288,13 @@ try {
 
   // describe --on <iid> SUCCEEDS and its attribution line names <iid>: the pinned instance
   // answered, not the queue winner (#554). Exit 0 alone is satisfied by the class queue; the
-  // attribution-line equality is the claim.
+  // equality of the report's "Answering instance" field is the claim.
   for (const [label, iid] of [["IID1", IID1], ["IID2", IID2]] as const) {
     const r = await cotal(["describe", "manager", "--on", iid, "--space", space], root1);
     mustHaveRun(r, `\`describe manager --on ${label}\``);
     const out = strip(r.out);
     check(`describe --on ${label} SUCCEEDS and its attribution line names ${label}: the pinned instance answered, not the queue winner (#554)`,
-      r.status === 0 && out.includes(`instance ${iid} ·`),
+      r.status === 0 && new RegExp(`^ +Answering instance: +${iid}$`, "m").test(out),
       { status: r.status, tail: out.slice(-300) });
   }
 
@@ -310,16 +311,17 @@ try {
   // `--on` where it cannot apply is REFUSED, never ignored (the `--dry-run` rule, mirrored): a
   // foreground spawn has no manager to pin and a manifest deploy launches through the class queue.
   // Both used to accept the flag and drop it, so an operator who read the split message's advice and
-  // typed `spawn -f ... --on <id>` was pinned to nothing and never told.
-  for (const [what, argv] of [
-    ["a foreground spawn", ["spawn", "no-such-persona", "--on", IID1, "--space", space]],
-    ["a manifest deploy", ["spawn", "-f", "no-such-manifest.yaml", "--detach", "--on", IID1, "--space", space]],
+  // typed `spawn -f ... --on <id>` was pinned to nothing and never told. Manifest deploys are now
+  // `team deploy`, which has no `--on` at all.
+  for (const [what, argv, refusal] of [
+    ["a foreground spawn", ["spawn", "no-such-persona", "--foreground", "--on", IID1, "--space", space], /direct --foreground execution takes no structured receipt, manager credential or manager pin/],
+    ["a manifest deploy", ["team", "deploy", "no-such-manifest.yaml", "--on", IID1, "--space", space], /Unknown option '--on'/],
   ] as const) {
     const r = await cotal([...argv], root1);
     mustHaveRun(r, `\`${what} --on\``);
     const out = strip(r.out);
     check(`--on on ${what} is REFUSED up front (not silently ignored)`,
-      r.status !== 0 && /--on only applies to a detached imperative spawn/.test(out), { status: r.status, tail: out.slice(-300) });
+      r.status === 1 && refusal.test(out), { status: r.status, tail: out.slice(-300) });
   }
 
   console.log("\n4. THE DISCRIMINATOR: a valid-but-absent instance must NOT be answered by a peer");
@@ -364,21 +366,22 @@ try {
   // cover the whole chain; neither covers it alone.
   console.log("\n5. every OTHER `--on` site forwards it too (spawn/stop/attach have their own)");
   const pinnedDescribeDeadline = /no describe reply from manager( instance \S+)? within/i;
-  const sites: ReadonlyArray<{ what: string; argv: string[] }> = [
+  const sites: ReadonlyArray<{ what: string; argv: string[]; deadline?: RegExp }> = [
     // --on is a `--detach` flag on spawn (foreground runs in this process, not on a manager). The
     // persona ref is deliberately nonexistent so that a dropped pin cannot start anything: the
     // worst case is a manager refusal, which is a DIFFERENT message and still fails this cell.
     { what: "spawn --detach", argv: ["spawn", `no-such-persona-${randomUUID().slice(0, 6)}`, "--detach", "--on", absent, "--space", space] },
     { what: "stop", argv: ["stop", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
     { what: "attach", argv: ["attach", "--name", `no-such-agent-${randomUUID().slice(0, 6)}`, "--on", absent, "--space", space] },
-    { what: "describe", argv: ["describe", "manager", "--on", absent, "--space", space] },
+    // describe reports the read as a failed request that names the pinned instance and the native deadline.
+    { what: "describe", argv: ["describe", "manager", "--on", absent, "--space", space], deadline: new RegExp(`^ +Requested instance: +${absent}\n +Native code: +deadline-exceeded$`, "m") },
   ];
   for (const site of sites) {
     const r = await cotal(site.argv, root1);
     mustHaveRun(r, `\`${site.what} --on <valid-but-absent>\``);
     const out = strip(r.out);
     check(`${site.what} HONOURS --on: it deadlines on the pinned rail instead of asking the class queue`,
-      pinnedDescribeDeadline.test(out),
+      (site.deadline ?? pinnedDescribeDeadline).test(out),
       { status: r.status, tail: out.slice(-400) });
     check(`...and ${site.what}'s headline names the instance, not an unreachable mesh`,
       !/no manager reachable/i.test(out), out.slice(-300));
@@ -490,8 +493,8 @@ try {
     result: { items: { agent: string; supported: boolean; models: { id: string }[]; unavailable?: string; error?: string }[] } | null;
   };
   const modelsJson = async (agent?: string): Promise<{ run: Run; env: ModelsEnvelope | undefined }> => {
-    const run = await cotal(["models", ...(agent ? ["--agent", agent] : []), "--json", "--space", space], root1);
-    mustHaveRun(run, `\`models${agent ? ` --agent ${agent}` : ""} --json\``);
+    const run = await cotal(["models", ...(agent ? ["--harness", agent] : []), "--json", "--space", space], root1);
+    mustHaveRun(run, `\`models${agent ? ` --harness ${agent}` : ""} --json\``);
     let env: ModelsEnvelope | undefined;
     try { env = JSON.parse(run.stdout) as ModelsEnvelope; } catch { env = undefined; }
     return { run, env };
@@ -508,7 +511,7 @@ try {
       unlisted.env.result.items[0].error === undefined && unlisted.env.warnings.length === 0,
     { status: unlisted.run.status, stdout: unlisted.run.stdout.slice(-600) });
   const broken = await modelsJson("models-broken");
-  check("the one catalog --agent names could not be read: failed, exit 5, with the connector's reason",
+  check("the one catalog --harness names could not be read: failed, exit 5, with the connector's reason",
     broken.run.status === 5 && broken.env?.outcome === "failed" && broken.env.error?.code === "OPERATION_FAILED" && /fixture catalog could not be read/.test(broken.run.stdout),
     { status: broken.run.status, stdout: broken.run.stdout.slice(-600) });
   const every = await modelsJson();
@@ -519,8 +522,8 @@ try {
       rowOf("models-unlisted")?.supported === false &&
       every.env.warnings.filter((w) => w.code === "MODEL_CATALOG_UNREADABLE").map((w) => w.target.agent).join() === "models-broken",
     { status: every.run.status, stdout: every.run.stdout.slice(-900) });
-  const unlistedHuman = await cotal(["models", "--agent", "models-unlisted", "--space", space], root1);
-  mustHaveRun(unlistedHuman, "`models --agent models-unlisted`");
+  const unlistedHuman = await cotal(["models", "--harness", "models-unlisted", "--space", space], root1);
+  mustHaveRun(unlistedHuman, "`models --harness models-unlisted`");
   check("the report gives the reason the install lists no catalog and no failure",
     unlistedHuman.status === 0 && strip(unlistedHuman.out).includes("this fixture install lists no catalog; pass --model") && !/could not be read/.test(strip(unlistedHuman.out)),
     { status: unlistedHuman.status, out: strip(unlistedHuman.out).slice(-400) });
