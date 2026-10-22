@@ -2456,11 +2456,14 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const src = { tls: undefined as any };\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
   check("...while the same source holding a real boolean is untouched",
     one(`const src = { tls: false };\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
-  check("a resolved mesh's TLS requirement captured as a primitive is stated without a default",
+  // An identifier bound to a member read is accepted without checking the member's value.
+  // `const options = { tls: undefined as any }; const tls = options.tls;` also passes here,
+  // while the runtime seam rejects it. This fixture covers the accepted syntax only.
+  check("an identifier bound to a resolved mesh's TLS member read is accepted",
     one(`const mesh = resolveMeshTarget(cwd, { space, server });\nconst tls = mesh.tlsRequired;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
-  check("the primitive spelling preserves an explicit false TLS decision",
+  check("a const bound to false states an explicit TLS decision",
     one(`const tls = false;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
-  check("the primitive spelling still refuses an explicitly undefined TLS decision",
+  check("a const bound to undefined still fails the explicit TLS decision check",
     one(`const tls = undefined;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
   check("...and a PRODUCER written here is refused where it is called, as the inline invocation is",
     one(`const mk = () => ({ tls: undefined as any });\nconst { tls } = mk();\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
@@ -2624,8 +2627,8 @@ console.log("\nB. the seam, across every source the compiler may or may not read
 }
 check("the literal per-file census accounts for the source and smoke totals",
   Object.values(SITE_COUNTS).every((n) => Number.isSafeInteger(n) && n > 0)
-  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === 311
-  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === 236);
+  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === SEAMS[0].sites
+  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === SEAMS[0].untypecheckedSites);
 const files = sources(ROOT);
 check("the scan reached a source tree at all (a zero-file walk would pass every cell below)", files.length > 500, files.length);
 
