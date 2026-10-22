@@ -56,6 +56,7 @@ import {
   bindGoal,
   createGoal,
   commitGoalResult,
+  requestGoalCancel,
   mintCheckpoint,
   expireCheckpoint,
   goalRefOf,
@@ -176,11 +177,22 @@ const DESPAWN_OUTPUT = {
 // it runs no seat process, so every seat whose presence lapsed is one it no longer holds.
 const INSPECT_INPUT = { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 } } } as const;
 const INSPECT_OUTPUT = { type: "object" } as const;
+// A cancelled step withdraws its relay through the manager's reserved `cancel` (SPEC 13.6 item 4)
+// before the cancellation leaves the step, so the stand-in serves it with the manager's schemas.
+const CANCEL_INPUT = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: { goalId: { type: "string", minLength: 1 }, mode: { enum: ["graceful", "terminate"] } },
+} as const;
+const CANCEL_OUTPUT = {
+  type: "object", additionalProperties: false, required: ["goalId", "state"],
+  properties: { goalId: { type: "string" }, state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] } },
+} as const;
 const COMPILED = {
   spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
   turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
   despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
   inspect: { input: cc(INSPECT_INPUT), output: cc(INSPECT_OUTPUT) },
+  cancel: { input: cc(CANCEL_INPUT), output: cc(CANCEL_OUTPUT) },
 };
 const DOCUMENT = {
   urn: "ai.cotal.test.turnmgr", revision: 1, attributes: [], events: [],
@@ -189,6 +201,7 @@ const DOCUMENT = {
     { name: "turn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.turn.input.closureDigest, outputDigest: COMPILED.turn.output.closureDigest },
     { name: "despawn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.despawn.input.closureDigest, outputDigest: COMPILED.despawn.output.closureDigest },
     { name: "inspect", class: "ephemeral" as const, targeted: false, capability: "manager.read", inputDigest: COMPILED.inspect.input.closureDigest, outputDigest: COMPILED.inspect.output.closureDigest },
+    { name: "cancel", class: "ephemeral" as const, targeted: false, capability: "manager.lifecycle", inputDigest: COMPILED.cancel.input.closureDigest, outputDigest: COMPILED.cancel.output.closureDigest },
   ],
 };
 const ROOT_DIGEST = contractDigest(DOCUMENT);
@@ -200,7 +213,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT, INSPECT_INPUT, INSPECT_OUTPUT]) {
+  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT, INSPECT_INPUT, INSPECT_OUTPUT, CANCEL_INPUT, CANCEL_OUTPUT]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -386,6 +399,19 @@ const defs: EpCommandDef[] = [
   } },
   { command: "inspect", contract: COMPILED.inspect, handler: (ctx: EpServeContext) => {
     throw new EpEnvelopeError("not-found", `no agent "${String((ctx.request.args as { name?: unknown }).name)}"`);
+  } },
+  // As the manager does, it moves a relay this stand-in accepted to `cancelling` and then commits
+  // the cancel terminal, and refuses a goal it never accepted.
+  { command: "cancel", contract: COMPILED.cancel, handler: async (ctx: EpServeContext) => {
+    const raw = (ctx.request.args ?? {}) as { goalId?: unknown; mode?: unknown };
+    const goalId = String(raw.goalId);
+    if (!turnAccepts.has(goalId)) throw new EpEnvelopeError("failed-precondition", `no turn "${goalId}" of this caller is pending on this manager`);
+    await requestGoalCancel(goalCtx, { request: ctx.subject, goalId, mode: (raw.mode ?? "graceful") as "graceful" | "terminate" });
+    const { fact } = await commitGoalResult(goalCtx, {
+      ref: goalRefOf(ctx.subject, goalId), now: Date.now(), cause: "cancel", data: { cancelledBy: "caller" },
+      committer: { instanceId: MGR_IID, epoch: EXEC_EPOCH },
+    });
+    return { goalId, state: fact.state };
   } },
 ];
 const serve = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
