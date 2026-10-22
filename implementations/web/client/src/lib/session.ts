@@ -18,6 +18,7 @@
 import type { CotalMessage } from "../api/types.js";
 import type { StoredMessage } from "../state/types.js";
 import { partsToText } from "./parts.js";
+import { toolResultOf } from "./toolResult.js";
 
 export type TurnSource = "prompt" | "mesh" | "continuation" | "notification";
 export interface SessionFrame { id: string; ts: number; events: unknown[]; live: boolean }
@@ -257,6 +258,9 @@ export function foldSession(frames: readonly SessionFrame[], posts: readonly Sto
           break;
 
         case "CUSTOM":
+          // A well-formed tool result marker adds no step: a call is drawn where it starts, and the
+          // marker only says it finished. A malformed one stays an unknown step.
+          if (toolResultOf(e) !== undefined) break;
           flat.push({ item: { kind: "unknown", key, label: `Custom event ${str(e.name) === undefined ? "(unnamed)" : JSON.stringify(e.name)}`, ts: at }, at, live });
           break;
 

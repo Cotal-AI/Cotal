@@ -430,7 +430,12 @@ onto this channel. The durable emitter drops those events before they are writte
 write-ahead log, because this channel's read ACL is not the ACL the tool ran under. Content is
 mandatory on both kinds, so the event is suppressed rather than emptied or replaced with a
 placeholder. Tool start and end still go out. A restart that finds a pending pre-fix frame
-still carrying those kinds HALTS rather than republishing it.
+still carrying those kinds HALTS rather than republishing it. In place of each tool result, the
+connector publishes a `CUSTOM` event named `cotal.toolResult` whose `value` is
+`{ toolCallId, isError }`, stamped with the result's time. It carries no tool input or output. A
+viewer can tell when a call finished and whether it returned an error, and nothing more. The closed
+schema refuses a marker with any other field, and `cotal console` draws it as `done` or `failed`
+under the call.
 
 The channel is **`events.<owner>.<actor>`**, named after the session's principal. What the actor
 half is depends on the mesh, and the difference matters when you go looking for it: on a static mesh

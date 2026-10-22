@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/agui-egress-closed-schema.smoke.ts"
   ],
-  "guard": "the egress fence validates the whole frame envelope against a closed schema: known top-level frame keys and known per-event keys per type; an envelope with an unknown or extra property at any level is refused naming the path; a frozen body carrying an extra property halts AguiEmitter.start recovery rather than republishing",
+  "guard": "the egress fence validates the whole frame envelope against a closed schema: known top-level frame keys and known per-event keys per type; an envelope with an unknown or extra property at any level is refused naming the path; a frozen body carrying an extra property halts AguiEmitter.start recovery rather than republishing; a cotal.toolResult marker whose value is not a string toolCallId and a boolean isError with no other key is refused the same way",
   "command": "pnpm --filter @cotal-ai/connector-core... build && pnpm smoke:agui-egress-closed-schema",
   "completionMarker": "agui-egress-closed-schema smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-egress-closed-schema.json",
@@ -19,7 +19,11 @@
     "proving the fence actually checks frame keys and is not vacuously passing.",
     "",
     "T-EVENT-LIVENESS adds a fake key to the RUN_STARTED event type's known keys, proving per-event",
-    "key checking is not vacuous."
+    "key checking is not vacuous.",
+    "",
+    "T-MARKER-VALUE skips the closed check on the tool result marker's value, so a marker carrying",
+    "content publishes. T-MARKER-TYPE lets a non-boolean isError through; a marker missing isError is",
+    "still refused by the key count, so only the type cell reddens."
   ],
   "mutations": [
     {
@@ -28,6 +32,7 @@
       "find": "        const extra = extraPropertyPath(part as Record<string, unknown>);\n        if (extra !== undefined) return \"extra-property\";\n      } catch {",
       "replace": "      } catch {",
       "expectRed": "closed-schema:sibling-property frame-level tool bytes are refused",
+      "cell": "closed-schema:sibling-property frame-level tool bytes are refused",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     },
     {
@@ -36,6 +41,7 @@
       "find": "      throw this.halt(\n        \"egress-extra-property\",",
       "replace": "      void this.halt(\n        \"egress-extra-property\",",
       "expectRed": "recover:AguiEmitter.start halts with egress-extra-property for frozen sibling-property body",
+      "cell": "recover:AguiEmitter.start halts with egress-extra-property for frozen sibling-property body",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     },
     {
@@ -44,6 +50,7 @@
       "find": "const KNOWN_FRAME_KEYS: ReadonlySet<string> = new Set([\n  \"kind\", \"protocol\", \"threadId\", \"runId\", \"epoch\", \"seq\", \"events\",\n]);",
       "replace": "const KNOWN_FRAME_KEYS: ReadonlySet<string> = new Set([\n  \"kind\", \"protocol\", \"threadId\", \"runId\", \"epoch\", \"seq\", \"events\",\n  \"recovery\", \"smuggled\",\n]);",
       "expectRed": "closed-schema:sibling-property frame-level tool bytes are refused",
+      "cell": "closed-schema:sibling-property frame-level tool bytes are refused",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     },
     {
@@ -52,6 +59,25 @@
       "find": "[AGUI_EVENT_TYPE.RUN_STARTED, new Set([\"type\", \"timestamp\", \"rawEvent\", \"threadId\", \"runId\", \"parentRunId\", \"input\", \"cotal\"])],",
       "replace": "[AGUI_EVENT_TYPE.RUN_STARTED, new Set([\"type\", \"timestamp\", \"rawEvent\", \"threadId\", \"runId\", \"parentRunId\", \"input\", \"cotal\", \"leaked\"])],",
       "expectRed": "closed-schema:nested-event-field tool bytes are refused",
+      "cell": "closed-schema:nested-event-field tool bytes are refused",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    },
+    {
+      "name": "T-MARKER-VALUE the value check is skipped, so a tool result marker can carry the tool output the fence drops from the result",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    if (t === AGUI_EVENT_TYPE.CUSTOM && e.name === TOOL_RESULT_EVENT) {\n      const defect = toolResultValueDefect(e.value);\n      if (defect !== undefined) return `events[${i}].${defect}`;\n    }\n",
+      "replace": "",
+      "expectRed": "closed-schema:marker a marker whose value also carries content is refused at events[0].value.content",
+      "cell": "closed-schema:marker a marker whose value also carries content is refused at events[0].value.content",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
+    },
+    {
+      "name": "T-MARKER-TYPE a non-boolean isError passes, so the marker's second field can carry any value",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "  if (typeof v.isError !== \"boolean\") return \"value\";\n",
+      "replace": "",
+      "expectRed": "closed-schema:marker a marker whose isError is not a boolean is refused at events[0].value",
+      "cell": "closed-schema:marker a marker whose isError is not a boolean is refused at events[0].value",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core... build"
     }
   ]

@@ -135,6 +135,23 @@ const CORPUS: { name: string; part: unknown }[] = [
 
   { name: "a tool result with no content", part: frame({ type: T.TOOL_CALL_RESULT, toolCallId: "c9" }) },
 
+  // THE TOOL RESULT MARKER. Both sides draw a well-formed `cotal.toolResult` as a result line and
+  // any other shape as the plain custom line, so the shape rule is written twice and compared here.
+  { name: "a call with a result marker", part: frame(
+    { type: T.TOOL_CALL_START, toolCallId: "c10", toolCallName: "Read" },
+    { type: T.TOOL_CALL_END, toolCallId: "c10" },
+    { type: T.CUSTOM, name: "cotal.toolResult", value: { toolCallId: "c10", isError: false } }) },
+
+  { name: "a call with an error result marker", part: frame(
+    { type: T.TOOL_CALL_START, toolCallId: "c11", toolCallName: "Bash" },
+    { type: T.TOOL_CALL_END, toolCallId: "c11" },
+    { type: T.CUSTOM, name: "cotal.toolResult", value: { toolCallId: "c11", isError: true } }) },
+
+  { name: "malformed result markers (a non-boolean isError, an extra key, a missing key)", part: frame(
+    { type: T.CUSTOM, name: "cotal.toolResult", value: { toolCallId: "c12", isError: "yes" } },
+    { type: T.CUSTOM, name: "cotal.toolResult", value: { toolCallId: "c12", isError: false, content: "x" } },
+    { type: T.CUSTOM, name: "cotal.toolResult", value: { toolCallId: "c12" } }) },
+
   { name: "CUSTOM, named and unnamed", part: frame(
     { type: T.CUSTOM, name: "checkpoint" }, { type: T.CUSTOM }) },
 
@@ -274,7 +291,8 @@ function factsFromLines(rendered: string): string[] {
     else if (l.startsWith("▸ ")) facts.push("turn");
     else if (l.startsWith("• unrecognised event") || l.startsWith("• custom")) facts.push("unknown");
     else if (l.startsWith("(thinking) ")) facts.push("reasoning");
-    // A result line is the deliberate difference; a `  · ` line continues the fact before it.
+    // A result line is the deliberate difference, the marker's `  ↳ done` and `  ↳ failed` included;
+    // a `  · ` line continues the fact before it.
     else if (l.startsWith("  ↳ ") || l.startsWith("  · ")) continue;
     // A prefix the projection does not know fails the comparison rather than vanishing from it.
     else facts.push("unprojected");
@@ -389,6 +407,8 @@ console.log(`
 ── what the fold cell leaves out, deliberately ─────────────────────────────────
   · Tool results (\`  ↳ \` lines) and tool arguments, on both sides. The event
     plane drops them, so the fold draws neither; if one arrives it is not drawn.
+    The result marker's \`  ↳ done\` and \`  ↳ failed\` lines are left out the
+    same way: the fold adds no step for a well-formed marker.
   · Where a call lands. The fold places a call where it starts and draws it once;
     the renderer prints it where it ends, prints an END with no START as "?()",
     and adds " …" to a call with no END. This is not hypothetical: the pi

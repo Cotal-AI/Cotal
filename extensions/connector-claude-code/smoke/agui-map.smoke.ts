@@ -979,6 +979,50 @@ c("real:every-RESULT-names-a-toolCallId-that-a-START-opened", (() => {
   return results.length > 0 && results.every((r) => opened.has(r.toolCallId));
 })());
 
+// THE TOOL RESULT MARKER. The fence drops each TOOL_CALL_RESULT, so the mapper follows each one with
+// a content-free `cotal.toolResult` for the same call, in the same unit, at the same timestamp. The
+// pairs are read from each unit's own event order, since a marker belongs right after its result.
+type Loose = { type: string; name?: unknown; value?: { toolCallId?: unknown; isError?: unknown }; timestamp?: unknown; toolCallId?: unknown; cotal?: { tsSource?: unknown; isError?: unknown } };
+const resultPairs = units.flatMap((u) => {
+  const ev = u.events as unknown as Loose[];
+  return ev.flatMap((e, k) => (e.type === "TOOL_CALL_RESULT" ? [{ result: e, next: ev[k + 1] }] : []));
+});
+const isMarker = (e: Loose | undefined): boolean => e?.type === "CUSTOM" && e.name === "cotal.toolResult";
+c("real:every-RESULT-is-followed-by-one-cotal.toolResult-for-the-same-call", (() => {
+  const markers = units.flatMap((u) => (u.events as unknown as Loose[]).filter(isMarker));
+  return resultPairs.length > 0 && markers.length === resultPairs.length &&
+    resultPairs.every(({ result, next }) => isMarker(next) && next!.value?.toolCallId === result.toolCallId);
+})(), { results: resultPairs.length });
+c("real:every-marker-carries-its-RESULT's-timestamp",
+  resultPairs.length > 0 && resultPairs.every(({ result, next }) => isMarker(next) && next!.timestamp === result.timestamp),
+  { results: resultPairs.length });
+// The marker's isError is the record's is_error, and the fixture holds results that set it. The
+// RESULT carries the same fact as `cotal.isError`, so each pair is checked against its own result.
+c("real:a-marker-says-isError-true-where-its-RESULT-carries-cotal.isError", (() => {
+  const failed = resultPairs.filter(({ result }) => result.cotal?.isError === true);
+  return failed.length > 0 && resultPairs.every(({ result, next }) =>
+    isMarker(next) && next!.value?.isError === (result.cotal?.isError === true));
+})(), { results: resultPairs.length });
+// No record in the fixture lacks a timestamp, so the arrival stamp is driven here on one that does.
+c("synthetic:an-arrival-stamped-result's-marker-carries-cotal.tsSource-arrival", (() => {
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => "r-arrival", now: () => 42 });
+  unitOf(m.map(OPENER));
+  unitOf(m.map({
+    type: "assistant",
+    uuid: "arrival-call",
+    timestamp: "2026-08-14T21:00:01.000Z",
+    message: { content: [{ type: "tool_use", id: "t-arrival", name: "Read", input: {} }] },
+  }));
+  const unit = unitOf(m.map({
+    type: "user",
+    uuid: "arrival-result",
+    message: { content: [{ type: "tool_result", tool_use_id: "t-arrival", content: "ok" }] },
+  }));
+  const marker = (unit?.events as unknown as Loose[] | undefined)?.find(isMarker);
+  return marker !== undefined && marker.value?.toolCallId === "t-arrival" && marker.timestamp === 42 &&
+    marker.cotal?.tsSource === "arrival";
+})());
+
 // IDENTITY. This is the `message.id` defect: a provider request id repeats across entries and
 // across block types, so spending it as `messageId` opens and closes one id repeatedly. Keyed on
 // `${uuid}#${blockIndex}` it cannot.
@@ -1143,7 +1187,7 @@ c("real:the-mapper-ALONE-leaves-the-LAST-run-open-at-EOF", (() => {
 // otherwise leaves the run green with a smaller number that nobody compares. The PR body leans on
 // this total, so the suite is what holds it.
 if (SESSION.endsWith("session-shape.jsonl")) {
-  const EXPECTED = 48;
+  const EXPECTED = 52;
   c(`fixture:every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 }
 

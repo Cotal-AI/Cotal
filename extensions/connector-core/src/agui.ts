@@ -24,8 +24,9 @@
  *
  * Here: the event constructors, the frame envelope, the routing/validity split
  * ({@link isAguiFramePart} / {@link parseAguiFrame}), the {@link AguiBrackets} stream machine, the
- * `cotal.*` `CUSTOM` table (empty in v1), the preview plane's {@link splitFrames}, and the egress
- * policy that decides which events may leave for the event channel.
+ * `cotal.*` `CUSTOM` table (one member, the tool result marker), the preview plane's
+ * {@link splitFrames}, and the egress policy that decides which events may leave for the event
+ * channel.
  *
  * Not here: the emitter that publishes, with the channel derivation and the durable source, WAL and
  * subject frontier it drives. Those are in `agui-emitter.ts`, which imports this module and is never
@@ -164,19 +165,27 @@ export interface CotalMeta {
 /** An event carrying Cotal metadata. Kept structural so it composes with any member of the union. */
 export type WithCotal<E> = E & { cotal?: CotalMeta };
 
+/** The name of the content-free tool result marker. */
+export const TOOL_RESULT_EVENT = "cotal.toolResult";
+
 /**
- * The `cotal.*` `CUSTOM` event table — the second and ONLY other vehicle for Cotal-specific data.
+ * The `cotal.*` `CUSTOM` event table, the second and only other vehicle for Cotal-specific data.
  *
- * **The v1 table is EMPTY, and that is the specification, not an unfinished state.** Earlier
- * revisions described a two-member table holding `cotal.ask.opened` / `cotal.ask.settled`. Both
- * were removed when ask state left this plane, on the operative ground that there is no consumer:
- * the board answers what is owed, the plane carries what is happening. Leaving the count in the
- * prose invited re-adding them "because the table has two slots", so the table ships with no slots.
+ * The table is the gate. The brackets refuse a `CUSTOM` whose name is not listed here, so adding a
+ * member is a decision that touches this declaration, reviewed here, rather than a name invented at
+ * a call site where nobody reviews the vocabulary.
  *
- * It exists as the GATE: adding a member is a decision that touches this declaration, rather than
- * a `CUSTOM` name invented at a call site where nobody reviews the vocabulary.
+ * Its one member is the tool result marker, {@link TOOL_RESULT_EVENT}. The egress fence suppresses
+ * `TOOL_CALL_RESULT` because its `content` is the tool output, and that leaves a viewer unable to
+ * tell when a call finished. The marker carries a call id and a boolean and nothing else, and the
+ * closed schema refuses one that carries more, so the reason the fence suppresses the result still
+ * holds.
+ *
+ * Earlier revisions held `cotal.ask.opened` and `cotal.ask.settled`. Both were removed when ask
+ * state left this plane, because nothing consumed them: the board answers what is owed, the plane
+ * carries what is happening. They do not come back without a consumer.
  */
-export const COTAL_CUSTOM_EVENTS: readonly string[] = [];
+export const COTAL_CUSTOM_EVENTS: readonly string[] = [TOOL_RESULT_EVENT];
 
 /** The envelope version. One frame declares the AG-UI vocabulary version it was built against. */
 export const AGUI_PROTOCOL = "ag-ui/0.0.57";
@@ -387,8 +396,15 @@ export class AguiBrackets {
       case AGUI_EVENT_TYPE.CUSTOM:
         if (!COTAL_CUSTOM_EVENTS.includes(String(e.name)))
           throw new AguiVocabularyError(
-            `CUSTOM "${String(e.name)}" is not declared in COTAL_CUSTOM_EVENTS (the v1 table is empty by specification)`,
+            `CUSTOM "${String(e.name)}" is not declared in COTAL_CUSTOM_EVENTS, the reviewed table of cotal.* names`,
           );
+        // The result marker stands in for TOOL_CALL_RESULT, so it holds the same rule: it follows
+        // its call's END, and a marker for a call still open is refused.
+        if (e.name === TOOL_RESULT_EVENT) {
+          const id = String((e.value as { toolCallId?: unknown } | null | undefined)?.toolCallId);
+          if (this.tools.has(id))
+            throw new AguiVocabularyError(`${TOOL_RESULT_EVENT} for "${id}" while its call is still open`);
+        }
         return;
 
       default:
@@ -804,6 +820,29 @@ export function toolCallResult(o: {
 }
 
 /**
+ * The marker for one tool result: which call finished and whether it returned an error. It carries
+ * no input and no output.
+ *
+ * A mapper emits it beside each `TOOL_CALL_RESULT`, at the result's timestamp. The fence drops the
+ * result and lets the marker through, so a viewer learns that a call finished and how, and nothing
+ * the tool read or returned. `isError` is always present.
+ */
+export function toolResultMarker(o: {
+  toolCallId: string;
+  isError: boolean;
+  timestamp?: number;
+  cotal?: CotalMeta;
+}): WithCotal<CustomEvent> {
+  return {
+    type: AGUI_EVENT_TYPE.CUSTOM,
+    name: TOOL_RESULT_EVENT,
+    value: { toolCallId: o.toolCallId, isError: o.isError },
+    ...(o.timestamp !== undefined ? { timestamp: o.timestamp } : {}),
+    ...(o.cotal ? { cotal: o.cotal } : {}),
+  } as WithCotal<CustomEvent>;
+}
+
+/**
  * `REASONING_MESSAGE_START` — off by default; the signature is never emitted, ever.
  *
  * **`role` is a REQUIRED literal `"reasoning"`**, unlike `TEXT_MESSAGE_START` where `role` is
@@ -1123,20 +1162,47 @@ const KNOWN_EVENT_KEYS_BY_TYPE: ReadonlyMap<string, ReadonlySet<string>> = new M
   [AGUI_EVENT_TYPE.CUSTOM, new Set(["type", "timestamp", "rawEvent", "name", "value", "cotal"])],
 ]);
 
+/** The only keys a {@link TOOL_RESULT_EVENT} marker's `value` carries. */
+const TOOL_RESULT_VALUE_KEYS: ReadonlySet<string> = new Set(["toolCallId", "isError"]);
+
+/**
+ * Where a {@link TOOL_RESULT_EVENT} marker's `value` leaves its closed shape, relative to the
+ * event, or `undefined` when it holds a string `toolCallId`, a boolean `isError` and nothing else.
+ * An extra key is named (`value.<key>`); a value that is not a plain object, or a key that is
+ * missing or of the wrong type, answers `value`.
+ */
+function toolResultValueDefect(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return "value";
+  const keys = Object.keys(value);
+  for (const key of keys) {
+    if (!TOOL_RESULT_VALUE_KEYS.has(key)) return `value.${key}`;
+  }
+  if (keys.length !== TOOL_RESULT_VALUE_KEYS.size) return "value";
+  const v = value as { toolCallId?: unknown; isError?: unknown };
+  if (typeof v.toolCallId !== "string") return "value";
+  if (typeof v.isError !== "boolean") return "value";
+  return undefined;
+}
+
 /**
  * Find the first extra property on a parsed frame, returning its JSON-path
  * string, or `undefined` when the envelope is closed.
  *
- * Checks two levels:
+ * Checks three levels:
  * 1. Frame-level keys against {@link KNOWN_FRAME_KEYS}.
  * 2. Per-event keys against {@link KNOWN_EVENT_KEYS_BY_TYPE} for the event's
  *    `type`. An event whose `type` is not in the map has already been refused
  *    by `parseAguiFrame`; if it somehow reaches here it is reported as
  *    `events[i]` with no key.
+ * 3. The `value` of a `CUSTOM` named {@link TOOL_RESULT_EVENT}, which must be
+ *    `{ toolCallId, isError }` and nothing more, so the marker cannot carry
+ *    tool output past the fence that drops the result.
  *
  * Returns the dotted path of the first unknown property found, e.g.
- * `"recovery"` for a frame-level extra or `"events[0].leaked"` for an
- * event-level extra. The caller turns this into a named verdict.
+ * `"recovery"` for a frame-level extra, `"events[0].leaked"` for an
+ * event-level extra or `"events[0].value.content"` for a marker carrying
+ * content. A marker whose value is malformed answers `"events[i].value"`.
+ * The caller turns this into a named verdict.
  */
 export function extraPropertyPath(part: Record<string, unknown>): string | undefined {
   // Frame-level extra keys.
@@ -1154,6 +1220,10 @@ export function extraPropertyPath(part: Record<string, unknown>): string | undef
     if (!allowed) return `events[${i}]`; // unknown type
     for (const key of Object.keys(e)) {
       if (!allowed.has(key)) return `events[${i}].${key}`;
+    }
+    if (t === AGUI_EVENT_TYPE.CUSTOM && e.name === TOOL_RESULT_EVENT) {
+      const defect = toolResultValueDefect(e.value);
+      if (defect !== undefined) return `events[${i}].${defect}`;
     }
   }
   return undefined;

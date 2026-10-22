@@ -41,11 +41,26 @@
  * the part kind and not on a guess about shape.
  */
 import { AGUI_EVENT_TYPE, AGUI_FRAME_KIND, isAguiFramePart, registry, type Part, type PartRenderer } from "@cotal-ai/core";
+import { TOOL_RESULT_EVENT } from "./agui.js";
 
 /** One event, as untrusted input. Every read is guarded; nothing here trusts a producer. */
 type LooseEvent = Record<string, unknown>;
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+/**
+ * Whether a `cotal.toolResult` marker reports an error, or `undefined` when its `value` is not the
+ * closed shape `{ toolCallId: string, isError: boolean }`. A marker of any other shape is drawn as
+ * the plain custom line, so this renderer never states an outcome the producer did not send in that
+ * shape. The browser's `toolResult.ts` holds the same rule, and the parity suite compares them.
+ */
+const markerIsError = (value: unknown): boolean | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !keys.includes("toolCallId") || !keys.includes("isError")) return undefined;
+  const v = value as { toolCallId?: unknown; isError?: unknown };
+  return typeof v.toolCallId === "string" && typeof v.isError === "boolean" ? v.isError : undefined;
+};
 
 /**
  * Line prefixes. **Every one of these starts with a non-space glyph within the first three columns,
@@ -216,9 +231,14 @@ function renderEvents(events: readonly LooseEvent[]): string[] {
         emit(RESULT_PREFIX, CONT, str(e.content) ?? "(no content)");
         break;
 
-      case AGUI_EVENT_TYPE.CUSTOM:
-        emit("• ", CONT, `custom ${str(e.name) ?? "(unnamed)"}`);
+      case AGUI_EVENT_TYPE.CUSTOM: {
+        // The tool result marker draws as the result line it stands in for: done or failed, and no
+        // content, since it carries none.
+        const failed = e.name === TOOL_RESULT_EVENT ? markerIsError(e.value) : undefined;
+        if (failed !== undefined) emit(RESULT_PREFIX, CONT, failed ? "failed" : "done");
+        else emit("• ", CONT, `custom ${str(e.name) ?? "(unnamed)"}`);
         break;
+      }
 
       // An event whose `type` this build does not know. NAMED, never skipped — a skipped event is a
       // hole in a transcript that still looks complete, which is `parseAguiFrame`'s own stated

@@ -36,6 +36,7 @@
 // `[unrenderable part kind "ag-ui.frame" ...]`, true and named, which is the honest-refusal property
 // that module exists for and the reason this is not a branch inside it.
 import { registerPartRenderer } from "./parts.js";
+import { toolResultOf } from "./toolResult.js";
 
 const KIND = "ag-ui.frame";
 
@@ -167,9 +168,14 @@ export function renderEvents(events: unknown[]): string[] {
         emit(lines, RESULT_PREFIX, CONT, str(e.content) ?? "(no content)");
         break;
 
-      case "CUSTOM":
-        emit(lines, "• ", CONT, `custom ${str(e.name) ?? "(unnamed)"}`);
+      case "CUSTOM": {
+        // The tool result marker draws as the result line it stands in for: done or failed, and no
+        // content, since it carries none. Any other shape stays a plain custom line.
+        const marker = toolResultOf(e);
+        if (marker !== undefined) emit(lines, RESULT_PREFIX, CONT, marker.isError ? "failed" : "done");
+        else emit(lines, "• ", CONT, `custom ${str(e.name) ?? "(unnamed)"}`);
         break;
+      }
 
       // An event whose type this build does not know. Named, never skipped: a skipped event is a
       // hole in a transcript that still looks complete.

@@ -171,14 +171,6 @@
     "sha256": "09edc98f6291d06627797299705438477cff1764b6c87528b3190492c9957bfa",
     "refusal": "mutation \"P1 the suffix match becomes a prefix match, letting one thread's emitter consume another's bytes\" is missing \"cell\""
   },
-  "extensions/connector-core/smoke/fixtures/agui-conformance.mutations.json": {
-    "sha256": "992c631bc5fff063328e20ede6c497596ef0330c84c6e37187ccc0e9d48b5a2b",
-    "refusal": "mutation \"M10 the reasoning constructor drops the required role literal, the defect the first draft actually shipped\" is missing \"cell\""
-  },
-  "extensions/connector-core/smoke/fixtures/agui-render.mutations.json": {
-    "sha256": "1b59a4b6fb0c18eb24564d6d75886148f10ca7a24aa9eb600329baa6ad79e642",
-    "refusal": "mutation \"R1 the renderer stops registering, so every surface goes back to the marker while the module still exports a perfectly good render function\" is missing \"cell\""
-  },
   "extensions/connector-core/smoke/fixtures/agui-wal-path.mutations.json": {
     "sha256": "9d9ea4400e6d2de235c8b6e89a8c2d93f7ba3b9065e381ddcb45bade07d99a20",
     "refusal": "mutation \"L1 the principal lock goes back to being a computed path with nothing acquired, which is the exact state a review drove two logs onto one file from\" is missing \"cell\""
@@ -198,10 +190,6 @@
   "extensions/connector-core/smoke/fixtures/transport-liveness.mutations.json": {
     "sha256": "ba68b5d67464980390b056267f4abc43539af1ddec9dee84b23c3d3bbb819061",
     "refusal": "mutation \"old status iterators may overwrite the current connection epoch\" targets packages/core/src/endpoint.ts, which none of [extensions/connector-core/smoke/transport-liveness.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "extensions/connector-core/smoke/mutations/agui-egress-closed-schema.json": {
-    "sha256": "714a4f377e9b1e7160c8af33b63cfd21e3d62742c0f3db3fd291d89c8957cd45",
-    "refusal": "mutation \"T-SCHEMA-BYPASS the extraPropertyPath check is removed from frozenBodyEgressVerdict so the fence reverts to event-kind-only control\" is missing \"cell\""
   },
   "extensions/connector-core/smoke/mutations/agui-holder.json": {
     "sha256": "f98004ee4864329b28220d2d0ce2f072961bb9a74c33eec22879a1b6d3ec97d9",

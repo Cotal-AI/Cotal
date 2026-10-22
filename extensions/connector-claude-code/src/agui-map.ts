@@ -73,6 +73,12 @@
  * than invented at a call site. Raised as a gap in `connector-core`'s constructor doc as well.
  * ---------------------------------------------------------------------------------------------
  *
+ * Each `TOOL_CALL_RESULT` is followed by a `cotal.toolResult` marker for the same call, in the same
+ * unit and at the same timestamp. The egress fence drops the result, because its content is the
+ * tool output, and without the marker a viewer could not tell that a call finished or that it
+ * failed. The marker carries the call id and whether the record said `is_error`, and no content:
+ * nothing the tool read or returned reaches it.
+ *
  * `messageId` is `${uuid}#${blockIndex}` and NOT `message.id`. `message.id` is a provider request
  * id: measured over a real session, 67% of them appear in more than one entry and 59% carry more
  * than one block type, so spending it as an AG-UI message identity opens and closes one id
@@ -91,6 +97,7 @@ import {
   toolCallArgs,
   toolCallEnd,
   toolCallResult,
+  toolResultMarker,
   reasoningMessageStart,
   reasoningMessageContent,
   reasoningMessageEnd,
@@ -360,6 +367,14 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
               ...(b.is_error || arrivalMeta
                 ? { cotal: { ...(b.is_error ? { isError: true } : {}), ...arrivalMeta } }
                 : {}),
+            }),
+          );
+          events.push(
+            toolResultMarker({
+              toolCallId: b.tool_use_id,
+              isError: b.is_error === true,
+              timestamp: ts,
+              ...(arrivalMeta ? { cotal: arrivalMeta } : {}),
             }),
           );
         });

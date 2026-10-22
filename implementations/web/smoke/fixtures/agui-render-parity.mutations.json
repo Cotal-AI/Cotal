@@ -33,6 +33,14 @@
       "replace": "    for (const id of [...text.keys()]) flush(text, id, \"said\", false);",
       "expectRed": "fold parity: foldSession's steps project to the node renderer's facts on every frame in the corpus that carries events",
       "cell": "fold parity: foldSession's steps project to the node renderer's facts on every frame in the corpus that carries events"
+    },
+    {
+      "name": "P5 the browser draws the result marker as a custom line, so the dashboard prints `custom cotal.toolResult` where the console prints done or failed",
+      "file": "implementations/web/client/src/lib/aguiFrame.ts",
+      "find": "        if (marker !== undefined) emit(lines, RESULT_PREFIX, CONT, marker.isError ? \"failed\" : \"done\");\n        else emit(",
+      "replace": "        emit(",
+      "expectRed": "parity: a call with an error result marker",
+      "cell": "parity: a call with an error result marker"
     }
   ],
   "suite": [

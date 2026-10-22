@@ -12,6 +12,10 @@
  * 2. Unknown top-level property (`smuggled: "secret"`)
  * 3. Unknown field nested inside an allowed event (`events[0].leaked: "<bytes>"`)
  *
+ * THE TOOL RESULT MARKER'S VALUE IS CLOSED TOO. `cotal.toolResult` stands in for the result the
+ * fence drops, so its `value` holds `toolCallId` and `isError` and nothing else. A marker carrying
+ * content, or missing a key, or carrying a non-boolean `isError`, is `extra-property`.
+ *
  * POSITIVE CONTROLS:
  * - A well-formed frame with only known keys passes.
  * - A well-formed frame with `cotal` metadata on events passes.
@@ -47,6 +51,7 @@ import {
   textMessageStart,
   toolCallEnd,
   toolCallStart,
+  toolResultMarker,
   type AguiEvent,
 } from "../src/agui.js";
 import {
@@ -278,6 +283,51 @@ try {
       ],
     });
     c("control:tool-call-start-end (no args/result) passes", frozenBodyEgressVerdict([frame]) === "clean");
+  }
+
+  // ── THE TOOL RESULT MARKER ─────────────────────────────────────────────────────────────────
+  // The marker's value is checked as a closed shape: a call id and a boolean, no more.
+  const markerFrame = (value: unknown) => ({
+    kind: "ag-ui.frame" as const,
+    protocol: "ag-ui/0.0.57",
+    threadId: "t1",
+    runId: "r1",
+    epoch: "e1",
+    seq: 0,
+    events: [{ type: "CUSTOM", name: "cotal.toolResult", value, timestamp: 1 }],
+  });
+
+  {
+    const frame = aguiFrame({
+      threadId: "t1", runId: "r1", epoch: "e1", seq: 6,
+      events: [toolResultMarker({ toolCallId: "tc1", isError: false, timestamp: 9 })],
+    });
+    c("closed-schema:marker a frame holding a well-formed marker is clean", frozenBodyEgressVerdict([frame]) === "clean",
+      { verdict: frozenBodyEgressVerdict([frame]), path: extraPropertyPath(frame as unknown as Record<string, unknown>) });
+  }
+
+  {
+    const frame = markerFrame({ toolCallId: "tc1", isError: false, content: NESTED_TOOL_BYTES });
+    const verdict = frozenBodyEgressVerdict([frame]);
+    const path = extraPropertyPath(frame as Record<string, unknown>);
+    c("closed-schema:marker a marker whose value also carries content is refused at events[0].value.content",
+      verdict === "extra-property" && path === "events[0].value.content", { verdict, path });
+  }
+
+  {
+    const frame = markerFrame({ toolCallId: "tc1" });
+    const verdict = frozenBodyEgressVerdict([frame]);
+    const path = extraPropertyPath(frame as Record<string, unknown>);
+    c("closed-schema:marker a marker with no isError is refused at events[0].value",
+      verdict === "extra-property" && path === "events[0].value", { verdict, path });
+  }
+
+  {
+    const frame = markerFrame({ toolCallId: "tc1", isError: "yes" });
+    const verdict = frozenBodyEgressVerdict([frame]);
+    const path = extraPropertyPath(frame as Record<string, unknown>);
+    c("closed-schema:marker a marker whose isError is not a boolean is refused at events[0].value",
+      verdict === "extra-property" && path === "events[0].value", { verdict, path });
   }
 
   // Well-formed frame with rawEvent field (AG-UI schema key)
