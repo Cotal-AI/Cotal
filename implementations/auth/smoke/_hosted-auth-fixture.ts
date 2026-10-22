@@ -44,7 +44,7 @@ export interface HostedAuthFixture {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export async function startHostedAuthFixture(label: string, count = 2, opts: { websocket?: boolean } = {}): Promise<HostedAuthFixture> {
+export async function startHostedAuthFixture(label: string, count = 2, opts: { websocket?: boolean; maxPayload?: number } = {}): Promise<HostedAuthFixture> {
   const port = await pickFreePort();
   const wsPort = opts.websocket ? await pickFreePort() : undefined;
   const servers = `nats://127.0.0.1:${port}`;
@@ -68,7 +68,7 @@ export async function startHostedAuthFixture(label: string, count = 2, opts: { w
     calloutAccounts.push({ pub: callout.account.pub, jwt: callout.account.jwt });
     accounts.push({ space, accountPublicKey: auth.account.pub, store, stateDir, sentinelCreds: callout.sentinelCreds, auth });
   }
-  writeFileSync(join(dir, "server.conf"), serverConfig(broker, spaceAccounts, { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js"), extraAccounts: calloutAccounts, ...(wsPort !== undefined ? { wsPort } : {}) }));
+  writeFileSync(join(dir, "server.conf"), serverConfig(broker, spaceAccounts, { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js"), extraAccounts: calloutAccounts, ...(wsPort !== undefined ? { wsPort } : {}) }) + (opts.maxPayload === undefined ? "" : `\nmax_payload: ${opts.maxPayload}\n`));
   let nats: ChildProcess = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
   let release = teardownOnSignal(nats, dir);
   let up = false;

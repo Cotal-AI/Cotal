@@ -18,6 +18,10 @@ export type SessionVerifier = (
 /** Out-of-band key on a session-caller permission set: the grant expiry (unix seconds) the callout
  *  binds the minted JWT to, instead of the bearer's. Stripped before the JWT is encoded. */
 export const SESSION_EXP = "__cotalSessionExp";
+/** Internal expiry bound for ordinary endpoint callers, stripped before JWT encoding. */
+export const ENDPOINT_CALLER_EXP = "__cotalEndpointCallerExp";
+export const ENDPOINT_CALLER_RECHECK = "__cotalEndpointCallerRecheck";
+export type EndpointCallerResolver = (t: ValidatedUserToken) => Promise<{ capabilities: NonNullable<MintOpts["endpointCapabilities"]>; expiresAt?: number; recheck?: () => Promise<void> }>;
 
 /** The callout's issuing seam for an eligible user's `manager-caller` view (SPEC 13.15). `mint`
  *  builds the view's permission set for the given `issued` pair, so the evidence is the set that is signed.
@@ -76,9 +80,17 @@ export function calloutPermissions(
 ): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
+  authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
+  verifySession: SessionVerifier,
+  issueUserCaller: UserCallerIssuer,
+  resolveEndpointCaller: EndpointCallerResolver,
+): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+export function calloutPermissions(
+  resolveAcl: AclResolver,
   authorizeManagerCaller?: (owner: string, instanceId: string) => Promise<void>,
   verifySession?: SessionVerifier,
   issueUserCaller?: UserCallerIssuer,
+  resolveEndpointCaller?: EndpointCallerResolver,
 ): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
   return (t, connId, readerId) => {
     if (t.act.view === "service-endpoint")
@@ -180,11 +192,14 @@ export function calloutPermissions(
     // The ledger row's lifecycleUid rides the PRINCIPAL: core's agent arm mints the lifecycle-keyed
     // dm/dlv/chathist grant names from it (SPEC 13.1) and refuses to mint without one.
     const { scope: _rowScope, kind: _kind, parentHasRun: _parentHasRun, ...aclOpts } = acl;
-    return permissionsFor(
-      "agent",
-      t.space,
-      { ...principal, lifecycleUid: acl.lifecycleUid },
-      { ...aclOpts, capabilities: caps },
+    const mint = (endpointCapabilities: NonNullable<MintOpts["endpointCapabilities"]> = []) => permissionsFor(
+      "agent", t.space, { ...principal, lifecycleUid: acl.lifecycleUid },
+      { ...aclOpts, capabilities: caps, endpointCapabilities },
     );
+    if (!resolveEndpointCaller) return mint();
+    return resolveEndpointCaller(t).then(({ capabilities, expiresAt, recheck }) => ({
+      ...mint(capabilities), ...(expiresAt === undefined ? {} : { [ENDPOINT_CALLER_EXP]: expiresAt }),
+      ...(recheck === undefined ? {} : { [ENDPOINT_CALLER_RECHECK]: recheck }),
+    }));
   };
 }
