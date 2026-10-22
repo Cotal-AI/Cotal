@@ -57,6 +57,8 @@ const mode = (p: string) => (lstatSync(p).mode & 0o777).toString(8).padStart(4, 
 // COTAL_DAEMON_SMOKE_TMP chooses the scratch parent; the cross-uid cells need every ancestor
 // directory to be searchable by the subordinate uid, which a private home directory is not.
 const root = mkdtempSync(join(process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir(), "cotal-daemon-smoke-"));
+// The CLI children get no mesh identity or connection material from whatever runs this suite.
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 chmodSync(root, 0o700);
 const runtime = (name: string) => { const r = join(root, name); mkdirSync(r, { mode: 0o700 }); return r; };
 const paths = (rt: string) => daemonPaths({ XDG_RUNTIME_DIR: rt });

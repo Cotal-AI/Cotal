@@ -40,7 +40,7 @@ const nextFrame = async () => {
   return frame;
 };
 const helper = (frame: NativeInlineFrame, action: string, extra = {}) => new Promise<Record<string, unknown>>((resolve, reject) => {
-  const child = spawn(process.execPath, [monitorPath, "--native", "--session", session, "--native-delivery"], { env: { ...process.env, COTAL_NAME: "", COTAL_LINK: "", COTAL_AGENT_FILE: "" }, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [monitorPath, "--native", "--session", session, "--native-delivery"], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_NAME: "", COTAL_LINK: "", COTAL_AGENT_FILE: "" }, stdio: ["pipe", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", (piece) => { output += piece; });
   child.on("error", reject);
