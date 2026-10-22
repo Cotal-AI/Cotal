@@ -114,6 +114,8 @@ const stages: Array<{ stage: "inspect" | "commit"; runId: string }> = [];
 let loseCommitReply = false;
 let failReadbackAfterLoss = false;
 let failNextOperatorReads = 0;
+const callerLimit = 64;
+const cancellationCalls = new Map<string, number>();
 async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${service!.url}${path}`, { method: "POST", headers: {
     "content-type": "application/json", authorization: `Bearer ${service!.cap}`,
@@ -152,6 +154,7 @@ async function channelClient(): Promise<Client> {
 }
 async function call(client: Client, command: string, args: Record<string, unknown>): Promise<EndpointReply> {
   const target = await resolveService(client.nc, account.space, "manager", client.caller, { instanceId: state.instanceId, deadlineMs: 10000 });
+  if (command === "run-cancel") cancellationCalls.set(client.caller.uid, (cancellationCalls.get(client.caller.uid) ?? 0) + 1);
   return (await invokeCommand(client.nc, account.space, target, command, args, { deadlineMs: 15000 })).reply;
 }
 async function status(client: Client, runId: string, wanted: "pending" | "released" | "completed"): Promise<RunStatusView> {
@@ -458,6 +461,27 @@ try {
       nextOperatorHold = undefined;
       await cancelling;
     }
+  });
+  await cell("issuer quota refusal names its local budget without caller data", async () => {
+    const warnings: string[] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      const text = args.map(String).join(" ");
+      if (text.startsWith("run-cancel custody:")) warnings.push(text);
+      warn(...args);
+    };
+    try {
+      let refused = false;
+      for (let attempt = 0; attempt <= callerLimit; attempt++) {
+        const reply = await call(original, "run-cancel", { runId: firstRun, reason: "bounded quota fixture" });
+        if (!reply.ok) { refused = true; break; }
+      }
+      assert.ok(refused, "the fixture reaches the issuer's finite caller quota");
+      assert.equal(cancellationCalls.get(original.caller.uid), callerLimit + 1, "the refusal occurs only after this lifecycle's exact allowance");
+      const repeated = await call(original, "run-cancel", { runId: firstRun, reason: "bounded quota repeat" });
+      assert.equal(repeated.ok, false);
+      assert.deepEqual(warnings, ["run-cancel custody: caller lifetime budget exhausted; new observations refused"]);
+    } finally { console.warn = warn; }
   });
 } finally {
   await manager?.stop();
