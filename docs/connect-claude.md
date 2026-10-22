@@ -260,6 +260,7 @@ native modules, its administrator must permit them before this connection path c
 
 A signed-in identity keeps its request and secret in private local recovery state. A lost create
 response retries the same request without rotating its secret or allocating another identity.
+Another plugin server reuses that identity only after the process that held it no longer exists.
 `cotal_disconnect`, session end and a signal request retirement of that lifecycle only. Other
 conversations stay connected. When the mesh reports retirement pending or does not confirm it, the
 conversation stays disconnected and keeps its saved record. Every tool then reports the same
