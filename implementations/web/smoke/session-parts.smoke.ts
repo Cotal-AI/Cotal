@@ -430,9 +430,9 @@ const tipWords = () => text(document.querySelector("[role=tooltip]"));
 }
 {
   const m = await mount(createElement(PromptBlock, { text: "word ".repeat(80), cut: false }));
-  const more = () => m.container.querySelector(".ui-more") as HTMLButtonElement;
+  const more = () => m.container.querySelector(".ui-more") as HTMLButtonElement | null;
   const before = [text(more()), m.container.querySelector(".ui-prompt .ui-tx.ui-clamp") !== null];
-  await m.run(() => more().click());
+  await m.run(() => more()?.click());
   same("11.4 a long prompt clamps with Show more, and opens with Show less",
     [before, [text(more()), m.container.querySelector(".ui-prompt .ui-tx.ui-clamp") !== null]], [["Show more", true], ["Show less", false]]);
   await m.unmount();

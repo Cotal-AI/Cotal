@@ -423,8 +423,8 @@ const messagesSeed = (): Partial<DashboardState> => ({
   same("5.5 on a phone the crumb is the back tool, Message is a tool titled for the agent, the Badge stays and the tabs stay under the header",
     {
       tools: all(head ?? root, "a.ui-tool").map((a) => [a.getAttribute("title"), a.getAttribute("aria-label")]),
-      crumb: head?.querySelector(".ui-crumb") ?? null,
-      topic: head?.querySelector(".ui-topic") ?? null,
+      crumb: head?.querySelector(".ui-crumb")?.outerHTML ?? null,
+      topic: head?.querySelector(".ui-topic")?.outerHTML ?? null,
       badge: text(head?.querySelector("[data-slot=badge]")),
       tabs: head?.nextElementSibling?.querySelector("[role=tablist]") !== null,
     },
@@ -492,7 +492,7 @@ await withLayout(async (log) => {
     { loading: [], marked: [["m-1", true]], turns: ["open", "closed"], arrived: ["m-1:center"], after: ["m-1:center"] });
   const raised = newSteps(root);
   const before = log.length;
-  await m.run(() => click(root.querySelector(".ox-newsteps")));
+  await m.run(() => root.querySelector<HTMLElement>(".ox-newsteps")?.click());
   same("6.2 and following stops, so a live step after it raises the new-steps button, live, whose click scrolls the work to its end",
     { raised, clicked: log.slice(before) }, { raised: { words: "1 new step", active: "true", inert: false }, clicked: ["end:900:smooth"] });
   await m.unmount();

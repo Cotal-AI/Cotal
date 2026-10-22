@@ -84,7 +84,7 @@ const svgOf = (key: string, mood: { look?: string; mood?: string } = {}) => `<sv
   const word = (r: Partial<RosterRow>) => renderToString(createElement(StatusWord, { row: { id: "x", name: "x", ts: 1, status: "idle", ...r } as RosterRow }));
   const words = (["waiting", "working", "idle", "offline"] as const).map((s) => text(word({ status: s })));
   ok("2.2 the words are Waiting, Working, Idle and Offline", words.join() === "Waiting,Working,Idle,Offline", words);
-  const paths = (["waiting", "working", "idle", "offline"] as const).map((s) => /<svg[\s\S]*<\/svg>/.exec(word({ status: s }))?.[0] ?? "");
+  const paths = (["waiting", "working", "idle", "offline"] as const).map((s) => /<svg[^>]*>([\s\S]*)<\/svg>/.exec(word({ status: s }))?.[1] ?? "");
   ok("2.3 each status carries its own icon, so it is a shape and not a colour alone", paths.every(Boolean) && new Set(paths).size === 4, paths.map((p) => p.length));
   ok("2.4 the word sits in the status pill with the status class",
     startTags(word({ status: "waiting" }), "span")[0]?.class === "v3-spill v3-s-waiting", startTags(word({ status: "waiting" }), "span"));
