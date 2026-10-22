@@ -349,16 +349,21 @@ try {
     await cell("C13 broker loss: connected is withdrawn at once and reclaimed only after the broker and a fresh ready", async () => {
       check("C13 instrument: connected before the broker stops", stateOf(await statusS(ON)) === "connected");
       await killAndAwaitExit(nats!, "SIGTERM");
-      const gone = !(await isReachable(`nats://127.0.0.1:${port}`));
       const during: string[] = [];
-      const t0 = Date.now();
-      while (Date.now() - t0 < 8000) { during.push(String(stateOf(await statusS(ON)))); await sleep(500); }
+      let gone = false;
+      try {
+        gone = !(await isReachable(`nats://127.0.0.1:${port}`));
+        const t0 = Date.now();
+        while (Date.now() - t0 < 8000) { during.push(String(stateOf(await statusS(ON)))); await sleep(500); }
+      } finally {
+        // Later cells share this broker: bring it back whatever the checks above found.
+        nats = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
+        for (let i = 0; i < 50 && !(await isReachable(`nats://127.0.0.1:${port}`)); i++) await sleep(200);
+      }
       console.log(`  C13 broker down: ${during.length} samples, ${during.filter((s) => s === "connected").length} connected, states ${[...new Set(during)].join(",")}`);
       check("C13 instrument: the broker is unreachable", gone);
       check("C13 no sample after the broker stopped says connected", during.length >= 12 && during.every((s) => s !== "connected"), during);
       check("C13 the state is connecting while the broker is down (not ended)", during.every((s) => s === "connecting"), [...new Set(during)]);
-      nats = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
-      for (let i = 0; i < 50 && !(await isReachable(`nats://127.0.0.1:${port}`)); i++) await sleep(200);
       const back = await waitState(ON, (s) => s === "connected", 60_000);
       check("C13 after the broker returns, connected again and the space reads ready", back === "connected" && (await instanceStatus(ON)) === "ready", back);
     });
