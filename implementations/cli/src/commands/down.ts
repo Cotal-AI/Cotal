@@ -612,6 +612,14 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
         }
       }
     } else {
+      // The cut takes its agent inventory from the manager that serves the space. A stack with no
+      // manager, such as one started with --no-manager, refuses here, before the prepare intent, the
+      // delivery stop or any other effect.
+      if ((await readPresenceAndLease(mesh.space, mesh.server)).managerId === undefined)
+        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager serves this space, so --preserve-state cannot take the agent inventory it preserves; nothing was stopped", {
+          target: { root, space: mesh.space, server: mesh.server },
+          remedy: "start this stack's manager with `cotal up`, then run `cotal down --preserve-state` again",
+        });
       // The attempt binding is durable BEFORE the manager is fenced: a crash between manager
       // preparation and the cut-intent journal retries with the exact attempt the manager holds.
       const intent = readPreservationPrepareIntent(root);
@@ -946,6 +954,14 @@ export async function assertControlPlaneQuiesced(space: string, server: string):
  *  THIS function, not a transcription of it: a copy carries its own `allowEmpty` parameter, so it
  *  stays green when the argument at the real call site is removed and proves nothing about the fix. */
 export async function readPresenceWithoutConsumer(space: string, server: string): Promise<{ roster: Presence[]; managerId: string }> {
+  const { roster, managerId } = await readPresenceAndLease(space, server);
+  if (managerId === undefined) throw new Error("manager lease has no authoritative holder principal");
+  return { roster, managerId };
+}
+
+/** The roster and the principal holding the space's manager lease, or no holder when no manager
+ *  serves the space. */
+async function readPresenceAndLease(space: string, server: string): Promise<{ roster: Presence[]; managerId?: string }> {
   const resolved = await connectOrExit({ space, server }, "deployer");
   const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
   const nc = await dialerFor(server)({
@@ -991,7 +1007,7 @@ export async function readPresenceWithoutConsumer(space: string, server: string)
       const held = await directValue<ManagerLeaseInfo>(leaseStream, subject, true);
       if (held?.holder) { lease = held; break; }
     }
-    if (!lease?.holder) throw new Error("manager lease has no authoritative holder principal");
+    if (!lease?.holder) return { roster };
     return { roster, managerId: parsePrincipalKey(lease.holder) ? lease.holder : principalKey(DEV_OWNER, lease.holder).key };
   } finally {
     await nc.drain().catch(() => {});
