@@ -338,6 +338,10 @@ function rawGrantInteractive(dir: string, row: Omit<ActorRow, "grantedAt">): Act
   return full;
 }
 
+/** A delegation chain that the current ledger reads cleanly and refuses: a missing ancestor, a
+ *  cross-owner link, or a grant beyond its spawner's. A corrupt or cyclic chain throws a plain error. */
+export class DelegationEnvelopeRefusal extends Error {}
+
 /** Delegation attenuation — the ENVELOPE rule: everything under an owner stays within the
  *  spawner's own grant. A spawn-scoped actor can delegate only a SUBSET of what it holds — channel
  *  ACLs by NATS-pattern containment ({@link patternInAllow}), capability scope by set inclusion —
@@ -375,14 +379,14 @@ export function assertWithinSpawnerGrant(
     const pActor = parentKey.slice(dot + 1);
     const parent = findActorUnified(dir, pOwner, pActor);
     if (!parent)
-      throw new Error(
+      throw new DelegationEnvelopeRefusal(
         boundary === "spawn"
           ? `spawner "${parentKey}"${deep ? ` (an ancestor of "${leaf}")` : ""} has no grant in this space - delegation flows from a granted spawner chain, so grant "${pActor}" under owner "${pOwner}" first, carrying "spawn" in its --scope. NO ready-to-run line is printed for it, deliberately: the row does not exist, so there is nothing to copy its read and post sets from, and any \`cotal actor grant\` short of all three flags widens the spawner on paste. Choose --allow-subscribe and --allow-publish yourself, because a flag left off is the WIDE default (\`>\` read, \`>\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against`
           : `agent "${leaf}": spawner "${parentKey}"${deep ? ` (an ancestor)` : ""} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\`cotal spawn\`). The revoke deleted the row, so \`cotal actor list\` can no longer show what it held: name --scope, --allow-subscribe and --allow-publish on the re-grant deliberately, because each one omitted comes back as the WIDE default (\`>\` read, \`>\` post) and a spawner's ACL is the ceiling for everything under it`,
       );
     if (parent.scope.includes("admin")) return;
     if (child.owner !== pOwner)
-      throw new Error(
+      throw new DelegationEnvelopeRefusal(
         `agent "${childKey}" cannot be delegated by spawner "${parentKey}" of a different owner - cross-owner spawns are operator (admin) launches only`,
       );
     const overScope = child.scope.filter((s) => !parent.scope.includes(s));
@@ -406,7 +410,7 @@ export function assertWithinSpawnerGrant(
       ].filter(Boolean);
       const widen = widenGrantCommand(pOwner, pActor, parent, [...overScope, ...(needRole ? [needRole] : [])], overSub, overPub);
       const who = deep ? `agent "${leaf}": its ancestor "${childKey}"` : `agent "${leaf}"`;
-      throw new Error(
+      throw new DelegationEnvelopeRefusal(
         (boundary === "spawn"
           ? `${who} would exceed its spawner's grant - delegation only narrows: `
           : `${who} exceeds its spawner's CURRENT grant (narrowed since spawn): `) +
@@ -683,11 +687,7 @@ export function ledgerAclResolver(dir: string): AclResolver {
       throw new Error("bearer carries no lifecycle claim - re-exchange for a fresh bearer (lifecycle-bound from v0.4)");
     if (t.act.lifecycleUid !== row.lifecycleUid)
       throw new Error(`bearer lifecycle ${t.act.lifecycleUid} is not the actor's current incarnation - re-exchange for a fresh bearer`);
-    // Issuance eligibility is separate from envelope containment, which exempts an admin parent.
-    // Read the direct parent at this mint, never the bearer's audit link or a cached spawn grant.
-    const parent = row.kind === "managed-agent" && typeof row.parent === "string" ? parsePrincipalKey(row.parent) : null;
-    const parentHasRun = parent !== null && parent.owner === row.owner && parent.actor !== row.actor
-      && findActorUnified(dir, parent.owner, parent.actor)?.scope.includes("run") === true;
+    const parentHasRun = row.kind === "managed-agent" && managedParentHoldsRun(dir, row);
     return {
       allowSubscribe: row.allowSubscribe,
       allowPublish: row.allowPublish,
@@ -700,6 +700,16 @@ export function ledgerAclResolver(dir: string): AclResolver {
       ...(row.kind === "managed-agent" ? { parentHasRun } : {}),
     };
   };
+}
+
+/** Whether a managed row's direct same-owner parent currently holds `run`, the issuance condition a
+ *  managed seat needs beside its own `run`. Issuance eligibility is separate from envelope
+ *  containment, which exempts an admin parent. It reads the direct parent now, never the bearer's
+ *  audit link or a cached spawn grant. */
+export function managedParentHoldsRun(dir: string, row: Pick<ActorRow, "owner" | "actor" | "parent">): boolean {
+  const parent = typeof row.parent === "string" ? parsePrincipalKey(row.parent) : null;
+  return parent !== null && parent.owner === row.owner && parent.actor !== row.actor
+    && findActorUnified(dir, parent.owner, parent.actor)?.scope.includes("run") === true;
 }
 
 /** Is an actor-ledger source live? True only when the ledger holds a row for the source's owner and

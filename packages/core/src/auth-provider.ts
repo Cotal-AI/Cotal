@@ -11,6 +11,8 @@ import type {
   RemoteManagerGoalIndexScanResult,
   RemoteManagerMaintenanceRequest,
   RemoteManagerMaintenanceResult,
+  RemoteManagerParticipantAuthorizationRequest,
+  RemoteManagerParticipantAuthorizationResult,
   RemoteManagedAgentEnrollmentRequest,
   RemoteManagedAgentEnrollmentResult,
   RemoteManagedAgentPrepareRetirementRequest,
@@ -258,6 +260,13 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteManagerAdminAuthorizationRequest;
   }): Promise<RemoteManagerAdminAuthorizationResult>;
+  /** Host-owned, fresh serve-time decision whether one exact same-owner foreground participant may
+   * take part in the remote manager's workflow runs. It returns a boolean, never a grant. */
+  authorizeRemoteManagerParticipant?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: RemoteManagerParticipantAuthorizationRequest;
+  }): Promise<RemoteManagerParticipantAuthorizationResult>;
   /**
    * Revalidate one retained remote managed agent at the host that owns the current ledger and auth
    * secrets. This is a read-only lifecycle check, never a mint and never a generic provider hook.

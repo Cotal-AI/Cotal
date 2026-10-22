@@ -42,32 +42,48 @@ export function parseRemoteManagerAdminAuthorizationRequest(raw: unknown, opts: 
   };
 }
 
-export async function authorizeRemoteManagerAdmin(args: {
-  request: RemoteManagerAdminAuthorizationRequest;
+/** The manager inputs both serve-time decisions take: the authenticated holder, the host space,
+ *  the proof secret and the current gate observer. */
+export type ServeTimeManagerArgs = {
   space: string;
   managerOwner: string;
   proofSecret: string | Uint8Array;
-  dir: string;
   observeManagerGate: ObserveManagerGate;
-} & ({ managerScope: string[]; managerAssignment?: never } | { managerAssignment: PlatformControlAssignment; managerScope?: never })): Promise<RemoteManagerAdminAuthorizationResult> {
-  const request = parseRemoteManagerAdminAuthorizationRequest(args.request, { allowPlatform: args.managerAssignment !== undefined });
-  if (request.space !== args.space) throw new EpEnvelopeError("permission-denied", `manager admin authorization names space ${request.space}, not this host space ${args.space}`);
+} & ({ managerScope: string[]; managerAssignment?: never } | { managerAssignment: PlatformControlAssignment; managerScope?: never });
+
+/** The current-manager check every serve-time decision shares: the request's space, the holder's
+ *  `supervise` or assignment, the open gate at the server-derived serve principal, the current serve
+ *  epoch and the host-issued registration proof. `what` names the decision in each refusal. */
+export async function requireCurrentServeTimeManager(
+  args: ServeTimeManagerArgs,
+  request: Pick<RemoteManagerAdminAuthorizationRequest, "space" | "actor" | "instanceId" | "managerLifecycleUid" | "identities" | "registrationProof" | "serveEpoch">,
+  what: string,
+): Promise<void> {
+  if (request.space !== args.space) throw new EpEnvelopeError("permission-denied", `${what} names space ${request.space}, not this host space ${args.space}`);
   requireManagerAuthorityHolder(
     args.managerAssignment !== undefined
       ? { holder: "platform", owner: args.managerOwner, assignment: args.managerAssignment }
       : { owner: args.managerOwner, scope: args.managerScope ?? [] },
     request.instanceId,
-    'manager admin authorization needs manager scope "supervise"',
+    `${what} needs manager scope "supervise"`,
   );
   const actors = remoteManagerActors(request.instanceId);
   const gate = await args.observeManagerGate(request.instanceId);
-  if (!gate || gate.state !== "open") throw new EpEnvelopeError("failed-precondition", `manager admin authorization found no current open manager gate for instance ${request.instanceId}`);
+  if (!gate || gate.state !== "open") throw new EpEnvelopeError("failed-precondition", `${what} found no current open manager gate for instance ${request.instanceId}`);
   const expectedPrincipal = `${args.managerOwner}.${actors.serve}`;
-  if (gate.principal !== expectedPrincipal) throw new EpEnvelopeError("permission-denied", `manager admin authorization gate belongs to ${gate.principal}, not ${expectedPrincipal}`);
-  if (gate.processEpoch !== request.serveEpoch) throw new EpEnvelopeError("conflict", `manager admin authorization serve epoch ${request.serveEpoch} is stale; current is ${gate.processEpoch}`);
+  if (gate.principal !== expectedPrincipal) throw new EpEnvelopeError("permission-denied", `${what} gate belongs to ${gate.principal}, not ${expectedPrincipal}`);
+  if (gate.processEpoch !== request.serveEpoch) throw new EpEnvelopeError("conflict", `${what} serve epoch ${request.serveEpoch} is stale; current is ${gate.processEpoch}`);
   const proof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.managerOwner, request, gate);
   if (!timingSafeEqual(Buffer.from(request.registrationProof), Buffer.from(proof)))
-    throw new EpEnvelopeError("permission-denied", "manager admin authorization proof does not match the current host registration");
+    throw new EpEnvelopeError("permission-denied", `${what} proof does not match the current host registration`);
+}
+
+export async function authorizeRemoteManagerAdmin(args: ServeTimeManagerArgs & {
+  request: RemoteManagerAdminAuthorizationRequest;
+  dir: string;
+}): Promise<RemoteManagerAdminAuthorizationResult> {
+  const request = parseRemoteManagerAdminAuthorizationRequest(args.request, { allowPlatform: args.managerAssignment !== undefined });
+  await requireCurrentServeTimeManager(args, request, "manager admin authorization");
 
   // A valid current-manager request gets one non-oracular decision. The authoritative unified row is
   // read fresh for every call. Absence, revocation, a narrowed scope, owner drift, and lifecycle drift

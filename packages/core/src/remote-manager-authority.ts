@@ -271,6 +271,42 @@ export interface RemoteManagerAdminAuthorizationResult {
   authorized: boolean;
 }
 
+/** Closed, secret-free serve-time decision whether one exact foreground participant may take part in
+ * this manager's workflow runs. It is not proof of the participant's liveness or process custody. */
+export interface RemoteManagerParticipantAuthorizationRequest {
+  v: 1;
+  kind: "manager-participant-authorization";
+  space: string;
+  /** Interactive actor whose current `supervise` grant authorizes this manager lifecycle. */
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  /** The exact participant incarnation the manager asks about. */
+  participant: { owner: string; actor: string; lifecycleUid: string };
+}
+
+/** Exact echo, the authority-derived owner and one host-derived boolean. No scope, token or ledger
+ * row crosses the seam. */
+export interface RemoteManagerParticipantAuthorizationResult {
+  v: 1;
+  kind: "manager-participant-authorization";
+  space: string;
+  owner: string;
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  requestId: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerAuthorityRequest["identities"];
+  participant: RemoteManagerParticipantAuthorizationRequest["participant"];
+  authorized: boolean;
+}
+
 /**
  * Closed wire request for host-owned managed agent enrollment (#1972).
  *
