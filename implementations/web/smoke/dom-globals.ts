@@ -27,6 +27,9 @@ g.document = win.document;
 // Node defines Web Storage of its own, which without --localstorage-file is a stub that warns on
 // every read, so the page's storage replaces it.
 for (const key of ["localStorage", "sessionStorage"]) Object.defineProperty(g, key, { value: win[key], configurable: true, writable: true });
+// Node defines `CustomEvent` too, and a jsdom node refuses to dispatch Node's. Radix's tooltip builds
+// one from the global and dispatches it on `document`, so the page's class replaces Node's.
+Object.defineProperty(g, "CustomEvent", { value: win.CustomEvent, configurable: true, writable: true });
 // jsdom has no `matchMedia`, and the app reads it to choose the phone layout. The window answers as a
 // wide screen, where no query matches; a suite that draws the phone layout installs its own.
 if (typeof win.matchMedia !== "function") {

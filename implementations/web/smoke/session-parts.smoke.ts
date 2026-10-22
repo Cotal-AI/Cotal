@@ -119,9 +119,9 @@ const failedLine = async (c: ToolCall) => {
   for (let i = 0; i < 100 && m.container.querySelector("button") === null; i++) await m.run(() => sleep(50));
   return { m, button: m.container.querySelector("button") as HTMLButtonElement };
 };
-/** The words the open tooltip shows: Radix repeats the content once, visually hidden, as the
- *  role=tooltip element the line describes. */
-const tipWords = () => text(document.querySelector("[data-slot=tooltip-content] [role=tooltip]"));
+/** The words the open tooltip shows: the role=tooltip element the line describes, which Radix's
+ *  tooltip content carries itself. */
+const tipWords = () => text(document.querySelector("[role=tooltip]"));
 {
   /** The words a failed call's tooltip shows once its line takes keyboard focus. */
   const tip = async (c: ToolCall) => {
@@ -185,7 +185,7 @@ const tipWords = () => text(document.querySelector("[data-slot=tooltip-content] 
   const pair = (failed: boolean) => {
     const root = draw("2.1", list(work([turn({ steps: [said("Writing it."), tools(call("Write", L(10, 38), { end: L(10, 38) + 200, failed: false }), call("Bash", L(10, 38) + 200, { end: L(10, 38) + 2000, failed }))] })])));
     const group = trigger(root, failed ? "Wrote a file, ran a command, 1 failed" : "Wrote a file, ran a command");
-    return [text(group?.querySelector("[data-slot=trace-description]")), group?.getAttribute("aria-expanded"), all(root, "[data-slot=trace-collapsible-content]").length];
+    return [text(group?.querySelector("[data-slot=trace-description]")), group?.getAttribute("aria-expanded"), all(root, "[data-slot=trace-collapsible-content]:not([hidden])").length];
   };
   same("2.1 two finished calls draw one closed group titled \"Wrote a file, ran a command\" with \"2 steps · 2.0s\", and \", 1 failed\" when one failed",
     [pair(false), pair(true)], [["2 steps · 2.0s", "false", 1], ["2 steps · 2.0s", "false", 1]]);
@@ -295,10 +295,21 @@ const tipWords = () => text(document.querySelector("[data-slot=tooltip-content] 
 // ── 6. Code ──────────────────────────────────────────────────────────────────────────────────────
 {
   const src = "Rewriting it:\n```js\nconst s = \"<b>x</b>\" // one tick\n```\n\nAnd in Rust:\n```rust\nfn main() {}\n```";
+  // jsdom has no IntersectionObserver, so the blocks would highlight at mount. This one holds each
+  // block off screen until it is told the blocks came into view.
+  const seen: ((entries: { isIntersecting: boolean }[]) => void)[] = [];
+  (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = class {
+    constructor(cb: (entries: { isIntersecting: boolean }[]) => void) { seen.push(cb); }
+    observe() {}
+    disconnect() {}
+  };
   const m = await mount(createElement(Prose, { src, className: "ox-said" }));
   const blocks = () => all(m.container, "[data-slot=code-block]");
   const styled = (el: Element | undefined) => all(el ?? m.container, "[data-slot=code-block-content] span[style]");
+  await m.run(() => sleep(300));
   const first = { blocks: blocks().length, head: text(blocks()[0]?.querySelector("[data-slot=code-block-header]")), code: blocks()[0]?.querySelector("[data-slot=code-block-content]")?.textContent, styled: styled(blocks()[0]).length };
+  await m.run(() => seen.forEach((cb) => cb([{ isIntersecting: true }])));
+  delete (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
   for (let i = 0; i < 100 && styled(blocks()[0]).length === 0; i++) await m.run(() => sleep(100));
   const colours = styled(blocks()[0]).map((s) => s.style.color);
   same("6.1 a js fence draws a code block with \"js\" and Copy, plain text first, then token spans coloured var(--shiki-…) with no element from Shiki's HTML",
