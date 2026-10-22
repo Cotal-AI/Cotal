@@ -9,6 +9,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import {
   issuedUserCaller, mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams,
   resolveService, invokeCommand, registry, type RuntimeProvider, type IssuedCaller,
+  RUN_HOST_KIND, COTAL_LANG_RUN_HOST, recordsBucket, recordStatusKey, RECORD_KINDS, type RunHost,
   type RemoteManagerAuthorityMaterial, type RemoteRunAdmissionResult, type RemoteRunAttemptResult,
   type RemoteRunCancelResult, type RunCancelResult, type RunStatusView, type EndpointReply,
 } from "@cotal-ai/core";
@@ -39,6 +40,28 @@ async function bounded<T>(promise: Promise<T>, name: string): Promise<T> {
 let launchHold: { entered: ReturnType<typeof deferred<string>>; release: ReturnType<typeof deferred<void>>;
   marker: ReturnType<typeof deferred<void>>; startSettled: ReturnType<typeof deferred<void>>;
   beforeReply: boolean; runId?: string } | undefined;
+let completionHold: { entered: ReturnType<typeof deferred<string>>; release: ReturnType<typeof deferred<void>> } | undefined;
+const realHost = registry.resolve<RunHost>(RUN_HOST_KIND, COTAL_LANG_RUN_HOST);
+registry.unregister(RUN_HOST_KIND, COTAL_LANG_RUN_HOST);
+const observedHost: RunHost = { ...realHost, drive: (planes, request, mediator) => {
+  const hold = completionHold;
+  if (hold) {
+    const send = planes.nc.request.bind(planes.nc);
+    const subject = `$KV.${recordsBucket(planes.space)}.${recordStatusKey(RECORD_KINDS.run, [request.endpoint, request.runId])}`;
+    planes.nc.request = async (target, data, options) => {
+      if (target === subject) {
+        const row = JSON.parse(typeof data === "string" ? data : new TextDecoder().decode(data)) as { state?: string };
+        if (row.state === "completed") {
+          hold.entered.resolve(request.runId);
+          await bounded(hold.release.promise, "release of the actual completed-status write");
+        }
+      }
+      return send(target, data, options);
+    };
+  }
+  return realHost.drive(planes, request, mediator);
+} };
+registry.register(observedHost);
 let passed = 0;
 async function cell(name: string, check: () => Promise<void>) {
   await check();
@@ -71,6 +94,8 @@ let manager: Manager | undefined;
 const connections: NatsConnection[] = [];
 const stages: Array<{ stage: "inspect" | "commit"; runId: string }> = [];
 let loseCommitReply = false;
+let failReadbackAfterLoss = false;
+let failNextOperatorReads = 0;
 async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${service!.url}${path}`, { method: "POST", headers: {
     "content-type": "application/json", authorization: `Bearer ${service!.cap}`,
@@ -150,6 +175,10 @@ try {
     runHosting: remote.remoteRunHosting({ state, owner, registrationProof: proof, accountPublicKey: account.accountPublicKey, processEpoch: registered.processEpoch,
       requestRunAdmission: request => post<RemoteRunAdmissionResult>("/manager-service-authority", { idpToken, request }),
       requestRunAttempt: async request => {
+        if (request.operator && failNextOperatorReads > 0) {
+          failNextOperatorReads--;
+          throw new Error("fixture read-only issuance transport unavailable");
+        }
         const result = await post<RemoteRunAttemptResult>("/manager-service-authority", { idpToken, request });
         const hold = launchHold;
         if (request.attempt && hold) {
@@ -172,6 +201,10 @@ try {
         }
         if (request.stage === "commit" && loseCommitReply) {
           loseCommitReply = false;
+          if (failReadbackAfterLoss) {
+            failReadbackAfterLoss = false;
+            failNextOperatorReads = 1;
+          }
           throw new Error("fixture loses the issuer reply after the real HTTP commit");
         }
         return result;
@@ -300,12 +333,44 @@ try {
       await starting;
     }
   });
+  await cell("terminal marker resend clears an earlier unknown pending cancellation", async () => {
+    const hold = { entered: deferred<string>(), release: deferred<void>() };
+    completionHold = hold;
+    try {
+      const started = await call(original, "run-start", { source: 'log("complete after the held native status write");' });
+      assert.ok(started.ok, started.error?.message);
+      const runId = (started.data as { runId: string }).runId;
+      assert.equal(await bounded(hold.entered.promise, "actual completed-status write"), runId);
+      loseCommitReply = true;
+      failReadbackAfterLoss = true;
+      const unknown = await call(original, "run-cancel", { runId, reason: "retain unknown until observed" });
+      assert.equal(unknown.ok, false);
+      assert.equal(unknown.error?.code, "deadline-exceeded");
+      assert.equal(failNextOperatorReads, 0, "readback encountered the injected transport failure");
+      hold.release.resolve();
+      await status(original, runId, "completed");
+      const resend = await call(original, "run-cancel", { runId, reason: "observe terminal marker" });
+      assert.ok(resend.ok, resend.error?.message);
+      const result = resend.data as RunCancelResult;
+      assert.equal(result.observed.phase, "terminal");
+      assert.equal(result.duplicate, true);
+      assert.equal(result.revocation?.reason, "retain unknown until observed");
+      const resumed = await call(original, "run-resume", { runId });
+      assert.equal(resumed.ok, false);
+      assert.equal(resumed.error?.code, "permission-denied", "resume must reach durable revocation, not a lingering local pending intent");
+    } finally {
+      hold.release.resolve();
+      completionHold = undefined;
+    }
+  });
 } finally {
   await manager?.stop();
   for (const nc of connections) await nc.close();
   await service?.close();
   await new Promise<void>((resolve, reject) => idp.close(error => error ? reject(error) : resolve()));
   await fx.stopBroker();
+  registry.unregister(RUN_HOST_KIND, COTAL_LANG_RUN_HOST);
+  registry.register(realHost);
   // Keep the private fixture root as evidence until the lane's cleanup barrier is established.
   console.log(`retained fixture root: ${fx.dir}`);
 }
