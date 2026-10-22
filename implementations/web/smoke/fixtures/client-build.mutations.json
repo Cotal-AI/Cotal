@@ -188,8 +188,8 @@
     {
       "name": "highlight.ts imports Shiki's core statically, so every page load downloads the highlighter",
       "file": "implementations/web/client/src/lib/highlight.ts",
-      "find": "import type { HighlighterCore, LanguageInput } from \"shiki/core\";\n\n/** Shiki's core and its JavaScript regex engine, loaded on the first highlight. */\nconst loadShiki = () => Promise.all([import(\"shiki/core\"), import(\"shiki/engine/javascript\")]);",
-      "replace": "import * as shikiCore from \"shiki/core\";\ntype HighlighterCore = shikiCore.HighlighterCore;\ntype LanguageInput = shikiCore.LanguageInput;\n\n/** Shiki's core and its JavaScript regex engine, loaded on the first highlight. */\nconst loadShiki = () => Promise.all([Promise.resolve(shikiCore), import(\"shiki/engine/javascript\")]);",
+      "find": "const loadShiki = () => Promise.all([import(\"shiki/core\"), import(\"shiki/engine/javascript\")]);",
+      "replace": "import * as shikiCore from \"shiki/core\";\nconst loadShiki = () => Promise.all([Promise.resolve(shikiCore), import(\"shiki/engine/javascript\")]);",
       "expectRed": "no first-load chunk holds Shiki, and a lazy chunk does",
       "cell": "no first-load chunk holds Shiki, and a lazy chunk does",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
