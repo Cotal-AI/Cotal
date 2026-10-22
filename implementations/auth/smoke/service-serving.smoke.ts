@@ -8,8 +8,10 @@
  *
  * Sections E and F also exercise the named stop points. "sim stop" means the fixture writes the
  * durable state a stop at that point leaves, with the engine's own record shapes and the native
- * barrier and registration primitives, and then drives the real door. Nothing here is native,
- * Cloud or production acceptance, and nothing proves a human decision. */
+ * barrier and registration primitives, and then drives the real door. Section G holds one real
+ * request in this process, through an in-memory patch of the nats.js prototype the live
+ * connections use, to place a competitor or a latch inside an effect; it latches the engine last.
+ * Nothing here is native, Cloud or production acceptance, and nothing proves a human decision. */
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdirSync } from "node:fs";
@@ -19,14 +21,14 @@ import { KvWatchInclude, Kvm, type KV } from "@nats-io/kv";
 import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
   GOVERNED_TRAIT_URNS, VOID_SCHEMA_DIGEST, contractArtifactCanonicalBytes, contractDigest, contractStoreContext, endpointRegistrationBarrier,
-  endpointToken, epAuthBucket, epgateKey, mintCreds, newIdentity, parseServiceAuthorityResult, publishContractArtifact, recordsBucket,
-  registerServiceInstance, serviceAuthorityRequestDigest, serviceWitnessDigest, setupSpaceStreams, singleDocumentClosure,
+  endpointToken, epAuthBucket, epgateKey, mintCreds, newIdentity, parseServiceAuthorityResult, publishContractArtifact, RECORD_KINDS, recordSpecKey,
+  recordStatusKey, recordsBucket, registerServiceInstance, serviceAuthorityRequestDigest, serviceWitnessDigest, setupSpaceStreams, singleDocumentClosure,
   type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { cotalAuthProvider } from "../src/provider.js";
 import { deriveOwnerForIdpSubject } from "../src/derive.js";
-import { grantActor } from "../src/ledger.js";
+import { grantActor, revokeActor } from "../src/ledger.js";
 import { fetchIdpJwt, saveIdpSession } from "../src/login.js";
 import { openLifecycleRegistry } from "../src/lifecycle-registry.js";
 import { readNativeIssuance } from "../src/native-issuance.js";
@@ -35,7 +37,7 @@ import { authClientSentinelKey, ensurePinnedIdp, loadOwnerSecret, saveAuthServic
 import type { ServiceEndpointHost, ServiceHostRequest, ServiceHostResult } from "../src/service-host-contract.js";
 import { serviceAuthorityEngineRequestId } from "../src/service-endpoint-authority.js";
 import { parseServiceRequestIntentIndexRecord, parseServiceRequestIntentRecord, serviceHostOperationId } from "../src/service-host-ops.js";
-import { startAuthService, type AuthServiceHandle } from "../src/service.js";
+import { serviceHostEngineOf, startAuthService, type AuthServiceHandle } from "../src/service.js";
 import { checks } from "./_service-custody-fixture.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
@@ -65,7 +67,7 @@ const idp = createServer(async (req, res) => {
 await new Promise<void>((r) => idp.listen(0, "127.0.0.1", () => r()));
 origin = `http://127.0.0.1:${(idp.address() as { port: number }).port}`;
 const idpUrl = `${origin}/api/auth`;
-for (const s of ["a", "b"]) sessions.set(`session-${s}`, `user-${s}`);
+for (const s of ["a", "b", "c"]) sessions.set(`session-${s}`, `user-${s}`);
 
 // ---- contract fixtures --------------------------------------------------------------------------
 const cmd = (name: string, traits: string[] = []) => ({ name, class: "ephemeral", targeted: false, capability: "read", inputDigest: VOID_SCHEMA_DIGEST, outputDigest: VOID_SCHEMA_DIGEST,
@@ -90,11 +92,12 @@ try {
   for (const d of [stateDir, clientDir, home]) mkdirSync(d, { recursive: true });
   ensurePinnedIdp(stateDir, idpUrl); ensurePinnedIdp(clientDir, idpUrl);
   const ownerSecret = (await loadOwnerSecret(a.store, space))!;
-  const [ownerA, ownerB] = ["user-a", "user-b"].map((sub) => deriveOwnerForIdpSubject(ownerSecret, origin, sub));
+  const [ownerA, ownerB, ownerC] = ["user-a", "user-b", "user-c"].map((sub) => deriveOwnerForIdpSubject(ownerSecret, origin, sub));
   grantActor(stateDir, { owner: ownerA, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
   grantActor(stateDir, { owner: ownerB, actor: "web", scope: [], allowSubscribe: [], allowPublish: [] });
+  grantActor(stateDir, { owner: ownerC, actor: "cli", scope: [], allowSubscribe: [], allowPublish: [] });
   process.env.COTAL_HOME = home;
-  const signIn = (s: "a" | "b") => saveIdpSession(home, idpUrl, { token: `session-${s}`, expiresAt: nowS() + 600, sub: `user-${s}` });
+  const signIn = (s: "a" | "b" | "c") => saveIdpSession(home, idpUrl, { token: `session-${s}`, expiresAt: nowS() + 600, sub: `user-${s}` });
   const on = await startAuthService({ context: { accountPublicKey, lifecycleUid: "life-0" }, space, servers: fx.servers, store: a.store, storeIdentity: a.store.identity,
     stateDir, publicFace: { port: 0, trustedProxy: false }, serviceEndpoints: { startup: { kind: "normal" } } });
   handles.push(on);
@@ -110,9 +113,9 @@ try {
   const harnessReg = await openLifecycleRegistry(harness.nc, space), store = await contractStoreContext(harness.nc, space);
 
   // ---- request, proof and record helpers ----
-  type Who = "a" | "b";
+  type Who = "a" | "b" | "c";
   type ServiceAuthorityProof = { kind: "service-renewal" | "service-access"; token: string };
-  const ownerOf = (w: Who) => (w === "a" ? ownerA : ownerB);
+  const ownerOf = (w: Who) => ({ a: ownerA, b: ownerB, c: ownerC })[w];
   const req = (operation: string, endpoint: string, instanceId: string, fields: object, requestId = rid()) =>
     ({ v: 1, kind: "service-endpoint-authority", operation, requestId, space, accountPublicKey, endpoint, instanceId, ...fields }) as ServiceAuthorityRequest;
   const registerReq = (ep: string, iid: string, x: Cluster, expected: ServiceRegistrationWitness | null = null, requestId = rid()) =>
@@ -472,6 +475,100 @@ try {
   let dialed = "connected";
   try { await dial(c9a.state === "credential" ? c9a.accessBearer : ""); } catch (e) { dialed = (e as Error).message; }
   c.check("F8 the same live bearer connects before its assignment is revoked and is refused by the callout after", live9 !== undefined && /authorization violation/i.test(dialed), dialed);
+
+  // ---- G: an owner without an interactive row, a sibling's status, and requests held inside an effect ----
+  const writesTo = async (kv: KV, k: string) => {
+    const revisions: number[] = [], w = await kv.watch({ key: k, include: KvWatchInclude.UpdatesOnly });
+    const loop = (async () => { for await (const e of w) revisions.push(e.revision); })();
+    return { revisions, stop: async () => { w.stop(); await loop; } };
+  };
+  // In-memory patch of the exact nats.js prototype used by live instances. No installed file edit.
+  const ncPrototype = Object.getPrototypeOf(harness.nc) as NatsConnection;
+  const ncRequest = ncPrototype.request;
+  const asText = (data: unknown) => (data instanceof Uint8Array ? dec.decode(data) : typeof data === "string" ? data : "");
+  /** Hold the first request a rule matches, before it is sent or after its answer arrives, until released. */
+  const holdFirst = (match: (subject: string, body: string) => boolean, mode: "before" | "after") => {
+    let hit!: () => void, release!: () => void;
+    const hitP = new Promise<void>((r) => { hit = r; }), released = new Promise<void>((r) => { release = r; });
+    ncPrototype.request = function (this: NatsConnection, ...args: Parameters<typeof ncRequest>) {
+      if (!match(args[0], asText(args[1]))) return ncRequest.apply(this, args);
+      ncPrototype.request = ncRequest;
+      hit();
+      if (mode === "before") return released.then(() => ncRequest.apply(this, args));
+      const sent = ncRequest.apply(this, args);
+      return Promise.allSettled([sent, released]).then(() => sent);
+    };
+    return { hit: Promise.race([hitP.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 15_000))]),
+      release: () => { ncPrototype.request = ncRequest; release(); } };
+  };
+  const instanceStatus = (ep: string, iid: string) => statusReq(ep, iid, { kind: "instance" });
+
+  const ledgerlessEp = "org.example.ledgerless", ledgerless = cluster(ledgerlessEp, [cmd("lookup")]);
+  const sg1 = await approved("c", ledgerlessEp, ledgerless), wg1 = await registered(sg1), actg1 = witnessReq("activate", wg1), credg1 = await credential("c", actg1);
+  const withRow = await raw(on.url, instanceStatus(ledgerlessEp, sg1.instanceId), await idpProof("c"));
+  revokeActor(stateDir, ownerC, "cli");
+  const rowlessInstance = await raw(on.url, instanceStatus(ledgerlessEp, sg1.instanceId), await idpProof("c"));
+  const rowlessIntent = await raw(on.url, opStatus(actg1), await idpProof("c"));
+  const ownProof = await raw(on.url, instanceStatus(ledgerlessEp, sg1.instanceId), { kind: "service-renewal", token: credg1.renewalProof });
+  c.check("G1 an owner whose last interactive row is removed reads neither instance nor operation status by IdP (403)",
+    withRow.status === 200 && [rowlessInstance, rowlessIntent].every((x) => x.status === 403 && denied(x.parsed, "permission-denied")),
+    { withRow: withRow.status, instance: rowlessInstance.body, intent: rowlessIntent.body });
+  c.check("G1 the service's own proof still reads its instance", ownProof.status === 200 && st(ownProof.parsed) !== undefined, ownProof.body);
+
+  const siblingsEp = "org.example.siblings", siblings = cluster(siblingsEp, [cmd("lookup")]);
+  const sg2 = await approved("a", siblingsEp, siblings), credg2 = await credential("a", witnessReq("activate", await registered(sg2)));
+  const tg2 = await approved("a", siblingsEp, siblings);
+  await registered(tg2);
+  const asSibling = () => raw(on.url, instanceStatus(siblingsEp, tg2.instanceId), { kind: "service-renewal", token: credg2.renewalProof });
+  const siblingLive = await asSibling(), revokedSibling = await revoke(tg2), siblingRevoking = await asSibling();
+  const ownerReads = await raw(on.url, instanceStatus(siblingsEp, tg2.instanceId), await idpProof("a"));
+  c.check("G2 a service proof reads its owner's sibling instance as not-found while it is live and while it is revoking",
+    [siblingLive, siblingRevoking].every((x) => x.status === 403 && denied(x.parsed, "not-found")) && st(ownerReads.parsed)?.state === "revoking",
+    { live: siblingLive.body, revoke: revokedSibling.state, revoking: siblingRevoking.body, owner: st(ownerReads.parsed)?.state });
+
+  const overtakenEp = "org.example.overtaken", overtaken = cluster(overtakenEp, [cmd("lookup")]);
+  const sg3 = await approved("a", overtakenEp, overtaken);
+  const first = registerReq(overtakenEp, sg3.instanceId, overtaken), competitor = registerReq(overtakenEp, sg3.instanceId, overtaken);
+  const specWrites = await writesTo(recordsKv, recordSpecKey(RECORD_KINDS.svc, [overtakenEp, sg3.instanceId]));
+  const manifestHex = contractDigest(overtaken.manifest).slice("sha256:".length);
+  // The first request waits at its first artifact publish while the competitor registers.
+  const publishHold = holdFirst((subject) => !subject.startsWith("$JS.") && subject.endsWith(`.epc.${manifestHex}`), "before");
+  const firstAnswer = raw(on.url, first, await idpProof("a"));
+  const publishHeld = await publishHold.hit;
+  const competitorAnswer = await raw(on.url, competitor, await idpProof("a"));
+  publishHold.release();
+  const overtakenAnswer = await firstAnswer, overtakenReplay = await raw(on.url, first, await idpProof("a"));
+  await new Promise((r) => setTimeout(r, 500));
+  await specWrites.stop();
+  const gate3 = await gate(overtakenEp, sg3.instanceId);
+  c.check("G3 a register whose expected witness no longer holds on the revision the barrier freezes is a conflict (409), and the competitor's registration stands",
+    publishHeld && competitorAnswer.status === 200 && competitorAnswer.parsed?.state === "registered"
+    && [overtakenAnswer, overtakenReplay].every((x) => x.status === 409 && denied(x.parsed, "conflict"))
+    && gate3.row.state === "open" && gate3.row.serviceAuthority.registration?.requestId === competitor.requestId && specWrites.revisions.length === 1,
+    { publishHeld, competitor: competitorAnswer.status, first: overtakenAnswer.body, replay: overtakenReplay.status, stamped: gate3.row.serviceAuthority.registration?.requestId === competitor.requestId, specWrites: specWrites.revisions.length });
+
+  // Last: the latch stays set for the rest of this context.
+  const latchedEp = "org.example.latched", latched = cluster(latchedEp, [cmd("lookup")]);
+  const sg4 = await approved("a", latchedEp, latched), wg4 = await registered(sg4), credg4 = await credential("a", witnessReq("activate", wg4));
+  const statusKey = recordStatusKey(RECORD_KINDS.svc, [latchedEp, sg4.instanceId]), statusSubject = `$KV.${recordsBucket(space)}.${statusKey}`;
+  const statusWrites = await writesTo(recordsKv, statusKey);
+  const unlatched = await raw(on.url, witnessReq("ready", wg4), { kind: "service-access", token: credg4.accessBearer });
+  await new Promise((r) => setTimeout(r, 300));
+  const beforeLatch = statusWrites.revisions.length;
+  // The ready's native status read, a last-by-subject read of the status key, waits for its answer while the engine latches.
+  const readHold = holdFirst((subject, body) => (subject.startsWith("$JS.API.STREAM.MSG.GET.") || subject.startsWith("$JS.API.DIRECT.GET."))
+    && (subject.endsWith(`.${statusSubject}`) || body.includes(statusSubject)), "after");
+  const readyAnswer = raw(on.url, witnessReq("ready", wg4), { kind: "service-access", token: credg4.accessBearer });
+  const readHeld = await readHold.hit;
+  serviceHostEngineOf(host)!.trip("smoke: a local fatal latch during ready");
+  await new Promise((r) => setTimeout(r, 300));
+  readHold.release();
+  const latchedAnswer = await readyAnswer;
+  await new Promise((r) => setTimeout(r, 800));
+  await statusWrites.stop();
+  c.check("G4 a ready held at its status read across the engine latch issues no status write after the latch and answers unknown (503)",
+    unlatched.status === 200 && beforeLatch === 1 && readHeld && latchedAnswer.status === 503 && statusWrites.revisions.length === beforeLatch,
+    { unlatched: unlatched.status, beforeLatch, readHeld, latched: latchedAnswer.status, writes: statusWrites.revisions.length });
 } finally {
   for (const nc of conns) await nc.close().catch(() => {});
   await harness?.close().catch(() => {});
