@@ -26,7 +26,7 @@ export async function publish(session: AdmittedChatSession, to: Recipient, text:
 /** The names more than one principal carries across `people` and the transcript's senders. */
 const sharedWith = (state: ChatState, people: readonly Person[]) => sharedNames([...people, ...heardFrom(state)]);
 
-const rosterLines = (state: ChatState) => (v: RosterView): string[] => {
+export const rosterLines = (state: ChatState) => (v: RosterView): string[] => {
   const shared = sharedWith(state, v.rows);
   return [
     ...(v.view === "current" ? [] : [`roster ${v.view}: this list may be incomplete`]),

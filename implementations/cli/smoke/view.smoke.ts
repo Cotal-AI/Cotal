@@ -6,7 +6,9 @@
  * status-sorted roster split, and the derived operator signals (counts + DM roll-up).
  */
 import { EventEmitter } from "node:events";
+import { renderReport } from "@cotal-ai/workspace";
 import { MeshView } from "../src/view/mesh-view.js";
+import { watchReport } from "../src/watch-data.js";
 import {
   chatSubject,
   unicastSubject,
@@ -112,6 +114,8 @@ check(
   s.signals.counts.working === 1 && s.signals.counts.waiting === 1 && s.signals.counts.idle === 1 && s.signals.counts.offline === 0,
 );
 check("signals.waiting surfaces the blocked agent", s.signals.waiting.length === 1 && s.signals.waiting[0].card.name === "bob");
+const watchRoster = renderReport(watchReport(s, "roster"), "plain", 200).split("\n");
+check("the watch roster names a working agent's progress as unknown", watchRoster.some((line) => /\balice\b.*working - progress unknown/.test(line)) && !watchRoster.some((line) => /\bbob\b.*progress unknown/.test(line)));
 
 const aliceDm = s.signals.dms.find((p) => p.name === "alice");
 check("DM roll-up: alice has 2 conversations (bob, carol)", aliceDm?.conversations.length === 2);

@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-`cotal chat` now shows a working peer as `working · progress unknown` in its `/who` roster and in the recipient picker, as `cotal who`, `cotal ps` and the console already do. A `working` presence says the seat claims to be busy, not that its work is advancing, and chat has no observation of the peer's last reply to say more.
+`cotal chat` and `cotal watch` now show a working peer as "working · progress unknown": chat in its `/who` roster and recipient picker, watch in its roster table. `cotal who`, `cotal ps` and the console already did. A `working` presence says the seat claims to be busy, not that its work is advancing, and neither view observes the peer's last reply to say more.

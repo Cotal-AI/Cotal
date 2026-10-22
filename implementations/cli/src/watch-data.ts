@@ -41,7 +41,7 @@ export function watchReport(snapshot: MeshSnapshot, filter: WatchFilter): Report
     const rows = filter === "waiting" ? snapshot.signals.waiting : snapshot.agents;
     return { sections: [{ title: filter === "waiting" ? "Reported waiting" : "Agent roster", blocks: [rows.length ? {
       kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "role", label: "Role" }, { key: "state", label: "Reported state" }, { key: "activity", label: "Reported activity" }, { key: "id", label: "Identity" }],
-      rows: rows.map((row) => ({ name: row.card.name, role: row.card.role ?? "none", state: { text: row.status, tone: row.status === "waiting" ? "waiting" : "hint" }, activity: row.activity || "not reported", id: row.card.id })),
+      rows: rows.map((row) => ({ name: row.card.name, role: row.card.role ?? "none", state: { text: row.status === "working" ? "working · progress unknown" : row.status, tone: row.status === "waiting" ? "waiting" : "hint" }, activity: row.activity || "not reported", id: row.card.id })),
     } : { kind: "lines", lines: [filter === "waiting" ? "No waiting report in this observer snapshot." : "No agents in this observer snapshot."] },
     { kind: "lines", lines: [{ text: filter === "waiting" ? "Presence carries heartbeat time, not how long a task has waited. No blocked-duration estimate is made." : hint, tone: "hint" }] }] }] };
   }

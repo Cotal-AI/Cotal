@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 618,
-    "honest-text": 35,
+    "total": 619,
+    "honest-text": 37,
     "presence-only-glyph/count": 57,
     "command-ack": 10,
-    "non-render/control": 516
+    "non-render/control": 515
   },
   "renderers": [
     {
@@ -295,10 +295,10 @@
       "kind": "derived-output",
       "anchor": "`${preface}Present in \"${config.space}\" (${roster.length}):\\n${lines.join(\"\\n\")}`",
       "class": "honest-text",
-      "rationale": "Textual presence status: prefixes the NOT-LIVE preface onto the roster header and rows, whose rows carry the explicit working progress uncertainty. The preface and roster now compose in one template, so the anchor moved here.",
+      "rationale": "Textual presence status: prefixes the NOT-LIVE preface onto the roster header and rows; the cited assertion runs the cotal_roster tool and checks that a working row names its progress as unknown.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(result.text, /Presence view is NOT LIVE/,"
+        "anchor": "assert.match(result.text, /bob\\b[^\\n]* — working[^\\n]* · progress unknown/,"
       }
     },
     {
@@ -4348,6 +4348,13 @@
       "rationale": "Watch report routing: compares the selected filter to pick the footnote line; the token itself is not rendered."
     },
     {
+      "path": "implementations/cli/src/watch-data.ts",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "non-render/control",
+      "rationale": "Comparison operand that selects the watch roster state cell's working branch, whose text names unknown progress; the token itself is not rendered."
+    },
+    {
       "path": "implementations/cli/src/watch-json.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
@@ -4365,8 +4372,12 @@
       "path": "implementations/cli/src/watch-json.ts",
       "kind": "derived-output",
       "anchor": "emit(\"snapshot\", data)",
-      "class": "non-render/control",
-      "rationale": "Watch JSON event: emits the machine-readable snapshot record to stdout for programs; no human progress text is composed."
+      "class": "honest-text",
+      "rationale": "Watch snapshot event: the JSON presentation emits the machine record for programs, and the plain presentation prints watchReport's roster, whose working rows name unknown progress; the cited output assertion renders that roster.",
+      "proof": {
+        "path": "implementations/cli/smoke/view.smoke.ts",
+        "anchor": "check(\"the watch roster names a working agent's progress as unknown\""
+      }
     },
     {
       "path": "implementations/cli/src/watch-json.ts",
@@ -4435,8 +4446,12 @@
       "path": "implementations/cli/src/watch-view.tsx",
       "kind": "derived-output",
       "anchor": "{!shown.length ? <Text dimColor>{connected ? \"Waiting for activity in this authorized view.\" : \"No current feed. Events may be missing.\"}</Text> : shown.map((line, index) => <Text key={index}>{line}</Text>)}",
-      "class": "non-render/control",
-      "rationale": "Watch body: the empty-feed placeholder chosen by the observer's own connection state, or the feed rows; no peer presence claim."
+      "class": "honest-text",
+      "rationale": "Watch body: the empty-feed placeholder, or the rendered view lines; for the roster view those lines are watchReport's table, whose working rows name unknown progress; the cited output assertion renders that roster.",
+      "proof": {
+        "path": "implementations/cli/smoke/view.smoke.ts",
+        "anchor": "check(\"the watch roster names a working agent's progress as unknown\""
+      }
     },
     {
       "path": "implementations/cli/src/watch-view.tsx",
