@@ -47,8 +47,8 @@
     {
       "name": "W4 an unheard wake counts as heard",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "      if (wake.signal(c)) signalled.add(c.agent);",
-      "replace": "      wake.signal(c);\n      signalled.add(c.agent);",
+      "find": "      if (wake.signal(c, renderInboxPreview(c.agent.inboxSnapshot()))) signalled.add(c.agent);",
+      "replace": "      wake.signal(c, renderInboxPreview(c.agent.inboxSnapshot()));\n      signalled.add(c.agent);",
       "expectRed": "a monitor that starts after the message still gets its wake, as one fixed line",
       "cell": "a monitor that starts after the message still gets its wake, as one fixed line",
       "command": "pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
@@ -80,8 +80,8 @@
     {
       "name": "W7 the monitor prints whatever the socket sends",
       "file": "extensions/connector-claude-code/src/monitor.ts",
-      "find": "        if (WAKE_ID.test(id)) process.stdout.write(`${wakeEvent(id)}\\n`);",
-      "replace": "        if (id) process.stdout.write(`${id}\\n`);",
+      "find": "          if (WAKE_ID.test(line)) process.stdout.write(`${wakeEvent(line)}\\n`);",
+      "replace": "          if (line) process.stdout.write(`${line}\\n`);",
       "expectRed": "a monitor turns only a connection id into an event, and drops any other text",
       "cell": "a monitor turns only a connection id into an event, and drops any other text",
       "command": "pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",

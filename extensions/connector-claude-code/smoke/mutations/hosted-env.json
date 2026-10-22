@@ -75,8 +75,8 @@
     {
       "name": "feedback resolves contact in the host environment",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          const contact = resolveFeedbackEmail(email as string | undefined, env);",
-      "replace": "          const contact = resolveFeedbackEmail(email as string | undefined, process.env);",
+      "find": "        const contact = config.feedbackKey ? undefined : resolveFeedbackEmail(email as string | undefined, env);",
+      "replace": "        const contact = config.feedbackKey ? undefined : resolveFeedbackEmail(email as string | undefined, process.env);",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_a",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
