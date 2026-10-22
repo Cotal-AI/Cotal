@@ -41,16 +41,17 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { skipSuite } from "@cotal-ai/smoke-kit";
 import { peerCredentials } from "@cotal-ai/seat";
 import { saveIdpSession } from "@cotal-ai/auth";
 import { recordMesh, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
 
-if (process.platform !== "linux") {
-  console.log("daemon-connect smoke: Linux only; skipped on " + process.platform);
-  process.exit(0);
-}
+if (process.platform !== "linux") skipSuite(`daemon-connect smoke: Linux only; skipped on ${process.platform}`);
+const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
+// The CLI children get no mesh identity or connection material from whatever runs this suite.
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
@@ -115,7 +116,7 @@ const deadBase = `http://127.0.0.1:${(dead.address() as AddressInfo).port}`;
 await new Promise<void>((r) => dead.close(() => r()));
 
 // ---------- an isolated machine home ----------
-const root = mkdtempSync(join(process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir(), "cdc-"));
+const root = mkdtempSync(join(scratchParent, "cdc-"));
 chmodSync(root, 0o700);
 const home = join(root, "home");
 mkdirSync(home, { mode: 0o700 });
