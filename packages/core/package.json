@@ -41,8 +41,8 @@
       "import": "./dist/launch-material.js"
     },
     "./secret-fs": {
-      "types": "./dist/secret-fs.d.ts",
-      "import": "./dist/secret-fs.js"
+      "types": "./dist/secret-fs-entry.d.ts",
+      "import": "./dist/secret-fs-entry.js"
     },
     "./peer-label": {
       "types": "./dist/peer-label.d.ts",
