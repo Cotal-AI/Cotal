@@ -21,13 +21,12 @@ if (process.argv[2] === "worker") {
   const { registry, eventChannel } = await import("@cotal-ai/core");
   type Connector = import("@cotal-ai/core").Connector;
   const { cotalAuthProvider } = await import("@cotal-ai/auth");
-  const { credentialFailure } = await import("@cotal-ai/workspace");
   // With no FOREGROUND_NAMES_URL the real provider runs. This fixture has no sign-in, so it refuses
   // before any request.
   if (process.env.FOREGROUND_NAMES_URL) {
     registry.unregister("auth-provider", cotalAuthProvider.name);
-    // The provisioning double throws what the real provider throws for each answer: a 401 is
-    // signed-out, a 403 is refused, and any other failure carries no code.
+    // The provisioning double throws what the real provider throws for each answer: no failure
+    // carries a code, and a 401 names the login.
     const provisioningDouble: typeof cotalAuthProvider = {
       ...cotalAuthProvider,
       async postAgentProvisioning({ actor }: { actor: string }) {
@@ -36,9 +35,11 @@ if (process.argv[2] === "worker") {
         });
         if (response.ok) return response.json();
         const reason = ((await response.json().catch(() => ({}))) as { error?: string }).error;
-        if (response.status === 401) throw credentialFailure("signed-out", `the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp https://idp.example/api/auth\``);
-        const refusal = `the mesh refused to provision agent "${actor}": ${reason}`;
-        throw response.status === 403 ? credentialFailure("refused", refusal) : new Error(refusal);
+        throw new Error(
+          response.status === 401
+            ? `the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp https://idp.example/api/auth\``
+            : `the mesh refused to provision agent "${actor}": ${reason}`,
+        );
       },
       async postAgentEnrollment({ url }: { url: string }) {
         const response = await fetch(url, { method: "POST" });
@@ -218,16 +219,17 @@ try {
   const beforeDenied = requests.length;
   const denied = launch();
   assert.equal(await denied.ready, false, "ordinary authorization refusal never launches");
-  // The endpoint's own 403 is a refusal: it answered before issuing anything for the actor.
-  assert.equal(await denied.closed, 2, `ordinary authorization refusal exits as a refusal: ${denied.output}`);
-  assert(/Outcome: refused/.test(denied.output) && /Code:\s+PERMISSION_DENIED/.test(denied.output) && denied.output.includes("fixture_denied"), `the endpoint's 403 is reported as a refusal with its own reason: ${denied.output}`);
+  // The endpoint is the deployment's, and nothing says what its 403 left behind, so the outcome
+  // stays unconfirmed.
+  assert.equal(await denied.closed, 3, `an endpoint 403's outcome is unconfirmed: ${denied.output}`);
+  assert(/Outcome: unknown/.test(denied.output) && /Code:\s+OPERATION_UNKNOWN/.test(denied.output) && denied.output.includes("fixture_denied"), `the endpoint's 403 is reported unconfirmed with its own reason: ${denied.output}`);
   assert.deepEqual(requests.slice(beforeDenied), ["denied"], "ordinary authorization refusal is not retried under another actor");
   writePersona("expired");
   const beforeExpired = requests.length;
   const expired = launch();
   assert.equal(await expired.ready, false, "a refused login never launches");
-  assert.equal(await expired.closed, 2, `a refused login exits as a refusal: ${expired.output}`);
-  assert(/Outcome: refused/.test(expired.output) && /Code:\s+AUTH_REQUIRED/.test(expired.output) && expired.output.includes("cotal login --idp"), `the endpoint's 401 is reported as a sign-in refusal: ${expired.output}`);
+  assert.equal(await expired.closed, 3, `an endpoint 401's outcome is unconfirmed: ${expired.output}`);
+  assert(/Outcome: unknown/.test(expired.output) && /Code:\s+OPERATION_UNKNOWN/.test(expired.output) && expired.output.includes("cotal login --idp"), `the endpoint's 401 is reported unconfirmed and still names the login: ${expired.output}`);
   assert.deepEqual(requests.slice(beforeExpired), ["expired"], "a refused login is not retried under another actor");
   writePersona("unavailable");
   const beforeUnavailable = requests.length;

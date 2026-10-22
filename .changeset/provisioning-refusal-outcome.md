@@ -4,4 +4,4 @@
 "@cotal-ai/cli": patch
 ---
 
-`cotal spawn --foreground` on a remote user-auth mesh now reports a provisioning refusal as a refusal. With no sign-in, or when the agent-provisioning endpoint answers 401, it exits 2 with `AUTH_REQUIRED`. When the endpoint answers 403 it exits 2 with `PERMISSION_DENIED`. Before, both were reported as an unknown outcome (`OPERATION_UNKNOWN`, exit 3), which told a script the agent might have been provisioned. Any other provisioning failure is still unknown.
+`cotal spawn --foreground` on a remote user-auth mesh with no sign-in now exits 2 with `AUTH_REQUIRED`, before any request is sent. Before, it was reported as an unknown outcome (`OPERATION_UNKNOWN`, exit 3), which told a script the agent might have been provisioned. Any failure after the provisioning request, an endpoint 401 or 403 included, is still an unknown outcome.
