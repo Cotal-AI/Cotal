@@ -101,6 +101,11 @@ function grant(raw: unknown): ServiceCallerGrant {
   return { grantId: id(o.grantId), endpoint: o.endpoint, instanceId: lifecycle(o.instanceId), serviceApprovalDigest: approvalDigest,
     capabilities, source: provenance, parentRefs: parents, status: state(o.status) };
 }
+/** A grant's immutable fields as canonical JSON: everything but `status`, the one field that advances. */
+export function immutableGrantView(g: ServiceCallerGrant): string {
+  return canonicalJson({ grantId: g.grantId, endpoint: g.endpoint, instanceId: g.instanceId, serviceApprovalDigest: g.serviceApprovalDigest,
+    capabilities: g.capabilities, source: g.source, parentRefs: g.parentRefs });
+}
 
 /** Stored syntax only. Eligibility, ancestry and native capability containment are host checks. */
 export function parseNativeServiceCallerPolicy(raw: unknown): NativeServiceCallerPolicy {
@@ -168,8 +173,10 @@ export async function appendNativeServiceCallerGrant(reg: LifecycleRegistry, bin
   const candidate = parseNativeServiceCallerPolicy({ v: 1, ...binding, grants: [args.grant] }).grants[0]!;
   if (candidate.status.state !== "active") bad();
   const found = await readNativeServiceCallerPolicy(reg, binding), existing = found?.row.grants.find((g) => g.grantId === candidate.grantId);
+  // An existing grant answers present whatever its status: the comparison leaves out status, which
+  // only advances, so a replay after deny-new adopts the row and never reactivates the grant.
   if (existing) {
-    if (canonicalJson(existing) !== canonicalJson(candidate)) conflict("grant id is immutable and cannot be rebound or reactivated");
+    if (immutableGrantView(existing) !== immutableGrantView(candidate)) conflict("grant id is immutable and cannot be rebound");
     return found!;
   }
   if ((found?.revision ?? 0) !== revision) conflict("native caller policy revision changed");
@@ -197,4 +204,29 @@ export async function beginNativeServiceCallerRevocation(reg: LifecycleRegistry,
   if (found.revision !== revision) conflict("native caller policy revision changed");
   return write(reg, binding, { ...found.row, grants: found.row.grants.map((g) => g.grantId === grantId
     ? { ...g, status: { state: "revoking", operationId, phase: "cutoff-required" } } : g) }, found.revision);
+}
+
+/** The cutoff step after deny-new: records the op-bound marker and its fixed deadline on a grant
+ *  whose intent this operation already holds. The same values again are a no-op. Other values,
+ *  another operation's intent in either revoking form, an active grant or a revoked one are a
+ *  conflict, so a recorded deadline is never reset. `notBefore` is in epoch seconds. */
+export async function recordNativeServiceCallerCutoff(reg: LifecycleRegistry, binding: ServiceCallerPolicyBinding, args: {
+  expectedRevision: number; grantId: string; operationId: string; markerKey: string; markerRevision: number; notBefore: number;
+}): Promise<NativeServiceCallerPolicyRead> {
+  const revision = uint(args.expectedRevision), grantId = id(args.grantId), operationId = id(args.operationId);
+  const marker = { state: "revoking" as const, operationId, markerKey: args.markerKey, markerRevision: uint(args.markerRevision, true), notBefore: uint(args.notBefore, true) };
+  const { accountPublicKey, space, grantee } = context(reg, binding).expected;
+  binding = { accountPublicKey, space, grantee };
+  const found = await readNativeServiceCallerPolicy(reg, binding);
+  if (!found) throw new EpEnvelopeError("not-found", "native caller policy is absent");
+  const existing = found.row.grants.find((g) => g.grantId === grantId);
+  if (!existing) throw new EpEnvelopeError("not-found", "native caller grant is absent");
+  const s = existing.status;
+  if (s.state !== "revoking" || s.operationId !== operationId) conflict("caller grant is not under this revocation operation's deny-new intent");
+  if (!("phase" in s)) {
+    if (canonicalJson(s) !== canonicalJson(marker)) conflict("caller grant already records another cutoff marker");
+    return found;
+  }
+  if (found.revision !== revision) conflict("native caller policy revision changed");
+  return write(reg, binding, { ...found.row, grants: found.row.grants.map((g) => g.grantId === grantId ? { ...g, status: marker } : g) }, found.revision);
 }
