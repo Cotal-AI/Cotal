@@ -1,7 +1,9 @@
 const WAKE = /^Cotal: a new message for connection_id ([A-Za-z0-9_-]{1,128})\. Read it with cotal_inbox\.$/;
+const PREVIEW = /^Cotal preview for connection_id ([A-Za-z0-9_-]{1,128}): (\{.*\})$/;
 const pending = new Set();
 const expanded = new Set();
 const wakeRows = new Set();
+const previews = new Map();
 let submitting = false;
 let paused = false;
 let active = false;
@@ -54,7 +56,16 @@ async function listen($) {
       for (let end; (end = buffer.indexOf('\n')) >= 0;) {
         const line = buffer.slice(0, end);
         buffer = buffer.slice(end + 1);
-        if (WAKE.test(line)) {
+        const preview = PREVIEW.exec(line);
+        if (preview) {
+          try {
+            const value = JSON.parse(preview[2]);
+            if (Number.isInteger(value.unread) && value.unread >= 0 && Array.isArray(value.rows) &&
+                value.rows.length <= 8 && value.rows.every(row => typeof row === 'string' && Array.from(row).length <= 240)) {
+              previews.set(preview[1], value);
+            }
+          } catch {}
+        } else if (WAKE.test(line)) {
           pending.add(line);
           void submit($);
         }
@@ -87,6 +98,8 @@ export function register(on) {
     // Some app versions include their attribution wrapper in the rendered text. Match only our
     // fixed wake line, and keep the full original available through the disclosure below.
     if (!e.props.text.split(/\r?\n/).some(line => WAKE.test(line))) return next(e);
+    const id = e.props.text.split(/\r?\n/).map(line => WAKE.exec(line)?.[1]).find(Boolean);
+    const preview = id ? previews.get(id) : undefined;
     const { Box, Button } = $.ui.resolve(e);
     const open = expanded.has(e.requestId);
     return Box({
@@ -94,7 +107,9 @@ export function register(on) {
       children: [
         Button({
           key: 'cotal-wake-details',
-          label: open ? 'Cotal · new message  ▾' : 'Cotal · new message  ›',
+          label: preview
+            ? `Cotal · ${preview.unread} unread  ${open ? '▾' : '›'}`
+            : open ? 'Cotal · new message  ▾' : 'Cotal · new message  ›',
           plain: true,
           onPress: () => {
             if (open) expanded.delete(e.requestId);
@@ -102,7 +117,9 @@ export function register(on) {
             $.ui.invalidate('ui.render');
           },
         }),
-        ...(open ? [await next(e)] : []),
+        ...(open ? preview?.rows?.length
+          ? preview.rows.map((row, index) => Box({ key: `cotal-preview-${index}`, children: [row] }))
+          : [await next(e)] : []),
       ],
     });
   });
