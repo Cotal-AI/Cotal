@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.94.0
+
+### Patch Changes
+
+- 8e05f65: Explain how to update an older recorded identity CLI that cannot enforce permission approval, without falling back or exposing its diagnostic output. Update the installed plugin instructions to describe the permission review page, mandatory direct messages and activity sharing, and unsupported local approval paths.
+
 ## 0.93.0
 
 ### Minor Changes
