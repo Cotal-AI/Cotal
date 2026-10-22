@@ -2,7 +2,7 @@
  *  fallback string excepted), no uppercase text, no positive letter-spacing, no Geist or Work Sans, no
  *  network call outside api/, and a token file that defines both palettes. Tailwind classes live only
  *  in the copied shadcn parts, shadcn's colour names are bridged from ours, and every running
- *  animation in app.css stops under reduced motion. */
+ *  animation in app.css stops under reduced motion, the working dot keeping a still halo. */
 import { strict as assert } from "node:assert";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -131,6 +131,14 @@ ok("tokens.css's :root defines each bridged shadcn name as var(--ours) per the m
 const appRules = cssRules(app);
 const reduced = (r: CssRule) => r.within.some((w) => /prefers-reduced-motion:\s*reduce/.test(w));
 const sets = (body: string) => /(?:^|;)\s*animation(?:-name)?\s*:\s*([^;]+)/.exec(body)?.[1]?.trim();
+/** The declarations the reduced-motion rules give `selector`, joined. */
+const reducedBody = (selector: string) => appRules.filter((r) => reduced(r) && r.selectors.includes(selector)).map((r) => r.body).join(";");
+ok("under reduced motion the working dot stops breathing and keeps a still 2.5px halo, so its shape still differs",
+  sets(reducedBody(".ui-st-working::after")) === "none" && /box-shadow\s*:\s*0 0 0 2\.5px color-mix\(in srgb, var\(--any\) 28%, transparent\)/.test(reducedBody(".ui-st-working::after")),
+  reducedBody(".ui-st-working::after"));
+ok("under reduced motion the topology arc, the working spokes and the working line's shimmer stop",
+  [".ui-orbit", ".ox-spin", ".ox-shimmer"].every((sel) => sets(reducedBody(sel)) === "none"),
+  [".ui-orbit", ".ox-spin", ".ox-shimmer"].map((sel) => [sel, reducedBody(sel)]));
 const animated = appRules.filter((r) => !reduced(r) && sets(r.body) && sets(r.body) !== "none")
   .flatMap((r) => r.selectors).filter((s) => s.includes("."));
 const stopped = new Set(appRules.filter((r) => reduced(r) && sets(r.body) === "none")

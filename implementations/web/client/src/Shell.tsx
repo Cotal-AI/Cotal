@@ -83,9 +83,9 @@ function centreView(
     case "topology":
       return <TopologyView store={store} clock={clock} />;
     case "agents":
-      return <AgentsView store={store} group={route.group === "host" ? "host" : undefined} selected={panel.agent} onPick={pick} clock={clock} />;
+      return <AgentsView store={store} controller={page.controller} group={route.group === "host" ? "host" : undefined} selected={panel.agent} onPick={pick} clock={clock} />;
     case "needs":
-      return <AgentsView store={store} group="status" focusWaiting selected={panel.agent} onPick={pick} clock={clock} />;
+      return <AgentsView store={store} controller={page.controller} group="status" focusWaiting selected={panel.agent} onPick={pick} clock={clock} />;
     case "agent":
       return (
         <Suspense fallback={<SkeletonView />}>
@@ -150,6 +150,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const places = usePlaces(route, channels, dms, roster, self);
   const everyone = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
   const needing = useMemo(() => waiting(everyone).length, [everyone]);
+  const busy = useMemo(() => roster.filter((p) => p.card.kind === "agent" && p.status === "working").length, [roster]);
   const badgeOf = useMemo(() => badgeLookup(everyone), [everyone]);
   const panel = usePanel(route, phone);
   const shown = panelShown(panel, paneOpen);
@@ -182,6 +183,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
           onTheme={onTheme}
           phone={phone}
           waiting={needing}
+          working={busy}
           sheetOpen={sheetOpen}
           onSheetClose={() => setSheetAt(null)}
           onPanelClose={panel.close}

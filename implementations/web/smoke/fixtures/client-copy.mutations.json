@@ -140,6 +140,22 @@
       "replace": "",
       "expectRed": "every class rule in app.css with a running animation also has a reduced-motion rule",
       "cell": "every class rule in app.css with a running animation also has a reduced-motion rule"
+    },
+    {
+      "name": "the working dot's halo is dropped under reduced motion",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": "  .ui-st-working::after { animation: none; box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--any) 28%, transparent); }",
+      "replace": "  .ui-st-working::after { animation: none; }",
+      "expectRed": "under reduced motion the working dot stops breathing and keeps a still 2.5px halo, so its shape still differs",
+      "cell": "under reduced motion the working dot stops breathing and keeps a still 2.5px halo, so its shape still differs"
+    },
+    {
+      "name": "the topology arc keeps circling under reduced motion",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": "  .ui-orbit { animation: none; }\n",
+      "replace": "",
+      "expectRed": "under reduced motion the topology arc, the working spokes and the working line's shimmer stop",
+      "cell": "under reduced motion the topology arc, the working spokes and the working line's shimmer stop"
     }
   ]
 }

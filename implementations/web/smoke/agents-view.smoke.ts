@@ -9,7 +9,10 @@
  *
  *  What is pinned, beyond the markup: a status the wire carries outside the four is listed, never
  *  dropped; an offline agent's old heartbeat never counts toward the live agents' oldest; a working
- *  agent that reports no progress never reads "No current activity". */
+ *  agent that reports no progress never reads "No current activity". Section 11 mounts the view over
+ *  a fake controller: the first 12 working rows in display order hold their agents' work open and the
+ *  rest show presence only, a row that stops working and the view's unmount close what they held, a
+ *  running call draws the row's live step, and View work sits beside the row's button. */
 import { closeDom, dom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { HourglassIcon, Loading03Icon, Moon02Icon, NotificationOff01Icon, Plug01Icon, ServerStack01Icon, Target02Icon, UnavailableIcon } from "@hugeicons/core-free-icons";
@@ -17,7 +20,8 @@ import { createElement, useState } from "react";
 import { renderToString } from "react-dom/server";
 import type { RosterEntry } from "../client/src/api/types.js";
 import { Icon } from "../client/src/icons/Icon.tsx";
-import type { Route } from "../client/src/lib/route.js";
+import { formatRoute, type Route } from "../client/src/lib/route.js";
+import type { Controller } from "../client/src/state/controller.js";
 import { Shell } from "../client/src/Shell.tsx";
 import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState } from "../client/src/state/types.js";
@@ -85,7 +89,10 @@ function sections(root: ParentNode): Section[] {
   const out: Section[] = [];
   for (const el of Array.from(list?.children ?? [])) {
     if (el.classList.contains("v3-ghead")) out.push({ label: textOf(el.querySelector("span:not(.v3-count)")), count: textOf(el.querySelector(".v3-count")), head: el, rows: [] });
-    else if (el.classList.contains("v3-arow")) out.at(-1)?.rows.push(el);
+    else if (el.classList.contains("ox-arow")) {
+      const row = el.querySelector(":scope > .v3-arow");
+      if (row) out.at(-1)?.rows.push(row);
+    }
   }
   return out;
 }
@@ -175,7 +182,7 @@ const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));
 
   const line = (root: ParentNode) => Array.from(root.querySelectorAll(".v3-by-status .v3-eprow")).map((e) => textOf(e));
   same("3.5 under the groups the oldest heartbeat among live agents is said, counted from the clock", line(d), ["Oldest heartbeat among live agents: 2s ago"]);
-  ok("3.6 it is the last thing in the list, after Offline", list.lastElementChild?.classList.contains("v3-eprow") === true && list.lastElementChild?.previousElementSibling?.classList.contains("v3-arow-off") === true);
+  ok("3.6 it is the last thing in the list, after Offline", list.lastElementChild?.classList.contains("v3-eprow") === true && list.lastElementChild?.previousElementSibling?.querySelector(":scope > .v3-arow-off") != null);
   const longAgo = view({ roster: ROSTER.map((p) => (p.card.id === "local.rv2" ? { ...p, ts: NOW - 7 * 60_000 } : p)) });
   same("3.7 an offline agent's old heartbeat does not count: only a live agent's can be the oldest", line(longAgo), ["Oldest heartbeat among live agents: 7m ago"]);
   const hours = view({ roster: ROSTER.map((p) => (p.card.id === "local.rv2" ? { ...p, ts: NOW - 3 * 3_600_000 } : p)) });
@@ -432,6 +439,70 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
     globalThis.setInterval = realSet;
     globalThis.clearInterval = realClear;
   }
+}
+
+// 11. Mounted: the live step, read from at most 12 working agents' event planes
+{
+  /** A controller that records which agents' work is held open, and does nothing else. */
+  const watcher = () => {
+    const calls: string[] = [];
+    const controller = {
+      openSession: (id: string) => void calls.push(`open ${id}`),
+      closeSession: (id: string) => void calls.push(`close ${id}`),
+    } as unknown as Controller;
+    const held = () => {
+      const n = new Map<string, number>();
+      for (const c of calls) {
+        const [kind, id] = c.split(" ") as [string, string];
+        n.set(id, (n.get(id) ?? 0) + (kind === "open" ? 1 : -1));
+      }
+      return [...n].filter(([, v]) => v > 0).map(([id]) => id);
+    };
+    return { controller, calls, held };
+  };
+  const pad = (i: number) => String(i).padStart(2, "0");
+  const crew = Array.from({ length: 14 }, (_, i) => entry(`local.w${pad(i)}`, `worker${pad(i)}`, "working", { connector: "claude-code", host: "box", activity: `Task ${i}` }));
+  const first12 = crew.slice(0, 12).map((p) => p.card.id);
+
+  const a = watcher();
+  const m = await mount(createElement(AgentsView, { store: seed({ roster: crew }), controller: a.controller, clock: () => NOW }));
+  same("11.1 fourteen working agents hold the work of twelve open, the first twelve in display order, each once",
+    [a.held(), a.calls.length], [first12, 12]);
+  await m.unmount();
+  same("11.2 unmounting the view closes every one it held", [a.held(), a.calls.filter((c) => c.startsWith("close")).length], [[], 12]);
+
+  const b = watcher();
+  const store = seed({ roster: crew });
+  const n = await mount(createElement(AgentsView, { store, controller: b.controller, clock: () => NOW }));
+  await n.run(() => store.set({ roster: crew.map((p) => (p.card.id === "local.w03" ? { ...p, status: "idle" as const } : p)) }));
+  same("11.3 a working agent that turns idle closes its work, and the next working row takes its place",
+    [b.calls.includes("close local.w03"), b.held()], [true, [...first12.filter((id) => id !== "local.w03"), "local.w12"]]);
+  await n.unmount();
+
+  const ts = Date.now() - 5000;
+  const session = (events: unknown[]) => ({ views: 1, frames: [{ id: "f1", ts, live: true, events: [{ type: "RUN_STARTED", threadId: "t", runId: "r1", timestamp: ts }, ...events] }], posts: [], load: "ok" as const, more: false, limit: 200 });
+  const start = { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "Bash", timestamp: ts };
+  const dav = ROSTER.filter((p) => p.card.id === "local.dav");
+  const c = watcher();
+  const live = await mount(createElement(AgentsView, { store: seed({ roster: dav, sessions: { "local.dav": session([start]) } }), controller: c.controller, clock: () => NOW }));
+  const row = rowByName(live.container, "david");
+  const step = row.querySelector(".ox-now");
+  const link = row.parentElement?.querySelector(":scope > a.ox-act") ?? null;
+  same("11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button",
+    [textOf(step?.querySelector('[data-slot="trace-title"]')), /^Bash · \d+s$/.test(textOf(step?.querySelector('[data-slot="trace-description"]'))), step?.querySelector('[data-slot="spinner"]') !== null,
+      step?.previousElementSibling?.classList.contains("v3-aact"), textOf(link), link?.getAttribute("href"), row.querySelector("a") === null, c.held()],
+    ["Running a command", true, true, true, "View work", formatRoute({ view: "agent", id: "local.dav", tab: "work" }), true, ["local.dav"]]);
+  ok("11.5 the activity line above it is presence's own text and never shimmers",
+    textOf(row.querySelector(".v3-aact")) === "Editing packages/core/src/presence.ts" && row.querySelector(".v3-aact.ox-shimmer, .v3-aact .ox-shimmer") === null);
+  await live.unmount();
+  const ended = { type: "CUSTOM", name: "cotal.toolResult", value: { toolCallId: "c1", isError: false }, timestamp: ts + 1000 };
+  const done = await mount(createElement(AgentsView, { store: seed({ roster: dav, sessions: { "local.dav": session([start, ended]) } }), controller: watcher().controller, clock: () => NOW }));
+  const quiet = rowByName(done.container, "david");
+  ok("11.6 a working row whose call has finished shows no step line, and keeps View work", quiet.querySelector(".ox-now") === null && textOf(quiet.parentElement?.querySelector(":scope > a.ox-act")) === "View work");
+  await done.unmount();
+  const heads = sections(view());
+  same("11.7 the Working group's spokes turn and no other group's icon does",
+    heads.map((h) => [h.label, h.head.querySelector("svg")?.classList.contains("ox-spin") ?? false]), [["Waiting", false], ["Working", true], ["Idle", false], ["Offline", false]]);
 }
 
 await closeDom();

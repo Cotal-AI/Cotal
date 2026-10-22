@@ -1,9 +1,12 @@
-import { Plug01Icon, ServerStack01Icon, Settings01Icon } from "@hugeicons/core-free-icons";
+import { ArrowUpRight01Icon, Plug01Icon, ServerStack01Icon, Settings01Icon } from "@hugeicons/core-free-icons";
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { RosterEntry } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
 import { ageText } from "../../lib/age.js";
 import { oldestLiveBeat, rosterRows, STATUS_ORDER, statusLabel, type RosterRow } from "../../lib/roster.js";
+import { formatRoute } from "../../lib/route.js";
+import { callState, foldWork, type ToolCall, type Turn, type Work } from "../../lib/session.js";
+import type { Controller } from "../../state/controller.js";
 import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
@@ -13,7 +16,9 @@ import { useBadgeOf } from "../identity.js";
 import { clock as clockTime } from "../../lib/time.js";
 import { harnessName } from "../MessageRow.tsx";
 import { needsDetail } from "../NeedsCard.tsx";
-import { STATUS_ICON, StatusWord, word } from "../Status.tsx";
+import { STATUS_ICON, statusIconClass, StatusWord, word } from "../Status.tsx";
+import { useOwnMessages, useSession } from "../agent/work.ts";
+import { ToolLine } from "../work/ToolLine.tsx";
 import { EmptySpace } from "./EmptySpace.tsx";
 
 /** How the roster is grouped: by status, or by the host each agent runs on. */
@@ -21,6 +26,10 @@ export type Grouping = "status" | "host";
 
 /** Where this browser keeps the viewer's grouping. */
 const KEY = "cotal.agents.group";
+
+/** How many working agents' event planes the view reads at once: the first this many working rows in
+ *  display order. Rows after them show presence only. */
+export const LIVE_STEPS = 12;
 
 /** How often the heartbeat ages redraw. They count whole seconds, and nothing else would redraw them
  *  while every agent is silent. */
@@ -96,33 +105,74 @@ function activityText(row: RosterRow, grouping: Grouping): string {
   return row.status === "working" ? word(statusLabel(row)) : "No current activity";
 }
 
+/** The call running now in `work`'s open turn: the latest call of the turn's trailing work whose state
+ *  (`callState`, with presence's `status`) is running. None when no turn is open or nothing runs. */
+function runningCall(work: Work, status: RosterRow["status"]): { call: ToolCall; turn: Turn } | undefined {
+  const turn = work.items.findLast((i): i is Turn => i.kind === "turn" && i.outcome === "open" && !i.superseded);
+  const trailing = turn?.steps.findLast((s) => s.kind !== "runError");
+  if (turn === undefined || trailing?.kind !== "tools") return undefined;
+  const call = trailing.calls.findLast((c) => callState(c, { turn, trailing: true, status, toolStatus: work.toolStatus }) === "running");
+  return call === undefined ? undefined : { call, turn };
+}
+
+/** A working row's live step (overhaul mock W, `tpl-agentlist-new`): while it is drawn it holds the
+ *  agent's work open (`useSession`, shared with the agent's page and peek through the controller's
+ *  count of views) and shows the running call of the open turn as one `ToolLine` (`ox-now`): the
+ *  spinner, the present-tense title shimmering and the tool with its counting seconds. No running
+ *  call, no line. It unmounts, and so closes the agent's work, when the row stops working, leaves the
+ *  first `LIVE_STEPS` or the view closes. A card that says the plane is off opens nothing. */
+function LiveStep({ store, controller, row }: { store: Store<DashboardState>; controller: Controller | null; row: RosterRow }) {
+  useSession(row.events === "off" ? null : controller, row.id);
+  const frames = useStore(store, (s) => s.sessions[row.id]?.frames);
+  const posts = useOwnMessages(store, row.id);
+  const running = useMemo(() => (frames === undefined ? undefined : runningCall(foldWork(frames, posts), row.status)), [frames, posts, row.status]);
+  if (running === undefined) return null;
+  return <ToolLine call={running.call} state="running" className="ox-now" />;
+}
+
 /** One agent: character, name, role and harness, activity, the attention badge when there is one
  *  (open shows nothing), and its host, or its status word under the host grouping. The row is a
- *  button; picking it tells the caller which agent. */
-function AgentRow({ row, grouping, selected, onPick }: { row: RosterRow; grouping: Grouping; selected: boolean; onPick?: (id: string) => void }) {
+ *  button; picking it tells the caller which agent. A working row adds View work beside the button,
+ *  as its own link to the agent's Work, and with `live` its live step under the activity line. The
+ *  activity line is presence's text and never shimmers. */
+function AgentRow({ row, grouping, selected, onPick, live }: {
+  row: RosterRow;
+  grouping: Grouping;
+  selected: boolean;
+  onPick?: (id: string) => void;
+  live?: { store: Store<DashboardState>; controller: Controller | null };
+}) {
   const attention = row.attention === "dnd" || row.attention === "focus" ? row.attention : undefined;
   const waiting = row.status === "waiting" && grouping === "status";
   const badgeOf = useBadgeOf();
   return (
-    <button
-      type="button"
-      className={row.status === "offline" ? "v3-arow v3-arow-off" : "v3-arow"}
-      data-agent={row.id}
-      aria-current={selected ? "true" : undefined}
-      onClick={() => onPick?.(row.id)}
-    >
-      <Avatar vendor={row.harness} status={row.status} size={36} badge={badgeOf(row.id)} />
-      <span>
-        <span className="v3-aname"><b>{row.name}</b><span>{roleLine(row)}</span></span>
-        <span className="v3-aact" style={waiting ? { color: "var(--gold-ink)" } : undefined}>{activityText(row, grouping)}</span>
-      </span>
-      {attention ? <AttentionMark attention={attention} /> : <span />}
-      {grouping === "host" ? (
-        <StatusWord row={row} />
-      ) : row.host !== undefined ? (
-        <span className="v3-meta"><Icon icon={ServerStack01Icon} size={16} className="ui-ic" />{row.host}</span>
-      ) : <span />}
-    </button>
+    <div className="ox-arow">
+      <button
+        type="button"
+        className={row.status === "offline" ? "v3-arow v3-arow-off" : "v3-arow"}
+        data-agent={row.id}
+        aria-current={selected ? "true" : undefined}
+        onClick={() => onPick?.(row.id)}
+      >
+        <Avatar vendor={row.harness} status={row.status} size={36} badge={badgeOf(row.id)} />
+        <span>
+          <span className="v3-aname"><b>{row.name}</b><span>{roleLine(row)}</span></span>
+          <span className="v3-aact" style={waiting ? { color: "var(--gold-ink)" } : undefined}>{activityText(row, grouping)}</span>
+          {live && <LiveStep store={live.store} controller={live.controller} row={row} />}
+        </span>
+        {attention ? <AttentionMark attention={attention} /> : <span />}
+        {grouping === "host" ? (
+          <StatusWord row={row} />
+        ) : row.host !== undefined ? (
+          <span className="v3-meta"><Icon icon={ServerStack01Icon} size={16} className="ui-ic" />{row.host}</span>
+        ) : <span />}
+      </button>
+      {row.status === "working" && (
+        <a className="ox-act" href={formatRoute({ view: "agent", id: row.id, tab: "work" })}>
+          View work<Icon icon={ArrowUpRight01Icon} size={16} />
+        </a>
+      )}
+    </div>
   );
 }
 
@@ -183,9 +233,16 @@ function HeartbeatLine({ beat, clock }: { beat: number; clock: () => number }) {
  *  - When the observer's own presence watch is silent the header says how many agents were last seen,
  *    the rows dim, and the heartbeat line goes, since its ages would be of a roster no longer heard.
  *
+ *  - Working rows move while presence says they work: the Working header's spokes turn, and each of
+ *    the first `LIVE_STEPS` working rows in display order reads its agent's event plane through
+ *    `controller` while the view is on screen and shows the call running now (`LiveStep`). Each read
+ *    is dropped when its row stops working or the view closes. Rows after those show presence only.
+ *
  *  `clock` is the time the heartbeat ages count from. */
-export function AgentsView({ store, group, focusWaiting = false, selected = null, onPick, clock = Date.now }: {
+export function AgentsView({ store, controller = null, group, focusWaiting = false, selected = null, onPick, clock = Date.now }: {
   store: Store<DashboardState>;
+  /** Opens and closes the working agents' work the live steps read. Null before the dashboard has started. */
+  controller?: Controller | null;
   group?: Grouping;
   focusWaiting?: boolean;
   selected?: string | null;
@@ -205,6 +262,7 @@ export function AgentsView({ store, group, focusWaiting = false, selected = null
   }, [roster]);
   const { agents, endpoints } = split;
   const sections = grouping === "status" ? sectionsByStatus(agents) : sectionsByHost(agents);
+  const reading = new Set(sections.flatMap((s) => s.rows).filter((r) => r.status === "working").slice(0, LIVE_STEPS).map((r) => r.id));
   const empty = agents.length === 0;
   const hasWaiting = sections.some((s) => s.key === "waiting") && grouping === "status";
 
@@ -271,13 +329,13 @@ export function AgentsView({ store, group, focusWaiting = false, selected = null
                     tabIndex={status === "waiting" ? -1 : undefined}
                     data-focused={status === "waiting" && focusWaiting ? "true" : undefined}
                   >
-                    {known && <Icon icon={STATUS_ICON[status as keyof typeof STATUS_ICON]} size={16} className="ui-ic" />}
+                    {known && <Icon icon={STATUS_ICON[status as keyof typeof STATUS_ICON]} size={16} className={statusIconClass(section.key, "ui-ic")} />}
                     {grouping === "host" && <Icon icon={ServerStack01Icon} size={16} className="ui-ic" />}
                     <span style={{ color: status === "offline" ? "var(--dim)" : "var(--ink)" }}>{section.label}</span>
                     <span className="v3-count">{section.rows.length}</span>
                   </div>,
                   ...section.rows.map((row) => (
-                    <AgentRow key={`row:${row.id}`} row={row} grouping={grouping} selected={selected === row.id} onPick={onPick} />
+                    <AgentRow key={`row:${row.id}`} row={row} grouping={grouping} selected={selected === row.id} onPick={onPick} live={reading.has(row.id) ? { store, controller } : undefined} />
                   )),
                 ];
               })}

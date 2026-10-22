@@ -88,6 +88,7 @@
 .ui-st-waiting { background: linear-gradient(90deg, var(--gold) 50%, var(--ring-bg, var(--bg)) 50%); border: 1.6px solid var(--gold); }
 .ui-st-idle { background: var(--ring-bg, var(--bg)); border: 1.6px solid var(--idle); }
 .ui-st-offline { background: var(--ring-bg, var(--bg)); border: 1.6px dashed var(--faint); }
+.ui-stack .ui-av .ui-st { width: 8px; height: 8px; right: -1px; bottom: -1px; }
 .ui-stack { display: flex; }
 .ui-stack .ui-av { margin-left: -6px; }
 .ui-stack .ui-av:first-child { margin-left: 0; }
@@ -151,10 +152,6 @@
 .ui-at { color: var(--multi-ink); font-weight: 600; }
 .ui-evt { display: flex; align-items: center; gap: 10px; padding: 3px 0 3px 46px; color: var(--dim); font-size: 12.5px; }
 .ui-evt time { font: 400 11.5px/1 var(--mono); color: var(--faint); }
-.ui-typing { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12.5px; padding: 6px 0 2px 2px; white-space: nowrap; overflow: hidden; }
-.ui-typing .ui-av { --s: 18px; }
-.ui-typing b { font-weight: 600; color: var(--ink); }
-.ui-typing span:last-child { overflow: hidden; text-overflow: ellipsis; }
 .ui-more { font-size: 12.5px; font-weight: 500; color: var(--multi-ink); margin-top: 2px; }
 .ui-clamp { max-height: 6.2em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
 
@@ -306,6 +303,17 @@
 .ui-lg-offline { background: repeating-linear-gradient(90deg, var(--faint) 0 2px, transparent 2px 5px); }
 .ui-lg-traffic { background: repeating-linear-gradient(90deg, var(--any) 0 6px, transparent 6px 11px); }
 .ui-lg-hot { background: var(--multi); }
+.ui-lg-working { background: var(--any); }
+/* A node's status dot, drawn as the avatars draw it, and a working node's faint ring and arc. */
+.ui-tst circle { stroke-width: 1.6; }
+.ui-tst-working circle { fill: var(--any); stroke: var(--bg); stroke-width: 2; }
+.ui-tst-waiting .ui-tst-bg { fill: var(--bg); stroke: var(--bg); stroke-width: 2; }
+.ui-tst-waiting path { fill: var(--gold); }
+.ui-tst-waiting .ui-tst-ring { fill: none; stroke: var(--gold); }
+.ui-tst-idle circle { fill: var(--bg); stroke: var(--idle); }
+.ui-tst-offline circle { fill: var(--bg); stroke: var(--faint); stroke-dasharray: 2 2; }
+.ui-orbit-ring { fill: none; stroke: var(--any); stroke-width: 2; opacity: .18; }
+.ui-orbit { fill: none; stroke: var(--any); stroke-width: 2; stroke-linecap: round; transform-box: fill-box; transform-origin: center; animation: ox-turn 3.2s linear infinite; }
 .ui-col-wide { max-width: 1040px; }
 .ui-btn-sm { padding: 5px 9px; font-size: 12.5px; }
 .ui-btn[aria-pressed="true"] { background: var(--soft); }
@@ -708,4 +716,53 @@ textarea.ui-input::placeholder { color: var(--faint); opacity: 1; }
 /* Reduced motion: the new-steps button appears and leaves with no transition. */
 @media (prefers-reduced-motion: reduce) {
   .ox-newsteps { transition: none; }
+}
+
+/* ---------- working, everywhere (overhaul mock W, D and G) ----------
+   Something moves only while presence says the agent is working: the spokes turn, the dot breathes,
+   the activity shimmers and a topology node's arc circles. Waiting, idle and offline never move. */
+.ox-spin { animation: ox-turn 1.6s linear infinite; }
+@keyframes ox-turn { to { transform: rotate(360deg); } }
+/* the working dot breathes a ring out to 5px and fades; the dot itself never changes */
+.ui-st-working { position: relative; }
+.ui-st-working::after { content: ""; position: absolute; inset: -1px; border-radius: 50%; animation: ui-breathe 2.4s ease-out infinite; }
+@keyframes ui-breathe { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--any) 50%, transparent); } 70%, 100% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--any) 0%, transparent); } }
+/* the activity on the working line, with the ink as the band, as Trace's running title */
+.ox-shimmer {
+  --sp: calc(3ch + 40px);
+  background-image: linear-gradient(110deg, currentColor calc(50% - var(--sp)), color-mix(in srgb, var(--ink) 55%, currentColor) calc(50% - var(--sp) * .5), var(--ink) 50%, color-mix(in srgb, var(--ink) 55%, currentColor) calc(50% + var(--sp) * .5), currentColor calc(50% + var(--sp)));
+  background-size: calc(200% + var(--sp) * 2) 100%; background-repeat: no-repeat; background-position: 0 0;
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  animation: ox-shim 2.4s linear infinite;
+}
+@keyframes ox-shim { from { background-position: 100% 0; } to { background-position: 0 0; } }
+/* the working line under a channel or a conversation, one Marker per working agent */
+.ox-typing { display: flex; flex-direction: column; gap: 6px; padding: 8px 0 2px 2px; }
+.ox-wline { gap: 8px; min-width: 0; font-size: 12.5px; color: var(--dim); }
+.ox-wline .ui-av { --s: 18px; }
+.ox-wline-c { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ox-wline-c b { color: var(--ink); font-weight: 600; }
+.ox-wmore { padding-left: 26px; color: var(--dim); font-size: 12.5px; }
+/* the channel header's working chip, the sidebar's and the phone tab's working counts */
+.ox-hchip { display: inline-flex; align-items: center; gap: 6px; flex: none; padding: 4px 9px 4px 7px; border-radius: 999px; background: color-mix(in srgb, var(--any) 10%, var(--bg)); color: var(--any-ink); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ox-hchip .ui-ic { width: 15px; height: 15px; }
+.ox-sbw { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--any-ink); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ox-sbw .ui-ic { width: 14px; height: 14px; }
+.v3-tabbar .ox-tabw { position: absolute; top: 6px; left: calc(50% + 8px); }
+/* the Agents view: View work beside a working row, and the live step under its activity */
+/* every row keeps room for the link, so the host and status columns line up whoever works */
+.ox-arow { position: relative; min-width: 0; }
+.ox-arow > .v3-arow { align-items: start; padding-right: 110px; }
+.ox-arow > .v3-arow > .v3-spill, .ox-arow > .v3-arow > .v3-meta { margin-top: 9px; }
+.ox-arow > .ox-act { position: absolute; top: 18px; right: 12px; padding: 0 4px; border-radius: 6px; }
+.ox-arow > .ox-act:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.ox-now { font-size: 12.5px; line-height: 18px; }
+.ox-now > [data-slot="trace-icon"] svg { width: 14px; height: 14px; }
+/* Reduced motion: no spin, no breathing (the dot keeps a still halo, so its shape still differs), no
+   shimmer, and the arc stays. The clocks keep counting. */
+@media (prefers-reduced-motion: reduce) {
+  .ox-spin { animation: none; }
+  .ui-st-working::after { animation: none; box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--any) 28%, transparent); }
+  .ox-shimmer { animation: none; background-image: none; -webkit-text-fill-color: currentColor; }
+  .ui-orbit { animation: none; }
 }

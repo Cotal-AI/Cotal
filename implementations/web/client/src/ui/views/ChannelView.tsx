@@ -1,4 +1,4 @@
-import { Menu01Icon, SidebarRightIcon } from "@hugeicons/core-free-icons";
+import { Loading03Icon, Menu01Icon, SidebarRightIcon } from "@hugeicons/core-free-icons";
 import { useContext, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import type { CotalMessage, FeedMessage } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
@@ -6,7 +6,7 @@ import { claimedBy } from "../../lib/claims.js";
 import { composeKey, type ComposeTarget } from "../../lib/compose.js";
 import { channelMembers } from "../../lib/members.js";
 import { nameIndex, type NameIndex } from "../../lib/names.js";
-import { rosterRows, statusLabel, waiting, type RosterRow } from "../../lib/roster.js";
+import { rosterRows, waiting, type RosterRow } from "../../lib/roster.js";
 import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { ChannelRow, DashboardState, StoredMessage } from "../../state/types.js";
@@ -16,6 +16,7 @@ import { Composer, OutgoingRows } from "../Composer.tsx";
 import { MessageRow } from "../MessageRow.tsx";
 import { NeedsCard, needsKey, useDismissed } from "../NeedsCard.tsx";
 import { SheetMenu } from "../sheet.js";
+import { WorkingLine } from "../WorkingLine.tsx";
 
 /** How many members the header stack draws before the count alone carries the rest. */
 const STACK = 4;
@@ -137,8 +138,10 @@ export function usePinnedScroll(list: string, last: string | undefined) {
  *    keeps them on screen while its history loads (the controller holds them), and the scroll stays
  *    where the reader left it.
  *  - Members are `channelMembers`: the broker's when its feed is authoritative, else who posted here.
- *  - The working line names the first member of this channel, in that order, whose status is
- *    working, with its status text from `statusLabel`.
+ *    The member stack draws each one's status dot, so a working member's dot breathes.
+ *  - The members presence says are working, in that order, make the header chip ("<n> working", or
+ *    on a phone just the count, with the spokes turning and their names in its title) and the
+ *    working line under the messages (`WorkingLine`). With nobody working neither is drawn.
  *  - The dock holds the card for the first waiting agent this browser has not dismissed, and the
  *    composer under it once `/api/meta` has said what the dashboard can post as. With neither it is
  *    not drawn at all. The operator's posts the list does not hold yet follow the messages.
@@ -174,7 +177,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
     () => channelMembers(channel, membership, channels.map((c) => c.channel), messages),
     [channel, membership, channels, messages],
   );
-  const working = members.map((m) => peers.get(m.id)).find((r) => r?.status === "working");
+  const working = members.map((m) => peers.get(m.id)).filter((r): r is RosterRow => r?.status === "working");
   const [dismissed, dismiss] = useDismissed();
   const needing = waiting(everyone).find((r) => !dismissed.has(needsKey(r)));
   const tail = messages[messages.length - 1];
@@ -197,11 +200,17 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
         {info?.description && <span className="ui-topic">{info.description}</span>}
         <span className="ui-sp" />
         {policyChips(info).map((c) => <span key={c.text} className="ui-chip" title={c.title}>{c.text}</span>)}
+        {working.length > 0 && (
+          <span className="ox-hchip" title={`Working now: ${working.map((r) => r.name).join(", ")}`}>
+            <Icon icon={Loading03Icon} size={16} className="ui-ic ox-spin" />
+            {sheet ? working.length : `${working.length} working`}
+          </span>
+        )}
         <button type="button" className="ui-members" title={`${count} member${count === 1 ? "" : "s"}`} disabled={!onMembers} onClick={onMembers}>
           <span className="ui-stack">
             {members.slice(0, STACK).map((m) => {
               const r = peers.get(m.id);
-              return <Avatar key={m.id} vendor={r?.harness} status={r?.status ?? "offline"} badge={r ? badgeOf(m.id) : undefined} size={22} dot={false} />;
+              return <Avatar key={m.id} vendor={r?.harness} status={r?.status ?? "offline"} badge={r ? badgeOf(m.id) : undefined} size={22} />;
             })}
           </span>
           {count}
@@ -216,14 +225,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
         <div className="ui-col">
           <MessageList messages={messages} idx={idx} peers={peers} />
           <OutgoingRows store={store} target={target} shown={shown} />
-          {working && (
-            <div className="ui-typing">
-              <Avatar vendor={working.harness} status={working.status} size={18} dot={false} badge={badgeOf(working.id)} />
-              <b>{working.name}</b>
-              {` is ${statusLabel(working)} `}
-              {working.activity && <span>{working.activity}</span>}
-            </div>
-          )}
+          <WorkingLine rows={working} />
         </div>
       </div>
       {(needing || post) && (

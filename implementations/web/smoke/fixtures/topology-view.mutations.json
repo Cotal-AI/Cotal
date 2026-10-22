@@ -380,6 +380,46 @@
       "replace": ".force(\"y\", forceY<Body>());",
       "expectRed": "4.7 a layout moves only when it is ticked: left alone, it neither moves nor cools",
       "cell": "4.7 a layout moves only when it is ticked: left alone, it neither moves nor cools"
+    },
+    {
+      "name": "TD1 every status dot loses its own shape class",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "className={`ui-tst ui-tst-${status}`}",
+      "replace": "className=\"ui-tst\"",
+      "expectRed": "6.1 every node draws its status dot as the avatars do: working solid, waiting half filled, idle a ring, offline dashed",
+      "cell": "6.1 every node draws its status dot as the avatars do: working solid, waiting half filled, idle a ring, offline dashed"
+    },
+    {
+      "name": "TD2 the status dot moves into the greyscale art group",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "      <NodeDot status={status} x={size / 2 - 2} y={size / 2 - 1} />\n    </g>",
+      "replace": "      <g className=\"ui-ta-art\"><NodeDot status={status} x={size / 2 - 2} y={size / 2 - 1} /></g>\n    </g>",
+      "expectRed": "6.2 the dot sits outside the greyscale art group, so an offline node's dashed ring keeps its stroke",
+      "cell": "6.2 the dot sits outside the greyscale art group, so an offline node's dashed ring keeps its stroke"
+    },
+    {
+      "name": "TD3 the working arc runs half way round",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "strokeDasharray={`${round / 5} ${(round * 4) / 5}`}",
+      "replace": "strokeDasharray={`${round / 2} ${round / 2}`}",
+      "expectRed": "6.3 a working node has a faint full ring and, on it, an arc a fifth of the way round",
+      "cell": "6.3 a working node has a faint full ring and, on it, an arc a fifth of the way round"
+    },
+    {
+      "name": "TD4 every node gets the working orbit",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "{status === \"working\" && <Orbit r={size / 2 + 7} />}",
+      "replace": "<Orbit r={size / 2 + 7} />",
+      "expectRed": "6.4 and no other node has either",
+      "cell": "6.4 and no other node has either"
+    },
+    {
+      "name": "TD5 the legend forgets the working arc",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "  { cls: \"ui-lg-working\", label: \"Working\" },\n",
+      "replace": "",
+      "expectRed": "2.21 the legend names each line kind and the badge",
+      "cell": "2.21 the legend names each line kind and the badge"
     }
   ]
 }

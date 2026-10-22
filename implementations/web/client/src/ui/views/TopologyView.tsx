@@ -7,13 +7,15 @@ import type { DashboardState } from "../../state/types.js";
 import { TopologyGraph } from "../graph/TopologyGraph.tsx";
 import { MembershipPill } from "../MembershipPill.tsx";
 
-/** What each kind of line in the graph means, in the same dress the graph gives it. */
+/** What each kind of line in the graph means, in the same dress the graph gives it, and the arc a
+ *  working agent's node carries. */
 const LEGEND: { cls: string; label: string }[] = [
   { cls: "ui-lg-member", label: "Member" },
   { cls: "ui-lg-durable", label: "Durable member" },
   { cls: "ui-lg-offline", label: "Offline agent" },
   { cls: "ui-lg-traffic", label: "Posted here" },
   { cls: "ui-lg-hot", label: "Active now" },
+  { cls: "ui-lg-working", label: "Working" },
 ];
 
 /** The graph's model and the clock it is drawn against, for the topology view and the panel's Topology

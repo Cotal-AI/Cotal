@@ -86,12 +86,12 @@
       "cell": "1.8 the member stack counts the broker's members of #review and says so in its tooltip"
     },
     {
-      "name": "V12 the stack's avatars grow status dots",
+      "name": "V12 the stack's avatars lose their status dots",
       "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
-      "find": "size={22} dot={false} />;",
-      "replace": "size={22} />;",
-      "expectRed": "1.9 each member is drawn from the roster by id, in the broker's order, with no status dot",
-      "cell": "1.9 each member is drawn from the roster by id, in the broker's order, with no status dot"
+      "find": "badge={r ? badgeOf(m.id) : undefined} size={22} />;",
+      "replace": "badge={r ? badgeOf(m.id) : undefined} size={22} dot={false} />;",
+      "expectRed": "1.9 each member is drawn from the roster by id, in the broker's order, with its status dot",
+      "cell": "1.9 each member is drawn from the roster by id, in the broker's order, with its status dot"
     },
     {
       "name": "V11 the stack draws a fifth avatar",
@@ -174,12 +174,12 @@
       "cell": "2.7 the view draws only the open channel's messages: another channel's list is not shown under this name"
     },
     {
-      "name": "V22 the working line names the roster's first working agent, in the channel or not",
+      "name": "V22 the working line names the roster's working agents, in roster order and in the channel or not",
       "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
-      "find": "const working = members.map((m) => peers.get(m.id)).find((r) => r?.status === \"working\");",
-      "replace": "const working = everyone.find((r) => r.status === \"working\");",
-      "expectRed": "3.1 the working line names the first working member of #review in the broker's order, with its activity",
-      "cell": "3.1 the working line names the first working member of #review in the broker's order, with its activity"
+      "find": "const working = members.map((m) => peers.get(m.id)).filter((r): r is RosterRow => r?.status === \"working\");",
+      "replace": "const working = everyone.filter((r) => r.status === \"working\");",
+      "expectRed": "3.1 a channel with two working members and one waiting draws a working line for each working one, in the broker's order, with View work to its Work",
+      "cell": "3.1 a channel with two working members and one waiting draws a working line for each working one, in the broker's order, with View work to its Work"
     },
     {
       "name": "V25 the dock holds a card for an agent that is not waiting",
@@ -964,6 +964,78 @@
       "replace": "onClick={() => { (globalThis as unknown as { location: { hash: string } }).location.hash = `#/agent/${senderId}`; }}><b>",
       "expectRed": "14.5 on a wide screen a sender's name opens that agent's peek and leaves the address alone",
       "cell": "14.5 on a wide screen a sender's name opens that agent's peek and leaves the address alone"
+    },
+    {
+      "name": "WK1 View work on the working line goes to the agent's Profile",
+      "file": "implementations/web/client/src/ui/WorkingLine.tsx",
+      "find": "href={formatRoute({ view: \"agent\", id: r.id, tab: \"work\" })}",
+      "replace": "href={formatRoute({ view: \"agent\", id: r.id, tab: \"profile\" })}",
+      "expectRed": "3.1 a channel with two working members and one waiting draws a working line for each working one, in the broker's order, with View work to its Work",
+      "cell": "3.1 a channel with two working members and one waiting draws a working line for each working one, in the broker's order, with View work to its Work"
+    },
+    {
+      "name": "WK2 the working line sits above the messages",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "          <MessageList messages={messages} idx={idx} peers={peers} />\n          <OutgoingRows store={store} target={target} shown={shown} />\n          <WorkingLine rows={working} />",
+      "replace": "          <WorkingLine rows={working} />\n          <MessageList messages={messages} idx={idx} peers={peers} />\n          <OutgoingRows store={store} target={target} shown={shown} />",
+      "expectRed": "3.4 the line sits in the list, after the last message",
+      "cell": "3.4 the line sits in the list, after the last message"
+    },
+    {
+      "name": "WK3 the working line is no live region",
+      "file": "implementations/web/client/src/ui/WorkingLine.tsx",
+      "find": "<div className=\"ox-typing\" role=\"status\" aria-live=\"polite\">",
+      "replace": "<div className=\"ox-typing\">",
+      "expectRed": "3.5 the lines are a polite live region, and each activity is presence's text, shimmering, with the name in bold",
+      "cell": "3.5 the lines are a polite live region, and each activity is presence's text, shimmering, with the name in bold"
+    },
+    {
+      "name": "WK4 a fourth working member is dropped with no and n more",
+      "file": "implementations/web/client/src/ui/WorkingLine.tsx",
+      "find": "{more > 0 && <div className=\"ox-wmore\">{`and ${more} more`}</div>}",
+      "replace": "",
+      "expectRed": "3.6 four working members draw three lines and then and 1 more",
+      "cell": "3.6 four working members draw three lines and then and 1 more"
+    },
+    {
+      "name": "WK5 the chip's title loses the working names",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "title={`Working now: ${working.map((r) => r.name).join(\", \")}`}",
+      "replace": "title=\"Working now\"",
+      "expectRed": "3.7 the header chip reads 2 working, with the turning spokes and the working names in its title, before the member stack",
+      "cell": "3.7 the header chip reads 2 working, with the turning spokes and the working names in its title, before the member stack"
+    },
+    {
+      "name": "WK6 the chip is drawn with nobody working",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "{working.length > 0 && (\n          <span className=\"ox-hchip\"",
+      "replace": "{working.length >= 0 && (\n          <span className=\"ox-hchip\"",
+      "expectRed": "3.8 a channel where only a waiting member is busy has no working line and no chip",
+      "cell": "3.8 a channel where only a waiting member is busy has no working line and no chip"
+    },
+    {
+      "name": "WK7 the activity is drawn as markup",
+      "file": "implementations/web/client/src/ui/WorkingLine.tsx",
+      "find": "<span className=\"ox-shimmer\">{r.activity}</span>",
+      "replace": "<span className=\"ox-shimmer\" dangerouslySetInnerHTML={{ __html: r.activity }} />",
+      "expectRed": "3.9 an activity holding markup is drawn as its text, escaped",
+      "cell": "3.9 an activity holding markup is drawn as its text, escaped"
+    },
+    {
+      "name": "WK8 on a phone the link still reads View work",
+      "file": "implementations/web/client/src/ui/WorkingLine.tsx",
+      "find": "{phone ? \"View\" : <>View work",
+      "replace": "{false ? \"View\" : <>View work",
+      "expectRed": "3.10 on a phone the chip reads the count alone and each line's link reads View",
+      "cell": "3.10 on a phone the chip reads the count alone and each line's link reads View"
+    },
+    {
+      "name": "WK9 a conversation draws no working line",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "            <WorkingLine rows={working} />\n",
+      "replace": "",
+      "expectRed": "7.9 a conversation draws the working line for its working party only, after its messages",
+      "cell": "7.9 a conversation draws the working line for its working party only, after its messages"
     }
   ]
 }

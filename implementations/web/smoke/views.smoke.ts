@@ -5,7 +5,8 @@
  *  the server or mounted in jsdom when it needs a click, and reads the DOM it drew.
  *
  *  What is pinned, beyond the markup: names come from the roster by id; a sender or a conversation
- *  nothing verified says so; the working line names a working member of THIS channel; a Needs card
+ *  nothing verified says so; the working line and the header chip name the working members of THIS
+ *  channel, three at most and then how many more, and a conversation's working parties; a Needs card
  *  dismissal lasts until that agent's status changes and survives blocked storage; and a reopen keeps
  *  the rows and the scroll position while its history loads. A reload from history keeps the copy of
  *  a message the page saw verified live, in a channel, the DMs and Activity. The DMs are a window of
@@ -21,6 +22,7 @@ import { renderToString } from "react-dom/server";
 import type { ChannelInfo, CotalMessage, FeedMessage, MembershipSnapshot, RosterEntry } from "../client/src/api/types.js";
 import { wave } from "../client/src/art/index.ts";
 import { DM_WINDOW, dmPeers } from "../client/src/lib/dms.js";
+import { badgeLookup } from "../client/src/ui/identity.js";
 import { rosterRows } from "../client/src/lib/roster.js";
 import { formatRoute, type Route } from "../client/src/lib/route.js";
 import { Shell } from "../client/src/Shell.tsx";
@@ -135,9 +137,10 @@ const all = (el: Element, sel: string) => [...el.querySelectorAll(sel)] as HTMLE
   const avatars = all(stack, ".ui-stack > .ui-av");
   ok("1.8 the member stack counts the broker's members of #review and says so in its tooltip",
     textOf(stack).endsWith("3") && stack.title === "3 members" && avatars.length === 3, { text: textOf(stack), title: stack.title });
-  const drawnAs = (vendor: string, status: RosterEntry["status"]) => parse(renderToString(createElement(Avatar, { vendor, status, size: 22, dot: false }))).innerHTML;
-  same("1.9 each member is drawn from the roster by id, in the broker's order, with no status dot",
-    avatars.map((a) => a.outerHTML), [drawnAs("codex", "working"), drawnAs("claude-code", "working"), drawnAs("opencode", "waiting")]);
+  const lookup = badgeLookup(rosterRows(roster, { includeOffline: true }));
+  const drawnAs = (id: string, vendor: string, status: RosterEntry["status"]) => parse(renderToString(createElement(Avatar, { vendor, status, size: 22, badge: lookup(id) }))).innerHTML;
+  same("1.9 each member is drawn from the roster by id, in the broker's order, with its status dot",
+    avatars.map((a) => a.outerHTML), [drawnAs("local.rev", "codex", "working"), drawnAs("local.dav", "claude-code", "working"), drawnAs("local.rv2", "opencode", "waiting")]);
   const traffic = all(centre(shellDom(channelSeed({ membership: {} }), channelRoute)), "header button.ui-members");
   ok("1.10 with no membership feed the stack is who posted here: david and reviewer, so 2",
     traffic.length === 1 && textOf(traffic[0]).endsWith("2") && traffic[0].title === "2 members", traffic.map((t) => [textOf(t), t.title]));
@@ -199,23 +202,48 @@ const all = (el: Element, sel: string) => [...el.querySelectorAll(sel)] as HTMLE
   ok("2.7 the view draws only the open channel's messages: another channel's list is not shown under this name", all(elsewhere, ".ui-msg").length === 0);
 }
 
-// ── 3. The working line ──────────────────────────────────────────────────────────────────────────
+// ── 3. The working line and the header chip ──────────────────────────────────────────────────────
 {
-  const line = (patch: Partial<DashboardState>) => centre(shellDom(channelSeed(patch), channelRoute)).querySelector(".ui-typing");
-  const l = line({});
-  ok("3.1 the working line names the first working member of #review in the broker's order, with its activity",
-    textOf(l) === "reviewer is working Reviewing the presence TTL diff" && textOf(l?.querySelector("b")) === "reviewer", textOf(l));
-  ok("3.2 a working agent who is not in the channel is not named",
-    line({ membership: { snapshot: { asOf: Date.now(), members: [{ id: "local.rv2", live: ["review"], durable: [], observedAt: 1 }] } as unknown as MembershipSnapshot } }) === null);
+  const view = (patch: Partial<DashboardState>, route: Route = channelRoute) => centre(shellDom(channelSeed(patch), route));
+  const lines = (root: Element) => all(root, ".ox-typing .ox-wline");
+  const read = (l: Element) => [textOf(l.querySelector(".ox-wline-c")), textOf(l.querySelector("a")), l.querySelector("a")?.getAttribute("href")];
+  const work = (id: string) => formatRoute({ view: "agent", id, tab: "work" });
+  const c = view({});
+  same("3.1 a channel with two working members and one waiting draws a working line for each working one, in the broker's order, with View work to its Work",
+    lines(c).map(read), [
+      ["reviewer is working Reviewing the presence TTL diff", "View work", work("local.rev")],
+      ["david is working Editing packages/core/src/presence.ts", "View work", work("local.dav")],
+    ]);
+  const outside = view({ membership: { snapshot: { asOf: Date.now(), members: [{ id: "local.rv2", live: ["review"], durable: [], observedAt: 1 }] } as unknown as MembershipSnapshot } });
+  ok("3.2 a working agent who is not in the channel is not named", outside.querySelector(".ox-typing") === null);
   const unknown = roster.map((p) => (p.card.id === "local.rev" ? { ...p, progress: { kind: "unknown" as const } } : p));
-  const u = line({ roster: unknown });
+  const u = lines(view({ roster: unknown }))[0];
   ok("3.3 a member whose connector reports no progress reads working with its activity, with no moving dots",
-    textOf(u) === "reviewer is working Reviewing the presence TTL diff" && u?.querySelector(".ui-dots") === null, textOf(u));
-  ok("3.4 the line sits in the list, after the last message", (() => {
-    const c = centre(shellDom(channelSeed(), channelRoute));
-    const col = c.querySelector(".ui-scroll .ui-col") ?? none();
-    return col.lastElementChild?.classList.contains("ui-typing") === true;
-  })());
+    textOf(u?.querySelector(".ox-wline-c")) === "reviewer is working Reviewing the presence TTL diff" && u?.querySelector(".ui-dots") === null, textOf(u));
+  ok("3.4 the line sits in the list, after the last message", c.querySelector(".ui-scroll .ui-col")?.lastElementChild?.classList.contains("ox-typing") === true);
+  const block = c.querySelector(".ox-typing");
+  same("3.5 the lines are a polite live region, and each activity is presence's text, shimmering, with the name in bold",
+    [block?.getAttribute("role"), block?.getAttribute("aria-live"), all(c, ".ox-wline .ox-shimmer").map(textOf), all(c, ".ox-wline b").map(textOf)],
+    ["status", "polite", ["Reviewing the presence TTL diff", "Editing packages/core/src/presence.ts"], ["reviewer", "david"]]);
+  const crowd = [...roster, entry("local.w1", "walker", "working", { connector: "pi", activity: "Walking" }), entry("local.w2", "worker", "working", { connector: "hermes" })];
+  const four: MembershipSnapshot = { asOf: Date.now(), members: ["local.rev", "local.dav", "local.w1", "local.w2"].map((id) => ({ id, live: ["review"], durable: [], observedAt: 1 })) } as unknown as MembershipSnapshot;
+  const many = view({ roster: crowd, membership: { snapshot: four } });
+  same("3.6 four working members draw three lines and then and 1 more",
+    [lines(many).map((l) => textOf(l.querySelector("b"))), textOf(many.querySelector(".ox-typing .ox-wmore"))], [["reviewer", "david", "walker"], "and 1 more"]);
+  const chip = c.querySelector("header.ui-bar .ox-hchip");
+  same("3.7 the header chip reads 2 working, with the turning spokes and the working names in its title, before the member stack",
+    [textOf(chip), chip?.getAttribute("title"), chip?.querySelector("svg.ox-spin") !== null, chip?.nextElementSibling?.classList.contains("ui-members")],
+    ["2 working", "Working now: reviewer, david", true, true]);
+  const waitingOnly = view({ roster: roster.map((p) => (p.status === "working" ? { ...p, status: "idle" as const } : p)) });
+  ok("3.8 a channel where only a waiting member is busy has no working line and no chip",
+    waitingOnly.querySelector(".ox-typing") === null && waitingOnly.querySelector(".ox-hchip") === null && waitingOnly.querySelector(".ui-members") !== null);
+  const tagged = view({ roster: roster.map((p) => (p.card.id === "local.rev" ? { ...p, activity: "<b>x</b>" } : p)) });
+  const shim = tagged.querySelector(".ox-wline .ox-shimmer");
+  ok("3.9 an activity holding markup is drawn as its text, escaped", textOf(shim) === "<b>x</b>" && shim?.querySelector("b") === null, shim?.innerHTML);
+  const phone = centre(parse(renderToString(createElement(Shell, { store: createStore<DashboardState>({ ...initialState, ...channelSeed() }), controller: null, route: channelRoute, paneOpen: false, msgPerSecond: () => 0, phone: true }))));
+  same("3.10 on a phone the chip reads the count alone and each line's link reads View",
+    [textOf(phone.querySelector(".ox-hchip")), lines(phone).map((l) => [textOf(l.querySelector("a")), l.querySelector("a")?.getAttribute("href")])],
+    ["2", [["View", work("local.rev")], ["View", work("local.dav")]]]);
 }
 
 // ── 4. The Needs card ────────────────────────────────────────────────────────────────────────────
@@ -384,6 +412,10 @@ const dmRows: StoredMessage[] = [
     textOf(lonely.querySelector("header h1")) === "scout" && textOf(lonely.querySelector(".ui-empty")) === "No direct messages with scout yet.", textOf(lonely));
   const stranger = view({ view: "dm", peer: "local.ghost" });
   ok("7.8 a peer off the roster is named by its id and drawn offline", textOf(stranger.querySelector("header h1")) === "local.ghost" && stranger.querySelector("header .ui-av.ui-av-off") !== null);
+  same("7.9 a conversation draws the working line for its working party only, after its messages",
+    [all(c, ".ox-typing .ox-wline").map((l) => [textOf(l.querySelector(".ox-wline-c")), textOf(l.querySelector("a")), l.querySelector("a")?.getAttribute("href")]),
+      c.querySelector(".ui-scroll .ui-col")?.lastElementChild?.classList.contains("ox-typing")],
+    [[["david is working Editing packages/core/src/presence.ts", "View work", formatRoute({ view: "agent", id: "local.dav", tab: "work" })]], true]);
 }
 
 // ── 8. Empty space ───────────────────────────────────────────────────────────────────────────────

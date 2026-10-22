@@ -20,6 +20,30 @@ export function initials(name: string): string {
   return first.toUpperCase() + (n ? n[1] : "");
 }
 
+/** Two letters for a name that clashes: its first character uppercased, its second as written, and
+ *  the digits of a trailing `_<n>` (`lead` gives "Le", `reviewer_2` gives "Re2"). */
+function twoLetters(name: string): string {
+  const [first, second = ""] = [...name];
+  if (first === undefined) return "";
+  const n = /_(\d+)$/.exec(name);
+  return first.toUpperCase() + second + (n ? n[1] : "");
+}
+
+/** The badge text for every row, by id. Live rows (status not offline) whose `initials` match
+ *  clash, and each of them takes two letters (`twoLetters`), so `lead` and `logic` read "Le" and
+ *  "Lo". A clash two letters do not break keeps the two letters; the colour slots still differ.
+ *  Offline rows, and live rows with no clash, keep `initials`. */
+export function badgeLetters(rows: readonly { id: string; name: string; status: Status }[]): Map<string, string> {
+  const live = new Map<string, number>();
+  for (const r of rows) if (r.status !== "offline") live.set(initials(r.name), (live.get(initials(r.name)) ?? 0) + 1);
+  const out = new Map<string, string>();
+  for (const r of rows) {
+    const one = initials(r.name);
+    out.set(r.id, r.status !== "offline" && (live.get(one) ?? 0) > 1 ? twoLetters(r.name) : one);
+  }
+  return out;
+}
+
 /** The colour slot, 1 to 8, from the name alone, so an agent keeps its colour across restarts and
  *  reloads: the mock's hash, h = 7, then for each character h = h * 31 + its code, kept to 32 bits. */
 export function slotOf(name: string): number {

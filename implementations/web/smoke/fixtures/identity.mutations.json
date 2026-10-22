@@ -52,6 +52,38 @@
       "replace": "        {mark}\n      </g>",
       "expectRed": "6.1 the Topology tab draws a badge circle with its letter on each agent node, and an offline node's badge is grey and outside the greyscale group",
       "cell": "6.1 the Topology tab draws a badge circle with its letter on each agent node, and an offline node's badge is grey and outside the greyscale group"
+    },
+    {
+      "name": "I7 a clash keeps one letter, so lead and logic both read L",
+      "file": "implementations/web/client/src/lib/identity.ts",
+      "find": "return first.toUpperCase() + second + (n ? n[1] : \"\");",
+      "replace": "return first.toUpperCase() + (n ? n[1] : \"\");",
+      "expectRed": "7.1 lead and logic, both live, read Le and Lo, and ui, which clashes with nobody, keeps U",
+      "cell": "7.1 lead and logic, both live, read Le and Lo, and ui, which clashes with nobody, keeps U"
+    },
+    {
+      "name": "I8 offline rows count toward a clash, so lead takes two letters beside an offline logic",
+      "file": "implementations/web/client/src/lib/identity.ts",
+      "find": "for (const r of rows) if (r.status !== \"offline\") live.set(",
+      "replace": "for (const r of rows) if (r.status !== \"nobody\") live.set(",
+      "expectRed": "7.2 with logic offline there is no clash among live agents: lead keeps L, and logic keeps L too",
+      "cell": "7.2 with logic offline there is no clash among live agents: lead keeps L, and logic keeps L too"
+    },
+    {
+      "name": "I9 two letters drop the digits, so reviewer_2 reads Re",
+      "file": "implementations/web/client/src/lib/identity.ts",
+      "find": "return first.toUpperCase() + second + (n ? n[1] : \"\");",
+      "replace": "return first.toUpperCase() + second;",
+      "expectRed": "7.3 reviewer_2 and rabbit_2 read Re2 and Ra2",
+      "cell": "7.3 reviewer_2 and rabbit_2 read Re2 and Ra2"
+    },
+    {
+      "name": "I10 the shell's lookup takes the first letter alone",
+      "file": "implementations/web/client/src/ui/identity.ts",
+      "find": "badges.set(r.id, { letter: letters.get(r.id) ?? \"\", slot });",
+      "replace": "badges.set(r.id, { letter: [...r.name][0]?.toUpperCase() ?? \"\", slot });",
+      "expectRed": "7.4 the shell's badges read Le for lead and Lo for logic",
+      "cell": "7.4 the shell's badges read Le for lead and Lo for logic"
     }
   ]
 }

@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { composeKey, composeTarget } from "../../lib/compose.js";
 import { dmPairs, pairKey } from "../../lib/dms.js";
 import { displayNameOf, nameIndex } from "../../lib/names.js";
-import { rosterRows } from "../../lib/roster.js";
+import { rosterRows, type RosterRow } from "../../lib/roster.js";
 import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
@@ -10,6 +10,7 @@ import { Avatar } from "../Avatar.tsx";
 import { useBadgeOf } from "../identity.js";
 import { BetweenAgents, Composer, OutgoingRows } from "../Composer.tsx";
 import { harnessName, UNVERIFIED } from "../MessageRow.tsx";
+import { WorkingLine } from "../WorkingLine.tsx";
 import { MessageList, usePinnedScroll } from "./ChannelView.tsx";
 
 /** One direct message conversation, from `dmPairs`. The header is the peer the route names: its
@@ -26,6 +27,9 @@ import { MessageList, usePinnedScroll } from "./ChannelView.tsx";
  *  operator's own id reads "operator (you)" until the roster names it.
  *
  *  The conversation is found among the DMs alone, so a roster change does not regroup them.
+ *
+ *  Under the messages the working line (`WorkingLine`) names each party the roster holds whose
+ *  status presence says is working.
  *
  *  WHEN A THREAD MAY BE CUT OFF. The page holds a window, the newest `DM_WINDOW` DMs space-wide, and
  *  nothing in it says where any one conversation started. Once a DM read has filled that window, or
@@ -60,6 +64,7 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
   const tail = conv?.messages[conv.messages.length - 1];
   const scroll = usePinnedScroll(conv?.key ?? peer, `${tail ? `${tail.msg.id}\u0001${tail.senderId ?? ""}` : ""}\u0002${sent}`);
   const toName = target?.kind === "dm" ? displayNameOf(target.to, idx, self) : "";
+  const working = [...new Set([peer, withWhom])].map((id) => (id === undefined ? undefined : peers.get(id))).filter((r): r is RosterRow => r?.status === "working");
   return (
     <>
       <header className="ui-bar">
@@ -75,6 +80,7 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
             {conv && cut && <div className="ui-cutoff">Earlier messages aren't loaded</div>}
             {conv && <MessageList messages={conv.messages} idx={idx} peers={peers} />}
             {target && <OutgoingRows store={store} target={target} shown={shown} />}
+            <WorkingLine rows={working} />
           </div>
         ) : (
           <div className="ui-empty"><span>{`No direct messages with ${name} yet.`}</span></div>

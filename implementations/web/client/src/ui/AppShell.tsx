@@ -32,6 +32,8 @@ export function AppShell(props: {
   phone: boolean;
   /** How many agents are waiting, for the phone tab bar's Agents count. */
   waiting: number;
+  /** How many agents are working, which the phone tab bar's Agents tab counts when none waits. */
+  working: number;
   sheetOpen: boolean;
   onSheetClose: () => void;
   onPanelClose: () => void;
@@ -45,7 +47,7 @@ export function AppShell(props: {
     return (
       <div className="ui-app ui-phone" data-view={route.view}>
         <main className="ui-center">{props.children}</main>
-        <TabBar route={route} places={props.places} waiting={props.waiting} />
+        <TabBar route={route} places={props.places} waiting={props.waiting} working={props.working} />
         {props.sheetOpen && (
           <FocusTrap onEscape={props.onSheetClose}>
             <div className="ui-sheet-scrim" onClick={props.onSheetClose} />

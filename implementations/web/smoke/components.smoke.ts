@@ -93,6 +93,9 @@ const svgOf = (key: string, mood: { look?: string; mood?: string } = {}) => `<sv
   const unsure = rosterRows([{ card: { id: "x", name: "x", kind: "agent" }, status: "working", ts: 1, progress: { kind: "unknown" } } as unknown as RosterEntry])[0]!;
   const unsureWord = text(renderToString(createElement(StatusWord, { row: unsure })));
   ok("2.5 a working row whose progress is unknown reads Working, with no progress claim", unsureWord === "Working", unsureWord);
+  const spins = (["waiting", "working", "idle", "offline"] as const).map((s) => /<svg[^>]*class="[^"]*\box-spin\b/.test(word({ status: s })));
+  ok("2.6 only the working word's spokes turn: its icon carries the spin class and the others' do not",
+    JSON.stringify(spins) === JSON.stringify([false, true, false, false]), spins);
 }
 
 // ── 3. MessageRow: who sent it ───────────────────────────────────────────────────────────────────

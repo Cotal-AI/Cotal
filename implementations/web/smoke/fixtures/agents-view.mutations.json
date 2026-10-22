@@ -256,8 +256,8 @@
     {
       "name": "A33 the Needs route follows a saved Host grouping",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": "<AgentsView store={store} group=\"status\" focusWaiting",
-      "replace": "<AgentsView store={store} focusWaiting",
+      "find": "<AgentsView store={store} controller={page.controller} group=\"status\" focusWaiting",
+      "replace": "<AgentsView store={store} controller={page.controller} focusWaiting",
       "expectRed": "7.10 the Shell draws the Needs route by status whatever grouping is saved",
       "cell": "7.10 the Shell draws the Needs route by status whatever grouping is saved"
     },
@@ -452,6 +452,70 @@
       "replace": "undefined} selected={panel.agent}",
       "expectRed": "9.3 clicking an agent row in #/agents opens the Agent tab for that id, and marks that row and no other",
       "cell": "9.3 clicking an agent row in #/agents opens the Agent tab for that id, and marks that row and no other"
+    },
+    {
+      "name": "A60 no cap on the working agents whose work the view holds open",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": ".filter((r) => r.status === \"working\").slice(0, LIVE_STEPS).map((r) => r.id));",
+      "replace": ".filter((r) => r.status === \"working\").map((r) => r.id));",
+      "expectRed": "11.1 fourteen working agents hold the work of twelve open, the first twelve in display order, each once",
+      "cell": "11.1 fourteen working agents hold the work of twelve open, the first twelve in display order, each once"
+    },
+    {
+      "name": "A61 a live step opens its agent's work and never closes it",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "  useSession(row.events === \"off\" ? null : controller, row.id);",
+      "replace": "  useEffect(() => { if (controller && row.events !== \"off\") controller.openSession(row.id); }, [controller, row.id, row.events]);",
+      "expectRed": "11.2 unmounting the view closes every one it held",
+      "cell": "11.2 unmounting the view closes every one it held"
+    },
+    {
+      "name": "A62 the live step is kept after its agent turns idle",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "live={reading.has(row.id) ? { store, controller } : undefined}",
+      "replace": "live={reading.has(row.id) || row.status === \"idle\" ? { store, controller } : undefined}",
+      "expectRed": "11.3 a working agent that turns idle closes its work, and the next working row takes its place",
+      "cell": "11.3 a working agent that turns idle closes its work, and the next working row takes its place"
+    },
+    {
+      "name": "A63 a running call draws no step line",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "return <ToolLine call={running.call} state=\"running\" className=\"ox-now\" />;",
+      "replace": "return null;",
+      "expectRed": "11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button",
+      "cell": "11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button"
+    },
+    {
+      "name": "A64 a working row loses View work",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "{row.status === \"working\" && (\n        <a className=\"ox-act\"",
+      "replace": "{false && (\n        <a className=\"ox-act\"",
+      "expectRed": "11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button",
+      "cell": "11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button"
+    },
+    {
+      "name": "A65 the activity line shimmers",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "<span className=\"v3-aact\" style=",
+      "replace": "<span className=\"v3-aact ox-shimmer\" style=",
+      "expectRed": "11.5 the activity line above it is presence's own text and never shimmers",
+      "cell": "11.5 the activity line above it is presence's own text and never shimmers"
+    },
+    {
+      "name": "A66 a finished call still draws as the live step",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "callState(c, { turn, trailing: true, status, toolStatus: work.toolStatus }) === \"running\");",
+      "replace": "callState(c, { turn, trailing: true, status, toolStatus: work.toolStatus }) !== \"called\");",
+      "expectRed": "11.6 a working row whose call has finished shows no step line, and keeps View work",
+      "cell": "11.6 a working row whose call has finished shows no step line, and keeps View work"
+    },
+    {
+      "name": "A67 the Working group's spokes stand still",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "className={statusIconClass(section.key, \"ui-ic\")}",
+      "replace": "className=\"ui-ic\"",
+      "expectRed": "11.7 the Working group's spokes turn and no other group's icon does",
+      "cell": "11.7 the Working group's spokes turn and no other group's icon does"
     }
   ]
 }

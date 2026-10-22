@@ -246,12 +246,12 @@
       "cell": "5.2 each row is named from the roster by id, the sender of its first message first, as the mock writes \"reviewer_2, david\": the payload's own name never shows"
     },
     {
-      "name": "SB31 the DM avatars draw a status dot",
+      "name": "SB31 the DM avatars draw no status dot",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
-      "find": "dot={false}",
-      "replace": "dot={true}",
-      "expectRed": "5.4 each row shows two small avatars, one per party, and no status dot",
-      "cell": "5.4 each row shows two small avatars, one per party, and no status dot"
+      "find": "dot={byId.has(id)}",
+      "replace": "dot={false}",
+      "expectRed": "5.4 each row shows two small avatars, one per party, and a status dot for each party the roster holds, so a working one's dot breathes",
+      "cell": "5.4 each row shows two small avatars, one per party, and a status dot for each party the roster holds, so a working one's dot breathes"
     },
     {
       "name": "SB32 a party not on the roster is drawn as idle, not offline",
@@ -516,6 +516,54 @@
       "replace": "const idx = useMemo(() => nameIndex(roster), []);",
       "expectRed": "10.8 and the rows take their names from the new roster",
       "cell": "10.8 and the rows take their names from the new roster"
+    },
+    {
+      "name": "SB64 the working count's title loses the names",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "title={`${working.length} member${working.length === 1 ? \"\" : \"s\"} working: ${working.map((r) => r.name).join(\", \")}`}",
+      "replace": "title={`${working.length} members working`}",
+      "expectRed": "11.1 a channel with working members shows the turning spokes and how many, from the broker's membership and presence, titled with their names",
+      "cell": "11.1 a channel with working members shows the turning spokes and how many, from the broker's membership and presence, titled with their names"
+    },
+    {
+      "name": "SB65 the unread count comes before the working count",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<span className=\"ui-row-lbl\">{c.channel}</span>\n              {working.length > 0 && (",
+      "replace": "<span className=\"ui-row-lbl\">{c.channel}</span>\n              {count > 0 && <span className=\"ui-badge-blue\">{count}</span>}\n              {working.length > 0 && (",
+      "expectRed": "11.2 the count comes before the unread count",
+      "cell": "11.2 the count comes before the unread count"
+    },
+    {
+      "name": "SB66 one working member reads 1 members working",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "member${working.length === 1 ? \"\" : \"s\"} working",
+      "replace": "members working",
+      "expectRed": "11.3 one working member reads 1 member working",
+      "cell": "11.3 one working member reads 1 member working"
+    },
+    {
+      "name": "SB67 a channel with nobody working still draws a count",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{working.length > 0 && (\n                <span className=\"ox-sbw\"",
+      "replace": "{working.length >= 0 && (\n                <span className=\"ox-sbw\"",
+      "expectRed": "11.4 a channel whose members are waiting or idle shows no count",
+      "cell": "11.4 a channel whose members are waiting or idle shows no count"
+    },
+    {
+      "name": "SB68 the count reads the event plane: an agent with frames held counts as working",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": ".filter((r): r is RosterRow => r?.status === \"working\")]));",
+      "replace": ".filter((r): r is RosterRow => r?.status === \"working\" || (store.get().sessions[r?.id ?? \"\"]?.frames.length ?? 0) > 0)]));",
+      "expectRed": "11.5 the count reads presence alone: an idle roster with a working frame on the event plane shows no count",
+      "cell": "11.5 the count reads presence alone: an idle roster with a working frame on the event plane shows no count"
+    },
+    {
+      "name": "SB69 the count reads who posted when the membership feed is not authoritative",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "channelMembers(c.channel, membership, names, [])",
+      "replace": "channelMembers(c.channel, membership, names, store.get().open?.messages ?? [])",
+      "expectRed": "11.6 with no authoritative membership feed no channel shows a count, though a working agent posted there",
+      "cell": "11.6 with no authoritative membership feed no channel shows a count, though a working agent posted there"
     }
   ]
 }

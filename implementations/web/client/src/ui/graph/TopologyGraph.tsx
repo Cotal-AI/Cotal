@@ -1,6 +1,7 @@
 import { useContext, useEffect, useReducer, useRef, useState } from "react";
 import { select } from "d3-selection";
 import { zoom, zoomIdentity, type D3ZoomEvent, type ZoomTransform } from "d3-zoom";
+import type { Status } from "../../lib/roster.js";
 import type { TopoModel, TopoNode } from "../../lib/topology.js";
 import { characterMarkup } from "../Avatar.tsx";
 import { useBadgeOf } from "../identity.js";
@@ -21,6 +22,38 @@ function linkClass(kind: TopoModel["links"][number]["kind"], hot: boolean, sourc
   return ["ui-tl", `ui-tl-${kind}`, sourceOffline ? "ui-tl-off" : "", hot ? "ui-tl-hot" : ""].filter(Boolean).join(" ");
 }
 
+/** The status dot at a node's bottom right, drawn as the avatars draw it: working a solid green dot,
+ *  waiting a gold ring half filled, idle a hollow ring and offline a dashed one (`ui-tst-<status>`).
+ *  It names the status to no one: the graph is one image, and the Agents view says it in words. */
+function NodeDot({ status, x, y }: { status: Status; x: number; y: number }) {
+  return (
+    <g className={`ui-tst ui-tst-${status}`} aria-hidden="true">
+      {status === "working" && <circle cx={x} cy={y} r={5} />}
+      {status === "waiting" && (
+        <>
+          <circle cx={x} cy={y} r={5} className="ui-tst-bg" />
+          <path d={`M${x} ${y - 4.2} A4.2 4.2 0 0 0 ${x} ${y + 4.2} Z`} />
+          <circle cx={x} cy={y} r={4.2} className="ui-tst-ring" />
+        </>
+      )}
+      {(status === "idle" || status === "offline") && <circle cx={x} cy={y} r={4.4} />}
+    </g>
+  );
+}
+
+/** A working node's mark (overhaul mock W): a faint full ring round the character and a 2px arc a
+ *  fifth of the way round it, which `ui-orbit` turns every 3.2s and stops where it is under reduced
+ *  motion. */
+function Orbit({ r }: { r: number }) {
+  const round = 2 * Math.PI * r;
+  return (
+    <g className="ui-orbit-g" aria-hidden="true">
+      <circle r={r} className="ui-orbit-ring" />
+      <circle r={r} className="ui-orbit" strokeDasharray={`${round / 5} ${(round * 4) / 5}`} />
+    </g>
+  );
+}
+
 /** One agent: its character, its roster name, and for a reader of every channel the "all channels"
  *  badge in place of a link to each channel. An offline agent is greyscale at half opacity, which
  *  `ui-ta-off` gives the art group (`ui-ta-art`) only.
@@ -28,6 +61,9 @@ function linkClass(kind: TopoModel["links"][number]["kind"], hot: boolean, sourc
  *  A roster agent also gets its initial badge (`BadgeOf`, by `node.id`) bottom left of the character,
  *  as the avatars draw it: inside the node's group and outside the greyscale one, so an offline
  *  badge's fill is grey (`--id-off`) and its letter keeps full strength.
+ *
+ *  Every node carries its status dot (`NodeDot`) bottom right, and a working node its orbit
+ *  (`Orbit`), both from presence alone.
  *
  *  Inside the shell (`AgentPicker`) a click on the node picks the agent: its peek, or on a phone its
  *  page. The graph is an image to assistive tech, so the node takes no focus; the Agents view and
@@ -54,6 +90,7 @@ function AgentNode({ node, x, y, size }: { node: TopoNode; x: number; y: number;
       transform={`translate(${x} ${y})`}
       onClick={pick ? () => pick(node.id) : undefined}
     >
+      {status === "working" && <Orbit r={size / 2 + 7} />}
       <g className="ui-ta-art">
         <svg
           x={-size / 2}
@@ -73,6 +110,7 @@ function AgentNode({ node, x, y, size }: { node: TopoNode; x: number; y: number;
         )}
       </g>
       {mark}
+      <NodeDot status={status} x={size / 2 - 2} y={size / 2 - 1} />
     </g>
   );
 }

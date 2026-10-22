@@ -4,13 +4,15 @@
  *  Section 5 renders the real shell over a seeded store with two Claude agents and reads the badges
  *  its message rows and Members rows draw, including that a history row (no verified sender) draws
  *  none. Section 6 renders the Topology tab, and the topology view with Hide offline off, under the
- *  lookup the shell provides and reads the badge on each agent node, an offline one included. */
+ *  lookup the shell provides and reads the badge on each agent node, an offline one included.
+ *  Section 7 is the two-letter rule: live agents whose letters clash take two each, and an offline
+ *  one never does. */
 import { closeDom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import type { ChannelInfo, CotalMessage, MembershipSnapshot, RosterEntry } from "../client/src/api/types.js";
-import { assignSlots, initials, slotOf } from "../client/src/lib/identity.js";
+import { assignSlots, badgeLetters, initials, slotOf } from "../client/src/lib/identity.js";
 import { rosterRows, type Status } from "../client/src/lib/roster.js";
 import type { Route } from "../client/src/lib/route.js";
 import { createStore } from "../client/src/state/store.js";
@@ -153,6 +155,21 @@ const teamRoute: Route = { view: "channel", channel: "team" };
       [["local.lead", false, "fill:var(--id-4)", "L"], ["local.ui", false, "fill:var(--id-5)", "U"]],
       [["local.lead", false, "fill:var(--id-4)", "L"], ["local.perf", false, "fill:var(--id-off)", "P"], ["local.ui", false, "fill:var(--id-5)", "U"]],
     ]);
+}
+
+// ── 7. Two letters on a clash among live agents ──────────────────────────────────────────────────
+{
+  const row = (id: string, name: string, status: Status) => ({ id, name, status });
+  const letters = (rows: ReturnType<typeof row>[]) => Object.fromEntries(badgeLetters(rows));
+  same("7.1 lead and logic, both live, read Le and Lo, and ui, which clashes with nobody, keeps U",
+    letters([row("a", "lead", "working"), row("b", "logic", "idle"), row("c", "ui", "waiting")]), { a: "Le", b: "Lo", c: "U" });
+  same("7.2 with logic offline there is no clash among live agents: lead keeps L, and logic keeps L too",
+    letters([row("a", "lead", "working"), row("b", "logic", "offline")]), { a: "L", b: "L" });
+  same("7.3 reviewer_2 and rabbit_2 read Re2 and Ra2", letters([row("a", "reviewer_2", "idle"), row("b", "rabbit_2", "working")]), { a: "Re2", b: "Ra2" });
+  const pair = [entry("local.lead", "lead", "working"), entry("local.logic", "logic", "idle")];
+  const shell = parse(renderShell({ space: "main", roster: pair }, { view: "agents", group: "status" }));
+  const badgeOn = (name: string) => all(shell, ".v3-arow").find((r) => r.querySelector("b")?.textContent === name)?.querySelector(".ui-idb")?.textContent;
+  same("7.4 the shell's badges read Le for lead and Lo for logic", [badgeOn("lead"), badgeOn("logic")], ["Le", "Lo"]);
 }
 
 await closeDom();

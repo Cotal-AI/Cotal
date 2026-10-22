@@ -21,13 +21,18 @@ export function StatusDot({ status }: { status: Status }) {
   return <i className={`ui-st ui-st-${status}`} role="img" aria-label={word(status)} />;
 }
 
+/** The class of a status's icon where it may turn: the working spokes turn (`ox-spin`, which stops
+ *  under reduced motion), and every other status stands still. */
+export const statusIconClass = (status: string, base: string): string => (status === "working" ? `${base} ox-spin` : base);
+
 /** A status as icon and word, in the status pill. The word is `statusLabel`'s, so a working agent
- *  reads "Working". A status outside the four has no icon to draw and shows its word alone. */
+ *  reads "Working", and its spokes turn while presence says so. A status outside the four has no
+ *  icon to draw and shows its word alone. */
 export function StatusWord({ row }: { row: RosterRow }) {
   const icon = Object.hasOwn(STATUS_ICON, row.status) ? STATUS_ICON[row.status] : undefined;
   return (
     <span className={`v3-spill v3-s-${row.status}`}>
-      {icon && <Icon icon={icon} size={16} className="ui-ic ui-ic16" />}
+      {icon && <Icon icon={icon} size={16} className={statusIconClass(row.status, "ui-ic ui-ic16")} />}
       {word(statusLabel(row))}
     </span>
   );

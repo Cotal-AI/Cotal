@@ -4,7 +4,8 @@
  *  these cells read structure (nodes, links, classes) and never a position. Section 3 mounts the
  *  graph in jsdom, where the frame loop and the zoom run: the nodes get positions, the layout heats
  *  only when the node or link set changes, a wheel zooms, and unmounting stops everything. The
- *  model's own rules (what is a node, what is hot) are in topology.smoke.ts. */
+ *  model's own rules (what is a node, what is hot) are in topology.smoke.ts. Section 6 reads each
+ *  node's status dot and a working node's ring and arc, all from presence. */
 import { closeDom, dom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { createElement, useState } from "react";
@@ -126,8 +127,8 @@ const text = (root: ParentNode, sel: string) => [...root.querySelectorAll(sel)].
 
   ok("2.20b the unreadable pill's tooltip carries the reason the read gave", pill({ membership: { unreadable: "permissions violation" } })?.getAttribute("title") === "the read failed: permissions violation");
   ok("2.20c and the other pills never claim a failure", pill({})?.getAttribute("title")?.includes("failed") === false);
-  ok("2.21 the legend names each line kind and the badge", text(dflt, ".ui-legend span").join("|") === "Member|Durable member|Offline agent|Posted here|Active now|all channelsReads every channel", text(dflt, ".ui-legend span"));
-  ok("2.21b durable and offline links have their own swatch and their own line class", [...dflt.querySelectorAll(".ui-legend i")].map((e) => e.className).join() === "ui-lg-member,ui-lg-durable,ui-lg-offline,ui-lg-traffic,ui-lg-hot"
+  ok("2.21 the legend names each line kind and the badge", text(dflt, ".ui-legend span").join("|") === "Member|Durable member|Offline agent|Posted here|Active now|Working|all channelsReads every channel", text(dflt, ".ui-legend span"));
+  ok("2.21b durable and offline links have their own swatch and their own line class", [...dflt.querySelectorAll(".ui-legend i")].map((e) => e.className).join() === "ui-lg-member,ui-lg-durable,ui-lg-offline,ui-lg-traffic,ui-lg-hot,ui-lg-working"
     && d.querySelector("line.ui-tl-durable:not(.ui-tl-off)") !== null && d.querySelector("line.ui-tl-off:not(.ui-tl-durable)") !== null);
   ok("2.22 the graph is one labelled image", dflt.querySelectorAll('svg[role="img"][aria-label="Mesh topology"]').length === 1 && dflt.querySelector("h1")?.textContent === "Topology");
   ok("2.23 the first draw is at rest and reproducible: one model renders to the same markup twice", view() === view());
@@ -333,6 +334,27 @@ const DomWheelEvent = (dom.window as unknown as { WheelEvent: typeof WheelEvent 
   ctl.onMessage(frame("live", 99_999_999_999));
   const live = store.get().activity.find((a) => a.msg.id === "live");
   ok("5.2 a live frame is stamped with the controller's clock, and its own ts is not what is stamped", live?.arrivedAt === 9_000, live);
+}
+
+// 6. Status dots and the working arc
+{
+  const roster = [agent("A", "ana", "working", "claude-code"), agent("B", "bo", "idle", "codex"), agent("C", "cy", "offline"), agent("D", "di", "waiting", "pi")];
+  const d = parse(view({ roster, membership: feed([member("A", ["alerts"]), member("B", [], ["ops"]), member("C", ["alerts"]), member("D", ["ops"])]) }, { initialHideOffline: false }));
+  const dot = (id: string) => d.querySelector(`[data-node="${id}"] .ui-tst`);
+  ok("6.1 every node draws its status dot as the avatars do: working solid, waiting half filled, idle a ring, offline dashed",
+    JSON.stringify(["A", "D", "B", "C"].map((id) => [dot(id)?.getAttribute("class"), dot(id)?.querySelectorAll("circle").length, dot(id)?.querySelectorAll("path").length]))
+      === JSON.stringify([["ui-tst ui-tst-working", 1, 0], ["ui-tst ui-tst-waiting", 2, 1], ["ui-tst ui-tst-idle", 1, 0], ["ui-tst ui-tst-offline", 1, 0]]),
+    ["A", "D", "B", "C"].map((id) => dot(id)?.outerHTML));
+  ok("6.2 the dot sits outside the greyscale art group, so an offline node's dashed ring keeps its stroke",
+    dot("C") !== null && d.querySelector('[data-node="C"] .ui-ta-art .ui-tst') === null);
+  const arc = d.querySelector('[data-node="A"] .ui-orbit');
+  const ring = d.querySelector('[data-node="A"] .ui-orbit-ring');
+  const r = Number(arc?.getAttribute("r"));
+  const dash = (arc?.getAttribute("stroke-dasharray") ?? "").split(" ").map(Number);
+  ok("6.3 a working node has a faint full ring and, on it, an arc a fifth of the way round",
+    ring !== null && r > 0 && Number(ring.getAttribute("r")) === r && Math.abs(dash[0]! / (2 * Math.PI * r) - 0.2) < 1e-9 && Math.abs(dash[0]! + dash[1]! - 2 * Math.PI * r) < 1e-9,
+    { arc: arc?.outerHTML, ring: ring?.outerHTML });
+  ok("6.4 and no other node has either", ["B", "C", "D"].every((id) => d.querySelector(`[data-node="${id}"] .ui-orbit, [data-node="${id}"] .ui-orbit-ring`) === null));
 }
 
 await closeDom();

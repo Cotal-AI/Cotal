@@ -10,14 +10,16 @@
  *  claims the operator's place on the roster before `/api/meta` has said what the dashboard can post
  *  as (compose.smoke.ts pins the lines it draws after); and no DM row reads "to you". The direct
  *  messages list the ten most recent conversations and the open one, then a "Show all" button that
- *  lists the rest in place, and a roster change redraws the names without regrouping the DMs. */
+ *  lists the rest in place, and a roster change redraws the names without regrouping the DMs. A
+ *  channel row counts its working members from the broker's membership and presence alone, never
+ *  from the event plane or from who posted, and a DM row's parties draw their status dots. */
 import { closeDom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { Plug01Icon } from "@hugeicons/core-free-icons";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import type { FeedHandlers } from "../client/src/api/feed.js";
-import type { CotalMessage, FeedMessage, RosterEntry } from "../client/src/api/types.js";
+import type { CotalMessage, FeedMessage, MembershipSnapshot, RosterEntry } from "../client/src/api/types.js";
 import { App } from "../client/src/App.tsx";
 import { Icon } from "../client/src/icons/Icon.tsx";
 import { RailIcon } from "../client/src/icons/rail.tsx";
@@ -177,8 +179,9 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   same("5.2 each row is named from the roster by id, the sender of its first message first, as the mock writes \"reviewer_2, david\": the payload's own name never shows",
     rows.map((r) => r.label), ["reviewer_2, scout", "reviewer, david", "reviewer_2, david", "scout, local.ghost"]);
   ok("5.3 no row or page text carries the payload's name", !html.includes("mallory"));
-  ok("5.4 each row shows two small avatars, one per party, and no status dot",
-    rows.every((r) => (r.inner.match(/<span class="ui-av[ "]/g) ?? []).length === 2 && !r.inner.includes("ui-st ")) && /<span class="ui-stack">/.test(rows[0].inner), rows[0].inner.slice(0, 200));
+  same("5.4 each row shows two small avatars, one per party, and a status dot for each party the roster holds, so a working one's dot breathes",
+    [rows.map((r) => (r.inner.match(/<span class="ui-av[ "]/g) ?? []).length), rows.map((r) => (r.inner.match(/class="ui-st ui-st-/g) ?? []).length), rows[1].inner.includes("ui-st ui-st-working"), /<span class="ui-stack">/.test(rows[0].inner)],
+    [[2, 2, 2, 2], [2, 2, 2, 1], true, true]);
   ok("5.5 a party not on the roster is drawn offline, as the roster's own offline agents are",
     (rows[3].inner.match(/ui-av-off/g) ?? []).length === 2 && (rows[0].inner.match(/ui-av-off/g) ?? []).length === 1 && !rows[1].inner.includes("ui-av-off"), rows[3].inner.slice(0, 300));
   const at = (route: Route) => dms(renderShell({ roster, dms: dmRows }, route)).map((r) => r.attrs["aria-current"]);
@@ -369,6 +372,39 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   ok("10.7 a roster change does not group the DMs again", before > 0 && walks === before, { before, after: walks });
   ok("10.8 and the rows take their names from the new roster", firstLabel === "agent0, dave", firstLabel);
   await shown.unmount();
+}
+
+// ── 11. Working members on a channel row ─────────────────────────────────────────────────────────
+{
+  const crew: RosterEntry[] = [entry("local.rev", "reviewer", "working", "codex"), entry("local.dav", "david", "working", "claude-code"), entry("local.rv2", "reviewer_2", "waiting", "opencode")];
+  const feed: MembershipSnapshot = {
+    asOf: Date.now(),
+    members: [
+      { id: "local.rev", live: ["general", "team.backend"], durable: [], observedAt: 1 },
+      { id: "local.dav", live: [], durable: ["general"], observedAt: 1 },
+      { id: "local.rv2", live: ["general", "ops"], durable: [], observedAt: 1 },
+    ],
+  } as unknown as MembershipSnapshot;
+  const chans = [{ channel: "general", messages: 3 }, { channel: "team.backend", messages: 1 }, { channel: "ops", messages: 1 }];
+  const working = (r: Row | undefined) => {
+    const m = /<span class="ox-sbw" title="([^"]*)">([\s\S]*?)<\/span>/.exec(r?.inner ?? "");
+    return m ? { title: unescapeHtml(m[1]!), text: strip(m[2]!), spins: m[2]!.includes("ox-spin") } : undefined;
+  };
+  const rows = channels(renderShell({ roster: crew, channels: chans, membership: { snapshot: feed }, unread: { general: 3 } }));
+  same("11.1 a channel with working members shows the turning spokes and how many, from the broker's membership and presence, titled with their names",
+    working(rows[0]), { title: "2 members working: reviewer, david", text: "2", spins: true });
+  ok("11.2 the count comes before the unread count", (rows[0]?.inner.indexOf("ox-sbw") ?? -1) >= 0 && rows[0]!.inner.indexOf("ox-sbw") < rows[0]!.inner.indexOf("ui-badge-blue"), rows[0]?.inner);
+  same("11.3 one working member reads 1 member working", working(rows[1]), { title: "1 member working: reviewer", text: "1", spins: true });
+  ok("11.4 a channel whose members are waiting or idle shows no count", rows[2] !== undefined && working(rows[2]) === undefined && !rows[2].inner.includes("ox-sbw"), rows[2]?.inner);
+  // The event plane says reviewer is running a command; presence says idle. The count follows presence.
+  const ts = Date.now() - 5000;
+  const plane = { views: 1, frames: [{ id: "f1", ts, live: true, events: [{ type: "RUN_STARTED", threadId: "t", runId: "r1", timestamp: ts }, { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "Bash", timestamp: ts }] }], posts: [], load: "ok" as const, more: false, limit: 200 };
+  const idle = crew.map((p) => ({ ...p, status: "idle" as const }));
+  const quiet = channels(renderShell({ roster: idle, channels: chans, membership: { snapshot: feed }, sessions: { "local.rev": plane } }));
+  ok("11.5 the count reads presence alone: an idle roster with a working frame on the event plane shows no count", quiet.length === 3 && quiet.every((r) => working(r) === undefined), quiet.map((r) => r.inner));
+  const posted: StoredMessage[] = [{ msg: { id: "p1", ts, space: "main", from: { id: "local.rev", name: "mallory" }, channel: "general", parts: [{ kind: "text", text: "hi" }] } as unknown as CotalMessage, senderId: "local.rev" }];
+  const traffic = channels(renderShell({ roster: crew, channels: chans, membership: {}, open: { channel: "general", messages: posted } }));
+  ok("11.6 with no authoritative membership feed no channel shows a count, though a working agent posted there", traffic.length === 3 && traffic.every((r) => working(r) === undefined), traffic.map((r) => r.inner));
 }
 
 await closeDom();

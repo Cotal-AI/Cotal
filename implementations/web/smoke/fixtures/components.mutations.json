@@ -284,6 +284,14 @@
       "replace": "(claimedBy(msg.id, messages.slice(i + 1)) ?? { id: msg.from.id, verified: true })",
       "expectRed": "7.3 and names none while nobody has replied",
       "cell": "7.3 and names none while nobody has replied"
+    },
+    {
+      "name": "C37 the working word's spokes stand still",
+      "file": "implementations/web/client/src/ui/Status.tsx",
+      "find": "(status === \"working\" ? `${base} ox-spin` : base)",
+      "replace": "(base)",
+      "expectRed": "2.6 only the working word's spokes turn: its icon carries the spin class and the others' do not",
+      "cell": "2.6 only the working word's spokes turn: its icon carries the spin class and the others' do not"
     }
   ]
 }

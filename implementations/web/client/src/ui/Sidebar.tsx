@@ -1,11 +1,12 @@
-import { Plug01Icon } from "@hugeicons/core-free-icons";
+import { Loading03Icon, Plug01Icon } from "@hugeicons/core-free-icons";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Icon } from "../icons/Icon.tsx";
 import { RailIcon } from "../icons/rail.tsx";
 import { footerLine } from "../lib/compose.js";
 import { dmPairs, pairKey } from "../lib/dms.js";
+import { channelMembers } from "../lib/members.js";
 import { displayNameOf, nameIndex } from "../lib/names.js";
-import { rosterRows, waiting } from "../lib/roster.js";
+import { rosterRows, waiting, type RosterRow } from "../lib/roster.js";
 import { formatRoute, type Route } from "../lib/route.js";
 import { rateText } from "../lib/shellText.js";
 import { useStore } from "../state/hooks.js";
@@ -50,6 +51,12 @@ function Row({ to, here, bold, title, children }: { to: Route; here: boolean; bo
  *  `msgPerSecond` is read on every render and again every second, so the Activity row follows the
  *  rate as it falls. The rate itself lives outside the store, which holds serializable state.
  *
+ *  A channel with members presence says are working shows the turning spokes and how many, titled
+ *  with their names, before its unread count. Its members are `channelMembers` over the broker's
+ *  membership alone, with no posts, so the count reads presence and membership and never the event
+ *  plane: with no authoritative feed no channel shows one. A direct message row draws each party's
+ *  status dot when the roster holds it, so a working agent's dot breathes there.
+ *
  *  A direct message conversation holding a row read from history says unverified, as a message row
  *  does, because it was grouped by what the payload says about its own sender. A conversation is
  *  named, and linked, opener first: the sender of its first message, then the other party, as the
@@ -76,6 +83,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
   const unread = useStore(store, (s) => s.unread);
   const roster = useStore(store, (s) => s.roster);
   const dms = useStore(store, (s) => s.dms);
+  const membership = useStore(store, (s) => s.membership);
   const connection = useStore(store, (s) => s.connection);
   const loading = useStore(store, (s) => s.loading);
   const post = useStore(store, (s) => s.post);
@@ -89,6 +97,10 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
   const idx = useMemo(() => nameIndex(roster), [roster]);
   const byId = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   const badgeOf = useBadgeOf();
+  const busy = useMemo(() => {
+    const names = channels.map((c) => c.channel);
+    return new Map(channels.map((c) => [c.channel, channelMembers(c.channel, membership, names, []).map((m) => byId.get(m.id)).filter((r): r is RosterRow => r?.status === "working")]));
+  }, [channels, membership, byId]);
   const needing = waiting(rows).length;
   const line = footerLine(post, self !== null && roster.some((p) => p.card.id === self));
   const conversations = useMemo(() => dmPairs(dms), [dms]);
@@ -120,6 +132,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
         {channels.map((c) => {
           const count = unread[c.channel] ?? 0;
           const event = isEventChannel(c.channel);
+          const working = busy.get(c.channel) ?? [];
           return (
             <Row
               key={c.channel}
@@ -130,6 +143,12 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
             >
               {event ? <Icon icon={Plug01Icon} size={18} className="ui-ic" /> : <RailIcon name="hash" />}
               <span className="ui-row-lbl">{c.channel}</span>
+              {working.length > 0 && (
+                <span className="ox-sbw" title={`${working.length} member${working.length === 1 ? "" : "s"} working: ${working.map((r) => r.name).join(", ")}`}>
+                  <Icon icon={Loading03Icon} size={16} className="ui-ic ox-spin" />
+                  {working.length}
+                </span>
+              )}
               {count > 0 && <span className="ui-badge-blue">{count}</span>}
             </Row>
           );
@@ -141,7 +160,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
             <Row key={key} to={{ view: "dm", peer: a, with: b }} here={key === openKey}>
               <span className="ui-stack">
                 {[a, b].map((id) => (
-                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? "offline"} size={18} dot={false} badge={byId.has(id) ? badgeOf(id) : undefined} />
+                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? "offline"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />
                 ))}
               </span>
               <span className="ui-row-lbl">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>
