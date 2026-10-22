@@ -185,8 +185,8 @@
  * run a build carries files a fresh clone does not. `node_modules`, `dist`, `build` and friends are
  * skipped, but a generated bundle landing outside those names is not: the Hermes sidecar at
  * `extensions/connector-hermes/plugin/cotal/_sidecar/` is gitignored build output and IS walked.
- * The bundle adds one outside-smoke call: a clean checkout has 311/236 and a built checkout has
- * 312/236. Packing `cotal-ai` (or `pnpm --dir bin seeded-connectors`) copies the same bundle to
+ * The bundle adds one outside-smoke call: a clean checkout has 312/237 and a built checkout has
+ * 313/237. Packing `cotal-ai` (or `pnpm --dir bin seeded-connectors`) copies the same bundle to
  * `bin/seeded-connectors/hermes/`, which is gitignored too and adds one more. Each copy has its own
  * one-site pin, required whenever that artifact exists. An EXACT count otherwise
  * turns this divergence into a red that
@@ -467,8 +467,9 @@ const SEAMS: Seam[] = [
   // three. Host vitals (#4253) adds two in manager-service-invoke.smoke.ts. Every call states `tls`.
   // Workflow cancellation adds one run-admitter store connection in auth/src/service.ts and
   // three smoke-side calls: bin/smoke/run-cancel-live two and auth/smoke/run-cancel-live one.
-  // Each states `tls`; the source population is now 311/236.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 311, untypecheckedSites: 236 },
+  // Each states `tls`. The native conversation run suite adds one smoke-side writer connection in
+  // manager/smoke/native-conversation-run, which states `tls`; the source population is now 312/237.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 312, untypecheckedSites: 237 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
@@ -2629,8 +2630,8 @@ console.log("\nB. the seam, across every source the compiler may or may not read
 }
 check("the literal per-file census accounts for the source and smoke totals",
   Object.values(SITE_COUNTS).every((n) => Number.isSafeInteger(n) && n > 0)
-  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === 311
-  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === 236);
+  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === 312
+  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === 237);
 const files = sources(ROOT);
 check("the scan reached a source tree at all (a zero-file walk would pass every cell below)", files.length > 500, files.length);
 
