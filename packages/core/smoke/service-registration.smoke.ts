@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,12 +6,15 @@ import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import {
   completeFrozenRegistrationFromSpec, contractDigest, createEndpointStreams, epAuthBucket, epgateKey,
   endpointRegistrationBarrier, isReachable, mintLifecycleUid, openRecordsBucket, parseEndpointGate,
   recordSpecKey, RECORD_KINDS, registerServiceInstance, type EndpointGateRow, type EpIssuanceBarrier,
 } from "../src/index.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const space = "service-registration", owner = `u_${"a".repeat(26)}`, actor = "fixture";
 const port = await freePort(), servers = `nats://127.0.0.1:${port}`;
@@ -88,6 +91,7 @@ try {
   }
   assert.deepEqual(failures, [], "atomic registration completion and abort provenance");
   console.log("service registration: abort preservation, atomic success, lost reply and op-bound native recovery passed");
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   await nc?.close();
   await killAndAwaitExit(broker);
