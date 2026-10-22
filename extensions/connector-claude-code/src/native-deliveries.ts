@@ -40,14 +40,20 @@ export class NativeDeliveries {
 
   constructor(private readonly route: string, private readonly timeoutMs = 30_000) {}
 
-  pending(session: string): boolean { return this.sessions.has(session); }
+  pending(session: string): boolean {
+    // A closed connection can leave its native reader alive. Its stale offer must not coalesce
+    // messages for the replacement connection, and releasing it never acknowledges that offer.
+    for (const [receipt, offer] of this.offers)
+      if (offer.frame.inline.session === session && !offer.batch.current()) this.finish(receipt, false);
+    return this.sessions.has(session);
+  }
 
   fits(id: string, session: string, payload: InlineDeliveryPayload): boolean {
     return isNativeInlineFrame({ id, inline: { ...payload, v: 1, receipt: "0".repeat(36), session }, route: this.route });
   }
 
   send(reader: Socket, id: string, session: string, batch: InlineDeliveryBatch, onSettled: (delivered: boolean) => void, retry: () => void): boolean {
-    if (this.sessions.has(session) || !this.fits(id, session, batch.payload)) return false;
+    if (this.pending(session) || !this.fits(id, session, batch.payload)) return false;
     const receipt = randomUUID();
     const frame: NativeInlineFrame = { id, inline: { ...batch.payload, v: 1, receipt, session }, route: this.route };
     // A long-running native tool may postpone its next safe boundary indefinitely. Before claim,

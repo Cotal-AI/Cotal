@@ -127,6 +127,14 @@ try {
   assert(!isNativeInlineFrame({ ...frame, inline: { ...frame.inline, text: "x".repeat(5000) } }));
   assert(!stdout.includes('"recvKey"'));
   console.log("  ✓ expired and malformed offers remain non-consuming; receive keys never cross the socket");
+
+  send();
+  const closed = await nextFrame();
+  await agent.stop();
+  assert(!feed.inlinePending(session), "a closed connection cannot retain this session's offer slot");
+  assert.equal((await helper(closed, "claim")).ok, false);
+  assert(!acked.includes("refused"), "releasing a closed connection's offer never acknowledges it");
+  console.log("  ✓ a stopped connection releases its stale session offer without an ACK");
 } finally {
   feed.close();
   monitor.kill("SIGTERM");

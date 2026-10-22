@@ -332,7 +332,8 @@ Message IDs distinguish retries from new requests.
 
 A wake follows the rule `cotal_wait` follows and does not compete with an active wait. Confirmed
 inline delivery rearms the next wake without an inbox call. A replacement reader reoffers unread
-work. Claude's Stop and organization controls still apply. Refused delivery stays pending without
+work. An offer from a closed connection cannot suppress its replacement connection's messages.
+Claude's Stop and organization controls still apply. Refused delivery stays pending without
 a retry loop; genuine person-origin input resumes it with a fresh offer. `cotal_connect` reports
 whether the incoming reader is attached; attachment alone does not prove native admission.
 When native modules are unavailable or blocked, the conversation can listen with `cotal_wait`.
