@@ -59,7 +59,9 @@ export interface GatewayHost {
    *  succeeding, or two conversations end up sharing one name. Error messages reach the caller,
    *  so they must not carry secrets. */
   open(account: string, name: string, context?: string): Promise<GatewayConnection>;
-  /** The connection `id` if `account` owns it, otherwise undefined. Never a default. */
+  /** The connection `id` if `account` owns it, otherwise undefined. Never a default. Throw, with the
+   *  reason and the retry, when `account` owns `id` but it can no longer serve, such as a
+   *  disconnected connection whose cleanup is unfinished. */
   find(account: string, id: string): Promise<GatewayConnection | undefined>;
   /** Stop and release one connection `account` owns. False when it owns no such connection. */
   close(account: string, id: string): Promise<boolean>;

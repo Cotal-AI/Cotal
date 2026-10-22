@@ -7,7 +7,7 @@ import {
   processStartToken, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider,
 } from "@cotal-ai/core";
 import { getSpaceAuth, homeCotalDir, resolveTargetOrThrow, userAuthStateDir, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
-import { checkConversationMaterial, conversationRetired, discoverConversationAuthority, type ConversationMaterial } from "./conversation-identity.js";
+import { checkConversationMaterial, conversationRetirementPhase, discoverConversationAuthority, type ConversationMaterial } from "./conversation-identity.js";
 
 interface SavedIdentity {
   v: 1;
@@ -90,9 +90,13 @@ export async function provisionUserApp(target: MeshTarget, name: string, session
   mkSecretDir(root);
   privateDir(root);
   const dir = join(root, hash(`${target.space}\0${session}`));
+  await retireDeadConsumers(target, dir);
   // A reconnect first finishes the previous explicit departure. Only a confirmed terminal
   // retirement can release this session key for a new request and a new secret.
-  if (existsSync(join(dir, RECORD)) && read(dir).state === "retiring") await retireUserApp(dir);
+  if (existsSync(join(dir, RECORD)) && read(dir).state === "retiring") {
+    try { await retireUserApp(dir); }
+    catch (error) { throw new Error(`this conversation's previous identity is still retiring: ${(error as Error).message}. Connect again to retry it`); }
+  }
   const lock = acquireLock(`${dir}.lock`, { waitMs: 0 });
   try {
     let record: SavedIdentity;
@@ -182,11 +186,29 @@ export function isUserAppDir(dir: string): boolean {
 }
 
 /** Retain the record and secret until exact lifecycle revocation and footprint cleanup are observed. */
-export async function retireUserApp(dir: string): Promise<void> {
+export function retireUserApp(dir: string): Promise<void> {
+  return retire(dir);
+}
+
+/** Retire this mesh's other saved conversations whose consumer is provably gone, such as a gateway
+ *  killed before it could retire them. A live, reused or unknown consumer keeps its identity, and a
+ *  retirement that does not finish stays saved for a later connection. */
+async function retireDeadConsumers(target: MeshTarget, own: string): Promise<void> {
+  for (const name of readdirSync(identityRoot())) {
+    const dir = join(identityRoot(), name);
+    if (dir === own || !isUserAppDir(dir) || !existsSync(join(dir, RECORD))) continue;
+    try { await retire(dir, (record) => record.trust === trust(target) && !consumerAlive(record.consumer)); }
+    catch { /* retained for a later connection */ }
+  }
+}
+
+/** `when` is decided under the record's lock, so a consumer that reissued it in between keeps it. */
+async function retire(dir: string, when?: (record: SavedIdentity) => boolean): Promise<void> {
   if (!isUserAppDir(dir)) throw new Error("not a saved conversation identity directory");
   const lock = acquireLock(`${dir}.lock`, { waitMs: 0 });
   try {
     const record = read(dir);
+    if (when && !when(record)) return;
     const target = await resolveTargetOrThrow({ space: record.space });
     if (trust(target) !== record.trust) throw new Error("conversation identity mesh trust changed; retirement was not sent");
     const provider = resolveAuthProvider();
@@ -211,8 +233,9 @@ export async function retireUserApp(dir: string): Promise<void> {
       expected.searchParams.set("lifecycleUid", assertLifecycleToken(material.lifecycleUid));
       if (material.retire.url !== expected.href) throw new Error("saved retirement URL does not name the exact lifecycle");
       const response = await request(provider)({ url: expected.href, idpUrl: record.remote.idpUrl, method: "DELETE" });
-      if (!conversationRetired(response.status, response.body, material))
-        throw new Error("conversation identity retirement is pending; retry disconnect for this saved lifecycle");
+      const phase = conversationRetirementPhase(response.status, response.body, material);
+      if (phase !== "terminal")
+        throw new Error(`conversation identity retirement is pending at phase ${JSON.stringify(phase)}; its saved lifecycle was retained for an exact retry`);
     } else {
       const local = record.local!;
       const store = workspaceSecretStore(target.root);

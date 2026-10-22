@@ -88,12 +88,14 @@ export function checkConversationMaterial(value: unknown, authority: Conversatio
   return body as unknown as ConversationMaterial;
 }
 
-/** Pending, malformed and unconfirmed retirement all keep the saved identity for an exact retry. */
-export function conversationRetired(status: number, value: unknown, material: ConversationMaterial): boolean {
+/** The phase a retirement reached, `terminal` once it is complete. Pending, malformed and unconfirmed
+ *  retirement all keep the saved identity for an exact retry. */
+export function conversationRetirementPhase(status: number, value: unknown, material: ConversationMaterial): string {
   const body = object(value);
   if (body.v !== 1 || body.actor !== material.actor || body.lifecycleUid !== material.lifecycleUid)
     throw new Error("conversation retirement response does not match the saved lifecycle");
-  if (status === 200 && body.complete === true && body.phase === "terminal") return true;
-  if (status === 202 && body.complete === false && typeof body.phase === "string" && body.phase !== "terminal") return false;
+  if (status === 200 && body.complete === true && body.phase === "terminal") return "terminal";
+  if (status === 202 && body.complete === false && typeof body.phase === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(body.phase) && body.phase !== "terminal")
+    return body.phase;
   throw new Error("conversation retirement is unconfirmed; its saved identity was retained");
 }

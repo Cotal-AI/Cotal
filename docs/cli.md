@@ -4604,8 +4604,12 @@ file in a new temporary directory; the credential never appears on stdout. A rec
 the identity, the mesh and the process that asked. `cotal app-identity retire --dir <dir>` removes
 the identity's broker footprint, then the files and the directory. When the broker is not answering
 it keeps them. Each provision also retires the directories whose owning process has exited, which
-covers a host killed before it could retire. A mesh that uses per-user sign-in is refused. Like
-`agent-bearer`, it skips the connector-seed boot gate.
+covers a host killed before it could retire. On a mesh that uses per-user sign-in, provision needs
+the conversation's native `--session` and keeps its request and secret in a private record under
+`~/.cotal/app-identities`. `retire` keeps that record until the mesh confirms retirement, and names
+the mesh's phase while it is pending. Each signed-in provision also retires the same mesh's saved
+conversations whose server process has provably exited. Like `agent-bearer`, it skips the
+connector-seed boot gate.
 
 ## watch
 

@@ -33,9 +33,19 @@ interface Held {
   plane?: ReturnType<typeof createClaudeEventPlane>;
   closing?: Promise<boolean>;
   stopped?: boolean;
+  /** Why the last retirement of a stopped connection did not finish. */
+  unfinished?: string;
 }
 
 type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string } } | { ok: false; taken?: true; error?: string };
+
+const reason = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** One state for a stopped connection whose retirement is unfinished, whichever tool meets it. */
+function unfinished(id: string, why: string): string {
+  return `This conversation is disconnected from the mesh, but its identity cleanup is not finished: ${why}. ` +
+    `Call cotal_disconnect with connection_id ${id} to retry it now, or cotal_connect to retry it and then connect again.`;
+}
 
 function launchEnv(base: NodeJS.ProcessEnv, printed: Record<string, string>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
@@ -63,10 +73,16 @@ export function createAppHost(o: AppHostOptions): AppHost {
   const open = async (name: string, context?: string): Promise<GatewayConnection> => {
     const binding = context ? bindings.get(context) : undefined;
     if (context && !binding) throw new Error("the native conversation has not bound its lifecycle and transcript; no identity was requested");
-    if (context && [...held.values()].some((h) => h.session === context))
-      throw new Error("this native conversation already has a connection; disconnect it before connecting again");
+    const prior = context ? [...held].find(([, h]) => h.session === context) : undefined;
+    if (prior && !prior[1].stopped) throw new Error("this native conversation already has a connection; disconnect it before connecting again");
+    // A stopped connection is this conversation's own unfinished departure: finish it first.
+    if (prior) await close(prior[0]);
     const previous = context ? pending.get(context) : undefined;
-    if (previous) { await retire(previous); pending.delete(context!); }
+    if (previous) {
+      try { await retire(previous); }
+      catch (error) { throw new Error(`this conversation's previous identity cleanup is not finished: ${reason(error)}. Call cotal_connect again to retry it`); }
+      pending.delete(context!);
+    }
     // Capture the personal privacy boundary before provisioning or waiting for a network connection.
     const source = binding ? await createBoundClaudeTranscriptSource(binding.path, "resume") : undefined;
     const reply = await plumbing(["provision", "--name", name, ...(binding ? ["--session", binding.session, "--events"] : [])]);
@@ -124,7 +140,8 @@ export function createAppHost(o: AppHostOptions): AppHost {
         await h.conn.agent.stop();
         h.stopped = true;
       }
-      await retire(h.dir);
+      try { await retire(h.dir); }
+      catch (error) { h.unfinished = reason(error); throw new Error(unfinished(id, h.unfinished)); }
       held.delete(id);
       return true;
     })();
@@ -138,7 +155,11 @@ export function createAppHost(o: AppHostOptions): AppHost {
       opening = next.catch(() => {});
       return next;
     },
-    async find(_account, id) { const h = held.get(id); return h?.stopped ? undefined : h?.conn; },
+    async find(_account, id) {
+      const h = held.get(id);
+      if (h?.stopped) throw new Error(h.closing ? "This conversation is disconnecting from the mesh." : unfinished(id, h.unfinished ?? "it was interrupted"));
+      return h?.conn;
+    },
     close: (_account, id) => close(id),
     sessionFor: (id) => held.get(id)?.session,
     async nativeEvent(event) {
