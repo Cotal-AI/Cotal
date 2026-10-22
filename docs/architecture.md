@@ -144,7 +144,9 @@ The confirmed full scope is rechecked under the native stop reservation and agai
 Native stop hooks bind service, launch and stop IDs plus both process creation identities. Phase
 files are create-only, and accepted/returned evidence plus the original process exit is required
 for a stopped record. A missing terminal remains unknown; generic signal escalation is not a
-native stop substitute. Reservations are not reclaimed. Lease, registration and family cleanup
+native stop substitute. Reservations are not reclaimed. The adapter releases one only after its own
+completed receipt and the original process exit settle the request, and only once the process that
+took it has exited. Lease, registration and family cleanup
 still remain not checked in the receipt. The service layer stays workstation-local and adds no
 wire authority. See [CLI services](cli.md#owned-process-services).
 

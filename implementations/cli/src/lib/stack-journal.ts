@@ -9,7 +9,7 @@ import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, cano
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance } from "./service-instances.js";
-import { retainedStopRequest, settleExitedInstance } from "./service-process.js";
+import { retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -246,6 +246,22 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
         ? "a stack member's stop request file does not read as its own, so whether a stop was published is unknown and the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
         : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: inspect(row.name) });
   } finally { hold?.release(); }
+}
+
+/** Settle each member's retained native stop from its adapter's own receipt, under that member's
+ *  definition lock, before an `up` or `down` classifies the members. The caller holds the root's
+ *  maintenance lock. A member whose adapter confirms less keeps its stop, and the classification
+ *  refuses it as before. A preserve or resume with no outcome is left to its maintenance attempt. */
+export async function settleRetainedStackStops(journal: StackJournal): Promise<void> {
+  if (stackOperationUnsettled(journal) && journal.operation.kind !== "up" && journal.operation.kind !== "down") return;
+  const store = serviceDefinitionStore(journal.space);
+  for (const role of STACK_ROLES.filter((entry) => stackRoleApplies(journal.mode, entry))) {
+    const definition = store.read(STACK_DEFINITION[role]), launch = definition?.record.value.launch;
+    if (!definition || launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER[role] || launch.options.root !== journal.root) continue;
+    const hold = store.pin(definition);
+    try { for (const row of serviceInstances(journal.space, definition.name)) await settleRetainedNativeStop(definition, row); }
+    finally { hold.release(); }
+  }
 }
 
 /** Settle an earlier `up` or `down` that has no recorded outcome, from evidence only. The caller

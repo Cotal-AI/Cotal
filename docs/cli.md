@@ -610,16 +610,21 @@ failed, and the command continues with an `OPERATION_SETTLED` warning. A member 
 running is kept: `up` reuses it and `down` stops it. A member whose process cannot be established,
 or one with a stop that was requested and never confirmed, refuses `LIFECYCLE_BLOCKED` and names
 `cotal service status <definition> --instance <id> --space <space>`. A manager stop whose request
-was published and never confirmed keeps the manager's record `stopping` under that request, also
-after its process exits. After a `down` that ends this way, the next bare `up` or `down` refuses
-`LIFECYCLE_BLOCKED` and names the instance and the original request. `service start`, `restart` and
+was published and not confirmed before `down` stopped waiting keeps the manager's record `stopping`
+under that request, also after its process exits. The next bare `up` or `down` reads that request's
+own receipts first. When the manager recorded the stop as completed and its exact process is gone,
+the record becomes `stopped` with that receipt, the request's reservation is released once the
+`down` that took it has exited, and the command continues. Otherwise it refuses
+`LIFECYCLE_BLOCKED` and names the instance and the original request. `down --dry-run` writes
+nothing, so it does not settle such a stop and refuses the same way. `service start`, `restart` and
 `stop` refuse it `LIFECYCLE_BLOCKED`, exit 2, before any readiness probe, stop request or record write.
 The earlier stop's outcome stays unknown. When the launch's
 request file does not read as its own, the refusal reports that it is unknown whether a stop was
 published. A manager record that an earlier release left `unknown` while its launch still holds a
 stop request is recorded `stopping` under that request when its process is gone. Its exit is never
 recorded as a crash, and no `up`, `down` or `service` command relaunches it, removes its record or
-removes the stack's registration. No command in this release clears such a stop. When `up`
+removes the stack's registration. No command in this release clears a stop that has no completed
+receipt. When `up`
 redefines a member because its launch options changed, the journal records the
 replacement's instance and launch request before the old instance is retired, and the new
 definition's revision before the replacement launches. After an `up` cut off in between, the next
@@ -5553,7 +5558,8 @@ identities, and uses the existing native shutdown intent for agent reap. The chi
 same complete scope before accepting. Changed or incomplete scope refuses without a broader policy.
 The controller requires immutable accepted/returned evidence and the original process exit before
 recording a native stopped state. An unconfirmed request retains its reservation and never escalates
-to force kill, restarts, or treats PID disappearance as completion. Reported cleanup remains not
+to force kill, restarts, or treats PID disappearance as completion. A later bare `up` or `down`
+settles it only from the same evidence, and only then releases the reservation. Reported cleanup remains not
 checked. Retained native-policy markers prevent a metadata change from selecting generic signals,
 and an unconfirmed native stop cannot be forgotten just because its process disappeared. Legacy shutdown refuses the native child rather than bypassing that boundary.
 

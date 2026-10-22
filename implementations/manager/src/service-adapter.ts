@@ -4,9 +4,9 @@ import {
   CommandFailure, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, armManagerShutdownIntent,
   assertRecordIdentity, canonicalLocalProcessPath, canonicalRoot, clearRefusedServiceStopRequest,
   colorEnabled, commandIsCotalSupervisor, controllerAttemptBinding, cutController, localProcessPath, maintenanceAdmitsStackWork, publishServiceStopRequest,
-  readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts,
+  readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts, readServiceStopRequest, releaseRetainedServiceStop,
   reserveNativeServiceStop, resolveNativeServiceTarget, serviceAdapterAttempt, serviceMetadataDigest,
-  stopReservationPath, type LocalProcess, type NativeServiceStopRequest, type ServiceAdapterAttempt, type ServiceAdapterContext,
+  stopReservationPath, type LocalProcess, type NativeServiceStopRequest, type ProcessIdentityRecord, type ServiceAdapterAttempt, type ServiceAdapterContext,
   type ServiceAdapterStopContext, type ServiceAdapterStopPlan, type ServiceAdapterStopResult,
   type ServicePreset,
 } from "@cotal-ai/workspace";
@@ -107,6 +107,22 @@ async function stop(context: ServiceAdapterStopContext & { requestId: string; pl
   } finally { if (releasable) reservation.release(); }
 }
 
+/** Settle an ordinary request that outlived its stop call from this launch's own evidence: its
+ *  published request, that request's `completed` receipt and the exact process exit. Only then is
+ *  the reservation the request took released, and only once its stopper is gone. Anything less
+ *  retains the request and the reservation. A preserved-exit request is left to its maintenance
+ *  attempt, which reads its own receipts. */
+function settleStop(context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly requestId: string }): ServiceAdapterStopResult | undefined {
+  const request = readServiceStopRequest(context);
+  if (!request || request.preserved || request.requestId !== context.requestId || request.target.pid !== context.process.pid || request.target.token !== context.process.token) return undefined;
+  const completed = readServiceStopReceipts(context, request).find((row) => row.phase === "completed");
+  const identity = assertRecordIdentity(request.target).kind;
+  if (!completed || identity !== "gone" && identity !== "mismatch") return undefined;
+  const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: String(context.options.root), space: context.space });
+  if (!releaseRetainedServiceStop(stopReservationPath(pidPath), request.stopper)) return undefined;
+  return { requestId: request.requestId, scopeSha256: request.scopeSha256, process: { ...request.target }, nativeStop: "returned", cleanup: "not-checked", observedAt: completed.observedAt };
+}
+
 export const managerService: LocalProcess = {
   kind: "local-process", name: "manager-service", label: "manager service", order: 10, controllerOnly: true,
   pidFile: MANAGER_PIDFILE, isOwnCommand: commandIsCotalSupervisor,
@@ -155,6 +171,7 @@ export const managerService: LocalProcess = {
   checkServiceReadiness: managerServiceReadiness,
   prepareServiceStop: prepareStop,
   stopService: stop,
+  settleServiceStop: settleStop,
 };
 
 registry.register(managerService, managerPreset);

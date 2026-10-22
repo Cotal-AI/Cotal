@@ -157,6 +157,10 @@ export interface ServiceAdapterHooks {
   readonly observeKernelStop?: (context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord }) => "ports-file-removed" | "ports-file-retained";
   readonly prepareServiceStop?: (context: ServiceAdapterStopContext) => Promise<ServiceAdapterStopPlan>;
   readonly stopService?: (context: ServiceAdapterStopContext & { readonly requestId: string; readonly plan: ServiceAdapterStopPlan }) => Promise<ServiceAdapterStopResult>;
+  /** A native stop request that outlived its `stopService` call. Returns the same returned result
+   *  once this adapter's own `completed` receipt for `requestId` and the exact process exit are both
+   *  on record, after releasing the reservation that request took. Undefined retains both. */
+  readonly settleServiceStop?: (context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly requestId: string }) => ServiceAdapterStopResult | undefined;
   readonly buildServiceLaunch?: (context: ServiceAdapterContext) => ServiceAdapterLaunch | Promise<ServiceAdapterLaunch>;
   readonly checkServiceReadiness?: (context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly signal: AbortSignal }) => Promise<ServiceAdapterReadiness>;
 }
