@@ -32,6 +32,24 @@ check("normal and snapshot publication consume sealed native qualification", () 
   assert(verify >= 0 && requireAll > verify && seal > requireAll && upload > seal);
   assert.equal(steps[seal].if, undefined); assert.equal(steps[seal]["continue-on-error"], undefined);
 });
+check("build provenance is pinned, retained and verified before native qualification", () => {
+  const job = workflow.jobs.candidate, steps = job.steps;
+  const pack = steps.findIndex((step) => step.run?.includes("pack-cold-candidate.mjs"));
+  const attest = steps.findIndex((step) => step.id === "build-attestation");
+  const retain = steps.findIndex((step) => step.run?.includes('cp "$QUALIFICATION_BUNDLE"'));
+  const verify = steps.findIndex((step) => step.run?.includes("verify-qualification-attestation.mjs"));
+  const upload = steps.findIndex((step) => step.with?.name === "cold-candidate");
+  assert(pack >= 0 && attest > pack && retain > attest && verify > retain && upload > verify);
+  assert.equal(steps[attest].uses, "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6");
+  assert.equal(steps[attest].with["subject-path"], "cold-candidate/manifest.json");
+  assert.equal(job.permissions.contents, "read"); assert.equal(job.permissions["id-token"], "write");
+  assert.equal(job.permissions.attestations, "write"); assert.equal(job.permissions["artifact-metadata"], "write");
+  assert.equal(workflow.permissions["id-token"], undefined, "build signing authority must not become global");
+  for (const index of [attest, retain, verify]) {
+    assert.equal(steps[index].if, "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository");
+    assert.equal(steps[index]["continue-on-error"], undefined);
+  }
+});
 check("snapshot publication replays qualified versions without versioning after go", () => {
   const steps = release.jobs.version.steps;
   const replay = steps.findIndex((step) => step.run?.includes("apply-cold-versions.mjs"));
@@ -75,7 +93,9 @@ check("main-only OIDC promotion pins the original clock and immutable cross-run 
   assert.equal(job.if, "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'");
   assert.equal(job.environment, "npm-publish");
   assert.equal(job.permissions["id-token"], "write"); assert.equal(job.permissions.actions, "read");
-  for (const name of ["qualification_run", "candidate_sha256", "source", "requested_at"]) assert.equal(release.on.workflow_dispatch.inputs[name].required, true);
+  for (const name of ["version", "qualification_run", "candidate_sha256", "source", "requested_at"]) assert.equal(release.on.workflow_dispatch.inputs[name].required, true);
+  assert.equal(release["run-name"], "${{ github.event_name == 'workflow_dispatch' && format('publication-v1 {0} {1} {2} {3} {4} {5}', inputs.version, inputs.candidate_sha256, inputs.source, inputs.qualification_run, inputs.snapshot || 'latest', inputs.requested_at) || 'Prepare release versions' }}");
+  assert.equal(job.env.RELEASE_VERSION, "${{ inputs.version }}");
   assert.equal(job.env.RELEASE_REQUESTED_AT, "${{ inputs.requested_at }}");
   assert.equal(job.env.RELEASE_SOURCE, "${{ inputs.source }}");
   assert.equal(job.env.RELEASE_ROOT, "${{ runner.temp }}/release-source");

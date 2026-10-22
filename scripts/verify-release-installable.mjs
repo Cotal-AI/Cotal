@@ -61,6 +61,12 @@ function parseArgs(argv) {
 /** One scratch-prefix install plus a run of the installed binary. Returns null on success. */
 async function attempt({ version, registry }, deadline) {
   const root = mkdtempSync(join(tmpdir(), "cotal-installable-"));
+  let settled = true;
+  const checkSettlement = (result) => {
+    if (result.settled) return;
+    settled = false;
+    throw Object.assign(new Error(`publication child group is unsettled; installation scratch retained at ${root}`), { code: "ERR_PUBLICATION_UNSETTLED" });
+  };
   try {
     // Keep operator credentials and personal state out of package scripts and the installed CLI.
     // Empty npm configs and a fresh cache keep mirrors and stale packuments out of the answer.
@@ -94,6 +100,7 @@ async function attempt({ version, registry }, deadline) {
       ["install", "-g", "--prefix", prefix, `--registry=${registry}/`, `cotal-ai@${version}`],
       bounded(),
     );
+    checkSettlement(install);
     if (install.error?.code === "ERR_PUBLICATION_INTERRUPTED") throw install.error;
     if (install.error?.code === "ETIMEDOUT") return "npm install was killed at the deadline";
     if (install.error) return `npm install could not complete (${install.error.code})`;
@@ -102,6 +109,7 @@ async function attempt({ version, registry }, deadline) {
       return `npm install exited ${install.status}${why.length ? `: ${why.join(" | ")}` : ""}`;
     }
     const run = await runPublicationChild(join(prefix, "bin", "cotal"), ["--version"], bounded());
+    checkSettlement(run);
     if (run.error?.code === "ERR_PUBLICATION_INTERRUPTED") throw run.error;
     if (run.error?.code === "ETIMEDOUT") return "cotal --version was killed at the deadline";
     if (run.error) return `cotal --version could not complete (${run.error.code})`;
@@ -111,7 +119,7 @@ async function attempt({ version, registry }, deadline) {
     }
     return null;
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    if (settled) rmSync(root, { recursive: true, force: true });
   }
 }
 

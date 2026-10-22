@@ -194,16 +194,20 @@ try {
     exec: (_, args) => args[1] === "HEAD" ? source : tree });
   const apiRun = { id: 123, path: ".github/workflows/cold-setup.yml", event: "pull_request", head_sha: head, run_attempt: 1, status: "completed", conclusion: "success", repository: { full_name: "Cotal-AI/Cotal" }, head_repository: { full_name: "Cotal-AI/Cotal" }, updated_at: before };
   const artifactRows = ["cold-candidate", "cold-qualified", ...coldResultNames()].map((name, index) => ({ id: index + 1, name, digest: "sha256:" + "f".repeat(64), expired: false, created_at: before, workflow_run: { id: 123, head_sha: head } }));
-  const promotionEnv = { ...options.env, GITHUB_SHA: main, GITHUB_REPOSITORY: "Cotal-AI/Cotal", GITHUB_REF: "refs/heads/main", GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_RUN_ATTEMPT: "1", GH_TOKEN: "synthetic-not-a-credential", RELEASE_SOURCE: main, RELEASE_CANDIDATE_SHA256: sha(bytes), RELEASE_QUALIFICATION_RUN: "123" };
-  const fetchImpl = async (url) => ({ status: 200, json: async () => url.includes("/git/commits/") ? { sha: source, tree: { sha: tree }, parents: [{ sha: "f".repeat(40) }, { sha: head }] } : url.includes("/artifacts?") ? { total_count: artifactRows.length, artifacts: artifactRows } : apiRun });
+  const promotionEnv = { ...options.env, GITHUB_SHA: main, GITHUB_RUN_ID: "456", GITHUB_REPOSITORY: "Cotal-AI/Cotal", GITHUB_REF: "refs/heads/main", GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_RUN_ATTEMPT: "1", GH_TOKEN: "synthetic-not-a-credential", RELEASE_VERSION: "1.0.0", RELEASE_TAG: "latest", RELEASE_SOURCE: main, RELEASE_CANDIDATE_SHA256: sha(bytes), RELEASE_QUALIFICATION_RUN: "123" };
+  const publicationRun = { id: 456, run_number: 1, run_attempt: 1, path: ".github/workflows/changesets.yml", event: "workflow_dispatch", head_sha: main, head_branch: "main", repository: { full_name: "Cotal-AI/Cotal" }, head_repository: { full_name: "Cotal-AI/Cotal" }, created_at: promotionEnv.RELEASE_REQUESTED_AT, display_title: `publication-v1 1.0.0 ${promotionEnv.RELEASE_CANDIDATE_SHA256} ${main} 123 latest ${promotionEnv.RELEASE_REQUESTED_AT}` };
+  const certificateResult = () => JSON.stringify([{ verificationResult: { signature: { certificate: { runInvocationURI: "https://github.com/Cotal-AI/Cotal/actions/runs/123/attempts/1" } } } }]);
+  const fetchImpl = async (url) => ({ status: 200, json: async () => url.includes("/actions/workflows/changesets.yml/runs?") ? { total_count: 1, workflow_runs: [publicationRun] }
+    : url.endsWith("/actions/runs/456") ? publicationRun : url.includes("/git/commits/") ? { sha: source, tree: { sha: tree }, parents: [{ sha: "f".repeat(40) }, { sha: head }] } : url.includes("/artifacts?") ? { total_count: artifactRows.length, artifacts: artifactRows } : apiRun });
   const selectionFile = join(root, "selection.json");
   const selection = await selectQualification({ runId: 123, env: promotionEnv, deadline: Date.now() + 10_000, fetchImpl });
   writeFileSync(selectionFile, JSON.stringify(selection));
   // Use the same layout that download-artifact produces, without moving the synthetic candidate.
   const candidateDirectory = join(root, "cold-candidate"); mkdirSync(candidateDirectory);
   writeFileSync(join(candidateDirectory, "manifest.json"), bytes);
+  writeFileSync(join(candidateDirectory, "qualification.sigstore.json"), "synthetic signature fixture; not cryptographic evidence");
   const promotionOptions = { root, directory: candidateDirectory, results: root, selectionFile, tag: "latest", env: promotionEnv, deadline: Date.now() + 10_000, fetchImpl,
-    exec: (_, args) => args[1] === "HEAD" ? main : tree };
+    exec: (file, args) => file === "gh" ? certificateResult() : args[1] === "HEAD" ? main : tree };
   await check("same-tree promotion retains the original PR merge and native source", async () => {
     const qualified = await verifyQualification(promotionOptions);
     assert.equal(qualified.source, source); assert.equal(qualified.promotionSource, main);
@@ -217,9 +221,30 @@ try {
     assert.deepEqual(uploaded, manifest.packages.map(({ archive }) => join(candidateDirectory, archive)));
     assert.equal(JSON.parse(readFileSync(join(candidateDirectory, "manifest.json"), "utf8")).source, source);
   });
+  await check("an unverified build certificate prevents preflight and every publication", async () => {
+    await assert.rejects(() => publishColdCandidate({ ...options, ...promotionOptions,
+      preflight: async () => assert.fail("must not preflight an unverified build"), publish: async () => assert.fail("must not publish an unverified build"),
+      exec: (file, args, settings) => {
+        if (file === "gh") throw Object.assign(new Error("synthetic certificate covers another executed source"), { status: 1 });
+        return promotionOptions.exec(file, args, settings);
+      },
+    }), /build attestation verification failed/);
+  });
+  await check("a predicate cannot substitute for the certificate's actual producing run", async () => {
+    await assert.rejects(() => publishColdCandidate({ ...options, ...promotionOptions,
+      preflight: async () => assert.fail("must not preflight a foreign producing run"), publish: async () => assert.fail("must not publish a foreign producing run"),
+      exec: (file, args, settings) => file === "gh" ? JSON.stringify([{ verificationResult: { signature: { certificate: { runInvocationURI: "https://github.com/Cotal-AI/Cotal/actions/runs/999/attempts/1" } }, statement: { predicate: { runInvocationURI: "https://github.com/Cotal-AI/Cotal/actions/runs/123/attempts/1" } } } }]) : promotionOptions.exec(file, args, settings),
+    }), /certificate belongs to another run or attempt/);
+  });
+  await check("publication inputs cannot detach the original clock from their server record", async () => {
+    await assert.rejects(() => publishColdCandidate({ ...options, ...promotionOptions, env: { ...promotionEnv, RELEASE_REQUESTED_AT: new Date(Date.parse(promotionEnv.RELEASE_REQUESTED_AT) + 1).toISOString() },
+      preflight: async () => assert.fail("must not preflight changed request inputs"), publish: async () => assert.fail("must not publish changed request inputs"),
+    }), /inputs differ from their server request record/);
+  });
   const publisherRoot = join(root, "publisher-controls"), advancedHead = "f".repeat(40);
   const advancedEnv = { ...promotionEnv, GITHUB_SHA: advancedHead };
   const advancedExec = (file, args, opts) => {
+    if (file === "gh") return certificateResult();
     assert.equal(file, "git");
     if (args[0] === "rev-list") {
       assert.equal(opts.cwd, publisherRoot);
@@ -231,7 +256,10 @@ try {
   };
   await check("main can advance without changing the frozen release source or archives", async () => {
     const receiptFile = join(root, "advanced-main-publication.json");
-    const result = await publishColdCandidate({ ...options, ...promotionOptions, publisherRoot, env: advancedEnv, exec: advancedExec, receiptFile, publish: async () => {} });
+    publicationRun.head_sha = advancedHead;
+    let result;
+    try { result = await publishColdCandidate({ ...options, ...promotionOptions, publisherRoot, env: advancedEnv, exec: advancedExec, receiptFile, publish: async () => {} }); }
+    finally { publicationRun.head_sha = main; }
     assert.equal(result.length, 2);
     const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
     assert.equal(receipt.source, source); assert.equal(receipt.promotionSource, main); assert.equal(receipt.publisherSource, advancedHead);

@@ -1,4 +1,5 @@
 name: Changesets
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('publication-v1 {0} {1} {2} {3} {4} {5}', inputs.version, inputs.candidate_sha256, inputs.source, inputs.qualification_run, inputs.snapshot || 'latest', inputs.requested_at) || 'Prepare release versions' }}
 
 on:
   push:
@@ -6,6 +7,10 @@ on:
       - main
   workflow_dispatch:
     inputs:
+      version:
+        description: "Exact release version already sealed in the qualification receipt."
+        type: string
+        required: true
       qualification_run:
         description: "Successful first-attempt Cold setup run prepared before publish-go."
         type: string
@@ -109,6 +114,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_REQUESTED_AT: ${{ inputs.requested_at }}
+      RELEASE_VERSION: ${{ inputs.version }}
       RELEASE_SOURCE: ${{ inputs.source }}
       RELEASE_ROOT: ${{ runner.temp }}/release-source
       RELEASE_CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}

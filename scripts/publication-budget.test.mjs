@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { runPublicationChild } from "./publication-child.mjs";
@@ -98,10 +98,55 @@ test("the publication deadline also stops a wrapper's live descendant", { skip: 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("successful client exit cannot leave an ignored-stdio descendant alive", { skip: process.platform === "win32" }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "publication-early-close-"));
+  const ready = join(root, "ready"), late = join(root, "late-write");
+  const descendant = `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(ready)}, "ready"); setTimeout(() => fs.writeFileSync(${JSON.stringify(late)}, "late"), 1_000);`;
+  const wrapper = `const fs = require("node:fs"); const child = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], {stdio:"ignore"}); child.unref(); const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(timer);process.exit(0);}},2);`;
+  let settled = false;
+  try {
+    const result = await runPublicationChild(process.execPath, ["-e", wrapper], { cwd: root, env: {}, timeout: 3_000, capture: true });
+    settled = result.settled;
+    assert.equal(result.status, 0); assert.equal(result.signal, null); assert.equal(result.error, undefined);
+    assert.equal(settled, true); assert(existsSync(ready), "control must start the descendant before its wrapper exits");
+    await pause(1_100);
+    assert.equal(existsSync(late), false, "direct-child close abandoned a live same-group descendant");
+  } finally { if (settled) rmSync(root, { recursive: true, force: true }); }
+});
+
 test("captured subprocess output is bounded and its writer is settled", { skip: process.platform === "win32" }, async () => {
   const result = await runPublicationChild(process.execPath, ["-e", 'process.stdout.write("x".repeat(2 * 1024 * 1024)); setInterval(() => {}, 1000);'], { cwd: import.meta.dirname, env: {}, timeout: 3_000, capture: true });
   assert.equal(result.error?.code, "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
   assert.equal(result.signal, "SIGKILL"); assert(Buffer.byteLength(result.stdout) <= 1024 * 1024);
+});
+
+test("the real install gate retains scratch when group settlement cannot be observed", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "publication-unknown-group-"));
+  const bin = join(root, "bin"); mkdirSync(bin);
+  const scratchRecord = join(root, "scratch.json"), groupRecord = join(root, "group.json");
+  const shim = join(root, "observe-unknown.mjs");
+  writeFileSync(join(bin, "npm"), `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(scratchRecord)}, JSON.stringify({cwd:process.cwd()}));\n`, { mode: 0o700 });
+  // Fault injection changes only this owned verifier process's observation, not the
+  // implementation or signal delivery. The actual owned group is still killed.
+  writeFileSync(shim, `import {writeFileSync} from "node:fs"; const original=process.kill.bind(process); process.kill=(pid,signal)=>{if(pid<0&&signal===0)return true;if(pid<0&&signal==="SIGKILL")writeFileSync(${JSON.stringify(groupRecord)},JSON.stringify(-pid));return original(pid,signal);};`);
+  let safeToClean = false;
+  try {
+    let failure;
+    try {
+      execFileSync(process.execPath, ["--import", shim, join(import.meta.dirname, "verify-release-installable.mjs"), "1.0.0", "--deadline-ms=5000", "--poll-interval-ms=1"], {
+        env: { PATH: bin + ":" + process.env.PATH, HOME: root, TMPDIR: root, TMP: root, TEMP: root }, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) { failure = error; }
+    assert.equal(failure?.status, 1);
+    assert.match(failure.stderr, /installation scratch retained/);
+    const retained = JSON.parse(readFileSync(scratchRecord, "utf8")).cwd;
+    assert(retained.startsWith(root + "/cotal-installable-"));
+    assert(existsSync(retained), "an unobserved process group lost its scratch directory");
+    const group = JSON.parse(readFileSync(groupRecord, "utf8"));
+    assert(Number.isSafeInteger(group) && group > 1);
+    assert.throws(() => process.kill(-group, 0), { code: "ESRCH" }, "the unshimmed observer must confirm quiescence before fixture removal");
+    safeToClean = true;
+  } finally { if (safeToClean) rmSync(root, { recursive: true, force: true }); }
 });
 
 test("owner cancellation stops its child group and refuses subsequent admission", { skip: process.platform === "win32" }, async () => {
