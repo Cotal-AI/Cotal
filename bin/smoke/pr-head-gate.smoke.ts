@@ -34,11 +34,13 @@ function check(name: string, condition: unknown, detail?: unknown): void {
 // changed-path set. Added in sorted position. The matching run row lives in the #1087 fixture below.
 // "Attribution" likewise: attribution.yml declares pull_request with no paths filter and a types
 // list that keeps opened and synchronize, so it is minted at every head of every PR.
-const expectedNames = ["Attribution", "CI", "Docs", "Mutation reproof", "Windows"];
+// "Cold setup" too: cold-setup.yml (c2fa6f30a) declares pull_request with no filter. The #1087
+// fixture's run row for it is added beside the others, as for Mutation reproof and Attribution.
+const expectedNames = ["Attribution", "CI", "Cold setup", "Docs", "Mutation reproof", "Windows"];
 check(
   "path-filtered workflows are included only when a changed path matches their declaration",
-  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["Attribution", "CI", "Mutation reproof", "Windows"]) &&
-    JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["Attribution", "CI", "Installer", "Mutation reproof", "Windows"]),
+  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["Attribution", "CI", "Cold setup", "Mutation reproof", "Windows"]) &&
+    JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["Attribution", "CI", "Cold setup", "Installer", "Mutation reproof", "Windows"]),
 );
 let repositoryWorkflowsParsed = false;
 try {

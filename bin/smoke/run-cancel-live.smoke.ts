@@ -101,7 +101,7 @@ try {
   }
 } finally {
   for (const nc of connections) await nc.drain();
-  await manager?.stop();
+  await manager?.stop({ withAgents: true });
   await delivery?.stop();
   await broker.stop();
   console.log(`owned fixture stopped; retained home=${home} workspace=${root}`);
