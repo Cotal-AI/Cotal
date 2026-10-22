@@ -36,12 +36,13 @@ async function main(): Promise<void> {
   for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
   process.env.COTAL_HOME = home;
   const {
-    createSpaceAuth, isReachable, mintCreds, newIdentity, remoteManagerActors, remoteManagerRegistrationProof, serverConfig, setupSpaceStreams,
+    CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, remoteManagerActors, remoteManagerRegistrationProof, serverConfig, setupSpaceStreams,
     standaloneConnectOpts, startTimerWriter,
   } = await import("@cotal-ai/core");
   const { connect } = await import("@nats-io/transport-node");
   const { assertUserAuthInfo, authDir, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-  const { cotalAuthProvider, grantActor, loadAuthServiceInfo, saveIdpSession } = await import("@cotal-ai/auth");
+  const { cotalAuthProvider, grantActor, loadAuthServiceInfo, loadCalloutAuth, saveIdpSession } = await import("@cotal-ai/auth");
+  const { startApprovalAuthority, EMPTY } = await import("../../auth/smoke/_approval-authority.js");
   const { NATIVE_GATEWAY_TOOLS, serveGatewayStdio } = await import("@cotal-ai/connector-core");
   const { createAppHost } = await import("../../../extensions/connector-claude-code/src/app-host.js");
   const { Manager } = await import("../src/manager.js");
@@ -76,6 +77,8 @@ async function main(): Promise<void> {
   let manager: InstanceType<typeof Manager> | undefined;
   let host: ReturnType<typeof createAppHost> | undefined;
   let served: { close(): Promise<void> } | undefined;
+  let authority: Awaited<ReturnType<typeof startApprovalAuthority>> | undefined;
+  let provisioner: InstanceType<typeof CotalEndpoint> | undefined;
   let idpServer: ReturnType<typeof createServer> | undefined;
   try {
     // A real IdP issues the human session the stock authority verifies; nothing is guessed.
@@ -172,7 +175,16 @@ async function main(): Promise<void> {
     await manager.start();
     check("a real participant Manager with run hosting is registered through the stock auth service", authChild.exitCode === null);
 
-    host = createAppHost({ cotal: () => [process.execPath, ...process.execArgv, import.meta.filename], cwd: hostRoot, env: { ...process.env, COTAL_HOME: home } });
+    authority = await startApprovalAuthority({ home, human: signup.token });
+    provisioner = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "provisioner"), channels: [], consume: false,
+      registerPresence: false, watchPresence: false, watchChannels: false, card: { name: "approval-provisioner", kind: "endpoint" } });
+    provisioner.on("error", () => {});
+    await provisioner.start();
+    authority.addMesh({ space, server: servers, root: hostRoot, owner, userAuth: assertUserAuthInfo(prepared.publicAuth),
+      sentinelCreds: (await loadCalloutAuth(hostStore, space))!.sentinelCreds, exchange: `${info.publicUrl}/exchange`,
+      local: { stateDir: hostDir, provisioner, auth, servers }, selection: true });
+    host = createAppHost({ cotal: () => [process.execPath, ...process.execArgv, import.meta.filename], cwd: hostRoot,
+      env: { ...process.env, COTAL_HOME: home, NODE_EXTRA_CA_CERTS: authority.caFile } });
     for (const session of ["native-run", "native-norun"]) {
       const path = join(home, `${session}.jsonl`);
       writeFileSync(path, "");
@@ -207,12 +219,20 @@ async function main(): Promise<void> {
     await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "native-run-smoke", version: "0" } });
     send({ method: "notifications/initialized" });
 
-    const norun = idOf(await tool("cotal_connect", { name: "norun_conv", context: "native-norun", capabilities: ["spawn"] }));
+    const personApproves = async (args: { name: string; context: string } & Record<string, unknown>) => {
+      const before = authority!.counts.issues;
+      const pending = await tool("cotal_connect", args);
+      const request = authority!.pending(args.name)[0];
+      check("the native connection waits without an identity until the fixture person approves", request && !idOf(pending) && authority!.counts.issues === before, pending);
+      authority!.decide(request!.requestId, { approve: request!.proposed ?? EMPTY });
+      return tool("cotal_connect", args);
+    };
+    const norun = idOf(await personApproves({ name: "norun_conv", context: "native-norun" }));
     const refused = await tool("cotal_run", { connection_id: norun, verb: "start", source: 'await sleep("1s", { name: "must-not-run" });' });
     check("a conversation that did not select run cannot start one", norun !== "" && refused.isError && /not available on this connection/.test(refused.text), refused);
     await tool("cotal_disconnect", { connection_id: norun });
 
-    const conn = idOf(await tool("cotal_connect", { name: "run_conv", context: "native-run", capabilities: ["run"] }));
+    const conn = idOf(await personApproves({ name: "run_conv", context: "native-run", capabilities: ["run"] }));
     check("a conversation that selected run connects", conn !== "");
     const started = await tool("cotal_run", { connection_id: conn, verb: "start", source: 'await sleep("2s", { name: "native-nap" });', file: "native-nap.cotal.js" });
     const runId = /run-[0-9a-f]{32}/.exec(started.text)?.[0];
@@ -231,6 +251,8 @@ async function main(): Promise<void> {
     await served?.close().catch(() => {});
     await host?.closeAll().catch(() => {});
     await manager?.stop({ withAgents: true }).catch(() => {});
+    await provisioner?.stop().catch(() => {});
+    await authority?.close();
     if (authChild) await killAndAwaitExit(authChild).catch(() => {});
     await writer?.stop().catch(() => {});
     await writerNc?.close().catch(() => {});

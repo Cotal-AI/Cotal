@@ -1,6 +1,7 @@
 /** A signed-in native conversation's capability selection on a real isolated user-auth broker,
  * auth service, delivery daemon and Manager, driven through the native gateway's MCP surface. The
- * human session and transcripts are fixtures; this does not claim hosted acceptance.
+ * human decision, authority and transcripts are fixtures; no hosted acceptance is claimed. The
+ * generic stock fixture permits approved spawn; an individual hosted authority may refuse it.
  *
  * Run: pnpm smoke:native-conversation-capabilities   (needs nats-server + node on PATH)
  */
@@ -54,7 +55,8 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
   } = await import("@cotal-ai/core");
   type Connector = import("@cotal-ai/core").Connector;
   const { authDir, assertUserAuthInfo, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
-  const { cotalAuthProvider, grantActor, loadAuthServiceInfo, saveIdpSession } = await import("@cotal-ai/auth");
+  const { cotalAuthProvider, grantActor, loadAuthServiceInfo, loadCalloutAuth, saveIdpSession } = await import("@cotal-ai/auth");
+  const { startApprovalAuthority, EMPTY } = await import("../../auth/smoke/_approval-authority.js");
   const { NATIVE_GATEWAY_TOOLS, serveGatewayStdio } = await import("@cotal-ai/connector-core");
   const { createAppHost } = await import("../../../extensions/connector-claude-code/src/app-host.js");
   const { Manager } = await import("../src/manager.js");
@@ -80,6 +82,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
   let manager: InstanceType<typeof Manager> | undefined;
   let host: ReturnType<typeof createAppHost> | undefined;
   let served: { close(): Promise<void> } | undefined;
+  let authority: Awaited<ReturnType<typeof startApprovalAuthority>> | undefined;
   const endpoints: InstanceType<typeof CotalEndpoint>[] = [];
   let checks = 0;
   const check = (name: string, condition: unknown, detail?: unknown) => {
@@ -108,11 +111,11 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     const owner = await cotalAuthProvider.ownerForLogin({ store, dir: stateDir, space });
     grantActor(stateDir, { owner, actor: "cli", scope: ["spawn", "run", "role:helper"], allowSubscribe: ["team.>"],
       allowPublish: ["team.alpha", `events.${owner}.>`], label: "isolated fixture operator" });
-    const childEnv = { ...process.env, COTAL_HOME: home };
-    authService = spawn(process.execPath, [...process.execArgv, import.meta.filename, "auth-service", "--space", space, "--server", servers], { cwd: root, env: childEnv, stdio: "ignore" });
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, COTAL_HOME: home };
+    authService = spawn(process.execPath, [...process.execArgv, import.meta.filename, "auth-service", "--space", space, "--server", servers, "--exchange-public-port", "0"], { cwd: root, env: childEnv, stdio: "ignore" });
     await until(async () => {
       const info = loadAuthServiceInfo(stateDir);
-      if (!info) return false;
+      if (!info?.publicUrl) return false;
       try { return (await fetch(`${info.url}/health`)).ok; } catch { return false; }
     }, "isolated real auth service did not become ready");
     delivery = await bootDeliveryDaemon({ space, servers, auth, reloadStoreIdentity: store.identity! });
@@ -128,6 +131,16 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     await manager.start();
     check("a real user-auth broker, auth service, delivery daemon and Manager are live", authService.exitCode === null && broker.exitCode === null);
 
+    authority = await startApprovalAuthority({ home, human: "isolated-human-session" });
+    childEnv.NODE_EXTRA_CA_CERTS = authority.caFile;
+    const provisioner = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "provisioner"), channels: [], consume: false,
+      registerPresence: false, watchPresence: false, watchChannels: false, card: { name: "approval-provisioner", kind: "endpoint" } });
+    provisioner.on("error", () => {});
+    endpoints.push(provisioner);
+    await provisioner.start();
+    authority.addMesh({ space, server: servers, root, owner, userAuth: assertUserAuthInfo(prepared.publicAuth),
+      sentinelCreds: (await loadCalloutAuth(store, space))!.sentinelCreds, exchange: `${loadAuthServiceInfo(stateDir)!.publicUrl}/exchange`,
+      local: { stateDir, provisioner, auth, servers }, selection: true });
     host = createAppHost({ cotal: () => [process.execPath, ...process.execArgv, import.meta.filename], cwd: root, env: childEnv });
     for (const session of ["native-plain", "native-wide", "native-sel", "native-run"]) {
       const path = join(home, `${session}.jsonl`);
@@ -171,7 +184,16 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     check("cotal_connect takes channels, role and capabilities, and no endpoints",
       ["channels", "role", "capabilities"].every((k) => connectArgs.includes(k)) && !connectArgs.includes("endpoints"), connectArgs);
 
-    const plain = idOf(await tool("cotal_connect", { name: "plain_conv", context: "native-plain" }));
+    const personApproves = async (args: { name: string; context: string } & Record<string, unknown>, approved?: import("@cotal-ai/core").ConversationSelection) => {
+      const before = authority!.counts.issues;
+      const pending = await tool("cotal_connect", args);
+      const request = authority!.pending(args.name)[0];
+      check("a native permission request is pending with no identity before the fixture person's decision", request && !idOf(pending) && authority!.counts.issues === before, pending);
+      // This is the fixture person, outside the client's HTTP and MCP surfaces, not a model flag.
+      authority!.decide(request!.requestId, { approve: approved ?? request!.proposed ?? EMPTY });
+      return tool("cotal_connect", args);
+    };
+    const plain = idOf(await personApproves({ name: "plain_conv", context: "native-plain" }));
     const plainSpawn = await tool("cotal_spawn", { connection_id: plain, name: "helper_seat" });
     check("a connection without a selection is not offered spawn", plain !== "" && plainSpawn.isError && /not available on this connection/.test(plainSpawn.text), plainSpawn);
     await tool("cotal_disconnect", { connection_id: plain });
@@ -179,14 +201,16 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     const before = identities();
     const wildcard = await tool("cotal_connect", { name: "wide_conv", context: "native-wide", channels: [{ channel: "team.>", access: "read" }] });
     check("a wildcard channel is refused before any identity is requested", wildcard.isError && /wildcard/.test(wildcard.text) && identities() === before, wildcard);
-    const wider = await tool("cotal_connect", { name: "wide_conv", context: "native-wide", role: "auditor",
-      channels: [{ channel: "team.beta", access: "read-post" }, { channel: "ops.secret", access: "read" }] });
-    check("a selection wider than your own grant names each refused item and connects nothing",
-      wider.isError && wider.text.includes('channel "team.beta" (read-post)') && wider.text.includes('channel "ops.secret" (read)') &&
-      wider.text.includes('capability "role:auditor"') && !wider.text.includes("Connected as"), wider);
-    check("the refused selection leaves no saved identity behind", identities() === before, { before, after: identities() });
+    const narrowed = idOf(await personApproves({ name: "wide_conv", context: "native-wide", role: "auditor",
+      channels: [{ channel: "team.beta", access: "read-post" }, { channel: "ops.secret", access: "read" }] }, EMPTY));
+    const narrowConnection = await host.find("local", narrowed);
+    check("the person's empty approval grants none of the proposal's wider channels, role or capabilities", narrowConnection &&
+      narrowConnection.config.allowSubscribe.length === 0 && narrowConnection.config.allowPublish.length === 1 &&
+      !narrowConnection.config.role && !narrowConnection.config.capabilities?.length);
+    await tool("cotal_disconnect", { connection_id: narrowed });
+    check("the narrowed connection retires only its own identity", identities() === before, { before, after: identities() });
 
-    const connected = await tool("cotal_connect", { name: "sel_conv", context: "native-sel", role: "helper", capabilities: ["spawn"],
+    const connected = await personApproves( { name: "sel_conv", context: "native-sel", role: "helper", capabilities: ["spawn"],
       channels: [{ channel: "team.beta", access: "read" }, { channel: "team.alpha", access: "read-post" }] });
     const sel = idOf(connected);
     const conn = await host.find("local", sel);
@@ -195,9 +219,9 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     const own = eventChannel({ owner, actor });
     check("the connection holds exactly the selected channels, own event channel first",
       JSON.stringify(conn!.config.allowSubscribe) === JSON.stringify(["team.alpha", "team.beta"]) &&
-      JSON.stringify(conn!.config.allowPublish) === JSON.stringify([own, "team.alpha"]) && conn!.config.subscribe.length === 0, conn!.config);
+      JSON.stringify(conn!.config.allowPublish) === JSON.stringify([own, "team.alpha"]) && conn!.config.subscribe.length === 0);
     check("the connection holds the selected role and capabilities", conn!.config.role === "helper" &&
-      JSON.stringify(conn!.config.capabilities) === JSON.stringify(["role:helper", "spawn"]), conn!.config);
+      JSON.stringify(conn!.config.capabilities) === JSON.stringify(["role:helper", "spawn"]));
     const ledger = await cotalAuthProvider.actorScope({ dir: stateDir, owner, actor });
     check("the ledger row carries exactly the selected scope", JSON.stringify(ledger) === JSON.stringify(["role:helper", "spawn"]), ledger);
     const run = await tool("cotal_run", { connection_id: sel, verb: "ps" });
@@ -231,7 +255,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     console.log(`    turn-pending for the conversation: ${JSON.stringify(turns).slice(0, 400)}`);
     check("the Manager answers the conversation's own turn pull", turns.ok === true || typeof turns.error === "string", turns);
 
-    const runner = idOf(await tool("cotal_connect", { name: "run_conv", context: "native-run", capabilities: ["run"] }));
+    const runner = idOf(await personApproves({ name: "run_conv", context: "native-run", capabilities: ["run"] }));
     const started = await tool("cotal_run", { connection_id: runner, verb: "start", source: 'await sleep("1s", { name: "native-nap" });' });
     check("a local user-auth Manager says it hosts no runs; a participant Manager does (smoke:native-conversation-run)",
       started.isError && /hosts no workflow runs yet/.test(started.text), started);
@@ -249,6 +273,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
     await stopped(authService);
     await stopped(broker);
     releaseBroker?.();
+    await authority?.close();
     await new Promise<void>((resolve) => idp.close(() => resolve()));
     rmSync(home, { recursive: true, force: true });
   }
