@@ -335,6 +335,24 @@ try {
       allowSubscribe: [], allowPublish: [ev("evkid")], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
     }),
     "delegation only narrows");
+  rejects("…nor the owner's whole event subtree",
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
+      owner: OWNER, actor: "evkid3", scope: [], parent: `${OWNER}.conv`,
+      allowSubscribe: [], allowPublish: [`events.${OWNER}.>`], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
+    }),
+    "delegation only narrows");
+  rejects("…nor the same actor's event channel under another owner",
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
+      owner: OWNER, actor: "evkid4", scope: [], parent: `${OWNER}.conv`,
+      allowSubscribe: [], allowPublish: [eventChannel({ owner: OTHER, actor: "evkid4" })], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
+    }),
+    "delegation only narrows");
+  rejects("…and a child of another owner still cannot be delegated, even with only its own event channel",
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
+      owner: OTHER, actor: "evkid5", scope: [], parent: `${OWNER}.conv`,
+      allowSubscribe: [], allowPublish: [eventChannel({ owner: OTHER, actor: "evkid5" })], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
+    }),
+    "different owner");
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn"], allowSubscribe: ["general", "review.>"], allowPublish: ["general"] });
   rejects("narrowing the root's events refuses the chain's next exchange at the spawner's own link",
     () => ledgerAuthorizeAgentExchange(dir, OWNER, "evkid", evKid.actorToken),
