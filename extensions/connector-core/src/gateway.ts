@@ -22,7 +22,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationSelection } from "@cotal-ai/core";
+import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
 import { cotalToolSpecs, parseToolArgs, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
 import type { MeshAgent } from "./agent.js";
@@ -37,6 +37,15 @@ export class NameTaken extends Error {
   constructor(readonly taken: string) {
     super(`name ${JSON.stringify(taken)} is taken`);
     this.name = "NameTaken";
+  }
+}
+
+/** An issuer is waiting for the person to review permissions. This is not a connection or an
+ *  authorization; only the authority's authenticated approval page can record the decision. */
+export class ApprovalRequired extends Error {
+  constructor(readonly pending: ConversationPending) {
+    super("the person must approve this connection's permissions");
+    this.name = "ApprovalRequired";
   }
 }
 
@@ -60,9 +69,12 @@ export interface GatewayHost {
    *  an authoritative name collision. The collision check and the issue must be one atomic step per
    *  account: an `open` racing another for the same name throws `NameTaken` rather than also
    *  succeeding, or two conversations end up sharing one name. Error messages reach the caller,
-   *  so they must not carry secrets. A `selection` comes only from an embedder that enables
-   *  {@link GatewayOptions.selection}: issue exactly what it names or throw, never less or more. */
-  open(account: string, name: string, context?: string, selection?: ConversationSelection): Promise<GatewayConnection>;
+   *  so they must not carry secrets. `selection` is only a proposal, never the person's consent.
+   *  Throw {@link ApprovalRequired} until the person approves through the authority's own UI; issue
+   *  only their approved selection within their current access. `approvalId` is an untrusted resume
+   *  handle, never proof of approval. Bind it to this account, name and unchanged request, and do not
+   *  reuse an issued approval for another connection. */
+  open(account: string, name: string, context?: string, selection?: ConversationSelection, approvalId?: string): Promise<GatewayConnection>;
   /** The connection `id` if `account` owns it, otherwise undefined. Never a default. Throw, with the
    *  reason and the retry, when `account` owns `id` but it can no longer serve, such as a
    *  disconnected connection whose cleanup is unfinished. */
@@ -146,9 +158,10 @@ function gatewayAnnotations(name: string): ToolAnnotations {
 
 /** What `cotal_connect` says about selection when the embedder enables it. */
 const SELECTION_TEXT =
-  "Without channels, role or capabilities the connection reads nothing and posts only to its own event " +
-  "channel. Each item you request must already be within your own access; if any is not, nothing is connected and " +
-  "the refused items are named. Ask for only what the person wants this conversation to have.";
+  "Channels, role and capabilities are a proposal for the person to review, edit and approve in Cotal, " +
+  "not permission to connect. Without them the proposal has no ordinary channel access or role, but still " +
+  "allows direct messages and publication of this conversation's own activity. Only the person's approved " +
+  "permissions within their current access may be issued. Joining an approved channel is a separate step.";
 
 const SELECTION_SHAPE = {
   channels: z
@@ -190,6 +203,9 @@ export interface GatewayOptions {
   /** `cotal_connect` takes the channels, role and capabilities a connection requests
    *  within the person's own access, and hands the canonical selection to {@link GatewayHost.open}. */
   selection?: boolean;
+  /** Offer an `approval_id` resume handle for hosted permission requests. The host must validate
+   *  its exact request binding and record the person's decision independently of this handle. */
+  approvalResume?: boolean;
   /** The longest `cotal_wait` may hold one call, in whole seconds. Defaults to
    *  {@link GATEWAY_WAIT_SECONDS}. Keep it under every proxy and client timeout on the path. */
   waitSeconds?: number;
@@ -408,15 +424,19 @@ export function registerCotalGatewayTools(
       title: "Cotal: connect this conversation",
       annotations: gatewayAnnotations("cotal_connect"),
       description:
-        "Join the Cotal mesh as a new agent for THIS conversation and return its connection_id. Call it once per " +
-        "conversation, keep the connection_id, and pass it on every other cotal_* call. If the name is taken, the " +
-        "next free name is chosen (name_2, name_3, ...) and reported. Never reuse a connection_id from another " +
-        "conversation, and call this again if you no longer have this conversation's connection_id." +
+        "Request a Cotal connection for THIS conversation. The person must review, edit and approve its " +
+        "permissions in Cotal before it receives a connection_id. When approval is pending, show them the " +
+        "approval link and stop; never approve for them or poll. After their decision, retry the same request " +
+        "as the pending result directs. Keep the returned connection_id and pass it on every other cotal_* " +
+        "call. If a new name is taken, the next free name is chosen (name_2, name_3, ...) and reported. " +
+        "Never reuse another conversation's connection_id or approval_id." +
         (options.selection ? ` ${SELECTION_TEXT}` : ""),
       inputSchema: z.strictObject({
         name: z.string().min(1).describe("The agent name to request, for example claude_web."),
         ...(options.connectContext ? { context: z.string().min(1).max(128).optional().describe("Conversation binding supplied by the native host.") } : {}),
         ...(options.selection ? SELECTION_SHAPE : {}),
+        ...(options.approvalResume ? { approval_id: z.string().regex(/^[a-z2-7]{26}$/).optional()
+          .describe("The approval.id from THIS conversation's pending result. Resumes only that unchanged request; it does not approve it.") } : {}),
       }),
     },
     async ({ name, ...input }, extra) => {
@@ -432,7 +452,8 @@ export function registerCotalGatewayTools(
       } catch (e) {
         return refuse(`cotal_connect: ${errorText(e)}. Nothing was connected.`);
       }
-      for (const candidate of gatewayNames(name)) {
+      const approvalId = typeof input.approval_id === "string" ? input.approval_id : undefined;
+      for (const candidate of approvalId ? [name] : gatewayNames(name)) {
         // A name the mesh would refuse is the caller's to fix, not a collision to rename around.
         try {
           assertValidName(candidate);
@@ -441,7 +462,7 @@ export function registerCotalGatewayTools(
         }
         try {
           const context = "context" in input && typeof input.context === "string" ? input.context : undefined;
-          const c = await host.open(account, candidate, context, selection);
+          const c = await host.open(account, candidate, context, selection, approvalId);
           watch(c);
           const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
           const listening = wake ? `\n${wake.listening(c)}` : "";
@@ -449,7 +470,25 @@ export function registerCotalGatewayTools(
             text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}`,
           });
         } catch (e) {
-          if (e instanceof NameTaken) continue;
+          if (e instanceof ApprovalRequired) {
+            const structuredContent = { v: 1, status: "pending", name: candidate,
+              requestId: e.pending.requestId, approval: e.pending.approval, proposed: e.pending.proposed };
+            const resume = options.approvalResume ? ` and approval_id ${JSON.stringify(e.pending.approval.id)}` : "";
+            return {
+              content: [
+                { type: "text" as const, text: `Permission approval required. This conversation is not connected.\n` +
+                  `The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.\n` +
+                  `Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.\n` +
+                  `After they approve, retry cotal_connect with name ${JSON.stringify(candidate)}${resume} and the same requested permissions. Do not poll or start another request while waiting.` },
+                { type: "text" as const, text: JSON.stringify(structuredContent) },
+              ],
+              structuredContent,
+            };
+          }
+          if (e instanceof NameTaken) {
+            if (approvalId) return refuse("The approved name is no longer available. Nothing was connected; a different name requires a new permission approval.");
+            continue;
+          }
           return refuse(`cotal_connect failed for ${JSON.stringify(candidate)}: ${errorText(e)}`);
         }
       }
@@ -579,9 +618,11 @@ export const GATEWAY_LISTENING =
 
 /** How a conversation joins and names its connection: the first part of {@link GATEWAY_INSTRUCTIONS}. */
 export const GATEWAY_CONNECTING =
-  "Cotal connects this conversation to the person's Cotal space. Call cotal_connect once with a short name " +
-  "for this conversation, then pass the returned connection_id on every other cotal tool call. Each " +
-  "conversation needs its own connection. Never reuse another conversation's connection_id.";
+  "Cotal connects this conversation to the person's Cotal space after they approve its permissions. " +
+  "Call cotal_connect with a short name. If approval is pending, show the person its link and wait for " +
+  "their decision; do not approve for them or poll. Then resume the same request as directed. Only a " +
+  "successful connection returns connection_id, required on every other cotal tool call. Each conversation " +
+  "needs its own connection. Never reuse another conversation's connection_id or approval_id.";
 
 /** The server instructions {@link handleGatewayRequest} sends when the embedder gives none. */
 export const GATEWAY_INSTRUCTIONS = `${GATEWAY_CONNECTING} ${GATEWAY_LISTENING}`;
@@ -601,6 +642,8 @@ export interface GatewayRequest {
   instructions?: string;
   /** See {@link GatewayOptions.connectContext}. */
   connectContext?: boolean;
+  /** See {@link GatewayOptions.approvalResume}. */
+  approvalResume?: boolean;
   /** See {@link GatewayOptions.waitSeconds}. */
   waitSeconds?: number;
 }
@@ -623,7 +666,7 @@ export async function handleGatewayRequest(host: GatewayHost, r: GatewayRequest)
     return;
   }
   const server = new McpServer({ name: "cotal", version: DOCS_VERSION }, { instructions: r.instructions ?? GATEWAY_INSTRUCTIONS });
-  registerCotalGatewayTools(server, host, r.source, r.waitSeconds === undefined ? {} : { waitSeconds: r.waitSeconds });
+  registerCotalGatewayTools(server, host, r.source, { approvalResume: r.approvalResume, ...(r.waitSeconds === undefined ? {} : { waitSeconds: r.waitSeconds }) });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   r.res.on("close", () => {
     void transport.close();
@@ -650,6 +693,8 @@ export interface GatewayStdio {
   tools?: ReadonlySet<string>;
   /** See {@link GatewayOptions.selection}. */
   selection?: boolean;
+  /** See {@link GatewayOptions.approvalResume}. */
+  approvalResume?: boolean;
   /** See {@link GatewayOptions.waitSeconds}. */
   waitSeconds?: number;
   /** See {@link GatewayOptions.wake}. */
@@ -668,6 +713,7 @@ export async function serveGatewayStdio(host: GatewayHost, o: GatewayStdio = {})
     ...(o.connectContext ? { connectContext: true } : {}),
     ...(o.tools ? { tools: o.tools } : {}),
     ...(o.selection ? { selection: true } : {}),
+    ...(o.approvalResume ? { approvalResume: true } : {}),
     ...(o.waitSeconds === undefined ? {} : { waitSeconds: o.waitSeconds }),
     ...(o.wake ? { wake: o.wake } : {}),
   });

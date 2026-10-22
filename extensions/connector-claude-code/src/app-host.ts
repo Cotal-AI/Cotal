@@ -3,8 +3,8 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { basename, isAbsolute } from "node:path";
-import { configFromEnv, eventPlaneArmed, GATEWAY_TOOLS, MeshAgent, NameTaken, type GatewayConnection, type GatewayHost, type HookEvent } from "@cotal-ai/connector-core";
-import type { ConversationGrant, ConversationSelection } from "@cotal-ai/core";
+import { ApprovalRequired, configFromEnv, eventPlaneArmed, GATEWAY_TOOLS, MeshAgent, NameTaken, type GatewayConnection, type GatewayHost, type HookEvent } from "@cotal-ai/connector-core";
+import type { ConversationGrant, ConversationPending, ConversationSelection } from "@cotal-ai/core";
 import { createClaudeHandle, type ClaudeHooks } from "./hooks.js";
 import { createClaudeEventPlane } from "./claude-events.js";
 import { createBoundClaudeTranscriptSource } from "./agui-source.js";
@@ -37,7 +37,9 @@ interface Held {
   unfinished?: string;
 }
 
-type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant } | { ok: false; taken?: true; error?: string };
+type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant }
+  | ({ ok: false; pending: true } & ConversationPending)
+  | { ok: false; pending?: false; taken?: true; error?: string };
 
 /** The native tools a signed-in conversation's own grant can use. The manager that serves each
  *  call still decides it from that grant. */
@@ -81,7 +83,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
   const retire = async (dir?: string): Promise<void> => {
     if (!dir) return;
     const reply = await plumbing(["retire", "--dir", dir]);
-    if (!reply.ok) throw new Error(reply.error ?? "identity retirement is unconfirmed");
+    if (!reply.ok) throw new Error(("error" in reply && reply.error) || "identity retirement is unconfirmed");
   };
   // Retiring other conversations' dead identities runs after a connection and never delays one. A
   // request made while a run is in flight starts one more run when it ends.
@@ -105,11 +107,10 @@ export function createAppHost(o: AppHostOptions): AppHost {
       catch (error) { throw new Error(`this conversation's previous identity cleanup is not finished: ${reason(error)}. Call cotal_connect again to retry it`); }
       pending.delete(context!);
     }
-    // Capture the personal privacy boundary before provisioning or waiting for a network connection.
-    const source = binding ? await createBoundClaudeTranscriptSource(binding.path, "resume") : undefined;
     const reply = await plumbing(["provision", "--name", name, ...(binding ? ["--session", binding.session, "--events"] : []),
       ...(selection ? ["--selection", JSON.stringify(selection)] : [])]);
     if (!reply.ok) {
+      if (reply.pending) throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed });
       if (reply.taken) throw new NameTaken(name);
       throw new Error(reply.error ?? "identity provisioning failed");
     }
@@ -117,6 +118,8 @@ export function createAppHost(o: AppHostOptions): AppHost {
     let agent: MeshAgent | undefined;
     let plane: ReturnType<typeof createClaudeEventPlane> | undefined;
     try {
+      // Approval can take minutes. Do not publish the conversation's pre-approval transcript later.
+      const source = binding ? await createBoundClaudeTranscriptSource(binding.path, "resume") : undefined;
       const env = launchEnv(o.env, reply.env);
       const config = configFromEnv(env);
       config.connector = "claude";

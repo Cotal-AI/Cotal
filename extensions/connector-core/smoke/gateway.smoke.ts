@@ -39,7 +39,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { GATEWAY_INSTRUCTIONS, NameTaken, handleGatewayRequest, registerCotalGatewayTools, serveGatewayStdio, type GatewayConnection, type GatewayHost } from "../src/gateway.js";
+import { ApprovalRequired, GATEWAY_INSTRUCTIONS, NameTaken, handleGatewayRequest, registerCotalGatewayTools, serveGatewayStdio, type GatewayConnection, type GatewayHost } from "../src/gateway.js";
 import { DOCS_VERSION } from "../src/docs.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -93,14 +93,25 @@ const BEARERS: Record<string, string> = { "tok-a": "acct_a", "tok-b": "acct_b" }
 const live = new Map<string, { account: string; conn: GatewayConnection }>();
 const opened: string[] = [];
 const reserved = new Set<string>();
+const pendingApproval = { requestId: "approval-request-0123456789012345", proposed: null,
+  approval: { id: "a".repeat(26), url: `https://authority.example/approve/${"a".repeat(26)}`, expiresAt: "2099-01-01T00:00:00.000Z" } };
+const resumedApprovals: string[] = [];
 const host: GatewayHost = {
   account(auth: AuthInfo | undefined): string {
     const account = auth?.extra?.account;
     if (typeof account !== "string") throw new Error("no valid bearer");
     return account;
   },
-  async open(account, name) {
+  async open(account, name, _context, _selection, approvalId) {
     opened.push(`${account}/${name}`);
+    if (name === "approval_probe") {
+      if (approvalId) {
+        resumedApprovals.push(`${account}/${approvalId}`);
+        throw new Error("the authority has not recorded the person's approval");
+      }
+      throw new ApprovalRequired(pendingApproval);
+    }
+    if (name === "approval_collision") throw new NameTaken(name);
     if (name === "quota_probe") throw new Error("quota exceeded");
     if (name === "business-model") throw new Error("Cloud agent names must be 1–64 lowercase letters, numbers, or underscores; dots and hyphens are not allowed.");
     if (name === "full" || name.startsWith("full_")) throw new NameTaken(name);
@@ -148,7 +159,7 @@ const http = createServer(async (req, res) => {
   const token = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
   const account = token ? BEARERS[token] : undefined;
   const auth: AuthInfo | undefined = account ? { token: token!, clientId: "smoke", scopes: [], extra: { account } } : undefined;
-  await handleGatewayRequest(host, { req, res, body: req.method === "POST" ? await readBody(req) : undefined, waitSeconds: WAIT, ...(auth ? { auth } : {}) });
+  await handleGatewayRequest(host, { req, res, body: req.method === "POST" ? await readBody(req) : undefined, waitSeconds: WAIT, approvalResume: true, ...(auth ? { auth } : {}) });
 });
 const httpPort = await new Promise<number>((resolve) => http.listen(0, "127.0.0.1", () => resolve((http.address() as { port: number }).port)));
 const url = new URL(`http://127.0.0.1:${httpPort}/mcp`);
@@ -267,6 +278,28 @@ try {
   const burst = await Promise.all(Array.from({ length: 4 }, () => call(a, "cotal_connect", { name: "burst" })));
   const burstNames = burst.map((r) => /^Connected as (\S+?)[. ]/.exec(r.text)?.[1] ?? "").sort();
   check("concurrent connects get distinct names", burstNames.join(",") === "burst,burst_2,burst_3,burst_4", burst);
+
+  // ---- permission requests are not connections ----
+  const beforeApproval = live.size;
+  const pendingResult = await a.callTool({ name: "cotal_connect", arguments: { name: "approval_probe" } });
+  const approvalBody = pendingResult.structuredContent as Record<string, unknown>;
+  const approvalText = (pendingResult.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("\n");
+  check("pending approval returns the person's link and no usable connection", !pendingResult.isError &&
+    approvalBody.status === "pending" && approvalBody.name === "approval_probe" &&
+    approvalBody.requestId === pendingApproval.requestId && !("connection_id" in approvalBody) &&
+    approvalText.includes(pendingApproval.approval.url) && approvalText.includes("not connected") && live.size === beforeApproval);
+  check("pending approval never renames or issues", opened.filter((o) => o === "acct_a/approval_probe").length === 1 &&
+    !opened.includes("acct_a/approval_probe_2") && !reserved.has("acct_a/approval_probe"));
+  const resume = await call(a, "cotal_connect", { name: "approval_probe", approval_id: pendingApproval.approval.id });
+  check("approval_id reaches the host but cannot approve its request", resume.isError &&
+    resume.text.includes("has not recorded") && resumedApprovals[0] === `acct_a/${pendingApproval.approval.id}` && live.size === beforeApproval);
+  const changedName = await call(a, "cotal_connect", { name: "approval_collision", approval_id: pendingApproval.approval.id });
+  check("an approval resume never renames on collision", changedName.isError && changedName.text.includes("new permission approval") &&
+    !opened.includes("acct_a/approval_collision_2"));
+  const beforeSelfApproval = opened.length;
+  const selfApproval = await call(a, "cotal_connect", { name: "approval_probe", approved: true }).catch(() => ({ isError: true, text: "schema refusal" }));
+  const foreignFlag = await call(a, "cotal_connect", { name: "approval_probe", approval_id: "INVALID" }).catch(() => ({ isError: true, text: "schema refusal" }));
+  check("self-approval flags and invalid resume handles run nothing", selfApproval.isError && foreignFlag.isError && opened.length === beforeSelfApproval);
 
   // ---- no fallback ----
   const missing = await a.callTool({ name: "cotal_roster", arguments: {} }).then(
