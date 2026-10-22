@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 619,
+    "total": 628,
     "honest-text": 37,
     "presence-only-glyph/count": 57,
     "command-ack": 10,
-    "non-render/control": 515
+    "non-render/control": 524
   },
   "renderers": [
     {
@@ -4501,6 +4501,69 @@
       "anchor": "capProbeText(lastProbe)",
       "class": "non-render/control",
       "rationale": "Dashboard startup failure: caps the last HTTP probe text; no agent presence is rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/gateway.ts",
+      "kind": "derived-output",
+      "anchor": "JSON.stringify(structuredContent)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "selectionRefusal(response.status, response.body)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "`${refusal}; no identity was issued`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "conversationApprovalRefusal(response.status, response.body)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "`conversation identity ${what} answered HTTP ${response.status}; its original request was retained`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "conversationRetirementPhase(response.status, response.body, material)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "`conversation identity retirement is pending at phase ${JSON.stringify(phase)}; its saved lifecycle was retained for an exact retry`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "JSON.stringify(phase)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/conversation-identity.ts",
+      "kind": "derived-output",
+      "anchor": "`conversation identity discovery answered HTTP ${response.status}; no identity was requested`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     }
   ]
 }
