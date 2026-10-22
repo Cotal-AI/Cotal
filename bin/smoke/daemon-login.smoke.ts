@@ -31,7 +31,8 @@
  *      for that delivery and answers completed; meanwhile a new login-start is refused, 0 IdP calls;
  *  L14 a failed sign-in relays none of the provider's text (an error_description, a non-JSON token
  *      body) in any frame, or on the CLI's stdout or stderr;
- *  L15 a sign-in that fails after stock wrote the session does not make the CLI claim nothing was saved.
+ *  L15 a sign-in that fails after stock wrote the session does not make the CLI claim nothing was saved;
+ *  L16 a sign-in denied at the verification page exits 2 refused PERMISSION_DENIED through the CLI.
  *
  * Run: tsx bin/smoke/daemon-login.smoke.ts   (Linux only)
  */
@@ -532,6 +533,21 @@ try {
       check("L15 instrument: the sign-in failed and the session was written", run.status !== 0 && run.status !== -1 && sessionSaved(home), { status: run.status, saved: sessionSaved(home), out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
       check("L15 instrument: the CLI reported the failed sign-in", /"daemon login"|daemon login/.test(run.out + run.err) && /fail|refus/i.test(run.out + run.err), { out: run.out.slice(0, 600), err: run.err.slice(0, 600) });
       check("L15 the CLI does not claim nothing was saved", !/no session was saved|nothing was saved/i.test(run.out + run.err), { out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
+    } finally { await d.close(); }
+  });
+
+  // ---- L16: a sign-in denied at the verification page reaches the terminal as a typed refusal ----
+  await cell("L16 a denied sign-in through the CLI", async () => {
+    resetScripted();
+    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    tokenOverride = { status: 400, body: JSON.stringify({ error: "access_denied" }) };
+    const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+    try {
+      const run = await runCli(rt, sBase);
+      let doc: Record<string, any> = {};
+      try { doc = JSON.parse(run.out) as Record<string, any>; } catch { /* reported below */ }
+      check("L16 exit 2, refused PERMISSION_DENIED with native code DENIED", run.status === 2 && doc.outcome === "refused" && doc.error?.code === "PERMISSION_DENIED" && JSON.stringify(doc).includes("DENIED"), { status: run.status, out: run.out.slice(0, 400) });
+      check("L16 nothing persisted", !sessionSaved(home));
     } finally { await d.close(); }
   });
 } catch (e) {
