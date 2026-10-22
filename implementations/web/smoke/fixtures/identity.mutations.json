@@ -84,6 +84,14 @@
       "replace": "badges.set(r.id, { letter: [...r.name][0]?.toUpperCase() ?? \"\", slot });",
       "expectRed": "7.4 the shell's badges read Le for lead and Lo for logic",
       "cell": "7.4 the shell's badges read Le for lead and Lo for logic"
+    },
+    {
+      "name": "I11 the second letter is whatever character comes next, so l_2 reads L_2",
+      "file": "implementations/web/client/src/lib/identity.ts",
+      "find": "const second = rest.find((ch) => /\\p{L}/u.test(ch)) ?? \"\";",
+      "replace": "const second = rest[0] ?? \"\";",
+      "expectRed": "7.5 the second letter is a letter: _, digits and punctuation are skipped, so l_2, lx_2, o'neil and ova read L2, Lx2, On and Ov",
+      "cell": "7.5 the second letter is a letter: _, digits and punctuation are skipped, so l_2, lx_2, o'neil and ova read L2, Lx2, On and Ov"
     }
   ]
 }

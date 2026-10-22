@@ -55,7 +55,8 @@ function Row({ to, here, bold, title, children }: { to: Route; here: boolean; bo
  *  with their names, before its unread count. Its members are `channelMembers` over the broker's
  *  membership alone, with no posts, so the count reads presence and membership and never the event
  *  plane: with no authoritative feed no channel shows one. A direct message row draws each party's
- *  status dot when the roster holds it, so a working agent's dot breathes there.
+ *  status dot when the roster holds it, so a working agent's dot breathes there. The avatars are
+ *  hidden from assistive tech, so the row's name is the two names it shows.
  *
  *  A direct message conversation holding a row read from history says unverified, as a message row
  *  does, because it was grouped by what the payload says about its own sender. A conversation is
@@ -158,7 +159,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
           const b = parts[0] === a ? parts[1] : parts[0];
           return (
             <Row key={key} to={{ view: "dm", peer: a, with: b }} here={key === openKey}>
-              <span className="ui-stack">
+              <span className="ui-stack" aria-hidden="true">
                 {[a, b].map((id) => (
                   <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? "offline"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />
                 ))}

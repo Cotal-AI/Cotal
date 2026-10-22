@@ -138,7 +138,8 @@ export function usePinnedScroll(list: string, last: string | undefined) {
  *    keeps them on screen while its history loads (the controller holds them), and the scroll stays
  *    where the reader left it.
  *  - Members are `channelMembers`: the broker's when its feed is authoritative, else who posted here.
- *    The member stack draws each one's status dot, so a working member's dot breathes.
+ *    The member stack draws each one's status dot, so a working member's dot breathes. The stack is
+ *    hidden from assistive tech, so the button's name stays its count.
  *  - The members presence says are working, in that order, make the header chip ("<n> working", or
  *    on a phone just the count, with the spokes turning and their names in its title) and the
  *    working line under the messages (`WorkingLine`). With nobody working neither is drawn.
@@ -207,7 +208,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
           </span>
         )}
         <button type="button" className="ui-members" title={`${count} member${count === 1 ? "" : "s"}`} disabled={!onMembers} onClick={onMembers}>
-          <span className="ui-stack">
+          <span className="ui-stack" aria-hidden="true">
             {members.slice(0, STACK).map((m) => {
               const r = peers.get(m.id);
               return <Avatar key={m.id} vendor={r?.harness} status={r?.status ?? "offline"} badge={r ? badgeOf(m.id) : undefined} size={22} />;

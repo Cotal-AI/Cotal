@@ -156,6 +156,22 @@
       "replace": "",
       "expectRed": "under reduced motion the topology arc, the working spokes and the working line's shimmer stop",
       "cell": "under reduced motion the topology arc, the working spokes and the working line's shimmer stop"
+    },
+    {
+      "name": "the spokes and the copied spinner keep turning while the roster is stale",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": "[data-presence=\"stale\"] .ox-spin, [data-presence=\"stale\"] [data-slot=\"spinner\"], [data-presence=\"stale\"] .ui-orbit { animation: none; }",
+      "replace": "[data-presence=\"stale\"] .ui-orbit { animation: none; }",
+      "expectRed": "while the roster is only last seen nothing moves: the spokes, the copied spinner and the arc stop, the dot keeps its still halo, and both shimmers are plain",
+      "cell": "while the roster is only last seen nothing moves: the spokes, the copied spinner and the arc stop, the dot keeps its still halo, and both shimmers are plain"
+    },
+    {
+      "name": "a phone Agents row keeps its host",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": ".ui-phone .ox-host { display: none; }\n",
+      "replace": "",
+      "expectRed": "only a working Agents row keeps room for View work, and on a phone a row hides its host",
+      "cell": "only a working Agents row keeps room for View work, and on a phone a row hides its host"
     }
   ]
 }

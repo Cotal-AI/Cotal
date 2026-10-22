@@ -139,6 +139,16 @@ ok("under reduced motion the working dot stops breathing and keeps a still 2.5px
 ok("under reduced motion the topology arc, the working spokes and the working line's shimmer stop",
   [".ui-orbit", ".ox-spin", ".ox-shimmer"].every((sel) => sets(reducedBody(sel)) === "none"),
   [".ui-orbit", ".ox-spin", ".ox-shimmer"].map((sel) => [sel, reducedBody(sel)]));
+/** The declarations app.css gives `selector` while the shell says the roster is stale, joined. */
+const staleBody = (selector: string) => appRules.filter((r) => r.selectors.includes(`[data-presence=stale] ${selector}`)).map((r) => r.body).join(";");
+ok("while the roster is only last seen nothing moves: the spokes, the copied spinner and the arc stop, the dot keeps its still halo, and both shimmers are plain",
+  [".ox-spin", '[data-slot=spinner]', ".ui-orbit", ".ui-st-working::after", ".ox-shimmer", '[data-slot=trace-title]'].every((sel) => sets(staleBody(sel)) === "none")
+    && /box-shadow\s*:\s*0 0 0 2\.5px/.test(staleBody(".ui-st-working::after")) && /background-image\s*:\s*none/.test(staleBody(".ox-shimmer")),
+  [".ox-spin", '[data-slot=spinner]', ".ui-orbit", ".ui-st-working::after", ".ox-shimmer", '[data-slot=trace-title]'].map((sel) => [sel, staleBody(sel)]));
+const ruleBody = (selector: string) => appRules.filter((r) => !reduced(r) && r.selectors.includes(selector)).map((r) => r.body).join(";");
+ok("only a working Agents row keeps room for View work, and on a phone a row hides its host",
+  /padding-right\s*:/.test(ruleBody(".ox-arow-w > .v3-arow")) && !/padding-right\s*:/.test(ruleBody(".ox-arow > .v3-arow")) && /display\s*:\s*none/.test(ruleBody(".ui-phone .ox-host")),
+  [ruleBody(".ox-arow-w > .v3-arow"), ruleBody(".ox-arow > .v3-arow"), ruleBody(".ui-phone .ox-host")]);
 const animated = appRules.filter((r) => !reduced(r) && sets(r.body) && sets(r.body) !== "none")
   .flatMap((r) => r.selectors).filter((s) => s.includes("."));
 const stopped = new Set(appRules.filter((r) => reduced(r) && sets(r.body) === "none")

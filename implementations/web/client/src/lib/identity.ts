@@ -20,11 +20,13 @@ export function initials(name: string): string {
   return first.toUpperCase() + (n ? n[1] : "");
 }
 
-/** Two letters for a name that clashes: its first character uppercased, its second as written, and
- *  the digits of a trailing `_<n>` (`lead` gives "Le", `reviewer_2` gives "Re2"). */
+/** Two letters for a name that clashes: its first character uppercased, the next letter as written,
+ *  skipping `_`, digits and punctuation, and the digits of a trailing `_<n>` (`lead` gives "Le",
+ *  `reviewer_2` gives "Re2", and `l_2`, with no letter after the first, gives "L2"). */
 function twoLetters(name: string): string {
-  const [first, second = ""] = [...name];
+  const [first, ...rest] = [...name];
   if (first === undefined) return "";
+  const second = rest.find((ch) => /\p{L}/u.test(ch)) ?? "";
   const n = /_(\d+)$/.exec(name);
   return first.toUpperCase() + second + (n ? n[1] : "");
 }

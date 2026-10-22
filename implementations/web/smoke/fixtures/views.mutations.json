@@ -1036,6 +1036,22 @@
       "replace": "",
       "expectRed": "7.9 a conversation draws the working line for its working party only, after its messages",
       "cell": "7.9 a conversation draws the working line for its working party only, after its messages"
+    },
+    {
+      "name": "WK10 the member stack is read out, so its dots rename the button",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "<span className=\"ui-stack\" aria-hidden=\"true\">",
+      "replace": "<span className=\"ui-stack\">",
+      "expectRed": "1.15 the stack is hidden from assistive tech, so its dots do not change the button's name, which stays its count",
+      "cell": "1.15 the stack is hidden from assistive tech, so its dots do not change the button's name, which stays its count"
+    },
+    {
+      "name": "WK11 the wide shell never marks a stale roster, so its working marks keep moving",
+      "file": "implementations/web/client/src/ui/AppShell.tsx",
+      "find": "<div className={paneOpen ? \"ui-app\" : \"ui-app no-pane\"} data-view={route.view} data-presence={props.stale ? \"stale\" : undefined}>",
+      "replace": "<div className={paneOpen ? \"ui-app\" : \"ui-app no-pane\"} data-view={route.view}>",
+      "expectRed": "9.5 while the roster is only last seen the shell marks itself stale, so every working mark stands still, and not otherwise",
+      "cell": "9.5 while the roster is only last seen the shell marks itself stale, so every working mark stands still, and not otherwise"
     }
   ]
 }

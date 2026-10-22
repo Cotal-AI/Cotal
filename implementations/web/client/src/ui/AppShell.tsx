@@ -34,6 +34,8 @@ export function AppShell(props: {
   waiting: number;
   /** How many agents are working, which the phone tab bar's Agents tab counts when none waits. */
   working: number;
+  /** The roster is only last seen, so the page holds every working mark still (`data-presence`). */
+  stale: boolean;
   sheetOpen: boolean;
   onSheetClose: () => void;
   onPanelClose: () => void;
@@ -45,7 +47,7 @@ export function AppShell(props: {
   }, [controller, target]);
   if (props.phone) {
     return (
-      <div className="ui-app ui-phone" data-view={route.view}>
+      <div className="ui-app ui-phone" data-view={route.view} data-presence={props.stale ? "stale" : undefined}>
         <main className="ui-center">{props.children}</main>
         <TabBar route={route} places={props.places} waiting={props.waiting} working={props.working} />
         {props.sheetOpen && (
@@ -63,7 +65,7 @@ export function AppShell(props: {
     );
   }
   return (
-    <div className={paneOpen ? "ui-app" : "ui-app no-pane"} data-view={route.view}>
+    <div className={paneOpen ? "ui-app" : "ui-app no-pane"} data-view={route.view} data-presence={props.stale ? "stale" : undefined}>
       <Rail route={route} places={props.places} theme={props.theme} onTheme={props.onTheme} />
       <aside className="ui-side" aria-label="Space">{props.sidebar}</aside>
       <main className="ui-center">{props.children}</main>

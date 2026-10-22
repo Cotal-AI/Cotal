@@ -166,6 +166,8 @@ const teamRoute: Route = { view: "channel", channel: "team" };
   same("7.2 with logic offline there is no clash among live agents: lead keeps L, and logic keeps L too",
     letters([row("a", "lead", "working"), row("b", "logic", "offline")]), { a: "L", b: "L" });
   same("7.3 reviewer_2 and rabbit_2 read Re2 and Ra2", letters([row("a", "reviewer_2", "idle"), row("b", "rabbit_2", "working")]), { a: "Re2", b: "Ra2" });
+  same("7.5 the second letter is a letter: _, digits and punctuation are skipped, so l_2, lx_2, o'neil and ova read L2, Lx2, On and Ov",
+    letters([row("a", "l_2", "idle"), row("b", "lx_2", "working"), row("c", "o'neil", "idle"), row("d", "ova", "working")]), { a: "L2", b: "Lx2", c: "On", d: "Ov" });
   const pair = [entry("local.lead", "lead", "working"), entry("local.logic", "logic", "idle")];
   const shell = parse(renderShell({ space: "main", roster: pair }, { view: "agents", group: "status" }));
   const badgeOn = (name: string) => all(shell, ".v3-arow").find((r) => r.querySelector("b")?.textContent === name)?.querySelector(".ui-idb")?.textContent;

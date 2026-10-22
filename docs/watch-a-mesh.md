@@ -215,10 +215,11 @@ row gets no badge.
 its working icon turns wherever its status shows. Under a channel's messages, the working line names
 each member that is working, with its activity and View work, which opens the agent's Work. The
 channel header counts the working members, and in the sidebar each channel row counts its working
-members too. All of this follows presence alone, so waiting, idle and offline agents never move.
+members too. All of this follows presence alone, so waiting, idle and offline agents never move,
+and nothing moves while the dashboard only has a last-seen roster.
 The Agents view also shows each working agent's running step. To do that it reads the event plane of
-at most 12 working agents while it is on screen, and it drops each read when that agent stops working
-or the view closes. With your system set to reduce motion, nothing turns, breathes, shimmers or
+at most 12 working agents while it is on screen, and it drops each read when that agent stops working,
+the roster goes stale or the view closes. With your system set to reduce motion, nothing turns, breathes, shimmers or
 circles, and every shape and word stays.
 
 **An agent's page.** Each agent has a page at `#/agent/<id>` with three tabs: Work, Messages and

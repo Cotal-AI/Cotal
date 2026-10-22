@@ -159,6 +159,8 @@ const all = (el: Element, sel: string) => [...el.querySelectorAll(sel)] as HTMLE
   await m.run(() => live.click());
   ok("1.14 given a Members tab, clicking the stack opens it", live.disabled === false && opened.join() === "members", opened);
   await m.unmount();
+  ok("1.15 the stack is hidden from assistive tech, so its dots do not change the button's name, which stays its count",
+    bar.querySelector("button.ui-members > .ui-stack")?.getAttribute("aria-hidden") === "true" && textOf(stack.querySelector(":scope > .ui-stack")) === "");
 }
 
 // ── 2. The message list ──────────────────────────────────────────────────────────────────────────
@@ -446,6 +448,9 @@ const dmRows: StoredMessage[] = [
   ok("9.2 a channel route draws the channel view and not the phase 1 lists", ch.querySelector("header h1")?.textContent === "# review" && ch.querySelector(".ui-chlink") === null && ch.querySelector('[aria-label="Roster"]') === null);
   ok("9.3 the activity route draws the Activity view, not the open channel", textOf(centre(shellDom(seed, { view: "activity" })).querySelector("header h1")) === "Activity");
   ok("9.4 a DM route draws the DM view", textOf(centre(shellDom(seed, { view: "dm", peer: "local.rv2" })).querySelector("header h1")) === "reviewer_2");
+  const presence = (patch: Partial<DashboardState>) => shellDom({ ...seed, ...patch }, channelRoute).querySelector(".ui-app")?.getAttribute("data-presence") ?? null;
+  same("9.5 while the roster is only last seen the shell marks itself stale, so every working mark stands still, and not otherwise",
+    [presence({ stale: [{ kind: "refused", name: "roster", reason: "observer presence watch silent" }] }), presence({}), presence({ stale: [{ kind: "refused", name: "peers", reason: "HTTP 503" }] })], ["stale", null, null]);
 }
 
 // ── 10. A reopen keeps the rows and the scroll position ──────────────────────────────────────────

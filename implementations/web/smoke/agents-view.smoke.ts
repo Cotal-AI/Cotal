@@ -156,8 +156,11 @@ const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));
     ["Focus", "Channel messages stay in the channel. DMs and role requests still reach it.", true]);
   const open = [rowByName(d, "sven"), rowByName(d, "david")];
   ok("2.12 an open agent, and one that reports no attention, show no badge", open.every((r) => r.querySelector(".v3-meta[title]") === null));
-  same("2.13 the host ends each row, behind the server icon, and the status word is not repeated",
-    [textOf(david.querySelector(".v3-meta")), svgOf(david.querySelector(".v3-meta")) === iconMarkup(ServerStack01Icon), david.querySelector(".v3-spill") === null], ["mbp-david", true, true]);
+  const sven = rowByName(d, "sven");
+  same("2.13 the host ends each row that is not working, behind the server icon, and the status word is not repeated",
+    [textOf(sven.querySelector(".v3-meta")), svgOf(sven.querySelector(".v3-meta")) === iconMarkup(ServerStack01Icon), sven.querySelector(".v3-spill") === null], ["mbp-david", true, true]);
+  same("2.13b a working row draws no host: View work takes its place, beside the row's button",
+    [david.querySelector(".v3-meta"), textOf(david.parentElement?.querySelector(":scope > a.ox-act")), david.parentElement?.classList.contains("ox-arow-w")], [null, "View work", true]);
   ok("2.14 an offline row is dimmed", rowByName(d, "scout").classList.contains("v3-arow-off") && !david.classList.contains("v3-arow-off") && d.querySelector(".v3-arow-off .ui-av-off") !== null);
   const hostless = view({ roster: [entry("local.h", "hollow", "idle", { connector: "pi" })] });
   ok("2.15 an agent that reports no host shows none", rowByName(hostless, "hollow").querySelector(".v3-meta") === null);
@@ -490,8 +493,10 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
   const link = row.parentElement?.querySelector(":scope > a.ox-act") ?? null;
   same("11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button",
     [textOf(step?.querySelector('[data-slot="trace-title"]')), /^Bash · \d+s$/.test(textOf(step?.querySelector('[data-slot="trace-description"]'))), step?.querySelector('[data-slot="spinner"]') !== null,
-      step?.previousElementSibling?.classList.contains("v3-aact"), textOf(link), link?.getAttribute("href"), row.querySelector("a") === null, c.held()],
+      step?.parentElement?.previousElementSibling?.classList.contains("v3-aact"), textOf(link), link?.getAttribute("href"), row.querySelector("a") === null, c.held()],
     ["Running a command", true, true, true, "View work", formatRoute({ view: "agent", id: "local.dav", tab: "work" }), true, ["local.dav"]]);
+  ok("11.4b the step is hidden from assistive tech, so no live region sits inside the row's button and the button's name holds still",
+    step !== null && step.parentElement?.getAttribute("aria-hidden") === "true" && [...row.querySelectorAll('[role="status"]')].every((e) => e.closest('[aria-hidden="true"]') !== null));
   ok("11.5 the activity line above it is presence's own text and never shimmers",
     textOf(row.querySelector(".v3-aact")) === "Editing packages/core/src/presence.ts" && row.querySelector(".v3-aact.ox-shimmer, .v3-aact .ox-shimmer") === null);
   await live.unmount();
@@ -503,6 +508,10 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
   const heads = sections(view());
   same("11.7 the Working group's spokes turn and no other group's icon does",
     heads.map((h) => [h.label, h.head.querySelector("svg")?.classList.contains("ox-spin") ?? false]), [["Waiting", false], ["Working", true], ["Idle", false], ["Offline", false]]);
+  const e = watcher();
+  const stale = await mount(createElement(AgentsView, { store: seed({ roster: crew, stale: [{ kind: "refused", name: "roster", reason: "observer presence watch silent" }] }), controller: e.controller, clock: () => NOW }));
+  same("11.8 while the roster is only last seen no row reads its agent's work, since presence cannot say who works now", [e.calls.length, e.held()], [0, []]);
+  await stale.unmount();
 }
 
 await closeDom();

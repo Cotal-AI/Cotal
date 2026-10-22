@@ -564,6 +564,14 @@
       "replace": "channelMembers(c.channel, membership, names, store.get().open?.messages ?? [])",
       "expectRed": "11.6 with no authoritative membership feed no channel shows a count, though a working agent posted there",
       "cell": "11.6 with no authoritative membership feed no channel shows a count, though a working agent posted there"
+    },
+    {
+      "name": "SB70 a DM row's avatars are read out, so its dots rename the row",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<span className=\"ui-stack\" aria-hidden=\"true\">",
+      "replace": "<span className=\"ui-stack\">",
+      "expectRed": "5.11 each row's avatars are hidden from assistive tech, so its dots do not change the row's name",
+      "cell": "5.11 each row's avatars are hidden from assistive tech, so its dots do not change the row's name"
     }
   ]
 }

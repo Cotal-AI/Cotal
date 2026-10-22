@@ -96,10 +96,10 @@
     {
       "name": "A13 the row no longer shows its host",
       "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
-      "find": ") : row.host !== undefined ? (",
+      "find": ") : row.host !== undefined && row.status !== \"working\" ? (",
       "replace": ") : false ? (",
-      "expectRed": "2.13 the host ends each row, behind the server icon, and the status word is not repeated",
-      "cell": "2.13 the host ends each row, behind the server icon, and the status word is not repeated"
+      "expectRed": "2.13 the host ends each row that is not working, behind the server icon, and the status word is not repeated",
+      "cell": "2.13 the host ends each row that is not working, behind the server icon, and the status word is not repeated"
     },
     {
       "name": "A14 an offline row is no longer dimmed",
@@ -480,7 +480,7 @@
     {
       "name": "A63 a running call draws no step line",
       "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
-      "find": "return <ToolLine call={running.call} state=\"running\" className=\"ox-now\" />;",
+      "find": "return <span className=\"ox-now-w\" aria-hidden=\"true\"><ToolLine call={running.call} state=\"running\" className=\"ox-now\" /></span>;",
       "replace": "return null;",
       "expectRed": "11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button",
       "cell": "11.4 a working row with a running call shows it under the activity line, with the spinner, the title and the tool with its seconds, and View work sits beside the button"
@@ -516,6 +516,30 @@
       "replace": "className=\"ui-ic\"",
       "expectRed": "11.7 the Working group's spokes turn and no other group's icon does",
       "cell": "11.7 the Working group's spokes turn and no other group's icon does"
+    },
+    {
+      "name": "A68 a working row still draws its host, so View work sits beside it",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": ") : row.host !== undefined && row.status !== \"working\" ? (",
+      "replace": ") : row.host !== undefined ? (",
+      "expectRed": "2.13b a working row draws no host: View work takes its place, beside the row's button",
+      "cell": "2.13b a working row draws no host: View work takes its place, beside the row's button"
+    },
+    {
+      "name": "A69 the live step is a live region inside the row's button",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "<span className=\"ox-now-w\" aria-hidden=\"true\">",
+      "replace": "<span className=\"ox-now-w\">",
+      "expectRed": "11.4b the step is hidden from assistive tech, so no live region sits inside the row's button and the button's name holds still",
+      "cell": "11.4b the step is hidden from assistive tech, so no live region sits inside the row's button and the button's name holds still"
+    },
+    {
+      "name": "A70 rows read their agents' work while the roster is only last seen",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "new Set(lastSeen ? [] : sections",
+      "replace": "new Set(false ? [] : sections",
+      "expectRed": "11.8 while the roster is only last seen no row reads its agent's work, since presence cannot say who works now",
+      "cell": "11.8 while the roster is only last seen no row reads its agent's work, since presence cannot say who works now"
     }
   ]
 }

@@ -78,10 +78,10 @@
     {
       "name": "M8 expected AST candidate total drifts by one",
       "file": "packages/workspace/smoke/fixtures/presence-render-sinks.json",
-      "find": "    \"total\": 682,",
-      "replace": "    \"total\": 681,",
+      "find": "    \"total\": 687,",
+      "replace": "    \"total\": 686,",
       "expectRed": "presence render census count drifted",
-      "note": "Re-anchored for #2362, which classified the ps mesh-column condition sink and moved the reviewed total from 514 to 515, and again when the service install Linger checks moved it to 516. The mutant still drifts the total by one. Re-anchored again when the web dashboard dropped its progress suffix and the reviewed total became 546, and when the dashboard's initial badges made it 559. Re-anchored again when the agent session view's sinks were classified and the reviewed total became 612. Re-anchored again when the dashboard's working motion and two-letter badges were classified and the reviewed total became 682."
+      "note": "Re-anchored for #2362, which classified the ps mesh-column condition sink and moved the reviewed total from 514 to 515, and again when the service install Linger checks moved it to 516. The mutant still drifts the total by one. Re-anchored again when the web dashboard dropped its progress suffix and the reviewed total became 546, and when the dashboard's initial badges made it 559. Re-anchored again when the agent session view's sinks were classified and the reviewed total became 612. The agent page's work parts and the agent page itself then moved the reviewed total from 612 to 649 without re-anchoring, so M8 matched nothing until it was re-anchored again when the dashboard's working motion and two-letter badges were classified and the reviewed total became 682, and to 687 when the Agents rows gave View work the host's place."
     },
     {
       "name": "M10 the narrowed agent.ts anchor regresses to the bare working token",

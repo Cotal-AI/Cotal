@@ -180,7 +180,7 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
     rows.map((r) => r.label), ["reviewer_2, scout", "reviewer, david", "reviewer_2, david", "scout, local.ghost"]);
   ok("5.3 no row or page text carries the payload's name", !html.includes("mallory"));
   same("5.4 each row shows two small avatars, one per party, and a status dot for each party the roster holds, so a working one's dot breathes",
-    [rows.map((r) => (r.inner.match(/<span class="ui-av[ "]/g) ?? []).length), rows.map((r) => (r.inner.match(/class="ui-st ui-st-/g) ?? []).length), rows[1].inner.includes("ui-st ui-st-working"), /<span class="ui-stack">/.test(rows[0].inner)],
+    [rows.map((r) => (r.inner.match(/<span class="ui-av[ "]/g) ?? []).length), rows.map((r) => (r.inner.match(/class="ui-st ui-st-/g) ?? []).length), rows[1].inner.includes("ui-st ui-st-working"), /<span class="ui-stack"/.test(rows[0].inner)],
     [[2, 2, 2, 2], [2, 2, 2, 1], true, true]);
   ok("5.5 a party not on the roster is drawn offline, as the roster's own offline agents are",
     (rows[3].inner.match(/ui-av-off/g) ?? []).length === 2 && (rows[0].inner.match(/ui-av-off/g) ?? []).length === 1 && !rows[1].inner.includes("ui-av-off"), rows[3].inner.slice(0, 300));
@@ -193,6 +193,8 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   const marks = rows.map((r) => startTags(r.inner, "span").filter((s) => s.class === "ui-unverified").map((s) => s.title));
   same("5.10 a conversation holding a history row, whose sender nothing checked, says unverified with the message rows' tooltip, and only that one",
     marks, [[], [UNVERIFIED], [], []]);
+  ok("5.11 each row's avatars are hidden from assistive tech, so its dots do not change the row's name",
+    rows.every((r) => startTags(r.inner, "span").find((t) => t.class === "ui-stack")?.["aria-hidden"] === "true"), rows.map((r) => startTags(r.inner, "span")[0]));
 }
 
 // ── 6. The operator footer and the connection pill ───────────────────────────────────────────────

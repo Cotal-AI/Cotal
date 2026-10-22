@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 682,
+    "total": 687,
     "honest-text": 57,
-    "presence-only-glyph/count": 138,
+    "presence-only-glyph/count": 139,
     "command-ack": 12,
-    "non-render/control": 475
+    "non-render/control": 479
   },
   "renderers": [
     {
@@ -3435,6 +3435,41 @@
       "rationale": "Routing: which rows read their agents' event planes, the first twelve working rows in display order; it renders nothing itself."
     },
     {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "className={row.status === \"working\" ? \"ox-arow ox-arow-w\" : \"ox-arow\"}",
+      "class": "non-render/control",
+      "rationale": "Styling: the row wrapper's class, which keeps room for View work beside a working row; nothing is said in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{row.status === \"working\" ? \"ox-arow ox-arow-w\" : \"ox-arow\"}",
+      "class": "non-render/control",
+      "rationale": "Styling: the row wrapper's class, which keeps room for View work beside a working row; nothing is said in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "assName={row.status === \"working\" ? \"ox-arow ox-arow-w\" :",
+      "class": "non-render/control",
+      "rationale": "Styling: the row wrapper's class, which keeps room for View work beside a working row; nothing is said in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{grouping === \"host\" ? (\n          <StatusWord row={row} />\n        ) : row.host !== undefined && row.status !== \"working\" ? (\n          <span className=\"v3-meta ox-host\"><Icon icon={ServerStack01Icon} size={16} className=\"ui-ic\" />{row.host}</span>\n        ) : <span />}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The row's last column: the status pill under the host grouping, else the host on a row that is not working. A presence word and glyph that make no progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "fined && row.status !== \"working\" ? (\n          <span cla",
+      "class": "non-render/control",
+      "rationale": "Routing: a working row under the status grouping draws no host, since View work takes its place; nothing is said from the status."
+    },
+    {
       "path": "implementations/web/client/src/ui/MessageRow.tsx",
       "kind": "derived-output",
       "anchor": "{!cont && (pick && senderId !== undefined ? (\n          // The name beside it is the keyboard's way in, so the avatar is not a second tab stop.\n          <button type=\"button\" className=\"ui-who\" tabIndex={-1} aria-label={name} onClick={() => pick(senderId)}>{avatar}</button>\n        ) : avatar)}",
@@ -3759,13 +3794,6 @@
     {
       "path": "implementations/web/client/src/ui/Sidebar.tsx",
       "kind": "derived-output",
-      "anchor": "{loading.roster || loading.channels ? <SkeletonPlaces /> : <nav className=\"ui-side-scroll\" aria-label=\"Places\">\n        <Row to={{ view: \"needs\" }} here={route.view === \"needs\"}>\n          <RailIcon name=\"inbox\" />\n          <span className=\"ui-row-lbl\">Needs you</span>\n          {needing > 0 && <span className=\"ui-badge-gold\" title={`${needing} agent${needing === 1 ? \"\" : \"s\"} waiting`}>{needing}</span>}\n        </Row>\n        <Row to={{ view: \"activity\" }} here={route.view === \"activity\"}>\n          <RailIcon name=\"activity\" />\n          <span className=\"ui-row-lbl\">Activity</span>\n          <span className=\"ui-row-n\">{rateText(msgPerSecond())}</span>\n        </Row>\n        <div className=\"ui-sec\">Channels</div>\n        {channels.length === 0 && <div className=\"ui-beat ui-beat-empty\">No channels yet. One appears with its first message.</div>}\n        {channels.map((c) => {\n          const count = unread[c.channel] ?? 0;\n          const event = isEventChannel(c.channel);\n          const working = busy.get(c.channel) ?? [];\n          return (\n            <Row\n              key={c.channel}\n              to={{ view: \"channel\", channel: c.channel }}\n              here={route.view === \"channel\" && route.channel === c.channel}\n              bold={count > 0}\n              title={event ? `Events from run ${c.channel.slice(\"run.\".length)}` : undefined}\n            >\n              {event ? <Icon icon={Plug01Icon} size={18} className=\"ui-ic\" /> : <RailIcon name=\"hash\" />}\n              <span className=\"ui-row-lbl\">{c.channel}</span>\n              {working.length > 0 && (\n                <span className=\"ox-sbw\" title={`${working.length} member${working.length === 1 ? \"\" : \"s\"} working: ${working.map((r) => r.name).join(\", \")}`}>\n                  <Icon icon={Loading03Icon} size={16} className=\"ui-ic ox-spin\" />\n                  {working.length}\n                </span>\n              )}\n              {count > 0 && <span className=\"ui-badge-blue\">{count}</span>}\n            </Row>\n          );\n        })}\n        <div className=\"ui-sec\">Direct messages</div>\n        {listed.map(({ key, parts, opener: a, verified }) => {\n          const b = parts[0] === a ? parts[1] : parts[0];\n          return (\n            <Row key={key} to={{ view: \"dm\", peer: a, with: b }} here={key === openKey}>\n              <span className=\"ui-stack\">\n                {[a, b].map((id) => (\n                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                ))}\n              </span>\n              <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n              {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n            </Row>\n          );\n        })}\n        {conversations.length > DM_ROWS && (\n          <button type=\"button\" className=\"ui-row ui-row-more\" aria-expanded={allDms} onClick={() => setAllDms((v) => !v)}>\n            <span className=\"ui-row-lbl\">{allDms ? \"Show fewer\" : `Show all ${conversations.length}`}</span>\n          </button>\n        )}\n      </nav>}",
-      "class": "presence-only-glyph/count",
-      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws, and the initial badge, which is chosen by id and greys its fill offline: no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/Sidebar.tsx",
-      "kind": "derived-output",
       "anchor": "{channels.map((c) => {\n          const count = unread[c.channel] ?? 0;\n          const event = isEventChannel(c.channel);\n          const working = busy.get(c.channel) ?? [];\n          return (\n            <Row\n              key={c.channel}\n              to={{ view: \"channel\", channel: c.channel }}\n              here={route.view === \"channel\" && route.channel === c.channel}\n              bold={count > 0}\n              title={event ? `Events from run ${c.channel.slice(\"run.\".length)}` : undefined}\n            >\n              {event ? <Icon icon={Plug01Icon} size={18} className=\"ui-ic\" /> : <RailIcon name=\"hash\" />}\n              <span className=\"ui-row-lbl\">{c.channel}</span>\n              {working.length > 0 && (\n                <span className=\"ox-sbw\" title={`${working.length} member${working.length === 1 ? \"\" : \"s\"} working: ${working.map((r) => r.name).join(\", \")}`}>\n                  <Icon icon={Loading03Icon} size={16} className=\"ui-ic ox-spin\" />\n                  {working.length}\n                </span>\n              )}\n              {count > 0 && <span className=\"ui-badge-blue\">{count}</span>}\n            </Row>\n          );\n        })}",
       "class": "presence-only-glyph/count",
       "rationale": "The sidebar's working count on a channel row: how many members the broker's membership and presence say are working, with their names in its title. A presence count, never read from the event plane."
@@ -3773,14 +3801,21 @@
     {
       "path": "implementations/web/client/src/ui/Sidebar.tsx",
       "kind": "derived-output",
-      "anchor": "{listed.map(({ key, parts, opener: a, verified }) => {\n          const b = parts[0] === a ? parts[1] : parts[0];\n          return (\n            <Row key={key} to={{ view: \"dm\", peer: a, with: b }} here={key === openKey}>\n              <span className=\"ui-stack\">\n                {[a, b].map((id) => (\n                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                ))}\n              </span>\n              <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n              {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n            </Row>\n          );\n        })}",
+      "anchor": "{[a, b].map((id) => (\n                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                ))}",
       "class": "presence-only-glyph/count",
       "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws, and the initial badge, which is chosen by id and greys its fill offline: no textual progress claim."
     },
     {
       "path": "implementations/web/client/src/ui/Sidebar.tsx",
       "kind": "derived-output",
-      "anchor": "{[a, b].map((id) => (\n                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                ))}",
+      "anchor": "{loading.roster || loading.channels ? <SkeletonPlaces /> : <nav className=\"ui-side-scroll\" aria-label=\"Places\">\n        <Row to={{ view: \"needs\" }} here={route.view === \"needs\"}>\n          <RailIcon name=\"inbox\" />\n          <span className=\"ui-row-lbl\">Needs you</span>\n          {needing > 0 && <span className=\"ui-badge-gold\" title={`${needing} agent${needing === 1 ? \"\" : \"s\"} waiting`}>{needing}</span>}\n        </Row>\n        <Row to={{ view: \"activity\" }} here={route.view === \"activity\"}>\n          <RailIcon name=\"activity\" />\n          <span className=\"ui-row-lbl\">Activity</span>\n          <span className=\"ui-row-n\">{rateText(msgPerSecond())}</span>\n        </Row>\n        <div className=\"ui-sec\">Channels</div>\n        {channels.length === 0 && <div className=\"ui-beat ui-beat-empty\">No channels yet. One appears with its first message.</div>}\n        {channels.map((c) => {\n          const count = unread[c.channel] ?? 0;\n          const event = isEventChannel(c.channel);\n          const working = busy.get(c.channel) ?? [];\n          return (\n            <Row\n              key={c.channel}\n              to={{ view: \"channel\", channel: c.channel }}\n              here={route.view === \"channel\" && route.channel === c.channel}\n              bold={count > 0}\n              title={event ? `Events from run ${c.channel.slice(\"run.\".length)}` : undefined}\n            >\n              {event ? <Icon icon={Plug01Icon} size={18} className=\"ui-ic\" /> : <RailIcon name=\"hash\" />}\n              <span className=\"ui-row-lbl\">{c.channel}</span>\n              {working.length > 0 && (\n                <span className=\"ox-sbw\" title={`${working.length} member${working.length === 1 ? \"\" : \"s\"} working: ${working.map((r) => r.name).join(\", \")}`}>\n                  <Icon icon={Loading03Icon} size={16} className=\"ui-ic ox-spin\" />\n                  {working.length}\n                </span>\n              )}\n              {count > 0 && <span className=\"ui-badge-blue\">{count}</span>}\n            </Row>\n          );\n        })}\n        <div className=\"ui-sec\">Direct messages</div>\n        {listed.map(({ key, parts, opener: a, verified }) => {\n          const b = parts[0] === a ? parts[1] : parts[0];\n          return (\n            <Row key={key} to={{ view: \"dm\", peer: a, with: b }} here={key === openKey}>\n              <span className=\"ui-stack\" aria-hidden=\"true\">\n                {[a, b].map((id) => (\n                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                ))}\n              </span>\n              <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n              {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n            </Row>\n          );\n        })}\n        {conversations.length > DM_ROWS && (\n          <button type=\"button\" className=\"ui-row ui-row-more\" aria-expanded={allDms} onClick={() => setAllDms((v) => !v)}>\n            <span className=\"ui-row-lbl\">{allDms ? \"Show fewer\" : `Show all ${conversations.length}`}</span>\n          </button>\n        )}\n      </nav>}",
+      "class": "presence-only-glyph/count",
+      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws, and the initial badge, which is chosen by id and greys its fill offline: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/Sidebar.tsx",
+      "kind": "derived-output",
+      "anchor": "{listed.map(({ key, parts, opener: a, verified }) => {\n          const b = parts[0] === a ? parts[1] : parts[0];\n          return (\n            <Row key={key} to={{ view: \"dm\", peer: a, with: b }} here={key === openKey}>\n              <span className=\"ui-stack\" aria-hidden=\"true\">\n                {[a, b].map((id) => (\n                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={byId.has(id)} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                ))}\n              </span>\n              <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n              {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n            </Row>\n          );\n        })}",
       "class": "presence-only-glyph/count",
       "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws, and the initial badge, which is chosen by id and greys its fill offline: no textual progress claim."
     },

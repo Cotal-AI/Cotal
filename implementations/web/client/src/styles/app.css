@@ -313,7 +313,7 @@
 .ui-tst-idle circle { fill: var(--bg); stroke: var(--idle); }
 .ui-tst-offline circle { fill: var(--bg); stroke: var(--faint); stroke-dasharray: 2 2; }
 .ui-orbit-ring { fill: none; stroke: var(--any); stroke-width: 2; opacity: .18; }
-.ui-orbit { fill: none; stroke: var(--any); stroke-width: 2; stroke-linecap: round; transform-box: fill-box; transform-origin: center; animation: ox-turn 3.2s linear infinite; }
+.ui-orbit { fill: none; stroke: var(--any); stroke-width: 2; stroke-linecap: round; transform-box: fill-box; transform-origin: center; animation: ox-rot 3.2s linear infinite; }
 .ui-col-wide { max-width: 1040px; }
 .ui-btn-sm { padding: 5px 9px; font-size: 12.5px; }
 .ui-btn[aria-pressed="true"] { background: var(--soft); }
@@ -721,8 +721,8 @@ textarea.ui-input::placeholder { color: var(--faint); opacity: 1; }
 /* ---------- working, everywhere (overhaul mock W, D and G) ----------
    Something moves only while presence says the agent is working: the spokes turn, the dot breathes,
    the activity shimmers and a topology node's arc circles. Waiting, idle and offline never move. */
-.ox-spin { animation: ox-turn 1.6s linear infinite; }
-@keyframes ox-turn { to { transform: rotate(360deg); } }
+.ox-spin { animation: ox-rot 1.6s linear infinite; }
+@keyframes ox-rot { to { transform: rotate(360deg); } }
 /* the working dot breathes a ring out to 5px and fades; the dot itself never changes */
 .ui-st-working { position: relative; }
 .ui-st-working::after { content: ""; position: absolute; inset: -1px; border-radius: 50%; animation: ui-breathe 2.4s ease-out infinite; }
@@ -750,14 +750,23 @@ textarea.ui-input::placeholder { color: var(--faint); opacity: 1; }
 .ox-sbw .ui-ic { width: 14px; height: 14px; }
 .v3-tabbar .ox-tabw { position: absolute; top: 6px; left: calc(50% + 8px); }
 /* the Agents view: View work beside a working row, and the live step under its activity */
-/* every row keeps room for the link, so the host and status columns line up whoever works */
+/* View work sits in the host's place on a working row (mock W): only that row keeps room for it */
 .ox-arow { position: relative; min-width: 0; }
-.ox-arow > .v3-arow { align-items: start; padding-right: 110px; }
+.ox-arow > .v3-arow { align-items: start; }
+.ox-arow-w > .v3-arow { padding-right: 96px; }
 .ox-arow > .v3-arow > .v3-spill, .ox-arow > .v3-arow > .v3-meta { margin-top: 9px; }
 .ox-arow > .ox-act { position: absolute; top: 18px; right: 12px; padding: 0 4px; border-radius: 6px; }
+.ox-host { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ui-phone .ox-host { display: none; }
 .ox-arow > .ox-act:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .ox-now { font-size: 12.5px; line-height: 18px; }
 .ox-now > [data-slot="trace-icon"] svg { width: 14px; height: 14px; }
+.ox-now-w { display: block; min-width: 0; }
+/* A roster the page only last saw cannot say anyone works now, so while it is stale nothing moves:
+   the shell carries data-presence="stale", and the copied Spinner and Trace's shimmer stop too. */
+[data-presence="stale"] .ox-spin, [data-presence="stale"] [data-slot="spinner"], [data-presence="stale"] .ui-orbit { animation: none; }
+[data-presence="stale"] .ui-st-working::after { animation: none; box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--any) 28%, transparent); }
+[data-presence="stale"] .ox-shimmer, [data-presence="stale"] [data-slot="trace-title"] { animation: none; background-image: none; -webkit-text-fill-color: currentColor; }
 /* Reduced motion: no spin, no breathing (the dot keeps a still halo, so its shape still differs), no
    shimmer, and the arc stays. The clocks keep counting. */
 @media (prefers-reduced-motion: reduce) {

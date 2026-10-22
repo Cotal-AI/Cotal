@@ -120,20 +120,25 @@ function runningCall(work: Work, status: RosterRow["status"]): { call: ToolCall;
  *  count of views) and shows the running call of the open turn as one `ToolLine` (`ox-now`): the
  *  spinner, the present-tense title shimmering and the tool with its counting seconds. No running
  *  call, no line. It unmounts, and so closes the agent's work, when the row stops working, leaves the
- *  first `LIVE_STEPS` or the view closes. A card that says the plane is off opens nothing. */
+ *  first `LIVE_STEPS`, the roster turns stale or the view closes. A card that says the plane is off
+ *  opens nothing. The line is hidden from assistive tech, so it is no live region inside the row's
+ *  button. */
 function LiveStep({ store, controller, row }: { store: Store<DashboardState>; controller: Controller | null; row: RosterRow }) {
   useSession(row.events === "off" ? null : controller, row.id);
   const frames = useStore(store, (s) => s.sessions[row.id]?.frames);
   const posts = useOwnMessages(store, row.id);
   const running = useMemo(() => (frames === undefined ? undefined : runningCall(foldWork(frames, posts), row.status)), [frames, posts, row.status]);
   if (running === undefined) return null;
-  return <ToolLine call={running.call} state="running" className="ox-now" />;
+  // Hidden from assistive tech: inside the row's button a live region would rename the button on
+  // every call. View work beside the row leads to the same step in words.
+  return <span className="ox-now-w" aria-hidden="true"><ToolLine call={running.call} state="running" className="ox-now" /></span>;
 }
 
 /** One agent: character, name, role and harness, activity, the attention badge when there is one
  *  (open shows nothing), and its host, or its status word under the host grouping. The row is a
  *  button; picking it tells the caller which agent. A working row adds View work beside the button,
- *  as its own link to the agent's Work, and with `live` its live step under the activity line. The
+ *  as its own link to the agent's Work, in the host's place (mock W): under the status grouping a
+ *  working row draws no host. With `live` it shows its live step under the activity line. The
  *  activity line is presence's text and never shimmers. */
 function AgentRow({ row, grouping, selected, onPick, live }: {
   row: RosterRow;
@@ -146,7 +151,7 @@ function AgentRow({ row, grouping, selected, onPick, live }: {
   const waiting = row.status === "waiting" && grouping === "status";
   const badgeOf = useBadgeOf();
   return (
-    <div className="ox-arow">
+    <div className={row.status === "working" ? "ox-arow ox-arow-w" : "ox-arow"}>
       <button
         type="button"
         className={row.status === "offline" ? "v3-arow v3-arow-off" : "v3-arow"}
@@ -163,8 +168,8 @@ function AgentRow({ row, grouping, selected, onPick, live }: {
         {attention ? <AttentionMark attention={attention} /> : <span />}
         {grouping === "host" ? (
           <StatusWord row={row} />
-        ) : row.host !== undefined ? (
-          <span className="v3-meta"><Icon icon={ServerStack01Icon} size={16} className="ui-ic" />{row.host}</span>
+        ) : row.host !== undefined && row.status !== "working" ? (
+          <span className="v3-meta ox-host"><Icon icon={ServerStack01Icon} size={16} className="ui-ic" />{row.host}</span>
         ) : <span />}
       </button>
       {row.status === "working" && (
@@ -236,7 +241,8 @@ function HeartbeatLine({ beat, clock }: { beat: number; clock: () => number }) {
  *  - Working rows move while presence says they work: the Working header's spokes turn, and each of
  *    the first `LIVE_STEPS` working rows in display order reads its agent's event plane through
  *    `controller` while the view is on screen and shows the call running now (`LiveStep`). Each read
- *    is dropped when its row stops working or the view closes. Rows after those show presence only.
+ *    is dropped when its row stops working, the roster turns stale or the view closes. Rows after
+ *    those show presence only, and while the roster is only last seen no row reads at all.
  *
  *  `clock` is the time the heartbeat ages count from. */
 export function AgentsView({ store, controller = null, group, focusWaiting = false, selected = null, onPick, clock = Date.now }: {
@@ -262,7 +268,6 @@ export function AgentsView({ store, controller = null, group, focusWaiting = fal
   }, [roster]);
   const { agents, endpoints } = split;
   const sections = grouping === "status" ? sectionsByStatus(agents) : sectionsByHost(agents);
-  const reading = new Set(sections.flatMap((s) => s.rows).filter((r) => r.status === "working").slice(0, LIVE_STEPS).map((r) => r.id));
   const empty = agents.length === 0;
   const hasWaiting = sections.some((s) => s.key === "waiting") && grouping === "status";
 
@@ -289,6 +294,8 @@ export function AgentsView({ store, controller = null, group, focusWaiting = fal
 
   const live = agents.filter((r) => r.status !== "offline").length;
   const lastSeen = stale.some((m) => m.name === "roster");
+  // A roster the page only last saw cannot say who works now, so no row reads its agent's work then.
+  const reading = new Set(lastSeen ? [] : sections.flatMap((s) => s.rows).filter((r) => r.status === "working").slice(0, LIVE_STEPS).map((r) => r.id));
   const beat = oldestLiveBeat(agents);
   return (
     <>

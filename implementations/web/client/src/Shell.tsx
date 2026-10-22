@@ -151,6 +151,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const everyone = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
   const needing = useMemo(() => waiting(everyone).length, [everyone]);
   const busy = useMemo(() => roster.filter((p) => p.card.kind === "agent" && p.status === "working").length, [roster]);
+  const lastSeen = useStore(store, (s) => s.stale.some((m) => m.name === "roster"));
   const badgeOf = useMemo(() => badgeLookup(everyone), [everyone]);
   const panel = usePanel(route, phone);
   const shown = panelShown(panel, paneOpen);
@@ -184,6 +185,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
           phone={phone}
           waiting={needing}
           working={busy}
+          stale={lastSeen}
           sheetOpen={sheetOpen}
           onSheetClose={() => setSheetAt(null)}
           onPanelClose={panel.close}
