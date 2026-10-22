@@ -426,6 +426,7 @@
   "cli:doctor--plain": "current:doctor auth --plain",
   "cli:doctor--space": "current:doctor auth",
   "cli:down": "current:down",
+  "cli:down--abandon-stop": "current:down --abandon-stop",
   "cli:down--dry-run": "current:down --dry-run",
   "cli:down--file": "pending:team remove",
   "cli:down--instance": "current:down --instance",
