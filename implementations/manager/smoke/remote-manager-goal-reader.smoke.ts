@@ -666,9 +666,9 @@ try {
   }
 
   for (const [index, entry] of callers.entries()) {
-    // Real acceptance and terminal production, without a successful child launch.
-    // Stock remote enrollment currently refuses missing host auth material. The declared
-    // test connector also refuses launch, so this proof cannot create an untracked child.
+    // Real acceptance and terminal production, without a successful child launch: the manager
+    // accepts the goal, and the declared test connector refuses launch, so the goal settles
+    // failed and this proof cannot create an untracked child.
     const accepted = await invokeCommand(entry.nc, space, entry.service, "spawn", { name: `worker_${index}`, role: "worker", agent: "remote-reader-test", events: false }, { id: entry.goalId, deadlineMs: 5000 });
     const acceptance = accepted.reply.ok ? accepted.reply.data as { goalId?: string; fingerprint?: string } : undefined;
     check(`owner ${index} receives a real accepted goal`, acceptance?.goalId === entry.goalId && typeof acceptance.fingerprint === "string");
