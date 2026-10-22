@@ -8,10 +8,11 @@
  * custody reference, and the successor's terminal reaps by that reference, verified by process
  * start identity, before the lifecycle retires. Linux only, like the custodian.
  *
- * A successor adopts a live seat its predecessor left a seat record for (#4095), so the seat it reaps
- * has none. A custodial seat never has one in practice: the built-in pty runtime stopped starting
- * custodians (#2351) before managers wrote seat records (#4094). The suite removes the record the
- * spawning host wrote, which leaves the seat such an older manager left behind.
+ * A successor adopts a live seat its predecessor left a seat record for (#4095), and reaps one with
+ * none. A custodial seat a manager left before seat records existed (#4094) has none: the built-in
+ * pty runtime stopped starting custodians (#2351) before then. The suite removes the record the
+ * spawning host wrote, which leaves that seat. A custodial seat with a record is adopted, and this
+ * suite does not cover that path.
  *
  * Run: pnpm smoke:orphan-seat-reap
  */
@@ -92,7 +93,7 @@ try {
   check("instrument: manager SIGKILL leaves the custodian and the seat child live", live(record.custodianPid) && live(record.childPid), { custodian: state(record.custodianPid), child: state(record.childPid) });
   const seatRecord = readSeatRecord(root, space, "worker");
   removeSeatRecord(root, space, "worker", ready.lifecycleUid);
-  check("instrument: the seat record the spawning host wrote is removed, as no custodial seat has one", seatRecord?.agent.identity.lifecycleUid === ready.lifecycleUid && readSeatRecord(root, space, "worker") === undefined, seatRecord);
+  check("instrument: the seat record the spawning host wrote is removed, leaving a seat from before seat records", seatRecord?.agent.identity.lifecycleUid === ready.lifecycleUid && readSeatRecord(root, space, "worker") === undefined, seatRecord);
   // The dead manager's liveness lease must lapse before the same logical instance can start again.
   await wait(20_000);
   const second = await startManager("successor", false);
