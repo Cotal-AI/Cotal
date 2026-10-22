@@ -116,14 +116,9 @@ jobs:
       RELEASE_REQUESTED_AT: ${{ inputs.requested_at }}
       RELEASE_VERSION: ${{ inputs.version }}
       RELEASE_SOURCE: ${{ inputs.source }}
-      RELEASE_ROOT: ${{ runner.temp }}/release-source
       RELEASE_CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
       RELEASE_QUALIFICATION_RUN: ${{ inputs.qualification_run }}
-      RELEASE_QUALIFICATION: ${{ runner.temp }}/qualification-selection.json
       RELEASE_TAG: ${{ inputs.snapshot || 'latest' }}
-      COLD_CANDIDATE: ${{ runner.temp }}/qualified/cold-candidate
-      COLD_RESULTS: ${{ runner.temp }}/qualified
-      PUBLISH_RECEIPT: ${{ runner.temp }}/publication.json
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -138,6 +133,16 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 22
+
+      - name: Set owned publication paths
+        run: |
+          {
+            printf 'RELEASE_ROOT=%s/release-source\n' "$RUNNER_TEMP"
+            printf 'RELEASE_QUALIFICATION=%s/qualification-selection.json\n' "$RUNNER_TEMP"
+            printf 'COLD_CANDIDATE=%s/qualified/cold-candidate\n' "$RUNNER_TEMP"
+            printf 'COLD_RESULTS=%s/qualified\n' "$RUNNER_TEMP"
+            printf 'PUBLISH_RECEIPT=%s/publication.json\n' "$RUNNER_TEMP"
+          } >> "$GITHUB_ENV"
 
       - name: Select the trusted qualification's immutable artifact IDs
         id: qualification

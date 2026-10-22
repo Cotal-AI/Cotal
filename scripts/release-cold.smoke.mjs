@@ -87,6 +87,23 @@ check("preparation cannot start publication or block its queue", () => {
   assert.equal(release.concurrency["cancel-in-progress"], false);
   assert.equal(release.concurrency.queue, "max");
 });
+check("publication runtime paths use supported step context before admission", () => {
+  const job = release.jobs.version;
+  assert(!JSON.stringify(job.env).includes("runner."), "GitHub rejects runner context in job-level env");
+  const index = job.steps.findIndex((step) => step.name === "Set owned publication paths");
+  assert(index >= 0 && index < job.steps.findIndex((step) => step.id === "qualification"));
+  const step = job.steps[index];
+  assert.equal(step.if, undefined); assert.equal(step["continue-on-error"], undefined);
+  const directory = mkdtempSync(join(tmpdir(), "publication-runtime-env-"));
+  const runner = join(directory, "runner with spaces"), output = join(directory, "runtime.env");
+  const paths = { RELEASE_ROOT: "release-source", RELEASE_QUALIFICATION: "qualification-selection.json", COLD_CANDIDATE: "qualified/cold-candidate", COLD_RESULTS: "qualified", PUBLISH_RECEIPT: "publication.json" };
+  try {
+    const result = spawnSync("bash", ["-euo", "pipefail", "-c", step.run], { env: { PATH: process.env.PATH, RUNNER_TEMP: runner, GITHUB_ENV: output }, encoding: "utf8", timeout: 3_000 });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(Object.fromEntries(readFileSync(output, "utf8").trim().split("\n").map((line) => line.split("="))), Object.fromEntries(Object.entries(paths).map(([name, suffix]) => [name, `${runner}/${suffix}`])));
+    for (const name of Object.keys(paths)) assert.equal(job.env[name], undefined);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
 check("main-only OIDC promotion pins the original clock and immutable cross-run inputs", () => {
   const job = release.jobs.version;
   assert.equal(job.needs, undefined);
@@ -98,7 +115,6 @@ check("main-only OIDC promotion pins the original clock and immutable cross-run 
   assert.equal(job.env.RELEASE_VERSION, "${{ inputs.version }}");
   assert.equal(job.env.RELEASE_REQUESTED_AT, "${{ inputs.requested_at }}");
   assert.equal(job.env.RELEASE_SOURCE, "${{ inputs.source }}");
-  assert.equal(job.env.RELEASE_ROOT, "${{ runner.temp }}/release-source");
   assert.equal(job.env.RELEASE_CANDIDATE_SHA256, "${{ inputs.candidate_sha256 }}");
   const download = job.steps.find((step) => step.uses === "actions/download-artifact@v4");
   assert.equal(download.with["artifact-ids"], "${{ steps.qualification.outputs.artifact-ids }}");
