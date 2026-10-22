@@ -1,8 +1,8 @@
 /**
  * LIVE e2e for `cotal up -f <manifest>` — the orchestration the hermetic manifest smoke can't reach:
  * a REAL fresh broker on an isolated port, channels seeded from the manifest, exactly ONE manager
- * (carrying the launch spec — a second supervise would race the singleton lease), the
- * refuse-on-reachable redirect to `spawn -f`, and `cotal down` teardown + transient-run cleanup.
+ * (carrying the launch spec — a second manager would race the singleton lease), the
+ * refuse-on-reachable guard, and `cotal down` teardown + transient-run cleanup.
  *
  * Open-mode manifest (no auth) so the registry is readable without minting creds. Channels-only
  * (agents: {}) so no real connector boots. Sandboxes COTAL_HOME + a temp project root; tears down via
@@ -64,11 +64,11 @@ const alive = (pid: number) => {
     return false;
   }
 };
-/** Command lines of every live `supervise` for OUR space (never other meshes' managers). */
+/** Command lines of every live manager daemon (`__daemon-manager`) for OUR space (never other meshes' managers). */
 const supervisors = () =>
   spawnSync("ps", ["ax", "-o", "command="], { encoding: "utf8" })
     .stdout.split("\n")
-    .filter((l) => l.includes(" supervise ") && l.includes(`--space ${SPACE}`));
+    .filter((l) => l.includes(" __daemon-manager ") && l.includes(`--space ${SPACE}`));
 
 const manifest = join(root, "mesh.yaml");
 writeFileSync(
@@ -114,10 +114,10 @@ try {
   ok("a launch spec was written", specs.length === 1, specs);
   ok("launch spec is 0600", (statSync(join(runDir, specs[0])).mode & 0o777) === 0o600);
 
-  // 4) up -f again, broker still running → refuse + redirect to spawn -f (never re-seed as fresh).
+  // 4) up -f again, broker still running → refuse (never re-seed as fresh, never adopt the broker).
   const again = cli("up", "-f", manifest, "--server", SERVER);
   ok("up -f refuses when a broker is already reachable", /already has a broker/.test(again.stderr), again.stderr + again.stdout);
-  ok("...and redirects to spawn -f", /spawn -f/.test(again.stderr), again.stderr);
+  ok("...and says a fresh boot will not adopt it", /a fresh boot will not adopt it/.test(again.stderr) && again.status === 1, { status: again.status, stderr: again.stderr });
 
   // 5) down tears the mesh down + clears the run dir — including the manager (nothing orphaned).
   //    `cotal down` now awaits real exit; keep a backstop poll keyed on the EXACT manager pid
@@ -128,7 +128,7 @@ try {
     torn = !alive(mgrPid) && !(await portOpen(PORT));
     if (!torn) await sleep(500);
   }
-  ok("broker + manager are gone after down (no orphaned supervise)", torn, { mgrAlive: alive(mgrPid), portOpen: await portOpen(PORT), supervisors: supervisors() });
+  ok("broker + manager are gone after down (no orphaned manager)", torn, { mgrAlive: alive(mgrPid), portOpen: await portOpen(PORT), supervisors: supervisors() });
   ok("transient run dir cleaned by down", !existsSync(runDir));
 
   console.log(`\nUP-MANIFEST LIVE SMOKE OK ✅ (${pass} checks)`);
