@@ -769,6 +769,32 @@ try {
       { ...liveLeaf, listed: recordsOf(liveLeaf) });
     await stopAll(live.child);
     rmSync(cancelledRecord, { force: true });
+    // The stop of a running stack reads its records the same way. A root `up` recorded keeps a live
+    // process of its own in fixture.pid, while `.cotal/daemon` and `.cotal/worker.record` link to a
+    // separate root's live records. Bare down refuses before its first stop and names each link once:
+    // nothing is signalled or unrecorded on either side, and the registration stays.
+    const running = mkdtempSync(join(tmpdir(), "cotal-running-"));
+    recordMesh({ ...entry("running", running), server: "nats://127.0.0.1:1", origin: "up" });
+    const own = liveAt(join(running, ".cotal", fixtured.pidFile));
+    const away = mkdtempSync(join(tmpdir(), "cotal-separate-"));
+    const awayDir = liveAt(join(away, ".cotal", nested.pidFile)), awayLeaf = liveAt(join(away, ".cotal", suffixed.pidFile));
+    const runDir = join(running, ".cotal", "daemon"), runLeaf = join(running, ".cotal", suffixed.pidFile);
+    symlinkSync(dirname(awayDir.record), runDir);
+    symlinkSync(awayLeaf.record, runLeaf);
+    const through = await bareDownIn(running);
+    const throughText = JSON.stringify([recordsOf(through), through.error?.message, through.error?.remedy]);
+    check("bare down of a running stack whose record paths link to another root refuses LIFECYCLE_BLOCKED before its first stop, naming each link once, and signals and unrecords nothing on either side",
+      through.error?.code === "LIFECYCLE_BLOCKED" && !/stopped/.test(through.out) &&
+        [...recordsOf(through)].sort().join("\n") === [`nested-worker at ${relative(running, runDir)} (link, not followed)`, `record-worker at ${relative(running, runLeaf)} (link, not followed)`].sort().join("\n") &&
+        (through.error.remedy ?? "").includes(relative(running, runDir)) && (through.error.remedy ?? "").includes(relative(running, runLeaf)) &&
+        [awayDir, awayLeaf].every(({ child, record }) => !throughText.includes(`pid ${child.pid}`) && alive(child.pid!) && existsSync(record)) &&
+        alive(own.child.pid!) && existsSync(own.record) && lstatSync(runDir).isSymbolicLink() && lstatSync(runLeaf).isSymbolicLink() &&
+        meshesForRoot(running).some((mesh) => mesh.space === "running"),
+      { ...through, listed: recordsOf(through) });
+    await stopAll(own.child, awayDir.child, awayLeaf.child);
+    removeMesh("running");
+    rmSync(running, { recursive: true, force: true });
+    rmSync(away, { recursive: true, force: true });
   } finally {
     setInstalledExtensionsEnabled(false);
     if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
