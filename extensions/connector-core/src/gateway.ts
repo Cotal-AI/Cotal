@@ -58,7 +58,7 @@ export interface GatewayHost {
    *  account: an `open` racing another for the same name throws `NameTaken` rather than also
    *  succeeding, or two conversations end up sharing one name. Error messages reach the caller,
    *  so they must not carry secrets. */
-  open(account: string, name: string): Promise<GatewayConnection>;
+  open(account: string, name: string, context?: string): Promise<GatewayConnection>;
   /** The connection `id` if `account` owns it, otherwise undefined. Never a default. */
   find(account: string, id: string): Promise<GatewayConnection | undefined>;
   /** Stop and release one connection `account` owns. False when it owns no such connection. */
@@ -125,6 +125,9 @@ export const GATEWAY_WAIT_SECONDS = 50;
 
 /** How an embedder tunes the surface for what sits in front of it. */
 export interface GatewayOptions {
+  /** A native embedder binds the connect call to a host-observed conversation. The value is only
+   * a routing key, never authentication; the host must validate its own binding before issue. */
+  connectContext?: boolean;
   /** The longest `cotal_wait` may hold one call, in whole seconds. Defaults to
    *  {@link GATEWAY_WAIT_SECONDS}. Keep it under every proxy and client timeout on the path. */
   waitSeconds?: number;
@@ -333,9 +336,10 @@ export function registerCotalGatewayTools(
         "conversation, and call this again if you no longer have this conversation's connection_id.",
       inputSchema: z.strictObject({
         name: z.string().min(1).describe("The agent name to request, for example claude_web."),
+        ...(options.connectContext ? { context: z.string().min(1).max(128).optional().describe("Conversation binding supplied by the native host.") } : {}),
       }),
     },
-    async ({ name }, extra) => {
+    async ({ name, ...input }, extra) => {
       let account: string;
       try {
         account = host.account(extra.authInfo);
@@ -350,7 +354,7 @@ export function registerCotalGatewayTools(
           return refuse(`cotal_connect: ${errorText(e)}`);
         }
         try {
-          const c = await host.open(account, candidate);
+          const c = await host.open(account, candidate, "context" in input && typeof input.context === "string" ? input.context : undefined);
           watch(c);
           const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
           const listening = wake ? `\n${wake.listening()}` : "";
@@ -508,6 +512,8 @@ export interface GatewayRequest {
   /** The source tag on messages this endpoint sends. */
   source?: string;
   instructions?: string;
+  /** See {@link GatewayOptions.connectContext}. */
+  connectContext?: boolean;
   /** See {@link GatewayOptions.waitSeconds}. */
   waitSeconds?: number;
 }
@@ -551,6 +557,8 @@ export interface GatewayStdio {
   /** The source tag on messages this server sends. */
   source?: string;
   instructions?: string;
+  /** See {@link GatewayOptions.connectContext}. */
+  connectContext?: boolean;
   /** See {@link GatewayOptions.waitSeconds}. */
   waitSeconds?: number;
   /** See {@link GatewayOptions.wake}. */
@@ -566,6 +574,7 @@ export interface GatewayStdio {
 export async function serveGatewayStdio(host: GatewayHost, o: GatewayStdio = {}): Promise<{ close(): Promise<void> }> {
   const server = new McpServer({ name: "cotal", version: DOCS_VERSION }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });
   registerCotalGatewayTools(server, host, o.source, {
+    ...(o.connectContext ? { connectContext: true } : {}),
     ...(o.waitSeconds === undefined ? {} : { waitSeconds: o.waitSeconds }),
     ...(o.wake ? { wake: o.wake } : {}),
   });

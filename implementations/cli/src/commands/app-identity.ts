@@ -19,6 +19,7 @@ import {
 import { defaultPersonaRef, resolveTargetOrThrow, type MeshTarget } from "@cotal-ai/workspace";
 import { liveMeshNames } from "../lib/live-names.js";
 import { defaultPersonaFix } from "../lib/default-persona.js";
+import { isUserAppDir, provisionUserApp, retireUserApp } from "../lib/app-user-identity.js";
 
 /** Every credential directory provision makes is a fresh `mkdtemp` under the OS temp dir with this prefix. */
 const CRED_DIR_PREFIX = "cotal-app-identity-";
@@ -37,6 +38,8 @@ export const appIdentityFlags = [
   { name: "name", type: "string", value: "<name>", description: "provision: the agent name to open, exactly" },
   { name: "space", type: "string", value: "<space>", description: "the mesh to use; defaults as `cotal spawn` does" },
   { name: "dir", type: "string", value: "<dir>", description: "retire: the credential directory provision returned" },
+  { name: "session", type: "string", value: "<id>", description: "provision: the native conversation identity" },
+  { name: "events", type: "boolean", description: "provision: a real native transcript source is bound" },
 ] as const satisfies readonly FlagSpec[];
 
 /** What the record in a credential directory says. `owner` is the process that ran provision. */
@@ -94,7 +97,7 @@ async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<A
   if (!name) return { ok: false, error: "provision needs --name <name>" };
   const t = await target(values.space);
   if (t.mode === "user")
-    return { ok: false, error: `the mesh "${t.space}" uses per-user sign-in, which a Claude app connection does not support yet. Use a mesh started with \`cotal up\`.` };
+    return { ok: true, ...await provisionUserApp(t, name, values.session, values.events === true) };
   const taken = await liveMeshNames(t);
   if (!taken) return { ok: false, error: `the mesh "${t.space}" at ${t.server} is not answering. Start it with \`cotal up\`.` };
   if (taken.has(name)) return { ok: false, taken: true };
@@ -163,7 +166,8 @@ async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<A
 
 async function retire(values: FlagValues<typeof appIdentityFlags>): Promise<{ ok: true } | AppIdentityReply> {
   if (!values.dir) return { ok: false, error: "retire needs --dir <dir>" };
-  await retireDir(values.dir);
+  if (isUserAppDir(values.dir)) await retireUserApp(values.dir);
+  else await retireDir(values.dir);
   return { ok: true };
 }
 

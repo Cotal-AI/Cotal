@@ -58,9 +58,16 @@ export function wakeSockets(claudePid: number): string[] {
   });
 }
 
+/** Lifecycle requests use a separate socket so an event relay is never mistaken for a wake reader. */
+export function nativeSocketPath(feed: string): string {
+  return `${feed}.native`;
+}
+
 export interface WakeFeed {
   /** Write one bounded preview + `id` to every monitor reading the feed. False when none is. */
-  send(id: string, preview: RenderedInboxPreview): boolean;
+  send(id: string, preview: RenderedInboxPreview, session?: string): boolean;
+  /** Native lifecycle frames are routed by their explicit session identity, never reader order. */
+  onNative(fn: (event: Record<string, unknown>) => Promise<void>): void;
   /** Whether a monitor is reading the feed now. */
   watched(): boolean;
   /** Run `fn` each time a monitor starts reading. */
@@ -74,35 +81,84 @@ export async function openWakeFeed(claudePid: number): Promise<WakeFeed> {
   if (process.platform !== "win32") {
     // A socket whose server pid is gone was left by a server that exited without closing it.
     for (const name of readdirSync(dir)) {
-      const server = ENTRY.exec(name)?.[2];
+      const server = ENTRY.exec(name.endsWith(".native") ? name.slice(0, -7) : name)?.[2];
       if (server && !alive(Number(server))) rmSync(join(dir, name), { force: true });
     }
   }
   const path = wakeSocketPath(claudePid);
-  const readers = new Set<Socket>();
+  const readers = new Map<Socket, string | undefined>();
   const joined: Array<() => void> = [];
+  let native: ((event: Record<string, unknown>) => Promise<void>) | undefined;
+  const nativeSockets = new Set<Socket>();
+  const lifecycle = createServer((s) => {
+    nativeSockets.add(s);
+    let buffer = "";
+    s.setEncoding("utf8");
+    s.on("data", (piece: string) => {
+      buffer += piece;
+      if (buffer.length > 16_384) { s.destroy(); return; }
+      const end = buffer.indexOf("\n");
+      if (end < 0) return;
+      s.removeAllListeners("data");
+      try {
+        const frame = JSON.parse(buffer.slice(0, end)) as { op?: string; event?: Record<string, unknown> };
+        if (frame.op !== "native" || !frame.event || !native) { s.destroy(); return; }
+        void native(frame.event).then(() => s.end('{"ok":true}\n'), () => s.end('{"ok":false}\n'));
+      } catch { s.destroy(); }
+    });
+    s.on("close", () => nativeSockets.delete(s));
+    s.on("error", () => s.destroy());
+  });
   const server = createServer((s) => {
-    readers.add(s);
+    const watch = (session?: string) => { readers.set(s, session); for (const fn of joined) fn(); };
+    watch();
+    let buffer = "";
+    s.setEncoding("utf8");
+    s.on("data", (piece: string) => {
+      buffer += piece;
+      if (buffer.length > 512) { s.destroy(); return; }
+      const end = buffer.indexOf("\n");
+      if (end < 0) return;
+      s.removeAllListeners("data");
+      try {
+        const frame = JSON.parse(buffer.slice(0, end)) as { op?: string; session?: string };
+        if (frame.op === "watch" && typeof frame.session === "string" && WAKE_ID.test(frame.session)) watch(frame.session);
+        else s.destroy();
+      } catch { s.destroy(); }
+    });
     s.on("close", () => readers.delete(s));
     s.on("error", () => s.destroy());
-    for (const fn of joined) fn();
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(path, () => resolve());
   });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      lifecycle.once("error", reject);
+      lifecycle.listen(nativeSocketPath(path), () => resolve());
+    });
+  } catch (error) { server.close(); throw error; }
   return {
-    send(id, preview) {
+    onNative: (fn) => { native = fn; },
+    send(id, preview, session) {
       if (!WAKE_ID.test(id)) throw new Error(`not a connection id: ${JSON.stringify(id)}`);
       const frame = JSON.stringify({ id, preview });
       if (frame.length > 4_096) throw new Error(`Cotal wake preview frame is ${frame.length} characters, over 4096`);
-      for (const s of readers) s.write(`${frame}\n`);
-      return readers.size > 0;
+      let sent = false;
+      for (const [s, owner] of readers) {
+        if (session !== undefined && owner !== session) continue;
+        s.write(`${frame}\n`);
+        sent = true;
+      }
+      return sent;
     },
     watched: () => readers.size > 0,
     onReader: (fn) => void joined.push(fn),
     close() {
-      for (const s of readers) s.destroy();
+      for (const s of readers.keys()) s.destroy();
+      for (const s of nativeSockets) s.destroy();
+      lifecycle.close();
       server.close();
     },
   };

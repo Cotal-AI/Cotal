@@ -71,6 +71,8 @@ export interface AgentConfig {
    *  **Default-deny** (empty): publishing must be declared. Informational only here; the broker
    *  enforces it under auth. */
   allowPublish: string[];
+  /** A conversation gateway has no managed-seat turn relay and must not request manager authority. */
+  turnRelay?: false;
   /** The trusted registration requires this session's event plane. */
   eventsRequired?: boolean;
   /** Per-channel attention DEFAULTS (operator, one-way from the agent file): channels to receive but

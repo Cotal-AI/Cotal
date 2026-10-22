@@ -165,6 +165,7 @@ const connectionId = (text: string) => /connection_id: (\S+)/.exec(text)?.[1] ??
 interface Monitor {
   p: ChildProcess;
   lines: string[];
+  previews: string[];
   exited: Promise<number | null>;
 }
 const monitors: Monitor[] = [];
@@ -175,11 +176,15 @@ function monitor(claudePid: number, extra: NodeJS.ProcessEnv = {}, native = fals
   if (native) delete monitorEnv.CLAUDE_PID;
   else monitorEnv.CLAUDE_PID = String(claudePid);
   const p = spawn(process.execPath, [MONITOR, ...(native ? ["--native"] : [])], { cwd: ROOT, env: monitorEnv, stdio: ["ignore", "pipe", "pipe"] });
-  const m: Monitor = { p, lines: [], exited: new Promise((r) => p.on("exit", (code) => r(code))) };
+  const m: Monitor = { p, lines: [], previews: [], exited: new Promise((r) => p.on("exit", (code) => r(code))) };
   let buf = "";
   p.stdout!.on("data", (d) => {
     buf += d;
-    for (let i; (i = buf.indexOf("\n")) >= 0; buf = buf.slice(i + 1)) m.lines.push(buf.slice(0, i));
+    for (let i; (i = buf.indexOf("\n")) >= 0; buf = buf.slice(i + 1)) {
+      const line = buf.slice(0, i);
+      if (line.startsWith("Cotal preview for connection_id ")) m.previews.push(line);
+      else m.lines.push(line);
+    }
   });
   monitors.push(m);
   return m;
@@ -263,7 +268,9 @@ try {
   const mon = monitor(process.pid, {}, true);
   check(
     "a monitor that starts after the message still gets its wake, as one fixed line",
-    (await until(() => mon.lines.length > 0)) && mon.lines.length === 1 && mon.lines[0] === wakeFor(idA),
+    (await until(() => mon.lines.length > 0)) && mon.lines.length === 1 && mon.lines[0] === wakeFor(idA) &&
+      mon.previews.length === 1 && mon.previews[0]!.startsWith(`Cotal preview for connection_id ${idA}: `) &&
+      JSON.parse(mon.previews[0]!.slice(mon.previews[0]!.indexOf(": ") + 2)).unread === 1,
     mon.lines,
   );
   cotal(ROOT, "send", "--to", "claude_local", "m2");

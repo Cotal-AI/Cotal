@@ -1,0 +1,137 @@
+/** Intended native CLI acceptance, opt-in because it uses real inference. No login cache is read
+ * or copied by the fixture. Only the isolated mesh and finite sleep commands are exposed. */
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { closeSync, constants, copyFileSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import type { CotalEndpoint } from "@cotal-ai/core";
+
+export async function runPersonalNativeAcceptance(input: {
+  home: string; cwd: string; cli: string[]; sender: CotalEndpoint;
+  peer: { roster(): Array<{ card: { id?: string; name: string } }> };
+  env: NodeJS.ProcessEnv;
+  evidence?: string;
+  onConnected?(principal: string, session: string): Promise<void>;
+}): Promise<{ principal: string; markers: string[]; stdout: string }> {
+  const session = randomUUID();
+  const fixture = join(input.home, `native-runtime-${session}`);
+  const plugin = join(fixture, "plugin");
+  const source = resolve(import.meta.dirname, "../../../extensions/connector-claude-code");
+  for (const dir of [fixture, plugin, join(plugin, "hooks"), join(plugin, "dist"), join(plugin, ".claude-plugin")]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  for (const file of [".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/native-wake.js", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"])
+    copyFileSync(join(source, file), join(plugin, file));
+  writeFileSync(join(plugin, "dist/cli.json"), JSON.stringify({ argv: input.cli }), { mode: 0o600 });
+  const name = `native_real_${session.slice(0, 8)}`;
+  const env: NodeJS.ProcessEnv = { ...input.env, CLAUDE_CONFIG_DIR: join(fixture, "config") };
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_CODE_ENTRYPOINT;
+  const mcp = { mcpServers: { cotal: { command: process.execPath, args: [join(plugin, "dist/mcp.cjs")] } } };
+  const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--model", "claude-sonnet-5-5",
+    "--session-id", session, "--plugin-dir", plugin, "--setting-sources", "", "--strict-mcp-config", "--mcp-config", JSON.stringify(mcp),
+    "--permission-mode", "dontAsk", "--tools", "Bash", "--allowedTools", "mcp__cotal__*", "Bash(sleep *)"];
+  const out = openSync(join(fixture, "native-stdout.jsonl"), "wx", 0o600);
+  const err = openSync(join(fixture, "native-stderr.log"), "wx", 0o600);
+  const child = spawn("claude", args, { cwd: input.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+  const exited = new Promise<void>((done) => child.once("exit", () => done()));
+  const rows: Array<{ sequence: number; value: any }> = [];
+  const texts: Array<{ sequence: number; text: string }> = [];
+  let buffer = "", sequence = 0;
+  child.stdout.on("data", (piece: Buffer) => {
+    writeFileSync(out, piece);
+    buffer += piece.toString();
+    for (let end; (end = buffer.indexOf("\n")) >= 0;) {
+      const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+      try {
+        const value = JSON.parse(line);
+        const seq = ++sequence;
+        rows.push({ sequence: seq, value });
+        if (value.type === "assistant") for (const part of value.message?.content ?? []) if (part.type === "text") texts.push({ sequence: seq, text: part.text });
+        if (value.type === "result" && typeof value.result === "string") texts.push({ sequence: seq, text: value.result });
+      } catch {}
+    }
+  });
+  child.stderr.on("data", (piece: Buffer) => writeFileSync(err, piece));
+  const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  const until = async (condition: () => boolean, label: string, ms = 60_000) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      if (condition()) return;
+      if (child.exitCode !== null || child.signalCode !== null) throw new Error(`native acceptance exited before ${label}; private logs retained`);
+      await wait(100);
+    }
+    throw new Error(`native acceptance timed out waiting for ${label}; private logs retained`);
+  };
+  const prompt = (text: string) => child.stdin.write(JSON.stringify({ type: "user", session_id: session, parent_tool_use_id: null, message: { role: "user", content: text } }) + "\n");
+  const assistantSaid = (marker: string, since = 0) => texts.some((row) => row.sequence > since && row.text.includes(marker));
+  const toolCalls = (tool: string, since = 0) => rows.flatMap((row) => row.sequence > since && row.value.type === "assistant"
+    ? (row.value.message?.content ?? []).filter((part: any) => part.type === "tool_use" && part.name === tool).map((part: any) => ({ sequence: row.sequence, input: part.input })) : []);
+  const passed: string[] = [];
+  const markers: string[] = [];
+  let nativePrincipal: string | undefined;
+  try {
+    prompt(`This is an isolated Cotal native acceptance test. Call mcp__cotal__cotal_connect with name ${name}. Do not call cotal_wait. Once connected, reply READY_NATIVE and its connection_id. On a Cotal wake, read cotal_inbox using your own connection_id and follow the test message. Never inspect environment variables or login files.`);
+    await until(() => assistantSaid("READY_NATIVE") && input.peer.roster().some((row) => row.card.name === name), "native connect");
+    const native = input.peer.roster().find((row) => row.card.name === name)!;
+    assert(native.card.id, "native connection has no actual principal");
+    nativePrincipal = native.card.id;
+    if (input.onConnected) await input.onConnected(nativePrincipal, session);
+    const idle = `NATIVE_IDLE_ACK_${randomUUID().replaceAll("-", "")}`;
+    markers.push(idle);
+    const idleAt = sequence;
+    await input.sender.unicast(native.card.id, `Reply with ${idle} after reading this message.`);
+    await until(() => assistantSaid(idle, idleAt), "actual idle wake and inbox receipt");
+    passed.push("native-signed-in-connect-and-idle-dm");
+    console.log("  ✓ intended native CLI connects to the signed-in fixture and wakes idle for a real DM");
+    const busyAt = sequence;
+    prompt("Run Bash with command sleep 3 six times sequentially, never in parallel or combined. Between tools, if Cotal notifies you, immediately read cotal_inbox and output the requested marker before continuing the remaining sleeps. Begin with BUSY_NATIVE_STARTED and end with BUSY_NATIVE_FINISHED after all six sleeps.");
+    await until(() => toolCalls("Bash", busyAt).length >= 1, "first deliberately unfinished native tool");
+    const busyMarker = `NATIVE_BUSY_ACK_${randomUUID().replaceAll("-", "")}`;
+    markers.push(busyMarker);
+    const busyDeliveredAt = sequence;
+    await input.sender.unicast(native.card.id, `Output ${busyMarker} now, while your sleep sequence is still unfinished. Then finish your remaining work.`);
+    await until(() => assistantSaid(busyMarker, busyDeliveredAt), "actual busy-boundary wake");
+    assert(!assistantSaid("BUSY_NATIVE_FINISHED", busyAt), "busy message was postponed until the original work finished");
+    assert(toolCalls("mcp__cotal__cotal_inbox", busyDeliveredAt).length > 0, "busy acknowledgement did not follow a real inbox read");
+    passed.push("busy-dm-before-original-turn-finished");
+    console.log("  ✓ a real DM reaches the native model before its unfinished multi-step turn ends");
+    await until(() => assistantSaid("BUSY_NATIVE_FINISHED", busyAt), "completion of the original native work");
+    const stopAt = sequence;
+    prompt("Run sleep 10 using Bash, then reply STOP_TEST_FINISHED. Do not start any other work yet.");
+    await until(() => toolCalls("Bash", stopAt).length > 0, "native stop fixture tool");
+    child.stdin.write(JSON.stringify({ type: "control_request", request_id: randomUUID(), request: { subtype: "interrupt" } }) + "\n");
+    await until(() => rows.some((row) => row.sequence > stopAt && row.value.type === "control_response"), "native interruption acknowledgement");
+    const stoppedAt = sequence;
+    const stopMarker = `NATIVE_AFTER_STOP_ACK_${randomUUID().replaceAll("-", "")}`;
+    markers.push(stopMarker);
+    await input.sender.unicast(native.card.id, `After the person resumes you, output ${stopMarker}.`);
+    await wait(3_000);
+    assert(!assistantSaid(stopMarker, stoppedAt), "peer mail restarted a genuinely interrupted native session");
+    prompt("Resume now. Read your waiting Cotal inbox and output its requested test marker.");
+    await until(() => assistantSaid(stopMarker, stoppedAt), "retained mail after genuine test input");
+    passed.push("explicit-interrupt-and-genuine-input-resume");
+    console.log("  ✓ explicit native interruption retains mail without autonomous restart, then resumes on input");
+    prompt("Call cotal_disconnect with your own connection_id and reply NATIVE_CLEANUP_COMPLETE.");
+    await until(() => assistantSaid("NATIVE_CLEANUP_COMPLETE") && !input.peer.roster().some((row) => row.card.name === name && (row as any).status !== "offline"), "native disconnect");
+    passed.push("native-exact-disconnect");
+    console.log("  ✓ intended native disconnect retires its own conversation");
+  } finally {
+    child.stdin.end();
+    await Promise.race([exited, wait(10_000)]);
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+      await exited;
+    }
+    closeSync(out); closeSync(err);
+    if (input.evidence) {
+      mkdirSync(input.evidence, { recursive: true, mode: 0o700 });
+      for (const file of ["native-stdout.jsonl", "native-stderr.log"]) copyFileSync(join(fixture, file), join(input.evidence, file), constants.COPYFILE_EXCL);
+      const files = ["hooks/native-wake.js", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"];
+      writeFileSync(join(input.evidence, "receipt.json"), JSON.stringify({ model: "claude-sonnet-5-5", session, principal: nativePrincipal,
+        passed, markers, hostedAcceptance: false, loginCacheCopied: false, childExited: child.exitCode !== null || child.signalCode !== null,
+        source: Object.fromEntries(files.map((file) => [file, createHash("sha256").update(readFileSync(join(plugin, file))).digest("hex")])) }, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+    }
+  }
+  assert(nativePrincipal, "native acceptance had no connected principal");
+  return { principal: nativePrincipal, markers, stdout: readFileSync(join(fixture, "native-stdout.jsonl"), "utf8") };
+}

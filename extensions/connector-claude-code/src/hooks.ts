@@ -121,6 +121,9 @@ const REPEAT_LABEL_CAP = 512;
  *  injected. Both must be wired into {@link startControlServer} — the handler surfaces, the
  *  callback is the only place a peer message is ever acked. */
 export interface ClaudeHooks {
+  /** Adopt a native transcript when a personal connection starts mid-session. No synthetic
+   * lifecycle event is needed, and the source decides the pre-connection privacy boundary. */
+  adoptTranscript(path: string, source: unknown): void;
   handle: HookHandle;
   /** Pass as {@link ControlServerOpts.onReply}. */
   onReply: (ev: HookEvent, delivered: boolean) => void;
@@ -486,7 +489,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
   };
 
-  return { handle, onReply };
+  return { handle, onReply, adoptTranscript: adoptEvents };
 }
 
 /** One `claude/channel` push. A rejection is surfaced to the caller. */

@@ -116,8 +116,8 @@ try {
   }, ts: new Date().toISOString() } as never);
   const userMesh = await run(["provision"], { space: "usermesh", name: "claude_app" });
   check(
-    "a mesh that uses per-user sign-in is refused by name",
-    userMesh.code === 1 && /per-user sign-in/.test(userMesh.reply?.error) && userMesh.reply.error.includes('"usermesh"'),
+    "a signed-in mesh refuses a missing native session before provisioning",
+    userMesh.code === 1 && /native session identity before connecting/.test(userMesh.reply?.error),
     userMesh.out,
   );
   check("  and it made no credential directory", credDirs().length === before, credDirs());

@@ -6,7 +6,7 @@
  */
 import { createConnection } from "node:net";
 import { hasIdentity } from "@cotal-ai/connector-core/relay";
-import { WAKE_ID, wakeSockets } from "./wake-feed.js";
+import { WAKE_ID, nativeSocketPath, wakeSockets } from "./wake-feed.js";
 import type { RenderedInboxPreview } from "@cotal-ai/connector-core";
 
 /** How often to look for a server that opened its feed since. */
@@ -16,6 +16,27 @@ const SCAN_MS = 1_000;
 const wakeEvent = (id: string) => `Cotal: a new message for connection_id ${id}. Read it with cotal_inbox.`;
 const previewEvent = (id: string, preview: RenderedInboxPreview) =>
   `Cotal preview for connection_id ${id}: ${JSON.stringify(preview)}`;
+
+async function relayNative(claude: number, raw: string): Promise<void> {
+  const event = JSON.parse(raw) as Record<string, unknown>;
+  if (typeof event.session_id !== "string" || !WAKE_ID.test(event.session_id) || raw.length > 8_192)
+    throw new Error("invalid native lifecycle frame");
+  const paths = wakeSockets(claude);
+  if (paths.length === 0) throw new Error("no local native lifecycle server");
+  await Promise.all(paths.map((path) => new Promise<void>((resolve, reject) => {
+    const s = createConnection(nativeSocketPath(path));
+    let reply = "";
+    s.setEncoding("utf8");
+    s.setTimeout(2_000, () => s.destroy(new Error("native lifecycle relay timed out")));
+    s.on("connect", () => s.write(`${JSON.stringify({ op: "native", event })}\n`));
+    s.on("data", (data: string) => { reply += data; if (reply.length > 128) s.destroy(); });
+    s.on("error", reject);
+    s.on("close", () => {
+      try { if (JSON.parse(reply).ok === true) resolve(); else reject(new Error("native lifecycle binding refused")); }
+      catch { reject(new Error("native lifecycle binding was not confirmed")); }
+    });
+  })));
+}
 
 function main(): void {
   if (hasIdentity()) return;
@@ -27,12 +48,24 @@ function main(): void {
     process.exitCode = 1;
     return;
   }
+  const eventAt = process.argv.indexOf("--native-event");
+  if (eventAt >= 0) {
+    void relayNative(claude, process.argv[eventAt + 1] ?? "").catch(() => {
+      process.stderr.write("[cotal-monitor] native lifecycle binding was not confirmed\n");
+      process.exitCode = 1;
+    });
+    return;
+  }
+  const sessionAt = process.argv.indexOf("--session");
+  const session = sessionAt >= 0 ? process.argv[sessionAt + 1] : undefined;
+  if (session !== undefined && !WAKE_ID.test(session)) throw new Error("invalid native session identity");
   const reading = new Set<string>();
   const read = (path: string) => {
     reading.add(path);
     let buf = "";
     const s = createConnection(path);
     s.setEncoding("utf8");
+    if (session) s.on("connect", () => s.write(`${JSON.stringify({ op: "watch", session })}\n`));
     s.on("data", (d: string) => {
       buf += d;
       for (let i; (i = buf.indexOf("\n")) >= 0; ) {

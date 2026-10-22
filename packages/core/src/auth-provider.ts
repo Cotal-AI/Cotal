@@ -324,6 +324,17 @@ export interface AuthProvider extends Extension {
    * its own named message.
    */
   postAgentProvisioning?(opts: { url: string; idpUrl: string; actor: string }): Promise<unknown>;
+  /** Present the signed-in human's proof to a discovered conversation-identity authority. The
+   * caller validates the selected registration and endpoint before this call. The provider keeps
+   * the proof private, refuses non-HTTPS destinations and redirects, and performs one request only.
+   * A transport failure is an unknown outcome; callers retain their original request and secret.
+   * The status is returned with the body because pending retirement is not completed cleanup. */
+  requestConversationIdentity?(opts: {
+    url: string;
+    idpUrl: string;
+    method: "POST" | "DELETE";
+    body?: { v: 1; requestId: string; tokenHash: string; label?: string };
+  }): Promise<{ status: number; body: unknown }>;
   /**
    * CLIENT side of a REMOTE mesh's one-time enrollment redeem: GET the secret-bearing enrollment
    * URL exactly once and return the parsed JSON answer verbatim. The URL itself is the credential,

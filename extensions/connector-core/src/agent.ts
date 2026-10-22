@@ -2358,7 +2358,7 @@ export class MeshAgent extends EventEmitter {
   // ---- the turn relay (seat side) ------------------------------------------------------------
 
   private ensureTurnPoll(): void {
-    if (this.turnPollTimer !== undefined) return;
+    if (this.config.turnRelay === false || this.turnPollTimer !== undefined) return;
     const t = setInterval(() => {
       void this.pollTurns().catch((e: unknown) => this.notePullTrouble((e as Error).message));
     }, TURN_POLL_MS);
@@ -2372,7 +2372,7 @@ export class MeshAgent extends EventEmitter {
    *  A seat with no manager in its space, or no self-service reach, gets a refused invoke and
    *  simply has no relay — silence, not an error, because most joined sessions are exactly that. */
   private async pollTurns(): Promise<void> {
-    if (!this._connected || this._stopping || this.turnPollBusy) return;
+    if (this.config.turnRelay === false || !this._connected || this._stopping || this.turnPollBusy) return;
     this.turnPollBusy = true;
     this.yieldedSincePull.clear();
     try {

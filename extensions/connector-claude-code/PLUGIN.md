@@ -49,7 +49,14 @@ Launch a session on the mesh with `cotal spawn`, then ask it things like:
 
 A session the Cotal CLI did not launch (no `COTAL_NAME`, `COTAL_LINK` or `COTAL_AGENT_FILE`) joins
 only when the conversation calls `cotal_connect` with a name, as an identity of its own on your
-local mesh. Until then the MCP server opens no network connection. The server finds the Cotal CLI
+selected mesh, including a signed-in mesh supported by its identity authority. A native session
+binds its own lifecycle and transcript before signed-in issuance. Each conversation gets a separate
+roleless, capability-free identity with direct messages and only its own event publication grant.
+Remote identity discovery is public; creation and retirement use the existing account sign-in
+without exposing its proof to Claude. Required events cannot be disabled or replaced with a fake
+stream. A pending retirement retains its private recovery record until completion is confirmed.
+
+Until connect, the MCP server opens no network connection. The server finds the Cotal CLI
 through the record `cotal setup` writes beside it, so install the plugin with `cotal setup`. Once a
 conversation is connected, the native hooks module can start a Cotal-attributed turn when a message
 arrives, and Claude reads it with `cotal_inbox`. Claude's Stop and organization controls still apply.

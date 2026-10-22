@@ -241,10 +241,23 @@ Nothing joins until the conversation calls `cotal_connect` with a name. The plug
 `cotal app-identity provision` with the CLI that `cotal setup` recorded beside the plugin
 (`dist/cli.json`), so it does not need `cotal` on `PATH`. Each conversation gets an identity of its
 own on the mesh a bare `cotal spawn` from the session's directory would pick. A name that a live peer
-holds moves to `<name>_2`, `<name>_3` and so on. The identity's channels and role come from the mesh's
-default persona. `cotal_disconnect`, the end of the session or a signal retires it, and the next
-provision retires one whose server was killed. A plugin that `cotal setup` did not install has no
-record, and `cotal_connect` names that remedy.
+holds moves to `<name>_2`, `<name>_3` and so on. On a static-auth or open mesh, channels and role come
+from the default persona. A plugin that `cotal setup` did not install has no record, and
+`cotal_connect` names that remedy.
+
+Personal native Code sessions can also join a signed-in mesh. The plugin binds the real native
+session and transcript before requesting an identity. Each conversation gets a separate actor with
+no role, capabilities or ordinary channel access. It can receive direct messages and publish only
+its own event channel. The existing signed-in account authorizes creation; no login proof reaches
+the conversation or its tools. A remote mesh must advertise conversation identity v1 on its pinned
+HTTPS discovery endpoint. An absent capability, a different origin or a changed registration is
+refused before authenticated issuance. There is no legacy provisioning fallback.
+
+A signed-in identity keeps its request and secret in private local recovery state. A lost create
+response retries the same request without rotating its secret or allocating another identity.
+`cotal_disconnect`, session end and a signal request retirement of that lifecycle only. Pending or
+unconfirmed retirement retains its record and reports incomplete cleanup. Other conversations stay
+connected. A mesh requiring events refuses a connection without a native transcript source.
 
 The gateway's MCP annotations distinguish read-only queries from updates. Orientation, connection
 status, the roster and channel information are read-only. Sending messages, connecting and joining
@@ -280,7 +293,9 @@ the plugin copy under `~/.cotal/claude-plugin`. Quit and reopen Claude Desktop t
 file that is not valid JSON is refused and left as it was. Setup can use Desktop's bundled Code
 executable when there is no standalone `claude` CLI. Its installed MCP and command hooks use the
 recorded Node executable, so the app need not find Node on `PATH`. On Linux, setup writes nothing
-for Desktop Chat.
+for Desktop Chat. Desktop Chat supplies no native Code transcript binding, so this local server
+refuses its signed-in connection path before identity issuance. The hosted connector is a separate
+connection path; it does not supply autonomous chat wake.
 
 Desktop's working directory is not your project, so its mesh is the `cotal use` mesh, else the only
 one running. Desktop runs no monitor, so a Desktop conversation hears messages when it calls a tool,
@@ -477,8 +492,12 @@ read. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out
 space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
 private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
 A hand-driven user-mode session may carry the same decision as `COTAL_EVENTS_REQUIRED=1`. Its own
-publish grant must cover `events.<owner>.<actor>` or the connector refuses before joining. An unmanaged
-session with no launch material and no required-policy fallback keeps the generic default behavior.
+publish grant must cover `events.<owner>.<actor>` or the connector refuses before joining. A personal
+native Code connection to a signed-in mesh uses the same recorder and captures its transcript
+boundary before requesting an identity. Records from before that connection are not published.
+Its native lifecycle drives presence and recording for that session only; a subagent or another
+conversation cannot end its main run. The event channel keeps the space's normal read permissions.
+A personal connection does not obtain manager-call authority.
 
 If the event plane stops, the seat keeps running and its mesh connection, on every connector and
 on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay

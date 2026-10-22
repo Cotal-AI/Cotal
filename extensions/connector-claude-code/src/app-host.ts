@@ -1,43 +1,42 @@
-/**
- * The local gateway host a plain Claude session serves: a Claude Code session the launcher did not
- * start, or Claude Desktop through its extension. Each `cotal_connect` runs `cotal app-identity
- * provision` with the CLI that installed the plugin, joins the mesh with the env it prints, and
- * keeps the connection in this process until `cotal_disconnect`, the end of stdin, or a signal,
- * which retire it.
- */
+/** The local gateway for personal Claude conversations. Issuance and retirement stay in the CLI;
+ * native lifecycle and transcripts stay in this adapter and are bound to an explicit session. */
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { configFromEnv, MeshAgent, NameTaken, type GatewayConnection, type GatewayHost } from "@cotal-ai/connector-core";
+import { basename, isAbsolute } from "node:path";
+import { configFromEnv, eventPlaneArmed, MeshAgent, NameTaken, type GatewayConnection, type GatewayHost, type HookEvent } from "@cotal-ai/connector-core";
+import { runAgentBearer } from "@cotal-ai/core";
+import { createClaudeHandle, type ClaudeHooks } from "./hooks.js";
+import { createClaudeEventPlane } from "./claude-events.js";
+import { createBoundClaudeTranscriptSource } from "./agui-source.js";
 
-/** How long one `app-identity` run may take, and how long a fresh agent may take to join. */
 const PLUMBING_MS = 60_000;
 const JOIN_MS = 20_000;
 
 export interface AppHostOptions {
-  /** The argv that runs the CLI. Read when a conversation connects, so a server whose record is
-   *  missing still answers MCP and refuses `cotal_connect` with the remedy. */
   cotal: () => readonly string[];
-  /** Where `app-identity` runs. A Claude Code session passes its own directory, so a project's mesh
-   *  is found as `cotal spawn` finds it; Claude Desktop passes a directory that is no project. */
   cwd: string;
   env: NodeJS.ProcessEnv;
 }
 
 export interface AppHost extends GatewayHost {
-  /** Disconnect and retire every connection. Safe to call more than once. */
   closeAll(): Promise<void>;
+  nativeEvent(event: Record<string, unknown>): Promise<void>;
+  sessionFor(id: string): string | undefined;
 }
 
+interface NativeBinding { session: string; path: string; event: HookEvent }
 interface Held {
   conn: GatewayConnection;
-  /** The credential directory `retire` takes; absent on a mesh with no credentials. */
   dir?: string;
+  session?: string;
+  hooks?: ClaudeHooks;
+  plane?: ReturnType<typeof createClaudeEventPlane>;
+  closing?: Promise<boolean>;
+  stopped?: boolean;
 }
 
 type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string } } | { ok: false; taken?: true; error?: string };
 
-/** The connection's own launch env: the process env without a launcher identity, plus what provision
- *  printed. A plain session has no `COTAL_NAME`, but it can carry other `COTAL_*` settings. */
 function launchEnv(base: NodeJS.ProcessEnv, printed: Record<string, string>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(base)) if (!k.startsWith("COTAL_") || k === "COTAL_HOME") env[k] = v;
@@ -46,76 +45,125 @@ function launchEnv(base: NodeJS.ProcessEnv, printed: Record<string, string>): No
 
 export function createAppHost(o: AppHostOptions): AppHost {
   const held = new Map<string, Held>();
+  const bindings = new Map<string, NativeBinding>();
+  const pending = new Map<string, string>();
   let opening: Promise<unknown> = Promise.resolve();
-
-  const plumbing = (args: string[]): Promise<Reply> =>
-    new Promise((resolve, reject) => {
-      const cotal = o.cotal();
-      execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd: o.cwd, env: o.env, timeout: PLUMBING_MS }, (error, stdout) => {
-        const line = stdout.trim().split("\n").at(-1);
-        try {
-          resolve(JSON.parse(line ?? "") as Reply);
-        } catch {
-          reject(new Error(`the Cotal CLI did not answer${error ? `: ${error.message.split("\n")[0]}` : ""}`));
-        }
-      });
+  const plumbing = (args: string[]): Promise<Reply> => new Promise((resolve, reject) => {
+    const cotal = o.cotal();
+    execFile(cotal[0]!, [...cotal.slice(1), "app-identity", ...args], { cwd: o.cwd, env: o.env, timeout: PLUMBING_MS }, (_error, stdout) => {
+      try { resolve(JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as Reply); }
+      catch { reject(new Error("the Cotal CLI did not return an identity result; its saved request was retained for recovery")); }
     });
-
-  const retire = async (dir: string | undefined): Promise<void> => {
+  });
+  const retire = async (dir?: string): Promise<void> => {
     if (!dir) return;
-    const r = await plumbing(["retire", "--dir", dir]);
-    if (!r.ok) throw new Error(r.error ?? "retire failed");
+    const reply = await plumbing(["retire", "--dir", dir]);
+    if (!reply.ok) throw new Error(reply.error ?? "identity retirement is unconfirmed");
   };
-
-  const open = async (name: string): Promise<GatewayConnection> => {
-    const r = await plumbing(["provision", "--name", name]);
-    if (!r.ok) {
-      if (r.taken) throw new NameTaken(name);
-      throw new Error(r.error ?? "provision failed");
+  const open = async (name: string, context?: string): Promise<GatewayConnection> => {
+    const binding = context ? bindings.get(context) : undefined;
+    if (context && !binding) throw new Error("the native conversation has not bound its lifecycle and transcript; no identity was requested");
+    if (context && [...held.values()].some((h) => h.session === context))
+      throw new Error("this native conversation already has a connection; disconnect it before connecting again");
+    const previous = context ? pending.get(context) : undefined;
+    if (previous) { await retire(previous); pending.delete(context!); }
+    // Capture the personal privacy boundary before provisioning or waiting for a network connection.
+    const source = binding ? await createBoundClaudeTranscriptSource(binding.path, "resume") : undefined;
+    const reply = await plumbing(["provision", "--name", name, ...(binding ? ["--session", binding.session, "--events"] : [])]);
+    if (!reply.ok) {
+      if (reply.taken) throw new NameTaken(name);
+      throw new Error(reply.error ?? "identity provisioning failed");
     }
-    const dir = r.retire?.dir;
+    const dir = reply.retire?.dir;
     let agent: MeshAgent | undefined;
+    let plane: ReturnType<typeof createClaudeEventPlane> | undefined;
     try {
-      const config = configFromEnv(launchEnv(o.env, r.env));
+      const env = launchEnv(o.env, reply.env);
+      const config = configFromEnv(env);
       config.connector = "claude";
-      agent = new MeshAgent(config);
-      agent.on("error", (e: Error) => process.stderr.write(`[cotal-connector] ${name}: ${e.message}\n`));
+      config.turnRelay = false;
+      if (config.userAuth?.bearerCmd) {
+        const { owner, actor, sentinelCreds, bearerCmd } = config.userAuth;
+        // A personal conversation has a leaf credential, not a manager-call instrument.
+        config.userAuth = { owner, actor, sentinelCreds, bearer: async () => {
+          const token = await runAgentBearer(bearerCmd, { env });
+          if (!token) throw new Error("the personal conversation's bearer command returned no token");
+          return token;
+        } };
+      }
+      if (eventPlaneArmed(config, env) && !binding) throw new Error("this mesh requires a bound native event source");
+      agent = new MeshAgent(config, env, { withholdProcessCwd: true });
+      agent.on("error", () => process.stderr.write("[cotal-connector] personal connection error; inspect cotal_connection_status\n"));
+      if (eventPlaneArmed(config, env)) plane = createClaudeEventPlane(agent, config, env, source);
+      const hooks = binding ? createClaudeHandle({ env, events: () => plane?.events }) : undefined;
+      hooks?.adoptTranscript(binding!.path, "resume");
       void agent.start();
-      for (let waited = 0; !agent.connected && waited < JOIN_MS; waited += 100) await new Promise((r) => setTimeout(r, 100));
-      if (!agent.connected) throw new Error(`${name} did not join the mesh "${config.space}" within ${JOIN_MS / 1000} s${agent.connectionIssue ? `: ${agent.connectionIssue}` : ""}`);
+      for (let waited = 0; !agent.connected && waited < JOIN_MS; waited += 100) await new Promise((resolve) => setTimeout(resolve, 100));
+      if (!agent.connected) throw new Error(`the personal conversation did not join within ${JOIN_MS / 1000} s; its identity was retained for exact cleanup`);
       const conn: GatewayConnection = { id: randomUUID(), agent, config };
-      held.set(conn.id, { conn, ...(dir ? { dir } : {}) });
+      held.set(conn.id, { conn, dir, session: binding?.session, hooks, plane });
+      if (binding && hooks) await hooks.handle(agent, binding.event);
       return conn;
-    } catch (e) {
+    } catch (error) {
+      plane?.stop();
+      await plane?.events.close().catch(() => {});
       await agent?.stop().catch(() => {});
-      await retire(dir).catch(() => {});
-      throw e;
+      try { await retire(dir); }
+      catch { if (context && dir) pending.set(context, dir); }
+      throw error;
     }
   };
-
   const close = async (id: string): Promise<boolean> => {
     const h = held.get(id);
     if (!h) return false;
-    held.delete(id);
-    await h.conn.agent.stop();
-    await retire(h.dir);
-    return true;
+    if (h.closing) return h.closing;
+    h.closing = (async () => {
+      if (!h.stopped) {
+        h.plane?.stop();
+        await h.plane?.events.close();
+        await h.conn.agent.stop();
+        h.stopped = true;
+      }
+      await retire(h.dir);
+      held.delete(id);
+      return true;
+    })();
+    try { return await h.closing; }
+    finally { h.closing = undefined; }
   };
-
   return {
     account: () => "local",
-    // One open at a time, so a name this process just opened is live before the next one is checked.
-    open(_account, name) {
-      const next = opening.then(() => open(name));
+    open(_account, name, context) {
+      const next = opening.then(() => open(name, context));
       opening = next.catch(() => {});
       return next;
     },
-    async find(_account, id) {
-      return held.get(id)?.conn;
-    },
+    async find(_account, id) { const h = held.get(id); return h?.stopped ? undefined : h?.conn; },
     close: (_account, id) => close(id),
+    sessionFor: (id) => held.get(id)?.session,
+    async nativeEvent(event) {
+      const session = event.session_id;
+      if (typeof session !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(session) || typeof event.hook_event_name !== "string")
+        throw new Error("invalid native session binding");
+      if (event.agent_id !== undefined) return;
+      const previous = bindings.get(session);
+      const path = typeof event.transcript_path === "string" ? event.transcript_path : previous?.path;
+      if (!path || !isAbsolute(path) || basename(path) !== `${session}.jsonl` || (previous && previous.path !== path))
+        throw new Error("native transcript does not match its explicit session identity");
+      const bound = { ...event, transcript_path: path } as HookEvent;
+      bindings.set(session, { session, path, event: bound });
+      for (const [id, h] of held) {
+        if (h.session !== session || h.stopped) continue;
+        // The gateway owns inbox consumption. Lifecycle replies are never injected or acknowledged.
+        await h.hooks?.handle(h.conn.agent, bound);
+        if (event.hook_event_name === "SessionEnd") await close(id);
+      }
+      if (event.hook_event_name === "SessionEnd") bindings.delete(session);
+    },
     async closeAll() {
-      await Promise.allSettled([...held.keys()].map((id) => close(id)));
+      const results = await Promise.allSettled([...held.keys()].map(close));
+      if (results.some((r) => r.status === "rejected") || pending.size)
+        throw new Error("some personal identities have pending cleanup; their saved lifecycle records were retained");
     },
   };
 }

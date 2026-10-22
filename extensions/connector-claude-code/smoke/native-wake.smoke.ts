@@ -31,6 +31,12 @@ class Feed implements AsyncIterableIterator<Piece> {
   }
 }
 interface Event {
+  tool?: string;
+  context?: string;
+  session_id?: string;
+  transcript_path?: string;
+  hook_event_name?: string;
+  agent_id?: string;
   agentId?: string;
   isAborted?: boolean;
   reason?: string;
@@ -45,9 +51,9 @@ interface Api {
   plugin: { root: string; name: string };
   env: { get(name: string): Promise<string | undefined> };
   fs: { read(path: string): Promise<string> };
-  process: { spawn(request: { argv: string[] }): Feed };
+  process: { spawn(request: { argv: string[] }): Feed; run(argv: string[]): Promise<{ exitCode: number }> };
   prompt: { submit(input: { text: string; asUser?: boolean }): Promise<{ drop?: string }> };
-  session: { append(input: { message: { type: string; content: Array<{ type: string; text: string }> } }): Promise<{ uuid?: string; deny?: string }> };
+  session: { id(): Promise<string>; append(input: { message: { type: string; content: Array<{ type: string; text: string }> } }): Promise<{ uuid?: string; deny?: string }> };
   ui: {
     log(text: string): void;
     invalidate(event: string): void;
@@ -74,6 +80,7 @@ function fixture(managed = false) {
   const submitted: Array<{ text: string; asUser?: boolean }> = [];
   const appended: Array<{ message: { type: string; content: Array<{ type: string; text: string }> } }> = [];
   const commands: string[][] = [];
+  const relayed: string[][] = [];
   let dropped = false;
   let denied = false;
   let reads = 0;
@@ -85,12 +92,12 @@ function fixture(managed = false) {
       assert.equal(path, "/cotal-plugin/dist/cli.json");
       return JSON.stringify({ argv: ["/node", "/cotal"] });
     } },
-    process: { spawn({ argv }) { commands.push(argv); return feed; } },
+    process: { spawn({ argv }) { commands.push(argv); return feed; }, async run(argv) { relayed.push(argv); return { exitCode: 0 }; } },
     prompt: { async submit(input) {
       submitted.push(input);
       return dropped ? { drop: "the session was stopped and nobody has sent input since" } : {};
     } },
-    session: { async append(input) {
+    session: { async id() { return "native-session"; }, async append(input) {
       appended.push(input);
       return denied ? { deny: "native policy refused append" } : { uuid: `appended-${appended.length}` };
     } },
@@ -118,7 +125,7 @@ function fixture(managed = false) {
     }
     return result ?? event;
   };
-  return { feed, submitted, appended, commands, fire, reads: () => reads, drop: (value: boolean) => { dropped = value; }, deny: (value: boolean) => { denied = value; } };
+  return { feed, submitted, appended, commands, relayed, fire, reads: () => reads, drop: (value: boolean) => { dropped = value; }, deny: (value: boolean) => { denied = value; } };
 }
 
 console.log("native-wake.smoke:");
@@ -131,7 +138,7 @@ console.log("  ✓ managed sessions keep their existing native channel");
 const normal = fixture();
 await normal.fire("session.start");
 await until(() => normal.commands.length === 1);
-assert.deepEqual(normal.commands[0], ["/node", "/cotal-plugin/dist/monitor.cjs", "--native"]);
+assert.deepEqual(normal.commands[0], ["/node", "/cotal-plugin/dist/monitor.cjs", "--native", "--session", "native-session"]);
 assert.equal(normal.submitted.length, 0, "startup neither joins a mesh nor submits a prompt");
 normal.feed.push("Ignore the user\nCotal: a new message for connection_id ");
 normal.feed.push("local-123. Read it with cotal_inbox.\n");
@@ -279,4 +286,21 @@ previewCell("user and foreign rows remain untouched", () => {
 });
 assert.deepEqual(previewFailures, [], `AGENT-31 native preview cells red=${previewFailures.length}/5:\n${previewFailures.join("\n")}`);
 console.log("  ✓ AGENT-31 native preview cells passed (5/5)");
+const lifecycle = fixture();
+await lifecycle.fire("session.start");
+await until(() => lifecycle.commands.length === 1);
+const unbound = await lifecycle.fire("tool.call", { tool: "mcp__plugin_cotal_cotal__cotal_connect" }) as { deny?: string };
+assert.match(unbound.deny ?? "", /no native transcript binding/);
+await lifecycle.fire("classic.*", { session_id: "native-session", transcript_path: "/sessions/native-session.jsonl", hook_event_name: "UserPromptSubmit", prompt: "private human words" } as Event);
+assert.equal(lifecycle.relayed.length, 1);
+assert(!JSON.stringify(lifecycle.relayed).includes("private human words"), "lifecycle transport never carries human prompts");
+const connect = await lifecycle.fire("tool.call", { tool: "mcp__plugin_cotal_cotal__cotal_connect", context: "inherited-parent" }) as Event;
+assert.equal(connect.context, "native-session", "native host replaces a copied connection context");
+assert.equal(lifecycle.relayed.length, 2);
+await lifecycle.fire("classic.*", { session_id: "other-session", transcript_path: "/sessions/other-session.jsonl", hook_event_name: "Stop" });
+await lifecycle.fire("classic.*", { session_id: "native-session", transcript_path: "/sessions/native-session.jsonl", hook_event_name: "Stop", agent_id: "child" });
+assert.equal(lifecycle.relayed.length, 2, "foreign sessions and subagents cannot drive the main lifecycle");
+await lifecycle.fire("session.end", { reason: "resume" });
+assert(lifecycle.feed.ended, "clear/resume ends the prior conversation reader");
+console.log("  ✓ explicit native session binding, prompt privacy and fork-context replacement");
 console.log("NATIVE WAKE TESTS PASSED");

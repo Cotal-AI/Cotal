@@ -8,6 +8,19 @@ let submitting = false;
 let paused = false;
 let active = false;
 let reader;
+let readerSession;
+let nativeBinding;
+
+async function relayNative($, event) {
+  if (await $.env.get('COTAL_NAME') || await $.env.get('COTAL_LINK') || await $.env.get('COTAL_AGENT_FILE')) return;
+  const root = $.plugin.root;
+  const record = JSON.parse(await $.fs.read(root + '/dist/cli.json'));
+  const fields = ['hook_event_name', 'session_id', 'transcript_path', 'cwd', 'source', 'notification_type', 'error', 'agent_id'];
+  const frame = {};
+  for (const key of fields) if (typeof event[key] === 'string') frame[key] = event[key];
+  const result = await $.process.run([record.argv[0], root + '/dist/monitor.cjs', '--native', '--native-event', JSON.stringify(frame)]);
+  if (result.exitCode !== 0) throw new Error('Cotal native lifecycle binding was not confirmed');
+}
 
 async function submit($, inTurn = false) {
   if (submitting || paused || active !== inTurn) return;
@@ -48,7 +61,11 @@ async function listen($) {
     if (!Array.isArray(record.argv) || typeof record.argv[0] !== 'string') {
       throw new Error('missing Cotal CLI record');
     }
-    reader = $.process.spawn({ argv: [record.argv[0], root + '/dist/monitor.cjs', '--native'] });
+    const session = await $.session.id();
+    if (reader && readerSession === session) return;
+    await reader?.return();
+    readerSession = session;
+    reader = $.process.spawn({ argv: [record.argv[0], root + '/dist/monitor.cjs', '--native', '--session', session] });
     let buffer = '';
     for await (const piece of reader) {
       if (piece.stream !== 'stdout') continue;
@@ -79,6 +96,16 @@ async function listen($) {
 }
 
 export function register(on) {
+  on('classic.*', async ($, e, next) => {
+    const result = await next(e);
+    if (e.agent_id !== undefined || typeof e.session_id !== 'string' || typeof e.transcript_path !== 'string') return result;
+    if (!['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolBatch', 'Notification', 'Stop', 'StopFailure', 'SessionEnd'].includes(e.hook_event_name)) return result;
+    if (e.session_id !== await $.session.id()) return result;
+    nativeBinding = e;
+    try { await relayNative($, e); } catch {}
+    if (e.hook_event_name === 'SessionStart') void listen($);
+    return result;
+  });
   on('session.append', async ($, e, next) => {
     const own = e.origin.kind === 'plugin' && e.origin.name === $.plugin.name && !e.origin.asUser;
     const text = e.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
@@ -140,7 +167,15 @@ export function register(on) {
     return next(e);
   });
   on('tool.call', async ($, e, next) => {
-    const result = await next(e);
+    let input = e;
+    if (e.agentId === undefined && /^mcp__(cotal|plugin_cotal_cotal)__cotal_connect$/.test(e.tool)) {
+      const session = await $.session.id();
+      if (!nativeBinding || nativeBinding.session_id !== session) return { deny: 'Cotal has no native transcript binding for this conversation. Reload the Cotal plugin before connecting.' };
+      try { await relayNative($, nativeBinding); }
+      catch { return { deny: 'Cotal could not bind this native conversation to its local server. No identity was requested.' }; }
+      input = { ...e, context: session };
+    }
+    const result = await next(input);
     if (e.agentId === undefined && !next.signal.aborted) await submit($, true);
     return result;
   });
@@ -161,7 +196,12 @@ export function register(on) {
     return completed;
   });
   on('session.end', async ($, e, next) => {
-    if (e.reason !== 'clear' && e.reason !== 'resume') await reader?.return();
+    await reader?.return();
+    reader = undefined;
+    readerSession = undefined;
+    nativeBinding = undefined;
+    pending.clear();
+    previews.clear();
     return next(e);
   });
 }

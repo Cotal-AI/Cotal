@@ -24,29 +24,19 @@ import {
   MESH_FIRST_STEER,
   WORKFLOW_STEER,
   CHANNEL_GUIDANCE,
-  AguiEmitter,
-  AguiEmitterHolder,
-  eventPlaneStopped,
-  EventWal,
-  FileSubjectFrontier,
-  ensureEventWalDir,
-  resolveEventsStateRoot,
+  type AguiEmitterHolder,
   controlFromEnv,
   GATEWAY_CONNECTING,
   GATEWAY_INSTRUCTIONS,
   GATEWAY_LISTENING,
   serveGatewayStdio,
   DOCS_VERSION,
-  JsonlFileSource,
-  type DurableSource,
 } from "@cotal-ai/connector-core";
-import { principalKey } from "@cotal-ai/core";
-import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { basename, dirname, parse } from "node:path";
+import { dirname, parse } from "node:path";
 import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.js";
-import { createClaudeMapper, type ClaudeEntry, type ClaudeMapper } from "./agui-map.js";
-import { createBoundClaudeTranscriptSource } from "./agui-source.js";
+import type { ClaudeEntry } from "./agui-map.js";
+import { createClaudeEventPlane } from "./claude-events.js";
 import { createAppHost } from "./app-host.js";
 import { readCliRecord } from "./cli-record.js";
 import { openWakeFeed } from "./wake-feed.js";
@@ -80,13 +70,15 @@ async function serveLocal(desktop: boolean): Promise<void> {
   // Desktop Chat runs no native hooks module. In Code, the server and native wake reader are
   // children of the same host process, which names their private feed.
   const feed = desktop ? undefined : await openWakeFeed(process.ppid);
+  feed?.onNative((event) => host.nativeEvent(event));
   const served = await serveGatewayStdio(host, {
     source: "claude-local",
+    connectContext: !desktop,
     ...(feed
       ? {
           instructions: `${LOCAL}${GATEWAY_CONNECTING} ${CODE_LISTENING}`,
           wake: {
-            signal: (c, preview) => feed.send(c.id, preview),
+            signal: (c, preview) => feed.send(c.id, preview, host.sessionFor(c.id)),
             attach: (rewake) => feed.onReader(rewake),
             listening: () =>
               feed.watched()
@@ -172,8 +164,8 @@ async function startSession(
   if (opts.input.readableEnded || opts.input.destroyed)
     throw new Error("hosted MCP input is already ended or destroyed");
   /** Publishes this session's activity as AG-UI events on `events.<owner>.<actor>` — set below
-   *  iff COTAL_EVENTS is on (buildLaunch sets it for managed sessions; a personal session never
-   *  publishes). This replaces the `tr-<name>` transcript mirror, which is gone. */
+   *  when launch policy arms it. Personal native connections use the same recorder through the
+   *  app host, with a boundary captured when that conversation connects. */
   let events: AguiEmitterHolder<ClaudeEntry> | undefined;
 
   /** The `claude/channel` push side — set below once the MCP server exists. */
@@ -192,137 +184,8 @@ async function startSession(
   // One process may host several sessions, so its own directory is not a session's: the card's
   // directory comes from that session's SessionStart hook instead.
   const agent = new MeshAgent(config, env, { withholdProcessCwd: true });
-  const eventWaitStop = new AbortController();
-  // A Cotal bind can remain current while nats.js is reconnecting and has no server info.
-  // Wait for both edges before starting or pumping the recorder. Its transcript stays durable
-  // while the endpoint owns reconnection; shutdown cancels the wait instead of a timer killing MCP.
-  const waitForEventConnection = (): Promise<void> =>
-    new Promise<void>((resolve, reject) => {
-      const release = (): void => {
-        agent.off("connection", onConnection);
-        agent.off("transport", onTransport);
-        eventWaitStop.signal.removeEventListener("abort", onStop);
-      };
-      const finish = (): void => {
-        release();
-        resolve();
-      };
-      const onStop = (): void => {
-        release();
-        reject(new Error("seat stopping while the mesh connection is down; unpublished events stay in the transcript"));
-      };
-      const onConnection = (e: { connected: boolean }): void => {
-        if (e.connected && agent.transportConnected) finish();
-      };
-      const onTransport = (e: { connected: boolean }): void => {
-        if (e.connected && agent.connected) finish();
-      };
-      agent.on("connection", onConnection);
-      agent.on("transport", onTransport);
-      eventWaitStop.signal.addEventListener("abort", onStop);
-      if (eventWaitStop.signal.aborted) onStop();
-      else if (agent.connected && agent.transportConnected) finish();
-    });
-
-  if (eventPlaneArmed(config, env)) {
-    // The mapper is built inside the emitter factory, because it is keyed on the thread the
-    // transcript names and that is not known until a hook hands one over. It is HELD here because
-    // `onRunClosed` below has to reach it, and the two are assigned at different times.
-    let mapper: ClaudeMapper | undefined;
-    // The emitter is built LAZILY, on the first hook that hands over a transcript path: its source
-    // IS that transcript, whose location this process does not know until a hook says so, and
-    // `start()` reaches the broker, work that must not run for a session that never emits.
-    //
-    // The channel is derived inside the emitter from the endpoint's OWN principal, never from
-    // `config.name`, so the subject the broker enforces a grant against and the subject this
-    // publishes to are computed from the identity the connection authenticates as.
-    // ONE source for the holder's lifetime. The holder re-establishes a plane that stopped by
-    // calling this factory again, and the boundary a bound source captured on the first call is
-    // the position the thread adopted at; a second source would capture a second boundary, at the
-    // re-establish, and every record between the two would be lost without a word.
-    let source: DurableSource<ClaudeEntry> | undefined;
-    events = new AguiEmitterHolder<ClaudeEntry, unknown>(
-      async (transcriptPath: string, sessionSource: unknown) => {
-        // Captured as the FACTORY'S FIRST ACT, before the mesh wait below and before anything else
-        // this bind does: a lazily-built source otherwise positions itself on its own first read,
-        // which happens only after the mesh wait, and anything the session writes to the transcript
-        // in that window is silently dropped. `fork` runs its own file-appear wait inside this same
-        // call and still substitutes its boundary exactly once. `startup` needs no boundary.
-        const boundSource = (source ??= await createBoundClaudeTranscriptSource(transcriptPath, sessionSource));
-        const startEmitter = async () => {
-          // The events state root throws rather than defaulting to the working directory: a WAL
-          // written somewhere no later start looks is a silent loss.
-          const workspaceRoot = resolveEventsStateRoot(env);
-
-          // The native session IS the AG-UI thread, and Claude Code names the transcript after it.
-          // Taken from the path rather than from any env: the hook's path is what the emitter
-          // actually reads, so deriving the thread from anything else could key a log to one session
-          // while consuming another's bytes.
-          const threadId = basename(transcriptPath, ".jsonl");
-          const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
-
-          // The directory chain is made durable BEFORE the first transition, so a crash cannot lose
-          // the thread directory's own link and let a published thread reboot as virgin.
-          const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
-
-          // The subject is per PRINCIPAL and the log is per thread, so the expectation a publish
-          // carries lives beside the thread directories rather than inside one of them. Without it a
-          // second session of this agent opens virgin, expects an empty subject its own first session
-          // filled, and halts for good.
-          const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
-
-          // `subjectMayExist: false` is an honest claim rather than a convenient default: this is a
-          // native session id, so nothing published under this (principal, thread) pair before this
-          // log existed, and a same-session connector restart finds the log on disk and never
-          // consults the flag. The case it would be wrong for, a session that published and then
-          // lost its log, does not fail silently: the first frame goes out expecting sequence 0 on a
-          // subject that already has one, the broker refuses it, and the emitter halts.
-          const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
-
-          // Seeded from the bracket state that will exist AFTER `start` settles a pending frame,
-          // not from the folded state before it: a pending terminal closes the log's run without
-          // passing through this mapper. A re-established plane starts here with the log's run
-          // open; a mapper that opened with none would drop every assistant record until the
-          // next prompt, whose `RUN_STARTED` the brackets then refuse.
-          const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-          mapper = createClaudeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
-          return AguiEmitter.start<ClaudeEntry>({
-            endpoint: agent.ep,
-            wal,
-            subjectFrontier,
-            source: boundSource,
-            map: mapper.map,
-            // Claude writes the transcript, and a write it cut short (a full disk) leaves part of
-            // one record glued to the next on a single line that never becomes readable. That line
-            // is stepped over and named here; halting on it ended the plane, and on a space that
-            // requires events the seat with it, for good at that byte, on every restart.
-            onUnreadable: (gap) =>
-              process.stderr.write(
-                `[cotal-connector] AG-UI source: skipped an unreadable transcript record at offset ${gap.offset} ` +
-                  `(${gap.bytes} bytes): ${gap.reason}\n`,
-              ),
-          });
-        };
-
-        // Capture the source boundary above before waiting, so records written during a delayed
-        // initial connection remain eligible for publication when the endpoint becomes live.
-        await waitForEventConnection();
-        return startEmitter();
-      },
-      {
-        onError: eventPlaneStopped({ log: (line) => process.stderr.write(`[cotal-connector] ${line}\n`) }),
-        // The transcript's end when a Stop or StopFailure hook fires: what names the turn a terminal
-        // held through an outage ends.
-        sourceEnd: (transcriptPath: string) => new JsonlFileSource(transcriptPath).end(),
-        // The turn terminal closes a run the record stream never described, so the mapper still
-        // believes that run is open. Without this it would attribute the next records to a run the
-        // published stream has already finished and the emitter would refuse the batch. Keyed on
-        // the id, so a newer run opened in between is left alone.
-        onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
-        waitLive: waitForEventConnection,
-      },
-    );
-  }
+  const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;
+  events = plane?.events;
 
   // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
   // cooperative shutdown. The SOCKET PATH comes from the launch env; the first-frame TOKEN comes
@@ -351,7 +214,7 @@ async function startSession(
     (stopping ??= (async () => {
       opts.input.off("end", onInputClose);
       opts.input.off("close", onInputClose);
-      eventWaitStop.abort();
+      plane?.stop();
       try {
         controlServer?.close();
       } catch {
