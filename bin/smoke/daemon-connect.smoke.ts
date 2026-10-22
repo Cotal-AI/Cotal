@@ -144,6 +144,8 @@ const rtDir = join(root, "rt");
 mkdirSync(rtDir, { mode: 0o700 });
 const paths = daemonPaths({ XDG_RUNTIME_DIR: rtDir });
 
+/** The instance id C5 first observes; C6, C12 and C13 compare against it. */
+let firstInstance: unknown;
 try {
   const d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
   try {
@@ -181,7 +183,7 @@ try {
       check("C4 no identity written", identityFiles().length === 0, identityFiles());
     });
 
-    let firstInstance: unknown;
+    firstInstance = undefined;
     await cell("C5 ready to register", async () => {
       resetHits();
       answer = { status: 200, body: { v: 1, kind: "service-endpoint-authority-info", space: "ready", accountPublicKey: ACCOUNT_A } };
