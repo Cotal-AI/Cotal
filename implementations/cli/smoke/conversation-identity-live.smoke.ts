@@ -28,11 +28,15 @@ const key = readFileSync(join(home, "server.key"));
 const owner = "u_native_fixture";
 let base = "", discoveryMode = "valid", createMode = "valid", retireMode = "terminal";
 let publicReads = 0, authenticated = 0, issued = 0, retired = 0;
-const requests = new Map<string, { tokenHash: string; material: Record<string, any> }>();
+/** Each request waits for the fixture person. Approving a baseline request approves the concrete
+ *  empty selection, so its grant carries `endpoints: []`. */
+const requests = new Map<string, { tokenHash: string; approval: { id: string; expiresAt: string; decidedAt?: string }; material?: Record<string, any> }>();
+const approve = (requestId: string) => { requests.get(requestId)!.approval.decidedAt = new Date().toISOString(); };
+const token = (n: number) => Array.from(randomBytes(n), (byte) => "abcdefghijklmnopqrstuvwxyz234567"[byte % 32]).join("");
 const bundle = () => ({ space: "native_fixture", server: "nats://127.0.0.1:1", tlsRequired: false,
   userAuth: { provider: "cotal", idp: { url: `${base}/idp`, issuer: `${base}/idp`, audience: "cotal-cli" }, endpoints: { url: `${base}/s/native_fixture` } },
   policy: { events: "required" }, sentinelCreds: "fixture-sentinel",
-  ...(discoveryMode === "absent" ? {} : { cloudCapabilities: { conversationIdentity: {
+  ...(discoveryMode === "absent" ? {} : { cloudCapabilities: { connectionApproval: { version: 1 }, conversationIdentity: {
     version: discoveryMode === "old" ? 2 : 1,
     url: discoveryMode === "foreign" ? "https://invalid.example/api/spaces/native_fixture/conversation-identities"
       : `${base}/api/spaces/${discoveryMode === "other-space" ? "other" : "native_fixture"}/conversation-identities`,
@@ -61,20 +65,26 @@ const server = createServer({ key, cert: ca }, async (req, res) => {
     let existing = requests.get(body.requestId);
     if (existing) assert.equal(existing.tokenHash, body.tokenHash);
     if (!existing) {
-      const actor = `pa_${Array.from(randomBytes(26), (byte) => "abcdefghijklmnopqrstuvwxyz234567"[byte % 32]).join("")}`;
-      const lifecycleUid = mintLifecycleUid();
-      existing = { tokenHash: body.tokenHash, material: { v: 1, requestId: body.requestId, space: "native_fixture", owner, actor, lifecycleUid,
-        grant: { scope: [], role: null, allowSubscribe: [], allowPublish: [eventChannel({ owner, actor })], subscribe: [] },
-        policy: { events: "required" }, sentinelCreds: "fixture-sentinel", exchangeUrl: `${base}/s/native_fixture`,
-        retire: { url: `${base}/api/spaces/native_fixture/conversation-identities/${actor}?lifecycleUid=${lifecycleUid}` } } };
+      existing = { tokenHash: body.tokenHash, approval: { id: token(26), expiresAt: new Date(Date.now() + 600_000).toISOString() } };
       requests.set(body.requestId, existing);
+    }
+    const { id, expiresAt, decidedAt } = existing.approval;
+    if (!decidedAt) return send(202, { v: 1, requestId: body.requestId, status: "pending", approval: { id, url: `${base}/approve/${id}`, expiresAt }, proposed: null });
+    if (!existing.material) {
+      const actor = `pa_${token(26)}`;
+      const lifecycleUid = mintLifecycleUid();
+      existing.material = { v: 1, requestId: body.requestId, space: "native_fixture", owner, actor, lifecycleUid,
+        grant: { scope: [], role: null, allowSubscribe: [], allowPublish: [eventChannel({ owner, actor })], subscribe: [], endpoints: [] },
+        policy: { events: "required" }, sentinelCreds: "fixture-sentinel", exchangeUrl: `${base}/s/native_fixture`,
+        retire: { url: `${base}/api/spaces/native_fixture/conversation-identities/${actor}?lifecycleUid=${lifecycleUid}` },
+        approval: { id, decidedAt, approved: { v: 1, channels: [], role: null, capabilities: [], endpoints: [] } } };
       issued++;
     }
     if (createMode === "drop") { req.socket.destroy(); return; }
     return send(200, existing.material);
   }
   if (req.method === "DELETE") {
-    const exact = [...requests.values()].find(({ material }) => material.retire.url === `${base}${req.url}`)?.material;
+    const exact = [...requests.values()].find(({ material }) => material?.retire.url === `${base}${req.url}`)?.material;
     assert(exact, "retirement must name one issued lifecycle");
     if (retireMode === "unconfirmed") return send(503, { error: "fixture revoke may already have happened" });
     retired++;
@@ -93,6 +103,16 @@ try {
     userAuth: registration.userAuth, policy: registration.policy as { events: "required" } });
   saveIdpSession(home, `${base}/idp`, { token: "isolated-fixture-human-session", sub: "isolated-human", expiresAt: Math.floor(Date.now() / 1000) + 600 });
   const target = await resolveTargetOrThrow({ space: "native_fixture" });
+  /** Connect, with the fixture person approving a new request; a replay of an issued one needs none. */
+  const connect = async (name: string, session: string) => {
+    let r = await provisionUserApp(target, name, session, true);
+    if ("pending" in r) {
+      approve(r.pending.requestId);
+      r = await provisionUserApp(target, name, session, true);
+    }
+    assert(!("pending" in r), "an approved request connects");
+    return r;
+  };
   await check("native identity is required before effects", async () => {
     await assert.rejects(provisionUserApp(target, "alice", undefined, true), /native session/);
     assert.equal(authenticated, 0);
@@ -109,7 +129,7 @@ try {
     });
   }
   discoveryMode = "valid";
-  const a = await provisionUserApp(target, "alice", "session-a", true);
+  const a = await connect("alice", "session-a");
   await check("create persists private secret before authenticated POST", () => {
     assert.equal(issued, 1);
     const record = JSON.parse(readFileSync(join(a.retire.dir, "identity.json"), "utf8"));
@@ -119,9 +139,9 @@ try {
     assert.equal(a.env.COTAL_SUBSCRIBE, "");
     assert(!JSON.stringify(a).includes(record.token));
   });
-  const replay = await provisionUserApp(target, "alice", "session-a", true);
+  const replay = await connect("alice", "session-a");
   await check("same conversation replays one lifecycle without rotating", () => { assert.deepEqual(replay, a); assert.equal(issued, 1); });
-  const b = await provisionUserApp(target, "alice", "session-b", true);
+  const b = await connect("alice", "session-b");
   await check("another conversation has a distinct principal and files", () => {
     assert.notEqual(b.env.COTAL_ACTOR, a.env.COTAL_ACTOR);
     assert.notEqual(b.env.COTAL_LIFECYCLE_UID, a.env.COTAL_LIFECYCLE_UID);
@@ -152,12 +172,15 @@ try {
     await assert.rejects(cotalAuthProvider.requestConversationIdentity!({ url: `${base}/redirect`, idpUrl: `${base}/idp`, method: "DELETE" }), /redirect/);
   });
   createMode = "drop";
-  await check("lost create response retains its original request", async () => {
+  await check("lost issue response retains its original request", async () => {
+    const first = await provisionUserApp(target, "charlie", "session-c", true);
+    assert("pending" in first);
+    approve(first.pending.requestId);
     await assert.rejects(provisionUserApp(target, "charlie", "session-c", true), /outcome is unknown/);
     assert.equal(issued, 3);
   });
   createMode = "valid";
-  const c = await provisionUserApp(target, "charlie", "session-c", true);
+  const c = await connect("charlie", "session-c");
   await check("retry after lost response creates no second identity", () => { assert.equal(issued, 3); assert(c.env.COTAL_ACTOR); });
   retireMode = "pending";
   await check("202 keeps pending identity and secret", async () => {
@@ -179,17 +202,17 @@ try {
     assert(!readdirSync(join(home, "app-identities")).includes(a.retire.dir.split("/").at(-1)!));
     assert(readdirSync(b.retire.dir).includes("actor.token"));
   });
-  const reconnected = await provisionUserApp(target, "alice", "session-a", true);
+  const reconnected = await connect("alice", "session-a");
   await check("a confirmed departure permits a fresh reconnect request", () => {
     assert.notEqual(reconnected.env.COTAL_ACTOR, a.env.COTAL_ACTOR);
     assert.equal(issued, 4);
   });
   await retireUserApp(reconnected.retire.dir);
-  const d = await provisionUserApp(target, "delta", "session-d", true);
+  const d = await connect("delta", "session-d");
   retireMode = "pending";
   await assert.rejects(retireUserApp(d.retire.dir), /pending/);
   retireMode = "terminal";
-  const d2 = await provisionUserApp(target, "delta", "session-d", true);
+  const d2 = await connect("delta", "session-d");
   await check("reconnect finishes an old retirement before issuing a replacement", () => {
     assert.notEqual(d2.env.COTAL_LIFECYCLE_UID, d.env.COTAL_LIFECYCLE_UID);
     assert.equal(issued, 6);

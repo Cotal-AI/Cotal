@@ -1,40 +1,33 @@
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
-  agentFilePath,
   checkConversationSelection,
-  CotalEndpoint,
   deprovisionAgent,
   isReachable,
-  loadAgentFile,
   mintCreds,
-  mintLifecycleUid,
   newIdentity,
-  provisionAgent,
-  resolveReadAcl,
   type ConversationGrant,
+  type ConversationPending,
   type FlagSpec,
   type FlagValues,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { defaultPersonaRef, resolveTargetOrThrow, type MeshTarget } from "@cotal-ai/workspace";
-import { liveMeshNames } from "../lib/live-names.js";
-import { defaultPersonaFix } from "../lib/default-persona.js";
+import { resolveTargetOrThrow, type MeshTarget } from "@cotal-ai/workspace";
 import { isUserAppDir, provisionUserApp, retireDeadUserApps, retireUserApp } from "../lib/app-user-identity.js";
 
-/** Every credential directory provision makes is a fresh `mkdtemp` under the OS temp dir with this prefix. */
+/** Every credential directory an earlier static-mesh provision made was a fresh `mkdtemp` under the
+ *  OS temp dir with this prefix. Provision makes none now; retire still removes them. */
 const CRED_DIR_PREFIX = "cotal-app-identity-";
 /** The file in that directory that says what to retire. It carries no secret. */
 const RECORD = "identity.json";
 
 /**
- * `cotal app-identity`: machine-facing plumbing for a Claude app conversation on a local mesh. The
- * Claude connector's local server runs it to open one conversation's own identity on the selected
- * mesh, and again to retire it. It prints one JSON line on stdout and nothing else there. The
- * credential is never in that line: it goes to a 0600 file whose path the env names. A record beside
- * it names the identity, the mesh and the process that asked, so retire needs only the directory,
- * and a later provision retires what a process that died without retiring left behind.
+ * `cotal app-identity`: machine-facing plumbing for a Claude app conversation. The Claude
+ * connector's local server runs it to open one conversation's own identity on the selected mesh,
+ * and again to retire it. It prints one JSON line on stdout and nothing else there. The credential is
+ * never in that line: it goes to a 0600 file whose path the env names. A new identity opens only
+ * after a person approves it at the mesh's authority, so a mesh without one opens none.
  */
 export const appIdentityFlags = [
   { name: "name", type: "string", value: "<name>", description: "provision: the agent name to open, exactly" },
@@ -53,9 +46,11 @@ interface IdentityRecord {
   owner: number;
 }
 
+/** `pending` names the request a person has not decided yet and the page where they decide it. It
+ *  carries no credential, secret or path. Provisioning again replays that same request. */
 export type AppIdentityReply =
   | { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant }
-  | { ok: false; taken: true }
+  | ({ ok: false; pending: true } & ConversationPending)
   | { ok: false; error: string };
 
 function reply(r: AppIdentityReply | { ok: true }): void {
@@ -88,86 +83,19 @@ function target(space: string | undefined): Promise<MeshTarget> {
   return resolveTargetOrThrow(space ? { space } : {});
 }
 
-/** What to run when the persona a bare spawn loads is missing. `up` in the root of a space this
- *  machine started writes the `default` one; another name comes from `COTAL_DEFAULT_PERSONA`. */
-function missingPersonaNext(persona: string, t: MeshTarget): string {
-  if (persona !== "default") return "Create it, or point COTAL_DEFAULT_PERSONA at a persona that exists.";
-  const fix = defaultPersonaFix(t);
-  return fix.cwd ? `Run \`${fix.command}\` in ${fix.cwd} to write it.` : `Create it with \`${fix.command}\`.`;
-}
-
 async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<AppIdentityReply> {
   const name = values.name?.trim();
   if (!name) return { ok: false, error: "provision needs --name <name>" };
   const selection = values.selection === undefined ? undefined : checkConversationSelection(JSON.parse(values.selection));
   const t = await target(values.space);
-  if (t.mode === "user")
-    return { ok: true, ...await provisionUserApp(t, name, values.session, values.events === true, selection) };
-  if (selection) return { ok: false, error: `the mesh "${t.space}" has no signed-in identities, so a conversation cannot request a selection on it` };
-  const taken = await liveMeshNames(t);
-  if (!taken) return { ok: false, error: `the mesh "${t.space}" at ${t.server} is not answering. Start it with \`cotal up\`.` };
-  if (taken.has(name)) return { ok: false, taken: true };
-  // Channels and role come from the persona a bare `cotal spawn` loads. Its capabilities do not:
-  // the remote surface offers no seat authority, so the credential carries none.
-  const persona = defaultPersonaRef();
-  let def: ReturnType<typeof loadAgentFile>;
-  try {
-    def = loadAgentFile(agentFilePath(t.root, persona));
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT")
-      return { ok: false, error: `no "${persona}" persona in ${t.personaRoot} for the mesh "${t.space}". ${missingPersonaNext(persona, t)}` };
-    throw e;
+  if (t.mode === "user") {
+    const connection = await provisionUserApp(t, name, values.session, values.events === true, selection);
+    return "pending" in connection ? { ok: false, pending: true, ...connection.pending } : { ok: true, ...connection };
   }
-  // Derived as a foreground spawn derives them, and handed to the connector too, so the session's
-  // runtime read and post sets match what its credential allows.
-  const subscribe = def.subscribe ?? [];
-  const channels = { subscribe, allowSubscribe: resolveReadAcl(subscribe, def.allowSubscribe), allowPublish: def.allowPublish ?? [] };
-  const env: Record<string, string> = {
-    COTAL_SPACE: t.space,
-    COTAL_SERVERS: t.server,
-    COTAL_NAME: name,
-    COTAL_SUBSCRIBE: channels.subscribe.join(","),
-    COTAL_ALLOW_SUBSCRIBE: channels.allowSubscribe.join(","),
-    COTAL_ALLOW_PUBLISH: channels.allowPublish.join(","),
-    ...(def.role ? { COTAL_ROLE: def.role } : {}),
-  };
-  if (!t.auth) return { ok: true, env };
-
+  // A static or open mesh has no authority where a person approves a connection, so it opens none.
+  // What a host that died without retiring left behind is still retired here.
   await retireOrphans();
-  const identity = newIdentity();
-  const lifecycleUid = mintLifecycleUid();
-  const prov = new CotalEndpoint({
-    space: t.space,
-    servers: t.server,
-    creds: await mintCreds(t.auth, newIdentity(), "provisioner"),
-    channels: [],
-    consume: false,
-    registerPresence: false,
-    watchPresence: false,
-    watchChannels: false,
-    card: { name: "app-provisioner", role: "provisioner", kind: "endpoint" },
-  });
-  // The awaited calls below own the verdict; the provisioner's own events would only reach stdout.
-  prov.on("error", () => {});
-  const ignoreProvisionerWarning = () => {};
-  prov.on("warning", ignoreProvisionerWarning);
-  const dir = mkdtempSync(join(tmpdir(), CRED_DIR_PREFIX));
-  // Written before anything reaches the broker, so a provision killed partway still leaves a record.
-  const record: IdentityRecord = { space: t.space, id: identity.id, lifecycleUid, owner: process.ppid };
-  writeFileSync(join(dir, RECORD), JSON.stringify(record), { mode: 0o600 });
-  try {
-    await prov.start();
-    // The same durable footprint a foreground spawn provisions (DM and delivery durables, read-ACL
-    // row), so a connection that blips misses nothing, and the same retirement removes it.
-    const creds = await provisionAgent(prov, t.auth, identity, { ...channels, role: def.role, lifecycleUid });
-    writeFileSync(join(dir, "agent.creds"), creds, { mode: 0o600 });
-  } catch (e) {
-    await prov.stop().catch(() => {});
-    await retireDir(dir).catch(() => {});
-    throw e;
-  }
-  await prov.stop();
-  return { ok: true, env: { ...env, COTAL_CREDS: join(dir, "agent.creds"), COTAL_LIFECYCLE_UID: lifecycleUid }, retire: { dir } };
+  return { ok: false, error: `the mesh "${t.space}" has no human approval for app conversations, so no identity was opened; connect through a signed-in mesh whose authority offers connection approval` };
 }
 
 async function retire(values: FlagValues<typeof appIdentityFlags>): Promise<{ ok: true } | AppIdentityReply> {

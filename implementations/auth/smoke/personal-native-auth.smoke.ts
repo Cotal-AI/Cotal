@@ -118,6 +118,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     await retireUserApp(crashDir);
     check("exact foreground retirement recovers a committed grant without its lost response secret", !existsSync(crashDir) && await cotalAuthProvider.actorScope({ dir: stateDir, owner, actor: crashedActor }) === undefined);
     const fresh = await provisionUserApp(target, "crash_test", "native-crash", true);
+    if ("pending" in fresh) throw new Error("a local mesh has no approval page, so it never answers pending");
     check("reconnect after confirmed crash cleanup gets a new actor", fresh.env.COTAL_ACTOR !== crashedActor);
     await retireUserApp(fresh.retire.dir);
     const a = await host.open("local", "personal_a", "native-a");

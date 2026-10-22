@@ -240,27 +240,39 @@ hosted connector offers: `cotal_connect`, `cotal_wait`, `cotal_disconnect` and t
 Nothing joins until the conversation calls `cotal_connect` with a name. The plugin's server then runs
 `cotal app-identity provision` with the CLI that `cotal setup` recorded beside the plugin
 (`dist/cli.json`), so it does not need `cotal` on `PATH`. Each conversation gets an identity of its
-own on the mesh a bare `cotal spawn` from the session's directory would pick. A name that a live peer
-holds moves to `<name>_2`, `<name>_3` and so on. On a static-auth or open mesh, channels and role come
-from the default persona. A plugin that `cotal setup` did not install has no record, and
+own on the mesh a bare `cotal spawn` from the session's directory would pick, once a person approves
+it. A static-auth or open mesh has no page where a person approves a connection, so the plugin
+opens no identity there. A plugin that `cotal setup` did not install has no record, and
 `cotal_connect` names that remedy.
 
-Personal native Code sessions can also join a signed-in mesh. The plugin binds the real native
-session and transcript before requesting an identity. Each conversation gets a separate actor.
-Without a selection it has no role, capabilities or ordinary channel access: it can receive direct
-messages and publish only its own event channel. The existing signed-in account authorizes creation;
-no login proof reaches the conversation or its tools. A remote mesh must advertise conversation
-identity v1 on its pinned HTTPS discovery endpoint. An absent capability, a different origin or a
-changed registration is refused before authenticated issuance. There is no legacy provisioning
-fallback.
+Personal native Code sessions can join a signed-in mesh whose authority offers connection approval.
+The plugin binds the real native session and transcript before requesting an identity. Each
+conversation gets a separate actor. A new identity is issued only after a person approves it in the
+authority's signed-in web page. A model's tool arguments, a client flag or a native tool approval
+never approve it. The request first comes back pending with the page's address and its expiry, and
+nothing is issued yet. Connecting again sends the same request and secret: while it is pending it
+answers the same page, and once approved it issues the identity. A denial or an expiry drops the
+request, and the next connection asks again. No login proof reaches the conversation or its tools.
+A remote mesh must advertise conversation identity v1 and connection approval v1 on its pinned HTTPS
+discovery endpoint. An absent capability, a different origin or a changed registration is refused
+before authenticated issuance, for a request without a selection too. There is no immediate-grant
+fallback. A signed-in mesh whose authority this machine holds has no approval page, so it issues no
+new identity either.
+
+Every identity sends and receives direct messages and publishes its own activity on its own event
+channel. These come with the identity and are not optional, so the approval page shows them before
+the person decides. A request without a selection proposes nothing beyond them: no role,
+capabilities or ordinary channel reads.
 
 `cotal_connect` in a native Code session also takes a selection: `channels` to read
 (`access: "read"`) or read and post to (`"read-post"`), a `role`, and `capabilities` (`spawn`,
-`run`). Each item must already be within your own grant on that mesh. When any item is not,
-nothing is issued and the reply names every refused item. There is no fallback to the
-event-only identity. The issued grant must match the selection item for item, or the connection is
-refused. Its own event channel stays the first post entry. A remote mesh must also advertise
-`conversationIdentitySelection` version 1, or a selection is refused before any request.
+`run`). The selection is a proposal. The person may approve it, change it within their own current
+access, or approve nothing beyond the identity's own permissions. The issued grant must match what
+the person approved item for item, or the connection is refused. When the authority refuses an item
+outside your own grant before asking anyone, nothing is issued and the reply names every refused
+item. There is no fallback to the event-only identity. Its own event channel stays the first post
+entry. A remote mesh must also advertise `conversationIdentitySelection` version 1, or a selection
+is refused before any request.
 Endpoint calls are not selectable yet: no stock credential carries endpoint caller reach for a
 conversation, so `cotal_describe` and `cotal_invoke` are not offered.
 
@@ -281,7 +293,8 @@ hooks still report lifecycle status and activity; the native module owns incomin
 
 A signed-in identity keeps its request and secret in private local recovery state. A lost create
 response retries the same request without rotating its secret or allocating another identity.
-Another plugin server reuses that identity only after the process that held it no longer exists.
+Retiring a request that is still pending drops it, and no identity is issued for it. An identity
+issued before connection approval keeps working, and its recovery stays exact. Another plugin server reuses that identity only after the process that held it no longer exists.
 `cotal_disconnect`, session end and a signal request retirement of that lifecycle only. Other
 conversations stay connected. When the mesh reports retirement pending or does not confirm it, the
 conversation stays disconnected and keeps its saved record. Every tool then reports the same

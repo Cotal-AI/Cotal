@@ -1,6 +1,6 @@
 import {
-  assertLifecycleToken, canonicalJson, conversationGrant, principalKey,
-  type ConversationGrant, type ConversationSelection,
+  assertLifecycleToken, canonicalJson, checkConversationApprovalDecision, conversationGrant, principalKey,
+  type ConversationApprovalDecision, type ConversationGrant, type ConversationSelection,
 } from "@cotal-ai/core";
 import { checkUserBundle, discoveryDocumentUrl, type MeshTarget, type UserBundle } from "@cotal-ai/workspace";
 
@@ -9,6 +9,8 @@ export interface ConversationAuthority {
   bundle: UserBundle;
   /** The authority advertises selection v1, so a request may carry a {@link ConversationSelection}. */
   selection: boolean;
+  /** The authority advertises connection approval v1: a person decides every new request. */
+  approval: boolean;
 }
 
 /** Discover without human proof, then bind every returned trust pin to the selected registration. */
@@ -34,7 +36,8 @@ export async function discoverConversationAuthority(target: MeshTarget): Promise
   const authority = secureUrl(capability.url);
   if (authority.origin !== url.origin || authority.pathname !== `/api/spaces/${encodeURIComponent(target.space)}/conversation-identities` || authority.search)
     throw new Error("conversation identity authority does not name the selected origin and space");
-  return { url: authority.href, bundle, selection: capabilities?.conversationIdentitySelection?.version === 1 };
+  return { url: authority.href, bundle, selection: capabilities?.conversationIdentitySelection?.version === 1,
+    approval: capabilities?.connectionApproval?.version === 1 };
 }
 
 export interface ConversationMaterial {
@@ -49,6 +52,8 @@ export interface ConversationMaterial {
   sentinelCreds: string;
   exchangeUrl: string;
   retire: { url: string };
+  /** The person's recorded decision. `null` or absent only for an identity issued before approval. */
+  approval?: ConversationApprovalDecision | null;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -63,20 +68,35 @@ function secureUrl(value: string): URL {
   return url;
 }
 
-/** A successful HTTP status is not authority: require exactly the grant the request implies, the
- *  own-event-only grant without a selection, and the exact pins. */
-export function checkConversationMaterial(value: unknown, authority: ConversationAuthority, requestId: string, selection?: ConversationSelection): ConversationMaterial {
+/** A successful HTTP status is not authority: require the exact pins and exactly the grant the
+ *  person approved. When `approval` is not required, for an identity requested before approval, an
+ *  answer may carry no decision; its grant is then the one the request implies: the selection's, or
+ *  the own-event-only grant without one. `approval.id` binds a decision to the pending approval the
+ *  client saw. */
+export function checkConversationMaterial(
+  value: unknown, authority: ConversationAuthority, requestId: string, selection?: ConversationSelection,
+  approval?: { required: true; id?: string },
+): ConversationMaterial {
   const body = object(value);
-  const known = ["v", "requestId", "space", "owner", "actor", "lifecycleUid", "grant", "policy", "sentinelCreds", "exchangeUrl", "retire"];
+  const known = ["v", "requestId", "space", "owner", "actor", "lifecycleUid", "grant", "policy", "sentinelCreds", "exchangeUrl", "retire", "approval"];
   if (Object.keys(body).some((key) => !known.includes(key)) || body.v !== 1 || body.requestId !== requestId ||
       body.space !== authority.bundle.space || typeof body.owner !== "string" || typeof body.actor !== "string" ||
       !/^pa_[a-z2-7]{26}$/.test(body.actor) || typeof body.lifecycleUid !== "string")
     throw new Error("conversation identity response does not match the saved request");
   principalKey(body.owner, body.actor);
   assertLifecycleToken(body.lifecycleUid);
-  if (canonicalJson(object(body.grant)) !== canonicalJson(conversationGrant({ owner: body.owner, actor: body.actor }, selection)))
-    throw new Error(selection ? "conversation identity grant is not the exact grant its selection asked for"
-      : "conversation identity grant is not the exact own-event-only grant");
+  const principal = { owner: body.owner, actor: body.actor };
+  if (body.approval === undefined || body.approval === null) {
+    if (approval) throw new Error("conversation identity was issued without a recorded approval");
+    if (canonicalJson(object(body.grant)) !== canonicalJson(conversationGrant(principal, selection)))
+      throw new Error(selection ? "conversation identity grant is not the exact grant its selection asked for"
+        : "conversation identity grant is not the exact own-event-only grant");
+  } else {
+    const decision = checkConversationApprovalDecision(body.approval);
+    if (approval?.id !== undefined && decision.id !== approval.id) throw new Error("conversation identity names another approval than the one requested");
+    if (canonicalJson(object(body.grant)) !== canonicalJson(conversationGrant(principal, decision.approved)))
+      throw new Error("conversation identity grant is not the exact grant the person approved");
+  }
   if (JSON.stringify(body.policy ?? null) !== JSON.stringify(authority.bundle.policy ?? null))
     throw new Error("conversation identity response changed the selected event policy");
   if (body.sentinelCreds !== authority.bundle.sentinelCreds || body.exchangeUrl !== authority.bundle.userAuth.endpoints?.url)

@@ -4593,22 +4593,26 @@ preflight. When it fails there without printing a sentence of its own, the refus
 timeout, the signal that killed it, or its exit code. (`cotal start` is a removed tombstone: it
 errors and points you to `cotal spawn --detach`.)
 
-`cotal app-identity` is plumbing for a Claude app conversation on a local mesh, and you never run it
-directly either. The Claude connector's local server runs `cotal app-identity provision --name <name>`
-when a conversation connects. It picks the mesh as `cotal spawn` does (`--space` selects one), and
-answers `{"ok":false,"taken":true}` when a peer with that name is live, so the server tries another
-name. Otherwise it prints one JSON line: the launch env the connector reads and the reference that
-`retire` takes. The channels and role come from the mesh's default persona. On a mesh with static
-credentials it provisions the identity's own delivery durables and writes its credential to a 0600
-file in a new temporary directory; the credential never appears on stdout. A record beside it names
-the identity, the mesh and the process that asked. `cotal app-identity retire --dir <dir>` removes
-the identity's broker footprint, then the files and the directory. When the broker is not answering
-it keeps them. Each provision also retires the directories whose owning process has exited, which
-covers a host killed before it could retire. On a mesh that uses per-user sign-in, provision needs
-the conversation's native `--session` and keeps its request and secret in a private record under
-`~/.cotal/app-identities`. `--selection <json>` requests channels, a role and capabilities within
-your own grant for that conversation. A selection on any other mesh is refused. `retire` keeps
-the record until the mesh confirms retirement, and names the mesh's phase while it is pending.
+`cotal app-identity` is plumbing for a Claude app conversation, and you never run it directly
+either. The Claude connector's local server runs `cotal app-identity provision --name <name>` when
+a conversation connects. It picks the mesh as `cotal spawn` does (`--space` selects one) and prints
+one JSON line. A new identity opens only after a person approves it at the mesh's authority, so
+provision needs a signed-in mesh whose authority advertises connection approval v1, and the
+conversation's native `--session`. It keeps the request and its secret in a private record under
+`~/.cotal/app-identities`. Until the person decides, it answers
+`{"ok":false,"pending":true,"requestId":"<id>","approval":{"id":"<id>","url":"<url>","expiresAt":"<time>"},"proposed":<selection>}`,
+with no credential, secret or path. `proposed` is `null` for a request without a selection.
+Provisioning again sends the same request: it answers the same approval while pending, and the
+launch env and the reference that `retire` takes once approved. The grant is what the person
+approved, which can differ from the request. A denial or an expiry drops the record, and the next
+provision makes a new request. `--selection <json>` proposes channels, a role and capabilities for
+that conversation. A mesh with static credentials, an open mesh, and a signed-in mesh whose
+authority this machine holds have no approval page, so provision opens no identity on them.
+`cotal app-identity retire --dir <dir>` still removes an identity an earlier version opened on a
+static mesh: its broker footprint, then its files and directory. When the broker is not answering it
+keeps them. Each provision also retires those directories whose owning process has exited. For a
+signed-in identity, `retire` keeps the record until the mesh confirms retirement, and names the
+mesh's phase while it is pending. A request still pending is dropped.
 `cotal app-identity reap` retires the selected mesh's saved conversations whose server process no
 longer exists. The connector runs it after each signed-in connection, so a connection never waits
 for that cleanup. Like `agent-bearer`, it skips the connector-seed boot gate.
