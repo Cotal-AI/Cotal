@@ -842,9 +842,9 @@
       "file": "packages/lang/src/engine/worker-entry.ts",
       "find": "    onLog: (line) => port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }),",
       "replace": "    onLog: (line) => { if (request.runId === \"\\u0000never\") port.postMessage({ kind: \"trace\", line }); port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }); },",
-      "expectRed": "the thread posts exactly the 2 message kinds this table cells",
+      "expectRed": "the thread posts exactly the 3 message kinds this table cells",
       "completionMarker": "ok and a reason past the buffer is truncated, not dropped",
-      "cell": "the thread posts exactly the 2 message kinds this table cells",
+      "cell": "the thread posts exactly the 3 message kinds this table cells",
       "note": "The failure the table exists for is a MISSING cell, not a wrong one: a crossing added to the thread side with nothing asserting anything about it, which is exactly how the log path shipped with an assertion on the return path and none on its own. The mutant's extra post is DEAD CODE on purpose - it changes the file's text and nothing else - because a kind that actually crossed would red the host's unknown-kind refusal first, which is a different rule with its own cell. Set equality against the file is what makes a new crossing red until somebody cells it."
     },
     {
