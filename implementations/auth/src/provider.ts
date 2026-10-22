@@ -24,6 +24,7 @@ import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog,
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, hashActorToken, newActorToken, withManagedGrantTransaction } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
+import { serviceEndpointRenewal } from "./service-endpoint-renewal.js";
 import {
   AUTH_PROVIDER_NAME,
   authCalloutKey,
@@ -281,6 +282,10 @@ export const cotalAuthProvider: AuthProvider = {
   async serviceEndpointInfo({ store, dir, space }) {
     const target = serviceClientTarget(store, dir, space);
     return readRemoteServiceAuthorityInfo(target.base, space);
+  },
+
+  serviceEndpointRenewal(opts) {
+    return serviceEndpointRenewal(cotalAuthProvider, opts);
   },
 
   async serviceEndpointAuthority({ store, dir, request: raw, proof, timeoutMs, signal }) {
