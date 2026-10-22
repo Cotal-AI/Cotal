@@ -24,8 +24,17 @@ const dm = (n: number, text: string): InboxItem => ({
 const frameLength = (id: string, preview: RenderedInboxPreview) => JSON.stringify({ id, preview }).length;
 
 const feed = await openWakeFeed(process.pid);
+// A Windows named pipe can report the client's `connect` before the feed's server has taken the
+// connection, so the first send waits until the feed itself counts this reader, for a bounded time.
+const joined = new Promise<void>((resolve) => feed.onReader(resolve));
 const reader: Socket = connect(wakeSocketPath(process.pid));
 await new Promise<void>((resolve, reject) => { reader.once("connect", resolve); reader.once("error", reject); });
+let joinWait: NodeJS.Timeout | undefined;
+await Promise.race([
+  joined,
+  new Promise<never>((_, reject) => { joinWait = setTimeout(() => reject(new Error("the wake feed never counted the connected reader")), 5_000); }),
+]);
+clearTimeout(joinWait);
 let received = "";
 reader.setEncoding("utf8");
 reader.on("data", (chunk: string) => { received += chunk; });
