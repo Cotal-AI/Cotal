@@ -261,9 +261,16 @@ hooks still report lifecycle status and activity; the native module owns incomin
 
 A signed-in identity keeps its request and secret in private local recovery state. A lost create
 response retries the same request without rotating its secret or allocating another identity.
-`cotal_disconnect`, session end and a signal request retirement of that lifecycle only. Pending or
-unconfirmed retirement retains its record and reports incomplete cleanup. Other conversations stay
-connected. A mesh requiring events refuses a connection without a native transcript source.
+`cotal_disconnect`, session end and a signal request retirement of that lifecycle only. Other
+conversations stay connected. When the mesh reports retirement pending or does not confirm it, the
+conversation stays disconnected and keeps its saved record. Every tool then reports the same
+unfinished cleanup with the mesh's retirement phase. Calling `cotal_disconnect` again retries it at
+once. `cotal_connect` retries it too, and connects with a new identity once the mesh confirms
+retirement. A restarted plugin server recovers the same way. Each connection also retires the same
+mesh's saved identities whose plugin server has provably exited, such as one killed before it could
+retire them. A live or unknown server keeps its identity, and a retirement that does not finish
+stays saved for a later connection. A mesh requiring events refuses a connection without a native
+transcript source.
 
 The gateway's MCP annotations distinguish read-only queries from updates. Orientation, connection
 status, the roster, the docs and channel information are read-only. Sending messages, connecting and joining
