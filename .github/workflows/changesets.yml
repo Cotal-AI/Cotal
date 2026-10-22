@@ -149,11 +149,38 @@ jobs:
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --ignore-scripts
+      # One GitHub Release per version, not one per package: the fixed group publishes every package
+      # at the same version, so per-package releases are the same change listed many times over.
       - uses: changesets/action/publish@v2.1.2
         id: publish
         with:
           pack-dir-artifact-id: ${{ needs.pack.outputs.artifact }}
-          create-github-releases: true
+          create-github-releases: false
+          push-git-tags: true
+      # The notes lead with the changeset summaries (what changed, as written in the package
+      # changelogs) and end with GitHub's generated list of merged PRs since the previous version
+      # release, which .github/release.yml keeps the version PR out of. GH_PAT rather than the job
+      # token, so the Release fires the release-published workflows (the Discord announcement).
+      - name: Cut the GitHub Release
+        if: steps.publish.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          version=$(node --print "require('./bin/package.json').version")
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists."
+            exit 0
+          fi
+          previous=$(gh release list --limit 200 --json tagName --jq 'map(select(.tagName | startswith("v")))[0].tagName // empty')
+          notes=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$tag" -f target_commitish="$GITHUB_SHA" ${previous:+-f previous_tag_name="$previous"} --jq .body)
+          {
+            printf 'Install or update: `npm i -g cotal-ai@%s`\n\n' "$version"
+            node scripts/release-notes-detail.mjs "$version"
+            printf '\n%s\n' "$notes"
+          } > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --latest --notes-file "$RUNNER_TEMP/release-notes.md"
       - name: Verify the published CLI installs and runs
         if: steps.publish.outputs.published == 'true'
         run: |
