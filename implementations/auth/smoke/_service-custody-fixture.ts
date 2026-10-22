@@ -79,7 +79,7 @@ interface ReadArm { match: (subject: string) => boolean; after: (subject: string
 
 /** Operator-mode material: one data account with JetStream, whose signing key signs every user as
  *  the auth service signs its own. A user without `perms` is unrestricted. */
-async function operatorStack(dir: string, port: number) {
+async function operatorStack(dir: string, port: number, maxPayload?: number) {
   const op = createOperator(), sys = createAccount(), account = createAccount(), signer = createAccount();
   const limits = { subs: -1, conn: -1, leaf: -1, imports: -1, exports: -1, data: -1, payload: -1, wildcards: true,
     mem_storage: -1, disk_storage: -1, streams: -1, consumer: -1 };
@@ -89,7 +89,7 @@ async function operatorStack(dir: string, port: number) {
   writeFileSync(config, [`port: ${port}`, "host: 127.0.0.1",
     `operator: ${await encodeOperator("fixture-operator", op, { system_account: sys.getPublicKey() })}`, `system_account: ${sys.getPublicKey()}`,
     "resolver: MEMORY", `resolver_preload: { ${sys.getPublicKey()}: ${sysJwt}, ${account.getPublicKey()}: ${accountJwt} }`,
-    `jetstream: { store_dir: ${JSON.stringify(join(dir, "js"))} }`, ""].join("\n"));
+    `jetstream: { store_dir: ${JSON.stringify(join(dir, "js"))} }`, ...(maxPayload === undefined ? [] : [`max_payload: ${maxPayload}`]), ""].join("\n"));
   const user = async (name: string, perms?: (id: string) => { pub: string[]; sub: string[] }) => {
     const u = createUser(), id = u.getPublicKey(), p = perms?.(id);
     const jwt = await encodeUser(name, u, account, p ? { pub: { allow: p.pub }, sub: { allow: p.sub } } : {}, { signer });
@@ -100,13 +100,15 @@ async function operatorStack(dir: string, port: number) {
   return { config, accountPublicKey: account.getPublicKey(), dataAccount, user };
 }
 
-export async function openFixture(space: string, opts: { endpoint?: string; owner?: string; limited?: boolean } = {}) {
+/** `maxPayload` sets the owned broker's `max_payload` (operator mode only); unset, the broker default applies. */
+export async function openFixture(space: string, opts: { endpoint?: string; owner?: string; limited?: boolean; maxPayload?: number } = {}) {
   const endpoint = opts.endpoint ?? "org.example.recovery";
   const owner = opts.owner ?? `u_${"c".repeat(26)}`;
   const port = await pickFreePort();
   if (port === 4222) throw new Error("fixture refuses the default NATS port");
   const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-  const stack = opts.limited ? await operatorStack(dir, port) : undefined;
+  if (opts.maxPayload !== undefined && !opts.limited) throw new Error("fixture sets max_payload only in operator mode");
+  const stack = opts.limited ? await operatorStack(dir, port, opts.maxPayload) : undefined;
   const server = `nats://127.0.0.1:${port}`;
   const broker = spawn("nats-server", stack ? ["-c", stack.config] : ["-js", "-sd", dir, "-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" });
   const releaseBroker = teardownOnSignal(broker, dir);

@@ -11,7 +11,10 @@ import { contractDigest, createEndpointStreams, epgateKey, isReachable, mintLife
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createPendingServiceGate } from "../src/native-service-gate.js";
 import { openLifecycleRegistry, registryStores } from "../src/lifecycle-registry.js";
-import { appendNativeServiceCallerGrant, beginNativeServiceCallerRevocation, parseNativeServiceCallerPolicy, readNativeServiceCallerPolicy } from "../src/service-caller-policy.js";
+import {
+  appendNativeServiceCallerGrant, beginNativeServiceCallerRevocation, immutableGrantView, parseNativeServiceCallerPolicy, readNativeServiceCallerPolicy,
+  recordNativeServiceCallerCutoff,
+} from "../src/service-caller-policy.js";
 import type { ServiceCallerGrant } from "../src/service-host-contract.js";
 
 const space = "service-policy", port = await freePort(), servers = `nats://127.0.0.1:${port}`;
@@ -53,7 +56,24 @@ try {
   assert.deepEqual(policy.row.grants[0]!.status, { state: "revoking", operationId, phase: "cutoff-required" }, "unrelated append preserves deny-new intent");
   assert.equal((await beginNativeServiceCallerRevocation(reg, binding, { expectedRevision: 0, grantId: grant.grantId, operationId })).revision, policy.revision);
   await assert.rejects(beginNativeServiceCallerRevocation(reg, binding, { expectedRevision: policy.revision, grantId: grant.grantId, operationId: "f".repeat(32) }), /another revocation/);
-  await assert.rejects(appendNativeServiceCallerGrant(reg, binding, { expectedRevision: policy.revision, grant }), /reactivated/);
+  const replayed = await appendNativeServiceCallerGrant(reg, binding, { expectedRevision: 0, grant });
+  assert.equal(replayed.revision, policy.revision, "a replay after deny-new adopts the row without a write");
+  assert.deepEqual(replayed.row.grants[0]!.status, { state: "revoking", operationId, phase: "cutoff-required" }, "a replay never reactivates the grant");
+  const normalized = parseNativeServiceCallerPolicy({ v: 1, ...binding, grants: [grant] }).grants[0]!;
+  assert.equal(immutableGrantView(replayed.row.grants[0]!), immutableGrantView(normalized), "the immutable view leaves out status alone");
+  const markerKey = `svccut.${operationId}`, cutoff = { grantId: grant.grantId, operationId, markerKey, markerRevision: 7, notBefore: 1767225671 };
+  await assert.rejects(recordNativeServiceCallerCutoff(reg, binding, { ...cutoff, expectedRevision: policy.revision + 1 }), /revision changed/);
+  policy = await recordNativeServiceCallerCutoff(reg, binding, { ...cutoff, expectedRevision: policy.revision });
+  assert.deepEqual(policy.row.grants[0]!.status, { state: "revoking", operationId, markerKey, markerRevision: 7, notBefore: 1767225671 });
+  assert.equal((await recordNativeServiceCallerCutoff(otherWriter, binding, { ...cutoff, expectedRevision: 0 })).revision, policy.revision, "the same marker again is a no-op");
+  await assert.rejects(recordNativeServiceCallerCutoff(reg, binding, { ...cutoff, notBefore: 1767225672, expectedRevision: policy.revision }), /another cutoff marker/, "a recorded deadline is never reset");
+  await assert.rejects(recordNativeServiceCallerCutoff(reg, binding, { ...cutoff, operationId: "f".repeat(32), expectedRevision: policy.revision }), /deny-new intent/, "the marker form under another operation");
+  await assert.rejects(recordNativeServiceCallerCutoff(reg, binding, { ...cutoff, grantId: unrelated.grantId, expectedRevision: policy.revision }), /deny-new intent/, "an active grant");
+  await assert.rejects(recordNativeServiceCallerCutoff(reg, binding, { ...cutoff, grantId: "1".repeat(32), expectedRevision: policy.revision }), /grant is absent/);
+  policy = await beginNativeServiceCallerRevocation(reg, binding, { expectedRevision: policy.revision, grantId: unrelated.grantId, operationId: "7".repeat(32) });
+  await assert.rejects(recordNativeServiceCallerCutoff(reg, binding, { ...cutoff, grantId: unrelated.grantId, operationId: "6".repeat(32), expectedRevision: policy.revision }), /deny-new intent/, "cutoff-required under another operation");
+  await assert.rejects(recordNativeServiceCallerCutoff(reg, binding, { ...cutoff, grantId: unrelated.grantId, operationId: "7".repeat(32), markerKey: "bad key", expectedRevision: policy.revision }), /invalid native/);
+  assert.equal((await appendNativeServiceCallerGrant(reg, binding, { expectedRevision: 0, grant })).revision, policy.revision, "a replay after the marker still adopts");
   await assert.rejects(readNativeServiceCallerPolicy(reg, { ...binding, accountPublicKey: createAccount().getPublicKey() }), /immutable grantee/);
   await assert.rejects(readNativeServiceCallerPolicy(reg, { ...binding, grantee: { ...binding.grantee, actor: "other" } }), /immutable grantee/);
   await assert.rejects(readNativeServiceCallerPolicy(reg, { ...binding, space: "other" }), /another registry space/);

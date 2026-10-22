@@ -1,3 +1,4 @@
+export { mintServiceCallerPayloadObserverCreds, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
 export { deriveOwnerToken, deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 export { parsePlatformControlAuthorityRequest, type ManagerAuthorityHolder } from "./platform-control.js";
 export { parsePlatformSupervisorAuthorityRequest, type PlatformSupervisorAssignment, type PlatformSupervisorAuthorityRequest, type PlatformSupervisorInput } from "./platform-supervisor.js";

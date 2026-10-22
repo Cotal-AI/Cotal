@@ -118,7 +118,9 @@ async function readyAfter(ctx: Ctx): Promise<void> {
   if (ctx.h.tripped !== undefined) held("post-write-readiness", ctx.step, `the host was fenced during the write: ${ctx.h.tripped}`);
 }
 
-type Leader = { state: "absent" } | { state: "marker"; op: string } | { state: "value"; bytes: Uint8Array; value: unknown; revision: number } | { state: "malformed"; revision: number };
+/** `timestamp` is the server's raw stored-message time string (`StoredMsg.timestamp`), unparsed;
+ *  `StoredMsg.time` is never used, because its `Date` has already dropped the nanoseconds. */
+type Leader = { state: "absent" } | { state: "marker"; op: string } | { state: "value"; bytes: Uint8Array; value: unknown; revision: number; timestamp: string } | { state: "malformed"; revision: number };
 
 /** Leader-served last message for one key. `absent` means the subject has no message at all. */
 async function leader(ctx: Ctx, bucket: "records" | "auth", key: string): Promise<Leader> {
@@ -132,7 +134,7 @@ async function leader(ctx: Ctx, bucket: "records" | "auth", key: string): Promis
   if (!m) return { state: "absent" };
   const op = m.header?.get("KV-Operation");
   if (op) return { state: "marker", op };
-  try { return { state: "value", bytes: m.data, value: JSON.parse(dec.decode(m.data)), revision: m.seq }; }
+  try { return { state: "value", bytes: m.data, value: JSON.parse(dec.decode(m.data)), revision: m.seq, timestamp: m.timestamp }; }
   catch { return { state: "malformed", revision: m.seq }; }
 }
 
