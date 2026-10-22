@@ -9,7 +9,6 @@ export function StatusBar({
   activeChannel,
   agentCount,
   mode,
-  railOpen,
   canBack,
   canWrite,
   canControl,
@@ -21,7 +20,6 @@ export function StatusBar({
   activeChannel: string;
   agentCount: number;
   mode: "normal" | "dm" | "topo";
-  railOpen: boolean;
   canBack?: boolean;
   canWrite?: boolean;
   canControl?: boolean;
@@ -31,16 +29,14 @@ export function StatusBar({
 }) {
   const keys =
     mode === "dm"
-      ? "j/k scroll · ←→ pane · esc back · / search · ? help · q quit"
+      ? "ctrl+p commands · j/k scroll · ←→ pane · esc back · / search"
       : mode === "topo"
-        ? "v / 1-3 variant · j/k h/l move · Enter detail · esc back · ? help · q quit"
+        ? "ctrl+p commands · v / 1-3 variant · j/k h/l move · Enter detail · esc back"
         : (canBack ? "esc back · " : "") +
-        ": cmd · j/k select · Enter detail · " +
-        (railOpen ? "n hide-rail" : "n needs-you") +
-        " · d DMs" +
+        "ctrl+p commands · j/k select · Enter detail" +
         (canWrite ? " · c compose" : "") +
-        (canControl ? " · a attach · D kill" : "") +
-        " · / search · [ ] chan · ? help · q quit";
+        (canControl ? " · D kill" : "") +
+        " · / search · [ ] chan";
   return (
     <Box width={width} paddingX={1}>
       <Text wrap="truncate-end">

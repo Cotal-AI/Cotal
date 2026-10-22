@@ -23,6 +23,10 @@ import { Detail, type DetailTarget } from "./ui/Detail.js";
 import { runCommand, type CommandCtx } from "./commands.js";
 import { mentionsIn } from "../lib/mentions.js";
 import { offlineRecipientNotice } from "../lib/offline-recipient.js";
+import { extensionNames } from "../ext-loader.js";
+import { spawnPersona } from "../lib/spawn-defaults.js";
+import { launchAgent } from "./launch.js";
+import { NewAgent } from "./ui/NewAgent.js";
 import type { FeedEntry, FocusId } from "./mesh.js";
 
 /** An in-progress compose: post to a channel, DM a peer, or reply to a feed message. */
@@ -38,7 +42,7 @@ const PS_POLL_MS = 10_000;
 
 /**
  * The lazygit-style console: channel tabs · golden-signal tiles · roster · live feed · status bar,
- * plus the NEEDS-YOU rail (`n`), the DM lens (`d`), and the `:` operator command palette. `useMesh`
+ * plus the NEEDS-YOU rail (`n`), the DM lens (`d`), and the Ctrl+P operator command palette. `useMesh`
  * owns the observer endpoint; panels lay out `mesh` and (when `canWrite`) the palette publishes
  * chat over the same endpoint. Control (`D` kill, `:spawn` / `:purge` / `:status` / `:ps`)
  * never rides the observer: each action is one call through the CLI's
@@ -79,13 +83,14 @@ export function App({
   const [topoVariant, setTopoVariant] = useState<TopoVariant>(0);
   const [railOpen, setRailOpen] = useState(false);
   const [palette, setPalette] = useState({ active: false, query: "" });
+  const [newAgent, setNewAgent] = useState(false);
   const [confirm, setConfirm] = useState<ConfirmTarget | null>(null);
   const [compose, setCompose] = useState<ComposeTarget | null>(null);
   const [notice, setNotice] = useState<string | undefined>();
   const [attachTarget, setAttachTarget] = useState<{ name: string } | null>(null);
 
   const overlay = helpOpen || detail !== null;
-  const blocked = overlay || search.active || palette.active || confirm !== null || compose !== null;
+  const blocked = overlay || search.active || palette.active || newAgent || confirm !== null || compose !== null;
 
   // ---- geometry (pure from size / mode / rail / search / palette / compose) ---
   const narrow = size.cols < 80;
@@ -93,11 +98,10 @@ export function App({
   // The filter row hides while the palette or a compose prompt owns the bottom region.
   const searchRow = (search.active || search.query) && !palette.active && !compose ? 1 : 0;
   const tilesRow = 1;
-  const paletteRows = palette.active ? 7 : 0; // CommandPalette is a fixed 6 suggestions + 1 input
   const noticeRow = notice ? 1 : 0;
   const bodyH = Math.max(
     3,
-    size.rows - 3 /* tabs */ - tilesRow - 1 /* status */ - searchRow - paletteRows - noticeRow - composeRow,
+    size.rows - 3 /* tabs */ - tilesRow - 1 /* status */ - searchRow - noticeRow - composeRow,
   );
   // The needs-you rail is a side column only on a genuinely wide terminal; otherwise `n` opens it
   // full-screen so it never squeezes the feed unreadably. It never coexists with the DM/topo lens.
@@ -121,13 +125,13 @@ export function App({
 
   // Focus the right pane after an overlay closes, or when switching into/out of a view.
   useEffect(() => {
-    if (overlay || confirm || attachTarget) return;
+    if (overlay || confirm || attachTarget || palette.active || newAgent) return;
     if (railOverlay) focus("needsyou");
     else if (mode === "dm") focus("dmpeers");
     else if (mode === "topo") focus("topo");
     else focus(normalFocus);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [helpOpen, detail, mode, railOpen, confirm, attachTarget]);
+  }, [helpOpen, detail, mode, railOpen, confirm, attachTarget, palette.active, newAgent]);
 
   // One control call against the manager of THIS space (console/control.ts): resolve, mint a
   // one-shot instrument, call, drop. The observer endpoint is never involved.
@@ -440,6 +444,7 @@ export function App({
   };
 
   // Run a typed palette line against the live endpoint.
+  const readPaletteAgents = useCallback(() => controlPs({ ...controlCtx, space: ep.space }), [controlCtx, ep.space]);
   const runPaletteLine = (line: string) => {
     setPalette({ active: false, query: "" });
     const ctx: CommandCtx = {
@@ -499,7 +504,7 @@ export function App({
       if (search.active) return; // the Search line owns input while open
       if (input === "?") return setHelpOpen(true);
       if (input === "/") return setSearch((s) => ({ active: true, query: s.query }));
-      if (input === ":") return setPalette({ active: true, query: "" });
+      if (key.ctrl && input === "p") return setPalette({ active: true, query: "" });
       if (key.escape) {
         // lazygit-style "back": pop one level per press, then return to the space overview.
         if (mode === "dm" || mode === "topo") return setMode("normal");
@@ -528,7 +533,7 @@ export function App({
         if (idx < tabs.length) setActiveChannel(tabs[idx]);
       }
     },
-    { isActive: !attachTarget && !palette.active && confirm === null && compose === null },
+    { isActive: !attachTarget && !palette.active && !newAgent && confirm === null && compose === null },
   );
 
   // Attached: render nothing so Ink releases stdin/stdout to the seat (the suspend effect owns the
@@ -639,18 +644,6 @@ export function App({
           onSubmit={submitCompose}
           onCancel={() => setCompose(null)}
         />
-      ) : palette.active ? (
-        <CommandPalette
-          active={palette.active}
-          query={palette.query}
-          snapshot={mesh}
-          canWrite={!!canWrite}
-          canControl={!!canControl}
-          width={size.cols}
-          onChange={(q) => setPalette((p) => ({ ...p, query: q }))}
-          onRun={runPaletteLine}
-          onCancel={() => setPalette({ active: false, query: "" })}
-        />
       ) : searchRow ? (
         <Search
           query={search.query}
@@ -667,13 +660,25 @@ export function App({
         activeChannel={activeChannel}
         agentCount={mesh.agents.length}
         mode={mode}
-        railOpen={railOpen}
         canBack={!!onBack}
         canWrite={!!canWrite}
         canControl={!!canControl}
         onRoster={onRoster}
         width={size.cols}
       />
+      {palette.active || newAgent ? <Box position="absolute" width={size.cols} height={size.rows}
+        alignItems="center" justifyContent="center">
+        {newAgent ? <NewAgent space={ep.space} width={size.cols} height={size.rows}
+          applications={extensionNames("connector")} defaultPersona={spawnPersona(undefined, [], { space: ep.space }).ref}
+          onLaunch={(input) => launchAgent({ ...controlCtx, space: ep.space }, input)}
+          onClose={() => setNewAgent(false)}
+          onBack={() => { setNewAgent(false); setPalette({ active: true, query: "" }); }} />
+          : <CommandPalette active query={palette.query} snapshot={mesh} canWrite={!!canWrite}
+            canControl={!!canControl} width={size.cols} readManaged={readPaletteAgents}
+            onChange={(query) => setPalette({ active: true, query })} onRun={runPaletteLine}
+            onNewAgent={() => { setPalette({ active: false, query: "" }); setNewAgent(true); }}
+            onCancel={() => setPalette({ active: false, query: "" })} />}
+      </Box> : null}
     </Box>
   );
 }

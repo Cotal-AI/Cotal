@@ -72,14 +72,14 @@ console.log("1. the status bar actually draws the activity series, it does not m
 {
   const loud = await paint(
     <StatusBar status={status} rates={ratesWith([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 4])}
-      activeChannel="all" agentCount={2} mode="normal" railOpen={false} canWrite canControl width={200} />,
+      activeChannel="all" agentCount={2} mode="normal" canWrite canControl width={200} />,
   );
   check("a rising series reaches the screen as scaled bars", loud.includes("▃▅█"), loud.slice(0, 160));
   check("...and the bars sit between the msg/s figure and the 60s label", /msg\/s\s*▁*▃▅█\s*60s/.test(loud), loud.slice(0, 160));
 
   const quiet = await paint(
     <StatusBar status={status} rates={ratesWith(new Array(15).fill(0))}
-      activeChannel="all" agentCount={2} mode="normal" railOpen={false} canWrite canControl width={200} />,
+      activeChannel="all" agentCount={2} mode="normal" canWrite canControl width={200} />,
   );
   check("a silent minute paints a flat floor of the full width", quiet.includes("▁".repeat(15)), quiet.slice(0, 160));
   check("...which is a DIFFERENT screen from the loud one, so the bars are not decoration",
@@ -90,11 +90,11 @@ console.log("2. the participant roster claim reaches the status bar");
 {
   const on = await paint(
     <StatusBar status={status} rates={ratesWith([])} activeChannel="all" agentCount={1}
-      mode="normal" railOpen={false} canWrite canControl onRoster width={200} />,
+      mode="normal" canWrite canControl onRoster width={200} />,
   );
   const off = await paint(
     <StatusBar status={status} rates={ratesWith([])} activeChannel="all" agentCount={1}
-      mode="normal" railOpen={false} canWrite canControl width={200} />,
+      mode="normal" canWrite canControl width={200} />,
   );
   check("on roster is shown when the operator's peer is up", on.includes("on roster"), on.slice(0, 160));
   check("...and is absent when it is not, so the indicator tracks the peer", !off.includes("on roster"), off.slice(0, 160));
@@ -194,7 +194,7 @@ console.log("4. every send waits for the same participant start, and a refusal r
   await wait(100);
   stdin.write("\r");
   await wait(100);
-  stdin.write(":");
+  stdin.write("\x10");
   await wait(100);
   stdin.write("msg second");
   await wait(100);
@@ -211,7 +211,7 @@ console.log("4. every send waits for the same participant start, and a refusal r
   const refusedPaint = await waitForFrame(frames, "participant-start-refused", 5_000);
   check("the participant refusal remains visible", refusedPaint.includes("participant-start-refused"), refusedPaint.slice(-300));
   check("send success is not painted over the refusal", refusedPaint.includes("participant-start-refused") && !refusedPaint.includes("\n → #general\n"), refusedPaint.slice(-300));
-  stdin.write(":");
+  stdin.write("\x10");
   await wait(100);
   stdin.write("msg retry");
   await wait(100);
