@@ -264,7 +264,11 @@ new identity either.
 
 Every identity sends and receives direct messages and publishes its own activity on its own event
 channel. These come with the identity and are not optional, so the approval page shows them before
-the person decides. A request without a selection proposes nothing beyond them: no role,
+the person decides. Native activity sharing includes the conversation's user messages, assistant
+replies, tool inputs and tool results after activation. It is not only presence or status. Reasoning
+is not shared by default, and earlier or pre-approval history is not shared. The space's activity
+read permissions determine who can read it. Decline the connection if you do not want this sharing.
+A request without a selection proposes nothing beyond these rights: no role,
 capabilities or ordinary channel reads.
 
 `cotal_connect` in a native Code session also takes a selection: `channels` to read
@@ -276,8 +280,8 @@ outside your own grant before asking anyone, nothing is issued and the reply nam
 item. There is no fallback to the event-only identity. Its own event channel stays the first post
 entry. A remote mesh must also advertise `conversationIdentitySelection` version 1, or a selection
 is refused before any request.
-Endpoint calls are not selectable yet: no stock credential carries endpoint caller reach for a
-conversation, so `cotal_describe` and `cotal_invoke` are not offered.
+Endpoint calls are not selectable through this connection approval contract, which accepts only
+an empty endpoint selection. These conversations do not offer `cotal_describe` or `cotal_invoke`.
 
 A connection is offered the tools its grant can use: `cotal_spawn`, `cotal_persona`,
 `cotal_personas` and `cotal_despawn` with `spawn`, `cotal_run` with `run`, and `cotal_reconnect`.
@@ -555,16 +559,16 @@ plugin registers, with their matchers, are listed in the
 
 ## Event plane
 
-A spawned session publishes a **structured** account of what it
-did: run boundaries per turn, assistant text, reasoning, and each tool call with its start
-and its end. Not prose about the work, the work itself, in a vocabulary a program can
-read. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
+A connected native session publishes a structured account of its activity: user messages,
+assistant replies, run boundaries and tool calls with their inputs and results. Reasoning is off
+by default. Programs can read these events directly. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
 space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
 private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
 A hand-driven user-mode session may carry the same decision as `COTAL_EVENTS_REQUIRED=1`. Its own
 publish grant must cover `events.<owner>.<actor>` or the connector refuses before joining. A personal
 native Code connection to a signed-in mesh uses the same recorder and captures its transcript
-boundary before requesting an identity. Records from before that connection are not published.
+boundary after approved issuance, before joining. Earlier history and time spent waiting for
+approval are not published.
 Its native lifecycle drives presence and recording for that session only; a subagent or another
 conversation cannot end its main run. The event channel keeps the space's normal read permissions.
 A personal connection makes manager calls only with its own selected grant.

@@ -54,8 +54,11 @@ A session the Cotal CLI did not launch (no `COTAL_NAME`, `COTAL_LINK` or `COTAL_
 `cotal_connect` with its own name to request a connection. It receives no usable identity before
 you approve its permissions on the mesh's authenticated page. Channel, role and capability arguments
 are proposals; you can edit them within your own access. The issued grant must match your decision.
-Even a minimal connection sends and receives direct messages and publishes its own activity; the
-approval page must disclose these required permissions. Decline the connection if you do not want them.
+Even a minimal connection sends and receives direct messages and shares its own activity. Native
+sharing includes new user messages, assistant replies, tool inputs and tool results, not just status.
+Reasoning is off by default. People allowed to read the activity stream in your space can read this
+data. The approval page must disclose this required sharing. Decline the connection if you do not
+want it.
 
 A native session binds its own lifecycle and transcript. Activity sharing starts after approval;
 it does not publish time spent waiting for consent. Discovery is public. Creation and retirement
