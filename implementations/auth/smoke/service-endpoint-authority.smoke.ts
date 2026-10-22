@@ -174,9 +174,9 @@ try {
   const s2 = await viaProvider("b", status(i1, r1.requestId));
   c.check("D2 another owner cannot read that operation", denied(s2, "not-found"), s2);
   const s3 = await viaProvider("a", request("status", { target: { kind: "instance" } }, i1));
-  c.check("D3 instance status is unsupported in this cut", denied(s3, "unsupported"), s3);
+  c.check("D3 instance status at a selector where the owner holds no assignment is not-found", denied(s3, "not-found"), s3);
   const s4 = await raw(on.url, { request: status(i1, r1.requestId), proof: { kind: "service-access", token: "fixture-access" } });
-  c.check("D4 a service proof is not accepted before any service credential exists", s4.status === 403 && s4.body.reason === "proof-unsupported", s4);
+  c.check("D4 a service proof that does not verify is unauthenticated (401)", s4.status === 401 && s4.body.reason === "unauthenticated", s4);
 
   // ---- E: proof and envelope refusals ----
   const st = status(i1, r1.requestId);
@@ -240,7 +240,8 @@ try {
   c.check("H4 status reports approved-unregistered with the approval's digest", s5.state === "status" && s5.status.state === "approved-unregistered"
     && s5.status.approvalDigest === approval?.approvalDigest, s5);
   const replayed = await viaProvider("a", r1);
-  c.check("H5 a register replay after approval is pending, never registered or a credential", replayed.state === "pending" && replayed.phase === "approved-unregistered", replayed);
+  c.check("H5 a register replay after approval enters the registration phase and registers, never a credential",
+    replayed.state === "registered" && replayed.witness.registrationRequestId === r1.requestId, replayed);
   const r4 = register(rid());
   const second = await viaProvider("a", r4);
   const p4 = second.state === "approval-required" ? await propRead(second.proposalId) : undefined;
