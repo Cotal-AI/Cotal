@@ -5,7 +5,8 @@
  *     operation. `down --dry-run` exits 0 and names the settlement, `down --yes` settles it and stops
  *     the broker, and a second `down --yes` is a no-op. `ps` on the `--no-manager` stack is a known
  *     refusal.
- *  2. Broker crash after start. The next `up` restarts the broker from its records.
+ *  2. Broker crash after start. The next `up` restarts the broker from its records. After a manager
+ *     crash, the next `up` relaunches the manager over the pidfile the killed process left.
  *  3. Busy port on a first `up`. It refuses CONFLICT naming the address and the bind error and
  *     launches nothing; once the port is free the same `up` starts.
  *  4. Orphan manager. With the broker killed under a live manager, `down` refuses before any stop
@@ -181,6 +182,15 @@ try {
     track(space);
     const replacement = pidOf(space, "stack-broker");
     check("up after a broker crash restarts the broker from its records", repaired.status === 0 && replacement !== null && replacement !== crashed && alive(replacement), shown(repaired));
+    // A killed manager leaves its pidfile behind; the relaunched one claims the slot once that
+    // process is proven gone.
+    const crashedManager = pidOf(space, "stack-manager");
+    if (crashedManager !== null) process.kill(crashedManager, "SIGKILL");
+    await until(() => gone(space, "stack-manager"), 10_000);
+    const relaunched = cli(root, "up", "--json");
+    track(space);
+    const manager = pidOf(space, "stack-manager");
+    check("up after a manager crash relaunches the manager over the pidfile its process left", crashedManager !== null && relaunched.status === 0 && relaunched.env?.outcome === "ok" && manager !== null && manager !== crashedManager && alive(manager), { ...shown(relaunched), crashedManager, manager });
     const finalDown = cli(root, "down", "--yes", "--json");
     check("down --yes stops the repaired stack", finalDown.status === 0 && (replacement === null || !alive(replacement)), shown(finalDown));
   }

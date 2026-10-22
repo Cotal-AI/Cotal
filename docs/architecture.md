@@ -131,7 +131,8 @@ Dotted endpoint classes retain their native grammar; encoding is validation, not
 
 The manager child exclusively claims its real creation-pinned native PID slot before endpoint
 initialization; that starting record is not serving evidence. Existing custody is not adopted or
-reclaimed. It settles that same process only after native start, and release remains owner-bound.
+reclaimed by the child. A record whose pid is dead, as a killed child leaves it, is removed by the
+manager adapter before the next launch, under the controller's definition lock. It settles that same process only after native start, and release remains owner-bound.
 The manager adapter correlates that binding with an attributed current instance/epoch response
 and its process lifecycle UID. It preserves the invoking caller, selected root/broker and required
 TLS. The native status policy uses the same fresh owner/admin visibility and process-bound seat

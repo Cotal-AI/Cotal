@@ -229,7 +229,7 @@ failure.
 | Agents & personas | [`persona`](#persona) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Deprecated and hidden from help: run a manager daemon; use the `manager` service preset |
 | Agents & personas | [`service`](#service) | Save, start, stop and inspect owned local services, from a preset or a definition file |
-| Agents & personas | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, and read its status |
+| Agents & personas | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Agents & personas | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
 | Agents & personas | [`endpoint deregister`](#endpoint-deregister) | Remove the service registration of an instance whose host is gone, when the broker affirms nothing is subscribed on its rail |
@@ -3042,10 +3042,12 @@ condition.
 ```bash
 cotal daemon serve [--json|--plain]
 cotal daemon status [--json|--plain]
+cotal daemon login --idp <auth base URL> [--client-id <id>] [--json|--plain]
 ```
 
-This release serves only a local status endpoint: it does not sign in, start a Manager or install
-a system service. It supports Linux only. On other platforms, an unset `XDG_RUNTIME_DIR` produces
+This release serves a local endpoint for status and sign-in only: it does not start a Manager,
+connect to a mesh or Cloud, or install a system service. It supports Linux only. On other
+platforms, an unset `XDG_RUNTIME_DIR` produces
 `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`); with it set, the platform check refuses `UNSUPPORTED`.
 
 `serve` runs in the foreground and prints `daemon ready at <socket>` once the endpoint is bound
@@ -3058,7 +3060,7 @@ The endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. Without `XDG_RUNTIME_DIR` 
 that is a symlink, not a directory, not owned by you, or not mode `0700`. `status` also refuses
 `PERMISSION_DENIED` for an endpoint entry that is not a socket, not yours, or not mode `0600`.
 The daemon drops connections from other users. The kernel separates users, not processes of one
-user: any process running as you can read the status.
+user: any process running as you can use the local controls, including sign-in and cancellation.
 
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`). `serve` refuses
 `CONFLICT` (`ALREADY_RUNNING`) for any existing socket, including one left after a crash, and
@@ -3067,6 +3069,24 @@ SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SI
 including closing the terminal, leaves a stale socket. To recover, run `cotal daemon status`.
 If it reports `NOT_RUNNING`, confirm no daemon process is running, then remove the named socket
 path by hand and start again.
+
+`login` signs the running daemon in with device approval. The daemon runs the same sign-in as
+`cotal login` and keeps the session in the machine's Cotal home, where `cotal login` keeps it. The
+command prints only the approval link, code and expiry to stderr, then the signed-in account. No
+session token crosses the endpoint or reaches the terminal. `--idp` takes an HTTPS auth URL, or an
+HTTP loopback IP URL; `--client-id` defaults to `cotal-cli`.
+
+One sign-in runs at a time: a second `login` refuses `CONFLICT` (`LOGIN_IN_PROGRESS`) without
+contacting the provider. Ctrl-C, or the command's connection closing, requests cancellation on this
+machine. If cancellation takes effect before persistence, nothing is saved, even if device approval
+already happened. An already-completed attempt remains completed; cancellation revokes nothing
+at the provider. A cancelled attempt reports `USAGE_INVALID` (`CANCELLED`). A denied or expired
+approval refuses `PERMISSION_DENIED` (`DENIED` or `EXPIRED`), and an unreachable provider refuses
+`DEPENDENCY_UNAVAILABLE`
+(`UNREACHABLE`); none of these saves a session. Any other provider answer fails `OPERATION_FAILED`
+(`REFUSED`). Such a failure can come after the session was saved, so run `login` again. A failure
+is reported with a fixed sentence; the provider's own error text is never relayed. `status`
+keeps answering while a sign-in waits.
 
 ## service
 
@@ -4437,7 +4457,9 @@ explicitly when PowerShell inherited another shell's `SHELL`. On supported POSIX
 
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
 ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symlink, untrusted
-owner or unsafe file access. On Windows, PowerShell script generation works but automatic
+owner or unsafe file access. A startup file its owner made read-only is never replaced. `install`
+still writes its stub, then fails, exit 5, and names the line to add to that file yourself.
+`uninstall` refuses it, exit 2, and changes nothing until you remove that line. On Windows, PowerShell script generation works but automatic
 profile editing remains unsupported: the guarded POSIX file writer cannot safely replace
 Windows reparse-point paths. Installing files does not establish that the host runs its
 profile or permits scripts under its execution policy.
@@ -5546,6 +5568,9 @@ It is not OS-supervised installation or platform parity.
 
 The real child exclusively claims its creation-pinned native PID custody before hosted authority
 preparation or local endpoint initialization. That starting record is not readiness; another existing slot is not adopted or reclaimed.
+After a crash, the record the killed child left names a dead pid. The manager adapter removes that
+record before the next launch, so the next `up` relaunches the manager; a live, foreign or
+unreadable record still refuses.
 It binds its actual native identity before endpoint construction. A startup phase appears only
 after native start, settled custody and signal handlers. On authenticated meshes the adapter also
 requires a current status response pinned to that native instance and epoch, with the same process

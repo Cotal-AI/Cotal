@@ -757,6 +757,7 @@
     "smoke:capability-census:live": "tsx bin/smoke/capability-census-live.smoke.ts",
     "smoke:launch-matrix:live": "tsx bin/smoke/launch-matrix-live.smoke.ts",
     "smoke:deprecated-daemon-entries": "tsx bin/smoke/deprecated-daemon-entries.smoke.ts",
+    "smoke:daemon-login": "pnpm --filter @cotal-ai/auth... --filter @cotal-ai/seat build && tsx bin/smoke/daemon-login.smoke.ts",
     "smoke:manager-preset:live": "tsx bin/smoke/manager-preset-live.smoke.ts",
     "smoke:persona-agent": "tsx bin/smoke/persona-agent.smoke.ts",
     "smoke:start-overrides": "tsx implementations/manager/smoke/start-overrides.smoke.ts",

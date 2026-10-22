@@ -4,7 +4,7 @@ import {
   CommandFailure, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, armManagerShutdownIntent,
   assertRecordIdentity, canonicalLocalProcessPath, canonicalRoot, clearRefusedServiceStopRequest,
   colorEnabled, commandIsCotalSupervisor, controllerAttemptBinding, cutController, localProcessPath, maintenanceAdmitsStackWork, publishServiceStopRequest,
-  readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts, readServiceStopRequest, releaseRetainedServiceStop, clearRetainedRefusedServiceStopRequest,
+  readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts, removePidPair, readServiceStopRequest, releaseRetainedServiceStop, clearRetainedRefusedServiceStopRequest,
   clearAbandonedServiceStopRequest, disarmManagerShutdownIntent, managerShutdownIntentArmedBy,
   reserveNativeServiceStop, resolveNativeServiceTarget, serviceAdapterAttempt, serviceMetadataDigest,
   stopReservationPath, type LocalProcess, type NativeServiceStopRequest, type ProcessIdentityRecord, type ServiceAdapterAttempt, type ServiceAdapterContext,
@@ -201,6 +201,10 @@ export const managerService: LocalProcess = {
       extra.push("--launch", context.options.launch, "--launch-sha256", context.options["launch-sha256"]);
     }
     if (context.options.roster !== undefined) extra.push("--roster", String(context.options.roster));
+    // A killed child leaves its custody record, and the next child claims the slot create-only and
+    // never reclaims. A record whose pid is dead is retired here, under the controller's definition
+    // lock, after every refusal above; a live, foreign or unreadable one refused there.
+    if (state.state === "dead") removePidPair(path, String(state.pid));
     const [executable, ...self] = context.cliInvocation;
     return { executable: executable!, cwd: target.root, args: [...self, ...(colorEnabled() ? [] : ["--no-color"]), "__service-manager", "--root", target.root, "--space", context.space, "--server", target.server, "--runtime", String(context.options.runtime), "--service-instance", context.instanceId, "--launch-request", context.launchRequestId, "--state-directory", context.stateDirectory, ...extra] };
   },

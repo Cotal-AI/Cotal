@@ -1,5 +1,9 @@
 # @cotal-ai/connector-claude-code
 
+## 0.94.5
+
+No changes in this release.
+
 ## 0.94.4
 
 ### Patch Changes
