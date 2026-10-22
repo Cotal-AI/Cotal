@@ -81,6 +81,8 @@ const contractGrant = (owner: string, actor: string, s: Approved) => ({
 
 /** `human` is the fixture human session every authenticated request must present. */
 export async function startApprovalAuthority(o: { home: string; human: string }): Promise<ApprovalAuthority> {
+  // The replay's registry rows land under COTAL_HOME, so it must already be this fixture's home.
+  if (process.env.COTAL_HOME !== o.home) throw new Error("start the approval authority only after process.env.COTAL_HOME is set to its home");
   const key = join(o.home, "authority.key"), caFile = join(o.home, "authority.crt");
   execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1",
     "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", key, "-out", caFile], { stdio: "ignore" });
