@@ -1,6 +1,8 @@
 /** The dashboard's copy and style rules hold across the client source: no em or en dashes (one pinned
  *  fallback string excepted), no uppercase text, no positive letter-spacing, no Geist or Work Sans, no
- *  network call outside api/, and a token file that defines both palettes. */
+ *  network call outside api/, and a token file that defines both palettes. Tailwind classes live only
+ *  in the copied shadcn parts, shadcn's colour names are bridged from ours, and every running
+ *  animation in app.css stops under reduced motion. */
 import { strict as assert } from "node:assert";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -94,7 +96,72 @@ ok("app.css holds no colour literal, only tokens", literals.length === 0, litera
 const scoped = app.split("\n").filter((l) => /(^|[\s,>+~])\.v3(?![\w-])/.test(l));
 ok("app.css has no .v3 scope: no element has to carry a root class", scoped.length === 0, scoped);
 
-const touchesBrowser = /\b(window|document|localStorage|sessionStorage)\b|\bfetch\s*\(|new\s+EventSource\s*\(/;
+// The copied shadcn parts keep the type rules too: Tailwind classes, not CSS, so the checks above miss them.
+const shadcnLines = lines.filter((l) => l.rel.startsWith("ui/shadcn/"));
+const loud = /(?<![\w-])(?:uppercase|tracking-(?:wide|wider|widest))(?![\w-])/;
+ok("no `uppercase` class and no tracking-wide, tracking-wider or tracking-widest in ui/shadcn",
+  shadcnLines.length > 0 && hits(loud, (rel) => rel.startsWith("ui/shadcn/")).length === 0,
+  hits(loud, (rel) => rel.startsWith("ui/shadcn/")));
+
+// Tailwind utilities come only from the copied shadcn files: shadcn.css scans ui/shadcn alone, so a
+// utility written anywhere else would silently do nothing, or match a class Tailwind happens to emit.
+// Product parts style with app.css classes. The ui-*, v3-* and ox-* names never match this list.
+const REFUSED = /^(?:flex|grid|hidden|border|rounded|truncate|text-sm|(?:p|px|py|gap|bg)-.+)$/;
+const tailwindOutside = lines
+  .filter((l) => l.rel.endsWith(".tsx") && !l.rel.startsWith("ui/shadcn/") && l.text.includes("className"))
+  .flatMap((l) => [...l.text.slice(l.text.indexOf("className")).matchAll(/"([^"]*)"|'([^']*)'|`([^`]*)`/g)]
+    .flatMap((m) => (m[1] ?? m[2] ?? m[3]!).split(/\s+/))
+    .filter((token) => REFUSED.test(token.split(":").pop()!.replace(/^!/, "")))
+    .map((token) => `${l.rel}:${l.line}: ${token}`));
+ok("no Tailwind utility class outside ui/shadcn", tailwindOutside.length === 0, tailwindOutside);
+
+/** shadcn's names, each set on :root from one of our tokens, so Night follows from our Night blocks. */
+const BRIDGE: Record<string, string> = {
+  "--background": "--bg", "--foreground": "--ink", "--card-foreground": "--ink", "--popover-foreground": "--ink",
+  "--secondary-foreground": "--ink", "--accent-foreground": "--ink", "--muted": "--soft", "--secondary": "--soft",
+  "--muted-foreground": "--dim", "--border": "--line", "--input": "--card-line", "--ring": "--focus",
+  "--accent": "--hover", "--primary-foreground": "--primary-ink", "--destructive": "--red-ink", "--popover": "--card",
+};
+const unbridged = Object.entries(BRIDGE).filter(([name, ours]) => lightVars.get(name) !== `var(${ours})` || nightVars.has(name) || systemVars.has(name));
+ok("tokens.css's :root defines each bridged shadcn name as var(--ours) per the map", unbridged.length === 0,
+  unbridged.map(([name]) => ({ name, root: lightVars.get(name), night: nightVars.get(name), system: systemVars.get(name) })));
+
+// Every class rule in app.css that runs an animation is stopped under reduced motion.
+type CssRule = { selector: string; body: string; within: string[] };
+/** The style rules of `css`, comments removed, each with the at-rules around it, outermost first. */
+const cssRules = (css: string, within: string[] = []): CssRule[] => {
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const out: CssRule[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf("{", i);
+    if (open < 0) break;
+    let depth = 0;
+    let close = open;
+    for (; close < text.length; close++) {
+      if (text[close] === "{") depth++;
+      else if (text[close] === "}" && --depth === 0) break;
+    }
+    const head = text.slice(i, open).trim();
+    const inner = text.slice(open + 1, close);
+    if (/^@(?:media|layer|supports)\b/.test(head)) out.push(...cssRules(inner, [...within, head]));
+    else if (!head.startsWith("@")) out.push({ selector: head, body: inner, within });
+    i = close + 1;
+  }
+  return out;
+};
+const appRules = cssRules(app);
+const reduced = (r: CssRule) => r.within.some((w) => /prefers-reduced-motion:\s*reduce/.test(w));
+const sets = (body: string) => /(?:^|;)\s*animation(?:-name)?\s*:\s*([^;]+)/.exec(body)?.[1]?.trim();
+const animated = appRules.filter((r) => !reduced(r) && sets(r.body) && sets(r.body) !== "none")
+  .flatMap((r) => r.selector.split(",").map((s) => s.trim())).filter((s) => s.includes("."));
+const stopped = new Set(appRules.filter((r) => reduced(r) && sets(r.body) === "none")
+  .flatMap((r) => r.selector.split(",").map((s) => s.trim())));
+const moving = animated.filter((s) => !stopped.has(s));
+ok("every class rule in app.css with a running animation also has a reduced-motion rule",
+  animated.length > 0 && moving.length === 0, moving);
+
+const touchesBrowser =/\b(window|document|localStorage|sessionStorage)\b|\bfetch\s*\(|new\s+EventSource\s*\(/;
 const impure = lines.filter((l) => /^(lib|state)\//.test(l.rel) && l.rel !== "lib/md.ts" && isCode(l.text) && touchesBrowser.test(l.text));
 ok("lib/ and state/ stay free of window, document, storage, fetch and EventSource, except lib/md.ts",
   impure.length === 0, impure.map((l) => `${l.rel}:${l.line}: ${l.text.trim()}`));

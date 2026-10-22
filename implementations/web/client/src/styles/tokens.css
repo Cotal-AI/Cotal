@@ -25,6 +25,14 @@
   --id-1: #F6B3C4; --id-2: #CDE6A3; --id-3: #C9B6F6; --id-4: #F7C59A;
   --id-5: #8FDCCB; --id-6: #E6D29C; --id-7: #B8C3D9; --id-8: #EBB1E8;
   --id-ink: #202B43; --id-off: #D2D2CF;
+  /* shadcn's names for the copied parts in ui/shadcn, each set from one of ours. They are set here
+     only: the Night blocks below change our tokens, and these follow. --primary and --card are ours. */
+  --background: var(--bg);
+  --foreground: var(--ink); --card-foreground: var(--ink); --popover-foreground: var(--ink);
+  --secondary-foreground: var(--ink); --accent-foreground: var(--ink);
+  --muted: var(--soft); --secondary: var(--soft); --muted-foreground: var(--dim);
+  --border: var(--line); --input: var(--card-line); --ring: var(--focus); --accent: var(--hover);
+  --primary-foreground: var(--primary-ink); --destructive: var(--red-ink); --popover: var(--card);
 }
 
 :root[data-theme="light"] { color-scheme: light; }

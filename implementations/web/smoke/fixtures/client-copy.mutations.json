@@ -108,6 +108,38 @@
       "replace": "import type { RosterEntry } from \"../api/types.js\";\nvoid document;",
       "expectRed": "lib/ and state/ stay free of window, document, storage, fetch and EventSource",
       "cell": "lib/ and state/ stay free of window, document, storage, fetch and EventSource"
+    },
+    {
+      "name": "a copied shadcn badge is set in uppercase",
+      "file": "implementations/web/client/src/ui/shadcn/badge.tsx",
+      "find": "\"group/badge inline-flex",
+      "replace": "\"group/badge uppercase inline-flex",
+      "expectRed": "no `uppercase` class and no tracking-wide, tracking-wider or tracking-widest in ui/shadcn",
+      "cell": "no `uppercase` class and no tracking-wide, tracking-wider or tracking-widest in ui/shadcn"
+    },
+    {
+      "name": "a product part writes a Tailwind utility class",
+      "file": "implementations/web/client/src/ui/Skeleton.tsx",
+      "find": "<div className=\"ui-skel-row\">",
+      "replace": "<div className=\"flex\">",
+      "expectRed": "no Tailwind utility class outside ui/shadcn",
+      "cell": "no Tailwind utility class outside ui/shadcn"
+    },
+    {
+      "name": "shadcn focus rings take the multicast blue instead of the focus token",
+      "file": "implementations/web/client/src/styles/tokens.css",
+      "find": "--ring: var(--focus);",
+      "replace": "--ring: var(--multi);",
+      "expectRed": "tokens.css's :root defines each bridged shadcn name as var(--ours) per the map",
+      "cell": "tokens.css's :root defines each bridged shadcn name as var(--ours) per the map"
+    },
+    {
+      "name": "the typing caret keeps blinking under reduced motion",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": "  .ui-caret { animation: none; }\n",
+      "replace": "",
+      "expectRed": "every class rule in app.css with a running animation also has a reduced-motion rule",
+      "cell": "every class rule in app.css with a running animation also has a reduced-motion rule"
     }
   ]
 }

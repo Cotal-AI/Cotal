@@ -4,19 +4,23 @@
    later rule wins a tie as in the mock. The v3 root rule is the body rule below.
    Type rules: no uppercase, no positive letter-spacing, mono only for code, commands, ids and model names. */
 
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 400 14px/1.5 var(--body); font-feature-settings: "cv11", "ss01"; font-optical-sizing: auto; -webkit-font-smoothing: antialiased; }
-button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+/* Element resets sit in the base layer, so a Tailwind utility on a copied shadcn part (an outline
+   button's border, say) wins over them. Every class rule below stays unlayered and wins over both. */
+@layer base {
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 400 14px/1.5 var(--body); font-feature-settings: "cv11", "ss01"; font-optical-sizing: auto; -webkit-font-smoothing: antialiased; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  code { font: 500 12.5px/1 var(--mono); background: var(--code); padding: 2px 5px; border-radius: 5px; }
+  pre { margin: 6px 0 2px; font: 400 12.5px/1.6 var(--mono); background: var(--code); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+}
 
 /* Hugeicons: Stroke Rounded at 1.5. The mock's round 3 blanket size (18) beat the earlier per-context
    sizes of the space chevron, the section button and the rail button, so those sit here as 18 and 22. */
 .ui-ic { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .ui-mono { font-family: var(--mono); }
-code { font: 500 12.5px/1 var(--mono); background: var(--code); padding: 2px 5px; border-radius: 5px; }
-pre { margin: 6px 0 2px; font: 400 12.5px/1.6 var(--mono); background: var(--code); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
-pre code { background: none; padding: 0; }
-:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 /* ---------- rail ---------- */
 .ui-rail { background: var(--side); color: var(--rail-ink); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 0; border-right: 1px solid var(--side-line); min-height: 0; }
 .ui-rail-mark { width: 26px; height: 26px; margin-bottom: 12px; color: var(--mark); }
@@ -588,8 +592,15 @@ textarea.ui-input::placeholder { color: var(--faint); opacity: 1; }
 @keyframes ui-fade { from { opacity: 0; } to { opacity: 1; } }
 .ui-post-hl { animation: ui-hl 2s ease-out forwards; }
 @keyframes ui-hl { from { background: color-mix(in srgb, var(--multi) 9%, transparent); } to { background: transparent; } }
+/* Reduced motion stops every animation here. The typing dots, caret and spinner stand still, and the
+   skeleton bar keeps its fill without the sweep. */
 @media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
   .ui-in, .ui-xfade, .ui-jump, .ui-post-hl { animation: none; }
+  .ui-dots i { animation: none; }
+  .ui-caret { animation: none; }
+  .ui-spin { animation: none; }
+  .ui-skel::after { animation: none; }
 }
 /* ---------- message actions (agents round 1: sections S, C, D and E) ----------
    The Session action on a verified roster agent's message. It is in the tab order, so it shows on

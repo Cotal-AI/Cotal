@@ -17,8 +17,8 @@
     {
       "name": "the manifest is no longer sorted by package",
       "file": "implementations/web/client/vite.config.ts",
-      "find": ".sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))",
-      "replace": ".sort(([a], [b]) => (a < b ? 1 : a > b ? -1 : 0))",
+      "find": ".sort((a, b) => (a.package < b.package ? -1 : a.package > b.package ? 1 : 0))",
+      "replace": ".sort((a, b) => (a.package < b.package ? 1 : a.package > b.package ? -1 : 0))",
       "expectRed": "bundle-licenses.json is sorted by package",
       "cell": "bundle-licenses.json is sorted by package",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
@@ -44,8 +44,8 @@
     {
       "name": "the build no longer puts the theme boot script in the page, so the first paint is in the system palette",
       "file": "implementations/web/client/vite.config.ts",
-      "find": "plugins: [react(), bundleLicenses(), themeBoot()],",
-      "replace": "plugins: [react(), bundleLicenses()],",
+      "find": "plugins: [tailwindcss(), react(), bundleLicenses(), themeBoot()],",
+      "replace": "plugins: [tailwindcss(), react(), bundleLicenses()],",
       "expectRed": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
       "cell": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
@@ -129,6 +129,51 @@
       "replace": "(() => localStorage, document.body)",
       "expectRed": "the built boot script puts the saved theme on the root element, and system for nothing saved, a value that is no theme, or blocked storage",
       "cell": "the built boot script puts the saved theme on the root element, and system for nothing saved, a value that is no theme, or blocked storage",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "Tailwind brings its preflight reset in, restyling the existing screens",
+      "file": "implementations/web/client/src/styles/shadcn.css",
+      "find": "@import \"tailwindcss/theme.css\" layer(theme);\n",
+      "replace": "@import \"tailwindcss/theme.css\" layer(theme);\n@import \"tailwindcss/preflight.css\" layer(base);\n",
+      "expectRed": "the stylesheet carries no Tailwind preflight: no ::file-selector-button and no reset rule on *, ::after, ::before, ::backdrop",
+      "cell": "the stylesheet carries no Tailwind preflight: no ::file-selector-button and no reset rule on *, ::after, ::before, ::backdrop",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the [data-slot] border reset is written unlayered, so it beats every Tailwind border utility",
+      "file": "implementations/web/client/src/styles/shadcn.css",
+      "find": "@layer base { :where([data-slot], [data-slot] *) { border: 0 solid; } }",
+      "replace": ":where([data-slot], [data-slot] *) { border: 0 solid; }",
+      "expectRed": "the [data-slot] border reset sits inside @layer base",
+      "cell": "the [data-slot] border reset sits inside @layer base",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the dark variant loses its system arm, so Night on first load gets the light shadcn styles",
+      "file": "implementations/web/client/src/styles/shadcn.css",
+      "find": "  @media (prefers-color-scheme: dark) {\n    &:where(:root:not([data-theme=\"light\"]), :root:not([data-theme=\"light\"]) *) { @slot; }\n  }\n",
+      "replace": "",
+      "expectRed": "a dark: utility from a shadcn file is emitted under [data-theme=dark] and inside @media (prefers-color-scheme: dark)",
+      "cell": "a dark: utility from a shadcn file is emitted under [data-theme=dark] and inside @media (prefers-color-scheme: dark)",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the vendored list is emptied, so the copied shadcn source ships without its license",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "const VENDORED: Licensed[] = [{ package: \"shadcn/ui\", version: \"4.22.1\", license: \"MIT\" }];",
+      "replace": "const VENDORED: Licensed[] = [];",
+      "expectRed": "bundle-licenses.json lists shadcn/ui with MIT and 4.22.1",
+      "cell": "bundle-licenses.json lists shadcn/ui with MIT and 4.22.1",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the CSS-only list is emptied, so Tailwind generated CSS ships without its license",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "const CSS_ONLY = [\"tailwindcss\"];",
+      "replace": "const CSS_ONLY: string[] = [];",
+      "expectRed": "bundle-licenses.json lists tailwindcss with its own version and license",
+      "cell": "bundle-licenses.json lists tailwindcss with its own version and license",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
     }
   ]

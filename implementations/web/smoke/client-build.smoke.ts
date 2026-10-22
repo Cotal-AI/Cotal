@@ -1,7 +1,9 @@
 /** The client build is the shipped page: it must exist after `build`, reference only files it
  *  contains, name every third-party package it bundles with that package's license, and carry the
  *  character art the avatars draw. Its theme boot script loads before the stylesheet and puts the
- *  saved theme on the root element, and its stylesheet's color-scheme follows the theme. */
+ *  saved theme on the root element, and its stylesheet's color-scheme follows the theme. Tailwind
+ *  comes in without its preflight reset, the shadcn parts' border reset and dark variant land where
+ *  the existing styles expect them, and the copied shadcn source and Tailwind carry their licenses. */
 import { strict as assert } from "node:assert";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -104,6 +106,48 @@ const schemes = [schemeOf(":root"), schemeOf(":root[data-theme=light]"), schemeO
 ok("the built stylesheet's color-scheme follows the theme: light dark for system, and each forced value under its data-theme",
   JSON.stringify(schemes) === JSON.stringify(["light dark", "light", "dark"]), schemes);
 
+// Tailwind comes in without its reset, so the existing screens keep app.css's own base.
+type CssRule = { selector: string; body: string; within: string[] };
+/** The style rules of the built stylesheet, each with the at-rules around it, outermost first. */
+const cssRules = (text: string, within: string[] = []): CssRule[] => {
+  const found: CssRule[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf("{", i);
+    if (open < 0) break;
+    const semi = text.indexOf(";", i);
+    if (semi >= 0 && semi < open) { i = semi + 1; continue; } // a statement such as `@layer a,b;`
+    let depth = 0;
+    let close = open;
+    for (; close < text.length; close++) {
+      if (text[close] === "{") depth++;
+      else if (text[close] === "}" && --depth === 0) break;
+    }
+    const head = text.slice(i, open).trim();
+    const inner = text.slice(open + 1, close);
+    if (/^@(?:media|layer|supports)\b/.test(head)) found.push(...cssRules(inner, [...within, head]));
+    else if (!head.startsWith("@")) found.push({ selector: head.replace(/["']/g, "").replace(/\s+/g, " "), body: inner, within });
+    i = close + 1;
+  }
+  return found;
+};
+const rules = cssRules(css);
+const resets = rules.filter((r) => r.selector.includes("::backdrop") && /box-sizing|margin:0|border:0 solid/.test(r.body));
+ok("the stylesheet carries no Tailwind preflight: no ::file-selector-button and no reset rule on *, ::after, ::before, ::backdrop",
+  !css.includes("::file-selector-button") && resets.length === 0, resets.map((r) => r.selector));
+// Without preflight, shadcn's borders need a border style. The scoped reset gives them one, and sits in
+// the base layer so Tailwind's own border utilities still override it.
+const slotResets = rules.filter((r) => r.selector === ":where([data-slot],[data-slot] *)" || r.selector === ":where([data-slot], [data-slot] *)");
+ok("the [data-slot] border reset sits inside @layer base",
+  slotResets.length > 0 && slotResets.every((r) => r.within.length === 1 && /^@layer base$/.test(r.within[0]!)), slotResets.map((r) => r.within));
+// The dark variant follows the theme the way tokens.css does: forced by data-theme="dark", and from
+// the OS setting when the theme is system or unset. Button's outline variant uses dark:bg-transparent.
+const darkRules = rules.filter((r) => r.selector.startsWith(".dark\\:bg-transparent:"));
+ok("a dark: utility from a shadcn file is emitted under [data-theme=dark] and inside @media (prefers-color-scheme: dark)",
+  darkRules.some((r) => r.selector.includes("[data-theme=dark]") && !r.within.some((w) => w.includes("prefers-color-scheme")))
+    && darkRules.some((r) => r.selector.includes(":root:not([data-theme=light])") && r.within.some((w) => /prefers-color-scheme:\s*dark/.test(w))),
+  darkRules);
+
 const licenses = JSON.parse(readFileSync(join(out, "bundle-licenses.json"), "utf8")) as {
   bundled: { package: string; version: string; license: string }[];
 };
@@ -112,6 +156,13 @@ const names = licenses.bundled.map((b) => b.package);
 // d3-force, d3-selection and d3-zoom are bundled because the topology graph lays out and pans with them.
 for (const want of ["react", "react-dom", "@fontsource-variable/inter", "marked", "dompurify", "d3-force", "d3-selection", "d3-zoom"])
   ok(`bundle-licenses.json names ${want}`, names.includes(want), names);
+// The shadcn parts and the utilities in shadcn.css are copied source, not a package any module id names.
+ok("bundle-licenses.json lists shadcn/ui with MIT and 4.22.1",
+  licenses.bundled.some((b) => b.package === "shadcn/ui" && b.license === "MIT" && b.version === "4.22.1"), licenses.bundled);
+// Tailwind generates its theme and utilities into the stylesheet, so it ships with no module id either.
+const tailwindMeta = JSON.parse(readFileSync(createRequire(join(pkg, "package.json")).resolve("tailwindcss/package.json"), "utf8")) as { version: string; license: string };
+ok("bundle-licenses.json lists tailwindcss with its own version and license",
+  licenses.bundled.some((b) => b.package === "tailwindcss" && b.version === tailwindMeta.version && b.license === tailwindMeta.license), licenses.bundled);
 ok("every bundled package carries a version and a license",
   licenses.bundled.every((b) => b.version && b.license), licenses.bundled);
 // The same plain comparison the build sorts with (vite.config.ts), so the two cannot disagree.
@@ -141,7 +192,10 @@ const reactMeta = JSON.parse(readFileSync(join(dirname(reactEntry), "package.jso
 let emitted: Emitted | undefined;
 licensesPlugin!.generateBundle!.call({ emitFile: (f) => { emitted = f; } }, {}, { "index.js": { type: "chunk", moduleIds: [reactEntry] } });
 const driven = emitted ? (JSON.parse(emitted.source) as { bundled: { package: string; version: string; license: string }[] }).bundled : [];
+// The CSS-only and vendored rows are added whatever the chunks hold, so react is the only package found.
+const drivenReact = driven.filter((d) => d.package === "react");
 ok("given a chunk holding react, the plugin writes bundle-licenses.json naming react with its own version and license",
-  emitted?.fileName === "bundle-licenses.json" && driven.length === 1 && driven[0].package === "react"
-    && driven[0].version === reactMeta.version && driven[0].license === reactMeta.license, { emitted: emitted?.fileName, driven });
+  emitted?.fileName === "bundle-licenses.json" && drivenReact.length === 1
+    && drivenReact[0]!.version === reactMeta.version && drivenReact[0]!.license === reactMeta.license
+    && driven.every((d) => ["react", "shadcn/ui", "tailwindcss"].includes(d.package)), { emitted: emitted?.fileName, driven });
 console.log(`client-build: ${n} checks passed`);

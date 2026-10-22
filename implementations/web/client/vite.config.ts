@@ -1,7 +1,9 @@
 /// <reference types="node" />
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 import { bootTheme } from "./src/lib/themeBoot.ts";
@@ -15,9 +17,26 @@ function packageOf(id: string): { name: string; root: string } | undefined {
   return m ? { name: m[2].replace(/\\/g, "/"), root: m[1] + m[2] } : undefined;
 }
 
+type Licensed = { package: string; version: string; license: string };
+
+/** Source copied into the client rather than installed: the shadcn/ui parts under src/ui/shadcn and
+ *  the utilities copied into src/styles/shadcn.css. No module id names them. */
+const VENDORED: Licensed[] = [{ package: "shadcn/ui", version: "4.22.1", license: "MIT" }];
+
+/** Packages the stylesheet carries with no module id to find them by: Tailwind generates its theme
+ *  and utilities into the stylesheet. Each is read from its own package.json, like the rest. */
+const CSS_ONLY = ["tailwindcss"];
+
+/** A package's version and license from its own package.json. A package with neither fails the build. */
+function licensed(name: string, manifest: string): Licensed {
+  const meta = JSON.parse(readFileSync(manifest, "utf8")) as { version?: string; license?: string };
+  if (!meta.version || !meta.license) throw new Error(`bundle-licenses: ${name} declares no version or license`);
+  return { package: name, version: meta.version, license: meta.license };
+}
+
 /** Writes `bundle-licenses.json`: every third-party package compiled into the client, with the
  *  version and license its own package.json declares, found from the module ids of the emitted
- *  chunks (stylesheet imports included). A package with no license fails the build. */
+ *  chunks (stylesheet imports included), plus the CSS-only packages and the vendored source. */
 function bundleLicenses(): Plugin {
   return {
     name: "cotal-bundle-licenses",
@@ -33,11 +52,12 @@ function bundleLicenses(): Plugin {
       }
       // Code-unit order, the same plain comparison the client-build suite checks with: a
       // locale-aware sort could order two names differently on another machine.
-      const bundled = [...found].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([name, root]) => {
-        const meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string; license?: string };
-        if (!meta.version || !meta.license) throw new Error(`bundle-licenses: ${name} declares no version or license`);
-        return { package: name, version: meta.version, license: meta.license };
-      });
+      const require = createRequire(import.meta.url);
+      const bundled = [
+        ...[...found].map(([name, root]) => licensed(name, join(root, "package.json"))),
+        ...CSS_ONLY.map((name) => licensed(name, require.resolve(`${name}/package.json`))),
+        ...VENDORED,
+      ].sort((a, b) => (a.package < b.package ? -1 : a.package > b.package ? 1 : 0));
       this.emitFile({ type: "asset", fileName: "bundle-licenses.json", source: JSON.stringify({ bundled }, null, 2) + "\n" });
     },
   };
@@ -71,7 +91,7 @@ function themeBoot(): Plugin {
 export default defineConfig({
   root: here,
   base: "/",
-  plugins: [react(), bundleLicenses(), themeBoot()],
+  plugins: [tailwindcss(), react(), bundleLicenses(), themeBoot()],
   build: {
     outDir: resolve(here, "../dist/web"),
     emptyOutDir: true,

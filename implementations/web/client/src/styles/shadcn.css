@@ -1,0 +1,189 @@
+/* Tailwind for the copied shadcn/ui parts in ui/shadcn, and nothing else. Imported after tokens.css
+   and before app.css. Only Tailwind's theme and utilities come in; its preflight reset does not, so
+   app.css keeps its own base. Utilities are generated only from the files under ui/shadcn, and
+   app.css stays unlayered, so on any clash our rule wins over a Tailwind utility. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "../ui/shadcn";
+
+/* From shadcn@4.22.1 dist/tailwind.css (MIT licence, copyright (c) 2023 shadcn): the shimmer
+   utilities and the data-* state variants the copied parts use. Radix marks state with data-state
+   and data-orientation, which these variants read. Copied as published. */
+@custom-variant data-open {
+  &:where([data-state="open"]),
+  &:where([data-open]:not([data-open="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-closed {
+  &:where([data-state="closed"]),
+  &:where([data-closed]:not([data-closed="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-active {
+  &:where([data-state="active"]),
+  &:where([data-active]:not([data-active="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-horizontal {
+  &:where([data-orientation="horizontal"]) {
+    @slot;
+  }
+}
+
+@custom-variant data-vertical {
+  &:where([data-orientation="vertical"]) {
+    @slot;
+  }
+}
+
+@property --shimmer-angle {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 20deg;
+}
+@property --shimmer-image {
+  syntax: "*";
+  inherits: false;
+}
+@property --shimmer-text-fill {
+  syntax: "*";
+  inherits: false;
+}
+
+@theme inline {
+  @keyframes tw-shimmer {
+    from {
+      background-position: 100% 0;
+    }
+    to {
+      background-position: 0 0;
+    }
+  }
+}
+
+@utility shimmer {
+  --_spread: var(--shimmer-spread, calc(3ch + 40px));
+  --_base: currentColor;
+  --_highlight: var(
+    --shimmer-color,
+    oklch(from currentColor l c h / calc(alpha* 0.2))
+  );
+
+  background-image: var(
+    --shimmer-image,
+    linear-gradient(
+      calc(90deg + var(--shimmer-angle)),
+      var(--_base) calc(50% - var(--_spread)),
+      color-mix(in oklch, var(--_highlight), var(--_base) 50%)
+        calc(50% - var(--_spread) * 0.5),
+      var(--_highlight) 50%,
+      color-mix(in oklch, var(--_highlight), var(--_base) 50%)
+        calc(50% + var(--_spread) * 0.5),
+      var(--_base) calc(50% + var(--_spread))
+    )
+  );
+  background-repeat: no-repeat;
+  background-size: calc(200% + var(--_spread) * 2) 100%;
+  background-position: 0 0;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: var(--shimmer-text-fill, transparent);
+  animation: tw-shimmer var(--shimmer-duration, 2s) linear infinite;
+
+  @variant dark {
+    --_highlight: var(
+      --shimmer-color,
+      oklch(from currentColor max(0.8, calc(l + 0.4)) c h / calc(alpha + 0.4))
+    );
+  }
+
+  &:where([dir="rtl"], [dir="rtl"] *) {
+    animation-direction: reverse;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+@utility shimmer-once {
+  animation-iteration-count: 1;
+}
+
+@utility shimmer-reverse {
+  animation-direction: reverse;
+}
+
+@utility shimmer-none {
+  --shimmer-image: none;
+  --shimmer-text-fill: currentColor;
+}
+
+@utility shimmer-color-* {
+  --shimmer-color: --value(--color, [color]);
+  --shimmer-color: color-mix(
+    in oklch,
+    --value(--color, [color]) calc(--modifier(integer) * 1%),
+    transparent
+  );
+}
+
+@utility shimmer-duration-* {
+  --shimmer-duration: calc(--value(integer) * 1ms);
+}
+
+@utility shimmer-spread-* {
+  --shimmer-spread: calc(var(--spacing) * --value(integer));
+  --shimmer-spread: --value([length], [percentage]);
+}
+
+@utility shimmer-angle-* {
+  --shimmer-angle: calc(--value(integer) * 1deg);
+}
+
+/* Without preflight, Tailwind's border utilities set a width on a style of none, so shadcn borders
+   would vanish. This scoped reset gives the parts a solid style. It sits in the base layer so
+   Tailwind's own border utilities still win over it. */
+@layer base { :where([data-slot], [data-slot] *) { border: 0 solid; } }
+
+/* shadcn's colour names, radii and fonts onto ours. tokens.css sets each shadcn name from one of our
+   tokens on :root, so Night follows from its own blocks. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-destructive: var(--destructive);
+  --color-accent: var(--accent);
+  --font-sans: var(--body);
+  --font-mono: var(--mono);
+  /* Rhea's rounded-2xl buttons, badges and tabs land on our 9px. */
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+  --radius-2xl: 9px;
+}
+
+/* dark: follows the theme the way tokens.css does. data-theme="dark" forces Night; system or unset
+   follows the OS setting; data-theme="light" pins Quiet. */
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) { @slot; }
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) { @slot; }
+  }
+}
