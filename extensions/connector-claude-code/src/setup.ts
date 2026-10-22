@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  acquireLock,
   globalConfigPath,
   mcpServerProblem,
   registry,
@@ -151,6 +152,16 @@ function cotalHome(): string {
 
 function marketplaceDir(): string {
   return join(cotalHome(), "claude-plugin");
+}
+
+/** Keep materialization, native registration and verification in one cross-process transaction. */
+function withPluginLock<T>(run: () => T): T {
+  const lock = acquireLock(join(marketplaceDir(), ".setup.lock"), { label: "Claude plugin setup" });
+  try {
+    return run();
+  } finally {
+    lock.release();
+  }
 }
 
 export function materialize(name: string, root: string, assets: readonly string[], version?: string, files: Readonly<Record<string, string>> = {}): void {
@@ -523,13 +534,15 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     explain: "Installs Cotal messaging for Claude Code, including supported local sessions in Desktop's Code tab. Reopen Claude after setup.",
     context: [DOCS_URL],
     run({ cotal }) {
-      const version = materializeCotal(cotal);
-      install("cotal", "user", version);
-      // Desktop first: a per-project install that cannot be removed fails the step after it.
-      const app = desktop(cotal, true);
-      const removed = retireProjectInstalls();
-      const replaced = removed ? `, replacing ${removed} project install${removed === 1 ? "" : "s"}` : "";
-      return `cotal@${MARKETPLACE} (user scope${replaced})${app ? `; ${app}` : ""}`;
+      return withPluginLock(() => {
+        const version = materializeCotal(cotal);
+        install("cotal", "user", version);
+        // Desktop first: a per-project install that cannot be removed fails the step after it.
+        const app = desktop(cotal, true);
+        const removed = retireProjectInstalls();
+        const replaced = removed ? `, replacing ${removed} project install${removed === 1 ? "" : "s"}` : "";
+        return `cotal@${MARKETPLACE} (user scope${replaced})${app ? `; ${app}` : ""}`;
+      });
     },
   },
   refresh: {
@@ -538,28 +551,30 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     explain: "Rewrites the copy of the Cotal plugin that Claude Code sessions load, and Cotal's entry in Claude Desktop, for this release.",
     context: [DOCS_URL],
     run({ cotal, skills }) {
-      const entries = installedForRefresh();
-      const installs = entries.filter((entry) => entry.id === `cotal@${MARKETPLACE}`);
-      const skillInstalls = entries.filter((entry) => entry.id === `cotal-skills@${MARKETPLACE}`);
-      const path = desktopConfigPath();
-      const app = path !== undefined && readDesktopEntry(path) !== undefined;
-      if (!installs.length && !skillInstalls.length && !app) return "not installed";
-      if (skillInstalls.length && !skills) throw new Error("current skills are required to refresh the installed Claude skills plugin");
-      const version = installs.length || app ? materializeCotal(cotal) : undefined;
-      if (skillInstalls.length) materializeSkills(skills!);
-      if (installs.length || skillInstalls.length) writeMarketplace();
-      const parts: string[] = [];
-      if (installs.length) {
-        refreshInstalls("cotal", installs, version!);
-        parts.push(`cotal@${MARKETPLACE} ${version}; reload plugins or reopen Claude to load it in running sessions`);
-      }
-      if (skillInstalls.length) {
-        refreshInstalls("cotal-skills", skillInstalls, skills!.version);
-        parts.push(`cotal-skills@${MARKETPLACE} ${skills!.version}`);
-      }
-      const desktopText = app ? desktop(cotal, false) : undefined;
-      if (desktopText) parts.push(desktopText);
-      return parts.join("; ");
+      return withPluginLock(() => {
+        const entries = installedForRefresh();
+        const installs = entries.filter((entry) => entry.id === `cotal@${MARKETPLACE}`);
+        const skillInstalls = entries.filter((entry) => entry.id === `cotal-skills@${MARKETPLACE}`);
+        const path = desktopConfigPath();
+        const app = path !== undefined && readDesktopEntry(path) !== undefined;
+        if (!installs.length && !skillInstalls.length && !app) return "not installed";
+        if (skillInstalls.length && !skills) throw new Error("current skills are required to refresh the installed Claude skills plugin");
+        const version = installs.length || app ? materializeCotal(cotal) : undefined;
+        if (skillInstalls.length) materializeSkills(skills!);
+        if (installs.length || skillInstalls.length) writeMarketplace();
+        const parts: string[] = [];
+        if (installs.length) {
+          refreshInstalls("cotal", installs, version!);
+          parts.push(`cotal@${MARKETPLACE} ${version}; reload plugins or reopen Claude to load it in running sessions`);
+        }
+        if (skillInstalls.length) {
+          refreshInstalls("cotal-skills", skillInstalls, skills!.version);
+          parts.push(`cotal-skills@${MARKETPLACE} ${skills!.version}`);
+        }
+        const desktopText = app ? desktop(cotal, false) : undefined;
+        if (desktopText) parts.push(desktopText);
+        return parts.join("; ");
+      });
     },
   },
   skills: {
@@ -568,9 +583,11 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     explain: "Installs Cotal's authored skills as a Claude Code plugin.",
     context: [DOCS_URL],
     run(input) {
-      materializeSkills(input);
-      install("cotal-skills", "user", input.version);
-      return `cotal-skills@${MARKETPLACE} (user scope)`;
+      return withPluginLock(() => {
+        materializeSkills(input);
+        install("cotal-skills", "user", input.version);
+        return `cotal-skills@${MARKETPLACE} (user scope)`;
+      });
     },
   },
   mcpServers: {
