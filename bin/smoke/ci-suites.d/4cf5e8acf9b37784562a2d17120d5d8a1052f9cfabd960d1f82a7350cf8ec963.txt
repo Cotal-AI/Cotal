@@ -1,0 +1,3 @@
+# Channel discovery bounds, event-channel wording, exact DM addressing feedback and zero-holder
+# anycast queueing, through the real tool specs on a real broker.
+smoke:discovery-addressing

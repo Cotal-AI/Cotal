@@ -219,6 +219,7 @@
     "smoke:provision-stream-info": "tsx packages/core/smoke/provision-stream-info.smoke.ts",
     "smoke:attention": "tsx extensions/connector-core/smoke/attention.smoke.ts",
     "smoke:gateway": "tsx extensions/connector-core/smoke/gateway.smoke.ts",
+    "smoke:discovery-addressing": "tsx extensions/connector-core/smoke/discovery-addressing.smoke.ts",
     "smoke:injection-framing": "tsx extensions/connector-core/smoke/injection-framing.smoke.ts",
     "smoke:control-reply": "tsx extensions/connector-core/smoke/control-reply.smoke.ts",
     "smoke:hook-relay-startup": "tsx extensions/connector-core/smoke/hook-relay-startup.smoke.ts",

@@ -265,7 +265,7 @@ unconfirmed retirement retains its record and reports incomplete cleanup. Other 
 connected. A mesh requiring events refuses a connection without a native transcript source.
 
 The gateway's MCP annotations distinguish read-only queries from updates. Orientation, connection
-status, the roster and channel information are read-only. Sending messages, connecting and joining
+status, the roster, the docs and channel information are read-only. Sending messages, connecting and joining
 channels are additive. Inbox reads and waits consume messages; status, channel mode, leaving and
 disconnecting can replace or remove state. These hints do not grant access or override Claude's
 permission settings or an organization's approval policy.
