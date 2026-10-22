@@ -24,6 +24,21 @@ import { Manager, managerClusterArtifacts, registerRemoteManagerAuthority } from
 import * as remote from "../../manager/src/remote-authority.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 import "../../runtime/src/index.js";
+import { printRunDetail } from "../../runtime/src/workflow-views.js";
+
+function renderDetail(space: string, view: RunStatusView) {
+  const output: string[] = [];
+  const log = console.log, error = console.error, exitCode = process.exitCode;
+  console.log = console.error = (...args: unknown[]) => { output.push(args.map(String).join(" ")); };
+  try {
+    printRunDetail(space, view, {});
+    return { text: output.join("\n"), exitCode: process.exitCode };
+  } finally {
+    console.log = log;
+    console.error = error;
+    process.exitCode = exitCode;
+  }
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -261,6 +276,8 @@ try {
   const original = await dial("cli", cli.lifecycleUid!);
   let firstRun = "";
   let firstResult: RunCancelResult | undefined;
+  let renderedMarker: ReturnType<typeof renderDetail> | undefined;
+  let renderedUnreadable: ReturnType<typeof renderDetail> | undefined;
   await cell("original caller cancels a parked checkpoint through issuer inspect and commit", async () => {
     firstRun = await start(original, 'await checkpoint("parked", "Await input"); log("must not execute");');
     const reply = await call(original, "run-cancel", { runId: firstRun, reason: "checkpoint fixture finished" });
@@ -275,6 +292,7 @@ try {
     console.log(`status marker observation: ${JSON.stringify({ recordedState: final.status?.state,
       hasRevoked: Object.hasOwn(final, "revoked"), hasUnreadable: Object.hasOwn(final, "revocationUnreadable"),
       cancellationObservedMarker: firstResult.revocation !== undefined })}`);
+    renderedMarker = renderDetail(account.space, final);
     assert.deepEqual(final.revoked, { by: firstResult.revocation!.by, reason: firstResult.revocation!.reason });
     assert.equal(final.revocationUnreadable, undefined);
     assert.ok(!final.journal.some(r => r.kind === "step" && r.step.includes("log")));
@@ -289,10 +307,19 @@ try {
       assert.equal(view.status?.state, "released");
       assert.equal(view.revoked, undefined);
       assert.equal(view.revocationUnreadable, "fixture marker read unavailable");
+      renderedUnreadable = renderDetail(account.space, view);
     } finally { failStatusMarkerRead = false; }
     const recovered = await status(original, firstRun, "released");
     assert.deepEqual(recovered.revoked, { by: firstResult!.revocation!.by, reason: firstResult!.revocation!.reason });
     assert.equal(recovered.revocationUnreadable, undefined);
+  });
+  await cell("human run detail renders observed revocation and unreadable status", async () => {
+    const revoked = /admission revoked/i.test(renderedMarker?.text ?? "");
+    const unreadable = /revocation not checked/i.test(renderedUnreadable?.text ?? "");
+    console.log(`human marker view: ${JSON.stringify({ revoked, unreadable, unreadableExit: renderedUnreadable?.exitCode })}`);
+    assert.ok(revoked, "the human view must not hide a known revocation beside released state");
+    assert.ok(unreadable, "the human view must disclose a marker it could not read");
+    assert.equal(renderedUnreadable?.exitCode, 4, "an incomplete marker read uses the existing partial-result exit");
   });
   await cell("fresh duplicate keeps the first marker", async () => {
     const reply = await call(original, "run-cancel", { runId: firstRun, reason: "later reason" });
