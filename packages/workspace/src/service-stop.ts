@@ -127,6 +127,18 @@ export function clearRetainedRefusedServiceStopRequest(context: StopContext, exp
   return true;
 }
 
+/** Remove a retained request that no receipt settles, for an operator's explicit abandon: it has
+ *  neither a `completed` nor a `refused` receipt, and both its target and the stopper that published
+ *  it are gone. Its phase receipts stay. Returns whether the request was removed. */
+export function clearAbandonedServiceStopRequest(context: StopContext, expected: NativeServiceStopRequest): boolean {
+  const checked = request(expected, context), current = readServiceStopRequest(context);
+  const phases = readServiceStopReceipts(context, checked);
+  const gone = (record: ProcessIdentityRecord) => ["gone", "mismatch"].includes(assertRecordIdentity(record).kind);
+  if (!current || !sameRequest(current, checked) || phases.some((row) => row.phase === "completed" || row.phase === "refused") || !gone(checked.target) || !gone(checked.stopper)) return false;
+  rmSync(serviceStopRequestPath(context));
+  return true;
+}
+
 /** Remove a retained request's reservation once the stopper that took it is gone. A marker that names
  *  another PID, is not a plain file, or whose stopper still runs or cannot be read, is kept. Returns
  *  whether no reservation remains. */

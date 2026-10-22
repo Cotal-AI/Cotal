@@ -20,7 +20,11 @@
  *     request. While the manager runs, `down` refuses `LIFECYCLE_BLOCKED` naming the instance and the
  *     request, and `service start` refuses before any readiness probe and keeps the record. After it
  *     is killed `down` still refuses and nothing is stopped or cleaned up; `up` refuses the same way
- *     and launches no manager.
+ *     and launches no manager. `down --abandon-stop <request> --yes` refuses while the manager runs,
+ *     without `--yes` and for another request. Once the manager is gone it abandons the request,
+ *     records the manager failed with a warning and stops the stack, which `up` starts again. In a
+ *     second stack the unconfirmed stop is a `--with-agents` one, and abandoning it also removes the
+ *     shutdown intent that stop armed, so a later `down` stops the restarted manager.
  *  7. A native manager stop that completes after `down` stopped waiting. The manager is frozen once
  *     it publishes its accepted receipt, so the first `down` reports the stop unknown, then resumed,
  *     so it records the stop completed and exits. The next bare `down` settles the record `stopped`
@@ -37,6 +41,7 @@
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
  */
+import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, watch } from "node:fs";
@@ -44,7 +49,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { mintLifecycleUid } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, readServiceStopRequest, stopReservationPath } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, stopReservationPath } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -66,7 +71,7 @@ const anchors = new Map<string, SmokeSandboxAnchor>();
 const roots: string[] = [];
 const owned = new Set<number>();
 
-type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Record<string, unknown>; warnings?: { code: string }[]; error?: { code: string; message: string; remedy?: string } };
+type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Record<string, unknown>; warnings?: { code: string; target?: Record<string, unknown> }[]; error?: { code: string; message: string; remedy?: string } };
 type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stderr: string; env?: Envelope };
 const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run => {
   const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000 };
@@ -304,13 +309,63 @@ try {
     // A public start on the live retained instance refuses before any readiness probe or record write.
     const serviceStart = cli(root, "service", "start", "stack-manager", "--space", space, "--json");
     check("while the frozen manager runs, service start refuses naming the retained request and leaves the record stopping", serviceStart.status === 2 && serviceStart.env?.outcome === "refused" && serviceStart.env.error?.code === "LIFECYCLE_BLOCKED" && serviceStart.env.target?.instanceId === manager?.name && serviceStart.env.target?.requestId === request && serviceStart.env.target?.stopPublication === "published" && Boolean(serviceStart.env.error.remedy?.includes(`cotal service status stack-manager --instance ${manager?.name} --space ${space}`)) && pid !== null && alive(pid) && held(), { ...shown(serviceStart), target: serviceStart.env?.target, record: record() });
+    const abandonLive = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
+    check("while the frozen manager runs, down --abandon-stop refuses and abandons nothing", abandonLive.status === 2 && abandonLive.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(abandonLive.env.error.message.includes("still runs")) && pid !== null && alive(pid) && held(), shown(abandonLive));
     if (pid !== null) process.kill(pid, "SIGKILL");
     await until(() => gone(space, "stack-manager"), 10_000);
     const afterExit = cli(root, "down", "--yes", "--json");
     check("after the manager exits, down still refuses naming its instance and request", names(afterExit) && held(), shown(afterExit));
+    check("its remedy names the abandon command for that request", Boolean(afterExit.env?.error?.remedy?.includes(`cotal down --abandon-stop ${request} --yes`)), shown(afterExit));
     check("no member was stopped and no registration was removed", delivery !== null && alive(delivery) && broker !== null && alive(broker) && findMesh(space) !== undefined, { delivery, broker, registered: findMesh(space) !== undefined });
     const restart = cli(root, "up", "--json");
     check("after the manager exits, up refuses the same way and launches no manager", names(restart) && held(), shown(restart));
+    const unacknowledged = cli(root, "down", "--abandon-stop", request ?? "none", "--json");
+    check("down --abandon-stop without --yes is a usage error, exit 1, and abandons nothing", unacknowledged.status === 1 && unacknowledged.env?.error?.code === "USAGE_INVALID" && held(), shown(unacknowledged));
+    const another = cli(root, "down", "--abandon-stop", randomUUID(), "--yes", "--json");
+    check("down --abandon-stop naming another request refuses TARGET_NOT_FOUND and abandons nothing", another.status === 2 && another.env?.error?.code === "TARGET_NOT_FOUND" && held() && alive(delivery!) && alive(broker!), shown(another));
+    const marker = stopReservationPath(canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space }));
+    const markerHeld = () => { try { return lstatSync(marker).isFile(); } catch { return false; } };
+    const abandoned = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
+    const after = serviceInstances(space, "stack-manager")[0]?.record.value;
+    const requestGone = states !== undefined && !readdirSync(states).some((name) => name.endsWith(".stop.json"));
+    const warned = abandoned.env?.warnings?.find((warning) => warning.code === "STOP_ABANDONED");
+    check("down --abandon-stop abandons the request, records the manager failed with a warning and stops the stack", abandoned.status === 0 && abandoned.env?.outcome === "ok" && warned?.target?.requestId === request && !markerHeld() && requestGone && after?.state === "failed" && gone(space, "stack-delivery") && gone(space, "stack-broker") && findMesh(space) === undefined, { ...shown(abandoned), warned, marker: markerHeld(), requestGone, state: after?.state });
+    const again = cli(root, "up", "--json");
+    const relaunched = pidOf(space, "stack-manager");
+    check("up then starts the stack with a new manager", again.status === 0 && again.env?.outcome === "ok" && relaunched !== null && relaunched !== pid && alive(relaunched), { ...shown(again), relaunched });
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("and down stops it", stopped.status === 0 && stopped.env?.outcome === "ok" && gone(space, "stack-manager") && findMesh(space) === undefined, shown(stopped));
+  }
+  {
+    // The unconfirmed stop is a --with-agents one, so it also armed the manager's shutdown intent.
+    const space = "unconfirmedagents";
+    const root = prepare(space);
+    const port = await freePort();
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track(space);
+    const manager = serviceInstances(space, "stack-manager")[0];
+    const pid = manager?.record.value.process?.pid ?? null;
+    const states = serviceInstanceStore(space).directory();
+    let frozen = false;
+    const watcher = states && pid !== null ? watch(states, (_event, name) => {
+      if (frozen || !String(name ?? "").endsWith(".stop.json")) return;
+      frozen = true;
+      try { process.kill(pid, "SIGSTOP"); } catch { /* the checks below report it */ }
+    }) : undefined;
+    const first = await cliAsync(root, "down", "--with-agents", "--yes", "--json");
+    watcher?.close();
+    let request: string | undefined;
+    try { request = manager && states ? readServiceStopRequest({ space, instanceId: manager.name, launchRequestId: manager.record.value.launchRequestId, stateDirectory: states })?.requestId : undefined; } catch { request = undefined; }
+    const intent = canonicalLocalProcessPath(MANAGER_SHUTDOWN_INTENT, { root, space });
+    const armed = () => { try { return lstatSync(intent).isFile(); } catch { return false; } };
+    if (pid !== null) process.kill(pid, "SIGKILL");
+    await until(() => gone(space, "stack-manager"), 10_000);
+    check(`${space}: the unconfirmed --with-agents stop leaves its shutdown intent armed after the manager exits`, started.status === 0 && frozen && first.env?.outcome === "unknown" && request !== undefined && armed(), { up: shown(started), frozen, first: shown(first), request, armed: armed() });
+    const abandoned = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
+    check(`${space}: down --abandon-stop removes that intent with the request and stops the stack`, abandoned.status === 0 && abandoned.env?.outcome === "ok" && !armed() && gone(space, "stack-broker") && findMesh(space) === undefined, { ...shown(abandoned), armed: armed() });
+    const again = cli(root, "up", "--json");
+    const stopped = cli(root, "down", "--yes", "--json");
+    check(`${space}: up starts a new manager, and down stops it with no earlier intent in the way`, again.status === 0 && stopped.status === 0 && stopped.env?.outcome === "ok" && gone(space, "stack-manager"), { up: shown(again), down: shown(stopped) });
   }
 
   // 7. A native manager stop the manager completes after `down` stopped waiting for it. It is frozen

@@ -626,8 +626,16 @@ request file does not read as its own, the refusal reports that it is unknown wh
 published. A manager record that an earlier release left `unknown` while its launch still holds a
 stop request is recorded `stopping` under that request when its process is gone. Its exit is never
 recorded as a crash, and no `up`, `down` or `service` command relaunches it, removes its record or
-removes the stack's registration. No command in this release clears a stop that has neither a
-completed nor a refused receipt. When `up`
+removes the stack's registration. A stop that has neither a completed nor a refused receipt, such
+as one whose manager was killed before it read the request, is cleared only on request:
+`cotal down --abandon-stop <request-id> --yes`, with the request ID the refusal names. It refuses
+`LIFECYCLE_BLOCKED` while the manager or the `down` that sent the request still runs, and
+`TARGET_NOT_FOUND` when no member retains that request; either way nothing changes. Otherwise it
+removes the request, the stop reservation and a `--with-agents` shutdown intent that the same stop
+armed, records the manager `failed`, and stops the rest of the stack with a `STOP_ABANDONED` warning.
+Whether that manager stopped or released its agents' seats is not confirmed, and a seat that runs
+outside the manager process may still run. It needs `--yes` and refuses `--dry-run` and
+`--with-agents`. When `up`
 redefines a member because its launch options changed, the journal records the
 replacement's instance and launch request before the old instance is retired, and the new
 definition's revision before the replacement launches. After an `up` cut off in between, the next
@@ -924,6 +932,7 @@ service would be stopped, because the legacy reap does not reach a service's age
 ```bash
 cotal down
 cotal down --with-agents
+cotal down --abandon-stop <request-id> --yes
 cotal down --preserve-state [--store-dir <dir>] [--session-store <dir> …]
 cotal down --dry-run [--space <name>] [--json|--plain]
 cotal down <service-name> [<service-name> …] [--instance <id>] [--space <s>] [--yes|--dry-run] [--json|--plain]
@@ -937,6 +946,7 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--space <name>` | current space | With service names: the space whose saved definitions to stop. With bare `--dry-run`: confirm that space belongs to this root. A bare stop refuses it |
 | `--dry-run` | off | Print the manifest teardown, the named service stop or the bare stack preview, mutate nothing |
 | `--with-agents` | off | Bare whole stack only: also stop and deprovision every managed agent |
+| `--abandon-stop <request-id>` | none | Controller stack, with `--yes`: abandon a member's stop that no receipt settles, then stop the stack. See the settlement rules under [up](#up) |
 | `--preserve-state` | off | Bare whole stack only: fence the manager, retain principals and durable state, stop and prove the stack down, then publish `ready` |
 | `--store-dir <dir>` | `.cotal/nats` | With `--preserve-state`: the actual store path (required for a custom store) |
 | `--session-store <dir>` | none | With `--preserve-state`: a harness transcript store directory to capture with every continuation-capable retained seat. Repeatable. No default and never inferred from a connector name; a path that does not exist or is not a directory is refused before anything stops |
