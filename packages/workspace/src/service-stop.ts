@@ -117,6 +117,16 @@ export function clearRefusedServiceStopRequest(context: StopContext, expected: N
   rmSync(serviceStopRequestPath(context));
 }
 
+/** Remove a retained request whose only receipt is the child's refusal, once the stopper that
+ *  published it is gone. Its phase receipts stay. Returns whether the request was removed. */
+export function clearRetainedRefusedServiceStopRequest(context: StopContext, expected: NativeServiceStopRequest): boolean {
+  const checked = request(expected, context), current = readServiceStopRequest(context);
+  const phases = readServiceStopReceipts(context, checked), holder = assertRecordIdentity(checked.stopper).kind;
+  if (!current || !sameRequest(current, checked) || phases.length !== 1 || phases[0]?.phase !== "refused" || holder !== "gone" && holder !== "mismatch") return false;
+  rmSync(serviceStopRequestPath(context));
+  return true;
+}
+
 /** Remove a retained request's reservation once the stopper that took it is gone. A marker that names
  *  another PID, is not a plain file, or whose stopper still runs or cannot be read, is kept. Returns
  *  whether no reservation remains. */

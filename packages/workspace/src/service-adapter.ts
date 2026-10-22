@@ -114,6 +114,13 @@ export interface ServiceAdapterStopResult {
   readonly observedAt: string;
 }
 
+/** A native stop the child refused before it started any stop. Its `refused` receipt is the outcome. */
+export interface ServiceAdapterStopRefusal {
+  readonly requestId: string;
+  readonly nativeStop: "refused";
+  readonly observedAt: string;
+}
+
 /** The exact local broker configuration a kernel-exit stop is bound to. It names no mesh endpoint,
  *  principal or epoch, because a broker process has none. */
 export interface ServiceAdapterBrokerBinding {
@@ -159,8 +166,10 @@ export interface ServiceAdapterHooks {
   readonly stopService?: (context: ServiceAdapterStopContext & { readonly requestId: string; readonly plan: ServiceAdapterStopPlan }) => Promise<ServiceAdapterStopResult>;
   /** A native stop request that outlived its `stopService` call. Returns the same returned result
    *  once this adapter's own `completed` receipt for `requestId` and the exact process exit are both
-   *  on record, after releasing the reservation that request took. Undefined retains both. */
-  readonly settleServiceStop?: (context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly requestId: string }) => ServiceAdapterStopResult | undefined;
+   *  on record, or the refusal once the child's `refused` receipt is its only one and the request is
+   *  removed. Either answer comes after releasing the reservation that request took. Undefined
+   *  retains both. */
+  readonly settleServiceStop?: (context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly requestId: string }) => ServiceAdapterStopResult | ServiceAdapterStopRefusal | undefined;
   readonly buildServiceLaunch?: (context: ServiceAdapterContext) => ServiceAdapterLaunch | Promise<ServiceAdapterLaunch>;
   readonly checkServiceReadiness?: (context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly signal: AbortSignal }) => Promise<ServiceAdapterReadiness>;
 }
@@ -364,6 +373,12 @@ export function serviceAdapterKernelStopResult(input: unknown): ServiceAdapterKe
   serviceOperationId(input.requestId);
   serviceAdapterReadiness({ state: "ready", process: input.process, observedAt: input.observedAt });
   return input as unknown as ServiceAdapterKernelStopResult;
+}
+
+export function serviceAdapterStopRefusal(input: unknown): ServiceAdapterStopRefusal {
+  if (!plainObject(input) || Object.keys(input).length !== 3 || Object.keys(input).some((key) => !["requestId", "nativeStop", "observedAt"].includes(key)) || input.nativeStop !== "refused" || typeof input.observedAt !== "string" || !Number.isFinite(Date.parse(input.observedAt))) invalid("the native stop refusal must name only its request, the refused outcome and its observation time");
+  serviceOperationId((input as Record<string, unknown>).requestId);
+  return input as unknown as ServiceAdapterStopRefusal;
 }
 
 export function serviceAdapterStopResult(input: unknown): ServiceAdapterStopResult {

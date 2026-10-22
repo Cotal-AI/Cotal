@@ -26,6 +26,9 @@
  *     so it records the stop completed and exits. The next bare `down` settles the record `stopped`
  *     from that receipt, releases the stop reservation and stops the rest of the stack; in a second
  *     stack the next bare `up` settles it the same way and starts a manager that a later `down` stops.
+ *     In a third, the manager is frozen once its stop request appears and resumed after that `down`
+ *     exited, so it refuses the request and keeps running. The next bare `up` settles the refusal and
+ *     reuses that manager, and the next `down` stops the stack.
  *  6. An interrupted redefinition. An `up` whose `--max-sessions` redefines the manager is killed
  *     while the replacement manager is frozen before its readiness is recorded. The next bare `down`
  *     adopts the journaled replacement and stops it; in a second stack the next bare `up` adopts it
@@ -312,7 +315,7 @@ try {
 
   // 7. A native manager stop the manager completes after `down` stopped waiting for it. It is frozen
   //    once its accepted receipt appears, past the first down's wait, then resumed.
-  const completeLate = async (space: string) => {
+  const lateReceipt = async (space: string, freezeOn: ".accepted.json" | ".stop.json") => {
     const root = prepare(space);
     const port = await freePort();
     const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
@@ -322,7 +325,7 @@ try {
     const states = serviceInstanceStore(space).directory();
     let frozen = false;
     const watcher = states && pid !== null ? watch(states, (_event, name) => {
-      if (frozen || !String(name ?? "").endsWith(".accepted.json")) return;
+      if (frozen || !String(name ?? "").endsWith(freezeOn)) return;
       frozen = true;
       try { process.kill(pid, "SIGSTOP"); } catch { /* the checks below report it */ }
     }) : undefined;
@@ -332,21 +335,26 @@ try {
     try { request = manager && states ? readServiceStopRequest({ space, instanceId: manager.name, launchRequestId: manager.record.value.launchRequestId, stateDirectory: states })?.requestId : undefined; } catch { request = undefined; }
     const marker = stopReservationPath(canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space }));
     const markerHeld = () => { try { return lstatSync(marker).isFile(); } catch { return false; } };
-    check(`${space}: the first down reports the accepted manager stop unknown and keeps its reservation`, started.status === 0 && frozen && first.env?.outcome === "unknown" && first.env.error?.code === "OPERATION_UNKNOWN" && request !== undefined && markerHeld(), { up: shown(started), frozen, first: shown(first), request, marker: markerHeld() });
+    check(`${space}: the first down reports the manager stop unknown and keeps its reservation`, started.status === 0 && frozen && first.env?.outcome === "unknown" && first.env.error?.code === "OPERATION_UNKNOWN" && request !== undefined && markerHeld(), { up: shown(started), frozen, first: shown(first), request, marker: markerHeld() });
     if (pid !== null) process.kill(pid, "SIGCONT");
-    const exitedLate = pid !== null && await until(() => !alive(pid), 30_000);
-    const completed = states !== undefined && readdirSync(states).some((name) => name.endsWith(".completed.json"));
-    check(`${space}: the resumed manager records its stop completed and exits`, exitedLate && completed, { exitedLate, completed });
+    const receipt = (phase: string) => states !== undefined && readdirSync(states).some((name) => name.endsWith(`.${phase}.json`));
+    if (freezeOn === ".accepted.json") {
+      const exitedLate = pid !== null && await until(() => !alive(pid), 30_000);
+      check(`${space}: the resumed manager records its stop completed and exits`, exitedLate && receipt("completed"), { exitedLate, completed: receipt("completed") });
+    } else {
+      const refused = await until(() => receipt("refused"), 30_000);
+      check(`${space}: the resumed manager refuses the request its exited down published and keeps running`, refused && !receipt("accepted") && pid !== null && alive(pid), { refused, accepted: receipt("accepted"), alive: pid !== null && alive(pid) });
+    }
     const settled = (row = serviceInstances(space, "stack-manager").find((entry) => entry.name === manager?.name)) => row?.record.value.state === "stopped" && row.record.value.nativeStop?.requestId === request && row.record.value.nativeStop?.nativeStop === "returned";
     return { root, pid, markerHeld, settled };
   };
   {
-    const { root, markerHeld, settled } = await completeLate("latedown");
+    const { root, markerHeld, settled } = await lateReceipt("latedown", ".accepted.json");
     const recovered = cli(root, "down", "--yes", "--json");
     check("bare down settles the late-completed manager stop from its receipt and stops the rest of the stack", recovered.status === 0 && recovered.env?.outcome === "ok" && settled() && !markerHeld() && gone("latedown", "stack-delivery") && gone("latedown", "stack-broker") && findMesh("latedown") === undefined, { ...shown(recovered), settled: settled(), marker: markerHeld() });
   }
   {
-    const { root, pid, markerHeld } = await completeLate("lateup");
+    const { root, pid, markerHeld } = await lateReceipt("lateup", ".accepted.json");
     const recovered = cli(root, "up", "--json");
     track("lateup");
     // The up relaunches the settled instance, so its record is running again; the settlement shows
@@ -355,6 +363,16 @@ try {
     check("bare up settles the late-completed manager stop from its receipt and starts a manager", recovered.status === 0 && recovered.env?.outcome === "ok" && Boolean(recovered.env.warnings?.some((warning) => warning.code === "OPERATION_SETTLED")) && !markerHeld() && relaunched !== null && relaunched !== pid && alive(relaunched), { ...shown(recovered), warnings: recovered.env?.warnings, marker: markerHeld(), relaunched, pid });
     const stopped = cli(root, "down", "--yes", "--json");
     check("down then stops the relaunched manager under a new reservation", stopped.status === 0 && stopped.env?.outcome === "ok" && gone("lateup", "stack-manager") && !markerHeld(), shown(stopped));
+  }
+  {
+    const { root, pid, markerHeld } = await lateReceipt("laterefused", ".stop.json");
+    const states = serviceInstanceStore("laterefused").directory();
+    const requestGone = () => states !== undefined && !readdirSync(states).some((name) => name.endsWith(".stop.json"));
+    const reused = cli(root, "up", "--json");
+    const row = serviceInstances("laterefused", "stack-manager")[0]?.record.value;
+    check("bare up settles the refused manager stop, removes its request and reuses the running manager", reused.status === 0 && ["ok", "no-op"].includes(reused.env?.outcome ?? "") && !markerHeld() && requestGone() && row?.state === "running" && row.process?.pid === pid && pid !== null && alive(pid), { ...shown(reused), marker: markerHeld(), requestGone: requestGone(), state: row?.state, pid: row?.process?.pid, frozenPid: pid });
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("down then stops that manager and the rest of the stack", stopped.status === 0 && stopped.env?.outcome === "ok" && gone("laterefused", "stack-manager") && !markerHeld() && findMesh("laterefused") === undefined, shown(stopped));
   }
 
   // 6. A redefinition cut off before its replacement's readiness is recorded (B2-2). After a clean up

@@ -614,7 +614,10 @@ was published and not confirmed before `down` stopped waiting keeps the manager'
 under that request, also after its process exits. The next bare `up` or `down` reads that request's
 own receipts first. When the manager recorded the stop as completed and its exact process is gone,
 the record becomes `stopped` with that receipt, the request's reservation is released once the
-`down` that took it has exited, and the command continues. Otherwise it refuses
+`down` that took it has exited, and the command continues. When the manager's only receipt is a
+refusal, which it writes when it started no stop, for example because that `down` had already
+exited, the request is removed, its reservation is released, and the record returns to what its
+process shows, so `down` stops a running manager and `up` reuses it. Otherwise it refuses
 `LIFECYCLE_BLOCKED` and names the instance and the original request. `down --dry-run` writes
 nothing, so it does not settle such a stop and refuses the same way. `service start`, `restart` and
 `stop` refuse it `LIFECYCLE_BLOCKED`, exit 2, before any readiness probe, stop request or record write.
@@ -623,8 +626,8 @@ request file does not read as its own, the refusal reports that it is unknown wh
 published. A manager record that an earlier release left `unknown` while its launch still holds a
 stop request is recorded `stopping` under that request when its process is gone. Its exit is never
 recorded as a crash, and no `up`, `down` or `service` command relaunches it, removes its record or
-removes the stack's registration. No command in this release clears a stop that has no completed
-receipt. When `up`
+removes the stack's registration. No command in this release clears a stop that has neither a
+completed nor a refused receipt. When `up`
 redefines a member because its launch options changed, the journal records the
 replacement's instance and launch request before the old instance is retired, and the new
 definition's revision before the replacement launches. After an `up` cut off in between, the next
