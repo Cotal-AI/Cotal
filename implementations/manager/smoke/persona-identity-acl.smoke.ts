@@ -8,7 +8,7 @@
  * then DECODE the written creds JWT to read the minted ACL. Run with: pnpm smoke:persona-acl
  */
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Manager } from "../src/manager.js";
@@ -26,6 +26,7 @@ import { firstFreeName,
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 import { bootBroker } from "./_boot-broker.js";
+import { credAcl } from "./_cred-acl.js";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -37,17 +38,6 @@ function check(label: string, cond: boolean, extra?: unknown): void {
  *  one narrow view rather than four spot casts. */
 const replyName = (r: { data?: unknown }): string | undefined =>
   (r.data as { name?: string } | undefined)?.name;
-
-// Decode the `nats` permission block out of a minted creds file (the JWT is the first line after the
-// BEGIN marker; its middle segment is base64url JSON).
-function credAcl(path: string): { sub: string[]; pub: string[] } {
-  const jwt = readFileSync(path, "utf8").split("\n").find((l) => l && !l.startsWith("-") && l.split(".").length === 3)!;
-  const claims = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8"));
-  const nats = claims.nats ?? {};
-  const chat = (arr: string[] | undefined, keepJs: boolean) =>
-    (arr ?? []).filter((s) => s.includes(".chat.") && (keepJs || !s.startsWith("$JS")));
-  return { sub: chat(nats.sub?.allow, true), pub: chat(nats.pub?.allow, false) };
-}
 
 // A dedicated space + its own JWT-auth broker, so the manager's minted provisioner cred is trusted.
 const space = `persona-acl-${randomUUID().slice(0, 8)}`;

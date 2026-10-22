@@ -41,6 +41,7 @@ import { loadLaunchSpec, materializePersona, launchAgentToStartOpts, launchSpecF
 import { createSpaceAuth, mintCreds, newIdentity, principalKey, setupSpaceStreams, registry, DEV_OWNER, type Connector, type LaunchSpec, type AgentHandle, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 import { bootBroker } from "./_boot-broker.js";
+import { credAcl } from "./_cred-acl.js";
 
 let failures = 0;
 function check(label: string, cond: boolean, extra?: unknown): void {
@@ -59,15 +60,6 @@ function throws(label: string, fn: () => unknown): void {
   } catch {
     check(label, true);
   }
-}
-
-function credAcl(path: string): { sub: string[]; pub: string[] } {
-  const jwt = readFileSync(path, "utf8").split("\n").find((l) => l && !l.startsWith("-") && l.split(".").length === 3)!;
-  const claims = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8"));
-  const nats = claims.nats ?? {};
-  const chat = (arr: string[] | undefined, keepJs: boolean) =>
-    (arr ?? []).filter((s) => s.includes(".chat.") && (keepJs || !s.startsWith("$JS")));
-  return { sub: chat(nats.sub?.allow, true), pub: chat(nats.pub?.allow, false) };
 }
 
 const root = mkdtempSync(join(tmpdir(), "cotal-launch-"));
