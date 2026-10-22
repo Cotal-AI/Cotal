@@ -237,6 +237,10 @@ export const RUN_READ_COMMANDS = Object.freeze(["run-status", "run-ps"] as const
 export const CHAT_SESSION_COMMANDS = Object.freeze(["chat-session-open", "chat-session-retire"] as const);
 
 // ---- operator INSTRUMENT capability sets (the 1c grant-migration table's admin row) --------------
+/** The actor capability that grants one pinned Manager's machine-vitals read. */
+export const MANAGER_VITALS_SCOPE = "machine-vitals" as const;
+export const MANAGER_VITALS_COMMAND = "vitals" as const;
+
 /** The manager endpoint's read commands (`manager.read` class). */
 export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "slots", "inspect", "models", "list-personas", "show-persona", "goal-result"] as const);
 /** The manager endpoint's admin-class commands (`manager.admin`): capability-only + untargeted -
