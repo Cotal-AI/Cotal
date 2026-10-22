@@ -107,6 +107,11 @@ export function immutableGrantView(g: ServiceCallerGrant): string {
     capabilities: g.capabilities, source: g.source, parentRefs: g.parentRefs });
 }
 
+/** One stored grant's closed syntax, as a row holds it. */
+export function parseServiceCallerGrant(raw: unknown): ServiceCallerGrant { return grant(raw); }
+/** The auth-store key of one grantee's policy row. */
+export function servicePolicyKey(granteeUid: string): string { return `servicepolicy.${lifecycle(granteeUid)}`; }
+
 /** Stored syntax only. Eligibility, ancestry and native capability containment are host checks. */
 export function parseNativeServiceCallerPolicy(raw: unknown): NativeServiceCallerPolicy {
   const o = object(raw, ["v", "accountPublicKey", "space", "grantee", "grants"]);
@@ -125,7 +130,7 @@ function context(reg: LifecycleRegistry, binding: ServiceCallerPolicyBinding) {
   const stores = registryStores(reg);
   const expected = parseNativeServiceCallerPolicy({ v: 1, ...binding, grants: [] });
   if (stores.space !== expected.space) throw new EpEnvelopeError("permission-denied", "caller policy belongs to another registry space");
-  return { kv: stores.authKv, key: `servicepolicy.${expected.grantee.lifecycleUid}`, expected };
+  return { kv: stores.authKv, key: servicePolicyKey(expected.grantee.lifecycleUid), expected };
 }
 
 /** Internal leader-served read. Deleted or corrupt records are not an absent/empty policy. */
@@ -157,11 +162,68 @@ const maxStatusBytes = Math.max(...[
     markerRevision: Number.MAX_SAFE_INTEGER, notBefore: Number.MAX_SAFE_INTEGER },
   { state: "revoked", operationId: "f".repeat(32), verifiedAt: Number.MAX_SAFE_INTEGER },
 ].map(byteSize));
-function assertRevocationHeadroom(row: NativeServiceCallerPolicy): void {
+/** Whether every grant of `row` could still take its largest status within the byte bound. */
+export function callerPolicyHasRevocationHeadroom(row: NativeServiceCallerPolicy): boolean {
   const worstBytes = byteSize(row) + row.grants.reduce((sum, g) => sum + Math.max(0, maxStatusBytes - byteSize(g.status)), 0);
-  if (worstBytes > SERVICE_AUTHORITY_MAX_BYTES)
-    throw new EpEnvelopeError("resource-exhausted", "native service caller policy lacks all-grant revocation status headroom");
+  return worstBytes <= SERVICE_AUTHORITY_MAX_BYTES;
 }
+
+// ---- pure steps ---------------------------------------------------------------------------------
+// Each takes the row as one read found it (undefined when absent) and decides the next write. The
+// storage helpers below and the service host both use them, so the rules live in one place.
+
+/** Appending `candidate` (status active) at `expectedRevision`. An existing grant with the same id
+ *  answers present whatever its status, because the comparison leaves out status, which only
+ *  advances: a replay after deny-new adopts the row and never reactivates the grant. */
+export type CallerAppendStep =
+  | { kind: "present"; grant: ServiceCallerGrant }
+  | { kind: "mismatch" }
+  | { kind: "moved" }
+  | { kind: "headroom" }
+  | { kind: "write"; row: NativeServiceCallerPolicy };
+export function callerAppendStep(found: NativeServiceCallerPolicyRead | undefined, empty: NativeServiceCallerPolicy, expectedRevision: number, candidate: ServiceCallerGrant): CallerAppendStep {
+  const existing = found?.row.grants.find((g) => g.grantId === candidate.grantId);
+  if (existing) return immutableGrantView(existing) === immutableGrantView(candidate) ? { kind: "present", grant: existing } : { kind: "mismatch" };
+  if ((found?.revision ?? 0) !== expectedRevision) return { kind: "moved" };
+  const row = found?.row ?? empty;
+  const next = { ...row, grants: [...row.grants, candidate] };
+  return callerPolicyHasRevocationHeadroom(next) ? { kind: "write", row: next } : { kind: "headroom" };
+}
+
+/** Deny-new: an active grant moves to `revoking` under `operationId` in phase `cutoff-required`. A
+ *  grant already revoking or revoked names the operation that holds its intent. */
+export type CallerBeginStep =
+  | { kind: "absent" }
+  | { kind: "held"; grant: ServiceCallerGrant; operationId: string }
+  | { kind: "write"; row: NativeServiceCallerPolicy; grant: ServiceCallerGrant };
+export function callerBeginStep(row: NativeServiceCallerPolicy | undefined, grantId: string, operationId: string): CallerBeginStep {
+  const existing = row?.grants.find((g) => g.grantId === grantId);
+  if (!row || !existing) return { kind: "absent" };
+  if (existing.status.state !== "active") return { kind: "held", grant: existing, operationId: existing.status.operationId };
+  const status: ServiceGrantState = { state: "revoking", operationId, phase: "cutoff-required" };
+  return { kind: "write", row: { ...row, grants: row.grants.map((g) => (g.grantId === grantId ? { ...g, status } : g)) }, grant: { ...existing, status } };
+}
+
+/** The cutoff marker and its fixed deadline, on a grant whose deny-new intent `operationId` holds.
+ *  The same marker again is a no-op; anything else is a conflict, so a recorded deadline is never
+ *  reset. `notBefore` is in epoch seconds. */
+export type CallerCutoffStep =
+  | { kind: "absent" }
+  | { kind: "same" }
+  | { kind: "conflict"; detail: string }
+  | { kind: "write"; row: NativeServiceCallerPolicy };
+export function callerCutoffStep(row: NativeServiceCallerPolicy | undefined, grantId: string, marker: { operationId: string; markerKey: string; markerRevision: number; notBefore: number }): CallerCutoffStep {
+  const existing = row?.grants.find((g) => g.grantId === grantId);
+  if (!row || !existing) return { kind: "absent" };
+  const next: ServiceGrantState = { state: "revoking", operationId: id(marker.operationId), markerKey: marker.markerKey,
+    markerRevision: uint(marker.markerRevision, true), notBefore: uint(marker.notBefore, true) };
+  const s = existing.status;
+  if (s.state !== "revoking" || s.operationId !== next.operationId) return { kind: "conflict", detail: "caller grant is not under this revocation operation's deny-new intent" };
+  if (!("phase" in s)) return canonicalJson(s) === canonicalJson(next) ? { kind: "same" } : { kind: "conflict", detail: "caller grant already records another cutoff marker" };
+  return { kind: "write", row: { ...row, grants: row.grants.map((g) => (g.grantId === grantId ? { ...g, status: next } : g)) } };
+}
+
+// ---- storage helpers ----------------------------------------------------------------------------
 
 /** Storage commit only, after trusted host eligibility checks. Never replaces an existing grant. */
 export async function appendNativeServiceCallerGrant(reg: LifecycleRegistry, binding: ServiceCallerPolicyBinding, args: {
@@ -172,18 +234,13 @@ export async function appendNativeServiceCallerGrant(reg: LifecycleRegistry, bin
   binding = { accountPublicKey, space, grantee };
   const candidate = parseNativeServiceCallerPolicy({ v: 1, ...binding, grants: [args.grant] }).grants[0]!;
   if (candidate.status.state !== "active") bad();
-  const found = await readNativeServiceCallerPolicy(reg, binding), existing = found?.row.grants.find((g) => g.grantId === candidate.grantId);
-  // An existing grant answers present whatever its status: the comparison leaves out status, which
-  // only advances, so a replay after deny-new adopts the row and never reactivates the grant.
-  if (existing) {
-    if (immutableGrantView(existing) !== immutableGrantView(candidate)) conflict("grant id is immutable and cannot be rebound");
-    return found!;
-  }
-  if ((found?.revision ?? 0) !== revision) conflict("native caller policy revision changed");
-  const row = found?.row ?? context(reg, binding).expected;
-  const next = { ...row, grants: [...row.grants, candidate] };
-  assertRevocationHeadroom(next);
-  return write(reg, binding, next, revision);
+  const found = await readNativeServiceCallerPolicy(reg, binding);
+  const step = callerAppendStep(found, context(reg, binding).expected, revision, candidate);
+  if (step.kind === "present") return found!;
+  if (step.kind === "mismatch") conflict("grant id is immutable and cannot be rebound");
+  if (step.kind === "moved") conflict("native caller policy revision changed");
+  if (step.kind === "headroom") throw new EpEnvelopeError("resource-exhausted", "native service caller policy lacks all-grant revocation status headroom");
+  return write(reg, binding, (step as Extract<CallerAppendStep, { kind: "write" }>).row, revision);
 }
 
 /** Monotonic deny-new intent only. Cutoff, descendant invalidation and live retirement remain host work. */
@@ -195,15 +252,14 @@ export async function beginNativeServiceCallerRevocation(reg: LifecycleRegistry,
   binding = { accountPublicKey, space, grantee };
   const found = await readNativeServiceCallerPolicy(reg, binding);
   if (!found) throw new EpEnvelopeError("not-found", "native caller policy is absent");
-  const existing = found.row.grants.find((g) => g.grantId === grantId);
-  if (!existing) throw new EpEnvelopeError("not-found", "native caller grant is absent");
-  if (existing.status.state !== "active") {
-    if (existing.status.operationId !== operationId) conflict("caller grant is already bound to another revocation operation");
+  const step = callerBeginStep(found.row, grantId, operationId);
+  if (step.kind === "absent") throw new EpEnvelopeError("not-found", "native caller grant is absent");
+  if (step.kind === "held") {
+    if (step.operationId !== operationId) conflict("caller grant is already bound to another revocation operation");
     return found;
   }
   if (found.revision !== revision) conflict("native caller policy revision changed");
-  return write(reg, binding, { ...found.row, grants: found.row.grants.map((g) => g.grantId === grantId
-    ? { ...g, status: { state: "revoking", operationId, phase: "cutoff-required" } } : g) }, found.revision);
+  return write(reg, binding, step.row, found.revision);
 }
 
 /** The cutoff step after deny-new: records the op-bound marker and its fixed deadline on a grant
@@ -214,19 +270,15 @@ export async function recordNativeServiceCallerCutoff(reg: LifecycleRegistry, bi
   expectedRevision: number; grantId: string; operationId: string; markerKey: string; markerRevision: number; notBefore: number;
 }): Promise<NativeServiceCallerPolicyRead> {
   const revision = uint(args.expectedRevision), grantId = id(args.grantId), operationId = id(args.operationId);
-  const marker = { state: "revoking" as const, operationId, markerKey: args.markerKey, markerRevision: uint(args.markerRevision, true), notBefore: uint(args.notBefore, true) };
+  const marker = { operationId, markerKey: args.markerKey, markerRevision: uint(args.markerRevision, true), notBefore: uint(args.notBefore, true) };
   const { accountPublicKey, space, grantee } = context(reg, binding).expected;
   binding = { accountPublicKey, space, grantee };
   const found = await readNativeServiceCallerPolicy(reg, binding);
   if (!found) throw new EpEnvelopeError("not-found", "native caller policy is absent");
-  const existing = found.row.grants.find((g) => g.grantId === grantId);
-  if (!existing) throw new EpEnvelopeError("not-found", "native caller grant is absent");
-  const s = existing.status;
-  if (s.state !== "revoking" || s.operationId !== operationId) conflict("caller grant is not under this revocation operation's deny-new intent");
-  if (!("phase" in s)) {
-    if (canonicalJson(s) !== canonicalJson(marker)) conflict("caller grant already records another cutoff marker");
-    return found;
-  }
+  const step = callerCutoffStep(found.row, grantId, marker);
+  if (step.kind === "absent") throw new EpEnvelopeError("not-found", "native caller grant is absent");
+  if (step.kind === "conflict") conflict(step.detail);
+  if (step.kind === "same") return found;
   if (found.revision !== revision) conflict("native caller policy revision changed");
-  return write(reg, binding, { ...found.row, grants: found.row.grants.map((g) => g.grantId === grantId ? { ...g, status: marker } : g) }, found.revision);
+  return write(reg, binding, (step as Extract<CallerCutoffStep, { kind: "write" }>).row, found.revision);
 }
