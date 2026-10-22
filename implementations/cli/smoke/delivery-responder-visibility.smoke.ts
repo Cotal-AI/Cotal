@@ -42,6 +42,9 @@ const SPACE = "responder-visibility";
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}responder-root-`));
 const home = mkdtempSync(join(tmpdir(), "cotal-responder-home-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
+// A folder that is not the mesh's project, as on a manager host apart from the broker (#1576).
+const elsewhere = join(home, "elsewhere");
+mkdirSync(elsewhere);
 // The record a delivery daemon writes for this space. Its name binds the folder to the space, so
 // status reads it as this space's process record.
 const DELIVERY_PID = canonicalLocalProcessPath(DELIVERY_PIDFILE, { root, space: SPACE });
@@ -70,10 +73,11 @@ async function portOpen(port: number): Promise<boolean> {
     sock.setTimeout(250, () => done(false));
   });
 }
-function cli(...args: string[]): { status: number | null; text: string } {
-  const r = spawnSync(TSX, [CLI, ...args], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
+function cliIn(cwd: string, ...args: string[]): { status: number | null; text: string } {
+  const r = spawnSync(TSX, [CLI, ...args], { cwd, env, encoding: "utf8", timeout: 60_000 });
   return { status: r.status, text: strip(`${r.stdout ?? ""}${r.stderr ?? ""}`) };
 }
+const cli = (...args: string[]) => cliIn(root, ...args);
 async function stop(child: ChildProcess | undefined): Promise<void> {
   if (!child?.pid) return;
   try { child.kill("SIGTERM"); } catch { /* gone */ }
@@ -82,6 +86,10 @@ async function stop(child: ChildProcess | undefined): Promise<void> {
     await sleep(50);
   }
   try { child.kill("SIGKILL"); } catch { /* gone */ }
+}
+/** The selected space's responder row in bare status. */
+function responderRow(text: string): string | undefined {
+  return text.split("\n").map((l) => strip(l).trim()).find((l) => /^Delivery responder:\s+\S/.test(l));
 }
 /** The bare-status delivery row, pid-normalized: the CLAIM the row makes, not its instance values. */
 function deliveryRow(text: string): string | undefined {
@@ -139,6 +147,15 @@ try {
   // Bare status stays a recovery-oriented, zero-exit diagnostic: naming the axis must not turn it
   // into a monitor. `--components` owns the exit disposition.
   check("CELL 1: bare status still exits 0 (it reports, it does not gate)", unboundBare.status === 0, unboundBare.status);
+  check("CELL 1: bare status names the unbound responder on the selected space's row",
+    /^Delivery responder:\s+● NOT BOUND - no spawn, no retirement, no join until it binds/.test(responderRow(unboundBare.text) ?? ""), unboundBare.text);
+  // From a folder that holds none of the mesh's process records, the selected space's row is the
+  // only place bare status can say it (#1576's split broker and manager hosts).
+  const unboundElsewhere = cliIn(elsewhere, "status", "--space", SPACE, "--server", server);
+  check("CELL 1: bare status from another folder has no delivery process row",
+    deliveryRow(unboundElsewhere.text) === undefined, unboundElsewhere.text);
+  check("CELL 1: bare status from another folder still names the unbound responder",
+    /^Delivery responder:\s+● NOT BOUND - no spawn, no retirement, no join until it binds/.test(responderRow(unboundElsewhere.text) ?? ""), unboundElsewhere.text);
 
   const unboundComponents = cli("status", "--components", "--space", SPACE, "--server", server);
   const unboundComponentRow = componentRow(unboundComponents.text);
@@ -166,6 +183,9 @@ try {
     /responder bound/.test(boundRow ?? ""), boundRow);
   check("CELL 2: the two delivery rows DIFFER (this is the 22-hour defect)",
     boundRow !== unboundRow, { unboundRow, boundRow });
+  const boundElsewhere = cliIn(elsewhere, "status", "--space", SPACE, "--server", server);
+  check("REFUSE CONTROL: bare status from another folder says the responder is bound",
+    /^Delivery responder:\s+● bound$/.test(responderRow(boundElsewhere.text) ?? ""), responderRow(boundElsewhere.text));
 
   const boundComponents = cli("status", "--components", "--space", SPACE, "--server", server);
   const boundComponentRow = componentRow(boundComponents.text);
