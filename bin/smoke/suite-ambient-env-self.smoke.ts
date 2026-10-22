@@ -204,13 +204,18 @@ function evaluate(source: string, fileName = "suite.ts"): Verdict {
  * choose, and why the variables it inherits cannot change what it resolves. A suite whose read
  * changes shape has to be re-measured, which is why the reason and not just the path is recorded.
  *
- * EMPTY TODAY, and that is the honest state rather than an oversight: every member of the class
- * scrubs. The mechanism is kept because the alternative to an exemption with a written reason is an
- * exemption nobody wrote down, and because a file that genuinely cannot scrub - one whose subject IS
- * the inherited environment - is a real possibility this census should not force into a lie. The
+ * Every other member of the class scrubs. The one entry is a suite whose read happens in a child it
+ * launches itself, where a scrub would delete the identity the child was launched with. The
+ * alternative to an exemption with a written reason is an exemption nobody wrote down, and a file
+ * that genuinely cannot scrub is a real possibility this census should not force into a lie. The
  * fixtures below grade the mechanism, so it is not an untested door.
  */
-const REVIEWED: Record<string, string> = {};
+const REVIEWED: Record<string, string> = {
+  // Measured: the suite passes the same cells with a hostile COTAL_ identity in its own environment
+  // (agent file, servers, space, name, owner, actor) as without one.
+  "implementations/manager/smoke/run-owned-agents.smoke.ts":
+    "configFromEnv runs only in its tool-seat child, which the suite's own u4-seat connector launches with an allowlisted environment plus the COTAL_ identity it minted for that seat, so the runner's COTAL_ keys never reach the read. A module-scope scrub would delete that seat's own launch identity.",
+};
 
 let pass = 0;
 let fail = 0;

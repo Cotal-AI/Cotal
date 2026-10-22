@@ -223,6 +223,23 @@ export async function userSessionAuth(
   return { bearer, sentinelCreds };
 }
 
+/** {@link userViewAuth} with the provider's own failure classified, as {@link userConnectOrThrow}
+ *  classifies the bearer's. A refused, signed-out or unanswered exchange happens before any request,
+ *  so it is a {@link ConnectRefusal} under its code, not an unclassified error that a structured
+ *  command must report as unknown. Only signed-out is `permanent`. `cotal attach` mints this view
+ *  again on every reconnect, an exchange that did not answer may answer the next time, and the
+ *  provider reports every answered failure as refused, including a manager that is not live yet and
+ *  a registry read that failed. Any other error rethrows unchanged. */
+export async function userViewAuthOrThrow(conn: Connection, view: string, opts: Parameters<typeof userViewAuth>[2] = {}): Promise<UserViewAuth> {
+  try {
+    return await userViewAuth(conn, view, opts);
+  } catch (e) {
+    const code = (e as { code?: unknown } | undefined)?.code;
+    if (code !== "refused" && code !== "signed-out" && code !== "unavailable") throw e;
+    throw new ConnectRefusal(`✗ ${(e as Error).message}`, undefined, { cause: e, kind: code === "signed-out" ? "permanent" : "transient", code: credentialCode(e) });
+  }
+}
+
 /** {@link userViewAuth}, workstation-flavoured: colour the thrown sentence and exit. */
 export async function userViewAuthOrExit(conn: Connection, view: string): Promise<UserViewAuth> {
   try {
@@ -294,10 +311,11 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
  * wrapper that supplies the exiting disposition. The two forms cannot drift in what they say
  * because there is only one place the sentence is written.
  *
- * `kind` says whether asking again can help. `transient` is a broker that did not answer in time
- * or could not be reached, and nothing else: a caller that keeps going retries it. Every other
- * refusal is `permanent` (missing seed, refused credentials, a user-auth mesh offered static
- * creds), and a caller that keeps going must stop and say the sentence rather than retry it.
+ * `kind` says whether asking again can help. `transient` is a broker that did not answer in time or
+ * could not be reached, or a view exchange that failed for any reason but a sign-out (see
+ * {@link userViewAuthOrThrow}): a caller that keeps going retries it. Every other refusal is
+ * `permanent` (missing seed, refused credentials, a user-auth mesh offered static creds), and a
+ * caller that keeps going must stop and say the sentence rather than retry it.
  */
 export type ConnectRefusalKind = "transient" | "permanent";
 

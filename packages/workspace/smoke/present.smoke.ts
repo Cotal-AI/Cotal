@@ -104,11 +104,12 @@ check(
   richLines,
 );
 
-// Too narrow for the table: one labeled record per row, nothing clipped.
+// Too narrow for the table: one labeled record per row, nothing clipped. Below 48 columns each label
+// takes a line of its own, with its value on the line under it.
 const narrow = renderReport(report, "plain", 20);
-check("a narrow terminal gets labeled records", /name: +古い席/.test(narrow) && /state: +failed/.test(narrow), narrow);
+check("a narrow terminal gets labeled records", /^ *name\n +古い席$/m.test(narrow) && /^ *state\n +failed$/m.test(narrow), narrow);
 const narrowEmpty = renderReport({ sections: [{ blocks: [{ kind: "table", columns: [{ key: "a", label: "NAME" }, { key: "b", label: "NOTE" }], rows: [{ a: "long value here", b: "" }] }] }] }, "plain", 20);
-check("a record leaves out a field its row leaves empty", /name: +long value here/.test(narrowEmpty) && !/note:/i.test(narrowEmpty), narrowEmpty);
+check("a record leaves out a field its row leaves empty", /^ *name\n +long value here$/m.test(narrowEmpty) && !/^ *note$/im.test(narrowEmpty), narrowEmpty);
 check("a record keeps every value", ["古い席", "seat-2", "working", "failed", "fine", "spoof"].every((word) => narrow.includes(word)), narrow);
 check("a table that fits stays a table", renderReport(report, "plain", 80) === plain);
 
@@ -130,9 +131,16 @@ check("below 20 columns nothing is wrapped", wrapWords("a b c d e f g h i j k l 
 const kept = wrapWords(["[--a <x>]", "[--server <url>]"], 20);
 check("given words are kept whole", JSON.stringify(kept) === JSON.stringify(["[--a <x>]", "[--server <url>]"]), kept);
 const fits = (text: string, width: number) => text.split("\n").every((line) => displayWidth(line) <= width);
-const longField = renderReport({ sections: [{ blocks: [{ kind: "fields", rows: [["id", "x"], ["server", "nats://broker.example.com:4222 with a note that runs well past the line"]] }] }] }, "plain", 40);
-check("a long field value fits the width", fits(longField, 40), longField);
+const longFields = { sections: [{ blocks: [{ kind: "fields" as const, rows: [["id", "x"], ["server", "nats://broker.example.com:4222 with a note that runs well past the line"]] as [string, string][] }] }] };
+const longField = renderReport(longFields, "plain", 60);
+check("a long field value fits the width", fits(longField, 60), longField);
 check("a long field value continues under itself", longField.split("\n").slice(2).every((line) => /^ {8}\S/.test(line)) && longField.split("\n").length > 2, longField);
+const stacked = renderReport(longFields, "plain", 40).split("\n");
+check(
+  "below 48 columns a label takes its own line and its value continues under it",
+  stacked[2] === "server" && stacked.slice(3).every((line) => /^ {2}\S/.test(line)) && stacked.length > 4 && fits(stacked.join("\n"), 40),
+  stacked,
+);
 const longLine = renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [{ text: "working on a task with a description long enough to wrap", tone: "ok", mark: "●" }, { text: "    a note indented by four spaces, long enough to wrap", tone: "hint" }] }] }] }, "rich", 30).replace(/\x1b\[[0-9;]*m/g, "");
 check("a long line fits the width", fits(longLine, 30), longLine);
 const [markLine, ...afterMark] = longLine.split("\n");

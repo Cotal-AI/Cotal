@@ -110,7 +110,7 @@ if (subcommand === "tool-seat") {
         (error, stdout, stderr) => done({ code: error ? (typeof error.code === "number" ? error.code : -1) : 0, stdout: stdout.slice(0, 1500), stderr: stderr.slice(0, 1500) })));
       trace({ kind: "pin-run-ps", ...await call(tool, { verb: "ps" }) });
       trace({ kind: "pin-cli-run-ps", ...await shell(["run", "ps", "--space", config.space]) });
-      trace({ kind: "pin-cli-models-on", ...await shell(["models", "--space", config.space, "--agent", "u4-seat", "--on", other]) });
+      trace({ kind: "pin-cli-models-on", ...await shell(["models", "--space", config.space, "--harness", "u4-seat", "--on", other]) });
       // What a user-mode seat launched without COTAL_MANAGER_INSTANCE (a foreground spawn) holds.
       const spawner = config.managerInstanceId;
       config.managerInstanceId = undefined;
@@ -190,6 +190,7 @@ if (subcommand === "tool-seat") {
 import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
+import { createServer as createTcpServer, connect as tcpConnect, type Server as TcpServer, type Socket } from "node:net";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -205,7 +206,7 @@ import {
 } from "@cotal-ai/core";
 import { authDir, userAuthStateDir, workspaceSecretStore, saveSpaceAuth, recordMesh, assertUserAuthInfo } from "@cotal-ai/workspace";
 import {
-  cotalAuthProvider, saveIdpSession, grantActor, loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp,
+  cotalAuthProvider, saveIdpSession, grantActor, loadAuthServiceInfo, saveAuthServiceInfo, loadOwnerSecret, loadPinnedIdp,
   deriveOwnerForIdpSubject, findActorUnified, revokeActor,
 } from "@cotal-ai/auth";
 import { Manager, type ManagerOptions } from "../src/manager.js";
@@ -381,7 +382,10 @@ try {
         remote.remoteManagedAgentRetirementPrepared(await cotalAuthProvider.prepareRemoteManagedAgentRetirement!({ ...callArgs, request }), request);
       },
       mintRetirementRequester: async ({ identity, target, opId, serveEpoch }) => remote.materialCredential(await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "retire", { registrationProof: remoteManagerRegistrationProof(owner, state), retirement: { id: identity.id, target, opId, serveEpoch } })), "retirementRequester", identity),
-      mintSessionServing: async () => { throw new Error("fixture does not request attach sessions"); },
+      mintSessionServing: async (session) => remote.materialCredential(await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "session", {
+        registrationProof: remoteManagerRegistrationProof(owner, state),
+        session: { id: session.identity.id, endpoint: session.endpoint, sessionId: session.sessionId, epoch: session.epoch, exp: session.exp },
+      })), "sessionServing", session.identity),
       validateRetainedAgent: async () => { throw new Error("fixture starts no retained seat"); },
       scanGoalIndex: async () => {
         const request = remote.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch);
@@ -447,12 +451,12 @@ try {
     if (!condition) console.error(`    ${JSON.stringify(detail).replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+\b/g, "[redacted]").slice(0, 1500)}`);
   };
   const namesBoth = (text: unknown, remedy: string) => typeof text === "string" && text.includes(state.instanceId) && text.includes(stateB.instanceId) && text.includes(remedy);
-  const unpinnedModels = await cli(["models", "--space", space, "--agent", "u4-seat"]);
-  cell("#3959 unpinned `cotal models` refuses two live managers, lists both and names --on", unpinnedModels.code === 1 && namesBoth(unpinnedModels.stderr, "--on <instanceId>"), unpinnedModels);
+  const unpinnedModels = await cli(["models", "--space", space, "--harness", "u4-seat"]);
+  cell("#3959 unpinned `cotal models` refuses two live managers, lists both and names --on", unpinnedModels.code === 2 && /^Request refused$/m.test(unpinnedModels.stderr) && namesBoth(unpinnedModels.stderr, "--on <instanceId>"), unpinnedModels);
   const unpinnedRuns = await cli(["run", "ps", "--space", space]);
-  cell("#3959 unpinned `cotal run ps` refuses two live managers, lists both and names --on", unpinnedRuns.code === 1 && namesBoth(unpinnedRuns.stderr, "--on <instanceId>"), unpinnedRuns);
+  cell("#3959 unpinned `cotal run ps` refuses two live managers, lists both and names --on", unpinnedRuns.code === 2 && /^Request refused$/m.test(unpinnedRuns.stderr) && namesBoth(unpinnedRuns.stderr, "--on <instanceId>"), unpinnedRuns);
   let before = { a: { ...onA }, b: { ...onB } };
-  const pinnedModels = await cli(["models", "--space", space, "--agent", "u4-seat", "--on", stateB.instanceId]);
+  const pinnedModels = await cli(["models", "--space", space, "--harness", "u4-seat", "--on", stateB.instanceId]);
   cell("#3959 `cotal models --on <instance>` succeeds against the named instance", pinnedModels.code === 0 && onB.models === before.b.models + 1 && onA.models === before.a.models, { pinnedModels, before, onA, onB });
   before = { a: { ...onA }, b: { ...onB } };
   const pinnedRuns = await cli(["run", "ps", "--space", space, "--on", state.instanceId]);
@@ -748,6 +752,99 @@ try {
   check("inventory MCP emits one bounded diagnostic page", toolPage?.isError !== true && typeof toolPage?.text === "string" && Buffer.byteLength(toolPage.text) <= 65536 && JSON.parse(toolPage.text).semantics === "diagnostic");
   successful(await endpoint.invokeService("manager", "run-answer", { runId: inventoryRun, stepKey: "/checkpoint:inventory-hold#0", value: "release" }));
   await until(async () => ((await status(inventoryRun)).status as { state?: string }).state === "completed", "inventory checkpoint released after observation");
+  // An attach whose link heals while its manager-caller exchange fails keeps reconnecting. `cotal
+  // attach` mints that view again on every re-establishment, after the base bearer exchange, and
+  // neither an exchange that did not answer nor one the auth service refused (its refusals include a
+  // pinned manager that is not live, as during a manager restart) means asking again cannot help.
+  // The CLI's broker link runs through a TCP proxy this cell severs and heals, and its exchanges
+  // through an HTTP proxy that, for the manager-caller view only, drops the request or forwards it
+  // pinned to an absent instance, which the real auth service refuses with 401.
+  {
+    const serviceInfo = loadAuthServiceInfo(hostDir)!;
+    const absentInstance = `${"z".repeat(4)}${state.instanceId.slice(4)}`;
+    let managerCaller: "forward" | "drop" | "refuse" = "forward";
+    let dropped = 0, refused = 0;
+    const exchangeProxy = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk: Buffer) => { body += chunk.toString("utf8"); });
+      req.on("end", () => {
+        let parsed: Record<string, unknown> | undefined;
+        try { parsed = JSON.parse(body) as Record<string, unknown>; } catch { /* not an exchange body */ }
+        const isManagerCaller = parsed?.view === "manager-caller";
+        if (isManagerCaller && managerCaller === "drop") { dropped++; req.socket.destroy(); return; }
+        const sent = isManagerCaller && managerCaller === "refuse" ? JSON.stringify({ ...parsed, managerInstanceId: absentInstance }) : body;
+        const headers: Record<string, string> = {};
+        for (const key of ["content-type", "authorization"]) { const v = req.headers[key]; if (typeof v === "string") headers[key] = v; }
+        fetch(`${serviceInfo.url}${req.url}`, { method: req.method, headers, ...(sent ? { body: sent } : {}) }).then(async (up) => {
+          if (isManagerCaller && managerCaller === "refuse" && up.status === 401) refused++;
+          res.writeHead(up.status, { "content-type": up.headers.get("content-type") ?? "application/json" });
+          res.end(await up.text());
+        }, () => { req.socket.destroy(); });
+      });
+    });
+    const linkPort = await freePort();
+    const linkSockets = new Set<Socket>();
+    let link: TcpServer | undefined;
+    const healLink = () => new Promise<void>((res, rej) => {
+      const proxy = createTcpServer((client) => {
+        const up = tcpConnect(port, "127.0.0.1");
+        linkSockets.add(client); linkSockets.add(up);
+        const drop = () => { linkSockets.delete(client); linkSockets.delete(up); client.destroy(); up.destroy(); };
+        for (const ev of ["error", "close"] as const) { client.on(ev, drop); up.on(ev, drop); }
+        client.pipe(up); up.pipe(client);
+      });
+      proxy.on("error", rej);
+      proxy.listen(linkPort, "127.0.0.1", () => { link = proxy; res(); });
+    });
+    const severLink = () => new Promise<void>((res) => {
+      const proxy = link; link = undefined;
+      for (const sock of linkSockets) sock.destroy();
+      linkSockets.clear();
+      if (!proxy) return res();
+      proxy.close(() => res());
+    });
+    const recordCliMesh = (server: string) => {
+      process.env.COTAL_HOME = cliHome;
+      try { recordMesh({ space, server, root: hostRoot, mode: "user", policy: { events: "required" }, userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() }); }
+      finally { process.env.COTAL_HOME = home; }
+    };
+    let attach: ChildProcess | undefined;
+    let out = "";
+    const running = () => attach !== undefined && attach.exitCode === null && attach.signalCode === null;
+    const settle = async (fn: () => boolean, ms: number) => { const end = Date.now() + ms; while (!fn() && running() && Date.now() < end) await wait(100); };
+    try {
+      await new Promise<void>((r) => exchangeProxy.listen(0, "127.0.0.1", () => r()));
+      writeFileSync(join(root, ".cotal", "agents", "attachseat.md"), "---\nname: attachseat\nagent: u4-seat\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nA seat to attach to.\n");
+      assert.equal((await manager!.startAgent({ name: "attachseat" }, `${owner}.cli`)).ok, true);
+      await healLink();
+      recordCliMesh(`nats://127.0.0.1:${linkPort}`);
+      saveAuthServiceInfo(hostDir, { ...serviceInfo, url: `http://127.0.0.1:${(exchangeProxy.address() as { port: number }).port}` });
+      attach = spawn(process.execPath, [...process.execArgv, cotalBin, "attach", "--name", "attachseat", "--space", space],
+        { cwd: hostRoot, env: { ...cliEnv, COTAL_HOME: cliHome, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["pipe", "pipe", "pipe"] });
+      for (const stream of [attach.stdout, attach.stderr]) stream!.on("data", (d) => { out += d.toString(); });
+      await settle(() => /attached to attachseat/.test(out), 60_000);
+      cell("attach over the healable link opens a session", /attached to attachseat/.test(out) && running(), out.slice(-800));
+      managerCaller = "drop";
+      await severLink();
+      await settle(() => /connection lost, reconnecting/.test(out), 60_000);
+      cell("...and says it is reconnecting when its link dies", /connection lost, reconnecting/.test(out) && running(), out.slice(-800));
+      await healLink();
+      await settle(() => dropped >= 2, 60_000);
+      cell("a reconnect whose manager-caller exchange does not answer keeps the attach running and tries again", dropped >= 2 && running(), { dropped, exit: attach.exitCode, out: out.slice(-800) });
+      managerCaller = "refuse";
+      await settle(() => refused >= 2, 90_000);
+      cell("a reconnect whose manager-caller exchange the auth service refuses keeps the attach running and tries again", refused >= 2 && running(), { refused, exit: attach.exitCode, out: out.slice(-800) });
+      managerCaller = "forward";
+      await settle(() => /\[cotal: reconnected\]/.test(out), 90_000);
+      cell("...and reconnects once the exchange succeeds", /\[cotal: reconnected\]/.test(out) && running(), out.slice(-800));
+    } finally {
+      if (attach) await killAndAwaitExit(attach);
+      saveAuthServiceInfo(hostDir, serviceInfo);
+      recordCliMesh(servers);
+      await severLink();
+      if (exchangeProxy.listening) await new Promise<void>((r) => exchangeProxy.close(() => r()));
+    }
+  }
   console.log(`INVENTORY_SCOPE: ${pageCount} pages, ${observedRuns.size} observed records, max reply ${Math.max(...wireLengths)} bytes; synthetic fixture records are not active lanes. No absence, restore or ownership proof.`);
   console.log("U4_SCOPE: preserved native persona cells plus genuine managed PTY cotal_run start/status/answer/released-resume using its own bearerCmd; no provider/model, production or full Cloud composition acceptance.");
 } catch (error) {
