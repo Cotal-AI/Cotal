@@ -108,15 +108,20 @@ jobs:
       - name: Released schemasafe public-error diagnostic
         if: ${{ !cancelled() }}
         run: pnpm smoke:schema-schemasafe-public-errors
+      # The direct-engine diagnostic above keeps its known wrong verdicts as failing tests, so a
+      # step after it with no `if:` never runs. Each check below reports its own result.
       - name: View smoke
+        if: ${{ !cancelled() }}
         run: pnpm smoke:view
       - name: Verify Claude connector package
+        if: ${{ !cancelled() }}
         run: pnpm --filter @cotal-ai/connector-claude-code pack --dry-run
       # Grades the convention, not one suite: every file that defaults COTAL_SERVERS with `||=`
       # must also print what it resolved. Pure — reads sources, spawns nothing, dials nothing.
       # Placed here rather than in the smoke:ci chain so the chain migration lands without a
       # rebase; `gate-inventory` counts a suite named in a workflow as reached.
       - name: Broker disclosure
+        if: ${{ !cancelled() }}
         run: pnpm smoke:broker-disclosure
 
   smoke:
