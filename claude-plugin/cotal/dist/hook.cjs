@@ -4,10 +4,133 @@
 var import_node_net = require("node:net");
 
 // ../../packages/core/dist/launch-material.js
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 
 // ../../packages/core/dist/secret-fs.js
+var import_node_fs = require("node:fs");
+var import_node_child_process = require("node:child_process");
+var import_node_path = require("node:path");
 var isWin = process.platform === "win32";
+function sys32(exe) {
+  const root = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+  return (0, import_node_path.join)(root, "System32", exe);
+}
+var cachedSid;
+function ownerSid() {
+  if (cachedSid)
+    return cachedSid;
+  const out = (0, import_node_child_process.execFileSync)(sys32("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" });
+  const sid = out.trim().split(",").pop()?.replace(/^"|"$/g, "").trim();
+  if (!sid || !/^S-1-/.test(sid))
+    throw new Error(`could not determine the current user's SID from \`whoami\` (got: ${out.trim()})`);
+  cachedSid = sid;
+  return sid;
+}
+var BROAD_SIDS = ["S-1-1-0", "S-1-5-11", "S-1-5-32-545"];
+function hardenPrivate(path, kind) {
+  if (!isWin) {
+    if (kind === "file")
+      (0, import_node_fs.closeSync)(openPrivate(path, import_node_fs.constants.O_RDONLY));
+    else
+      (0, import_node_fs.chmodSync)(path, 448);
+    return;
+  }
+  const perm = kind === "dir" ? "(OI)(CI)(F)" : "(F)";
+  const removeBroad = BROAD_SIDS.flatMap((sid) => ["/remove:g", `*${sid}`]);
+  const grant = (sid) => ["/grant:r", `*${sid}:${perm}`];
+  try {
+    (0, import_node_child_process.execFileSync)(sys32("icacls.exe"), [
+      path,
+      "/inheritance:r",
+      ...removeBroad,
+      ...grant(ownerSid()),
+      ...grant("S-1-5-18"),
+      ...grant("S-1-5-32-544")
+    ], { stdio: ["ignore", "ignore", "pipe"] });
+  } catch (e) {
+    throw new Error(`failed to harden ${kind} "${path}" to private via icacls: ${e.message.trim()}. Cotal will not leave a secret with a permissive ACL - ensure the path is on an NTFS volume and %SystemRoot%\\System32\\icacls.exe is available.`);
+  }
+}
+function notPrivate(path, why) {
+  const refused = new Error(`refusing to write "${path}": it ${why}; it was left unchanged`);
+  refused.code = "EPERM";
+  return refused;
+}
+function openPrivate(path, flags) {
+  if (isWin) {
+    const fd2 = (0, import_node_fs.openSync)(path, flags, 384);
+    try {
+      (0, import_node_fs.fchmodSync)(fd2, 384);
+    } catch (e) {
+      (0, import_node_fs.closeSync)(fd2);
+      throw e;
+    }
+    return fd2;
+  }
+  let fd;
+  try {
+    fd = (0, import_node_fs.openSync)(path, flags | import_node_fs.constants.O_NOFOLLOW | import_node_fs.constants.O_NONBLOCK, 384);
+  } catch (e) {
+    if (e.code === "ELOOP")
+      throw notPrivate(path, "is a symlink");
+    throw e;
+  }
+  try {
+    const info = (0, import_node_fs.fstatSync)(fd);
+    if (!info.isFile())
+      throw notPrivate(path, "is not a regular file");
+    if (info.uid !== process.getuid())
+      throw notPrivate(path, `is owned by uid ${info.uid}, not this user`);
+    (0, import_node_fs.fchmodSync)(fd, 384);
+    return fd;
+  } catch (e) {
+    (0, import_node_fs.closeSync)(fd);
+    throw e;
+  }
+}
+function writeSecretFile(path, data) {
+  writePrivate(path, data, false);
+}
+function writeBytes(path, data, exclusive) {
+  const fd = openPrivate(path, import_node_fs.constants.O_WRONLY | import_node_fs.constants.O_CREAT | (exclusive ? import_node_fs.constants.O_EXCL : 0));
+  try {
+    (0, import_node_fs.ftruncateSync)(fd);
+    (0, import_node_fs.writeFileSync)(fd, data);
+  } finally {
+    (0, import_node_fs.closeSync)(fd);
+  }
+}
+function writePrivate(path, data, exclusive) {
+  writeBytes(path, data, exclusive);
+  if (!isWin)
+    return;
+  try {
+    hardenPrivate(path, "file");
+  } catch (e) {
+    try {
+      (0, import_node_fs.unlinkSync)(path);
+    } catch {
+    }
+    throw e;
+  }
+}
+function writeSecretFileAtomic(path, data) {
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeSecretFile(tmp, data);
+    (0, import_node_fs.renameSync)(tmp, path);
+  } catch (e) {
+    try {
+      (0, import_node_fs.unlinkSync)(tmp);
+    } catch {
+    }
+    throw e;
+  }
+}
+function mkSecretDir(path) {
+  (0, import_node_fs.mkdirSync)(path, { recursive: true, mode: 448 });
+  hardenPrivate(path, "dir");
+}
 
 // ../../packages/core/dist/launch-material.js
 var LAUNCH_MATERIAL_ENV = "COTAL_LAUNCH_MATERIAL";
@@ -15,11 +138,11 @@ function readLaunchMaterial(path) {
   let raw;
   try {
     if (process.platform !== "win32") {
-      const mode = (0, import_node_fs.statSync)(path).mode & 511;
+      const mode = (0, import_node_fs2.statSync)(path).mode & 511;
       if (mode & 63)
         throw new Error(`is readable beyond its owner (mode ${mode.toString(8)}) - refusing to read connection material out of a file other local users can open`);
     }
-    raw = (0, import_node_fs.readFileSync)(path, "utf8");
+    raw = (0, import_node_fs2.readFileSync)(path, "utf8");
   } catch (e) {
     throw new Error(`launch material: cannot read ${path} (${e instanceof Error ? e.message : String(e)})`);
   }
@@ -170,9 +293,9 @@ function done(out, confirm) {
   });
   setTimeout(exit, 1e3);
 }
-async function runHookRelay(answer) {
+async function runHookRelay(answer, observe) {
   const managed = hasIdentity();
-  if (!managed && !answer)
+  if (!managed && !answer && !observe)
     return done("");
   const raw = (await readStdin()).trim() || "{}";
   let event = {};
@@ -187,6 +310,10 @@ async function runHookRelay(answer) {
   }
   if (local)
     return done(JSON.stringify(local));
+  try {
+    await observe?.(event, { managed });
+  } catch {
+  }
   if (!managed)
     return done("");
   let control;
@@ -309,8 +436,8 @@ var otherCotalPath = (event, session) => {
 };
 
 // src/connection-owner.ts
-var import_node_fs2 = require("node:fs");
-var import_node_path = require("node:path");
+var import_node_fs3 = require("node:fs");
+var import_node_path2 = require("node:path");
 var CONNECTED = /^connection_id: (\S+)$/m;
 var SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 var FORKED_REASON = "This connection_id was opened by another Claude Code session. This session is a fork or a copy of that one, so it needs its own connection: call cotal_connect, then use the connection_id it returns.";
@@ -324,7 +451,7 @@ function connectedId(response) {
   return void 0;
 }
 function connectionOwner(dataDir) {
-  const dir = dataDir ? (0, import_node_path.join)(dataDir, "hosted-connections") : void 0;
+  const dir = dataDir ? (0, import_node_path2.join)(dataDir, "hosted-connections") : void 0;
   return (event, session) => {
     if (session.managed || !dir) return void 0;
     const ev = event;
@@ -335,7 +462,7 @@ function connectionOwner(dataDir) {
     const id = typeof given === "string" && SAFE_ID.test(given) ? given : void 0;
     const owner2 = () => {
       try {
-        return (0, import_node_fs2.readFileSync)((0, import_node_path.join)(dir, id), "utf8");
+        return (0, import_node_fs3.readFileSync)((0, import_node_path2.join)(dir, id), "utf8");
       } catch {
         return void 0;
       }
@@ -343,13 +470,13 @@ function connectionOwner(dataDir) {
     if (ev?.hook_event_name === "PostToolUse" && tool === "cotal_connect") {
       const opened = connectedId(ev.tool_response);
       if (opened === void 0) return void 0;
-      (0, import_node_fs2.mkdirSync)(dir, { recursive: true, mode: 448 });
-      (0, import_node_fs2.writeFileSync)((0, import_node_path.join)(dir, opened), sessionId, { mode: 384 });
+      (0, import_node_fs3.mkdirSync)(dir, { recursive: true, mode: 448 });
+      (0, import_node_fs3.writeFileSync)((0, import_node_path2.join)(dir, opened), sessionId, { mode: 384 });
       return void 0;
     }
     if (id === void 0) return void 0;
     if (ev?.hook_event_name === "PostToolUse" && tool === "cotal_disconnect") {
-      if (owner2() === sessionId) (0, import_node_fs2.rmSync)((0, import_node_path.join)(dir, id), { force: true });
+      if (owner2() === sessionId) (0, import_node_fs3.rmSync)((0, import_node_path2.join)(dir, id), { force: true });
       return void 0;
     }
     if (ev?.hook_event_name !== "PreToolUse") return void 0;
@@ -365,6 +492,130 @@ function connectionOwner(dataDir) {
   };
 }
 
+// src/native-binding.ts
+var import_node_fs5 = require("node:fs");
+var import_node_net2 = require("node:net");
+var import_node_os2 = require("node:os");
+var import_node_path4 = require("node:path");
+
+// src/wake-feed.ts
+var import_node_fs4 = require("node:fs");
+var import_node_os = require("node:os");
+var import_node_path3 = require("node:path");
+var WAKE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+var WIN_PIPES = "\\\\.\\pipe\\";
+var WIN_PREFIX = "cotal-claude-wake-";
+function wakeDir() {
+  if (process.platform === "win32") return WIN_PIPES;
+  const uid = process.getuid();
+  const dir = (0, import_node_path3.join)((0, import_node_os.tmpdir)(), `cotal-claude-wake-${uid}`);
+  (0, import_node_fs4.mkdirSync)(dir, { recursive: true, mode: 448 });
+  const st = (0, import_node_fs4.lstatSync)(dir);
+  if (!st.isDirectory() || st.uid !== uid || (st.mode & 63) !== 0) throw new Error(`${dir} is not a private directory of this user's`);
+  return dir;
+}
+var entryName = (claudePid, serverPid) => process.platform === "win32" ? `${WIN_PREFIX}${claudePid}-${serverPid}` : `${claudePid}-${serverPid}.sock`;
+var ENTRY = process.platform === "win32" ? new RegExp(`^${WIN_PREFIX}(\\d+)-(\\d+)$`) : /^(\d+)-(\d+)\.sock$/;
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+function wakeSocketPath(claudePid, serverPid = process.pid) {
+  const dir = wakeDir();
+  return process.platform === "win32" ? `${dir}${entryName(claudePid, serverPid)}` : (0, import_node_path3.join)(dir, entryName(claudePid, serverPid));
+}
+function wakeSockets(claudePid) {
+  const dir = wakeDir();
+  return (0, import_node_fs4.readdirSync)(dir).flatMap((name) => {
+    const m = ENTRY.exec(name);
+    return m?.[1] === String(claudePid) && alive(Number(m[2])) ? [wakeSocketPath(claudePid, Number(m[2]))] : [];
+  });
+}
+function nativeSocketPath(feed) {
+  return `${feed}.native`;
+}
+
+// src/native-binding.ts
+function stateFile(session) {
+  if (!WAKE_ID.test(session)) throw new Error("invalid native session identity");
+  const root = (0, import_node_path4.join)((0, import_node_os2.tmpdir)(), `cotal-claude-native-${process.getuid?.() ?? "local"}`);
+  const st = (0, import_node_fs5.lstatSync)(root, { throwIfNoEntry: false });
+  if (st && (!st.isDirectory() || process.getuid && st.uid !== process.getuid()))
+    throw new Error("native session state is not this user's private directory");
+  mkSecretDir(root);
+  return (0, import_node_path4.join)(root, `${session}.json`);
+}
+function readRecord(file) {
+  const st = (0, import_node_fs5.lstatSync)(file, { throwIfNoEntry: false });
+  if (!st) return void 0;
+  if (!st.isFile() || st.size > 16384 || process.getuid && (st.uid !== process.getuid() || (st.mode & 63) !== 0))
+    throw new Error("native session state is not an owner-private bounded regular file");
+  const value = JSON.parse((0, import_node_fs5.readFileSync)(file, "utf8"));
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid native session state");
+  return value;
+}
+function transcriptMatches(session, path) {
+  return typeof path === "string" && (0, import_node_path4.isAbsolute)(path) && (0, import_node_path4.basename)(path) === `${session}.jsonl`;
+}
+async function forward(event, hostPid) {
+  const paths = wakeSockets(hostPid);
+  if (!paths.length) throw new Error("no local native lifecycle server");
+  await Promise.all(paths.map((path) => new Promise((resolve, reject) => {
+    const socket = (0, import_node_net2.createConnection)(nativeSocketPath(path));
+    let reply = "";
+    socket.setEncoding("utf8");
+    socket.setTimeout(2e3, () => socket.destroy(new Error("native lifecycle relay timed out")));
+    socket.on("connect", () => socket.write(`${JSON.stringify({ op: "native", event })}
+`));
+    socket.on("data", (data) => {
+      reply += data;
+      if (reply.length > 128) socket.destroy();
+    });
+    socket.on("error", reject);
+    socket.on("close", () => {
+      try {
+        if (JSON.parse(reply).ok === true) resolve();
+        else reject(new Error("native lifecycle binding refused"));
+      } catch {
+        reject(new Error("native lifecycle binding was not confirmed"));
+      }
+    });
+  })));
+}
+async function observePersonalHook(value) {
+  if (!value || typeof value !== "object") return;
+  const event = value;
+  if (event.agent_id !== void 0 || typeof event.session_id !== "string" || !WAKE_ID.test(event.session_id) || !transcriptMatches(event.session_id, event.transcript_path) || typeof event.hook_event_name !== "string") return;
+  if (!["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolBatch", "Notification", "Stop", "StopFailure", "SessionEnd"].includes(event.hook_event_name)) return;
+  const file = stateFile(event.session_id);
+  const previous = readRecord(file);
+  if (previous && previous.transcript_path !== event.transcript_path)
+    throw new Error("native command hook changed its session transcript");
+  const safe = {};
+  for (const key of ["hook_event_name", "session_id", "transcript_path", "cwd", "source", "notification_type", "error", "model"])
+    if (typeof event[key] === "string" && event[key].length <= 4096) safe[key] = event[key];
+  if (JSON.stringify(safe).length > 8192) throw new Error("native command-hook metadata is too large");
+  writeSecretFileAtomic(file, JSON.stringify(safe));
+  const target = readRecord(`${file}.host`);
+  if (target) {
+    if (!Number.isInteger(target.hostPid) || target.hostPid <= 0) throw new Error("invalid native lifecycle host");
+    await forward(safe, target.hostPid);
+  }
+  if (event.hook_event_name === "SessionEnd") {
+    (0, import_node_fs5.unlinkSync)(file);
+    if (target) (0, import_node_fs5.unlinkSync)(`${file}.host`);
+  }
+}
+
 // src/hook.ts
 var owner = connectionOwner(process.env.CLAUDE_PLUGIN_DATA);
-void runHookRelay((event, session) => otherCotalPath(event, session) ?? owner(event, session)).catch(() => process.exit(0));
+void runHookRelay(
+  (event, session) => otherCotalPath(event, session) ?? owner(event, session),
+  async (event, session) => {
+    if (!session.managed) await observePersonalHook(event);
+  }
+).catch(() => process.exit(0));
