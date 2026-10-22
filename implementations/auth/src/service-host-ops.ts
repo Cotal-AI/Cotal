@@ -680,6 +680,15 @@ const finalArm = (operationId: string, f: Exclude<Final, { state: "complete" }>,
 
 function badRequest(detail: string): never { throw new EpEnvelopeError("bad-request", `service host request: ${detail}`); }
 
+/** The host register request a public register's proposal phase admits. Serving recomputes it, so
+ *  one public request key binds one body across both phases. */
+export function serviceRegisterHostRequest(r: { owner: string; endpoint: string; instanceId: string; engineRequestId: string;
+  requestId: string; requestDigest: string; clusterDigests: string[]; commands: Command[] }): ServiceRegisterRequest {
+  return { v: 1, kind: "service-endpoint-host", requestId: r.engineRequestId, operation: "register", granter: { kind: "owner", owner: r.owner },
+    input: { owner: r.owner, endpoint: r.endpoint, instanceId: r.instanceId, clusterDigests: r.clusterDigests, commands: r.commands,
+      publicRequest: { requestId: r.requestId, requestDigest: r.requestDigest } } };
+}
+
 /** Structural admission of the internal register request. */
 export function parseServiceRegisterRequest(raw: unknown): ServiceRegisterRequest {
   let o: Rec, input: Rec, g: Rec;
@@ -1618,8 +1627,34 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
   }
   const sameIntent = (a: Intent, b: Intent) => canonicalJson({ ...a, admittedAtMs: 0 }) === canonicalJson({ ...b, admittedAtMs: 0 });
 
-  /** R1 §A: a new admission's state check, read before anything is written. */
-  async function admissible(ctx: Ctx, req: ServiceServeRequest, b: Bound): Promise<ServiceServeResult | undefined> {
+  /** A register key the proposal phase already admitted stays bound to that admission's body and
+   *  proposal: a changed body is a conflict, and a key of another proposal answers that proposal's
+   *  own refusal, or a conflict. */
+  async function keyHistory(ctx: Ctx, req: ServiceServeRequest, b: Bound, id: string): Promise<ServiceServeResult | undefined> {
+    ctx.step = "S-key";
+    const op = await readOp(ctx, id);
+    if (op.state === "absent") return undefined;
+    const r = req.register!;
+    const admitted = serviceRegisterHostRequest({ owner: req.owner, endpoint: req.endpoint, instanceId: req.instanceId, engineRequestId: req.engineRequestId,
+      requestId: req.requestId, requestDigest: req.requestDigest, clusterDigests: r.clusterDigests, commands: r.commands });
+    if (op.row.operation !== "register" || op.row.requestDigest !== requestDigestOf(admitted)) return deniedServe("conflict");
+    const proposalId = op.row.projection.proposalId;
+    if (proposalId === b.row.proposalId) return undefined;
+    const p = proposalId === null ? undefined : await readProposal(ctx, proposalId);
+    if (p?.state === "value") {
+      if (p.row.kind === "service-proposal-terminal" && (p.row.state === "refused" || p.row.state === "expired"))
+        return deniedServe(p.row.state === "expired" ? "proposal-expired" : "proposal-refused");
+      if (p.row.kind === "service-proposal" && p.row.state.state === "proposed" && Date.now() >= p.row.expiresAtMs) return deniedServe("proposal-expired");
+    }
+    return deniedServe("conflict");
+  }
+
+  /** R1 §A: a new admission's key history and state check, read before anything is written. */
+  async function admissible(ctx: Ctx, req: ServiceServeRequest, b: Bound, id: string): Promise<ServiceServeResult | undefined> {
+    if (req.operation === "register") {
+      const k = await keyHistory(ctx, req, b, id);
+      if (k !== undefined) return k;
+    }
     ctx.step = "S-state";
     if (b.row.cancel !== null) return deniedServe("approval-revoked");
     const g = await servedGate(ctx, b);
@@ -1684,7 +1719,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
         const found = await readIntent(ctx, id);
         if (found.state === "value") { if (!sameIntent(found.row, intent)) return deniedServe("conflict"); }
         else {
-          const refusal = (await admissible(ctx, req, bound)) ?? (await listIntent(ctx, bound, id, req.operation));
+          const refusal = (await admissible(ctx, req, bound, id)) ?? (await listIntent(ctx, bound, id, req.operation));
           if (refusal !== undefined) return refusal;
           ctx.step = "S-intent-create";
           if ((await put(ctx, intentKey(id), intent, parseServiceRequestIntentRecord)) === "moved") {
@@ -1713,6 +1748,10 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       const stamp = row.serviceAuthority.registration;
       return stamp?.requestId === req.requestId && stamp.requestDigest === req.requestDigest;
     };
+    const frozenHere = (row: EndpointRow) => {
+      const pending = row.serviceAuthority.pendingRegistration;
+      return row.state === "frozen" && pending?.operationId === id && pending.requestId === req.requestId && pending.requestDigest === req.requestDigest;
+    };
     const recovered = async (g: Awaited<ReturnType<typeof servedGate>>) => {
       if (!stampedHere(g.row)) return undefined;
       const witness = stampWitness(ctx, b.binding, g.row)!;
@@ -1724,9 +1763,9 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     if (g.kind === "revoked" || b.row.cancel !== null) return deniedServe("approval-revoked");
     const done = await recovered(g);
     if (done !== undefined) return done;
-    const a = g.row.serviceAuthority, pending = a.pendingRegistration;
+    const a = g.row.serviceAuthority;
     if (a.activationIssued) return deniedServe("registration-active");
-    const resuming = g.row.state === "frozen" && pending?.operationId === id && pending.requestId === req.requestId && pending.requestDigest === req.requestDigest;
+    const resuming = frozenHere(g.row);
     const expected = req.witness === null ? undefined : serviceWitnessDigest(req.witness);
     const expectationHolds = (row: EndpointRow) => {
       const current = stampWitness(ctx, b.binding, row);
@@ -1754,12 +1793,14 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     // not find the gate frozen by this operation: also for a request that read it frozen and finds
     // it reopened. The checks above ran on an earlier read, so they are made again on exactly the
     // revision being frozen, and nothing is frozen or written unless they hold. A stamp that already
-    // names this request was completed by another invocation of it and answers as a replay does.
-    let decided: "approval-revoked" | "stamped" | "conflict" | undefined;
+    // names this request was completed by another invocation of it and answers as a replay does; a
+    // freeze of this operation with no stamp yet is that invocation still running, so this one holds.
+    let decided: "approval-revoked" | "stamped" | "running" | "conflict" | undefined;
     const barrier = { ...observed, freeze: async (revision: number) => {
       const now = await servedGate(ctx, b);
       if (now.kind === "revoked") decided = "approval-revoked";
       else if (stampedHere(now.row)) decided = "stamped";
+      else if (frozenHere(now.row)) decided = "running";
       else if (now.revision !== revision || now.row.state !== "open" || !expectationHolds(now.row)) decided = "conflict";
       return decided === undefined ? await observed.freeze(revision) : null;
     } };
@@ -1770,6 +1811,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
         authority: nativeServiceNameAuthority(inv.h.registry, { space, accountPublicKey }), barrier, readClusterArtifact: (d) => artifacts.get(d) }));
     } catch (err) {
       if (decided === undefined || !(err instanceof Held)) throw err;
+      if (decided === "running") return held("unknown", ctx.step, "another invocation of this request froze the gate and has not completed");
       if (decided !== "stamped") return deniedServe(decided);
       ctx.step = "R-confirm";
       const now = await servedGate(ctx, b);

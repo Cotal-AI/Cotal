@@ -10,7 +10,7 @@ import {
   type EpCommandAuthority, type ServiceAuthorityInfo, type ServiceAuthorityRequest, type ServiceAuthorityStatus, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import type { ServiceHostRequest, ServiceHostResult, ServiceProposalTombstoneView, ServiceProposalView } from "./service-host-contract.js";
-import { serviceHostOperationId, type ServiceHostOperations, type ServiceServeOperation, type ServiceServeResult } from "./service-host-ops.js";
+import { serviceHostOperationId, serviceRegisterHostRequest, type ServiceHostOperations, type ServiceServeOperation, type ServiceServeResult } from "./service-host-ops.js";
 
 export const SERVICE_ENDPOINT_AUTHORITY_PATH = "/service-endpoint-authority";
 
@@ -170,8 +170,8 @@ export async function answerServiceAuthority(door: ServiceAuthorityDoor, request
     if (request.expected.state !== "unregistered") return deny("conflict");
     let r: Awaited<ReturnType<ServiceHostOperations["register"]>>;
     try {
-      r = await door.engine.register({ v: 1, kind: "service-endpoint-host", requestId, operation: "register", granter: { kind: "owner", owner },
-        input: { owner, endpoint: request.endpoint, instanceId: request.instanceId, ...compiled, publicRequest: { requestId: request.requestId, requestDigest } } });
+      r = await door.engine.register(serviceRegisterHostRequest({ owner, endpoint: request.endpoint, instanceId: request.instanceId, engineRequestId: requestId,
+        requestId: request.requestId, requestDigest, ...compiled }));
     } catch (e) { if (e instanceof EpEnvelopeError && e.code === "bad-request") return deny("bad-request"); throw e; }
     const required = (proposalId: string, proposalDigest: string) => reply(202, { state: "approval-required", proposalId, proposalDigest });
     switch (r.state) {
@@ -211,7 +211,12 @@ export async function answerServiceAuthority(door: ServiceAuthorityDoor, request
     try {
       accessBearer = await door.material!.issueServiceAccess({ witness: r.witness, expiresAt: accessExpiresAt });
       renewalProof = await door.material!.issueServiceRenewal({ witness: r.witness, expiresAt: renewalExpiresAt });
-    } catch { return deny("expired"); }
+    } catch {
+      // Only a fixed expiry that has passed is expired. Any other failure to mint leaves the current
+      // registration with no material, so it is unknown and a replay mints replacement material.
+      if (accessExpiresAt <= Math.floor(Date.now() / 1000)) return deny("expired");
+      return unknown(`the ${request.operation} material was not minted`);
+    }
     return reply(200, { state: "credential", witness: r.witness, duty: "serve", accessBearer, accessExpiresAt, renewalProof, renewalExpiresAt, snapshot: r.snapshot });
   }
 
