@@ -356,9 +356,12 @@ try {
         const t0 = Date.now();
         while (Date.now() - t0 < 8000) { during.push(String(stateOf(await statusS(ON)))); await sleep(500); }
       } finally {
-        // Later cells share this broker: bring it back whatever the checks above found.
+        // Later cells share this broker: bring it back whatever the checks above found, then wait
+        // (bounded) until the stock auth service answers its door again: its context reconnects on
+        // its own, and until it does every door call answers unavailable.
         nats = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
         for (let i = 0; i < 50 && !(await isReachable(`nats://127.0.0.1:${port}`)); i++) await sleep(200);
+        for (let i = 0; i < 120; i++) { try { await instanceStatus(ON); break; } catch { await sleep(1000); } }
       }
       console.log(`  C13 broker down: ${during.length} samples, ${during.filter((s) => s === "connected").length} connected, states ${[...new Set(during)].join(",")}`);
       check("C13 instrument: the broker is unreachable", gone);
