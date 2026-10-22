@@ -44,6 +44,10 @@ A service endpoint authority status query that reads one operation now names tha
 `parseServiceAuthorityEnvelope` and the `ServiceAuthorityRequest` type, so it reaches every client
 and server built on them.
 
+A `revoke` operation status parses, but the 0.92.0 auth service does not answer it yet: it is
+`denied` with reason `unsupported` (HTTP 422), as SPEC states. To follow a revocation, read
+`target: { kind: "instance" }`, which reports `revoking` with the revoke's operation id.
+
 ### What keeps working
 
 - Every running mesh. 0.91.0 shipped the request types and the client (the auth provider's
@@ -60,10 +64,17 @@ and server built on them.
 - **Code that builds an operation status query without `operation`.** The 0.92.0 provider hook and
   client parse each request before sending it, so the query fails locally with a `bad-request`
   error, `service-endpoint authority: <detail>`, whose detail is
-  `object has missing or unsupported fields`, and nothing is sent. A 0.91.0 client that sends the
-  old selector to a 0.92.0 auth service gets HTTP 400 with the same message, and the service reads
-  and writes nothing for it. An operation name outside the five gets the detail
-  `unsupported status operation`.
+  `object has missing or unsupported fields`, and nothing is sent. An operation name outside the
+  five gets the detail `unsupported status operation`.
+- **A 0.91.0 client still sends the old selector.** A 0.92.0 auth service opened with
+  `serviceEndpoints` answers it with HTTP 400, whose body carries the same parser message. The
+  service reads and writes nothing for it and logs nothing. The 0.91.0 provider hook and client
+  never show that message: they cannot parse the 400 body as a protocol result, so they throw a
+  `ServiceAuthorityTransportError` whose message is
+  `service authority returned an unconfirmed response; retain the existing request identity`, with
+  `httpStatus` 400 and outcome `not-executed`. A status query is a read, so nothing ran and
+  nothing needs replaying. An auth service without `serviceEndpoints` answers 404 before it reads
+  the body.
 - **No legacy operation is inferred.** Neither the client nor the service maps an old selector onto
   `register` or any other operation. One requestId can key a different request under each
   operation, so a guessed operation could answer with another request's status. Send the operation
@@ -88,8 +99,10 @@ order those as their own sections say.
 
 There is no compatibility window to schedule. A 0.92.0 auth service never accepts the old selector,
 and a 0.91.0 auth service has no handler for the route at all, so a mixed pool is not partly
-working: every 0.92.0 auth service refuses an old client's operation status queries with 400.
-Nothing else is interrupted, so the change has no outage window of its own.
+working: every 0.92.0 auth service opened with `serviceEndpoints` refuses an old client's
+operation status queries with 400, which that client reports as the unconfirmed-response error
+above, and one without `serviceEndpoints` answers 404. Nothing else is interrupted, so the change
+has no outage window of its own.
 
 ### Before the upgrade
 
@@ -111,8 +124,10 @@ grep -rn 'kind: "operation"' --include='*.ts' --include='*.js' src/
 ```
 
 What this section measured, and what it did not: the local refusal and the accepted and refused
-selectors are covered by the core parser's own test. The 400 answer is read from the auth service's
-source. No mixed-version deployment was run.
+selectors are covered by the core parser's own test. The 400, 404 and `unsupported` answers, and
+the absence of a log line, are read from the auth service's source. The 0.91.0 client's error is
+read from the 0.91.0 client and core parser source; the client file is unchanged since 0.91.0. No
+mixed-version deployment was run.
 
 ## History reader deletes after 0.86.0
 
