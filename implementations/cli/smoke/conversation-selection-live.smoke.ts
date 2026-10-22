@@ -35,6 +35,13 @@ let authenticated = 0, issued = 0;
 const posts: Record<string, any>[] = [];
 const requests = new Map<string, Record<string, any>>();
 type Selection = { channels: { channel: string; access: string }[]; role: string | null; capabilities: string[] };
+/** Connection approval: each request waits for the fixture person, who approves exactly what it
+ *  proposed, or the concrete empty selection for a baseline request. */
+const approvals = new Map<string, { id: string; expiresAt: string; proposed: Selection | null; approved?: Selection; decidedAt?: string }>();
+const approve = (requestId: string) => {
+  const a = approvals.get(requestId)!;
+  Object.assign(a, { approved: a.proposed ?? { v: 1, channels: [], role: null, capabilities: [], endpoints: [] }, decidedAt: new Date().toISOString() });
+};
 // Written out from the frozen contract rather than computed by the client's own helper.
 const contractGrant = (actor: string, s?: Selection) => s
   ? { scope: [...s.capabilities], role: s.role, allowSubscribe: s.channels.map((c) => c.channel),
@@ -43,7 +50,7 @@ const contractGrant = (actor: string, s?: Selection) => s
 const bundle = () => ({ space: "selection_fixture", server: "nats://127.0.0.1:1", tlsRequired: false,
   userAuth: { provider: "cotal", idp: { url: `${base}/idp`, issuer: `${base}/idp`, audience: "cotal-cli" }, endpoints: { url: `${base}/s/selection_fixture` } },
   policy: { events: "required" }, sentinelCreds: "fixture-sentinel",
-  cloudCapabilities: { conversationIdentity: { version: 1, url: `${base}/api/spaces/selection_fixture/conversation-identities` },
+  cloudCapabilities: { conversationIdentity: { version: 1, url: `${base}/api/spaces/selection_fixture/conversation-identities` }, connectionApproval: { version: 1 },
     ...(selectionMode === "absent" ? {} : { conversationIdentitySelection: { version: selectionMode === "old" ? 2 : 1 } }) },
 });
 const server = createServer({ key, cert: ca }, async (req, res) => {
@@ -62,14 +69,20 @@ const server = createServer({ key, cert: ca }, async (req, res) => {
         { kind: "channel", item: { channel: "ops.secret", access: "read" }, reason: "not-in-parent" },
         { kind: "capability", item: "run", reason: "not-in-parent" }] });
     if (createMode === "unsupported") return send(400, { error: "endpoint selection is not available in selection v1" });
+    const token = (n: number) => Array.from(randomBytes(n), (byte) => "abcdefghijklmnopqrstuvwxyz234567"[byte % 32]).join("");
     let existing = requests.get(body.requestId);
     if (!existing) {
-      const actor = `pa_${Array.from(randomBytes(26), (byte) => "abcdefghijklmnopqrstuvwxyz234567"[byte % 32]).join("")}`;
+      let a = approvals.get(body.requestId);
+      if (!a) approvals.set(body.requestId, a = { id: token(26), expiresAt: new Date(Date.now() + 600_000).toISOString(), proposed: body.selection ?? null });
+      if (!a.approved) return send(202, { v: 1, requestId: body.requestId, status: "pending",
+        approval: { id: a.id, url: `${base}/approve/${a.id}`, expiresAt: a.expiresAt }, proposed: a.proposed });
+      const actor = `pa_${token(26)}`;
       const lifecycleUid = mintLifecycleUid();
       existing = { v: 1, requestId: body.requestId, space: "selection_fixture", owner, actor, lifecycleUid,
-        grant: contractGrant(actor, body.selection), policy: { events: "required" }, sentinelCreds: "fixture-sentinel",
+        grant: contractGrant(actor, a.approved), policy: { events: "required" }, sentinelCreds: "fixture-sentinel",
         exchangeUrl: `${base}/s/selection_fixture`,
-        retire: { url: `${base}/api/spaces/selection_fixture/conversation-identities/${actor}?lifecycleUid=${lifecycleUid}` } };
+        retire: { url: `${base}/api/spaces/selection_fixture/conversation-identities/${actor}?lifecycleUid=${lifecycleUid}` },
+        approval: { id: a.id, decidedAt: a.decidedAt, approved: a.approved } };
       requests.set(body.requestId, existing);
       issued++;
     }
@@ -98,6 +111,16 @@ try {
     userAuth: registration.userAuth, policy: registration.policy as { events: "required" } });
   saveIdpSession(home, `${base}/idp`, { token: "isolated-fixture-human-session", sub: "isolated-human", expiresAt: Math.floor(Date.now() / 1000) + 600 });
   const target = await resolveTargetOrThrow({ space: "selection_fixture" });
+  /** Connect, with the fixture person approving a new request; a replay of an issued one needs none. */
+  const connect = async (name: string, session: string, s?: typeof selection) => {
+    let r = await provisionUserApp(target, name, session, true, s);
+    if ("pending" in r) {
+      approve(r.pending.requestId);
+      r = await provisionUserApp(target, name, session, true, s);
+    }
+    assert(!("pending" in r), "an approved request connects");
+    return r;
+  };
 
   await check("the builder sorts into canonical order and adds the role's own capability", () => {
     assert.deepEqual(selection, { v: 1, role: "default", capabilities: ["role:default", "run", "spawn"], endpoints: [],
@@ -123,7 +146,7 @@ try {
     });
   }
   selectionMode = "valid";
-  const s = await provisionUserApp(target, "sel", "session-s", true, selection);
+  const s = await connect("sel", "session-s", selection);
   const own = s.env.COTAL_ACTOR ? eventChannel({ owner, actor: s.env.COTAL_ACTOR }) : "";
   await check("the request carries the canonical selection and the reply's exact grant reaches the connection", () => {
     assert.deepEqual(posts.at(-1)!.selection, selection);
@@ -134,7 +157,7 @@ try {
     assert.equal(s.env.COTAL_CAPABILITIES, "role:default,run,spawn");
     assert.deepEqual(s.grant.endpoints, []);
   });
-  const replay = await provisionUserApp(target, "sel", "session-s", true, selection);
+  const replay = await connect("sel", "session-s", selection);
   await check("the same conversation and selection replay one identity", () => { assert.deepEqual(replay, s); assert.equal(issued, 1); });
   await check("the same conversation with a different selection is refused locally", async () => {
     const sent = posts.length;
@@ -142,7 +165,7 @@ try {
     await assert.rejects(provisionUserApp(target, "sel", "session-s", true), /different selection/);
     assert.equal(posts.length, sent);
   });
-  const plain = await provisionUserApp(target, "plain", "session-p", true);
+  const plain = await connect("plain", "session-p");
   await check("a baseline request is the v1 body and the own-event-only grant", () => {
     assert.deepEqual(Object.keys(posts.at(-1)!).sort(), ["label", "requestId", "tokenHash", "v"]);
     assert.equal(plain.env.COTAL_CAPABILITIES, undefined);
@@ -161,17 +184,17 @@ try {
     await check(`reject a selected grant with ${label}`, () => {
       const material = structuredClone(saved.remote.material);
       mutate(material);
-      assert.throws(() => checkConversationMaterial(material, authority, saved.requestId, selection), /exact grant its selection/);
+      assert.throws(() => checkConversationMaterial(material, authority, saved.requestId, selection), /exact grant the person approved/);
     });
   }
   for (const mode of ["baseline", "reordered", "widened"]) {
     createMode = mode;
     await check(`a ${mode} grant for a selection fails closed with no baseline fallback`, async () => {
-      await assert.rejects(provisionUserApp(target, `fc_${mode}`, `session-${mode}`, true, selection), /exact grant its selection/);
+      await assert.rejects(connect(`fc_${mode}`, `session-${mode}`, selection), /exact grant the person approved/);
     });
   }
   createMode = "exact";
-  const recovered = await provisionUserApp(target, "fc_baseline", "session-baseline", true, selection);
+  const recovered = await connect("fc_baseline", "session-baseline", selection);
   await check("a retry after a mismatched grant takes the exact grant under the same request", () => {
     assert.equal(recovered.env.COTAL_CAPABILITIES, "role:default,run,spawn");
     assert.equal(issued, 5);
@@ -183,7 +206,7 @@ try {
     assert.equal(issued, 5);
   });
   createMode = "exact";
-  const narrower = await provisionUserApp(target, "denied", "session-denied", true, conversationSelection({ capabilities: ["spawn"] }));
+  const narrower = await connect("denied", "session-denied", conversationSelection({ capabilities: ["spawn"] }));
   await check("the same conversation can then ask for a narrower selection", () => assert.equal(narrower.env.COTAL_CAPABILITIES, "spawn"));
   createMode = "unsupported";
   await check("an unsupported answer is reported as the HTTP status, distinct from a denial", async () => {

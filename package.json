@@ -744,6 +744,7 @@
     "smoke:join-durable-dedup:live": "tsx implementations/cli/smoke/join-durable-dedup-live.smoke.ts",
     "smoke:app-identity:live": "tsx implementations/cli/smoke/app-identity-live.smoke.ts",
     "smoke:conversation-selection-live": "tsx implementations/cli/smoke/conversation-selection-live.smoke.ts",
+    "smoke:conversation-approval-live": "tsx implementations/cli/smoke/conversation-approval-live.smoke.ts",
     "smoke:claude-local:live": "tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
     "smoke:claude-desktop-config": "tsx extensions/connector-claude-code/smoke/desktop-config.smoke.ts",
     "smoke:claude-hook-weight": "tsx extensions/connector-claude-code/smoke/hook-weight.smoke.ts",

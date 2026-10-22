@@ -2,13 +2,16 @@ import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
-  CotalEndpoint, acquireLock, assertLifecycleToken, canonicalJson, checkConversationSelection, conversationGrant, deprovisionAgent,
-  mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, patternInAllow, principalKey, provisionAgentDurables,
-  processStartToken, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider, type ConversationGrant,
-  type ConversationSelection, type SecretStore,
+  CotalEndpoint, acquireLock, assertLifecycleToken, canonicalJson, checkConversationApprovalPending, checkConversationPendingAnswer,
+  checkConversationSelection, conversationApprovalRefusal, conversationGrant, deprovisionAgent, mintCreds, mkSecretDir, newIdentity,
+  principalKey, provisionAgentDurables, processStartToken, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider,
+  type ConversationApprovalPending, type ConversationGrant, type ConversationPending, type ConversationSelection,
 } from "@cotal-ai/core";
 import { getSpaceAuth, homeCotalDir, resolveTargetOrThrow, userAuthStateDir, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
-import { checkConversationMaterial, conversationRetirementPhase, discoverConversationAuthority, selectionRefusal, type ConversationMaterial } from "./conversation-identity.js";
+import {
+  checkConversationMaterial, conversationRetirementPhase, discoverConversationAuthority, selectionRefusal,
+  type ConversationAuthority, type ConversationMaterial,
+} from "./conversation-identity.js";
 
 interface SavedIdentity {
   v: 1;
@@ -23,7 +26,11 @@ interface SavedIdentity {
   consumer: { pid: number; start?: string };
   /** What the identity was requested with beyond its own event channel. Fixed at creation. */
   selection?: ConversationSelection;
-  remote?: { url: string; idpUrl: string; material?: ConversationMaterial };
+  /** `approval` is present when the authority runs connection approval for this request: always for
+   *  a request made by this version, and from its first pending answer for one saved before. Its
+   *  issued answer must then carry the person's decision. */
+  remote?: { url: string; idpUrl: string; material?: ConversationMaterial; approval?: { pending?: ConversationApprovalPending } };
+  /** Issued before connection approval. A new local identity is refused: no human approval exists here. */
   local?: { owner: string; actor: string; lifecycleUid: string; sentinelCreds?: string };
 }
 
@@ -63,6 +70,8 @@ function read(dir: string): SavedIdentity {
       Boolean(record.remote) === Boolean(record.local))
     throw new Error("conversation identity recovery record is invalid; it was retained");
   if (record.selection !== undefined) checkConversationSelection(record.selection);
+  const pending = record.remote?.approval?.pending;
+  if (pending !== undefined) checkConversationApprovalPending(pending, new URL(record.remote!.url).origin);
   return record;
 }
 
@@ -80,17 +89,36 @@ function creationBody(record: SavedIdentity) {
     ...(record.selection ? { selection: record.selection } : {}) };
 }
 
-/** What a local selection asks for beyond the caller's own `<owner>.cli` grant, by the hosted
- *  decision rule: read needs the parent's read ACL, read-post also its post ACL, and a capability
- *  must be in the parent's scope. An empty list admits the selection. */
-async function localRefusals(provider: AuthProvider, store: SecretStore, dir: string, space: string, selection: ConversationSelection): Promise<string[]> {
-  const parent = (await provider.userStatus({ store, dir, space, actor: "cli" })).grant;
-  if (!parent || parent === "not-granted") throw new Error("your own grant on this mesh is unreadable here, so a selection cannot be checked against it; no identity was requested");
-  return [
-    ...selection.channels.filter((c) => !patternInAllow(parent.allowSubscribe, c.channel) ||
-      (c.access === "read-post" && !patternInAllow(parent.allowPublish, c.channel))).map((c) => `channel ${JSON.stringify(c.channel)} (${c.access})`),
-    ...selection.capabilities.filter((c) => !parent.scope.includes(c)).map((c) => `capability ${JSON.stringify(c)}`),
-  ];
+/** An issued answer for a request under approval must carry the decision on the approval it saw. */
+function approvalExpectation(remote: NonNullable<SavedIdentity["remote"]>): { required: true; id?: string } | undefined {
+  if (!remote.approval) return undefined;
+  return { required: true, ...(remote.approval.pending ? { id: remote.approval.pending.id } : {}) };
+}
+
+/** What one creation answer proves. A selection refusal, a recorded denial or expiry, and a pending
+ *  approval each prove that nothing was issued. Any other answer than an exact issued identity
+ *  leaves the outcome unknown, so it throws and the request stays saved. */
+function creationOutcome(
+  record: SavedIdentity, authority: ConversationAuthority, response: { status: number; body: unknown }, what: "creation" | "recovery",
+): { refused: string } | { pending: ConversationPending } | { material: ConversationMaterial } {
+  const remote = record.remote!;
+  if (!remote.material) {
+    const refusal = selectionRefusal(response.status, response.body);
+    if (refusal) return { refused: `${refusal}; no identity was issued` };
+    const decided = conversationApprovalRefusal(response.status, response.body);
+    if (decided === "denied") return { refused: "the person denied this connection; no identity was issued" };
+    if (decided === "expired") return { refused: "the approval expired before anyone decided; no identity was issued. Connect again to ask again" };
+    if (response.status === 202) {
+      const pending = checkConversationPendingAnswer(response.body,
+        { requestId: record.requestId, authorityOrigin: new URL(authority.url).origin, proposed: record.selection ?? null });
+      if (remote.approval?.pending && canonicalJson(remote.approval.pending) !== canonicalJson(pending.approval))
+        throw new Error("conversation identity approval changed while it was pending; its request was retained");
+      return { pending };
+    }
+  }
+  if (response.status !== 200 && response.status !== 201)
+    throw new Error(`conversation identity ${what} answered HTTP ${response.status}; its original request was retained`);
+  return { material: checkConversationMaterial(response.body, authority, record.requestId, record.selection, approvalExpectation(remote)) };
 }
 
 function request(provider: AuthProvider): NonNullable<AuthProvider["requestConversationIdentity"]> {
@@ -98,10 +126,19 @@ function request(provider: AuthProvider): NonNullable<AuthProvider["requestConve
   return provider.requestConversationIdentity.bind(provider);
 }
 
-/** The session key is supplied by the native host, not guessed from a parent pid or an open inbox. */
+/** A connected conversation identity: its environment, where to retire it, and its exact grant. */
+export interface UserAppConnection {
+  env: Record<string, string>;
+  retire: { dir: string };
+  grant: ConversationGrant;
+}
+
+/** The session key is supplied by the native host, not guessed from a parent pid or an open inbox.
+ *  A new request waits for a person's approval: until it is decided this returns `pending`, and
+ *  connecting again replays the same saved request and secret. */
 export async function provisionUserApp(
   target: MeshTarget, name: string, session: string | undefined, events: boolean, selection?: ConversationSelection,
-): Promise<{ env: Record<string, string>; retire: { dir: string }; grant: ConversationGrant }> {
+): Promise<UserAppConnection | { pending: ConversationPending }> {
   if (!session || !/^[A-Za-z0-9_-]{1,128}$/.test(session))
     throw new Error("a signed-in conversation needs its native session identity before connecting");
   const store = workspaceSecretStore(target.root);
@@ -139,6 +176,10 @@ export async function provisionUserApp(
       record.consumer = { pid: process.ppid, start: processStartToken(process.ppid) };
       save(dir, record);
     } else {
+      // A new identity needs a person's approval. Nothing local can give one, and a remote authority
+      // must advertise connection approval before anything authenticated is sent.
+      if (!authority) throw new Error("this mesh has no human approval for a new conversation identity, so none was requested");
+      if (!authority.approval) throw new Error("the selected mesh does not advertise connection approval v1; no identity was requested");
       mkSecretDir(dir);
       privateDir(dir);
       if (readdirSync(dir).length) throw new Error("conversation identity state is incomplete; it was retained for recovery");
@@ -147,9 +188,7 @@ export async function provisionUserApp(
         v: 1, space: target.space, root: target.root, trust: trust(target), session,
         requestId: randomBytes(24).toString("base64url"), label: name, token, state: "creating",
         consumer: { pid: process.ppid, start: processStartToken(process.ppid) }, ...(selection ? { selection } : {}),
-        ...(authority ? { remote: { url: authority.url, idpUrl: target.userAuth!.idp.url } }
-          : { local: { owner: await provider.ownerForLogin({ store, dir: userAuthStateDir(target.root, target.space), space: target.space }),
-              actor: `pa_${randomBytes(16).toString("hex")}`, lifecycleUid: mintLifecycleUid() } }),
+        remote: { url: authority.url, idpUrl: target.userAuth!.idp.url, approval: {} },
       };
       save(dir, record);
       if (process.platform !== "win32") { syncFile(root); syncFile(dirname(root)); }
@@ -157,40 +196,30 @@ export async function provisionUserApp(
     if (record.remote) {
       if (!authority || record.remote.url !== authority.url || record.remote.idpUrl !== target.userAuth?.idp.url)
         throw new Error("conversation identity authority changed; the saved identity was retained");
+      // Only an exact replay of an issued identity may go to an authority without approval.
+      if (!record.remote.material && !authority.approval)
+        throw new Error("the selected mesh does not advertise connection approval v1; the saved request was retained and not sent");
       const response = await request(provider)({ url: authority.url, idpUrl: record.remote.idpUrl, method: "POST", body: creationBody(record) });
-      const refusal = selectionRefusal(response.status, response.body);
-      // The authority refuses a selection before writing anything, so there is nothing to recover.
-      if (refusal && !record.remote.material) {
+      const outcome = creationOutcome(record, authority, response, "creation");
+      if ("refused" in outcome) {
         discard(dir);
-        throw new Error(`${refusal}; no identity was issued`);
+        throw new Error(outcome.refused);
       }
-      if (response.status !== 200 && response.status !== 201)
-        throw new Error(`conversation identity creation answered HTTP ${response.status}; its original request was retained for recovery`);
-      const material = checkConversationMaterial(response.body, authority, record.requestId, record.selection);
-      if (record.remote.material && JSON.stringify(record.remote.material) !== JSON.stringify(material))
-        throw new Error("conversation identity replay changed its saved lifecycle or grant");
-      record.remote.material = material;
-    } else {
-      const local = record.local!;
-      const stateDir = userAuthStateDir(target.root, target.space);
-      const grant = conversationGrant(local, record.selection);
-      if (!local.sentinelCreds) {
-        if (await provider.actorScope({ dir: stateDir, owner: local.owner, actor: local.actor }) !== undefined)
-          throw new Error("a local conversation grant has an unconfirmed secret; disconnect its saved lifecycle before connecting again");
-        const refused = record.selection ? await localRefusals(provider, store, stateDir, target.space, record.selection) : [];
-        if (refused.length) {
-          discard(dir);
-          throw new Error(`the selection exceeds your own access: ${refused.join(", ")}; no identity was issued`);
-        }
-        // The ledger attenuates the row against the same parent again when it writes it.
-        const issued = await provider.grantAgent({ store, dir: stateDir, space: target.space, owner: local.owner, actor: local.actor,
-          fresh: true, lifecycleUid: local.lifecycleUid, custody: { kind: "foreground" }, scope: grant.scope,
-          allowSubscribe: grant.allowSubscribe, allowPublish: grant.allowPublish, ...(grant.role ? { role: grant.role } : {}),
-          parent: `${local.owner}.cli`, label: name });
-        record.token = issued.actorToken;
-        local.sentinelCreds = issued.sentinelCreds;
+      if ("pending" in outcome) {
+        record.remote.approval = { pending: outcome.pending.approval };
         save(dir, record);
+        return { pending: outcome.pending };
       }
+      if (record.remote.material && JSON.stringify(record.remote.material) !== JSON.stringify(outcome.material))
+        throw new Error("conversation identity replay changed its saved lifecycle or grant");
+      record.remote.material = outcome.material;
+    } else {
+      // An identity granted here before connection approval resumes exactly. One without a
+      // confirmed grant is not issued now: no human approval exists on this path.
+      const local = record.local!;
+      if (!local.sentinelCreds)
+        throw new Error("this mesh has no human approval for a new conversation identity, so this unfinished one was not issued; disconnect it to remove its saved request");
+      const grant = conversationGrant(local, record.selection);
       const provisioner = new CotalEndpoint({ space: target.space, servers: target.server,
         creds: await mintCreds(infra!, newIdentity(), "provisioner"), channels: [], consume: false,
         registerPresence: false, watchPresence: false, watchChannels: false,
@@ -274,19 +303,20 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean): P
       if (!material) {
         if (record.selection && !authority.selection)
           throw new Error("the selected mesh no longer offers selection for conversation identities; recovery was not sent");
+        if (!authority.approval)
+          throw new Error("the selected mesh does not advertise connection approval v1; recovery was not sent");
         const replay = await request(provider)({ url: authority.url, idpUrl: record.remote.idpUrl, method: "POST", body: creationBody(record) });
-        const refusal = selectionRefusal(replay.status, replay.body);
-        if (refusal) {
+        const outcome = creationOutcome(record, authority, replay, "recovery");
+        // Refused, or still pending: the authority issued nothing, so there is nothing to retire.
+        if (!("material" in outcome)) {
           discard(dir);
           return;
         }
-        if (replay.status !== 200 && replay.status !== 201)
-          throw new Error(`conversation identity recovery answered HTTP ${replay.status}; its original request was retained`);
-        material = checkConversationMaterial(replay.body, authority, record.requestId, record.selection);
+        material = outcome.material;
         record.remote.material = material;
         save(dir, record);
       }
-      material = checkConversationMaterial(material, authority, record.requestId, record.selection);
+      material = checkConversationMaterial(material, authority, record.requestId, record.selection, approvalExpectation(record.remote));
       const expected = new URL(`${authority.url}/${material.actor}`);
       expected.searchParams.set("lifecycleUid", assertLifecycleToken(material.lifecycleUid));
       if (material.retire.url !== expected.href) throw new Error("saved retirement URL does not name the exact lifecycle");

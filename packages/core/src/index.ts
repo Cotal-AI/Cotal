@@ -107,6 +107,7 @@ export * from "./terminal.js";
 export * from "./registry.js";
 export * from "./auth-provider.js";
 export * from "./conversation-selection.js";
+export * from "./conversation-approval.js";
 export * from "./manager-caller.js";
 export * from "./remote-manager-authority.js";
 export * from "./remote-service-authority.js";

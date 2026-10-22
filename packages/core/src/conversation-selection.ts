@@ -29,7 +29,8 @@ export interface ConversationGrant {
   allowSubscribe: string[];
   allowPublish: string[];
   subscribe: [];
-  /** Present, and empty, exactly when the identity was created with a selection. */
+  /** Present, and empty, exactly when the grant derives from a selection: the one an identity was
+   *  created with, or the one a person approved, empty included. */
   endpoints?: [];
 }
 
