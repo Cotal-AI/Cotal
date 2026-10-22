@@ -62,18 +62,12 @@ function read(dir: string): SavedIdentity {
   return record;
 }
 
-/** Only the kernel's "no such process" proves a consumer gone. A live pid whose start token reads
- *  differently is not proof: macOS reads that token through `ps` in the reader's locale and time zone. */
+/** Only the kernel's "no such process" proves a consumer gone, before its identity is reissued or
+ *  retired. A live pid whose start token reads differently is not proof: macOS reads that token
+ *  through `ps` in the reader's locale and time zone. */
 function consumerGone(consumer: SavedIdentity["consumer"]): boolean {
   try { process.kill(consumer.pid, 0); return false; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
-}
-
-function consumerAlive(consumer: SavedIdentity["consumer"]): boolean {
-  try { process.kill(consumer.pid, 0); }
-  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
-  const start = processStartToken(consumer.pid);
-  return !consumer.start || !start || start === consumer.start;
 }
 
 function request(provider: AuthProvider): NonNullable<AuthProvider["requestConversationIdentity"]> {
@@ -111,7 +105,7 @@ export async function provisionUserApp(target: MeshTarget, name: string, session
       if (record.session !== session || record.trust !== trust(target) || record.label !== name)
         throw new Error("this conversation has a saved identity under different mesh pins or a different name; disconnect it before connecting again");
       if (record.state === "retiring") throw new Error("this conversation's prior identity is still retiring; retry disconnect before connecting again");
-      if (record.consumer.pid !== process.ppid && consumerAlive(record.consumer))
+      if (record.consumer.pid !== process.ppid && !consumerGone(record.consumer))
         throw new Error("this native conversation still has a live inbox consumer; no identity was reissued");
       record.consumer = { pid: process.ppid, start: processStartToken(process.ppid) };
       save(dir, record);

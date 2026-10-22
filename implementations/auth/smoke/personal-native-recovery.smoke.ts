@@ -240,7 +240,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
       mkdirSync(meshRoot, { recursive: true });
       recordMesh({ space: at, server, root: meshRoot, mode: "user", origin: "manual", policy: { events: "required" }, userAuth: { ...userAuth, remote: true }, ts: new Date().toISOString() });
     }
-    for (const session of [1, 2, 3, 4, 5, 6].map((n) => `recovery-session-${n}`).concat("recovery-orphan-a", "recovery-orphan-b")) {
+    for (const session of [1, 2, 3, 4, 5, 6].map((n) => `recovery-session-${n}`).concat("recovery-orphan-a", "recovery-orphan-b", "recovery-live-ctl", "recovery-unknown-ctl")) {
       sessions.set(session, join(home, `${session}.jsonl`));
       writeFileSync(sessions.get(session)!, JSON.stringify({ type: "user", uuid: `before-${session}`, message: { role: "user", content: "PRIVATE_BEFORE_CONNECT" }, timestamp: new Date().toISOString() }) + "\n");
     }
@@ -346,8 +346,34 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     check("a live consumer keeps its identity, also when its saved start token reads differently",
       record("recovery-live-ctl")?.state === "ready" && record("recovery-unknown-ctl")?.state === "ready" &&
       await granted(actorOf("recovery-live-ctl")!) && await granted(actorOf("recovery-unknown-ctl")!));
+
+    // The same conversation from another process. A live consumer keeps its identity, also when its
+    // saved start token reads differently; once it is gone, the saved identity is replayed, not rotated.
+    const saved = (session: string) => readFileSync(join(recordDir(session), "identity.json"), "utf8");
+    const files = (session: string) => ["actor.token", "sentinel.creds", "identity.json"].every((f) => existsSync(join(recordDir(session), f)));
+    const kept = { live: saved("recovery-live-ctl"), unknown: saved("recovery-unknown-ctl") };
+    const issuedBefore = creates;
+    const g6 = await gateway(["recovery-live-ctl", "recovery-unknown-ctl"]);
+    const takeLive = await g6.connect("live_ctl", "recovery-live-ctl");
+    const takeUnknown = await g6.connect("unknown_ctl", "recovery-unknown-ctl");
+    for (const [label, result] of Object.entries({ takeLive, takeUnknown }))
+      console.log(`    ${label}: ${result.error ? "error" : "ok"}: ${result.text.replace(/\s+/g, " ")}`);
+    check("the same conversation from another process cannot take over a live consumer's identity",
+      takeLive.error && /live inbox consumer/.test(takeLive.text) && creates === issuedBefore);
+    check("nor one whose saved start token reads differently",
+      takeUnknown.error && /live inbox consumer/.test(takeUnknown.text) && creates === issuedBefore);
+    check("a refused takeover leaves both saved recovery records and secrets unchanged",
+      saved("recovery-live-ctl") === kept.live && saved("recovery-unknown-ctl") === kept.unknown && files("recovery-live-ctl") && files("recovery-unknown-ctl"));
+    await stopped(holders[0], "SIGKILL");
+    const replayed = await g6.connect("live_ctl", "recovery-live-ctl");
+    const before = JSON.parse(kept.live) as { requestId: string; remote: { material: { actor: string; lifecycleUid: string } } };
+    check("once that consumer is gone, the same conversation replays its saved identity without rotating it",
+      !replayed.error && creates === issuedBefore && record("recovery-live-ctl")?.requestId === before.requestId &&
+      actorOf("recovery-live-ctl") === before.remote.material.actor && await granted(before.remote.material.actor), replayed.text);
+    assert(!(await g6.call("cotal_disconnect", { connection_id: replayed.id })).error);
+    await stopped(g6.child);
     for (const holder of holders) await stopped(holder, "SIGKILL");
-    for (const [session, at] of [["recovery-live-ctl", space], ["recovery-unknown-ctl", space], ["recovery-foreign-ctl", foreign]] as const)
+    for (const [session, at] of [["recovery-unknown-ctl", space], ["recovery-foreign-ctl", foreign]] as const)
       await cliVia(["retire", "--dir", recordDir(session, at)]);
 
     assert(!(await g5.call("cotal_disconnect", { connection_id: sixth.id })).error);
