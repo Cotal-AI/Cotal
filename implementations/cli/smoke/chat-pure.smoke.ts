@@ -9,6 +9,7 @@
  *     leave/discard/quit, disconnect and ended handling, publish results, slash parsing, escaping;
  *   - replies and shared names (view.ts, picker.ts): the reply recipient, `/reply`, and the principal
  *     shown beside a display name another principal carries;
+ *   - the `/who` roster line (controller.ts) and the picker detail (picker.ts) for a working peer;
  *   - resolveDmTarget (native-session.ts) over plain roster data and a real ParticipantEngine, with
  *     senders heard on a DM and on a channel;
  *   - grantRefusal (native-session.ts): the pre-effect refusal for a channel outside the grant;
@@ -26,6 +27,7 @@ import {
   initialState, parseSlash, replyTo, replyToLatest, transcriptRows, type ChatState,
 } from "../src/chat/view.js";
 import { listChoices } from "../src/chat/picker.js";
+import { rosterLines } from "../src/chat/controller.js";
 import { ParticipantEngine } from "../src/chat/engine.js";
 import { grantRefusal, resolveDmTarget } from "../src/chat/native-session.js";
 import type { Presence } from "@cotal-ai/core";
@@ -354,6 +356,13 @@ const task = msg({ id: "t1", kind: "anycast", service: "reviewer", from: { id: "
   check("the picker shows a present peer's principal when a heard sender shares its name",
     choices.some((c) => c.label === "DM alice (u_c.alice)") && choices.some((c) => c.label === "DM bob"), choices);
   check("without such a sender the picker shows the name alone", listChoices(undefined, roster, identity.principal).some((c) => c.label === "DM alice"));
+}
+{
+  const working: RosterView = { view: "current", rows: [{ id: "o.carol", name: "carol", kind: "agent", status: "working", activity: "building" }] };
+  const choice = listChoices(undefined, working, identity.principal).find((c) => c.label === "DM carol");
+  check("the picker names a working peer's progress as unknown", choice?.detail === "agent · working · progress unknown", choice);
+  const who = rosterLines(s0())(working);
+  check("/who names a working peer's progress as unknown", who.length === 1 && who[0] === "carol · agent · working · progress unknown · building", who);
 }
 {
   const roster = [presence("u_c.alice", "alice"), presence("o.bob", "bob")];
