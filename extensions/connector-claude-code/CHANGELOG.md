@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.92.1
+
+### Patch Changes
+
+- 8bb9766: Verify folder-backed Claude plugins by their resolved manifest and file contents, so older native installation records do not incorrectly fail an upgrade.
+
 ## 0.92.0
 
 ### Patch Changes
