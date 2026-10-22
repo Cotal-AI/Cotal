@@ -14,7 +14,7 @@
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
-export const DAEMON_OPS = ["status", "login-start", "login-cancel"] as const;
+export const DAEMON_OPS = ["status", "login-start", "login-cancel", "connect-check"] as const;
 export type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
@@ -22,12 +22,14 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   status: { required: [], optional: [] },
   "login-start": { required: ["idp"], optional: ["clientId"] },
   "login-cancel": { required: ["attempt"], optional: [] },
+  "connect-check": { required: ["space"], optional: [] },
 };
 
 export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "status" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-start"; readonly idp: string; readonly clientId?: string }
-  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-cancel"; readonly attempt: string };
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-cancel"; readonly attempt: string }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "connect-check"; readonly space: string };
 
 export type ProtocolErrorCode =
   | "BAD_JSON" | "NOT_OBJECT" | "BAD_VERSION" | "UNKNOWN_FIELD" | "BAD_ID" | "UNKNOWN_OP" | "LINE_TOO_LONG"
@@ -63,9 +65,16 @@ export type CancelResult =
   | { readonly outcome: "completed"; readonly attempt: string }
   | { readonly outcome: "not-found"; readonly attempt: string };
 
+/** The answer to `connect-check`: whether this daemon could ask the space to register it. It never
+ *  means registered or connected. Every `message` is a fixed sentence; nothing remote is quoted. */
+export type ConnectCheckResult =
+  | { readonly outcome: "not-registered" | "not-user-auth" | "not-signed-in" | "unsupported-by-space" | "unreachable" | "refused"; readonly space: string; readonly message: string }
+  | { readonly outcome: "account-mismatch"; readonly space: string; readonly pinnedAccountPublicKey: string; readonly observedAccountPublicKey: string; readonly message: string }
+  | { readonly outcome: "ready-to-register"; readonly space: string; readonly endpoint: string; readonly instanceId: string; readonly accountPublicKey: string; readonly message: string };
+
 type Envelope = { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string | null };
 export type DaemonResponse =
-  | (Envelope & { readonly ok: true; readonly result: DaemonStatus | CancelResult })
+  | (Envelope & { readonly ok: true; readonly result: DaemonStatus | CancelResult | ConnectCheckResult })
   | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode; readonly message: string } })
   | (Envelope & { readonly ok: true; readonly event: "login-prompt"; readonly attempt: string; readonly prompt: LoginPrompt })
   | (Envelope & { readonly ok: true; readonly event: "login-result"; readonly attempt: string; readonly result: LoginResult });
@@ -75,6 +84,8 @@ const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 /** An attempt id is daemon-minted: 22 characters of base64url. */
 export const ATTEMPT_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const MAX_CLIENT_ID = 128;
+/** A space name as it appears in a subject token. */
+const SPACE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export type ParsedRequest = { readonly ok: true; readonly request: DaemonRequest } | { readonly ok: false; readonly id: string | null; readonly code: ProtocolErrorCode; readonly message: string };
 
@@ -105,6 +116,10 @@ export function parseRequest(line: string): ParsedRequest {
   if (op === "login-cancel") {
     if (typeof obj.attempt !== "string" || !ATTEMPT_PATTERN.test(obj.attempt)) return bad(id, "attempt must be the 22-character attempt id from login-prompt");
     return { ok: true, request: { v, id, op, attempt: obj.attempt } };
+  }
+  if (op === "connect-check") {
+    if (typeof obj.space !== "string" || !SPACE_PATTERN.test(obj.space)) return bad(id, "space must be 1-64 characters of [A-Za-z0-9_-]");
+    return { ok: true, request: { v, id, op, space: obj.space } };
   }
   if (typeof obj.idp !== "string") return bad(id, "idp must be the provider's auth base URL");
   let idp: string;

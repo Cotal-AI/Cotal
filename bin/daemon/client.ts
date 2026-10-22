@@ -9,7 +9,23 @@
 import { connect as netConnect, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, assertLinux, checkDir, checkSocket, type DaemonPaths, type PeerUid } from "./endpoint.js";
-import { encode, type DaemonResponse, type DaemonStatus, type LoginPrompt, type LoginResult } from "./protocol.js";
+import { encode, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type LoginPrompt, type LoginResult } from "./protocol.js";
+
+/** Ask the daemon whether it could register with `space`. Nothing is registered either way. */
+export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "uid"> & { readonly space: string }): Promise<
+  { readonly ok: true; readonly result: ConnectCheckResult } | { readonly ok: false; readonly code: string; readonly message: string }> {
+  const sock = await openVerified({ ...opts, timeoutMs: 5000 });
+  try {
+    sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: "connect-check", space: opts.space }));
+    // The daemon's own network read is bounded by the stock client (30 s); allow a little more.
+    const reply = JSON.parse(await readLine(sock, 35_000)) as DaemonResponse;
+    if (!reply.ok) return { ok: false, code: reply.error.code, message: reply.error.message };
+    if ("event" in reply || !("outcome" in reply.result) || !("space" in reply.result)) return { ok: false, code: "BAD_REPLY", message: "the daemon answered the connect check with something else" };
+    return { ok: true, result: reply.result };
+  } finally {
+    sock.destroy();
+  }
+}
 
 export interface ClientCounters {
   bytesWritten: number;
