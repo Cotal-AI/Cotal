@@ -126,7 +126,7 @@ jobs:
 
   smoke:
     if: ${{ github.event_name != 'workflow_dispatch' }}
-    needs: workspace-native
+    needs: [workspace-native, seat-native-linux-x64, seat-native-linux-arm64]
     name: smoke (shard ${{ matrix.shard }}/4)
     # Shard 2/4 runs ~39-40 min, so the previous 40 left a median margin of 15 seconds and
     # cancelled healthy runs (#1220 died at 40m18s). Sized at ~1.5x the slowest observed
@@ -198,6 +198,19 @@ jobs:
         env:
           WORKSPACE_NATIVE_X64: ${{ runner.temp }}/workspace-native-x64
           WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/workspace-native-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-native-linux-x64
+          path: ${{ runner.temp }}/seat-native-linux-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: seat-native-linux-arm64
+          path: ${{ runner.temp }}/seat-native-linux-arm64
+      - name: Assemble the seat SO_PEERCRED helpers
+        run: node scripts/seat-assemble-natives.mjs
+        env:
+          SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
       - name: Protocol & security smoke tests (shard ${{ matrix.shard }}/4)
         # The detector grades committed blobs. Earlier steps must not change inputs or execution hooks.
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
@@ -284,7 +297,8 @@ jobs:
 
   # The Windows identity binding needs an MSVC Developer Command Prompt, so it is built once here and
   # downloaded by the Windows platforms leg, as windows.yml does. The smoke shards take both
-  # architectures: their pack suites pack @cotal-ai/workspace, whose prepack requires the pair.
+  # architectures: their pack suites pack @cotal-ai/workspace and @cotal-ai/seat, whose prepacks
+  # require the pair.
   workspace-native:
     if: ${{ github.event_name != 'workflow_dispatch' }}
     uses: ./.github/workflows/workspace-native.yml
