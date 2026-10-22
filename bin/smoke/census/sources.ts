@@ -27,7 +27,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
 
@@ -255,11 +255,8 @@ function objectLiteral(sf: ts.SourceFile, node: ts.Expression): ts.ObjectLiteral
   return ts.isObjectLiteralExpression(node) ? node : undefined;
 }
 
-/** The auth service's HTTP routes: the keys of its route tables, string literals, the module's own
- *  string constants, or string properties of its constant objects (`CHAT_SESSION_PATHS.open`). A key
- *  that resolves to none of these fails the census rather than going uncounted. */
-export function authHttpItems(): CensusItem[] {
-  const file = "implementations/auth/src/service.ts";
+/** A module's string constants and the string properties of its constant objects, by name. */
+function moduleConstants(file: string): Map<string, string> {
   const sf = ts.createSourceFile(file, readFileSync(join(REPO, file), "utf8"), ts.ScriptTarget.Latest, true);
   const constants = new Map<string, string>();
   sf.forEachChild((node) => {
@@ -271,6 +268,31 @@ export function authHttpItems(): CensusItem[] {
         if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && ts.isStringLiteral(p.initializer)) constants.set(`${d.name.text}.${p.name.text}`, p.initializer.text);
     }
   });
+  return constants;
+}
+
+/** The auth service's HTTP routes: the keys of its route tables, string literals, the module's own
+ *  string constants, or string properties of its constant objects (`CHAT_SESSION_PATHS.open`), each
+ *  either declared in the module or imported by name from a sibling module. A key that resolves to
+ *  none of these fails the census rather than going uncounted. */
+export function authHttpItems(): CensusItem[] {
+  const file = "implementations/auth/src/service.ts";
+  const sf = ts.createSourceFile(file, readFileSync(join(REPO, file), "utf8"), ts.ScriptTarget.Latest, true);
+  const constants = moduleConstants(file);
+  const imports = new Map<string, { file: string; name: string }>();
+  for (const node of sf.statements) {
+    if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier) || !node.moduleSpecifier.text.startsWith("./")) continue;
+    const named = node.importClause?.namedBindings;
+    if (!named || !ts.isNamedImports(named)) continue;
+    const from = join(dirname(file), node.moduleSpecifier.text.replace(/\.js$/, ".ts"));
+    for (const el of named.elements) imports.set(el.name.text, { file: from, name: (el.propertyName ?? el.name).text });
+  }
+  const resolve = (name: string): string | undefined => {
+    if (constants.has(name)) return constants.get(name);
+    const [head, ...rest] = name.split(".");
+    const from = imports.get(head!);
+    return from && moduleConstants(from.file).get([from.name, ...rest].join("."));
+  };
   const routes = new Set<string>();
   const visit = (node: ts.Node): void => {
     if (ts.isNewExpression(node) && node.expression.getText(sf) === "Map" && node.arguments?.[0] && ts.isArrayLiteralExpression(node.arguments[0])) {
@@ -279,7 +301,7 @@ export function authHttpItems(): CensusItem[] {
         if (!key) continue;
         const name = ts.isIdentifier(key) ? key.text
           : ts.isPropertyAccessExpression(key) && ts.isIdentifier(key.expression) ? `${key.expression.text}.${key.name.text}` : undefined;
-        const text = ts.isStringLiteral(key) ? key.text : name === undefined ? undefined : constants.get(name);
+        const text = ts.isStringLiteral(key) ? key.text : name === undefined ? undefined : resolve(name);
         if (text === undefined) throw new Error(`${file}: route key ${key.getText(sf)} is not a string, a module string constant or a string property of a module constant object`);
         if (text.startsWith("/")) routes.add(text);
       }
