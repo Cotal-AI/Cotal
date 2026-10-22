@@ -185,8 +185,8 @@
  * run a build carries files a fresh clone does not. `node_modules`, `dist`, `build` and friends are
  * skipped, but a generated bundle landing outside those names is not: the Hermes sidecar at
  * `extensions/connector-hermes/plugin/cotal/_sidecar/` is gitignored build output and IS walked.
- * The bundle adds one outside-smoke call: a clean checkout has 286/214 and a built checkout has
- * 287/214. Its own one-site pin is required whenever that artifact exists. An EXACT count otherwise
+ * The bundle adds one outside-smoke call: a clean checkout has 307/233 and a built checkout has
+ * 308/233. Its own one-site pin is required whenever that artifact exists. An EXACT count otherwise
  * turns this divergence into a red that
  * depends on whether someone ran `pnpm bundle`, which is a property of a disk rather than of a
  * revision. Reading it is deliberate rather than an oversight, since that bundle SHIPS in the
@@ -455,7 +455,15 @@ const SEAMS: Seam[] = [
   // `tls`.
   // The audited source population is pinned per file in required-arg-sites.json. The generated
   // Hermes sidecar adds one separately pinned call after build, never a smoke-side call.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 286, untypecheckedSites: 214 },
+  // 286/214 -> 307/233: three landings added calls without updating required-arg-sites.json.
+  // Control-only local management (#4240, a9a78ecf6) adds the provisioner dial of an
+  // `execution: none` manager in implementations/manager/src/manager.ts and seven smoke-side calls:
+  // interactive-manager-selection two, local-no-execution four and local-no-execution-state one.
+  // Caller-bound keyed submission (#4242) adds the run-admitter store connection in
+  // implementations/auth/src/service.ts and ten smoke-side calls: keyed-review-client one,
+  // keyed-submission-client-provider two, keyed-review-window four and keyed-submission-native
+  // three. Host vitals (#4253) adds two in manager-service-invoke.smoke.ts. Every call states `tls`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 307, untypecheckedSites: 233 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
@@ -2613,8 +2621,8 @@ console.log("\nB. the seam, across every source the compiler may or may not read
 }
 check("the literal per-file census accounts for the source and smoke totals",
   Object.values(SITE_COUNTS).every((n) => Number.isSafeInteger(n) && n > 0)
-  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === 286
-  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === 214);
+  && Object.values(SITE_COUNTS).reduce((a, b) => a + b, 0) === 307
+  && Object.entries(SITE_COUNTS).filter(([file]) => file.includes("/smoke/")).reduce((n, [, count]) => n + count, 0) === 233);
 const files = sources(ROOT);
 check("the scan reached a source tree at all (a zero-file walk would pass every cell below)", files.length > 500, files.length);
 

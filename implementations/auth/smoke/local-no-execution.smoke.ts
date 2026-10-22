@@ -39,6 +39,8 @@ console.log = () => {};
 console.error = () => {};
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}interactive-primary-`));
 const home = join(root, "home");
+// The CLI children inherit this environment, so they must see only the suite's own COTAL_ keys.
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 process.env.COTAL_HOME = home;
 const configHome = join(root, "config");
 mkdirSync(configHome);
