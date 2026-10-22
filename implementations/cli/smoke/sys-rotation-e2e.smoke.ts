@@ -243,7 +243,7 @@ try {
   check("...and left no flat copy behind", !existsSync(legacyPath(SYSTEM_CREDS_FILES[0])) && !existsSync(legacyPath(SYSTEM_CREDS_FILES[1])));
   check("the migration is byte-preserving (a move, not a re-mint)", readFileSync(obsPath, "utf8") === expiredObs && readFileSync(evPath, "utf8") === expiredEv);
   const doc1 = cotal(["doctor", "auth"]);
-  check("`cotal doctor auth` exits 1 on the expired pair", doc1.code === 1, `code=${doc1.code} ${doc1.out.slice(-300)}`);
+  check("`cotal doctor auth` exits 5 on the expired pair", doc1.code === 5, `code=${doc1.code} ${doc1.out.slice(-300)}`);
   check("`cotal doctor auth` names both $SYS files as EXPIRED", doc1.out.includes(SYSTEM_CREDS_FILES[0]) && doc1.out.includes(SYSTEM_CREDS_FILES[1]) && /EXPIRED/.test(doc1.out), doc1.out.slice(-400));
   check("`cotal doctor auth` prints `--rotate-sys` as the repair", /--rotate-sys/.test(doc1.out), doc1.out.slice(-400));
 
@@ -251,8 +251,8 @@ try {
   console.log("\n2) traffic and durable state before any rotation");
   const NONCE = `sysrot-${randomUUID()}`;
   const CH = `survive-${RUN}`;
-  const sent = cotal(["send", "msg", "general", NONCE, "--space", SPACE, "--server", SERVERS]);
-  check("`cotal send msg` exits 0 on the expiring mesh", sent.code === 0, sent.out.slice(-400));
+  const sent = cotal(["send", "-c", "general", NONCE, "--space", SPACE, "--server", SERVERS]);
+  check("`cotal send -c` exits 0 on the expiring mesh", sent.code === 0, sent.out.slice(-400));
   const set = cotal(["channel", "set", CH, "--desc", NONCE, "--space", SPACE, "--server", SERVERS]);
   check("`cotal channel set` writes durable registry state", set.code === 0, set.out.slice(-400));
   const list1 = cotal(["channel", "--space", SPACE, "--server", SERVERS]);
@@ -279,7 +279,7 @@ try {
   check("it left the observer cred BYTE-IDENTICAL (still expired)", readFileSync(obsPath, "utf8") === expiredObs);
   check("it left the evictor cred BYTE-IDENTICAL (still expired)", readFileSync(evPath, "utf8") === expiredEv);
   const doc2 = cotal(["doctor", "auth"]);
-  check("`cotal doctor auth` is still red after the advertised repair", doc2.code === 1, `code=${doc2.code} ${doc2.out.slice(-300)}`);
+  check("`cotal doctor auth` is still red after the advertised repair", doc2.code === 5, `code=${doc2.code} ${doc2.out.slice(-300)}`);
 
   // ── 4) the repair that works ───────────────────────────────────────────────────────────────────
   console.log("\n4) `down` + `up --rotate-sys`");
