@@ -3047,7 +3047,7 @@ The endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. Without `XDG_RUNTIME_DIR` 
 that is a symlink, not a directory, not owned by you, or not mode `0700`. `status` also refuses
 `PERMISSION_DENIED` for an endpoint entry that is not a socket, not yours, or not mode `0600`.
 The daemon drops connections from other users. The kernel separates users, not processes of one
-user: any process running as you can read the status.
+user: any process running as you can use the local controls, including sign-in and cancellation.
 
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`). `serve` refuses
 `CONFLICT` (`ALREADY_RUNNING`) for any existing socket, including one left after a crash, and
@@ -3064,10 +3064,12 @@ session token crosses the endpoint or reaches the terminal. `--idp` takes an HTT
 HTTP loopback IP URL; `--client-id` defaults to `cotal-cli`.
 
 One sign-in runs at a time: a second `login` refuses `CONFLICT` (`LOGIN_IN_PROGRESS`) without
-contacting the provider. Ctrl-C, or the command's connection closing, cancels the sign-in on this
-machine and saves nothing, even after approval. It revokes nothing at the provider. A cancel
-reports `USAGE_INVALID` (`CANCELLED`). A denied or expired approval refuses `PERMISSION_DENIED`
-(`DENIED` or `EXPIRED`), and an unreachable provider refuses `DEPENDENCY_UNAVAILABLE`
+contacting the provider. Ctrl-C, or the command's connection closing, requests cancellation on this
+machine. If cancellation takes effect before persistence, nothing is saved, even if device approval
+already happened. An already-completed attempt remains completed; cancellation revokes nothing
+at the provider. A cancelled attempt reports `USAGE_INVALID` (`CANCELLED`). A denied or expired
+approval refuses `PERMISSION_DENIED` (`DENIED` or `EXPIRED`), and an unreachable provider refuses
+`DEPENDENCY_UNAVAILABLE`
 (`UNREACHABLE`); none of these saves a session. Any other provider answer fails `OPERATION_FAILED`
 (`REFUSED`). Such a failure can come after the session was saved, so run `login` again. A failure
 is reported with a fixed sentence; the provider's own error text is never relayed. `status`
