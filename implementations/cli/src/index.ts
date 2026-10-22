@@ -144,7 +144,7 @@ const baseCommands: Command[] = [
     subcommands: [
       { name: "off", summary: "send nothing", usage: "cotal telemetry off [--json|--plain]", outputs: ["json", "plain"] },
       { name: "minimal", summary: "send the command name, outcome, version and platform only", usage: "cotal telemetry minimal [--json|--plain]", outputs: ["json", "plain"] },
-      { name: "regular", aliases: ["on"], summary: "also send the subcommand, flag names, error code, terminal kind and a daily install summary", usage: "cotal telemetry regular [--json|--plain]", outputs: ["json", "plain"] },
+      { name: "regular", aliases: ["on"], summary: "also send the subcommand, flag names, error code and masked error text, terminal kind and a daily install summary", usage: "cotal telemetry regular [--json|--plain]", outputs: ["json", "plain"] },
     ],
     flags: telemetryFlags,
     outputs: ["json", "plain"],

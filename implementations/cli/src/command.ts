@@ -43,7 +43,7 @@ import { metadataPositionals } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
 import { ConfirmationRequired } from "./lib/confirmation-required.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
-import { armTelemetry, recordTelemetryFailure } from "./telemetry.js";
+import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
 
 /** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
 function asksForHelp(args: readonly string[]): boolean {
@@ -102,7 +102,7 @@ function asksForJson(cmd: Command, args: readonly string[]): boolean {
  *  for, and the exit code its outcome sets. The envelope is written synchronously, because stdout
  *  to a pipe is asynchronous on some platforms and `exit` would cut it short. */
 function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false): never {
-  recordTelemetryFailure(failure.outcome, failure.code);
+  recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
   // missing --yes is not a grammar mistake, and its remedy says the whole fix.
   if (failure.code === "USAGE_INVALID" && !json) {
@@ -241,7 +241,7 @@ function usageExit(message: string, cmd?: Command, json = false): never {
   // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
   // the remedy names stays out of it.
   if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: `run \`cotal help ${cmd.name}\`` }), true);
-  recordTelemetryFailure("refused", "USAGE_INVALID");
+  recordTelemetryFailure("refused", "USAGE_INVALID", message);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
   stderrLine("✗ ", message, c.red);
@@ -477,6 +477,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       await cmd.run(parsed);
     });
   } catch (e) {
+    recordTelemetryError(e);
     const mode = parsed.positionals[0];
     const json = structured(cmd, mode) && parsed.values.json === true;
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.

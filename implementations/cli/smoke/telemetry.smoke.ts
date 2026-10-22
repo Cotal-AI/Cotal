@@ -84,7 +84,7 @@ const settled = () => wait(150);
 
 const COMMON = ["v", "installId", "level", "event", "version", "os", "arch", "node", "ci"];
 const MINIMAL = [...COMMON, "command", "outcome", "exitCode", "durationMs"];
-const REGULAR = [...MINIMAL, "subcommand", "flags", "errorCode", "interactive", "shell", "terminal"];
+const REGULAR = [...MINIMAL, "subcommand", "flags", "errorCode", "errorMessage", "errorStack", "interactive", "shell", "terminal"];
 const INSTALL = [...COMMON, "osRelease", "packageManager", "installMethod", "connectors", "extensions", "runtimes", "meshes", "hostedMesh", "uptimeDays"];
 
 // ---- regular: the first command of the day sends the install event, then its own ----
@@ -99,7 +99,7 @@ const INSTALL = [...COMMON, "osRelease", "packageManager", "installMethod", "con
   check("the install event has exactly the documented keys", sameKeys(install, INSTALL), keysOf(install));
   check("the install event reports this install", install?.installId === file.installId && install?.level === "regular" && install?.installMethod === "unknown" && Array.isArray(install?.connectors) && install?.meshes === 0 && install?.hostedMesh === false && install?.uptimeDays === 0, install);
   check("the command event has exactly the regular keys", sameKeys(command, REGULAR), keysOf(command));
-  check("the command event names the command and its outcome", command?.command === "version" && command?.outcome === "ok" && command?.exitCode === 0 && command?.errorCode === null && command?.subcommand === null && Array.isArray(command?.flags) && (command?.flags as unknown[]).length === 0, command);
+  check("the command event names the command and its outcome", command?.command === "version" && command?.outcome === "ok" && command?.exitCode === 0 && command?.errorCode === null && command?.errorMessage === null && command?.errorStack === null && command?.subcommand === null && Array.isArray(command?.flags) && (command?.flags as unknown[]).length === 0, command);
   check("…with the platform facts", command?.os === process.platform && command?.arch === process.arch && command?.node === Number.parseInt(process.versions.node, 10) && command?.ci === false && command?.interactive === false && command?.shell === "zsh" && command?.terminal === "smoke-term" && typeof command?.version === "string" && typeof command?.durationMs === "number", command);
   check("the file records the install event's day and no notice (stderr was not a terminal)", typeof file.lastInstallEventAt === "string" && file.noticeShownAt === undefined, file);
   check("no notice is printed when stderr is not a terminal", !first.stderr.includes("Cotal collects"), shown(first));
@@ -131,9 +131,12 @@ const INSTALL = [...COMMON, "osRelease", "packageManager", "installMethod", "con
   const error = ps.envelope?.error as Body | undefined;
   check("control: ps with no mesh is refused with a typed code", ps.status === 2 && ps.envelope?.outcome === "refused" && typeof error?.code === "string", shown(ps));
   check("a refused command's event carries the outcome and the typed error code", ps.sent.length === 1 && ps.sent[0]?.outcome === "refused" && ps.sent[0]?.errorCode === error?.code && ps.sent[0]?.exitCode === 2, ps.sent[0]);
+  check("…and the refusal's message, with no path in it", typeof ps.sent[0]?.errorMessage === "string" && (ps.sent[0]!.errorMessage as string).length > 0 && !(ps.sent[0]!.errorMessage as string).includes(s.home) && !/\/[\w.-]+\/[\w.-]+/.test(ps.sent[0]!.errorMessage as string), ps.sent[0]?.errorMessage);
+  check("…and a stack whose frames name no directory outside node_modules", typeof ps.sent[0]?.errorStack === "string" && /^at /.test(ps.sent[0]!.errorStack as string) && !(ps.sent[0]!.errorStack as string).includes(s.home) && !/\(\/|\(file:/.test(ps.sent[0]!.errorStack as string), ps.sent[0]?.errorStack);
   const usage = await s.run(["ext", "frobnicate"]);
   await settled();
   check("a usage refusal is an event too: refused, USAGE_INVALID, exit 1", usage.status === 1 && usage.sent.length === 1 && usage.sent[0]?.outcome === "refused" && usage.sent[0]?.errorCode === "USAGE_INVALID" && usage.sent[0]?.subcommand === null, { ...shown(usage), sent: usage.sent });
+  check("…whose message masks the unknown word the user typed", typeof usage.sent[0]?.errorMessage === "string" && !(usage.sent[0]!.errorMessage as string).includes("frobnicate") && (usage.sent[0]!.errorMessage as string).includes("<value>"), usage.sent[0]?.errorMessage);
   const unknown = await s.run(["frobnicate"]);
   await settled();
   check("an unknown command word names no command and sends nothing", unknown.status === 1 && unknown.sent.length === 0, shown(unknown));
