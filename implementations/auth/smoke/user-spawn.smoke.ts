@@ -946,14 +946,19 @@ try {
     }
   }
   const missing = await cliResult(["invoke", "manager", "attach", "--name", "missing", "--space", SPACE]);
+  // The manager answers the attach target's inspection with not-found; a denied ps scan would be a
+  // PERMISSION_DENIED that no instance answered.
   check("a nonexistent generic --name target is refused by its inspect resolution, not the denied manager ps scan",
-    !missing.timedOut && missing.status !== 0 && /could not resolve "missing"|no agent/i.test(missing.plain), missing);
+    !missing.timedOut && missing.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(missing.plain) && /Native command:\s+attach/.test(missing.plain) &&
+      /Native code:\s+not-found/.test(missing.plain) && /Answering instance:/.test(missing.plain), missing);
+  // The broker refuses the publish, so the call is not executed and no manager instance answers it.
+  const brokerDenied = (r: { plain: string; status: number | null; timedOut: boolean }) =>
+    !r.timedOut && r.status === 2 && /Code:\s+PERMISSION_DENIED/.test(r.plain) && /Native code:\s+permission-denied/.test(r.plain) &&
+      /Native outcome:\s+not-executed/.test(r.plain) && !/Answering instance:/.test(r.plain);
   const deniedRead = await cliResult(["invoke", "manager", "ps", "--space", SPACE, "--timeout", "1000"]);
-  check("the shipped CLI leaves manager.read denied to a spawn-scoped user bearer",
-    !deniedRead.timedOut && deniedRead.status !== 0 && /permission-denied: .*REFUSED BY THE BROKER/.test(deniedRead.plain), deniedRead);
+  check("the shipped CLI leaves manager.read denied to a spawn-scoped user bearer", brokerDenied(deniedRead), deniedRead);
   const deniedAdmin = await cliResult(["invoke", "manager", "purge", "--args", "{}", "--space", SPACE, "--timeout", "1000"]);
-  check("the shipped CLI leaves manager.admin denied to a spawn-scoped user bearer",
-    !deniedAdmin.timedOut && deniedAdmin.status !== 0 && /permission-denied: .*REFUSED BY THE BROKER/.test(deniedAdmin.plain), deniedAdmin);
+  check("the shipped CLI leaves manager.admin denied to a spawn-scoped user bearer", brokerDenied(deniedAdmin), deniedAdmin);
   // `who` asks the same denied manager.read for the managed column. The roster is still this bearer's
   // to read, so the denial labels that column rather than failing or partialling the run.
   const deniedWho = await cliResult(["who", "--json", "--space", SPACE]);
@@ -968,7 +973,7 @@ try {
   grantActor(dir, { ...cliRow0, scope: [] });
   try {
   const nativeText = `narrow native history ${Date.now()}`;
-  const postedHistory = await cliResult(["send", "msg", "general", nativeText, "--space", SPACE]);
+  const postedHistory = await cliResult(["send", "-c", "general", nativeText, "--space", SPACE]);
   check("narrow user sends its own history fixture message", postedHistory.status === 0 && !postedHistory.timedOut, postedHistory);
   const parseHistory = (r: { out: string }) => {
     try { return JSON.parse(r.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as {

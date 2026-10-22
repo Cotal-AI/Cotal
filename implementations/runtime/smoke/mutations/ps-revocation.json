@@ -151,8 +151,8 @@
     {
       "name": "the writer accepts a revocation with an empty by and reason",
       "file": "packages/core/src/run-admission.ts",
-      "find": "  if (snap.by.length === 0 || snap.reason.length === 0)",
-      "replace": "  if (false)",
+      "find": "  if (snap.by.length === 0 || snap.reason.length === 0)\n    throw new Error(`run revocation of ${snap.runId} names who revoked it and why; by and reason must be non-empty`);",
+      "replace": "  if (false)\n    throw new Error(`run revocation of ${snap.runId} names who revoked it and why; by and reason must be non-empty`);",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-run-command",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "cell": "revoke refuses an empty --by and --reason",

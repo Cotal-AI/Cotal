@@ -1095,6 +1095,20 @@ function meshesSections(m: StatusResult["meshes"]): Section[] {
   return sections;
 }
 
+/** The selected space's delivery responder (#1576). Bare status and the verbose mesh section both
+ *  state it, so an operator on a manager host away from the broker's folder still sees it. */
+function responderText(state: DeliveryResponderState | null): { text: string; tone: Tone } | undefined {
+  if (state === "unbound")
+    return { text: `NOT BOUND - ${RESPONDER_UNBOUND_CONSEQUENCE} · start it with \`${displayCmd()} up\` (or \`${displayCmd()} deliver --space <space>\`)`, tone: "failed" };
+  // A stale record is NOT BOUND with a different next move: the slot is occupied by a corpse, so
+  // starting a daemon now loses the single-flight CAS. Say that, rather than sending the operator
+  // into a refusal they will read as a second failure.
+  if (state === "stale")
+    return { text: `NOT BOUND - a DEAD daemon's ready record still holds the lease - ${RESPONDER_UNBOUND_CONSEQUENCE} · it expires on its own; a replacement can then take the shard`, tone: "failed" };
+  if (state === "bound") return { text: "bound", tone: "ok" };
+  return undefined;
+}
+
 function selectedSection(s: SelectedResult): Section {
   if (!s.resolved) return { title: "Selected Mesh", blocks: [{ kind: "fields", rows: [["target", cell(s.code, "failed")]] }] };
   const rows: [string, Cell][] = [
@@ -1123,14 +1137,8 @@ function selectedSection(s: SelectedResult): Section {
     }
   } else {
     rows.push(["connection", s.connection === "ok" ? cell("ok", "ok") : cell(`${s.connection}${s.staleRecord ? " (stale registry entry)" : ""}`, "failed")]);
-    if (s.deliveryResponder === "unbound")
-      rows.push(["delivery responder", cell(`NOT BOUND - ${RESPONDER_UNBOUND_CONSEQUENCE} · start it with \`${displayCmd()} up\` (or \`${displayCmd()} deliver --space <space>\`)`, "failed")]);
-    // A stale record is NOT BOUND with a different next move: the slot is occupied by a corpse, so
-    // starting a daemon now loses the single-flight CAS. Say that, rather than sending the operator
-    // into a refusal they will read as a second failure.
-    else if (s.deliveryResponder === "stale")
-      rows.push(["delivery responder", cell(`NOT BOUND - a DEAD daemon's ready record still holds the lease - ${RESPONDER_UNBOUND_CONSEQUENCE} · it expires on its own; a replacement can then take the shard`, "failed")]);
-    else if (s.deliveryResponder === "bound") rows.push(["delivery responder", cell("bound", "ok")]);
+    const responder = responderText(s.deliveryResponder);
+    if (responder) rows.push(["delivery responder", cell(responder.text, responder.tone)]);
   }
   if (s.snapshot.state === "unavailable" || (s.mode === "user" && s.snapshot.state === "skipped")) rows.push(["live snapshot", cell(`${s.snapshot.state === "unavailable" ? "unavailable" : "not read"} (${s.snapshot.reason})`, s.snapshot.state === "unavailable" ? "failed" : "hint")]);
   if (s.channels) rows.push(["channels", s.channels.length ? s.channels.map((ch) => `${ch.channel}(${ch.messages})`).join(", ") : "none"]);
@@ -1219,10 +1227,13 @@ function brokerOverview(r: StatusResult): Section {
 function selectedOverview(r: StatusResult): Section | undefined {
   const s = r.selected;
   if (!s.resolved) return { title: "Selected space", blocks: [{ kind: "lines", lines: [stateCell(s.message, "failed")] }] };
-  if (!r.meshes.items.length && !r.meshes.currentPrepared && r.folder.auth.state === "none" && !r.folder.processes?.some((item) => item.pid !== null)) return undefined;
+  // A broker named with `--server` is reported even when nothing on this machine is registered.
+  if (s.source !== "flag-server" && !r.meshes.items.length && !r.meshes.currentPrepared && r.folder.auth.state === "none" && !r.folder.processes?.some((item) => item.pid !== null)) return undefined;
+  const responder = responderText(s.deliveryResponder);
   const rows: [string, Cell][] = [
     ["Broker", s.server ?? stateCell("address unavailable", "failed")],
     ["Connection", connectionCell(s)],
+    ...(responder ? [["Delivery responder", stateCell(responder.text, responder.tone)] as [string, Cell]] : []),
     ["Access", s.mode === "user" ? "user sign-in" : s.mode === "auth" ? "static auth" : "open"],
     ["Project", s.root],
     ["Default agent", r.machine.defaults ? `${r.machine.defaults.harness ?? "application not set"} · persona ${r.machine.defaults.persona ?? "not set"}` : stateCell("saved defaults could not be read", "failed")],

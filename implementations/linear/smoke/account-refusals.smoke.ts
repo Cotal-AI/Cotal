@@ -3,9 +3,10 @@
  * record and a Linear service whose account has no record both refuse with TARGET_NOT_FOUND and the
  * account-add route. The service refusal comes from its launch plan, so no child is ever started. A
  * record that exists but cannot be read stays DEPENDENCY_UNAVAILABLE, and a recorded account still
- * produces a launch plan. A definition whose envRefs set HOME refuses before any account read while
- * COTAL_HOME is unset, because the child would read its account under that HOME; with COTAL_HOME set
- * the child inherits it, and the same definition plans.
+ * produces a launch plan. A definition whose envRefs set the variable the Cotal home falls back to
+ * (HOME on POSIX, LOCALAPPDATA on Windows) refuses before any account read while COTAL_HOME is unset,
+ * because the child would read its account under that home; with COTAL_HOME set the child inherits
+ * it, and the same definition plans.
  *
  * Run: pnpm smoke:linear-accounts   (needs `pnpm build` of core and workspace first)
  */
@@ -18,7 +19,7 @@ import { join } from "node:path";
 const home = mkdtempSync(join(tmpdir(), "linear-accounts-smoke-"));
 process.env.COTAL_HOME = join(home, "cotal");
 process.env.HOME = home;
-const { isCommandFailure, recordMesh } = await import("@cotal-ai/workspace");
+const { homeCotalDirFallbacks, isCommandFailure, recordMesh } = await import("@cotal-ai/workspace");
 const { linearDir, saveAccount, storedTokenPath } = await import("../src/account.js");
 const { accountForRead } = await import("../src/cli.js");
 const { linearService } = await import("../src/service-adapter.js");
@@ -60,16 +61,18 @@ try {
   const args = (plan as { args?: readonly string[] } | undefined)?.args ?? [];
   check("a recorded account still produces the native child's launch plan", recorded === undefined && args.includes("__service-linear") && args[args.indexOf("--account") + 1] === "present", recorded ?? args);
 
-  // The child inherits COTAL_HOME, so a HOME reference cannot move its Cotal home while it is set.
-  const pinned = await refusal(() => linearService.buildServiceLaunch!(context("present", { HOME: "SERVICE_HOME" })));
-  check("with COTAL_HOME set, a HOME reference still plans with the recorded account", pinned === undefined, pinned);
-  // Without COTAL_HOME the child's Cotal home follows its own HOME, which this process cannot read for it.
+  // The variable the Cotal home falls back to here: HOME on POSIX, LOCALAPPDATA on Windows.
+  const fallback = homeCotalDirFallbacks()[0]!;
+  // The child inherits COTAL_HOME, so a reference to that variable cannot move its Cotal home while it is set.
+  const pinned = await refusal(() => linearService.buildServiceLaunch!(context("present", { [fallback]: "SERVICE_HOME" })));
+  check(`with COTAL_HOME set, a ${fallback} reference still plans with the recorded account`, pinned === undefined, pinned);
+  // Without COTAL_HOME the child's Cotal home follows its own copy of that variable, which this process cannot read for it.
   const cotalHome = process.env.COTAL_HOME;
   delete process.env.COTAL_HOME;
   try {
     for (const account of ["present", "nosuch"]) {
-      const moved = await refusal(() => linearService.buildServiceLaunch!(context(account, { HOME: "SERVICE_HOME" })));
-      check(`without COTAL_HOME, a HOME reference refuses before reading account "${account}"`, moved?.code === "UNSUPPORTED" && moved.message.includes("envRefs set HOME") && moved.remedy?.includes("COTAL_HOME") === true, moved);
+      const moved = await refusal(() => linearService.buildServiceLaunch!(context(account, { [fallback]: "SERVICE_HOME" })));
+      check(`without COTAL_HOME, a ${fallback} reference refuses before reading account "${account}"`, moved?.code === "UNSUPPORTED" && moved.message.includes(`envRefs set ${fallback}`) && moved.remedy?.includes("COTAL_HOME") === true, moved);
     }
   } finally { process.env.COTAL_HOME = cotalHome; }
   for (const dir of [root, stateDirectory]) rmSync(dir, { recursive: true, force: true });

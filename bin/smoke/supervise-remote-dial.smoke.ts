@@ -229,7 +229,7 @@ try {
   // websocket broker as a STATIC mesh - the mode `cotal run` is reachable on at all.
   recordMesh({ space, server: wsServer, root, mode: "auth", ts: new Date().toISOString() });
   const runLine = await runPs();
-  ok("E: `cotal run ps --local` opens its run planes over the recorded ws:// broker", runLine === `no workflow runs recorded in space ${space}`, runLine);
+  ok("E: `cotal run ps --local` opens its run planes over the recorded ws:// broker", new RegExp(`Workflow runs\\n\\s+Space:\\s+${space}\\n\\s+No workflow runs in this authorized record view\\.`).test(runLine), runLine);
 
   // A remote-authority manager never reads local signing trust (#1944). These cells run the
   // SHIPPED command — `tsx bin/cotal.ts supervise --space <space>` as a child, cwd = a per-cell

@@ -94,7 +94,7 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
     stuck: true,
   };
   const agent = agentStub({
-    roster: [presence("BOBID00000000000000000000000000000000000000", "bob", "worker")],
+    roster: [presence("BOBID00000000000000000000000000000000000000", "bob", "worker", "working")],
     presenceWriteFailure: failure,
   });
   const text = renderOrientation(buildOrientation(agent, cfg({ creds: "CREDS" }), [], 1));
@@ -104,6 +104,8 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   const result = await roster.run(agent, cfg({ creds: "CREDS" }), {});
   assert.match(result.text, /Presence view is NOT LIVE/,
     "cotal_roster labels its rows as last-known while this endpoint's presence writer is stuck");
+  assert.match(result.text, /bob\b[^\n]* — working[^\n]* · progress unknown/,
+    "cotal_roster names a working peer's progress as unknown");
 }
 
 // 4c — #1229: the roster's trust state is part of the rendering. An `unpopulated` view is a

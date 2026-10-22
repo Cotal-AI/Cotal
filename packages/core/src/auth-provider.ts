@@ -319,7 +319,10 @@ export interface AuthProvider extends Extension {
    * the session cache. The transport discipline is the provider's too: redirects are refused
    * (a 302 could walk the proof onto another host), and every failure MUST throw one sentence
    * with the exact operator action — not signed in names the `cotal login --idp …` line, an
-   * endpoint refusal surfaces the endpoint's own reason. The caller owns validating the returned
+   * endpoint refusal surfaces the endpoint's own reason. No sign-in throws with `code`
+   * `"signed-out"`, before any request. A failure after the request carries no such code, an
+   * endpoint 401 or 403 included: the endpoint is the deployment's, and nothing pins what its
+   * refusal left behind. The caller owns validating the returned
    * material's shape; this method proves and carries, it does not interpret. Optional: a
    * provider without a remote-provisioning story simply lacks it, and the caller refuses with
    * its own named message.

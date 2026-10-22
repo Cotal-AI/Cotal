@@ -45,7 +45,7 @@
     {
       "name": "route keys held in module constants are no longer resolved",
       "file": "bin/smoke/census/sources.ts",
-      "find": "        const text = ts.isStringLiteral(key) ? key.text : name === undefined ? undefined : constants.get(name);\n        if (text === undefined) throw",
+      "find": "        const text = ts.isStringLiteral(key) ? key.text : name === undefined ? undefined : resolve(name);\n        if (text === undefined) throw",
       "replace": "        const text = ts.isStringLiteral(key) ? key.text : \"\";\n        if (text === undefined) throw",
       "expectRed": "auth routes keyed by a module constant are census items",
       "cell": "auth routes keyed by a module constant are census items"

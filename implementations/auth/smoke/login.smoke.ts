@@ -125,6 +125,49 @@ console.log("A) one-shot remote enrollment client");
   if (priorHome !== undefined) process.env.COTAL_HOME = priorHome;
 }
 
+// ---------- remote agent provisioning ----------
+console.log("A2) remote agent-provisioning client");
+{
+  let requests = 0;
+  const provisioningHome = mkdtempSync(join(tmpdir(), "cotal-provisioning-home-"));
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = provisioningHome;
+  // The path names the status the endpoint answers.
+  const provisioning = createServer((req, res) => {
+    requests++;
+    const status = Number(req.url?.slice(1));
+    res.statusCode = status;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(status === 200 ? { ok: true } : { error: `fixture_${status}` }));
+  });
+  await new Promise<void>((r) => provisioning.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(provisioning.address() as AddressInfo).port}`;
+  const idpUrl = `${base}/idp`;
+  const answer = async (status: number) => {
+    try {
+      await cotalAuthProvider.postAgentProvisioning!({ url: `${base}/${status}`, idpUrl, actor: "agent" });
+      return { code: "resolved", message: "" };
+    } catch (e) {
+      return { code: (e as { code?: unknown }).code, message: (e as Error).message };
+    }
+  };
+  const signedOut = await answer(403);
+  check("no sign-in is signed-out before any request", signedOut.code === "signed-out" && requests === 0 && signedOut.message.includes("cotal login --idp"));
+  saveIdpSession(provisioningHome, idpUrl, { token: "cached-login", expiresAt: Date.now() / 1000 + 600 });
+  const expired = await answer(401);
+  // The endpoint is the deployment's, and nothing pins what its refusal left behind.
+  check("an endpoint 401 carries no code and names the login", expired.code === undefined && expired.message.includes("fixture_401") && expired.message.includes("cotal login --idp"));
+  const denied = await answer(403);
+  check("an endpoint 403 carries no code and gives the endpoint's reason", denied.code === undefined && denied.message.includes("fixture_403"));
+  const failing = await answer(503);
+  check("an endpoint 503 carries no code", failing.code === undefined && failing.message.includes("fixture_503"));
+  check("a 200 answer resolves", (await answer(200)).code === "resolved");
+  check("each signed-in call sent one request", requests === 4);
+  provisioning.close();
+  delete process.env.COTAL_HOME;
+  if (priorHome !== undefined) process.env.COTAL_HOME = priorHome;
+}
+
 // ---------- the real Better Auth IdP ----------
 console.log("B) real Better Auth (jwt + deviceAuthorization + bearer), the happy chain");
 

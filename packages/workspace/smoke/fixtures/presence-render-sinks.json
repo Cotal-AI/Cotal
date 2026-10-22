@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 415,
-    "honest-text": 35,
+    "total": 619,
+    "honest-text": 37,
     "presence-only-glyph/count": 57,
-    "command-ack": 12,
-    "non-render/control": 311
+    "command-ack": 10,
+    "non-render/control": 515
   },
   "renderers": [
     {
@@ -52,7 +52,7 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
-      "anchor": "return r;",
+      "anchor": "s.delete(t.goalId);\n    return r;\n  }\n\n  /** Drop an acti",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -166,7 +166,7 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
-      "anchor": "\"waiting\" ? \"◐\" : s === \"idle\" ? \"○\" : \"·\";\n}\n\n/** One",
+      "anchor": "\"waiting\" ? \"◐\" : s === \"idle\" ? \"○\" : \"·\";\n}\n\n/** The",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -198,13 +198,6 @@
         "path": "extensions/connector-core/src/tool-specs.ts",
         "anchor": "const progress = p.status === \"working\" ? `working${condition} · progress unknown` : `${p.status}${condition}`;"
       }
-    },
-    {
-      "path": "extensions/connector-core/src/tool-specs.ts",
-      "kind": "derived-output",
-      "anchor": "`Present in \"${config.space}\" (${roster.length}):\\n${lines.join(\"\\n\")}`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
@@ -263,11 +256,11 @@
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/feedback.ts",
       "kind": "derived-output",
       "anchor": "`Feedback rejected (${res.status}${reply.error ? `: ${reply.error}` : \"\"}).`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "HTTP response plumbing: the feedback intake's status code in a rejection message; no agent presence is rendered."
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
@@ -300,20 +293,20 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`${preface}\\n\\n${rendered}`",
+      "anchor": "`${preface}Present in \"${config.space}\" (${roster.length}):\\n${lines.join(\"\\n\")}`",
       "class": "honest-text",
-      "rationale": "Textual presence status: composes the NOT-LIVE preface with the rendered roster, whose rows carry the explicit working progress uncertainty. #2083 split the single template into preface plus this composition, so the anchor moved here.",
+      "rationale": "Textual presence status: prefixes the NOT-LIVE preface onto the roster header and rows; the cited assertion runs the cotal_roster tool and checks that a working row names its progress as unknown.",
       "proof": {
         "path": "extensions/connector-core/smoke/orientation.smoke.ts",
-        "anchor": "assert.match(result.text, /Presence view is NOT LIVE/,"
+        "anchor": "assert.match(result.text, /bob\\b[^\\n]* — working[^\\n]* · progress unknown/,"
       }
     },
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
-      "anchor": "\"working\"",
+      "anchor": "nt\" };\n  if (r.mesh === \"working\") return { text: `workin",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Comparison operand that selects the ps mesh column's working branch, whose text names unknown progress; the token itself is not rendered."
     },
     {
       "path": "implementations/cli/src/commands/agents.ts",
@@ -428,7 +421,7 @@
     {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
-      "anchor": "`down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}`",
+      "anchor": "`down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}, and nothing was stopped`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -475,28 +468,6 @@
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/commands/endpoints.ts",
-      "kind": "derived-output",
-      "anchor": "`${c.bold(row.label.padEnd(labelWidth))}  ${c.dim(row.kind.padEnd(kindWidth))}  ${statusBadge(row.presence.status)}${condition}${activity}`",
-      "class": "honest-text",
-      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
-      "proof": {
-        "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
-      }
-    },
-    {
-      "path": "implementations/cli/src/commands/endpoints.ts",
-      "kind": "renderer-call",
-      "anchor": "statusBadge(row.presence.status)",
-      "class": "honest-text",
-      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
-      "proof": {
-        "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
-      }
-    },
-    {
       "path": "implementations/cli/src/commands/ext.ts",
       "kind": "derived-output",
       "anchor": "`npm intermediary terminated by ${closed.signal}`",
@@ -513,9 +484,9 @@
     {
       "path": "implementations/cli/src/commands/feedback.ts",
       "kind": "derived-output",
-      "anchor": "`Feedback rejected (${res.status}${reply.error ? `: ${reply.error}` : \"\"}).`",
+      "anchor": "`HTTP_${response.status}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "HTTP response plumbing: the feedback intake's status code as the failure cause; no agent presence is rendered."
     },
     {
       "path": "implementations/cli/src/commands/history.ts",
@@ -570,9 +541,9 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "status-token",
-      "anchor": "\"offline\"",
+      "anchor": "   else if (ev.type === \"offline\")\n      print(c.dim(`← $",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Comparison that routes the join feed's offline presence event to its went-offline line; the token itself is not rendered."
     },
     {
       "path": "implementations/cli/src/commands/join.ts",
@@ -717,13 +688,6 @@
     {
       "path": "implementations/cli/src/commands/meshes.ts",
       "kind": "derived-output",
-      "anchor": "`✗ ${disco} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get(\"location\") ?? \"\")}) - a redirect can move the fetch onto plaintext or onto another host, so it is refused rather than followed; publish the discovery document at the URL you pass`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/commands/meshes.ts",
-      "kind": "derived-output",
       "anchor": "`✗ ${disco} answered ${res.status} - no discovery document there`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
@@ -736,74 +700,18 @@
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/commands/personas.ts",
+      "path": "implementations/cli/src/lib/persona-files.ts",
       "kind": "derived-output",
-      "anchor": "`editor exited ${res.signal ? `on ${res.signal}` : `with status ${res.status}`} - not saved`",
+      "anchor": "`editor ${result.signal ? `ended on ${result.signal}` : `exited with status ${result.status}`} - not saved`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Persona editor failure: the editor process's exit signal or status in a not-saved message; process state, not agent presence."
     },
     {
-      "path": "implementations/cli/src/commands/personas.ts",
+      "path": "implementations/cli/src/lib/persona-files.ts",
       "kind": "derived-output",
-      "anchor": "`with status ${res.status}`",
+      "anchor": "`exited with status ${result.status}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/commands/send.ts",
-      "kind": "derived-output",
-      "anchor": "`  ${cand.name} (${cand.status})  ${cand.id}`",
-      "class": "command-ack",
-      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
-    },
-    {
-      "path": "implementations/cli/src/commands/send.ts",
-      "kind": "derived-output",
-      "anchor": "c.green(`→ ${peer.card.name}`) +\n      c.dim(`  stored seq ${ack.seq}; recipient ${peer.status} at send; delivery not confirmed  ${text}`)",
-      "class": "command-ack",
-      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
-    },
-    {
-      "path": "implementations/cli/src/commands/send.ts",
-      "kind": "derived-output",
-      "anchor": "`  stored seq ${ack.seq}; recipient ${peer.status} at send; delivery not confirmed  ${text}`",
-      "class": "command-ack",
-      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
-    },
-    {
-      "path": "implementations/cli/src/commands/setup.ts",
-      "kind": "derived-output",
-      "anchor": "`${mesh.server} · space ${mesh.space}`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/commands/setup.ts",
-      "kind": "derived-output",
-      "anchor": "`mesh     ${dim(meshLine)}`",
-      "class": "non-render/control",
-      "rationale": "Setup summary prints the selected mesh's reachability word, not any agent's presence or work progress."
-    },
-    {
-      "path": "implementations/cli/src/commands/setup.ts",
-      "kind": "derived-output",
-      "anchor": "`${mesh.server} · space ${mesh.space} · selected (not probed)`",
-      "class": "non-render/control",
-      "rationale": "Setup summary branch stating the mesh endpoint was selected without a reachability probe, not agent presence."
-    },
-    {
-      "path": "implementations/cli/src/commands/setup.ts",
-      "kind": "derived-output",
-      "anchor": "`${mesh.server} · space ${mesh.space} · unreachable`",
-      "class": "non-render/control",
-      "rationale": "Setup summary branch reporting the selected mesh endpoint unreachable, not any agent's presence or work progress."
-    },
-    {
-      "path": "implementations/cli/src/commands/spawn.ts",
-      "kind": "status-token",
-      "anchor": "\"offline\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Persona editor failure: the editor process's exit status; process state, not agent presence."
     },
     {
       "path": "implementations/cli/src/commands/up.ts",
@@ -1657,9 +1565,9 @@
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "`✓ running in the background: ${components.join(\", \")} - stop with: cotal down`",
+      "anchor": "`✓ running in the background: ${components.join(\", \")} - ${status.root ? `from ${oneLine(status.root)}, stop with: ${stop}` : `stop with: ${stop}`}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Up result line: lists the started components, the root and the stop command; status is the local stack record, not agent presence."
     },
     {
       "path": "implementations/cli/src/render.ts",
@@ -1933,14 +1841,14 @@
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "$(\"center\").innerHTML = `\n    <div class=\"ch-head\">\n      <div class=\"row\">\n        <div class=\"title\"><span class=\"h\"># ${esc(name)}</span>${sub ? `<span class=\"sub\">${esc(sub)}</span>` : \"\"}</div>\n        <div class=\"ctrls\">\n          ${toggleAllChip(items)}\n          <span class=\"chip mode on\">👥 ${plural(memberCount, \"member\")}</span>\n          ${policy.join(\"\")}\n          ${isDemo ? `<span class=\"chip static\" title=\"demo only\">✦ summarize</span><span class=\"chip static\" title=\"demo only\">🔕 mute</span>` : \"\"}\n          ${isDemo ? \"\" : `<span class=\"chip danger\" id=\"ch-del\" title=\"Delete this channel and all its messages\">🗑 delete</span>`}\n        </div>\n      </div>\n      <div class=\"purpose\">${purpose}</div>\n    </div>\n    ${orderNoticeHtml()}\n    <div class=\"clist\">${items.length ? items.map(cmsgHTML).join(\"\") : `<div class=\"empty\">no messages</div>`}</div>`",
+      "anchor": "$(\"center\").innerHTML = `\n    <div class=\"ch-head\">\n      <div class=\"row\">\n        <div class=\"title\"><span class=\"h\"># ${esc(name)}</span>${sub ? `<span class=\"sub\">${esc(sub)}</span>` : \"\"}</div>\n        <div class=\"ctrls\">\n          ${toggleAllChip(items)}\n          <span class=\"chip mode on\">👥 ${plural(memberCount, \"member\")}</span>\n          ${policy.join(\"\")}\n          ${isDemo ? `<span class=\"chip static\" title=\"demo only\">✦ summarize</span><span class=\"chip static\" title=\"demo only\">🔕 mute</span>` : \"\"}\n          ${isDemo || !channelDeleteSupported ? \"\" : `<span class=\"chip danger\" id=\"ch-del\" title=\"Delete this channel and all its messages\">🗑 delete</span>`}\n        </div>\n      </div>\n      <div class=\"purpose\">${purpose}</div>\n    </div>\n    ${orderNoticeHtml()}\n    <div class=\"clist\">${items.length ? items.map(cmsgHTML).join(\"\") : `<div class=\"empty\">no messages</div>`}</div>`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/web/src/web/app.js",
       "kind": "derived-output",
-      "anchor": "`\n    <div class=\"ch-head\">\n      <div class=\"row\">\n        <div class=\"title\"><span class=\"h\"># ${esc(name)}</span>${sub ? `<span class=\"sub\">${esc(sub)}</span>` : \"\"}</div>\n        <div class=\"ctrls\">\n          ${toggleAllChip(items)}\n          <span class=\"chip mode on\">👥 ${plural(memberCount, \"member\")}</span>\n          ${policy.join(\"\")}\n          ${isDemo ? `<span class=\"chip static\" title=\"demo only\">✦ summarize</span><span class=\"chip static\" title=\"demo only\">🔕 mute</span>` : \"\"}\n          ${isDemo ? \"\" : `<span class=\"chip danger\" id=\"ch-del\" title=\"Delete this channel and all its messages\">🗑 delete</span>`}\n        </div>\n      </div>\n      <div class=\"purpose\">${purpose}</div>\n    </div>\n    ${orderNoticeHtml()}\n    <div class=\"clist\">${items.length ? items.map(cmsgHTML).join(\"\") : `<div class=\"empty\">no messages</div>`}</div>`",
+      "anchor": "`\n    <div class=\"ch-head\">\n      <div class=\"row\">\n        <div class=\"title\"><span class=\"h\"># ${esc(name)}</span>${sub ? `<span class=\"sub\">${esc(sub)}</span>` : \"\"}</div>\n        <div class=\"ctrls\">\n          ${toggleAllChip(items)}\n          <span class=\"chip mode on\">👥 ${plural(memberCount, \"member\")}</span>\n          ${policy.join(\"\")}\n          ${isDemo ? `<span class=\"chip static\" title=\"demo only\">✦ summarize</span><span class=\"chip static\" title=\"demo only\">🔕 mute</span>` : \"\"}\n          ${isDemo || !channelDeleteSupported ? \"\" : `<span class=\"chip danger\" id=\"ch-del\" title=\"Delete this channel and all its messages\">🗑 delete</span>`}\n        </div>\n      </div>\n      <div class=\"purpose\">${purpose}</div>\n    </div>\n    ${orderNoticeHtml()}\n    <div class=\"clist\">${items.length ? items.map(cmsgHTML).join(\"\") : `<div class=\"empty\">no messages</div>`}</div>`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -2536,13 +2444,6 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "agent.setStatus(agent.status, activity)",
-      "class": "non-render/control",
-      "rationale": "Connector lifecycle: reapplies the recorded status while updating activity only; no rendering."
-    },
-    {
-      "path": "extensions/connector-core/src/tool-specs.ts",
-      "kind": "derived-output",
       "anchor": "agent.setStatus(status, activity)",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: publishes status and activity to the mesh; no rendering."
@@ -2637,13 +2538,6 @@
       "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `npm intermediary terminated by ${closed.signal}`\n        : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,\n    )",
       "class": "non-render/control",
       "rationale": "Terminal command plumbing: drives the spinner's closing state; the teardown output reports process state, not agent presence progress."
-    },
-    {
-      "path": "implementations/cli/src/commands/setup.ts",
-      "kind": "derived-output",
-      "anchor": "dim(meshLine)",
-      "class": "non-render/control",
-      "rationale": "Terminal command plumbing: dims the selected-mesh summary line; no agent status is printed here."
     },
     {
       "path": "implementations/cli/src/commands/update.ts",
@@ -2879,23 +2773,16 @@
     {
       "path": "implementations/cli/src/commands/doctor.ts",
       "kind": "status-token",
-      "anchor": "et authority: \"lease\" | \"offline\";\n\n    if (target) {\n   ",
+      "anchor": "\n  authority: \"lease\" | \"offline\" | null;\n  results: { fi",
       "class": "non-render/control",
-      "rationale": "Doctor renewal authority: declares whether the pass took the mesh lease or recorded an offline repair; not an agent presence status."
+      "rationale": "Doctor renewal authority type: declares whether the pass took the mesh lease or recorded an offline repair; not an agent presence status."
     },
     {
       "path": "implementations/cli/src/commands/doctor.ts",
       "kind": "status-token",
-      "anchor": "ace);\n      authority = \"offline\";\n    }\n\n    // A local ",
+      "anchor": "   observed.authority = \"offline\";\n    observed.attempted",
       "class": "non-render/control",
       "rationale": "Doctor renewal authority: records that the repair ran without the mesh lease; not an agent presence status."
-    },
-    {
-      "path": "implementations/cli/src/commands/doctor.ts",
-      "kind": "status-token",
-      "anchor": "ion}${rec.authority === \"offline\" ? c.dim(\" · offline\") :",
-      "class": "non-render/control",
-      "rationale": "Doctor renewal record: renders how the LAST RENEWAL PASS was authorised, not any agent's presence; the token matches only because the authority is spelled offline."
     },
     {
       "path": "implementations/cli/src/commands/who.ts",
@@ -3006,16 +2893,9 @@
     {
       "path": "implementations/cli/src/commands/completion.ts",
       "kind": "status-token",
-      "anchor": "ll ${s.shell}\\``, tone: \"waiting\" as const })),\n         ",
+      "anchor": "W[shell.shell]}`, tone: \"waiting\" as const })),\n         ",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/commands/completion.ts",
-      "kind": "indexed-map",
-      "anchor": "LOAD_NOW[status.shell]",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Completion report note: \"waiting\" is the color tone for the custom-wiring migration line, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/runtimes.ts",
@@ -3065,6 +2945,1562 @@
       "anchor": "b ${l.subject} --full`, \"waiting\")]);\n      else if (l.ac",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Anycast bookkeeping: counts the role's non-offline holders at send for the result; the status is a filter predicate, not rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "f\" } });\n    if (!r.ok) return r;\n    this.yieldedSincePu",
+      "class": "non-render/control",
+      "rationale": "Turn-yield control flow: returns the manager's refusal to the caller early; the status is a request field, not a rendered presence status."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Comparison that chooses whether the DM acknowledgement appends the offline-delivery note; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/chat-view.tsx",
+      "kind": "status-token",
+      "anchor": "tice ? addNotice(first, \"waiting\", notice) : first;\n  });",
+      "class": "non-render/control",
+      "rationale": "Chat view initial notice: \"waiting\" is the color tone for the opening notice, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/chat-view.tsx",
+      "kind": "status-token",
+      "anchor": " \"refused\" ? \"failed\" : \"waiting\", `roster ${roster.outco",
+      "class": "non-render/control",
+      "rationale": "Chat view roster-failure notice: \"waiting\" is the color tone for a roster call that did not refuse; not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/chat-view.tsx",
+      "kind": "status-token",
+      "anchor": "rning) s = addNotice(s, \"waiting\", warning);\n    update(s",
+      "class": "non-render/control",
+      "rationale": "Chat view recipient disclosure notice: \"waiting\" is the notice's color tone, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/controller.ts",
+      "kind": "derived-output",
+      "anchor": "session.setStatus(command.status, command.activity)",
+      "class": "non-render/control",
+      "rationale": "Chat /status dispatch: applies the user's own requested status to the session; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/chat/controller.ts",
+      "kind": "derived-output",
+      "anchor": "`${oneLine(personLabel(r, shared))} · ${r.sessionKind === \"chat\" ? \"human session\" : oneLine(r.kind)}${r.role ? ` · ${oneLine(r.role)}` : \"\"} · ${r.status === \"working\" ? \"working · progress unknown\" : r.status}${r.activity ? ` · ${oneLine(r.activity)}` : \"\"}`",
+      "class": "honest-text",
+      "rationale": "Chat /who roster line: a working peer reads \"working · progress unknown\"; the cited output assertion checks the rendered line.",
+      "proof": {
+        "path": "implementations/cli/smoke/chat-pure.smoke.ts",
+        "anchor": "check(\"/who names a working peer's progress as unknown\""
+      }
+    },
+    {
+      "path": "implementations/cli/src/chat/controller.ts",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "non-render/control",
+      "rationale": "Comparison operand that selects the /who roster line's working branch, whose text names unknown progress; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/native-session.ts",
+      "kind": "status-token",
+      "anchor": "pe: \"join\" | \"update\" | \"offline\"; presence: Presence }) ",
+      "class": "non-render/control",
+      "rationale": "Chat session presence handler type: \"offline\" is a presence event type in the listener signature; not rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/native-session.ts",
+      "kind": "status-token",
+      "anchor": " \"joined\" : ev.type === \"offline\" ? \"left\" : \"updated\" })",
+      "class": "non-render/control",
+      "rationale": "Chat session event shaping: maps the presence event type to a joined, left or updated change; the token is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/native-session.ts",
+      "kind": "status-token",
+      "anchor": "\"idle\"",
+      "class": "non-render/control",
+      "rationale": "Chat session API signature: the status union the user may set; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/chat/native-session.ts",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "non-render/control",
+      "rationale": "Chat session API signature: the status union the user may set; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/chat/native-session.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Chat session API signature: the status union the user may set; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/chat/native-session.ts",
+      "kind": "derived-output",
+      "anchor": "this.inputs.endpoint.setStatus(status)",
+      "class": "non-render/control",
+      "rationale": "Chat session lifecycle: publishes the user's own status update to the endpoint; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/chat/picker.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Chat recipient picker filter: skips self and offline rows; the comparison token is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/picker.ts",
+      "kind": "derived-output",
+      "anchor": "`${row.sessionKind === \"chat\" ? \"human session\" : oneLine(row.kind)}${row.role ? ` · ${oneLine(row.role)}` : \"\"} · ${row.status === \"working\" ? \"working · progress unknown\" : row.status}`",
+      "class": "honest-text",
+      "rationale": "Chat recipient picker detail: a working peer reads \"working · progress unknown\"; the cited output assertion checks the rendered detail.",
+      "proof": {
+        "path": "implementations/cli/smoke/chat-pure.smoke.ts",
+        "anchor": "check(\"the picker names a working peer's progress as unknown\""
+      }
+    },
+    {
+      "path": "implementations/cli/src/chat/picker.ts",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "non-render/control",
+      "rationale": "Comparison operand that selects the picker detail's working branch, whose text names unknown progress; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/plain.ts",
+      "kind": "status-token",
+      "anchor": " \"refused\" ? \"failed\" : \"waiting\", `roster ${roster.outco",
+      "class": "non-render/control",
+      "rationale": "Plain chat roster-failure notice: \"waiting\" is the color tone for a roster call that did not refuse; the text names the call outcome, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/plain.ts",
+      "kind": "status-token",
+      "anchor": "tate = addNotice(state, \"waiting\", warning);\n    mode = {",
+      "class": "non-render/control",
+      "rationale": "Plain chat recipient disclosure notice: \"waiting\" is the notice's color tone, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/plain.ts",
+      "kind": "status-token",
+      "anchor": "tate = addNotice(state, \"waiting\", \"not connected: nothin",
+      "class": "non-render/control",
+      "rationale": "Plain chat send-blocked notice: \"waiting\" is the color tone; the text is about this session's connection, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/plain.ts",
+      "kind": "status-token",
+      "anchor": "tate = addNotice(state, \"waiting\", `draft is at its ${MAX",
+      "class": "non-render/control",
+      "rationale": "Plain chat draft-limit notice: \"waiting\" is the color tone; the text is about the local draft, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/plain.ts",
+      "kind": "status-token",
+      "anchor": "tate = addNotice(state, \"waiting\", \"not connected: only /",
+      "class": "non-render/control",
+      "rationale": "Plain chat offline-command notice: \"waiting\" is the color tone; the text is about this session's connection, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/session.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Chat session interface signature: excludes offline from the statuses the user may set; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/chat/static-session.ts",
+      "kind": "derived-output",
+      "anchor": "mintControlInstrument(mesh, \"privileged\", instanceId)",
+      "class": "non-render/control",
+      "rationale": "Static chat control path: mints the manager control instrument for the pinned space record (mesh); no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/static-session.ts",
+      "kind": "derived-output",
+      "anchor": "preflightOrThrow(mesh, undefined, true)",
+      "class": "non-render/control",
+      "rationale": "Static chat control path: runs the broker preflight for the pinned space record after a failed call; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/static-session.ts",
+      "kind": "derived-output",
+      "anchor": "askPinned(mesh, \"chatSessionOpen\", {\n      subscribe, allowSubscribe: [...(options.allowSubscribe ?? [])], allowPublish, label: options.label, ttl: STATIC_CHAT_TTL_SEC, sealTo: recipient.publicKey,\n    }, options.instanceId)",
+      "class": "non-render/control",
+      "rationale": "Static chat control path: asks the pinned manager to open the chat session; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/static-session.ts",
+      "kind": "derived-output",
+      "anchor": "managerFailure(reply, \"chat-session-open\", { space: mesh.space })",
+      "class": "non-render/control",
+      "rationale": "Static chat control path: turns a refused session-open reply into a command failure; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/static-session.ts",
+      "kind": "derived-output",
+      "anchor": "askPinned(mesh, \"chatSessionRetire\", { alias: slot.alias, actor: slot.actor, lifecycleUid: slot.lifecycleUid }, managerInstanceId)",
+      "class": "non-render/control",
+      "rationale": "Static chat control path: asks the pinned manager to retire the chat session; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/static-session.ts",
+      "kind": "derived-output",
+      "anchor": "retireReport(answer, managerInstanceId, slot.expiresAt)",
+      "class": "non-render/control",
+      "rationale": "Static chat control path: shapes the manager's retire answer into the close report; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/static-session.ts",
+      "kind": "derived-output",
+      "anchor": "return session;",
+      "class": "non-render/control",
+      "rationale": "Static chat control path: returns the opened session to the caller; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/stdio.ts",
+      "kind": "status-token",
+      "anchor": "tring; readonly status: \"idle\" | \"working\" | \"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Chat stdio request type: the status union a program may set; a protocol shape, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/chat/stdio.ts",
+      "kind": "status-token",
+      "anchor": "adonly status: \"idle\" | \"working\" | \"waiting\"; readonly a",
+      "class": "non-render/control",
+      "rationale": "Chat stdio request type: the status union a program may set; a protocol shape, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/chat/stdio.ts",
+      "kind": "status-token",
+      "anchor": "s: \"idle\" | \"working\" | \"waiting\"; readonly activity?: st",
+      "class": "non-render/control",
+      "rationale": "Chat stdio request type: the status union a program may set; a protocol shape, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/chat/stdio.ts",
+      "kind": "status-token",
+      "anchor": "s;\n      if (status !== \"idle\" && status !== \"working\"",
+      "class": "non-render/control",
+      "rationale": "Chat stdio request validation: compares the requested status to the settable values; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/stdio.ts",
+      "kind": "status-token",
+      "anchor": "== \"idle\" && status !== \"working\" && status !== \"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Chat stdio request validation: compares the requested status to the settable values; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/stdio.ts",
+      "kind": "status-token",
+      "anchor": "\"working\" && status !== \"waiting\")\n        return usage(i",
+      "class": "non-render/control",
+      "rationale": "Chat stdio request validation: compares the requested status to the settable values; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/stdio.ts",
+      "kind": "derived-output",
+      "anchor": "session.setStatus(req.status, req.activity)",
+      "class": "non-render/control",
+      "rationale": "Chat stdio dispatch: applies the requested status to the session and records the call result; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "; readonly tone: \"ok\" | \"waiting\" | \"failed\" | \"hint\"; re",
+      "class": "non-render/control",
+      "rationale": "Chat transcript type: \"waiting\" names a notice's color tone, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "\nconst notice = (state: ChatState, tone: \"ok\" | \"waiting\" | \"failed\" | \"hint\", text: string): ChatState =",
+      "class": "non-render/control",
+      "rationale": "Chat notice helper signature: \"waiting\" is a tone parameter type, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "nction addNotice(state: ChatState, tone: \"ok\" | \"waiting\" | \"failed\" | \"hint\", text: string): ChatState {",
+      "class": "non-render/control",
+      "rationale": "Chat notice API signature: \"waiting\" is a tone parameter type, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "0) return notice(state, \"waiting\", `draft is at its ${MAX",
+      "class": "non-render/control",
+      "rationale": "Chat draft-limit notice: \"waiting\" is the notice's color tone; the text is about the local draft, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "text.length ? notice(s, \"waiting\", `input truncated at th",
+      "class": "non-render/control",
+      "rationale": "Chat input-truncation notice: \"waiting\" is the notice's color tone; the text is about the local draft, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": " { state: notice(state, \"waiting\", \"not connected: only /",
+      "class": "non-render/control",
+      "rationale": "Chat offline-command notice: \"waiting\" is the notice's color tone; the text is about this session's connection, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": " { state: notice(state, \"waiting\", \"not connected: sendin",
+      "class": "non-render/control",
+      "rationale": "Chat send-blocked notice: \"waiting\" is the notice's color tone; the text is about this session's connection, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": " { state: notice(state, \"waiting\", \"the previous message ",
+      "class": "non-render/control",
+      "rationale": "Chat pending-send notice: \"waiting\" is the notice's color tone for a send still in flight, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Comparison that chooses whether to add the offline-recipient notice after a send; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "nt\n      ? notice(next, \"waiting\", offlineRecipientNotice",
+      "class": "non-render/control",
+      "rationale": "Chat offline-recipient notice: \"waiting\" is the notice's color tone; the notice text comes from offlineRecipientNotice."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "nown\") return notice(s, \"waiting\", \"outcome unknown: not ",
+      "class": "non-render/control",
+      "rationale": "Chat send-outcome notice: \"waiting\" is the color tone for an unknown publish outcome, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": " === \"retired\" ? \"ok\" : \"waiting\", closeSummary(state.ide",
+      "class": "non-render/control",
+      "rationale": "Chat close notice: \"waiting\" is the color tone when the session was not retired; the text is the close summary, not presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "   return notice(state, \"waiting\", `/${command.name} outc",
+      "class": "non-render/control",
+      "rationale": "Chat slash-command notice: \"waiting\" is the color tone for an unknown command outcome, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "atus\"; readonly status: \"idle\" | \"working\" | \"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Chat /status command type: the status union the user may set; a parse result shape, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "adonly status: \"idle\" | \"working\" | \"waiting\"; readonly a",
+      "class": "non-render/control",
+      "rationale": "Chat /status command type: the status union the user may set; a parse result shape, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "s: \"idle\" | \"working\" | \"waiting\"; readonly activity?: st",
+      "class": "non-render/control",
+      "rationale": "Chat /status command type: the status union the user may set; a parse result shape, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "s\": {\n      if (arg !== \"idle\" && arg !== \"working\" &&",
+      "class": "non-render/control",
+      "rationale": "Chat /status argument validation: compares the typed word to the settable statuses; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "g !== \"idle\" && arg !== \"working\" && arg !== \"waiting\") r",
+      "class": "non-render/control",
+      "rationale": "Chat /status argument validation: compares the typed word to the settable statuses; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "== \"working\" && arg !== \"waiting\") return { ok: false, er",
+      "class": "non-render/control",
+      "rationale": "Chat /status argument validation: compares the typed word to the settable statuses; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "port type Tone = \"ok\" | \"waiting\" | \"failed\" | \"hint\" | \"",
+      "class": "non-render/control",
+      "rationale": "Chat row tone type: \"waiting\" is a color tone name for the renderer, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "n}: sending off`, tone: \"waiting\" };\n  return [\n    { tex",
+      "class": "non-render/control",
+      "rationale": "Chat header connection row: \"waiting\" is the color tone for this session's own connection state, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "derived-output",
+      "anchor": "`you → ${recipientLabel(e.to)} [${status}]: `",
+      "class": "command-ack",
+      "rationale": "Chat sent-message row: acknowledges the user's send with its publish outcome (stored, denied, unknown); the local variable is named status but holds no presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": " \"refused\" ? \"failed\" : \"waiting\");\n        break;\n      ",
+      "class": "non-render/control",
+      "rationale": "Chat sent-message row: \"waiting\" is the color tone for an unknown publish outcome, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "e.scope}: ${e.reason}`, \"waiting\");\n        break;\n    }\n",
+      "class": "non-render/control",
+      "rationale": "Chat gap row: \"waiting\" is the color tone for a history gap notice, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/chat/view.ts",
+      "kind": "status-token",
+      "anchor": "scard and leave\", tone: \"waiting\" }];\n  const lines = sta",
+      "class": "non-render/control",
+      "rationale": "Chat leave-confirmation prompt: \"waiting\" is the color tone for the unsent-draft warning, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "status-token",
+      "anchor": "\"idle\"",
+      "class": "non-render/control",
+      "rationale": "Status JSON projection: membership list that admits only exact-presence activity states into the record; not rendered text."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "status-token",
+      "anchor": "actPresence && [\"idle\", \"working\", \"waiting\"].includes(ro",
+      "class": "non-render/control",
+      "rationale": "Status JSON projection: membership list that admits only exact-presence activity states into the record; not rendered text."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "status-token",
+      "anchor": " && [\"idle\", \"working\", \"waiting\"].includes(row.mesh) ? r",
+      "class": "non-render/control",
+      "rationale": "Status JSON projection: membership list that admits only exact-presence activity states into the record; not rendered text."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "` --on ${assertLifecycleToken(managerInstanceId, \"instanceId\")}`",
+      "class": "non-render/control",
+      "rationale": "Builds the --on manager-instance hint for the next-step command; the text names a manager, not any presence status."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "assertLifecycleToken(managerInstanceId, \"instanceId\")",
+      "class": "non-render/control",
+      "rationale": "Validates the manager instance id before it goes into the --on hint; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "agentStatusProjection(item, managerInstanceId)",
+      "class": "non-render/control",
+      "rationale": "Status data shaping: projects the manager row into the identity, execution, mesh and activity record; rendering classifies at its sinks."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "status-token",
+      "anchor": " agent is gone.\", tone: \"waiting\" }] }] },\n      { title:",
+      "class": "non-render/control",
+      "rationale": "Status report line: \"waiting\" is the color tone for the unlocated-agent warning, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "status-token",
+      "anchor": "iqueness check.\", tone: \"waiting\" as const }] }] : []),\n ",
+      "class": "non-render/control",
+      "rationale": "Status report line: \"waiting\" is the color tone for the partial-census warning, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "status-token",
+      "anchor": "e is not proof.\", tone: \"waiting\" as const }] }] : []),\n ",
+      "class": "non-render/control",
+      "rationale": "Status report line: \"waiting\" is the color tone for the unestablished-presence warning, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "status-token",
+      "anchor": ".partial.message, tone: \"waiting\" }] }] }] }, \"rich\", ter",
+      "class": "non-render/control",
+      "rationale": "Attach picker preface: \"waiting\" is the color tone for the partial agent list warning, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "`${item.name} · ${item.status}`",
+      "class": "non-render/control",
+      "rationale": "Attach picker label: the agent name with the manager-reported process state (row.status), not mesh presence or work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "prompts.isCancel(choice)",
+      "class": "non-render/control",
+      "rationale": "Attach picker control flow: checks whether the selection was cancelled; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "indexed-map",
+      "anchor": "choices[choice]",
+      "class": "non-render/control",
+      "rationale": "Attach picker control flow: looks up the chosen row by its index; not a status map."
+    },
+    {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "return selected;",
+      "class": "non-render/control",
+      "rationale": "Attach picker control flow: returns the chosen attach target to the caller; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/backup-read.ts",
+      "kind": "status-token",
+      "anchor": "t: \"not checked\", tone: \"waiting\" }], [\"Restoration\", { t",
+      "class": "non-render/control",
+      "rationale": "Backup inspect view: \"waiting\" is the color tone for an unchecked field, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/backup-read.ts",
+      "kind": "status-token",
+      "anchor": "mpted or proved\", tone: \"waiting\" }]] },\n      { kind: \"l",
+      "class": "non-render/control",
+      "rationale": "Backup inspect view: \"waiting\" is the color tone for an unattempted restoration, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/backup.ts",
+      "kind": "status-token",
+      "anchor": " \"not confirmed\", tone: \"waiting\" }], [\"Restore\", { text:",
+      "class": "non-render/control",
+      "rationale": "Backup create view: \"waiting\" is the color tone for unconfirmed cleanup, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/backup.ts",
+      "kind": "status-token",
+      "anchor": "mpted or proved\", tone: \"waiting\" }]] },\n    { kind: \"lin",
+      "class": "non-render/control",
+      "rationale": "Backup create view: \"waiting\" is the color tone for an unattempted restore, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/completion.ts",
+      "kind": "status-token",
+      "anchor": "ned integration`, tone: \"waiting\", mark: \"●\" };\n  if (she",
+      "class": "non-render/control",
+      "rationale": "Completion integration cell: \"waiting\" is the color tone for a modified or unreadable integration, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/completion.ts",
+      "kind": "status-token",
+      "anchor": "needs migration\", tone: \"waiting\", mark: \"●\" };\n  if (she",
+      "class": "non-render/control",
+      "rationale": "Completion integration cell: \"waiting\" is the color tone for legacy wiring that needs migration, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/completion.ts",
+      "kind": "status-token",
+      "anchor": " not configured\", tone: \"waiting\", mark: \"●\" };\n  if (she",
+      "class": "non-render/control",
+      "rationale": "Completion integration cell: \"waiting\" is the color tone for a script whose startup is not configured, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/completion.ts",
+      "kind": "derived-output",
+      "anchor": "completionCell(selected)",
+      "class": "non-render/control",
+      "rationale": "Completion report field: the selected shell's integration cell from the completion status record; no agent presence is involved."
+    },
+    {
+      "path": "implementations/cli/src/commands/completion.ts",
+      "kind": "status-token",
+      "anchor": "ich is missing.`, tone: \"waiting\" as const })),\n         ",
+      "class": "non-render/control",
+      "rationale": "Completion report note: \"waiting\" is the color tone for a startup line that sources a missing script, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/completion.ts",
+      "kind": "derived-output",
+      "anchor": "`cotal completion install ${selected?.shell ?? \"<shell>\"}`",
+      "class": "non-render/control",
+      "rationale": "Completion next-step command naming the selected shell; no agent presence is involved."
+    },
+    {
+      "path": "implementations/cli/src/commands/completion.ts",
+      "kind": "derived-output",
+      "anchor": "`cotal completion script ${selected?.shell ?? \"<shell>\"}`",
+      "class": "non-render/control",
+      "rationale": "Completion next-step command naming the selected shell; no agent presence is involved."
+    },
+    {
+      "path": "implementations/cli/src/commands/completion.ts",
+      "kind": "derived-output",
+      "anchor": "`cotal completion uninstall ${selected?.shell ?? \"<shell>\"}`",
+      "class": "non-render/control",
+      "rationale": "Completion next-step command naming the selected shell; no agent presence is involved."
+    },
+    {
+      "path": "implementations/cli/src/commands/describe.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Endpoint cast result field: \"waiting\" is the color tone for unconfirmed execution, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/doctor.ts",
+      "kind": "status-token",
+      "anchor": "t: \"not checked\", tone: \"waiting\" }], [\"Live agent health",
+      "class": "non-render/control",
+      "rationale": "Doctor credential field: \"waiting\" is the color tone for unchecked broker authorization, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/doctor.ts",
+      "kind": "status-token",
+      "anchor": "t: \"not checked\", tone: \"waiting\" }], [\"Repair requested\"",
+      "class": "non-render/control",
+      "rationale": "Doctor credential field: \"waiting\" is the color tone for unchecked live agent health, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/doctor.ts",
+      "kind": "status-token",
+      "anchor": " || value.authority === \"offline\" ? value.authority : nul",
+      "class": "non-render/control",
+      "rationale": "Doctor renewal record parse: admits only the lease or offline authority values; not an agent presence status."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-services.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Bare down service plan table: \"waiting\" is the color tone for a service marked stop, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Down inspection report: \"waiting\" is the color tone for the not-a-stop-plan caveat, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`${local.length} registrations name this root (${local.map((mesh) => `\"${mesh.space}\"`).join(\", \")}); bare down did not pick one to stop`",
+      "class": "non-render/control",
+      "rationale": "Down refusal text: names the several space registrations at this root; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`\"${mesh.space}\"`",
+      "class": "non-render/control",
+      "rationale": "Down refusal text: quotes one registration's space name; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "assertBareDownServicesVerified(mesh.space, services)",
+      "class": "non-render/control",
+      "rationale": "Down control flow: verifies the bare-down service plan for the registered space; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/endpoint-deregister.ts",
+      "kind": "status-token",
+      "anchor": "t: \"not checked\", tone: \"waiting\" }], [\"Governance and re",
+      "class": "non-render/control",
+      "rationale": "Endpoint deregistration preview: \"waiting\" is the color tone for an unchecked broker field, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/endpoint-deregister.ts",
+      "kind": "status-token",
+      "anchor": "t: \"not checked\", tone: \"waiting\" }]] }, { kind: \"lines\",",
+      "class": "non-render/control",
+      "rationale": "Endpoint deregistration preview: \"waiting\" is the color tone for unchecked governance, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/endpoint.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Endpoint list section: \"waiting\" is the color tone for unavailable live registration reads, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/endpoints.ts",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "non-render/control",
+      "rationale": "Comparison operand that selects the endpoints state cell's working branch, whose text names unknown progress; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/endpoints.ts",
+      "kind": "status-token",
+      "anchor": "item.reportedStatus === \"waiting\" ? \"waiting\" : \"hint\" },",
+      "class": "non-render/control",
+      "rationale": "Endpoints state cell: compares the reported status to pick the color tone; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/endpoints.ts",
+      "kind": "status-token",
+      "anchor": "dStatus === \"waiting\" ? \"waiting\" : \"hint\" },\n        act",
+      "class": "non-render/control",
+      "rationale": "Endpoints state cell: \"waiting\" is the color tone name, not rendered text."
+    },
+    {
+      "path": "implementations/cli/src/commands/feedback.ts",
+      "kind": "indexed-map",
+      "anchor": "codes[response.status]",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: maps the feedback intake's status code to a refusal code; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/join.ts",
+      "kind": "status-token",
+      "anchor": "    if (peer.status === \"offline\") print(c.yellow(offline",
+      "class": "non-render/control",
+      "rationale": "Comparison that chooses whether the join DM echo adds the offline-recipient notice; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/models.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Models report line: \"waiting\" is the color tone for an unreadable model catalog, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "realDirNoSymlink(root, \".cotal\")",
+      "class": "non-render/control",
+      "rationale": "Reset preview plumbing: the root comes from the space registration record (mesh), and this checks its control directory; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "localMeshesForRoot(root)",
+      "class": "non-render/control",
+      "rationale": "Reset preview plumbing: lists the spaces registered at the registration record's root; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "authDir(root)",
+      "class": "non-render/control",
+      "rationale": "Reset preview plumbing: resolves the auth directory under the registration record's root; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "safeStoreCleanupPath(root, mesh.storeDir)",
+      "class": "non-render/control",
+      "rationale": "Reset preview plumbing: resolves the store path from the registration record; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "readMaintenanceJournal(root)",
+      "class": "non-render/control",
+      "rationale": "Reset preview plumbing: reads the maintenance journal under the registration record's root; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "liveMeshProcesses(root, space)",
+      "class": "non-render/control",
+      "rationale": "Reset preview plumbing: lists local mesh processes under the registration record's root; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "listLedgerFiles(root, { requireReadable: true })",
+      "class": "non-render/control",
+      "rationale": "Reset preview plumbing: lists additive deployment ledgers under the registration record's root; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "listAdditiveTeamAttempts(root)",
+      "class": "non-render/control",
+      "rationale": "Reset preview plumbing: lists additive team attempts under the registration record's root; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "listFreshTeamAttempts(root)",
+      "class": "non-render/control",
+      "rationale": "Reset preview plumbing: lists fresh team attempts under the registration record's root; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "listFreshTeamSummaries(root)",
+      "class": "non-render/control",
+      "rationale": "Reset preview plumbing: lists fresh team summaries under the registration record's root; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "assertResetEligible(mesh, \"reset store\")",
+      "class": "non-render/control",
+      "rationale": "Reset preview control flow: checks the registration record is eligible for a store reset; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "derived-output",
+      "anchor": "resolve(root, \".cotal\", \"nats\")",
+      "class": "non-render/control",
+      "rationale": "Reset preview data shaping: the default store path under the registration record's root; no presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/reset.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Reset preview report: \"waiting\" is the color tone for the unproved-scope caveat, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/send.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Comparison that chooses whether the send result carries the RECIPIENT_OFFLINE warning; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/service-actions.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Service stop impact table: \"waiting\" is the color tone for a release-custody seat action, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/service-registry.ts",
+      "kind": "status-token",
+      "anchor": ": \"not checked\"), tone: \"waiting\" } };\n      }) } : { kin",
+      "class": "non-render/control",
+      "rationale": "Service registry table: \"waiting\" is the color tone for an unchecked service readiness, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/service-registry.ts",
+      "kind": "status-token",
+      "anchor": "ributable\" ? \"failed\" : \"waiting\" }, owner: \"not checked\"",
+      "class": "non-render/control",
+      "rationale": "Service registry component table: \"waiting\" is the color tone for a PID observation, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/service-set-stop.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Service set stop table: \"waiting\" is the color tone for a stop result, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "status-token",
+      "anchor": ".startup.state}`, tone: \"waiting\", mark: \"!\" }\n    : r.ha",
+      "class": "non-render/control",
+      "rationale": "Setup headline: \"waiting\" is the color tone when the requested startup failed; the text is about setup, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "status-token",
+      "anchor": " not set up yet`, tone: \"waiting\", mark: \"!\" }\n    : unre",
+      "class": "non-render/control",
+      "rationale": "Setup headline: \"waiting\" is the color tone when the harness is not set up yet; not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "status-token",
+      "anchor": "are\"} not ready`, tone: \"waiting\", mark: \"!\" }\n      : r.",
+      "class": "non-render/control",
+      "rationale": "Setup headline: \"waiting\" is the color tone when a selected runtime is not ready; not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "status-token",
+      "anchor": "before retrying\", tone: \"waiting\", mark: \"!\" }\n    : s.st",
+      "class": "non-render/control",
+      "rationale": "Setup startup label: \"waiting\" is the color tone for an unknown startup outcome; the text is the command result, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "status-token",
+      "anchor": "n remains saved\", tone: \"waiting\", mark: \"!\" }\n    : s.st",
+      "class": "non-render/control",
+      "rationale": "Setup startup label: \"waiting\" is the color tone for an incomplete startup; the text is the command result, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "status-token",
+      "anchor": "ome unconfirmed\", tone: \"waiting\" }] as [string, Cell]] :",
+      "class": "non-render/control",
+      "rationale": "Setup startup row: \"waiting\" is the color tone for an unconfirmed local startup command, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "status-token",
+      "anchor": "does not answer`, tone: \"waiting\" };\n  return `${r.name} ",
+      "class": "non-render/control",
+      "rationale": "Setup runtime cell: \"waiting\" is the color tone for a runtime that does not answer, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space-registration.ts",
+      "kind": "derived-output",
+      "anchor": "`${disco} answered ${res.status}: no discovery document there`",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: the discovery URL's status code in a refusal; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/space-registration.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Space registration field: \"waiting\" is the color tone for a broker check skipped with --force, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
+      "anchor": "t: \"unreachable\", tone: \"waiting\", mark: \"●\" };\n  return ",
+      "class": "non-render/control",
+      "rationale": "Space list check cell: \"waiting\" is the color tone for an unreachable broker, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
+      "anchor": "t: \"not started\", tone: \"waiting\" }], [\"root\", p.root], [",
+      "class": "non-render/control",
+      "rationale": "Prepared space view: \"waiting\" is the color tone for a broker not started, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
+      "anchor": "at registration\", tone: \"waiting\" }]);\n  if (s.attachHost",
+      "class": "non-render/control",
+      "rationale": "Space detail field: \"waiting\" is the color tone for an accepted unencrypted overlay, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn-preview.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Spawn preview field: \"waiting\" is the color tone for unperformed execution-host validation, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-down.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Stack down result table: \"waiting\" is the color tone for a member stop result, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Stack up report table: \"waiting\" is the color tone for a stack member's result, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "Number.isSafeInteger(error.status)",
+      "class": "non-render/control",
+      "rationale": "Stack up failure shaping: checks the JetStream error's HTTP status before copying it into the cause; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": " . before starting it\", \"waiting\")]);\n  const auth = f.au",
+      "class": "non-render/control",
+      "rationale": "Status folder row: \"waiting\" is the color tone for the inherited-root warning, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "nes = { ok: \"ok\", warn: \"waiting\", error: \"failed\", off: ",
+      "class": "non-render/control",
+      "rationale": "Status machine overview: maps integration check states to color tones; \"waiting\" is a tone, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "nector.missing.length ? \"waiting\" : \"ok\")]);\n  }\n  rows.p",
+      "class": "non-render/control",
+      "rationale": "Status machine overview: \"waiting\" is the color tone for a connector whose binaries are not on PATH, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": " m.nats === \"missing\" ? \"waiting\" : \"ok\")]);\n  rows.push(",
+      "class": "non-render/control",
+      "rationale": "Status machine overview: \"waiting\" is the color tone for a missing broker executable, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "ed\" : \"not recorded\"}`, \"waiting\")] });\n  return { title:",
+      "class": "non-render/control",
+      "rationale": "Status brokers section: \"waiting\" is the color tone for an unrecorded selected space, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "teCell(\"not signed in\", \"waiting\")]);\n    else {\n      ro",
+      "class": "non-render/control",
+      "rationale": "Status selected-space account row: \"waiting\" is the color tone for a signed-out account, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "tor === \"not-granted\" ? \"waiting\" : \"hint\")]);\n    }\n  }\n",
+      "class": "non-render/control",
+      "rationale": "Status selected-space grant row: \"waiting\" is the color tone for a grant that was not given, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": " ${s.snapshot.reason}`, \"waiting\")]);\n  const blocks: Sec",
+      "class": "non-render/control",
+      "rationale": "Status selected-space live details row: \"waiting\" is the color tone for an unavailable snapshot, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "s ${s.personas.root}.`, \"waiting\")] });\n  return { title:",
+      "class": "non-render/control",
+      "rationale": "Status selected-space note: \"waiting\" is the color tone for the unused-personas warning, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "finitions unavailable\", \"waiting\")] });\n  if (services.in",
+      "class": "non-render/control",
+      "rationale": "Status owned-services section: \"waiting\" is the color tone for unreadable service definitions, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "topped state inferred\", \"waiting\")] });\n  if (services.in",
+      "class": "non-render/control",
+      "rationale": "Status owned-services section: \"waiting\" is the color tone for unreadable service instances, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "ss === \"foreign-host\" ? \"waiting\" : \"hint\"),\n    readines",
+      "class": "non-render/control",
+      "rationale": "Status owned-services table: \"waiting\" is the color tone for a process observed on a foreign host, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "derived-output",
+      "anchor": "`HTTP ${status}`",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: the dashboard readiness probe's status code in a component fact; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/sync.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Sync account note: \"waiting\" is the color tone for a selected space that left its catalog, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/team-agent-apply.ts",
+      "kind": "derived-output",
+      "anchor": "managerFailure(status, \"team manager inspection\", target)",
+      "class": "non-render/control",
+      "rationale": "Team apply control path: turns a failed manager status reply into a command failure; status is the RPC reply, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/team-agent-apply.ts",
+      "kind": "derived-output",
+      "anchor": "resolveControlTarget({ space }, \"control-caller-admin\", instanceId, { onRefusal: \"throw\" })",
+      "class": "non-render/control",
+      "rationale": "Team apply control path: pins the control target to the manager instance the status reply named; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/team-agent-apply.ts",
+      "kind": "derived-output",
+      "anchor": "managerFailure(pinnedStatus, \"pinned team manager inspection\", { ...target, managerInstanceId: instanceId })",
+      "class": "non-render/control",
+      "rationale": "Team apply control path: turns a failed pinned manager status reply into a command failure; not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/team-agent-apply.ts",
+      "kind": "derived-output",
+      "anchor": "writeAdditiveTeamAttempt(root, attempt)",
+      "class": "non-render/control",
+      "rationale": "Team apply journal write: records the additive attempt under the selected root; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/team-agent-apply.ts",
+      "kind": "derived-output",
+      "anchor": "writeAdditiveChannelStep(root, attempt, ordinal, \"submitted\")",
+      "class": "non-render/control",
+      "rationale": "Team apply journal write: records a submitted channel step under the selected root; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/team-agent-apply.ts",
+      "kind": "derived-output",
+      "anchor": "writeAdditiveChannelStep(root, attempt, ordinal, \"accepted\", revision)",
+      "class": "non-render/control",
+      "rationale": "Team apply journal write: records an accepted channel step under the selected root; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/team-agent-apply.ts",
+      "kind": "derived-output",
+      "anchor": "managerFailure(reply, \"additive agent launch\", { ...target, deploymentId, managerInstanceId: instanceId, requested: agent.name })",
+      "class": "non-render/control",
+      "rationale": "Team apply control path: turns a refused agent launch reply into a command failure; not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/team-agent-apply.ts",
+      "kind": "derived-output",
+      "anchor": "writeAdditiveAgentStep(root, original, ordinal, { phase: \"joined\", managerInstanceId: instanceId, requestId: request.requestId, request, joined })",
+      "class": "non-render/control",
+      "rationale": "Team apply journal write: records the joined agent step under the selected root; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/team-agent-apply.ts",
+      "kind": "derived-output",
+      "anchor": "writeAdditiveAgentReceipt(root, attempt, created, createdChannels)",
+      "class": "non-render/control",
+      "rationale": "Team apply journal write: records the returned team receipt under the selected root; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/team.ts",
+      "kind": "status-token",
+      "anchor": "e still needed.\", tone: \"waiting\" }] }] },\n    { title: \"",
+      "class": "non-render/control",
+      "rationale": "Team deployments report: \"waiting\" is the color tone for the incomplete-history caveat, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/team.ts",
+      "kind": "status-token",
+      "anchor": "hing was added.\", tone: \"waiting\" }] }] },\n    { title: \"",
+      "class": "non-render/control",
+      "rationale": "Additive team inspection report: \"waiting\" is the color tone for the nothing-added caveat, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/team.ts",
+      "kind": "status-token",
+      "anchor": "write occurred.\", tone: \"waiting\" }] }] },\n    ...(data.o",
+      "class": "non-render/control",
+      "rationale": "Additive removal impact report: \"waiting\" is the color tone for the no-write caveat, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/team.ts",
+      "kind": "status-token",
+      "anchor": "ce was started.\", tone: \"waiting\" }] }] },\n    { title: \"",
+      "class": "non-render/control",
+      "rationale": "Fresh team impact report: \"waiting\" is the color tone for the nothing-started caveat, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "status-token",
+      "anchor": "${entry.reason}`, tone: \"waiting\" as const })), { text: \"",
+      "class": "non-render/control",
+      "rationale": "Update report line: \"waiting\" is the color tone for a preserved shell completion integration, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "status-token",
+      "anchor": " text: \"unknown\", tone: \"waiting\" } : r.updateAvailable ?",
+      "class": "non-render/control",
+      "rationale": "Update availability field: \"waiting\" is the color tone for an unknown CLI update state, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "status-token",
+      "anchor": "ext: \"available\", tone: \"waiting\" } : comparison === 0 ? ",
+      "class": "non-render/control",
+      "rationale": "Update availability field: \"waiting\" is the color tone for an available update, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "status-token",
+      "anchor": " was attempted.\", tone: \"waiting\" }] } : r.extensions.len",
+      "class": "non-render/control",
+      "rationale": "Update extensions section: \"waiting\" is the color tone for an unavailable inventory, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "status-token",
+      "anchor": "rom running CLI\", tone: \"waiting\" } })) } : { kind: \"line",
+      "class": "non-render/control",
+      "rationale": "Update extensions table: \"waiting\" is the color tone for an extension whose version differs from the CLI, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "status-token",
+      "anchor": "ext: \"available\", tone: \"waiting\" } : \"no newer latest ta",
+      "class": "non-render/control",
+      "rationale": "Self-update version field: \"waiting\" is the color tone for an available update, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Comparison that chooses whether the console DM label appends the offline-recipient notice; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "onSubmit={submitCompose}",
+      "class": "non-render/control",
+      "rationale": "Console compose wiring: passes the submit handler to the input box; no status text is rendered."
+    },
+    {
+      "path": "implementations/cli/src/console/app.tsx",
+      "kind": "derived-output",
+      "anchor": "{submitCompose}",
+      "class": "non-render/control",
+      "rationale": "Console compose wiring: the submit handler expression; no status text is rendered."
+    },
+    {
+      "path": "implementations/cli/src/console/commands.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Comparison that chooses whether the console DM notice adds the offline-recipient notice; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/help.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Help context line: \"waiting\" is the color tone for unreadable local defaults, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/controller-preserve.ts",
+      "kind": "status-token",
+      "anchor": "\"idle\"",
+      "class": "non-render/control",
+      "rationale": "Controller preserve data shaping: \"idle\" is the static reconciliation state of a synthetic manager status, not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/endpoint-inventory.ts",
+      "kind": "derived-output",
+      "anchor": "row.epoch = status.epoch",
+      "class": "non-render/control",
+      "rationale": "Endpoint inventory data shaping: copies the service status record's epoch onto the row; not agent presence and not rendered here."
+    },
+    {
+      "path": "implementations/cli/src/lib/endpoint-inventory.ts",
+      "kind": "derived-output",
+      "anchor": "row.reportedState = status.state",
+      "class": "non-render/control",
+      "rationale": "Endpoint inventory data shaping: copies the service's reported lifecycle state onto the row; not agent presence and not rendered here."
+    },
+    {
+      "path": "implementations/cli/src/lib/endpoint-inventory.ts",
+      "kind": "derived-output",
+      "anchor": "row.projection = status.observedSpecRevision === record.revision ? \"current\" : status.observedSpecRevision < record.revision ? \"stale\" : \"changed-during-read\"",
+      "class": "non-render/control",
+      "rationale": "Endpoint inventory data shaping: compares the status record's spec revision to mark the row current or stale; not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/endpoint-scatter.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Endpoint scatter report: \"waiting\" is the color tone for a scatter coverage field, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/live-names.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Live-name lookup: filters offline peers out of the roster to collect taken names; the token is a filter predicate."
+    },
+    {
+      "path": "implementations/cli/src/lib/persona-files.ts",
+      "kind": "derived-output",
+      "anchor": "commitPersona(path, source, edited)",
+      "class": "non-render/control",
+      "rationale": "Persona edit control flow: commits the edited persona file; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/lib/space-schema-report.ts",
+      "kind": "status-token",
+      "anchor": "\" ? \"failed\" as const : \"waiting\" as const },\n        rec",
+      "class": "non-render/control",
+      "rationale": "Space schema report: \"waiting\" is the color tone for a stream comparison result, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/space-schema-report.ts",
+      "kind": "status-token",
+      "anchor": " === \"migration-required\" ? \"failed\" as const : \"waiting\" as const },\n        fields: [...new Set([...row",
+      "class": "non-render/control",
+      "rationale": "Space schema report: \"waiting\" is the color tone for a reconciliation state, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/space-schema-report.ts",
+      "kind": "status-token",
+      "anchor": "= \"field-policy-required\" ? \"failed\" as const : \"waiting\" as const },\n        fields: row.changedFields.j",
+      "class": "non-render/control",
+      "rationale": "Space schema report: \"waiting\" is the color tone for a key initialization result, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/up-report.ts",
+      "kind": "derived-output",
+      "anchor": "`from ${oneLine(status.root)}, stop with: ${stop}`",
+      "class": "non-render/control",
+      "rationale": "Up result fragment: the stack root and stop command from the local stack record; not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/up-report.ts",
+      "kind": "derived-output",
+      "anchor": "`stop with: ${stop}`",
+      "class": "non-render/control",
+      "rationale": "Up result fragment: the stop command chosen from the local stack record; not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/watch-data.ts",
+      "kind": "status-token",
+      "anchor": ", \"roster\", \"channels\", \"waiting\", \"dms\", \"topology\"] as ",
+      "class": "non-render/control",
+      "rationale": "Watch view list: \"waiting\" names the reported-waiting filter view; a routing key, not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/watch-data.ts",
+      "kind": "status-token",
+      "anchor": " \"roster\" || filter === \"waiting\") {\n    const rows = fil",
+      "class": "non-render/control",
+      "rationale": "Watch report routing: compares the selected filter to pick the roster table branch; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/watch-data.ts",
+      "kind": "status-token",
+      "anchor": "const rows = filter === \"waiting\" ? snapshot.signals.wait",
+      "class": "non-render/control",
+      "rationale": "Watch report routing: compares the selected filter to pick the waiting rows or the full roster; not a rendered status."
+    },
+    {
+      "path": "implementations/cli/src/watch-data.ts",
+      "kind": "status-token",
+      "anchor": "s: [{ title: filter === \"waiting\" ? \"Reported waiting\" : ",
+      "class": "non-render/control",
+      "rationale": "Watch report routing: compares the selected filter to pick the section title; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/watch-data.ts",
+      "kind": "status-token",
+      "anchor": "s, tone: row.status === \"waiting\" ? \"waiting\" : \"hint\" },",
+      "class": "non-render/control",
+      "rationale": "Watch roster table: compares the peer's status to pick the state cell's color tone; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/watch-data.ts",
+      "kind": "status-token",
+      "anchor": ".status === \"waiting\" ? \"waiting\" : \"hint\" }, activity: r",
+      "class": "non-render/control",
+      "rationale": "Watch roster table: \"waiting\" is the state cell's color tone name, not rendered text."
+    },
+    {
+      "path": "implementations/cli/src/watch-data.ts",
+      "kind": "status-token",
+      "anchor": "es\", lines: [filter === \"waiting\" ? \"No waiting report in",
+      "class": "non-render/control",
+      "rationale": "Watch report routing: compares the selected filter to pick the empty-table line; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/watch-data.ts",
+      "kind": "status-token",
+      "anchor": "es: [{ text: filter === \"waiting\" ? \"Presence carries hea",
+      "class": "non-render/control",
+      "rationale": "Watch report routing: compares the selected filter to pick the footnote line; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/watch-data.ts",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "non-render/control",
+      "rationale": "Comparison operand that selects the watch roster state cell's working branch, whose text names unknown progress; the token itself is not rendered."
+    },
+    {
+      "path": "implementations/cli/src/watch-json.ts",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Watch JSON routing: compares the selected filter to decide whether the metadata event carries the waiting list; not rendered text."
+    },
+    {
+      "path": "implementations/cli/src/watch-json.ts",
+      "kind": "derived-output",
+      "anchor": "JSON.stringify(data)",
+      "class": "non-render/control",
+      "rationale": "Watch JSON change detection: serializes the metadata to compare with the last emitted copy; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/watch-json.ts",
+      "kind": "derived-output",
+      "anchor": "emit(\"snapshot\", data)",
+      "class": "honest-text",
+      "rationale": "Watch snapshot event: the JSON presentation emits the machine record for programs, and the plain presentation prints watchReport's roster, whose working rows name unknown progress; the cited output assertion renders that roster.",
+      "proof": {
+        "path": "implementations/cli/smoke/view.smoke.ts",
+        "anchor": "check(\"the watch roster names a working agent's progress as unknown\""
+      }
+    },
+    {
+      "path": "implementations/cli/src/watch-json.ts",
+      "kind": "derived-output",
+      "anchor": "view.on(\"change\", changed)",
+      "class": "non-render/control",
+      "rationale": "Watch JSON event wiring: subscribes the change handler to the observer view; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/watch-json.ts",
+      "kind": "derived-output",
+      "anchor": "view.off(\"change\", changed)",
+      "class": "non-render/control",
+      "rationale": "Watch JSON event wiring: unsubscribes the change handler from the observer view; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/watch-view.tsx",
+      "kind": "derived-output",
+      "anchor": "`cotal watch · ${snapshot.status.space}`",
+      "class": "non-render/control",
+      "rationale": "Watch title: the space name read from the observer's own status record; no peer presence or progress is shown."
+    },
+    {
+      "path": "implementations/cli/src/watch-view.tsx",
+      "kind": "derived-output",
+      "anchor": "content.slice(scroll, scroll + bodyHeight)",
+      "class": "non-render/control",
+      "rationale": "Watch layout geometry: slices the visible rows by the scroll offset; no status text is composed."
+    },
+    {
+      "path": "implementations/cli/src/watch-view.tsx",
+      "kind": "derived-output",
+      "anchor": "scroll + bodyHeight",
+      "class": "non-render/control",
+      "rationale": "Watch layout geometry: the last visible row index; no status text is composed."
+    },
+    {
+      "path": "implementations/cli/src/watch-view.tsx",
+      "kind": "derived-output",
+      "anchor": "{title.map((line, index) => <Text key={`title-${index}`} bold>{line}</Text>)}",
+      "class": "non-render/control",
+      "rationale": "Watch title rows: prints the space-name title lines; no peer presence or progress is shown."
+    },
+    {
+      "path": "implementations/cli/src/watch-view.tsx",
+      "kind": "derived-output",
+      "anchor": "{connection.map((line, index) => <Text key={`connection-${index}`} color={connected ? undefined : \"yellow\"}>{line}</Text>)}",
+      "class": "non-render/control",
+      "rationale": "Watch connection line: the observer's own connection state (live or errored), not any peer's presence or progress."
+    },
+    {
+      "path": "implementations/cli/src/watch-view.tsx",
+      "kind": "derived-output",
+      "anchor": "height={bodyHeight}",
+      "class": "non-render/control",
+      "rationale": "Watch layout geometry: the body box height; no status text is composed."
+    },
+    {
+      "path": "implementations/cli/src/watch-view.tsx",
+      "kind": "derived-output",
+      "anchor": "{bodyHeight}",
+      "class": "non-render/control",
+      "rationale": "Watch layout geometry: the body box height expression; no status text is composed."
+    },
+    {
+      "path": "implementations/cli/src/watch-view.tsx",
+      "kind": "derived-output",
+      "anchor": "{!shown.length ? <Text dimColor>{connected ? \"Waiting for activity in this authorized view.\" : \"No current feed. Events may be missing.\"}</Text> : shown.map((line, index) => <Text key={index}>{line}</Text>)}",
+      "class": "honest-text",
+      "rationale": "Watch body: the empty-feed placeholder, or the rendered view lines; for the roster view those lines are watchReport's table, whose working rows name unknown progress; the cited output assertion renders that roster.",
+      "proof": {
+        "path": "implementations/cli/smoke/view.smoke.ts",
+        "anchor": "check(\"the watch roster names a working agent's progress as unknown\""
+      }
+    },
+    {
+      "path": "implementations/cli/src/watch-view.tsx",
+      "kind": "derived-output",
+      "anchor": "{connected ? \"Waiting for activity in this authorized view.\" : \"No current feed. Events may be missing.\"}",
+      "class": "non-render/control",
+      "rationale": "Watch empty-feed placeholder: chosen by the observer's own connection state, not any peer's presence or progress."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "`native dashboard request ${caller ? \"refused\" : \"failed\"}; diagnostic body omitted`",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: logs whether a native dashboard request was refused or failed from its status code; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "lifecycle.onSession(browserSession)",
+      "class": "non-render/control",
+      "rationale": "Dashboard lifecycle: hands the browser session to the native lifecycle hook; status here is an HTTP code, and nothing is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "`${probeUrl}: HTTP ${answer.status}`",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: records the readiness probe's status code for the startup error; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "`web dashboard did not become HTTP-ready within ${opts.timeoutMs}ms (pid ${pid})${lastProbe ? `; last probe ${capProbeText(lastProbe)}` : \"\"}`",
+      "class": "non-render/control",
+      "rationale": "Dashboard startup failure: reports the readiness timeout with the last HTTP probe; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "`; last probe ${capProbeText(lastProbe)}`",
+      "class": "non-render/control",
+      "rationale": "Dashboard startup failure fragment: the last HTTP probe text; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "capProbeText(lastProbe)",
+      "class": "non-render/control",
+      "rationale": "Dashboard startup failure: caps the last HTTP probe text; no agent presence is rendered."
     }
   ]
 }

@@ -73,9 +73,11 @@ const ansi = /\x1b\[/;
   check("runtimes --json lists pty built in and each official runtime as not installed", JSON.stringify(names) === JSON.stringify(["pty:built-in", "orca:not-installed", "tmux:not-installed", "cmux:not-installed", "herdr:not-installed"]), names);
   const rich = run(["runtimes"], { FORCE_COLOR: "1" });
   const richText = rich.stdout.replace(/\x1b\[[0-9;]*m/g, "");
-  check("runtimes draws a colored table with its state words", rich.status === 0 && ansi.test(rich.stdout) && /RUNTIME\s+STATE\s+PACKAGE/.test(richText) && /tmux\s+not installed\s+@cotal-ai\/tmux/.test(richText) && /cotal ext add <package>/.test(richText), shown(rich));
+  check("runtimes draws a colored table with its state words", rich.status === 0 && ansi.test(rich.stdout) && /Runtime\s+State\s+Extension/.test(richText) && /tmux\s+○ not installed\s+@cotal-ai\/tmux/.test(richText) && /cotal ext add <package>/.test(richText), shown(rich));
   const plain = run(["runtimes", "--plain"], { FORCE_COLOR: "1" });
-  check("runtimes --plain writes the same words with no ANSI and ASCII punctuation", plain.status === 0 && !ansi.test(plain.stdout) && plain.stdout === richText.replace(/·/g, "-"), shown(plain));
+  // Plain drops the state glyphs and spells punctuation in ASCII, so its columns are narrower.
+  const words = (text: string) => text.replace(/[●○] /g, "").replace(/·/g, "-").replace(/ +/g, " ");
+  check("runtimes --plain writes the same words with no ANSI and ASCII punctuation", plain.status === 0 && !ansi.test(plain.stdout) && !/[●○·]/.test(plain.stdout) && words(plain.stdout) === words(richText), shown(plain));
   check("no report line ends in padding", plain.stdout.split("\n").every((line) => !line.endsWith(" ")), plain.stdout);
   const both = run(["runtimes", "--json", "--plain"]);
   check("runtimes --json --plain is one USAGE_INVALID envelope, exit 1", both.status === 1 && both.envelope?.error?.code === "USAGE_INVALID", shown(both));
@@ -90,7 +92,7 @@ const ansi = /\x1b\[/;
   check("the provider is listed as installed with its load error, never dropped", broken?.state === "installed" && broken.reachable === null && /not installed at/.test(broken.error ?? ""), broken);
   check("a RUNTIME_LOAD_FAILED warning names it", json.envelope?.warnings.some((w) => w.code === "RUNTIME_LOAD_FAILED" && JSON.stringify(w.target) === JSON.stringify({ runtime: "broken" })) === true, json.envelope?.warnings);
   const human = run(["runtimes"]);
-  check("the human report exits 4 and names the failure on stderr", human.status === 4 && /broken\s+installed · load failed/.test(human.stdout) && /1 installed runtime provider could not be loaded/.test(human.stderr), shown(human));
+  check("the human report exits 4 and names the failure on stderr", human.status === 4 && /broken\s+● installed · load failed/.test(human.stdout) && /1 installed runtime provider could not be loaded/.test(human.stderr), shown(human));
 }
 
 // ── ps and models: no mesh to read is refused before any request ─────────────────────────────────
@@ -106,8 +108,8 @@ const ansi = /\x1b\[/;
     check(`${command} with no mesh exits 2 with the sentence on stderr and nothing on stdout`, human.status === 2 && human.stdout === "" && /no mesh running/.test(human.stderr), shown(human));
   }
   const named = run(["models", "--json", "--space", "nope"]);
-  check("models --json --space <unknown> names the space it could not find", named.status === 2 && named.envelope?.error?.code === "TARGET_NOT_FOUND" && /no mesh named "nope"/.test(named.envelope.error.message), shown(named));
-  check("an unknown --space refusal names where to look in its remedy", named.envelope?.error?.remedy === "see `cotal meshes`", named.envelope?.error);
+  check("models --json --space <unknown> names the space it could not find", named.status === 2 && named.envelope?.error?.code === "TARGET_NOT_FOUND" && /no space named "nope"/.test(named.envelope.error.message), shown(named));
+  check("an unknown --space refusal names where to look in its remedy", named.envelope?.error?.remedy === "see `cotal space`", named.envelope?.error);
 }
 
 // ── ps and models: a home reached through a symlink is still no project ──────────────────────────

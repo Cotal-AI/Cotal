@@ -34,7 +34,7 @@ export function listChoices(conn: ConnectionReport | undefined, roster: RosterVi
     out.push({
       recipient: { kind: "dm", to: row.id },
       label: `DM ${oneLine(personLabel(row, shared))}`,
-      detail: `${row.sessionKind === "chat" ? "human session" : oneLine(row.kind)}${row.role ? ` · ${oneLine(row.role)}` : ""} · ${row.status}`,
+      detail: `${row.sessionKind === "chat" ? "human session" : oneLine(row.kind)}${row.role ? ` · ${oneLine(row.role)}` : ""} · ${row.status === "working" ? "working · progress unknown" : row.status}`,
     });
   }
   const shown = out.slice(0, MAX_CHOICES);

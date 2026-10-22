@@ -88,6 +88,19 @@ const refs = tmux.windowRefs(SESSION, "test-win");
 ok("windowRefs returns one entry", refs.length >= 1);
 ok("windowRefs entry starts with @", refs[0]!.startsWith("@"));
 
+// Without a UTF-8 locale the tmux client writes a tab in its output as `_`. The name lookups parse
+// tab-separated listings, so they must still find the window with every locale variable unset.
+{
+  const locale = ["LC_ALL", "LC_CTYPE", "LANG"].map((name) => [name, process.env[name]] as const);
+  for (const [name] of locale) delete process.env[name];
+  try {
+    ok("with no locale set, windowAlive still finds test-win", tmux.windowAlive(SESSION, "test-win"));
+    ok("with no locale set, windowRefs still returns test-win's window ID", tmux.windowRefs(SESSION, "test-win").includes(windowId));
+  } finally {
+    for (const [name, value] of locale) if (value !== undefined) process.env[name] = value;
+  }
+}
+
 // send / sendKey
 tmux.send("echo hello", `${SESSION}:test-win`);
 tmux.sendKey("Enter", `${SESSION}:test-win`);
@@ -247,7 +260,7 @@ ok("tmuxTerminalProvider.available() returns true", tmuxTerminalProvider.availab
 throws("refs() throws when not in tmux", () => tmuxTerminalProvider.refs("anything"));
 
 // The provider reads its session from $TMUX/$TMUX_PANE, so point both at the smoke session.
-const [socketPath, serverPid] = execFileSync("tmux", ["display-message", "-p", "-t", `${SESSION}:`, "#{socket_path}\t#{pid}"], { encoding: "utf8" }).trim().split("\t");
+const [socketPath, serverPid] = execFileSync("tmux", ["-u", "display-message", "-p", "-t", `${SESSION}:`, "#{socket_path}\t#{pid}"], { encoding: "utf8" }).trim().split("\t");
 const anchorPane = execFileSync("tmux", ["list-panes", "-t", `${SESSION}:`, "-F", "#{pane_id}"], { encoding: "utf8" }).trim().split("\n")[0]!;
 process.env.TMUX = `${socketPath},${serverPid},0`;
 process.env.TMUX_PANE = anchorPane;

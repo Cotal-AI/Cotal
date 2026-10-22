@@ -264,6 +264,20 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   let connB = await connectRw();
   opened.push(connB);
   connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
+  // conn B's own drops, from its status stream. Adopting a renewed rw cred reconnects conn B in place,
+  // and until the redial lands the broker has no conn B to report, so a sweep in that window did not
+  // miss connections.
+  let connBDown = false;
+  let connBDrops = 0;
+  const watchConnB = (nc: NatsConnection): void => {
+    void (async () => {
+      for await (const s of nc.status()) {
+        if (s.type === "disconnect") { connBDown = true; connBDrops++; }
+        else if (s.type === "reconnect") connBDown = false;
+      }
+    })().catch(() => {});
+  };
+  watchConnB(connB);
 
   const kvm = new Kvm(connB);
   let feedKv: KV = await kvm.open(membershipBucket(space));
@@ -359,6 +373,8 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       feedKv = nextFeed;
       membersKv = nextMembers;
       connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
+      connBDown = false;
+      watchConnB(connB);
       // Assign first so a concurrent stop() drains THIS connection rather than the already-closed
       // predecessor. If stop already ran, drain the fresh dial here.
       if (rwStopped) {
@@ -503,6 +519,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     const serverMore = new Set<string>(); // server ids still reporting a full page this round
     const serversSeen = new Set<string>(); // distinct responders across the whole sweep
     let gotReply = false, exhausted = false, seenSelf = false;
+    const dropsBefore = connBDrops;
     for (let page = 0; page < MAX_PAGES; page++) {
       const offset = page * pageLimit;
       const replies = await connzRound(offset);
@@ -539,7 +556,9 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     // would still pass this canary. The sufficient multi-server check is `distinct responding server_ids
     // == expected server count` (expected set discovered via $SYS.REQ.SERVER.PING); deferred with the rest
     // of multi-broker support — a conscious deferral, not a single-server bake-in.
-    if (gotReply && exhausted && !seenSelf)
+    // A sweep that ran while conn B itself was down (its own reconnect) is still incomplete, but it
+    // missed nothing: conn B's return emits a CONNECT event, which polls again.
+    if (gotReply && exhausted && !seenSelf && !connBDown && connBDrops === dropsBefore)
       log(`CONNZ sweep omitted our own rw connection - treating as incomplete (keeping last membership)`);
     // NO-SILENT-DEGRADATION (socrates): in a real cluster the conn-B floor only proves conn B's OWN server
     // answered — a DIFFERENT silent server would still pass `complete` yet under-report its agents. Until

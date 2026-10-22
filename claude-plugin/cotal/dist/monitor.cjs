@@ -55,6 +55,7 @@ function wakeSockets(claudePid) {
 // src/monitor.ts
 var SCAN_MS = 1e3;
 var wakeEvent = (id) => `Cotal: a new message for connection_id ${id}. Read it with cotal_inbox.`;
+var previewEvent = (id, preview) => `Cotal preview for connection_id ${id}: ${JSON.stringify(preview)}`;
 function main() {
   if (hasIdentity()) return;
   const claude = process.argv.includes("--native") ? process.ppid : Number(process.env.CLAUDE_PID);
@@ -72,12 +73,22 @@ function main() {
     s.on("data", (d) => {
       buf += d;
       for (let i; (i = buf.indexOf("\n")) >= 0; ) {
-        const id = buf.slice(0, i);
+        const line = buf.slice(0, i);
         buf = buf.slice(i + 1);
-        if (WAKE_ID.test(id)) process.stdout.write(`${wakeEvent(id)}
+        try {
+          const frame = JSON.parse(line);
+          if (typeof frame.id !== "string" || !WAKE_ID.test(frame.id)) continue;
+          const preview = frame.preview;
+          if (!preview || !Number.isInteger(preview.unread) || !Array.isArray(preview.rows) || preview.rows.length > 8 || !preview.rows.every((row) => typeof row === "string" && Array.from(row).length <= 240)) continue;
+          process.stdout.write(`${previewEvent(frame.id, preview)}
+${wakeEvent(frame.id)}
 `);
+        } catch {
+          if (WAKE_ID.test(line)) process.stdout.write(`${wakeEvent(line)}
+`);
+        }
       }
-      if (buf.length > 256) s.destroy();
+      if (buf.length > 4096) s.destroy();
     });
     s.on("error", () => {
     });

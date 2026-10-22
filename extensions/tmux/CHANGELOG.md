@@ -1,5 +1,13 @@
 # @cotal-ai/tmux
 
+## 0.92.1
+
+### Patch Changes
+
+- c69a00d: The tmux runtime passes `-u` to every tmux call. Without a UTF-8 locale (`LANG`, `LC_CTYPE` and `LC_ALL` unset or not UTF-8) the tmux client wrote tabs and non-ASCII bytes in its output as `_`, so the runtime could not find a window by name and read pane screens with mangled text.
+
+## 0.92.0
+
 ## 0.91.0
 
 ## 0.90.1
