@@ -430,13 +430,14 @@ export const cotalAuthProvider: AuthProvider = {
     const body: unknown = await res.json().catch(() => ({}));
     if (!res.ok) {
       const reason = (body as { error?: string }).error ?? `HTTP ${res.status}`;
-      // 401 is the one refusal with a local remedy; everything else is the mesh's own word. A 401 or
-      // 403 refuses before anything is provisioned. Any other status leaves that open, so it carries
-      // no code.
-      if (res.status === 401)
-        throw credentialFailure("signed-out", `the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp ${idpUrl}\``);
-      const refusal = `the mesh refused to provision agent "${actor}": ${reason}`;
-      throw res.status === 403 ? credentialFailure("refused", refusal) : new Error(refusal);
+      // 401 is the one refusal with a local remedy; everything else is the mesh's own word. The
+      // endpoint is the deployment's, and nothing pins what its refusal left behind, so no answer
+      // carries a code.
+      throw new Error(
+        res.status === 401
+          ? `the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp ${idpUrl}\``
+          : `the mesh refused to provision agent "${actor}": ${reason}`,
+      );
     }
     return body;
   },

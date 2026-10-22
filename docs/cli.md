@@ -2186,10 +2186,10 @@ remote spawn (an enrollment or the advertised provisioning endpoint) removes onl
 credential files; its grant stays until the mesh operator revokes it, and the launch line says
 which arm you are on. A spawn through the advertised provisioning endpoint against a record that
 pins no exchange URL is refused before the grant is requested, so no credential lands on this
-machine. With no sign-in, or when the endpoint answers 401, the spawn is refused with
-`AUTH_REQUIRED`; when the endpoint answers 403 it is refused with `PERMISSION_DENIED`. Both exit 2,
-because nothing was provisioned. Any other provisioning failure, an unanswered request included, is
-reported as `OPERATION_UNKNOWN` (exit 3). A foreground `--share-tools` selection that names a server the config does not declare is
+machine. With no sign-in the spawn is refused with `AUTH_REQUIRED` (exit 2) before any request is
+sent. Any provisioning failure after the request, an endpoint 401 or 403 included, is reported as
+`OPERATION_UNKNOWN` (exit 3): the endpoint belongs to the deployment, and nothing says what its
+refusal left behind. A foreground `--share-tools` selection that names a server the config does not declare is
 refused before anything is provisioned. A managed spawn is an
 **action**: the manager accepts it and allocates the identity, and the CLI waits for a real outcome
 (the agent joins, exits, or about 30 seconds pass) before it reports or attaches (see

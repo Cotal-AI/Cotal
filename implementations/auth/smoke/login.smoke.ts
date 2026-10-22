@@ -155,9 +155,10 @@ console.log("A2) remote agent-provisioning client");
   check("no sign-in is signed-out before any request", signedOut.code === "signed-out" && requests === 0 && signedOut.message.includes("cotal login --idp"));
   saveIdpSession(provisioningHome, idpUrl, { token: "cached-login", expiresAt: Date.now() / 1000 + 600 });
   const expired = await answer(401);
-  check("an endpoint 401 is signed-out and names the login", expired.code === "signed-out" && expired.message.includes("fixture_401") && expired.message.includes("cotal login --idp"));
+  // The endpoint is the deployment's, and nothing pins what its refusal left behind.
+  check("an endpoint 401 carries no code and names the login", expired.code === undefined && expired.message.includes("fixture_401") && expired.message.includes("cotal login --idp"));
   const denied = await answer(403);
-  check("an endpoint 403 is refused with the endpoint's reason", denied.code === "refused" && denied.message.includes("fixture_403"));
+  check("an endpoint 403 carries no code and gives the endpoint's reason", denied.code === undefined && denied.message.includes("fixture_403"));
   const failing = await answer(503);
   check("an endpoint 503 carries no code", failing.code === undefined && failing.message.includes("fixture_503"));
   check("a 200 answer resolves", (await answer(200)).code === "resolved");

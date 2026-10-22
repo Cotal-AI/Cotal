@@ -1570,11 +1570,9 @@ async function provisionRemoteUserForeground(
       body = await provider.postAgentProvisioning({ url: source.provisioningUrl, idpUrl, actor: name });
     } catch (e) {
       materialClaim.release();
-      // No sign-in, or the endpoint's own refusal, comes before anything is provisioned. Any other
-      // failure, an unanswered request included, may have provisioned the actor.
-      const code = (e as { code?: unknown }).code;
-      if (code === "signed-out") throw new CommandFailure("refused", "AUTH_REQUIRED", (e as Error).message);
-      if (code === "refused") throw new CommandFailure("refused", "PERMISSION_DENIED", (e as Error).message);
+      // No sign-in refuses before any request. Any failure after the request, an endpoint refusal
+      // included, may have provisioned the actor.
+      if ((e as { code?: unknown }).code === "signed-out") throw new CommandFailure("refused", "AUTH_REQUIRED", (e as Error).message);
       throw e;
     }
   }
