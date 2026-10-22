@@ -47,7 +47,7 @@ assertEphemeralBroker(servers);
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const configPath = join(dir, "server.conf");
 writeFileSync(configPath, `port: ${port}\njetstream { store_dir: "${join(dir, "js")}" }\n`);
-const startBroker = (): ChildProcess => spawn("nats-server", ["-c", configPath], { stdio: "ignore" });
+const startBroker = (config = configPath): ChildProcess => spawn("nats-server", ["-c", config], { stdio: "ignore" });
 let broker = startBroker();
 const releases = [teardownOnSignal(broker, dir)];
 
@@ -75,6 +75,7 @@ agent.ep.on("error", (error: Error) => {
 });
 let rebuildAgent: MeshAgent | undefined;
 let staleAgent: MeshAgent | undefined;
+let lateAgent: MeshAgent | undefined;
 let inflightAgent: MeshAgent | undefined;
 let overlapAgent: MeshAgent | undefined;
 let blockerAgent: MeshAgent | undefined;
@@ -168,13 +169,18 @@ try {
   // the terminal-close cell. It returns the moment the bind arrives, so the cost is only paid
   // when the bind never gets there, and then the cell fails loudly rather than passing empty.
   const reachedFinalStep = await until(() => bindAtFinalStep, 30_000);
-  await raceAgent.stop();
+  // stop() waits for an in-flight initial bind to finish its stopped teardown, so awaiting it before
+  // the release would wait on the gate this cell holds. Release once the endpoint itself has begun
+  // stopping, which keeps the order the cell is about: the stop lands first, the bind ends after it.
+  const raceStopping = raceAgent.stop();
+  const raceEndpointStopping = await until(() => (raceAgent.ep as unknown as { stopped?: boolean }).stopped === true, 30_000);
   releaseBind();
+  await raceStopping;
   await raceStart;
   check(
     "stop during a REAL initial bind never announces the connection it then tears down",
-    reachedFinalStep && !raceEdges.some((event) => event.connected === true) && raceAgent.connected === false,
-    { reachedFinalStep, raceEdges, ready: raceAgent.connected },
+    reachedFinalStep && raceEndpointStopping && !raceEdges.some((event) => event.connected === true) && raceAgent.connected === false,
+    { reachedFinalStep, raceEndpointStopping, raceEdges, ready: raceAgent.connected },
   );
 
   // A sibling of the readiness race, raised in review. watchStatus seeds `transport: true` as soon as
@@ -251,16 +257,21 @@ try {
     reachedRebuildFinalStep,
     { reachedRebuildFinalStep, rebuildBindAtFinalStep },
   );
-  await rebuildAgent.stop();
+  // As in the initial-bind cell: stop() waits for the held bind, so release it once the endpoint has
+  // begun stopping rather than after stop() returns.
+  const rebuildStopping = rebuildAgent.stop();
+  const rebuildEndpointStopping = await until(() => (rebuildAgent!.ep as unknown as { stopped?: boolean }).stopped === true, 30_000);
   releaseRebuildBind();
+  await rebuildStopping;
   await rebuildWork;
   const rebuildNcAfterStop = (rebuildAgent.ep as unknown as { nc?: unknown }).nc;
   check(
     "stop during a REAL rebuild bind never announces the connection it then tears down",
     reachedRebuildFinalStep
+      && rebuildEndpointStopping
       && !rebuildEdges.slice(rebuildEdgesBeforeReconnect).some((event) => event.connected === true)
       && rebuildAgent.connected === false,
-    { reachedRebuildFinalStep, afterReconnect: rebuildEdges.slice(rebuildEdgesBeforeReconnect), ready: rebuildAgent.connected },
+    { reachedRebuildFinalStep, rebuildEndpointStopping, afterReconnect: rebuildEdges.slice(rebuildEdgesBeforeReconnect), ready: rebuildAgent.connected },
   );
   check(
     "stop during a REAL rebuild bind tears the just-bound connection rather than leaving nc live",
@@ -312,39 +323,56 @@ try {
     { record: staleEp.presenceWriteFailure() },
   );
 
-  // The operator-visible half, and it must be driven through MeshAgent's OWN retry loop, because that
-  // is where the sentence is composed. An earlier version of this cell asserted on stderr after the
-  // failed reconnect alone: connectLoop was not running, no diagnosis was ever produced, and the cell
-  // passed against the unfixed source as readily as the fixed one. A cell that cannot fail is not a
-  // control, so it is driven here and its discrimination is checked in both directions.
-  const staleErr: string[] = [];
-  const realWrite = process.stderr.write.bind(process.stderr);
-  (process.stderr as unknown as { write: (chunk: unknown, ...rest: unknown[]) => boolean }).write = (
-    chunk: unknown,
-    ...rest: unknown[]
-  ): boolean => {
-    staleErr.push(String(chunk));
-    return (realWrite as unknown as (c: unknown, ...r: unknown[]) => boolean)(chunk, ...rest);
-  };
-  const staleLoop = staleAgent.start(100).catch(() => {});
-  await sleep(900);
-  (process.stderr as unknown as { write: unknown }).write = realWrite;
-  const staleLog = staleErr.join("");
-  check(
-    "the retry line names the network rather than claiming the transport is fine",
-    staleLog.includes("mesh unreachable") && !staleLog.includes("the transport is fine and the fault is not the network"),
-    { tail: staleLog.slice(-400) },
-  );
-
   // The same defect wearing a smaller hat: the duration is computed from Date.now(), so a record kept
   // past stop() does not merely go stale, it keeps COUNTING UP for as long as the dead object is held.
   await staleAgent.stop();
-  await staleLoop;
   check(
     "a stopped session reports no presence-refusal record",
     staleEp.presenceWriteFailure() === undefined,
     { record: staleEp.presenceWriteFailure() },
   );
+
+  // The operator-visible half. The retry sentence is composed in MeshAgent's own connect loop, which
+  // runs only while a FIRST start is pending: start() is single-flight, so a session that connected
+  // never re-enters it, and the same-object retry the record cells above came from is no longer
+  // reachable through the public API. Those cells grade the record; this one grades the sentence, as
+  // an operator meets it. A fresh agent dials a port nothing listens on yet, which then becomes an
+  // owned broker. Its one start must log the network retry, without claiming the transport is fine,
+  // BEFORE it connects. The transport was never up here, so this is the network branch only.
+  const latePort = await pickFreePort();
+  const lateServers = `nats://127.0.0.1:${latePort}`;
+  assertEphemeralBroker(lateServers);
+  const lateConfig = join(dir, "late.conf");
+  writeFileSync(lateConfig, `port: ${latePort}\njetstream { store_dir: "${join(dir, "late-js")}" }\n`);
+  lateAgent = new MeshAgent({ ...cfg, servers: lateServers, name: `transport-live-late-${port}` });
+  const lateErr: string[] = [];
+  const realWrite = process.stderr.write.bind(process.stderr);
+  (process.stderr as unknown as { write: (chunk: unknown, ...rest: unknown[]) => boolean }).write = (
+    chunk: unknown,
+    ...rest: unknown[]
+  ): boolean => {
+    lateErr.push(String(chunk));
+    return (realWrite as unknown as (c: unknown, ...r: unknown[]) => boolean)(chunk, ...rest);
+  };
+  let lateSettled: "connected" | "failed" | undefined;
+  void lateAgent.start(100).then(() => (lateSettled = "connected"), () => (lateSettled = "failed"));
+  const retried = await until(() => lateErr.join("").includes("; retrying in 100ms"), 15_000);
+  const pendingAtRetry = lateSettled === undefined;
+  const lateBroker = startBroker(lateConfig);
+  releases.push(teardownOnSignal(lateBroker, dir));
+  const lateConnected = await until(() => lateSettled !== undefined, 30_000) && lateSettled === "connected" && lateAgent.connected;
+  (process.stderr as unknown as { write: unknown }).write = realWrite;
+  const lateLog = lateErr.join("");
+  const retryAt = lateLog.indexOf("mesh unreachable (");
+  check(
+    "a first start that cannot reach its broker logs a network retry, then connects once the broker is up",
+    retried && pendingAtRetry && lateConnected && retryAt >= 0 && retryAt < lateLog.indexOf(`connected to ${lateServers}`) &&
+      !lateLog.includes("the transport is fine and the fault is not the network"),
+    { retried, pendingAtRetry, lateSettled, tail: lateLog.slice(-600) },
+  );
+  await lateAgent.stop();
+  lateBroker.kill("SIGTERM");
+  await awaitExit(lateBroker);
 
   // #1356 COMPOSED WITH #1421: A PUT THAT SETTLES AFTER TEARDOWN MUST NOT RE-PLANT THE RECORD.
   //
@@ -756,6 +784,7 @@ try {
   await blockerAgent?.stop().catch(() => {});
   await overlapAgent?.stop().catch(() => {});
   await inflightAgent?.stop().catch(() => {});
+  await lateAgent?.stop().catch(() => {});
   await staleAgent?.stop().catch(() => {});
   await rebuildAgent?.stop().catch(() => {});
   await agent.stop().catch(() => {});
