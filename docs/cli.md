@@ -3046,11 +3046,14 @@ cotal daemon status [--json|--plain]
 cotal daemon login --idp <auth base URL> [--client-id <id>] [--json|--plain]
 cotal daemon connect-check --space <s> [--json|--plain]
 cotal daemon register --space <s> [--json|--plain]
+cotal daemon service-connect --space <s> [--json|--plain]
+cotal daemon service-disconnect --space <s> [--json|--plain]
+cotal daemon service-status --space <s> [--json|--plain]
 ```
 
-This release serves a local endpoint for status, sign-in, a connection check and a registration
-request only. It does not activate or serve a registration, start a Manager, connect to a mesh or
-Cloud, or install a system service. It supports Linux only. On other
+This release serves a local endpoint for status, sign-in, a connection check, a registration request
+and the daemon's own service connection. It does not start a Manager, serve any command on its
+service, connect to Cloud, or install a system service. It supports Linux only. On other
 platforms, an unset `XDG_RUNTIME_DIR` produces
 `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`); with it set, the platform check refuses `UNSUPPORTED`.
 
@@ -3143,6 +3146,26 @@ does not send. A sign-in the provider rejects (expired or revoked) is `AUTH_REQU
 `cotal daemon login` again. A failure before anything was sent is `DEPENDENCY_UNAVAILABLE`. Only a
 request whose outcome is unconfirmed is `OPERATION_UNKNOWN`: run the same command again
 to replay it. A changed registration for the same instance is refused `CONFLICT` and nothing is sent.
+
+`service-connect` connects the running daemon to the space as its own registered service. It replays
+the saved register request unchanged to read its registration, gets its service credential from the
+space's auth provider, connects to the space's broker as that service, and reports itself ready. It
+succeeds, exit 0, only when both have happened: the broker accepted the connection and the space
+accepted the daemon as ready. The renewal and ready request IDs are kept in
+`<COTAL_HOME>/daemon/<space segment>/service-store/`, mode `0600`, and reused after a restart.
+
+Every other answer is a refusal and nothing is connected. Not yet approved is `LIFECYCLE_BLOCKED`
+(`APPROVAL_PENDING`). A refused registration is `PERMISSION_DENIED`, and so is a space that ended the
+daemon's authority, with its code as the native code, such as `APPROVAL_REVOKED`; connecting again
+does not reconnect it. A space or broker that cannot be reached is `DEPENDENCY_UNAVAILABLE`, and
+connecting again retries the same requests. Without a register request the answer is
+`TARGET_NOT_FOUND`.
+
+The connection renews itself and reconnects on its own. The access bearer lives at most 60 seconds,
+so the broker drops the connection when each one expires and the daemon reconnects with the next.
+`service-status` reads the daemon's current answer without contacting the space. `service-disconnect`
+closes the connection, and stopping the daemon closes all of them. The daemon does not answer any
+command on its service yet.
 
 ## service
 

@@ -11,7 +11,9 @@
  * directory where `cotal login` keeps it, and no token ever crosses the local endpoint. The
  * connection check (`connect.ts`) reads the space's public account identity and keeps the daemon's
  * own per-space identity, never a Manager's. The registration request (`register.ts`) sends one stock
- * `register` for that identity and reports the space's answer; approval stays with the space owner. It is a
+ * `register` for that identity and reports the space's answer; approval stays with the space owner. The
+ * service connection (`service.ts`) connects that approved identity as a stock service through the stock
+ * renewal source and reports it connected only once the broker and the space's ready both accept it. It is a
  * foreground foundation, not a resilient machine service: a daemon killed without cleanup leaves
  * its socket behind, and the next start refuses until the operator removes it (see the
  * ALREADY_RUNNING remedy). `state: "ready"` means the local control listener is bound and
@@ -27,8 +29,8 @@ import { normalizeIdpUrl } from "@cotal-ai/auth";
 import type { Socket } from "node:net";
 import { EndpointRefusal, daemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
-import { connectCheckViaDaemon, loginViaDaemon, queryDaemon, registerViaDaemon } from "./client.js";
-import type { ConnectCheckResult, DaemonStatus, LoginResult, RegisterResult } from "./protocol.js";
+import { connectCheckViaDaemon, loginViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
+import type { ConnectCheckResult, DaemonStatus, LoginResult, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
   jsonFlag,
@@ -205,6 +207,41 @@ async function registerCommand(args: ParsedArgs): Promise<void> {
   ] }));
 }
 
+/** Connect, disconnect or read the daemon's own service connection to a space. Only `connected` (and
+ *  `disconnected` for a disconnect) exits 0; every other state is a refusal naming why. */
+async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service-disconnect" | "service-status"): Promise<void> {
+  const presentation = presentationOf(args.values);
+  const space = (args.values as { space?: string }).space;
+  if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", `cotal daemon ${op} needs --space <s>`);
+  let reply;
+  try {
+    reply = await serviceViaDaemon({ paths: daemonPaths(), peerUid, space, op });
+  } catch (e) {
+    throw asFailure(e);
+  }
+  if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the service request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
+  const r: ServiceConnectionResult = reply.result;
+  const native = { native: { code: (r.state === "ended" && r.reason ? r.reason : r.state).toUpperCase().replaceAll("-", "_") } };
+  const ok = r.state === "connected" || (op === "service-disconnect" && r.state === "disconnected");
+  if (!ok) {
+    const code = r.state === "not-requested" || r.state === "not-registered" ? "TARGET_NOT_FOUND"
+      : r.state === "unsupported" ? "UNSUPPORTED"
+      : r.state === "not-signed-in" ? "AUTH_REQUIRED"
+      : r.state === "refused" || r.state === "ended" ? "PERMISSION_DENIED"
+      : r.state === "conflict" ? "CONFLICT"
+      : r.state === "approval-pending" || r.state === "connecting" ? "LIFECYCLE_BLOCKED"
+      : r.state === "disconnected" ? "TARGET_UNAVAILABLE"
+      : "DEPENDENCY_UNAVAILABLE";
+    throw new CommandFailure("refused", code, r.message, native);
+  }
+  writeResult(presentation, { command: `daemon ${op}`, target: { space }, result: r }, () => ({ sections: [
+    { title: r.state === "connected" ? "Connected" : "Disconnected", blocks: [
+      { kind: "fields", rows: [["Space", r.space], ...(r.instanceId ? [["Instance", r.instanceId] as [string, string]] : [])] },
+      { kind: "lines", lines: [{ text: r.message, tone: "hint" }] },
+    ] },
+  ] }));
+}
+
 async function serve(): Promise<void> {
   let running;
   try {
@@ -228,15 +265,16 @@ async function run(args: ParsedArgs): Promise<void> {
   if (mode === "login") return login(args);
   if (mode === "connect-check") return connectCheckCommand(args);
   if (mode === "register") return registerCommand(args);
-  throw new CommandFailure("refused", "USAGE_INVALID", mode === undefined ? "cotal daemon needs a mode: status, serve, login, connect-check or register" : `unknown daemon mode ${JSON.stringify(mode)}`, { remedy: "cotal daemon status" });
+  if (mode === "service-connect" || mode === "service-disconnect" || mode === "service-status") return serviceCommand(args, mode);
+  throw new CommandFailure("refused", "USAGE_INVALID", mode === undefined ? "cotal daemon needs a mode: status, serve, login, connect-check, register, service-connect, service-disconnect or service-status" : `unknown daemon mode ${JSON.stringify(mode)}`, { remedy: "cotal daemon status" });
 }
 
 const daemonCommand: Command = {
   kind: "command",
   name: "daemon",
   group: "Manager",
-  summary: "the local machine daemon (Linux): serve its control endpoint, read its status, sign it in, check and request its own registration with a space",
-  positionals: "<status|serve|login|connect-check|register>",
+  summary: "the local machine daemon (Linux): serve its control endpoint, read its status, sign it in, check and request its own registration with a space, and connect it as its own service",
+  positionals: "<status|serve|login|connect-check|register|service-connect|service-disconnect|service-status>",
   flags: daemonFlags,
   subcommands: [
     { name: "status", summary: "ask the running daemon for its status over the local endpoint", flagNames: ["json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
@@ -244,9 +282,12 @@ const daemonCommand: Command = {
     { name: "login", summary: "sign the running daemon in to a provider with device approval; the daemon keeps the session", flagNames: ["idp", "client-id", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "connect-check", summary: "ask the running daemon whether it could register with a space as its own service; registers nothing", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "register", summary: "ask the running daemon to request its own service registration with a space; the space owner must approve it, and it does not connect", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "service-connect", summary: "connect the running daemon to a space as its own approved service; succeeds only when the broker accepts the connection and the space accepts it as ready", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "service-disconnect", summary: "close the running daemon's service connection to a space", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "service-status", summary: "read the running daemon's service connection to a space, without contacting it", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
   ],
   prepareMeshTarget: false,
-  examples: ["cotal daemon serve", "cotal daemon status", "cotal daemon status --json", "cotal daemon login --idp https://example.org/api/auth", "cotal daemon connect-check --space acme", "cotal daemon register --space acme"],
+  examples: ["cotal daemon serve", "cotal daemon status", "cotal daemon status --json", "cotal daemon login --idp https://example.org/api/auth", "cotal daemon connect-check --space acme", "cotal daemon register --space acme", "cotal daemon service-connect --space acme", "cotal daemon service-status --space acme"],
   run,
 };
 
