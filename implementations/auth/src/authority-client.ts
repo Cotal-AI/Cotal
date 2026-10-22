@@ -403,17 +403,41 @@ function scopeKey(pattern: RegExp, key: string, what: string): string {
  *  Named residual: this is publish-subject confinement only. Broker permissions do not restrict
  *  what a publish on a granted subject does; the engine's own writes are only creates and
  *  exact-revision CASes. */
-export function serviceHostEffectGrants(space: string, connId: string, keys: ServiceWriteScope): { publish: string[]; subscribe: string[] } {
+export function serviceHostEffectGrants(space: string, connId: string, keys: ServiceWriteScope, reads: ServiceHostEffectReads = NO_EFFECT_READS): { publish: string[]; subscribe: string[] } {
   const base = serviceHostDiscoveryGrants(space, connId);
   const auth = epAuthBucket(space);
   const records = recordsBucket(space);
+  const epc = epcStreamName(space), prefix = spacePrefix(space);
   return {
     publish: [...base.publish,
       ...keys.records.map((k) => `$KV.${records}.${scopeKey(KV_KEY, k, "the records key")}`),
       ...keys.auth.map((k) => `$KV.${auth}.${scopeKey(KV_KEY, k, "the auth key")}`),
-      ...keys.authFamilies.map((f) => `$KV.${auth}.${scopeKey(KV_FAMILY, f, "the auth family")}*`)],
+      ...keys.authFamilies.map((f) => `$KV.${auth}.${scopeKey(KV_FAMILY, f, "the auth family")}*`),
+      ...reads.records.map((k) => `$JS.API.DIRECT.GET.KV_${records}.$KV.${records}.${scopeKey(KV_KEY, k, "the records read")}`),
+      ...reads.contract.flatMap((hex) => {
+        if (!/^[0-9a-f]{64}$/.test(hex)) throw new EpEnvelopeError("bad-request", "a service host effect grant names a contract artifact that is not a sha256 hex digest");
+        return [`${prefix}.epc.${hex}`, `$JS.API.DIRECT.GET.${epc}.${prefix}.epc.${hex}`];
+      })],
     subscribe: base.subscribe,
   };
+}
+
+/** What a native registration reads and publishes beyond its writes: exact records keys read by
+ *  Direct Get (the records store serves its native readers that way), and exact contract
+ *  artifacts it publishes create-only and reads back after a lost create. */
+export interface ServiceHostEffectReads { readonly records: readonly string[]; readonly contract: readonly string[] }
+const NO_EFFECT_READS: ServiceHostEffectReads = Object.freeze({ records: Object.freeze([]), contract: Object.freeze([]) });
+
+/** The SERVICE CALLOUT writer: the base writer, plus the endpoint gate and endpoint credential
+ *  families a native service connection's mint stages and touches.
+ *
+ *  Named residual: a broker ACL cannot confine one endpoint-token key family to service
+ *  assignments, so these families also cover native control endpoints' rows. The native service
+ *  mint writes only the bearer's own assignment rows, and every service gate parse refuses another
+ *  authority family. */
+export function serviceCalloutWriterGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const base = baseAuthorityWriterGrants(space, connId), auth = epAuthBucket(space);
+  return { publish: [...base.publish, `$KV.${auth}.epgate.*.*`, `$KV.${auth}.epcred.*.*.*`], subscribe: base.subscribe };
 }
 
 export interface AuthorityClientOpts {

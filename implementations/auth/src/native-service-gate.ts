@@ -237,13 +237,11 @@ export async function approveNativeServiceGate(reg: LifecycleRegistry, binding: 
   return replace(reg, binding, found, approvedServiceGateRow(found.row, args, rootExpiresAt, now));
 }
 
-/** The host withholds both access and renewal material until this monotonic activation CAS wins. */
-export async function markNativeServiceActivated(reg: LifecycleRegistry, binding: ServiceAssignmentBinding, args: {
-  expectedRevision: number; witness: ServiceRegistrationWitness;
-}): Promise<ServiceGateRead> {
-  const witness = parseServiceRegistrationWitness(args.witness);
-  const found = await current(reg, binding, args.expectedRevision), row = found.row, authority = row.serviceAuthority;
-  const { actor } = coordinates(reg, binding);
+/** Pure activation precondition and successor on a read gate row: `undefined` when the row is
+ *  already activated at this witness. The caller still proves the native root live before the CAS. */
+export function activatedServiceGateRow(row: ServiceRow, binding: ServiceAssignmentBinding, raw: ServiceRegistrationWitness, nowMs: number): ServiceRow | undefined {
+  const witness = parseServiceRegistrationWitness(raw), authority = row.serviceAuthority;
+  const actor = serviceEndpointActor(binding);
   if (witness.accountPublicKey !== binding.accountPublicKey || witness.space !== binding.space
     || witness.endpoint !== binding.endpoint || witness.instanceId !== binding.instanceId
     || witness.principal.owner !== binding.owner || witness.principal.actor !== actor
@@ -252,12 +250,20 @@ export async function markNativeServiceActivated(reg: LifecycleRegistry, binding
     || witness.registrationRevision !== row.registrationRevision || witness.nameAuthorityRevision !== row.nameAuthorityRevision
     || !authority.registration || witness.registrationRequestId !== authority.registration.requestId || witness.registrationProof !== authority.registration.registrationProof)
     conflict("activation witness does not match the current service registration");
-  const now = Date.now();
-  if (row.state !== "open" || !serviceGateApprovalLive(authority, Math.floor(now / 1000)))
+  if (row.state !== "open" || !serviceGateApprovalLive(authority, Math.floor(nowMs / 1000)))
     throw new EpEnvelopeError("expired", "service approval no longer permits activation");
-  await rootExpiry(reg, binding, witness.rootCredentialId, now);
-  if (authority.activationIssued) return found;
-  return replace(reg, binding, found, { ...row, serviceAuthority: { ...authority, activationIssued: true } });
+  return authority.activationIssued ? undefined : { ...row, serviceAuthority: { ...authority, activationIssued: true } };
+}
+
+/** The host withholds both access and renewal material until this monotonic activation CAS wins. */
+export async function markNativeServiceActivated(reg: LifecycleRegistry, binding: ServiceAssignmentBinding, args: {
+  expectedRevision: number; witness: ServiceRegistrationWitness;
+}): Promise<ServiceGateRead> {
+  const found = await current(reg, binding, args.expectedRevision), now = Date.now();
+  coordinates(reg, binding);
+  const next = activatedServiceGateRow(found.row, binding, args.witness, now);
+  await rootExpiry(reg, binding, args.witness.rootCredentialId, now);
+  return next === undefined ? found : replace(reg, binding, found, next);
 }
 
 /** Durable deny-new only. This is never a terminal retirement result or broker absence proof. */

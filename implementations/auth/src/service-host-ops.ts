@@ -15,15 +15,19 @@
 import { createHash } from "node:crypto";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
-  EpEnvelopeError, assertDerivedOwnerToken, assertLifecycleToken, canonicalJson, contractDigest, endpointToken,
-  isContractDigest, mintLifecycleUid, parseEndpointCapabilities, parseNativeUidCustody, serviceEndpointActor,
-  type EpCapability, type EpCommandAuthority, type ServiceUidCustodyV1,
+  EpEnvelopeError, GOVERN_HEAD, RECORD_KINDS, assertDerivedOwnerToken, assertLifecycleToken, canonicalJson, contractArtifactCanonicalBytes,
+  contractDigest, contractStoreContext, endpointRegistrationBarrier, endpointToken, epgateKey, isContractDigest, mintLifecycleUid,
+  parseEndpointCapabilities, parseNativeUidCustody, parseServiceSpec, parseServiceStatus, publishContractArtifact, recordAtomicKey,
+  recordSpecKey, recordStatusKey, registerServiceInstance, serviceEndpointActor, serviceGateApprovalLive, serviceWitnessDigest,
+  verifyClusterManifest, verifyClusterRoot, writeServiceStatus,
+  type ContractStoreContext, type EpCapability, type EpCommandAuthority, type ServiceAuthorityStatus, type ServiceRegistrationSnapshot,
+  type ServiceRegistrationWitness, type ServiceSpec, type ServiceUidCustodyV1,
 } from "@cotal-ai/core";
-import { SERVICE_HOST_INVOCATION_MS, openAuthorityClient, serviceHostEffectGrants, serviceHostEffectLabel } from "./authority-client.js";
+import { SERVICE_HOST_INVOCATION_MS, openAuthorityClient, serviceHostEffectGrants, serviceHostEffectLabel, type ServiceHostEffectReads } from "./authority-client.js";
 import { findInteractiveActor } from "./ledger.js";
-import { openLifecycleRegistry, type LifecycleRegistry } from "./lifecycle-registry.js";
-import { approvedServiceGateRow, assertApprovableServiceGate, type ServiceAssignmentBinding, type ServiceGateRows } from "./native-service-gate.js";
-import { readNativeServiceName, serviceNameKey, serviceNameRowBytes } from "./native-service-name.js";
+import { openLifecycleRegistry, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
+import { activatedServiceGateRow, approvedServiceGateRow, assertApprovableServiceGate, type ServiceAssignmentBinding, type ServiceGateRows } from "./native-service-gate.js";
+import { nativeServiceNameAuthority, readNativeServiceName, serviceNameKey, serviceNameRowBytes } from "./native-service-name.js";
 import type { PlaneClaimHold } from "./plane-claim.js";
 import { encodeRoundTrip } from "./service-custody-shapes.js";
 import {
@@ -39,8 +43,8 @@ import {
 } from "./service-host-contract.js";
 import { readRegistryServiceRoot } from "./service-root-reader.js";
 import {
-  HOSTS, Held, bounded, context, endpoint, held, leader, message, openServiceCustodyHost, scopeCovers, write,
-  type Ctx, type EndpointClass, type HostInternals, type ServiceCustodyHost, type ServiceWriteScope,
+  HOSTS, Held, bounded, context, endpoint, held, leader, message, openServiceCustodyHost, readyAfter, readyBefore, scopeCovers, write,
+  type Ctx, type EndpointClass, type EndpointRow, type HostInternals, type ServiceCustodyHost, type ServiceWriteScope,
 } from "./service-write.js";
 
 /** Original authority limit of one approve, refuse or register, from its admission. */
@@ -55,12 +59,16 @@ export const S2A_MAX_PENDING_PER_OWNER = 32;
 export const S2A_MAX_PROPOSAL_BYTES = 256 * 1024;
 /** Fresh decisions after a CAS loss before a step holds. */
 export const S2A_MAX_REDECIDE = 4;
+/** Serving request intents one instance keeps (SPEC 13.1): never pruned or reused in this cut. */
+export const S3_MAX_INTENTS_PER_INSTANCE = 64;
 
 const ADMISSION_KEY = "svchost.admission";
 const CAPACITY_KEY = "svccap.space";
 const opKey = (operationId: string) => `svcop.${operationId}`;
 const proposalKey = (proposalId: string) => `svcprop.${proposalId}`;
 const assignmentKey = (endpoint: string, instanceId: string) => `svcasg.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}`;
+const intentKey = (operationId: string) => `svcint.${hexN(operationId, 32)}`;
+const intentIndexKey = (endpoint: string, instanceId: string) => `svcintx.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}`;
 const enc = new TextEncoder();
 const seconds = (ms: number) => Math.floor(ms / 1000);
 
@@ -309,6 +317,41 @@ export function parseServiceAssignmentRecord(raw: unknown): Assignment {
   closed(raw, ["v", "kind", "state", "endpoint", "instanceId", "owner", "proposalId", "assignmentDigest", "cancel"]); pick(o.state, ["fenced"]);
   return { ...base(o), state: "fenced", cancel: cancelOf(o.cancel) };
 }
+export type ServiceServeOperation = "register" | "activate" | "renew" | "ready";
+const SERVE_OPERATIONS: readonly ServiceServeOperation[] = ["register", "activate", "renew", "ready"];
+/** One public serving request, bound before its first effect. It holds no proof, token or reply. */
+interface Intent {
+  v: 1; kind: "service-request-intent"; operationId: string; operation: ServiceServeOperation; account: Account;
+  owner: string; endpoint: string; instanceId: string; requestId: string; requestDigest: string;
+  /** The registration the request names: register's expected witness (null for unregistered), or the request witness. */
+  registrationRequestId: string | null; witnessDigest: string | null; admittedAtMs: number;
+}
+interface IntentIndex {
+  v: 1; kind: "service-request-intent-index"; owner: string; endpoint: string; instanceId: string;
+  intents: { operationId: string; operation: ServiceServeOperation }[];
+}
+export function parseServiceRequestIntentRecord(raw: unknown): Intent {
+  const o = closed(raw, ["v", "kind", "operationId", "operation", "account", "owner", "endpoint", "instanceId", "requestId", "requestDigest",
+    "registrationRequestId", "witnessDigest", "admittedAtMs"]);
+  if (o.v !== 1 || o.kind !== "service-request-intent") bad("unknown version or kind");
+  const operation = pick(o.operation, SERVE_OPERATIONS);
+  const registrationRequestId = o.registrationRequestId === null ? null : hexN(o.registrationRequestId, 32);
+  const witnessDigest = o.witnessDigest === null ? null : digest(o.witnessDigest);
+  if ((registrationRequestId === null) !== (witnessDigest === null) || (operation !== "register" && witnessDigest === null))
+    bad("a request intent names its registration exactly when it has a witness");
+  return { v: 1, kind: "service-request-intent", operationId: hexN(o.operationId, 32), operation, account: account(o.account),
+    owner: owner(o.owner), endpoint: endpointName(o.endpoint), instanceId: token(o.instanceId, "instanceId"), requestId: hexN(o.requestId, 32),
+    requestDigest: digest(o.requestDigest), registrationRequestId, witnessDigest, admittedAtMs: ms(o.admittedAtMs) };
+}
+export function parseServiceRequestIntentIndexRecord(raw: unknown): IntentIndex {
+  const o = closed(raw, ["v", "kind", "owner", "endpoint", "instanceId", "intents"]);
+  if (o.v !== 1 || o.kind !== "service-request-intent-index") bad("unknown version or kind");
+  if (!Array.isArray(o.intents) || o.intents.length === 0 || o.intents.length > S3_MAX_INTENTS_PER_INSTANCE) bad("invalid intent list");
+  const intents = o.intents.map((x) => { const e = closed(x, ["operationId", "operation"]); return { operationId: hexN(e.operationId, 32), operation: pick(e.operation, SERVE_OPERATIONS) }; });
+  if (intents.some((x, i) => i > 0 && intents[i - 1]!.operationId >= x.operationId)) bad("intents must be sorted and unique");
+  return { v: 1, kind: "service-request-intent-index", owner: owner(o.owner), endpoint: endpointName(o.endpoint), instanceId: token(o.instanceId, "instanceId"), intents };
+}
+
 export function parseServiceAdmissionRecord(raw: unknown): Admission {
   const o = closed(raw, ["v", "kind", "state", "epoch", "restoreId"]);
   if (o.v !== 1 || o.kind !== "service-host-admission") bad("unknown version or kind");
@@ -336,6 +379,8 @@ const readProposal = (ctx: Ctx, id: string) => read(ctx, proposalKey(id), "propo
 const readCapacity = (ctx: Ctx) => read(ctx, CAPACITY_KEY, "capacity", parseServiceCapacityRecord);
 const readAssignment = (ctx: Ctx, endpointName: string, instanceId: string) => read(ctx, assignmentKey(endpointName, instanceId), "assignment", parseServiceAssignmentRecord);
 const readAdmission = (ctx: Ctx) => read(ctx, ADMISSION_KEY, "admission", parseServiceAdmissionRecord);
+const readIntent = (ctx: Ctx, id: string) => read(ctx, intentKey(id), "intent", parseServiceRequestIntentRecord);
+const readIntentIndex = (ctx: Ctx, endpointName: string, instanceId: string) => read(ctx, intentIndexKey(endpointName, instanceId), "intent-index", parseServiceRequestIntentIndexRecord);
 
 /** One zero-history create (no prior) or exact-revision CAS of a closed record. */
 function put<T>(ctx: Ctx, key: string, row: T, parse: (v: unknown) => T, prior?: { revision: number; bytes: Uint8Array }): Promise<number | "moved"> {
@@ -428,19 +473,23 @@ async function retryDebt(ctx: Ctx, op: Op, registerRequestIdOf: (proposalId: str
 
 /** What discovery located for one invocation before its effect connection opens. */
 export interface ServiceHostScopeTarget {
-  operation: "startup" | "register" | "decide" | "revoke" | "name-bind";
+  operation: "startup" | "register" | "decide" | "revoke" | "name-bind" | "serve";
   operationId: string | null;
   proposalId: string | null;
   owner: string | null;
   endpoint: string | null;
   instanceId: string | null;
   lifecycleUid: string | null;
+  /** A serving invocation's public operation; required exactly when `operation` is `serve`. */
+  serve?: ServiceServeOperation;
+  /** The contract artifacts (sha256 hex) a serving registration publishes. */
+  contract?: readonly string[];
 }
 /** One invocation's scope: its target, the exact keys it may write and its original deadline. The
  *  engine guards every write with `keys` and never starts a request at or past `deadlineMs`, so an
  *  effect credential granted from the same keys and expiring from the same deadline cannot differ
  *  from it. */
-export interface ServiceHostEffectScope extends ServiceHostScopeTarget { readonly keys: ServiceWriteScope; readonly deadlineMs: number }
+export interface ServiceHostEffectScope extends ServiceHostScopeTarget { readonly keys: ServiceWriteScope; readonly reads: ServiceHostEffectReads; readonly deadlineMs: number }
 
 /** The one key source for an invocation's writes: its own S2-A records, plus native custody's keys
  *  for the located reservation. A decide with a reservation can bootstrap it; a revoke only cancels. */
@@ -469,28 +518,56 @@ export function serviceHostScopeKeys(account: { accountPublicKey: string; space:
       if (t.endpoint === null) bad("a name binding scope names its endpoint");
       auth.push(serviceNameKey(t.endpoint));
       break;
+    case "serve": {
+      // A serving request writes its intent and its instance's index, then only its own effect's keys.
+      if (t.endpoint === null || t.instanceId === null || t.serve === undefined) bad("a serving scope names its selector and operation");
+      auth.push(intentKey(hexN(t.operationId, 32)), intentIndexKey(t.endpoint, t.instanceId));
+      if (t.serve === "register" || t.serve === "activate") auth.push(epgateKey(t.endpoint, t.instanceId));
+      records.push(...serveRecordKeys(t).writes);
+      break;
+    }
   }
   const uniq = (a: string[]) => Object.freeze([...new Set(a)]);
   return Object.freeze({ records: uniq(records), auth: uniq(auth), authFamilies: uniq(authFamilies) });
 }
+/** A native registration writes and reads the spec and the endpoint's governance head; readiness
+ *  writes the status and reads it with the spec. */
+function serveRecordKeys(t: ServiceHostScopeTarget): { writes: string[]; reads: string[] } {
+  if (t.operation !== "serve" || t.endpoint === null || t.instanceId === null) return { writes: [], reads: [] };
+  const sel = [t.endpoint, assertLifecycleToken(t.instanceId, "instanceId")];
+  const spec = recordSpecKey(RECORD_KINDS.svc, sel), status = recordStatusKey(RECORD_KINDS.svc, sel), govern = recordAtomicKey(GOVERN_HEAD, [t.endpoint]);
+  if (t.serve === "register") return { writes: [spec, govern], reads: [spec, govern] };
+  if (t.serve === "ready") return { writes: [status], reads: [spec, status] };
+  return { writes: [], reads: [] };
+}
+/** What one invocation's effect credential may read by Direct Get and publish to the contract store. */
+export function serviceHostScopeReads(t: ServiceHostScopeTarget): ServiceHostEffectReads {
+  const contract = t.operation === "serve" && t.serve === "register" ? [...(t.contract ?? [])] : [];
+  return Object.freeze({ records: Object.freeze([...new Set(serveRecordKeys(t).reads)]), contract: Object.freeze([...new Set(contract)]) });
+}
 const NO_WRITES: ServiceWriteScope = Object.freeze({ records: Object.freeze([]), auth: Object.freeze([]), authFamilies: Object.freeze([]) });
 /** One per-invocation effect connection's registry. `gone` resolves when the connection is gone for
  *  good, which fences the invocation. `close` runs only after every awaited call returned. */
-export interface ServiceHostEffect { registry: LifecycleRegistry; gone: Promise<void>; close(): Promise<void> }
+export interface ServiceHostEffect { registry: LifecycleRegistry; gone: Promise<void>; close(): Promise<void>;
+  /** The contract store over the same connection; a serving registration holds without it. */
+  contract?: ContractStoreContext }
 
 /** Open one invocation's effect connection: a fresh identity whose credential publishes exactly
  *  `scope.keys`, never reconnects or renews, and expires at `scope.deadlineMs` rounded up to the
  *  whole second. The registry over it is the effect registry. */
 export async function openServiceHostEffect(
   opts: { server: string; space: string; dataAccount: { pub: string; signingSeed: string }; log: (line: string) => void; onConnection?: (nc: NatsConnection, label: string) => void },
-  scope: Pick<ServiceHostEffectScope, "keys" | "deadlineMs">,
+  scope: Pick<ServiceHostEffectScope, "keys" | "deadlineMs"> & { reads?: ServiceHostEffectReads },
 ): Promise<ServiceHostEffect> {
   const client = await openAuthorityClient({
     server: opts.server, space: opts.space, dataAccount: opts.dataAccount, log: opts.log, label: serviceHostEffectLabel(opts.space),
-    grants: (connId) => serviceHostEffectGrants(opts.space, connId, scope.keys), noReconnect: true, serviceHostInvocation: { deadlineMs: scope.deadlineMs },
+    grants: (connId) => serviceHostEffectGrants(opts.space, connId, scope.keys, scope.reads), noReconnect: true, serviceHostInvocation: { deadlineMs: scope.deadlineMs },
     ...(opts.onConnection ? { onConnection: opts.onConnection } : {}),
   });
-  try { return { registry: await openLifecycleRegistry(client.nc, opts.space), gone: client.gone!, close: () => client.close() }; }
+  try {
+    return { registry: await openLifecycleRegistry(client.nc, opts.space), gone: client.gone!, close: () => client.close(),
+      contract: await contractStoreContext(client.nc, opts.space) };
+  }
   catch (e) { await client.close().catch(() => {}); throw e; }
 }
 export interface ServiceHostOperationsOptions {
@@ -504,7 +581,44 @@ export interface ServiceHostOperationsOptions {
   ledgerDir: string;
   /** Required. Only normal startup is supported; restore refuses construction. */
   startup?: { kind: "normal" } | { kind: "restore"; restoreId: string };
+  /** Serving reads a registered closure's artifacts from the contract store; without it a
+   *  serving read that needs them is unavailable. */
+  serving?: { readContractArtifact(digest: string): Promise<unknown> };
 }
+/** One verified public serving request (SPEC 13.1). The face verified the proof: `owner` is an IdP
+ *  owner, whose current interactive row the engine still requires, or a service proof's witness
+ *  owner whose proof binds `witness`. */
+export interface ServiceServeRequest {
+  operation: ServiceServeOperation;
+  caller: "owner" | "service";
+  owner: string; endpoint: string; instanceId: string;
+  /** The public request id and digest, and the engine request id of its full idempotency key. */
+  requestId: string; requestDigest: string; engineRequestId: string;
+  /** activate, renew and ready: the request witness. register: the expected witness, or null for unregistered. */
+  witness: ServiceRegistrationWitness | null;
+  /** register only: the compiled surface and the submitted artifacts. */
+  register?: { clusterDigests: string[]; commands: Command[]; artifacts: unknown[] };
+}
+export type ServiceServeResult =
+  | { state: "registered"; witness: ServiceRegistrationWitness; snapshot: ServiceRegistrationSnapshot }
+  /** activate (after its CAS) and renew: the current registration and the fixed bounds material may not outlive. */
+  | { state: "current"; witness: ServiceRegistrationWitness; snapshot: ServiceRegistrationSnapshot; rootExpiresAt: number; approvalExpiresAt: number | null }
+  | { state: "ready"; witness: ServiceRegistrationWitness; reportedAt: number }
+  | { state: "denied"; reason: string }
+  /** Unread, unknown or inconsistent: the request may be bound, and its identity must be kept. */
+  | { state: "unavailable"; detail: string };
+/** One status query by a verified reader: an IdP owner, or a service proof's witness. */
+export interface ServiceStatusQuery {
+  owner: string; endpoint: string; instanceId: string;
+  reader: { kind: "owner" } | { kind: "service"; witness: ServiceRegistrationWitness };
+  target: { kind: "instance" } | { kind: "operation"; operation: ServiceServeOperation; engineRequestId: string };
+}
+export type ServiceStatusAnswer =
+  | { kind: "status"; status: ServiceAuthorityStatus }
+  /** A register with no intent: its proposal-phase operation record answers. */
+  | { kind: "proposal-phase" }
+  | { kind: "not-found" }
+  | { kind: "unavailable"; detail: string };
 export interface ServiceRegisterRequest {
   v: 1; kind: "service-endpoint-host"; requestId: string; operation: "register";
   input: { owner: string; endpoint: string; instanceId: string; clusterDigests: string[]; commands: Command[];
@@ -530,6 +644,12 @@ export interface ServiceHostOperations {
   /** One owner's assignment at a selector, from one discovery read of its record and endpoint gate.
    *  Another owner's assignment reads absent. For the authority door, which proved the owner. */
   serviceState(owner: string, endpoint: string, instanceId: string): Promise<ServiceAssignmentState>;
+  /** One verified serving request: intent, quota and binding, then its effect (SPEC 13.1). */
+  serve(request: ServiceServeRequest): Promise<ServiceServeResult>;
+  /** Instance or serving-operation status, by the precedence rules; never a guessed absence. */
+  serveStatus(query: ServiceStatusQuery): Promise<ServiceStatusAnswer>;
+  /** The current bound assignment a service witness names, for the native service callout; throws otherwise. */
+  serviceBinding(witness: ServiceRegistrationWitness): Promise<ServiceAssignmentBinding>;
   /** The engine-level fatal latch: refuses new invocations and trips every live invocation host. */
   trip(reason: string): void;
   /** From the moment it is called, refuses every later call with the latch's answers. */
@@ -546,10 +666,10 @@ export interface ServiceHostOperations {
 export type ServiceAssignmentState =
   | { state: "absent" } | { state: "unavailable" }
   | { state: "pending-root"; proposalId: string; assignmentDigest: string }
-  | { state: "approved"; proposalId: string; assignmentDigest: string; approvalDigest: string }
+  | { state: "approved"; proposalId: string; assignmentDigest: string; approvalDigest: string; registrationRequestId: string | null }
   | { state: "revoking"; proposalId: string; assignmentDigest: string; operationId: string; denyNew: ServiceDenyNew };
 
-interface Inv { host: ServiceCustodyHost; h: HostInternals; writes: ServiceWriteScope; endMs: number; operationId: string; bound: boolean; assignmentDigest?: string }
+interface Inv { host: ServiceCustodyHost; h: HostInternals; writes: ServiceWriteScope; endMs: number; operationId: string; bound: boolean; assignmentDigest?: string; contract?: ContractStoreContext }
 const denied = (reason: ServiceHostReason, boundOperationId?: string): Arms => ({ state: "denied", reason, ...(boundOperationId ? { boundOperationId } : {}) });
 const refusedArm = (operationId: string, reason: ServiceOperationRefusal, debts: ServiceHostDebt[], boundOperationId?: string): Arms =>
   ({ state: "refused", operationId, reason, ...(boundOperationId ? { boundOperationId } : {}), ...(debts.length ? { debt: debts } : {}) });
@@ -597,21 +717,25 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
    *  engine latch. The connection's loss trips the host. Every awaited call returns before close. */
   async function invoke<T>(target: ServiceHostScopeTarget, run: (inv: Inv) => Promise<T>): Promise<T> {
     if (tripped !== undefined) throw new Held("readiness", "open", `the service host is fenced: ${tripped}`);
-    const keys = serviceHostScopeKeys({ accountPublicKey, space }, target);
+    const keys = serviceHostScopeKeys({ accountPublicKey, space }, target), reads = serviceHostScopeReads(target);
     const deadlineMs = Date.now() + S2A_INVOCATION_MS;
-    const scope: ServiceHostEffectScope = Object.freeze({ ...target, keys, deadlineMs });
+    const scope: ServiceHostEffectScope = Object.freeze({ ...target, keys, reads, deadlineMs });
     let effect: ServiceHostEffect;
     try { effect = await opts.openEffect(scope); }
     catch (e) { throw new Held("unavailable", "effect-open", `the invocation's effect connection did not open: ${message(e)}`); }
     try {
-      const { host, trip } = openServiceCustodyHost({ registry: effect.registry, hold: opts.hold, accountPublicKey, writes: keys });
+      const opened = openServiceCustodyHost({ registry: effect.registry, hold: opts.hold, accountPublicKey, writes: keys }), host = opened.host;
       if (host.space !== space) throw new EpEnvelopeError("permission-denied", "the effect registry belongs to another space");
+      // A native registration writes through its own client, not the custody writer: a trip also
+      // closes its connection, so none of its requests is issued after the fence.
+      const native = target.operation === "serve" && target.serve === "register";
+      const trip = (reason: string) => { opened.trip(reason); if (native) void effect.close().catch(() => {}); };
       live.add(trip);
       if (tripped !== undefined) trip(tripped);
       // Attached before the first request: a write issued after the loss holds, one in flight across it reports held.
       void effect.gone.then(() => trip("the invocation's effect connection is gone"));
       const h = HOSTS.get(host)!;
-      try { return await run({ host, h, writes: h.writes!, endMs: deadlineMs, operationId: target.operationId ?? "", bound: true }); }
+      try { return await run({ host, h, writes: h.writes!, endMs: deadlineMs, operationId: target.operationId ?? "", bound: true, ...(effect.contract ? { contract: effect.contract } : {}) }); }
       finally { live.delete(trip); }
     } finally { await effect.close(); }
   }
@@ -664,6 +788,9 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
 
   // ---- register (R1-R7) ---------------------------------------------------------------------------
 
+  const proposalBodyDigest = (sel: { owner: string; endpoint: string; instanceId: string }, clusterDigests: string[], commands: Command[]) =>
+    contractDigest({ v: 1, kind: "service-proposal-body", accountPublicKey, space, ...sel, clusterDigests, commands });
+
   type Selector = { owner: string; endpoint: string; instanceId: string };
   type Registered = { state: "registered"; outcome: ServiceHostOutcome; operationId: string; proposalId: string; proposalDigest: string; revision: number; expiresAtMs: number; debt?: ServiceHostDebt[] };
   /** R3: the initial refusal reasons, from one read of each authority. */
@@ -693,7 +820,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     try { serviceNameKey(e); }
     catch (err) { if (err instanceof EpEnvelopeError && err.code === "permission-denied") return out(denied("permission-denied")); throw err; }   // never binds
     const operationId = serviceHostOperationId(space, req.requestId), requestDigest = requestDigestOf(req);
-    const proposalDigest = contractDigest({ v: 1, kind: "service-proposal-body", accountPublicKey, space, owner: o, endpoint: e, instanceId: i, clusterDigests, commands });
+    const proposalDigest = proposalBodyDigest({ owner: o, endpoint: e, instanceId: i }, clusterDigests, commands);
     const proposalId = proposalIdOf(proposalDigest, req.requestId);
     const proposalRow = (p: RegisterPlan): ProposalLive => ({ v: 1, kind: "service-proposal", proposalId, proposalDigest, account: { accountPublicKey, space },
       owner: o, endpoint: e, instanceId: i, register: { requestId: req.requestId, requestDigest, operationId }, createdAtMs: p.createdAtMs, expiresAtMs: p.expiresAtMs,
@@ -1385,6 +1512,382 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     } catch (err) { if (err instanceof Held) return unread(req.requestId, err.reason, err.step); throw err; }
   }
 
+  // ---- serving: register, activate, renew and ready (SPEC 13.1) -----------------------------------
+
+  type Bound = { state: "bound"; row: Extract<Assignment, { state: "bound" }>; binding: ServiceAssignmentBinding; epgate: ServiceGateRows };
+  type Binding = { state: "absent" } | { state: "fenced"; row: Extract<Assignment, { state: "fenced" }> } | Bound;
+  const deniedServe = (reason: string): ServiceServeResult => ({ state: "denied", reason });
+  /** The owner's own assignment at a selector; another owner's reads absent. */
+  async function bindingOf(ctx: Ctx, o: string, e: string, i: string): Promise<Binding> {
+    const asg = await readAssignment(ctx, e, i);
+    if (asg.state === "absent" || asg.row.owner !== o) return { state: "absent" };
+    if (asg.row.state === "fenced") return { state: "fenced", row: asg.row };
+    return { state: "bound", row: asg.row, ...serviceAssignmentGate(discovery.host, asg.row.reservation) };
+  }
+  /** A witness is a public coordinate: it must name this selector, owner, actor and lifecycle. */
+  const namesBinding = (w: ServiceRegistrationWitness, b: ServiceAssignmentBinding) =>
+    w.accountPublicKey === accountPublicKey && w.space === space && w.endpoint === b.endpoint && w.instanceId === b.instanceId
+    && w.principal.owner === b.owner && w.principal.actor === serviceEndpointActor(b) && w.principal.lifecycleUid === b.lifecycleUid;
+  /** The witness of a gate's current registration stamp, or undefined when the gate has none. A stamp
+   *  whose coordinates disagree with the gate's is inconsistent and holds. */
+  function stampWitness(ctx: Ctx, b: ServiceAssignmentBinding, row: EndpointRow): ServiceRegistrationWitness | undefined {
+    const a = row.serviceAuthority, stamp = a.registration;
+    if (stamp === undefined) return undefined;
+    if (a.rootCredentialId === null || a.approvalDigest === null || stamp.processEpoch !== row.processEpoch
+      || stamp.registrationRevision !== row.registrationRevision || stamp.nameAuthorityRevision !== row.nameAuthorityRevision)
+      return held("registration-inconsistent", ctx.step, "the registration stamp disagrees with its endpoint gate");
+    return { accountPublicKey, space, endpoint: b.endpoint, instanceId: b.instanceId,
+      principal: { owner: b.owner, actor: serviceEndpointActor(b), lifecycleUid: b.lifecycleUid },
+      rootCredentialId: a.rootCredentialId, approvalDigest: a.approvalDigest, processEpoch: stamp.processEpoch,
+      registrationRevision: stamp.registrationRevision, nameAuthorityRevision: stamp.nameAuthorityRevision,
+      registrationRequestId: stamp.requestId, registrationProof: stamp.registrationProof };
+  }
+  /** The closures' manifest and root documents, each verified against its digest. */
+  async function closureArtifacts(ctx: Ctx, clusterDigests: string[]): Promise<unknown[]> {
+    const reader = opts.serving?.readContractArtifact;
+    if (reader === undefined) return held("unavailable", ctx.step, "this host has no contract store reader");
+    const get = async (d: string) => {
+      const r = await bounded(ctx, () => reader(d));
+      if (!r.ok) return held("unavailable", ctx.step, "timedOut" in r ? `the contract artifact ${d} read timed out` : message(r.error));
+      return r.value;
+    };
+    const out: unknown[] = [];
+    for (const closure of clusterDigests) {
+      const manifest = await get(closure);
+      const document = await grammarHeld(ctx, async () => { const { root } = verifyClusterManifest(closure, manifest); const raw = await get(root); verifyClusterRoot(root, raw); return raw; });
+      out.push(manifest, document);
+    }
+    return out;
+  }
+  /** A read that its own parser or verifier refuses holds as inconsistent, never as absence. */
+  async function grammarHeld<T>(ctx: Ctx, f: () => Promise<T> | T): Promise<T> {
+    try { return await f(); } catch (e) { if (e instanceof Held) throw e; return held("registration-inconsistent", ctx.step, message(e)); }
+  }
+  /** The registered spec at the witness revision, the name revision and the closures' artifacts. */
+  async function snapshotOf(ctx: Ctx, w: ServiceRegistrationWitness, artifacts?: unknown[]): Promise<ServiceRegistrationSnapshot> {
+    const cur = await leader(ctx, "records", recordSpecKey(RECORD_KINDS.svc, [w.endpoint, w.instanceId]));
+    if (cur.state !== "value" || cur.revision !== w.registrationRevision)
+      return held("registration-inconsistent", ctx.step, "the registered spec is not readable at the witness revision");
+    const spec: ServiceSpec = await grammarHeld(ctx, () => parseServiceSpec(cur.value, { endpoint: w.endpoint }));
+    if (spec.owner !== w.principal.owner) return held("registration-inconsistent", ctx.step, "the registered spec names another owner");
+    return { spec: { value: spec, revision: cur.revision }, name: { authorized: true, revision: w.nameAuthorityRevision }, processEpoch: w.processEpoch,
+      contractArtifacts: artifacts ?? await closureArtifacts(ctx, spec.clusterDigests) };
+  }
+  /** The service-reported ready status at the witness's epoch and spec revision, if recorded. */
+  async function reportedAt(ctx: Ctx, w: ServiceRegistrationWitness): Promise<number | undefined> {
+    const cur = await leader(ctx, "records", recordStatusKey(RECORD_KINDS.svc, [w.endpoint, w.instanceId]));
+    if (cur.state === "absent" || cur.state === "marker") return undefined;
+    if (cur.state === "malformed") return held("registration-inconsistent", ctx.step, "the service status is not JSON");
+    const status = await grammarHeld(ctx, () => parseServiceStatus(cur.value));
+    const at = (status as { reportedAt?: unknown }).reportedAt;
+    return status.state === "ready" && status.epoch === w.processEpoch && status.observedSpecRevision === w.registrationRevision
+      && typeof at === "number" && Number.isSafeInteger(at) && at >= 0 ? at : undefined;
+  }
+  /** The live native root's expiry in Unix seconds; a refused proof is a definite refusal. */
+  async function rootExpiresAt(ctx: Ctx, inv: Inv, b: ServiceAssignmentBinding, rootCredentialId: string): Promise<number | ServiceServeResult> {
+    const r = await bounded(ctx, () => readRegistryServiceRoot(inv.h.registry, b, rootCredentialId, Date.now()));
+    if (r.ok) return r.value.expiresAt;
+    if ("error" in r && r.error instanceof EpEnvelopeError && r.error.code === "permission-denied") return deniedServe("root-revoked");
+    return held("unavailable", ctx.step, "timedOut" in r ? "the native root read timed out" : message(r.error));
+  }
+  /** Run one native multi-request step to completion or the invocation's original deadline, which
+   *  ends the step held; the step's own later requests then fail on the closed connection. */
+  async function native<T>(ctx: Ctx, start: () => Promise<T>): Promise<T> {
+    const remaining = ctx.deadlineMs - Date.now();
+    if (remaining <= 0) return held("deadline", ctx.step, "the original deadline has passed; no request starts");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((r) => { timer = setTimeout(() => r("timeout"), remaining); });
+    const settled = start().then((value) => ({ value }), (error: unknown) => ({ error }));
+    let r: { value: T } | { error: unknown } | "timeout";
+    try { r = await Promise.race([settled, timeout]); } finally { clearTimeout(timer); }
+    if (r === "timeout") return held("deadline", ctx.step, "the original deadline was reached during a native step");
+    if ("error" in r) return held("unknown", ctx.step, `the native step did not complete: ${message(r.error)}`);
+    return r.value;
+  }
+  /** Classify the assignment's endpoint gate; anything but an approved or revoked service gate is
+   *  inconsistent for a bound selector past approval. */
+  async function servedGate(ctx: Ctx, b: Bound) {
+    const g = await endpoint(ctx, b);
+    if (g.kind !== "approved" && g.kind !== "revoked") return held("registration-inconsistent", ctx.step, `the endpoint gate is ${g.kind}`);
+    return g;
+  }
+  const sameIntent = (a: Intent, b: Intent) => canonicalJson({ ...a, admittedAtMs: 0 }) === canonicalJson({ ...b, admittedAtMs: 0 });
+
+  /** R1 §A: a new admission's state check, read before anything is written. */
+  async function admissible(ctx: Ctx, req: ServiceServeRequest, b: Bound): Promise<ServiceServeResult | undefined> {
+    ctx.step = "S-state";
+    if (b.row.cancel !== null) return deniedServe("approval-revoked");
+    const g = await servedGate(ctx, b);
+    if (g.kind === "revoked") return deniedServe("approval-revoked");
+    const a = g.row.serviceAuthority, current = stampWitness(ctx, b.binding, g.row);
+    if (req.operation === "register") {
+      if (a.activationIssued) return deniedServe("registration-active");
+      const p = await readProposal(ctx, b.row.proposalId);
+      if (p.state !== "value" || p.row.kind !== "service-proposal-terminal" || p.row.state !== "approved" || p.row.approvalDigest !== a.approvalDigest)
+        return held("registration-inconsistent", ctx.step, "the assignment's approved proposal is not readable");
+      const r = req.register!;
+      if (proposalBodyDigest({ owner: b.binding.owner, endpoint: b.binding.endpoint, instanceId: b.binding.instanceId }, r.clusterDigests, r.commands) !== p.row.proposalDigest)
+        return deniedServe("approval-mismatch");
+      const expected = req.witness === null ? undefined : serviceWitnessDigest(req.witness);
+      if ((current === undefined) !== (expected === undefined) || (current !== undefined && serviceWitnessDigest(current) !== expected)) return deniedServe("conflict");
+      return undefined;
+    }
+    if (current === undefined || serviceWitnessDigest(current) !== serviceWitnessDigest(req.witness!)) return deniedServe("stale-witness");
+    return undefined;
+  }
+  /** Append the request to its instance's index, or find it listed. */
+  async function listIntent(ctx: Ctx, b: Bound, id: string, operation: ServiceServeOperation): Promise<ServiceServeResult | undefined> {
+    ctx.step = "S-index";
+    const { owner: o, endpoint: e, instanceId: i } = b.binding;
+    for (let n = 0; n < S2A_MAX_REDECIDE; n++) {
+      const cur = await readIntentIndex(ctx, e, i);
+      if (cur.state === "value") {
+        if (cur.row.owner !== o || cur.row.endpoint !== e || cur.row.instanceId !== i)
+          return held("intent-index-inconsistent", ctx.step, "the intent index names another assignment");
+        if (cur.row.intents.some((x) => x.operationId === id)) return undefined;
+        if (cur.row.intents.length >= S3_MAX_INTENTS_PER_INSTANCE) return deniedServe("resource-exhausted");
+      }
+      const intents = [...(cur.state === "value" ? cur.row.intents : []), { operationId: id, operation }]
+        .sort((x, y) => (x.operationId < y.operationId ? -1 : 1));
+      const row: IntentIndex = { v: 1, kind: "service-request-intent-index", owner: o, endpoint: e, instanceId: i, intents };
+      if ((await put(ctx, intentIndexKey(e, i), row, parseServiceRequestIntentIndexRecord, cur.state === "value" ? cur : undefined)) !== "moved") return undefined;
+    }
+    return held("contention", ctx.step);
+  }
+
+  async function serve(req: ServiceServeRequest): Promise<ServiceServeResult> {
+    if (tripped !== undefined || closed) return { state: "unavailable", detail: "the service host is fenced or closing" };
+    const { owner: o, endpoint: e, instanceId: i } = req;
+    if (req.caller === "owner" && !interactive(o)) return deniedServe("permission-denied");
+    const id = serviceHostOperationId(space, req.engineRequestId);
+    let b: Binding;
+    try { b = await bindingOf(discoveryCtx("S-binding"), o, e, i); }
+    catch (err) { if (err instanceof Held) return { state: "unavailable", detail: `the assignment is not readable (${err.reason})` }; throw err; }
+    if (b.state === "absent") return deniedServe("permission-denied");
+    if (b.state === "fenced") return deniedServe("approval-revoked");
+    if (req.witness !== null && !namesBinding(req.witness, b.binding)) return deniedServe("permission-denied");
+    const intent: Intent = { v: 1, kind: "service-request-intent", operationId: id, operation: req.operation, account: { accountPublicKey, space },
+      owner: o, endpoint: e, instanceId: i, requestId: req.requestId, requestDigest: req.requestDigest,
+      registrationRequestId: req.witness?.registrationRequestId ?? null, witnessDigest: req.witness === null ? null : serviceWitnessDigest(req.witness),
+      admittedAtMs: Date.now() };
+    const contract = req.register?.artifacts.map((a) => contractDigest(a).slice("sha256:".length)) ?? [];
+    const bound = b;
+    try {
+      return await invoke({ operation: "serve", serve: req.operation, operationId: id, proposalId: null, owner: o, endpoint: e, instanceId: i,
+        lifecycleUid: b.binding.lifecycleUid, contract }, async (inv) => {
+        const ctx = readCtx(inv, "S-intent");
+        const found = await readIntent(ctx, id);
+        if (found.state === "value") { if (!sameIntent(found.row, intent)) return deniedServe("conflict"); }
+        else {
+          const refusal = (await admissible(ctx, req, bound)) ?? (await listIntent(ctx, bound, id, req.operation));
+          if (refusal !== undefined) return refusal;
+          ctx.step = "S-intent-create";
+          if ((await put(ctx, intentKey(id), intent, parseServiceRequestIntentRecord)) === "moved") {
+            const again = await readIntent(ctx, id);
+            if (again.state !== "value") return held("unknown", ctx.step, "the intent create lost but no intent is readable");
+            if (!sameIntent(again.row, intent)) return deniedServe("conflict");
+          }
+        }
+        switch (req.operation) {
+          case "register": return registerEffect(ctx, inv, req, bound, id);
+          case "activate": case "renew": return credentialEffect(ctx, inv, req, bound);
+          case "ready": return readyEffect(ctx, inv, req, bound);
+        }
+      });
+    } catch (err) {
+      if (err instanceof Held) return { state: "unavailable", detail: `${req.operation} held (${err.reason} at ${err.step})` };
+      throw err;
+    }
+  }
+
+  /** Same-request recovery first, from the stamp alone; otherwise publish, barrier, spec and stamp. */
+  async function registerEffect(ctx: Ctx, inv: Inv, req: ServiceServeRequest, b: Bound, id: string): Promise<ServiceServeResult> {
+    ctx.step = "R-gate";
+    const r = req.register!;
+    const recovered = async (g: Awaited<ReturnType<typeof servedGate>>) => {
+      const stamp = g.row.serviceAuthority.registration;
+      if (stamp?.requestId !== req.requestId || stamp.requestDigest !== req.requestDigest) return undefined;
+      const witness = stampWitness(ctx, b.binding, g.row)!;
+      return { state: "registered" as const, witness, snapshot: await snapshotOf(ctx, witness, r.artifacts) };
+    };
+    // Revocation answers first, as status does; then a completed same request recovers from its
+    // stamp before any expected or activation check, with no barrier and no epoch advance.
+    const g = await servedGate(ctx, b);
+    if (g.kind === "revoked" || b.row.cancel !== null) return deniedServe("approval-revoked");
+    const done = await recovered(g);
+    if (done !== undefined) return done;
+    const a = g.row.serviceAuthority, pending = a.pendingRegistration;
+    if (a.activationIssued) return deniedServe("registration-active");
+    const resuming = g.row.state === "frozen" && pending?.operationId === id && pending.requestId === req.requestId && pending.requestDigest === req.requestDigest;
+    if (!resuming) {
+      if (g.row.state !== "open") return deniedServe("registration-pending");
+      const current = stampWitness(ctx, b.binding, g.row);
+      const expected = req.witness === null ? undefined : serviceWitnessDigest(req.witness);
+      if ((current === undefined) !== (expected === undefined) || (current !== undefined && serviceWitnessDigest(current) !== expected)) return deniedServe("conflict");
+      if (!serviceGateApprovalLive(a, seconds(Date.now()))) return deniedServe("expired");
+    }
+    if (inv.contract === undefined) return held("unavailable", ctx.step, "the effect connection has no contract store");
+    ctx.step = "R-publish";
+    for (const artifact of r.artifacts) {
+      await readyBefore(ctx);
+      const p = await bounded(ctx, () => publishContractArtifact(inv.contract!, contractArtifactCanonicalBytes(artifact)));
+      if (!p.ok) return held("unknown", ctx.step, "timedOut" in p ? "a contract artifact publish timed out" : message(p.error));
+    }
+    ctx.step = "R-register";
+    const stores = registryStores(inv.h.registry), artifacts = new Map(r.artifacts.map((v) => [contractDigest(v), v] as const));
+    // A service family is empty before activation, so the barrier keeps no repair cursor.
+    const { progress: _progress, ...barrier } = endpointRegistrationBarrier(stores.authKv, space,
+      { endpoint: b.binding.endpoint, instanceId: b.binding.instanceId, opId: id, serviceRegistration: { requestId: req.requestId, requestDigest: req.requestDigest } });
+    void _progress;
+    await readyBefore(ctx);
+    await native(ctx, () => registerServiceInstance(stores.recordsKv, { space, instanceId: b.binding.instanceId, registrant: { owner: b.binding.owner },
+      spec: { endpoint: b.binding.endpoint, owner: b.binding.owner, clusterDigests: [...r.clusterDigests], protocol: { v: 1 } },
+      authority: nativeServiceNameAuthority(inv.h.registry, { space, accountPublicKey }), barrier, readClusterArtifact: (d) => artifacts.get(d) }));
+    await readyAfter(ctx);
+    ctx.step = "R-confirm";
+    const after = await recovered(await servedGate(ctx, b));
+    return after ?? held("unknown", ctx.step, "the registration completed but its stamp does not name this request");
+  }
+
+  /** activate: the monotonic activation CAS at the current witness; renew: the same checks with no
+   *  write. Either returns the bounds fresh material must keep; no material is minted here. */
+  async function credentialEffect(ctx: Ctx, inv: Inv, req: ServiceServeRequest, b: Bound): Promise<ServiceServeResult> {
+    for (let n = 0; n < S2A_MAX_REDECIDE; n++) {
+      ctx.step = req.operation === "activate" ? "A-gate" : "W-gate";
+      const g = await servedGate(ctx, b);
+      if (g.kind === "revoked" || b.row.cancel !== null) return deniedServe("approval-revoked");
+      const a = g.row.serviceAuthority, current = stampWitness(ctx, b.binding, g.row);
+      if (current === undefined || serviceWitnessDigest(current) !== serviceWitnessDigest(req.witness!)) return deniedServe("stale-witness");
+      if (g.row.state !== "open") return deniedServe("registration-pending");
+      if (!serviceGateApprovalLive(a, seconds(Date.now()))) return deniedServe("expired");
+      const root = await rootExpiresAt(ctx, inv, b.binding, current.rootCredentialId);
+      if (typeof root !== "number") return root;
+      if (!a.activationIssued) {
+        if (req.operation === "renew") return deniedServe("stale-witness");
+        ctx.step = "A-activate";
+        const next = await grammarHeld(ctx, () => activatedServiceGateRow(g.row, b.binding, current, Date.now()));
+        if (next !== undefined) {
+          const bytes = enc.encode(JSON.stringify(next));
+          await grammarHeld(ctx, () => b.epgate.parse(bytes));
+          if ((await write(ctx, "auth", b.epgate.key, bytes, { revision: g.revision, preimage: g.bytes })) === "moved") continue;
+        }
+      }
+      return { state: "current", witness: current, snapshot: await snapshotOf(ctx, current), rootExpiresAt: root, approvalExpiresAt: a.approvalExpiresAt };
+    }
+    return held("contention", ctx.step);
+  }
+
+  /** ready: the service-reported status at the current activated witness, fenced on its epoch. */
+  async function readyEffect(ctx: Ctx, inv: Inv, req: ServiceServeRequest, b: Bound): Promise<ServiceServeResult> {
+    ctx.step = "Y-gate";
+    const g = await servedGate(ctx, b);
+    if (g.kind === "revoked" || b.row.cancel !== null) return deniedServe("approval-revoked");
+    const a = g.row.serviceAuthority, current = stampWitness(ctx, b.binding, g.row);
+    if (current === undefined || serviceWitnessDigest(current) !== serviceWitnessDigest(req.witness!) || !a.activationIssued) return deniedServe("stale-witness");
+    if (g.row.state !== "open") return deniedServe("registration-pending");
+    if (!serviceGateApprovalLive(a, seconds(Date.now()))) return deniedServe("expired");
+    const root = await rootExpiresAt(ctx, inv, b.binding, current.rootCredentialId);
+    if (typeof root !== "number") return root;
+    const name = await nameOf(ctx, b.binding.endpoint);
+    if (name === undefined || name.owner !== b.binding.owner || name.revision !== current.nameAuthorityRevision) return deniedServe("stale-witness");
+    ctx.step = "Y-status";
+    const at = seconds(Date.now()), stores = registryStores(inv.h.registry);
+    await readyBefore(ctx);
+    await native(ctx, () => writeServiceStatus(stores.recordsKv, { endpoint: b.binding.endpoint, instanceId: b.binding.instanceId, epoch: current.processEpoch,
+      status: { epoch: current.processEpoch, state: "ready", observedSpecRevision: current.registrationRevision, reportedAt: at },
+      readProcessEpoch: async () => {
+        const now = await servedGate(ctx, b);
+        if (now.row.state !== "open" || stampWitness(ctx, b.binding, now.row)?.registrationRequestId !== current.registrationRequestId)
+          throw new EpEnvelopeError("conflict", "the registration changed before the ready status was written");
+        return now.row.processEpoch;
+      } }));
+    await readyAfter(ctx);
+    return { state: "ready", witness: current, reportedAt: at };
+  }
+
+  // ---- serving status (SPEC 13.1 precedence) ------------------------------------------------------
+
+  async function serveStatus(q: ServiceStatusQuery): Promise<ServiceStatusAnswer> {
+    if (tripped !== undefined || closed) return { kind: "unavailable", detail: "the service host is fenced or closing" };
+    try { return await statusOf(discoveryCtx("T-read"), q); }
+    catch (err) { if (err instanceof Held) return { kind: "unavailable", detail: `status held (${err.reason} at ${err.step})` }; throw err; }
+  }
+  async function statusOf(ctx: Ctx, q: ServiceStatusQuery): Promise<ServiceStatusAnswer> {
+    const status = (s: ServiceAuthorityStatus): ServiceStatusAnswer => ({ kind: "status", status: s });
+    const unavailable = (detail: string): ServiceStatusAnswer => ({ kind: "unavailable", detail });
+    const readerDigest = q.reader.kind === "service" ? serviceWitnessDigest(q.reader.witness) : null;
+    let intent: Intent | undefined;
+    if (q.target.kind === "operation") {
+      const id = serviceHostOperationId(space, q.target.engineRequestId);
+      const found = await readIntent(ctx, id);
+      if (found.state === "absent") {
+        const idx = await readIntentIndex(ctx, q.endpoint, q.instanceId);
+        if (idx.state === "value" && idx.row.owner === q.owner && idx.row.intents.some((x) => x.operationId === id))
+          return unavailable("the request is listed without its intent; replay it");
+        return q.target.operation === "register" && readerDigest === null ? { kind: "proposal-phase" } : { kind: "not-found" };
+      }
+      intent = found.row;
+      if (intent.owner !== q.owner || (readerDigest !== null && intent.witnessDigest !== readerDigest)) return { kind: "not-found" };
+    }
+    const b = await bindingOf(ctx, q.owner, q.endpoint, q.instanceId);
+    if (b.state === "absent") return intent === undefined ? { kind: "not-found" } : unavailable("the intent's assignment is not readable");
+    // Rule 3: cancellation and revocation first.
+    if (b.state === "fenced") return status({ state: "revoking", operationId: b.row.cancel.operationId, phase: "deny-new-landed" });
+    const g = await endpoint(ctx, b);
+    if (b.row.cancel !== null) return status({ state: "revoking", operationId: b.row.cancel.operationId, phase: g.kind === "revoked" ? "deny-new-landed" : "deny-new-pending" });
+    if (g.kind === "revoked" || g.kind === "foreign") return unavailable(`the endpoint gate is ${g.kind} without a bound cancel`);
+    if (q.reader.kind === "service" && !namesBinding(q.reader.witness, b.binding)) return { kind: "not-found" };
+    if (g.kind === "absent" || g.kind === "pending") {
+      if (intent !== undefined) return unavailable("the intent's approval is not readable");
+      return status({ state: "registering", operationId: b.row.creation.operationId, phase: "approving" });
+    }
+    const a = g.row.serviceAuthority, stamp = a.registration, pending = a.pendingRegistration;
+    const current = stampWitness(ctx, b.binding, g.row);
+    const live = async (w: ServiceRegistrationWitness): Promise<ServiceStatusAnswer> => {
+      const snapshot = await snapshotOf(ctx, w), at = await reportedAt(ctx, w);
+      return status(at === undefined ? { state: "registered", witness: w, snapshot } : { state: "ready", witness: w, snapshot, reportedAt: at });
+    };
+    if (intent === undefined) {
+      // The instance: the reader's own incarnation, or the owner's current state.
+      if (q.reader.kind === "service") {
+        if (stamp === undefined) return unavailable("the reader's registration has no stamp");
+        if (stamp.requestId !== q.reader.witness.registrationRequestId)
+          return status({ state: "superseded", registrationRequestId: q.reader.witness.registrationRequestId, currentRegistrationRequestId: stamp.requestId });
+      }
+      if (g.row.state === "frozen") return pending ? status({ state: "registering", operationId: pending.operationId, phase: "barrier" }) : unavailable("the gate is frozen without a pending registration");
+      if (current === undefined) return status({ state: "approved-unregistered", approvalDigest: a.approvalDigest! });
+      if (readerDigest !== null && serviceWitnessDigest(current) !== readerDigest) return unavailable("the reader's witness disagrees with the current stamp");
+      return live(current);
+    }
+    if (intent.operation === "register") {
+      // Rule 5: the permanent answers before the transient ones.
+      if (stamp?.requestId === intent.requestId && stamp.requestDigest === intent.requestDigest) return live(current!);
+      if (stamp !== undefined && (stamp.requestId !== intent.registrationRequestId || a.activationIssued))
+        return status({ state: "superseded", registrationRequestId: intent.requestId, currentRegistrationRequestId: stamp.requestId });
+      if (pending?.requestId === intent.requestId && pending.requestDigest === intent.requestDigest)
+        return status({ state: "registering", operationId: intent.operationId, phase: "barrier" });
+      if ((stamp === undefined && intent.registrationRequestId === null) || (stamp?.requestId === intent.registrationRequestId && !a.activationIssued))
+        return status({ state: "registering", operationId: intent.operationId, phase: "admitted" });
+      return unavailable("the register intent matches no registration state");
+    }
+    // Rule 6: activate, renew and ready name a registration.
+    if (stamp === undefined) return unavailable("the intent's registration has no stamp");
+    if (stamp.requestId !== intent.registrationRequestId)
+      return status({ state: "superseded", registrationRequestId: intent.registrationRequestId!, currentRegistrationRequestId: stamp.requestId });
+    if (g.row.state === "frozen") return pending ? status({ state: "registering", operationId: pending.operationId, phase: "barrier" }) : unavailable("the gate is frozen without a pending registration");
+    if (current !== undefined && serviceWitnessDigest(current) === intent.witnessDigest) return live(current);
+    return unavailable("the intent's witness disagrees with the current stamp");
+  }
+
+  /** The callout's assignment: the current bound assignment the witness names, never a guess. */
+  async function serviceBinding(w: ServiceRegistrationWitness): Promise<ServiceAssignmentBinding> {
+    if (tripped !== undefined || closed) throw new EpEnvelopeError("unavailable", "the service host is fenced or closing");
+    const b = await bindingOf(discoveryCtx("C-binding"), w.principal.owner, w.endpoint, w.instanceId);
+    if (b.state !== "bound" || b.row.cancel !== null || !namesBinding(w, b.binding))
+      throw new EpEnvelopeError("permission-denied", "the service witness names no current bound assignment");
+    return { ...b.binding };
+  }
+
   // ---- one owner's assignment state (read only) ---------------------------------------------------
 
   async function serviceState(o: string, e: string, i: string): Promise<ServiceAssignmentState> {
@@ -1398,7 +1901,8 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       const gate = await endpoint(ctx, serviceAssignmentGate(discovery.host, a.reservation));
       if (a.cancel !== null) return { state: "revoking", ...ids, operationId: a.cancel.operationId, denyNew: denyNewOf(gate) };
       const approvalDigest = gate.kind === "approved" ? gate.row.serviceAuthority.approvalDigest : null;
-      if (approvalDigest !== null) return { state: "approved", ...ids, approvalDigest };
+      if (approvalDigest !== null && gate.kind === "approved")
+        return { state: "approved", ...ids, approvalDigest, registrationRequestId: gate.row.serviceAuthority.registration?.requestId ?? null };
       if (gate.kind === "absent" || gate.kind === "pending") return { state: "pending-root", ...ids };
       // A revoked gate without a bound cancel identity, an approved gate without its digest, or another assignment's row.
       return { state: "unavailable" };
@@ -1431,6 +1935,9 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
     register: (raw: unknown) => tracked(register(raw)),
     handle: (raw: unknown) => tracked(handle(raw)),
     serviceState: (owner: string, endpoint: string, instanceId: string) => tracked(serviceState(owner, endpoint, instanceId)),
+    serve: (request: ServiceServeRequest) => tracked(serve(request)),
+    serveStatus: (query: ServiceStatusQuery) => tracked(serveStatus(query)),
+    serviceBinding: (witness: ServiceRegistrationWitness) => tracked(serviceBinding(witness)),
     refuse() { closed = true; },
     async close() {
       closed = true;

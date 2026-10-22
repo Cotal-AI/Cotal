@@ -63,7 +63,7 @@ import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { CotalEndpoint, deprovisionAgent, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody } from "@cotal-ai/core";
+import { CotalEndpoint, deprovisionAgent, dlvDurable, dlvStream, dmDurable, dmStream, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpErrorCode, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, epgateKey, isCasLoss, sameManagedGrantCustody, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
@@ -73,7 +73,7 @@ import { OwnedConnections, type AuthConnectionState, type AuthServiceClosed } fr
 import { makePlatformSupervisorAuthority, makePlatformSupervisorEnd, platformSupervisorEnded, requirePlatformSupervisorAdmin, type PlatformSupervisorInput, type PlatformSupervisorAuthorityRequest } from "./platform-supervisor.js";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, verifyIdpToken, verifyToolResultHumanProof, type IdpBridge } from "./idp.js";
-import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
+import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, validateUserToken, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions, type UserCallerIssuer } from "./permissions.js";
@@ -85,7 +85,8 @@ import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
-import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
+import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
+import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { chatAwareAclResolver, openChatSessionAuthority, type ChatAdmissionRequest, type ChatRetireRequest, type ChatRetireResult, type ChatSessionAdmitted } from "./chat-session-authority.js";
 import { makeNativeIssuanceRecorder, pruneNativeIssuance, type NativeIssuanceRecorder } from "./native-issuance.js";
@@ -93,7 +94,8 @@ import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import type { ServiceEndpointHost } from "./service-host-contract.js";
 import { openServiceHostEffect, openServiceHostOperations, type ServiceHostEffect, type ServiceHostEffectScope, type ServiceHostOperations, type ServiceHostOperationsOptions } from "./service-host-ops.js";
-import { SERVICE_ENDPOINT_AUTHORITY_PATH, answerServiceAuthority, serviceAuthorityDenied, serviceAuthorityInfo, type ServiceAuthorityDoor } from "./service-endpoint-authority.js";
+import { SERVICE_ENDPOINT_AUTHORITY_PATH, answerServiceAuthority, serviceAuthorityDenied, serviceAuthorityInfo, type ServiceAuthorityCaller, type ServiceAuthorityDoor } from "./service-endpoint-authority.js";
+import { validateServiceRenewalProof } from "./service-renewal.js";
 import { openAuthLedgerScannerCandidate } from "./ledger-scanner.js";
 import { openRecordsScannerCandidate } from "./records-scanner.js";
 import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, makeDeliveryAdminPrincipalOracle, scannerDeathCopy, planeClaimRefusal, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
@@ -527,8 +529,9 @@ export async function openAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions
  *  ready, and mapped to the same engine so the internal accessor still finds it. */
 function hostedServiceEndpoints(host: ServiceEndpointHost, ready: () => void): ServiceEndpointHost {
   const door: ServiceEndpointHost = async (request) => { ready(); return await host(request); };
-  const engine = SERVICE_HOST_ENGINES.get(host);
+  const engine = SERVICE_HOST_ENGINES.get(host), callout = SERVICE_CALLOUTS.get(host);
   if (engine !== undefined) SERVICE_HOST_ENGINES.set(door, engine);
+  if (callout !== undefined) SERVICE_CALLOUTS.set(door, callout);
   return door;
 }
 
@@ -537,6 +540,11 @@ function hostedServiceEndpoints(host: ServiceEndpointHost, ready: () => void): S
 const SERVICE_HOST_ENGINES = new WeakMap<ServiceEndpointHost, ServiceHostOperations>();
 export function serviceHostEngineOf(host: ServiceEndpointHost): ServiceHostOperations | undefined {
   return SERVICE_HOST_ENGINES.get(host);
+}
+/** Package-internal: the native service callout authority composed with a plane's service host. */
+const SERVICE_CALLOUTS = new WeakMap<ServiceEndpointHost, NativeServiceCalloutAuthority>();
+export function serviceHostCalloutOf(host: ServiceEndpointHost): NativeServiceCalloutAuthority | undefined {
+  return SERVICE_CALLOUTS.get(host);
 }
 
 /** The context's custody callback is private. Failed construction unwinds from one place. */
@@ -776,7 +784,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // renewing profile: a broker loss makes its reads fail until it reconnects, and a renewal failure
   // closes it for good, after which decide and revoke answer unavailable until the plane is opened
   // again. The engine shares this plane's hold; both fatal sites above trip it.
-  let discoveryClient: AuthorityClient | undefined;
+  let discoveryClient: AuthorityClient | undefined, calloutWriter: AuthorityClient | undefined;
   // Every effect connection the host opened whose close has not succeeded, kept past its call's
   // settlement: plane close and a failed construction close it again and fail while any remains.
   const openEffects = new Set<ServiceHostEffect>();
@@ -799,8 +807,17 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     const discovery = await openLifecycleRegistry(d.nc, space);
     await opts.probeServiceHost?.discovery?.({ registry: discovery, kill: () => d.close() });
     const probeEffect = opts.probeServiceHost?.effect;
+    // Serving reads registered closures from the contract store on the issuer's connection, which
+    // holds only the store's exact-subject Direct Get.
+    const contractStore = await contractStoreContext(remoteIssuer.nc, space);
+    const readContractArtifact = async (digest: string): Promise<unknown> => {
+      const bytes = await fetchContractArtifact(contractStore, contractRefToHex(digest));
+      if (!bytes) throw new EpEnvelopeError("failed-precondition", `the registered contract artifact ${digest} is not readable`);
+      return JSON.parse(new TextDecoder().decode(bytes));
+    };
     const engine = await openServiceHostOperations({
       discovery, hold: hold!, accountPublicKey: dataAccount.pub, ledgerDir: opts.dir, startup: opts.serviceEndpoints.startup,
+      serving: { readContractArtifact },
       openEffect: async (scope) => {
         const opened = await openServiceHostEffect({ onConnection, server, space, dataAccount, log }, scope);
         const effect: ServiceHostEffect = { ...opened, close: async () => { await opened.close(); openEffects.delete(effect); } };
@@ -816,6 +833,16 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     SERVICE_HOST_ENGINES.set(engine.handle, engine);
     // A fence while the engine was opening latches it now.
     if (fatalReason !== undefined) engine.trip(fatalReason);
+    // The native service callout: a service bearer's connect mints only for the current bound
+    // assignment its witness names, read from the engine, on a writer that stages and touches the
+    // endpoint gate and credential rows. A fenced plane or a latched engine refuses it.
+    const calloutLabel = `cotal:service-callout:${space}`;
+    const cw = calloutWriter = await openAuthorityClient({ onConnection, server, space, dataAccount, label: calloutLabel, grants: (id) => serviceCalloutWriterGrants(space, id), log });
+    unwind.push(() => cw.close());
+    SERVICE_CALLOUTS.set(engine.handle, createNativeServiceCalloutAuthority({
+      registry: await openLifecycleRegistry(cw.nc, space), reader: () => reader.current(), dataAccount,
+      resolveAssignment: (witness) => engine.serviceBinding(witness), readClusterArtifact: readContractArtifact, assertOpen: () => refuseIfFenced(),
+    }));
   }
   const recordsJsm = await jetstreamManager(remoteIssuer.nc);
   const authKv = await new Kvm(remoteIssuer.nc).open(epAuthBucket(space));
@@ -1975,6 +2002,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       // the claim is released. A failure here rejects with the claim still held; close retries it.
       await serviceHost?.close();
       await closeEffects();
+      await calloutWriter?.close();
       await discoveryClient?.close();
       const scannerFlight = closeScanners ??= (async () => {
         await authAdmin?.close();
@@ -2456,7 +2484,9 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       name: `cotal:auth-service:${space}`,
     });
     onConnection(nc, `cotal:auth-service:${space}`);
+    const serviceCallout = plane.serviceEndpointHost !== undefined ? serviceHostCalloutOf(plane.serviceEndpointHost) : undefined;
     startAuthCallout(nc as never, {
+      ...(serviceCallout !== undefined ? { serviceAuthority: serviceCallout } : {}),
       xkeySeed: callout.xkey.seed,
       authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
       dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
@@ -2496,7 +2526,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     const serviceEngine = plane.serviceEndpointHost !== undefined ? serviceHostEngineOf(plane.serviceEndpointHost) : undefined;
     const ctx: HandlerCtx = {
       ...(issueToolResultConsent ? { issueToolResultConsent } : {}),
-      ...(serviceEngine !== undefined ? { serviceAuthority: { space, accountPublicKey: keys.dataAccount.pub, engine: serviceEngine } } : {}),
+      ...(serviceEngine !== undefined ? { serviceAuthority: { space, accountPublicKey: keys.dataAccount.pub, engine: serviceEngine, material: issuer } } : {}),
       issuer,
       bridge,
       bridgeIdp,
@@ -3477,11 +3507,34 @@ async function handleManagerInstances(req: IncomingMessage, res: ServerResponse,
   }
 }
 
+/** A service renewal or access proof, verified against this context's own signing keys: the
+ *  signed witness it binds. A request that carries a witness must name the proof's; a status query
+ *  carries none, so its proof's own witness is the expected one. Current native state is the
+ *  engine's check, never the proof's. */
+async function verifyServiceProof(proof: { kind: "service-renewal" | "service-access"; token: string }, request: ServiceAuthorityRequest,
+  issuer: UserTokenIssuer, space: string): Promise<ServiceRegistrationWitness> {
+  const key = issuer.localKeySet();
+  if (proof.kind === "service-renewal") {
+    const expected = "witness" in request ? request.witness : parseServiceRegistrationWitness(decodeJwt(proof.token).witness);
+    return (await validateServiceRenewalProof(proof.token, { issuer: issuer.issuer, key, witness: expected })).witness;
+  }
+  const token = await validateUserToken(proof.token, { issuer: issuer.issuer, audience: space, key });
+  if (token.act.view !== "service-endpoint" || token.act.service?.duty !== "serve") throw new Error("the access proof is not a service bearer");
+  const witness = parseServiceRegistrationWitness(token.act.service.witness);
+  if (token.owner !== witness.principal.owner || token.act.owner !== witness.principal.owner || token.act.actor !== witness.principal.actor
+    || token.act.lifecycleUid !== witness.principal.lifecycleUid || token.credentialId !== witness.rootCredentialId)
+    throw new Error("the access proof does not bind its witness");
+  if ("witness" in request && serviceWitnessDigest(request.witness) !== serviceWitnessDigest(witness)) throw new Error("the access proof binds another witness");
+  return witness;
+}
+
 /** The public service endpoint authority route, on both faces and only with `serviceEndpoints`: GET
  *  reads the account info, POST takes one `{request, proof}` envelope. The proof is the credential on
- *  either face; the loopback capability is never read or accepted here. Only an IdP proof verifies in
- *  this cut, against the pinned issuer and exact audience, and its subject derives the owner. A refused
- *  proof counts against the face's refusal budget; a valid proof does not, whatever the answer. */
+ *  either face; the loopback capability is never read or accepted here. An IdP proof verifies against
+ *  the pinned issuer and exact audience, and its subject derives the owner. A service renewal or
+ *  access proof verifies against this context's own issuer and binds a witness, never an owner's
+ *  authority. A refused proof counts against the face's refusal budget; a valid proof does not,
+ *  whatever the answer. */
 async function handleServiceEndpointAuthority(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
   const door = ctx.serviceAuthority;
   if (door === undefined) return send(res, 404, { error: "service endpoint authority is not enabled for this space" });
@@ -3499,17 +3552,18 @@ async function handleServiceEndpointAuthority(req: IncomingMessage, res: ServerR
   const { request, proof } = envelope;
   const answer = (r: { status: number; body: unknown }) => send(res, r.status, r.body, noStore);
   if (request.space !== door.space || request.accountPublicKey !== door.accountPublicKey) return answer(serviceAuthorityDenied(request, "account-mismatch"));
-  if (proof.kind !== "idp") return answer(serviceAuthorityDenied(request, "proof-unsupported"));
-  let owner: string;
+  let caller: ServiceAuthorityCaller;
   try {
-    owner = deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, (await verifyIdpToken(proof.token, ctx.bridgeIdp)).sub);
+    caller = proof.kind === "idp"
+      ? { kind: "idp", owner: deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, (await verifyIdpToken(proof.token, ctx.bridgeIdp)).sub) }
+      : { kind: "service", witness: await verifyServiceProof(proof, request, ctx.issuer, door.space) };
   } catch (e) {
     policy.recordFailure(ctx, peer);
     console.error(`auth-service: refused a service endpoint authority proof: ${e instanceof Error ? e.message : String(e)}`);
     return answer(serviceAuthorityDenied(request, peerThrottled ? "rate-limited" : "unauthenticated"));
   }
   try {
-    return answer(await answerServiceAuthority(door, request, owner));
+    return answer(await answerServiceAuthority(door, request, caller));
   } catch (e) {
     // After the proof, a register may already be bound: an unexpected failure is an unknown effect.
     console.error(`auth-service: service endpoint authority ${request.operation} failed: ${e instanceof Error ? e.message : String(e)}`);
