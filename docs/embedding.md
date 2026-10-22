@@ -1229,10 +1229,11 @@ from that tuple, and the creation operation and request digest remain fixed.
 These guards run before ordinary root reuse, activation, gate and head changes, mint finalization,
 and native retirement. Ordinary connect and currency reads also refuse service custody, including
 rows whose head or credential mirror is missing. Existing ordinary reservation bytes are unchanged.
-Closed head, gate and credential parsers continue to reject service markers. No product path writes
-a service reservation or mints a marked root. A service access-view contract and
-optional sealed native access/callout composition are shipped, but production registration and
-lifecycle wiring remain unavailable. Those unwired seams do not authorize service admission.
+Closed head, gate and credential parsers continue to reject service markers. Without
+`serviceEndpoints`, no product path writes a service reservation or mints a marked root. The service
+access-view contract and the sealed native access/callout composition are shipped; only a context
+opened with `serviceEndpoints` composes them, with the service host's approval and registration
+described below. Lifecycle retirement and restore remain unwired.
 
 The package-internal service prerequisite reader is separate from ordinary connect and lifecycle
 currency readers. It leader-reads immutable UID custody, the exact active service head, native
@@ -1245,8 +1246,8 @@ native gate evidence cannot be replaced by an endpoint gate. This is no writer, 
 mint/abort, rotation, cancellation or terminal-retirement authority, and not an atomic multi-key
 snapshot. Positive fixtures raw-seed synthetic marked records, not production service admission.
 The account is trusted host configuration. Sealed readers do not attest the broker account or
-detect a cross-account pair of legitimately constructed handles. Future service integration must
-construct the registry, reader and callout from the same authenticated account context.
+detect a cross-account pair of legitimately constructed handles. The authority plane constructs the
+service callout's registry, reader and contract reads from its own data account.
 
 A package-internal custody writer is not exported; in the product only the service endpoint host's
 decide and revoke reach it, and the proposals they act on come only from the owner-proved public
@@ -1335,19 +1336,37 @@ take over the claim.
 
 With `serviceEndpoints`, both faces also serve `/service-endpoint-authority`, and without it that
 route answers 404. `GET` returns the receiver's account and space. `POST` takes a `{request, proof}`
-envelope of at most 2 MiB; the IdP proof is the credential on either face and derives the owner, who
-needs a current interactive cli or web row. Register verifies the submitted closures against their
-digests and answers `approval-required` with the proposal id and digest. Status reads the caller's
-own register by its requestId. A typical sequence: the service registers, you bind its name with an
-operator `name-bind`, the owner approves with `decide`, and status then reads `approved-unregistered`
-while a replayed register answers `pending`. The auth provider's `serviceEndpointInfo` and
-`serviceEndpointAuthority` hooks are the client. A changed body under the same request id is a
-conflict, and another owner's equal request id is a separate request.
+envelope of at most 2 MiB. An IdP proof derives the owner, who needs a current interactive cli or web
+row; register needs one, and so may activate. A service's renewal proof authorizes activate, renew
+and status, and its access bearer authorizes ready and status; neither is owner authority. A typical
+sequence: the service registers and gets `approval-required`; you bind its name with an operator
+`name-bind`; the owner approves with `decide`; the service replays the same register and gets
+`registered` with its witness and snapshot; it activates and gets a `credential` with an access bearer
+of at most 60 s and a renewal proof of at most 24 h, neither outliving the native root or approval;
+it connects to the broker with the bearer through the composed native service callout, binds its
+responder, calls `ready`, and renews before the bearer expires. The auth provider's
+`serviceEndpointInfo` and `serviceEndpointAuthority` hooks are the client, and accept a service proof
+as well as the signed-in login.
 
-This is proposal admission and approval, not a usable service endpoint. Approval runs service
-bootstrap and revoke runs cancellation, but no registration, service credential, callout or caller
-policy follows, and terminal retirement, complete observer evidence, writer exclusion and restore
-readiness remain unavailable. Do not seed service reservations in an existing space, adopt old service-shaped rows,
-or use ordinary retirement to make them terminal. A signing-key or raw-store holder can bypass
-helper guards, so schema rejection alone does not make mixed-version writers safe. Restore must
-quarantine service work until a separately supported reconciliation protocol is available.
+Every effectful request is keyed by its requestId and body. Keep one requestId per operation and
+witness, store it with the witness and the renewal material before you send it, and reuse it with
+the same body after a restart: a replay is safe, a changed body under the same requestId is a
+`conflict`, and one instance accepts at most 64 distinct requests, so fresh keys per refresh or
+restart exhaust it. A 503 means the request may be bound: replay the same request, or read its
+status with `target: { kind: "operation", operation, requestId }`; the selector names the operation
+since this release, and the old `{ kind: "operation", requestId }` no longer parses. `registered` and
+`ready` in a status mean only that the request's registration is current. A pre-activation
+re-registration sends `expected: { state: "registered", witness }` and yields a new witness; once a
+service has activated, its registration can no longer change. Commands must be ephemeral and declare
+no governed trait.
+
+This is registration and serving, not a complete service endpoint. Caller policy and scoped Describe
+are not available, so callers cannot yet be authorized against the service, and revoke, terminal
+retirement and restore stay unsupported: a host revoke refuses new activation, renewal, readiness
+and connections, but a connection already open keeps its original expiry of at most 60 s. Approval
+runs service bootstrap and revoke runs cancellation, while complete observer evidence and writer
+exclusion remain unavailable. Do not seed service reservations in an existing space, adopt old
+service-shaped rows, or use ordinary retirement to make them terminal. A signing-key or raw-store
+holder can bypass helper guards, so schema rejection alone does not make mixed-version writers safe.
+Restore must quarantine service work until a separately supported reconciliation protocol is
+available.
