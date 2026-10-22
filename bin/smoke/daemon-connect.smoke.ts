@@ -39,7 +39,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
 import { saveIdpSession } from "@cotal-ai/auth";
-import { recordMesh, type MeshEntry } from "@cotal-ai/workspace";
+import { recordMesh, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
 
@@ -122,9 +122,11 @@ const IDP = "https://idp.example.test/api/auth";
 // Two account-key-shaped values. The daemon only pins and compares them; nothing signs with them.
 const ACCOUNT_A = `A${"B".repeat(55)}`;
 const ACCOUNT_B = `A${"C".repeat(55)}`;
+// The shape `cotal meshes add --from` records for a remote user-auth space: the sentinel path lives under
+// that space's own state dir, which the stock client checks. The file itself is never read by this check.
 const userMesh = (space: string, url: string): MeshEntry => ({
   space, server: "nats://127.0.0.1:4222", root: meshRoot, mode: "user", origin: "manual",
-  userAuth: { provider: "cotal", idp: { url: IDP, issuer: "https://idp.example.test", audience: "https://idp.example.test" }, endpoints: { url }, remote: true, sentinelCredsPath: join(meshRoot, "sentinel.creds") },
+  userAuth: { provider: "cotal", idp: { url: IDP, issuer: "https://idp.example.test", audience: "https://idp.example.test" }, endpoints: { url }, remote: true, sentinelCredsPath: join(userAuthStateDir(meshRoot, space, { readOnly: true }), "sentinel.creds") },
   ts: new Date().toISOString(),
 });
 recordMesh(userMesh("signedout", base));
