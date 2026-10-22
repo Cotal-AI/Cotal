@@ -355,8 +355,14 @@ async function uniqueMeshName(
 }
 
 
-/** Only an occupied actor is retryable; authorization and provisioning failures stay failures. */
-class ForegroundActorCollision extends Error {}
+/** Only an occupied actor is retryable; authorization and provisioning failures stay failures.
+ *  Thrown only where the collision is found before anything is launched, issued or redeemed, so
+ *  it is a refusal. */
+class ForegroundActorCollision extends CommandFailure {
+  constructor(message: string) {
+    super("refused", "CONFLICT", message);
+  }
+}
 
 async function provisionFreshForeground<T>(
   requested: string,
@@ -1542,9 +1548,12 @@ async function provisionRemoteUserForeground(
   const exchangeUrl = "body" in source ? source.exchangeUrl : target.userAuth?.endpoints?.url;
   if (!exchangeUrl) return fail(noExchangeEndpoint(space));
   let body: unknown;
+  const held = `foreground actor material for "${name}" is already held; preserve its session and choose a distinct actor for a new launch`;
   const materialClaim = acquireLock(`${paths.actorToken}.launch.lock`, {
     waitMs: 0,
-    onTimeout: () => new ForegroundActorCollision(`foreground actor material for "${name}" is already held; preserve its session and choose a distinct actor for a new launch`),
+    // A supplied body comes from an enrollment that was already redeemed, so its collision is not
+    // a refusal: the one-time enrollment is spent.
+    onTimeout: () => "body" in source ? new Error(held) : new ForegroundActorCollision(held),
   });
   if ("body" in source) {
     body = source.body;
