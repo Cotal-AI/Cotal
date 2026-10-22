@@ -2,25 +2,28 @@
  * DOGFOOD LIVE e2e: the REAL `@cotal-ai/web` package installed through the REAL `cotal ext`
  * mechanism and exercised against a REAL mesh — the full operator journey:
  *
- *  A. `web` left the core surface (unknown command; the built-in count shrank).
+ *  A. The dashboard is not part of the core surface: `cotal web` is an unknown command, and the
+ *     `web` service preset refuses until its provider is installed, naming `cotal ext add`.
  *  B. `cotal ext add ./implementations/web` — the first real MULTI-PEER extension: BOTH
  *     @cotal-ai/core and @cotal-ai/workspace get linked to this binary's copies (provenance
- *     proves it); help + <TAB> list `web` from the manifest cache.
- *  C. `cotal up --detach` (JWT auth), then foreground and detached `cotal web`: the dashboard
- *     refuses an unauthenticated request, exchanges its single-use launch link for a session, and
- *     over that session serves /, /app.js (packaged assets), and /api/meta against the live mesh.
- *     Detached launch is PID-bound, root-pinned, logged, ready before return, and owned by `down`.
- *  D. `ext remove @cotal-ai/web`; `web` is unknown again.
+ *     proves it), and the add names the `web` service preset it contributes.
+ *  C. `cotal up --detach` (JWT auth), then the dashboard as an owned service: `service add --preset
+ *     web` with a protected observer credential and read-only intent, `service start`. The running
+ *     dashboard refuses an unauthenticated request, exchanges its single-use launch link (read from
+ *     the private bootstrap file its log names) for a session, and over that session serves /,
+ *     /app.js (packaged assets), and /api/meta against the live mesh. A second start is a no-op,
+ *     `ext remove` refuses while it runs, and `service stop` ends it.
+ *  D. `ext remove @cotal-ai/web`; the `web` preset refuses again.
  *
  * Needs dist built (the packages install per their `files: ["dist"]`), `nats-server` + npm on
  * PATH. Sandboxes COTAL_HOME/XDG_CONFIG_HOME + a temp root; kills only its own pids.
  * Run: pnpm smoke:dogfood:live
  */
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { assertSmokeSandboxDown, assertSmokeSandboxTargetDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned ports: no fixed-port collision across back-to-back / concurrent runs.
@@ -47,14 +50,11 @@ const env = { ...process.env, XDG_CONFIG_HOME: configDir, COTAL_HOME: home, COTA
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
 const tsxCli = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = join(REPO, "bin", "cotal.ts");
-const cotalAt = (cwd: string, args: string[], timeout = 180_000) => {
-  const options = { encoding: "utf8" as const, env, cwd, timeout };
-  if (args[0] === "down" && args[1] === "web")
-    assertSmokeSandboxTargetDown(sandboxAnchor, args, options);
-  else assertSmokeSandboxDown(sandboxAnchor, args, options);
+const cotal = (args: string[], timeout = 180_000) => {
+  const options = { encoding: "utf8" as const, env, cwd: root, timeout };
+  assertSmokeSandboxDown(sandboxAnchor, args, options);
   return spawnSync(realNode, [tsxCli, binCotal, ...args], options);
 };
-const cotal = (args: string[], timeout = 180_000) => cotalAt(root, args, timeout);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid: number) => {
   try {
@@ -64,143 +64,102 @@ const alive = (pid: number) => {
     return false;
   }
 };
+const out = (r: ReturnType<typeof cotal>) => r.stdout + r.stderr;
+const pidOf = (r: ReturnType<typeof cotal>) => Number(/^\s*PID:\s+(\d+)\s*$/m.exec(r.stdout)?.[1]);
 
-let webChild: ReturnType<typeof spawn> | undefined;
 const ownPids: number[] = [];
 try {
-  // -- A: web left the core surface ---------------------------------------------------------------
+  // -- A: the dashboard is not core ----------------------------------------------------------------
+  const creds = join(sandbox, "dashboard.creds");
+  const definition = ["service", "add", "web", "--preset", "web", "--space", SPACE, "--root", root, "--creds", creds, "--read-only", "--port", String(WEB_PORT)];
   {
     const r = cotal(["web", "--help"]);
-    ok("`cotal web` is unknown before the extension is installed", r.status === 1 && /unknown command: web/.test(r.stderr), r.stderr.slice(0, 150));
+    ok("`cotal web` is an unknown command", r.status === 1 && /unknown command: web/.test(r.stderr), r.stderr.slice(0, 150));
+    const preset = cotal(definition);
+    ok("the web preset refuses before its provider is installed, naming ext add", preset.status === 2 && /no registered or installed service preset is named "web"/.test(out(preset)) && /cotal ext add @cotal-ai\/web/.test(out(preset)), out(preset).slice(-500));
   }
 
   // -- B: install the REAL @cotal-ai/web package (multi-peer link) --------------------------------------
   {
     const r = cotal(["ext", "add", join(REPO, "implementations", "web")]);
-    ok("ext add @cotal-ai/web exits 0", r.status === 0, (r.stdout + r.stderr).slice(-500));
+    ok("ext add @cotal-ai/web exits 0", r.status === 0, out(r).slice(-500));
     ok("core peer linked to this binary's copy", /→ wrote @cotal-ai\/core link/.test(r.stderr), r.stderr.slice(-400));
     ok("workspace peer linked to this binary's copy", /→ wrote @cotal-ai\/workspace link/.test(r.stderr), r.stderr.slice(-400));
-    ok("the add names the contributed `web` command", /web/.test(r.stdout), r.stdout);
-    const help = cotal(["--help"]);
-    ok("--help lists web (from the cache, no import)", help.status === 0 && /web\s+.*dashboard/.test(help.stdout), help.stdout.slice(-400));
-    const comp = cotal(["__complete", "web", "--"]);
-    ok("<TAB> offers web's cached flags", comp.status === 0 && /--port/.test(comp.stdout) && /--detach/.test(comp.stdout), comp.stdout);
+    ok("the add names the contributed `web` service preset", /service-preset:web/.test(r.stdout), r.stdout);
   }
 
-  // -- C: the dashboard runs against a real JWT-authed mesh -----------------------------------------
+  // -- C: the dashboard runs as an owned service against a real JWT-authed mesh ---------------------
   {
     const server = `nats://127.0.0.1:${AUTH_PORT}`;
     const up = cotal(["up", "--detach", "--space", SPACE, "--server", server]);
-    ok("up --detach (auth) exits 0", up.status === 0, (up.stdout + up.stderr).slice(-400));
+    ok("up --detach (auth) exits 0", up.status === 0, out(up).slice(-400));
     const record = (t: string) => canonicalLocalProcessPath(t, { root, space: SPACE });
     for (const f of [join(root, ".cotal", "nats.pid"), record(DELIVERY_PIDFILE), record(MANAGER_PIDFILE)]) {
       const pid = Number(readFileSync(f, "utf8").trim());
       ownPids.push(pid);
     }
 
-    const rawCreds = join(sandbox, "raw-web.creds");
-    const mint = cotal(["mint", "raw-web", "--profile", "admin", "--out", rawCreds]);
-    ok("admin fixture creds mint for raw-target rejection", mint.status === 0, mint.stderr);
-    const noRoot = cotalAt(sandbox, ["web", "--detach", "--space", SPACE, "--server", server, "--creds", rawCreds, "--port", String(WEB_PORT), "--no-open"]);
-    const noRootArtifacts = [root, sandbox, home].flatMap((dir) => [join(dir, ".cotal", "web.pid"), join(dir, ".cotal", "web.log"), join(dir, "web.pid"), join(dir, "web.log")]);
-    ok("detached web rejects a reachable target without a recorded root before side effects", noRoot.status === 1 && /requires a recorded mesh root/.test(noRoot.stderr) && noRootArtifacts.every((path) => !existsSync(path)), noRoot.stdout + noRoot.stderr);
+    const mint = cotal(["auth", "mint", "dashweb", "--profile", "observer", "--out", creds]);
+    ok("an observer credential mints into a private file", mint.status === 0 && (statSync(creds).mode & 0o777) === 0o600, out(mint).slice(-400));
+    const add = cotal(definition);
+    ok("service add --preset web saves the dashboard definition", add.status === 0 && /Service definition saved/.test(add.stdout), out(add).slice(-500));
+    const start = cotal(["service", "start", "web", "--space", SPACE]);
+    const webPid = pidOf(start);
+    if (Number.isFinite(webPid)) ownPids.push(webPid);
+    ok("service start web runs the dashboard", start.status === 0 && /Owned service process running/.test(start.stdout) && alive(webPid), out(start).slice(-600));
 
-    webChild = spawn(realNode, [tsxCli, binCotal, "web", "--port", String(WEB_PORT), "--no-open"], {
-      env,
-      cwd: root,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let webErr = "";
-    webChild.stderr?.on("data", (d: Buffer) => (webErr += d.toString()));
-    // `web.session` is written only after listen() succeeded, so its appearance is the readiness
-    // signal. Polling the port cannot be one any more: it answers before and after the console is
-    // ready, with the same refusal either way.
-    const sessionPath = join(root, ".cotal", "web.session");
+    // The bootstrap link lives in an owner-private file; the service log names its path, never its
+    // contents. The file is written once the listener is up, so its appearance is the readiness signal.
+    let sessionPath: string | undefined;
     let launch: { launchUrl?: unknown } | undefined;
     for (let i = 0; i < 30 && launch === undefined; i++) {
-      await sleep(1000);
-      if (existsSync(sessionPath)) launch = JSON.parse(readFileSync(sessionPath, "utf8"));
+      const logs = cotal(["service", "logs", "web", "--space", SPACE, "--json"]);
+      sessionPath ??= /Private browser bootstrap file: ([^"\\\n]+)/.exec(logs.stdout)?.[1]?.trim();
+      if (sessionPath && existsSync(sessionPath)) launch = JSON.parse(readFileSync(sessionPath, "utf8"));
+      else await sleep(1000);
     }
-    const launchUrl = typeof launch?.launchUrl === "string" ? launch.launchUrl : undefined;
-    ok("the console publishes its single-use launch link", launchUrl !== undefined, webErr.slice(-400));
+    ok("the log names the private bootstrap file, and that file holds a launch link", typeof launch?.launchUrl === "string", { sessionPath });
+    ok("the bootstrap file is owner-private", sessionPath !== undefined && (statSync(sessionPath).mode & 0o077) === 0, sessionPath);
+    const launchUrl = launch!.launchUrl as string;
     const unauthenticated = await fetch(`http://127.0.0.1:${WEB_PORT}/`);
     ok("the dashboard refuses a request with no session", unauthenticated.status === 401, unauthenticated.status);
     // Spend the token ONCE and ride the session it mints. Presenting `?k=` a second time earns
     // `launch-token-already-used`, a different refusal that reads exactly like the first.
-    const exchange = await fetch(launchUrl!, { redirect: "manual" });
+    const exchange = await fetch(launchUrl, { redirect: "manual" });
     const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange.headers.get("set-cookie") ?? "")?.[1];
     ok("the launch link is accepted once and mints a session", exchange.status === 302 && session !== undefined, exchange.status);
     const authed = { cookie: `cotal_web_session=${session}` };
     const page = await fetch(`http://127.0.0.1:${WEB_PORT}/`, { headers: authed });
-    ok("the extension `web` command serves the dashboard", page.status === 200, webErr.slice(-400));
+    ok("the web service serves the dashboard", page.status === 200, page.status);
     const html = await page.text();
     ok("dashboard page is the real asset (packaged via files:[dist])", /<html|<!doctype/i.test(html) && html.length > 200, html.slice(0, 120));
     const appJs = await fetch(`http://127.0.0.1:${WEB_PORT}/app.js`, { headers: authed });
     ok("static asset /app.js serves", appJs.status === 200);
     const meta = (await (await fetch(`http://127.0.0.1:${WEB_PORT}/api/meta`, { headers: authed })).json()) as { space?: string; pid?: number };
-    const foregroundPid = Number(readFileSync(join(root, ".cotal", "web.pid"), "utf8").trim());
-    ok("live /api/meta answers with the mesh's space and serving pid", meta.space === SPACE && meta.pid === foregroundPid && alive(foregroundPid), meta);
+    ok("live /api/meta answers with the mesh's space and serving pid", meta.space === SPACE && meta.pid === webPid, { meta, webPid });
+
+    const again = cotal(["service", "start", "web", "--space", SPACE]);
+    ok("a second start is a no-op on the running instance", again.status === 0 && /Already running; nothing was started/.test(again.stdout) && pidOf(again) === webPid, out(again).slice(-500));
     const removeLive = cotal(["ext", "remove", "@cotal-ai/web"]);
-    ok("ext remove refuses to orphan a running web process and names its pid", removeLive.status === 1 && /web \(pid \d+\) in .+ - stop pid \d+, then retry/.test(removeLive.stderr), removeLive.stderr.slice(-400));
-    const webDown = cotal(["down", "web", "--space", SPACE]);
-    if (webChild.exitCode === null)
-      await Promise.race([new Promise<void>((resolve) => webChild!.once("exit", () => resolve())), sleep(2_000)]);
-    ok("down web stops the extension-owned process only", webDown.status === 0 && webChild.exitCode !== null, webDown.stdout + webDown.stderr);
-
-    const logPath = join(root, ".cotal", "web.log");
-    const oldLogLine = "OLD-LAUNCH-MUST-NOT-BE-REPORTED";
-    writeFileSync(logPath, oldLogLine + "\n", { mode: 0o600 });
-    const collisionReady = join(sandbox, "collision.ready");
-    const collision = spawn(realNode, [
-      "-e",
-      `const http=require("node:http"),fs=require("node:fs"); const s=http.createServer((q,r)=>{r.setHeader("content-type","application/json");r.end(JSON.stringify({space:${JSON.stringify(SPACE)},pid:process.pid}))}); s.listen(${WEB_PORT},"127.0.0.1",()=>fs.writeFileSync(${JSON.stringify(collisionReady)},"ready")); setInterval(()=>{},1000);`,
-    ], { detached: true, stdio: "ignore" });
-    collision.unref();
-    if (collision.pid) ownPids.push(collision.pid);
-    for (let i = 0; i < 100 && !existsSync(collisionReady); i++) await sleep(20);
-    ok("port-collision fixture is listening", existsSync(collisionReady));
-    const collided = cotalAt(sandbox, ["web", "--detach", "--space", SPACE, "--port", String(WEB_PORT), "--no-open"]);
-    ok("detached readiness never accepts another listener's pid", collided.status === 1 && /exited before becoming ready/.test(collided.stderr) && /Port .* is in use/.test(collided.stderr), collided.stdout + collided.stderr);
-    ok("failed launch reports only its appended log tail", !collided.stderr.includes(oldLogLine), collided.stderr);
-    ok("failed launch leaves no child pidfile", !existsSync(join(root, ".cotal", "web.pid")));
-    if (collision.pid) try { process.kill(collision.pid, "SIGTERM"); } catch { /* gone */ }
-    for (let i = 0; collision.pid && alive(collision.pid) && i < 100; i++) await sleep(20);
-
-    rmSync(logPath, { force: true });
-    const shadowPath = join(home, "meshes", "aaa-shadow.json");
-    const currentPath = join(home, "current-mesh");
-    writeFileSync(shadowPath, JSON.stringify({ space: "aaa-shadow", server, root, mode: "open", ts: new Date().toISOString() }), { mode: 0o600 });
-    writeFileSync(currentPath, SPACE, { mode: 0o600 });
-    ok("canonical-target fixture is isolated and ambiguous", existsSync(join(home, "meshes", `space.${Buffer.from(SPACE, "utf8").toString("hex")}.json`)) && existsSync(shadowPath) && readFileSync(currentPath, "utf8") === SPACE);
-    const detached = cotalAt(sandbox, ["web", "--detach", "--port", String(WEB_PORT), "--no-open"]);
-    ok("implicit detached launch from outside the root exits only after HTTP readiness", detached.status === 0 && /web dashboard ready/.test(detached.stdout), detached.stdout + detached.stderr);
-    const webPid = Number(readFileSync(join(root, ".cotal", "web.pid"), "utf8").trim());
-    const reportedPid = Number(detached.stdout.match(/\(pid (\d+)\)/)?.[1]);
-    ownPids.push(webPid);
-    // The readiness nonce, not a session: this is the detached PARENT's own path, a header that is
-    // never consumed precisely because the parent may poll many times.
-    const readiness = JSON.parse(readFileSync(join(root, ".cotal", "web.session"), "utf8")).readiness as string;
-    const detachedMeta = await (await fetch(`http://127.0.0.1:${WEB_PORT}/api/meta`, { headers: { "x-cotal-readiness": readiness } })).json() as { space?: string; pid?: number };
-    ok("detached child preserves the implicit parent target across same-root registry ambiguity", detachedMeta.space === SPACE && detachedMeta.pid === webPid && reportedPid === webPid && alive(webPid), detachedMeta);
-    ok("detached launch creates a private diagnostic log", existsSync(logPath) && (statSync(logPath).mode & 0o777) === 0o600 && /Cotal web/.test(readFileSync(logPath, "utf8")));
-
-    const duplicate = cotalAt(sandbox, ["web", "--detach", "--space", SPACE, "--port", String(WEB_PORT + 1), "--no-open"]);
-    ok("a second detached launch fails without disturbing the recorded owner", duplicate.status === 1 && /already running/.test(duplicate.stderr) && alive(webPid) && readFileSync(join(root, ".cotal", "web.pid"), "utf8").trim() === String(webPid), duplicate.stdout + duplicate.stderr);
+    ok("ext remove refuses to orphan the running dashboard", removeLive.status === 2 && /LIFECYCLE_BLOCKED/.test(out(removeLive)) && alive(webPid), out(removeLive).slice(-500));
+    const stop = cotal(["service", "stop", "web", "--space", SPACE, "--yes"]);
+    for (let i = 0; i < 50 && alive(webPid); i++) await sleep(100);
+    ok("service stop web ends the dashboard process", stop.status === 0 && /Service stopped/.test(stop.stdout) && !alive(webPid), out(stop).slice(-500));
+    ok("a confirmed stop removes the private bootstrap file", sessionPath !== undefined && !existsSync(sessionPath), sessionPath);
 
     const down = cotal(["down"]);
-    ok("bare down stops detached web, removes the shadow, and stops the auth mesh", down.status === 0 && !alive(webPid) && !existsSync(join(root, ".cotal", "web.pid")) && !existsSync(shadowPath), down.stdout + down.stderr);
+    ok("bare down stops the auth mesh", down.status === 0 && ownPids.slice(0, 3).every((pid) => !alive(pid)), out(down).slice(-500));
   }
 
-  // -- D: remove the extension; the surface shrinks back ---------------------------------------------
+  // -- D: remove the extension; the preset's provider is gone again ----------------------------------
   {
     ok("ext remove @cotal-ai/web exits 0", cotal(["ext", "remove", "@cotal-ai/web"]).status === 0);
-    const r = cotal(["web"]);
-    ok("`cotal web` is unknown again after remove", r.status === 1 && /unknown command: web/.test(r.stderr), r.stderr.slice(0, 150));
+    const r = cotal(definition);
+    ok("the web preset refuses again once its provider is removed", r.status === 2 && /no registered or installed service preset is named "web"/.test(out(r)), out(r).slice(-500));
   }
 
   console.log(`\nDOGFOOD LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {
-  webChild?.kill("SIGKILL");
   cotal(["down"]);
   for (const p of ownPids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(sandbox, { recursive: true, force: true });
