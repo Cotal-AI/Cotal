@@ -15,8 +15,8 @@
  * That is fixture authority over a fixture space, not a human decision.
  *
  * Cells (each asserts counts):
- *  R1  `register` on the ON space answers `approval-required` with a proposal id; exactly 1 POST
- *      reached the authority route; the requestId was persisted before the send;
+ *  R1  `register` on the ON space (with no prior connect-check) answers `approval-required` with a
+ *      proposal id; exactly 1 POST reached the authority route; the requestId was persisted;
  *  R2  a second `register` before any decision replays the SAME requestId: still approval-required
  *      with the same proposal, and still one proposal at the host;
  *  R3  the operator binds the name and the owner approves through the stock host; the daemon's
@@ -24,10 +24,12 @@
  *      endpoint and pinned account. Nothing is activated and no bearer is held;
  *  R4  a daemon restart reuses the persisted requestId (no fresh key), and the replay is still
  *      `registered`;
- *  R5  the OFF space (stock default, no serviceEndpoints) answers `unsupported-by-space` with 0 POST;
+ *  R5  the OFF space (stock default, no serviceEndpoints) answers `unsupported-by-space` with 0 POST
+ *      and no identity written;
  *  R6  the owner refuses a proposal for a second space: the daemon reports refused/proposal-refused,
  *      and the persisted requestId is unchanged;
- *  R7  register before connect-check (no identity yet) is refused locally with 0 requests;
+ *  R7  register for a space this machine has not registered: the readiness check (A2b.1) runs first
+ *      and stops it with not-registered, 0 requests to any space;
  *  R8  closed contract: register without space, or with an unknown field, is refused with its typed
  *      code and 0 requests;
  *  R9  no frame and no CLI output carries the IdP session, an IdP JWT, an access bearer or a
@@ -224,13 +226,12 @@ try {
 
   let d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
   try {
-    await cell("R7 register before connect-check", async () => {
+    await cell("R7 register for a space this machine has not registered", async () => {
       const before = hits.length;
-      const r = await ask(paths.socket, { op: "register", space: ON });
-      check("R7 refused locally as not-ready (no identity yet)", r.ok === true && resultOf(r).outcome === "not-ready", r);
-      check("R7 0 requests reached the space", hits.length === before, hits.slice(before));
+      const r = await ask(paths.socket, { op: "register", space: "not-registered-here" });
+      check("R7 not-registered (the readiness check runs first and stops it)", r.ok === true && resultOf(r).outcome === "not-registered", r);
+      check("R7 0 requests reached any space", hits.length === before, hits.slice(before));
     });
-    for (const s of [ON, OFF, DENY]) await ask(paths.socket, { op: "connect-check", space: s });
 
     let proposalId = "", requestId = "";
     await cell("R1 register asks for approval", async () => {
@@ -277,6 +278,7 @@ try {
       const r = await ask(paths.socket, { op: "register", space: OFF });
       check("R5 unsupported-by-space", resultOf(r).outcome === "unsupported-by-space", r);
       check("R5 0 POST to that space", posts(OFF) === before, hits.filter((h) => h.space === OFF));
+      check("R5 no identity or request record written for that space", !readdirSync(join(home, "daemon"), { recursive: true }).map(String).some((f) => f.includes(Buffer.from(OFF).toString("hex"))));
     });
 
     await cell("R6 the owner refuses", async () => {
