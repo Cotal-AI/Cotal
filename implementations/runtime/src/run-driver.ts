@@ -303,6 +303,8 @@ export interface DriveRequest {
   readonly pause?: PauseToken;
   /** Root cancellation established by the hosting manager after observing its durable marker. */
   readonly cancellation?: RootCancellationSource;
+  /** Shared host observation for classifying a revoked channel effect before root signalling. */
+  readonly cancellationObserved?: () => string | undefined;
   /**
    * Repair external state bound to the PREVIOUS holder, once this driver holds the run and before
    * the program is resumed.
@@ -734,7 +736,8 @@ async function drive(
     }
     // The host stopping is the same kind of answer: this driver no longer holds the run, and the
     // program has neither failed nor finished.
-    if (e instanceof RunReleased || (e instanceof Cancelled && req.cancellation?.reason !== undefined)) {
+    if (e instanceof RunReleased || (e instanceof Cancelled
+      && (req.cancellation?.reason !== undefined || req.cancellationObserved?.() !== undefined))) {
       await noteFinal(req, "released", appender.journalHigh, specRevision, statusRevision);
       return { status: "released", reason: e };
     }

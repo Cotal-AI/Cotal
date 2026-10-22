@@ -1118,6 +1118,9 @@ export class RunHosting {
         epoch: req.epoch,
         defaultCheckpointTimeout: req.timeout,
         admission: req.admission,
+        cancellationObserved: () => this.runs.get(req.runId) === holder
+          ? [...this.cancellations.values()].find(entry => entry.runId === req.runId && entry.observed)?.reason
+          : undefined,
         // The broker's own max_payload, minus headroom for the record envelope around the entry.
         ...(typeof max === "number" && max > 4096 ? { resultBytes: max - 4096 } : {}),
       }, mediator);

@@ -363,6 +363,12 @@ ends the drive as `released`; the status projection can lag if its write fails. 
 state separately. A completion or failure that wins the race keeps its actual outcome. It does not stop an agent process or preempt already-pulled tool work.
 `release(reason)` remains a separate next-effect-boundary request, used for host shutdown.
 
+The host also supplies `cancellationObserved` for channel-effect classification. A fresh revocation
+read together with an observed local cancellation intent ends that effect as cancelled, even while
+the manager is still reading the current holder before signalling the root. Pending intents alone
+never do this. An ordinary local revoke without a cancellation intent keeps its existing failure
+behavior. The shared observation neither signals the root nor replaces the holder check.
+
 `cotal run revoke <runId> --local --by <who> --reason <text>` writes the run's revocation marker
 from the project folder. An empty `--by` or `--reason` is refused before anything is written. The
 admission itself is never rewritten. Every host reads the marker

@@ -263,6 +263,7 @@ export const cotalLangRunHost: RunHost = {
   drive(planes: RunHostPlanes, req: RunHostDriveRequest, mediator: RunHostPlanes): RunHostDrive {
     const pause = new PauseToken();
     const cancellation = new RootCancellation();
+    const cancellationObserved = () => req.cancellationObserved?.() ?? cancellation.reason;
     if (mediator === undefined || mediator.nc === planes.nc || mediator.space !== planes.space)
       throw new Error("a hosted run requires a separate trusted mediator connection in the same space");
     const authority = createRunScopeAuthority(mediator, req.runId, req.lease);
@@ -277,7 +278,7 @@ export const cotalLangRunHost: RunHost = {
       space: planes.space, endpoint: req.endpoint, runId: req.runId,
       caller: runDriverCaller(req.runId, admitted.caller.owner), instanceId: req.instanceId, epoch: req.epoch,
       holder: req.holder, defaultCheckpointTimeout: req.defaultCheckpointTimeout,
-    }, authority, admission, cancellation);
+    }, authority, admission, cancellationObserved);
     const records = createRunRecordHost(mediator, req.endpoint, req.runId);
     const driveReq = {
       space: planes.space,
@@ -289,6 +290,7 @@ export const cotalLangRunHost: RunHost = {
       handler,
       pause,
       cancellation,
+      cancellationObserved,
       ...(req.file !== undefined ? { file: req.file } : {}),
       ...(req.resultBytes !== undefined ? { resultBytes: req.resultBytes } : {}),
     };

@@ -1,7 +1,7 @@
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import { assertAdmittedSubscribe, chatStream, chatSubject, isConsumerNotFound, subjectMatches, waitConsumerConfig, waitConsumerName, type RunAdmissionView } from "@cotal-ai/core";
 import { RunScopeAuthority, RunScopeDenied, WaitReceipts, type WaitReceipt } from "./run-scope-authority.js";
-import { Cancelled, type RootCancellationSource } from "@cotal-ai/lang";
+import { Cancelled } from "@cotal-ai/lang";
 
 export interface RunWaitMessage {
   readonly sequence: number;
@@ -23,7 +23,7 @@ export function createRunWaitHost(
   broker: { js: JetStreamClient; jsm: JetStreamManager; space: string },
   authority: RunScopeAuthority,
   admission: () => Promise<RunAdmissionView>,
-  cancellation?: RootCancellationSource,
+  cancellationObserved?: () => string | undefined,
 ): RunWaitHost {
   const stream = chatStream(broker.space);
   const receipts = new WaitReceipts();
@@ -33,8 +33,9 @@ export function createRunWaitHost(
   // admission is re-read leader-served each time; a failed read refuses.
   const admitted = async (channel: string): Promise<void> => {
     const view = await admission();
-    if (view.revoked !== undefined && cancellation?.reason !== undefined)
-      throw new Cancelled(cancellation.reason);
+    const reason = cancellationObserved?.();
+    if (view.revoked !== undefined && reason !== undefined)
+      throw new Cancelled(reason);
     assertAdmittedSubscribe(view, channel);
   };
   return Object.freeze({

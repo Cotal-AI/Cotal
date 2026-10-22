@@ -73,6 +73,9 @@ export interface RunHostDriveRequest {
    *  every channel effect. A drive without one performs no channel effect: the host refuses at
    *  the boundary rather than running the effect under the mediator's own authority. */
   readonly admission: RunAdmissionView;
+  /** The host's observed local cancellation intent. Classification only: this does not signal
+   *  the root or replace the current-holder check before calling the drive's cancel handle. */
+  readonly cancellationObserved?: () => string | undefined;
 }
 
 /** How a drive attempt ended. `released` is the driver saying the run is not its to continue (a
