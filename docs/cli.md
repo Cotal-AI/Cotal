@@ -2165,7 +2165,8 @@ does not override `--no-events`.
 The persona (`--file` or the positional name, else the [`persona` preference](config.md#preferences),
 else `default`) is loaded from the target mesh's `.cotal/agents/` when it is a bare name. A reference that contains a path separator or
 ends in `.md` is loaded from that file. A relative path resolves against the mesh root, except that
-an enrollment or a managed handoff resolves its persona file against the working directory. A missing
+a managed handoff, and an enrollment onto a mesh this machine has not registered yet, resolve the
+persona file against the working directory. A missing
 persona is refused with the catalog directory or the file that was checked. A missing `default`
 persona also names the command that writes one: `cotal up` in the root of a space this machine
 started, or `cotal persona create default` for any other space. The launch flags
@@ -2212,7 +2213,7 @@ fails, and a managed seat frees its slot only when it stops. The refusal counts 
 only while it holds a slot, so a launch whose seat already ended is not counted. The roster counts
 presence, which also includes peers no manager owns, so its total is a different number.
 
-Run from a managed seat's own shell on a static or open mesh, `cotal spawn --detach` launches as
+Run from a managed seat's own shell on a static or open mesh, a managed `cotal spawn` launches as
 that seat when it targets the seat's own space. Without `--space` it picks that target the way the
 operator path does, so a recorded mesh that is not running is skipped. The CLI reads the seat's
 launch identity (`COTAL_NAME`, `COTAL_ID`, `COTAL_LIFECYCLE_UID`, `COTAL_SPACE`, and on a static
@@ -2226,8 +2227,10 @@ its credential holds no spawn subject.
 `--on <instance>` keeps its pin: the seat's own credential has no instance route, so on a static
 mesh the CLI mints a one-shot `manager-caller` view for the seat, pinned to that instance and
 carrying the spawn subject only when the seat's credential holds it. On an open mesh the call keeps
-the TLS requirement the mesh records. `--creds`, `--server` with an unregistered `--space`, and a
-user-auth mesh keep the operator path.
+the TLS requirement the mesh records. A managed spawn from a seat's shell never falls back to the
+operator: `--creds` is refused there, and so is a target the seat cannot act on as itself, such as
+`--server` with an unregistered `--space`, a user-auth mesh, or an open mesh that `COTAL_SPACE` does
+not name.
 
 Foreground user-mode launches serialize their local actor material. A duplicate refuses
 without replacing the first launch's files. A new local-user foreground launch also refuses
