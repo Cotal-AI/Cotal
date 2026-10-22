@@ -73,11 +73,12 @@ catch (error) { console.log(JSON.stringify({ok:false,error:error.message})); pro
   });
   const entries = JSON.parse(runClaude("plugin", "list", "--json")) as Array<{ id: string; scope: string; projectPath?: string; version: string; enabled: boolean; readFromFolder?: string }>;
   const entry = entries.find((e) => e.id === plugin && e.scope === "local" && e.projectPath === project);
-  check("the native local registration agrees with the final materialized generation", () => {
+  check("the native local registration resolves the final materialized generation", () => {
     assert.ok(entry);
-    assert.equal(entry.version, version());
-    assert.notEqual(entry.version, initial);
     assert.equal(entry.readFromFolder, join(process.env.COTAL_HOME!, "claude-plugin", "cotal"));
+    const resolved = JSON.parse(readFileSync(join(entry.readFromFolder!, ".claude-plugin", "plugin.json"), "utf8")) as { version: string };
+    assert.equal(resolved.version, version());
+    assert.notEqual(resolved.version, initial);
     assert.equal(entry.enabled, false);
   });
   check("the resolved payload still matches the built connector", () => {

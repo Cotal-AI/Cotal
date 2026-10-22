@@ -41,8 +41,9 @@ existing Claude plugin registrations, including older cached installations. Afte
 the first regular Cotal command also refreshes these copies before accepting the new generation. Setup,
 skills installation and refresh share a machine-local lock through the final plugin check, so simultaneous
 commands cannot overwrite a generation while another command verifies it. Disabled installations
-stay disabled during an update. `cotal status` checks the resolved payload and its recorded version,
-so a current marketplace cannot hide an outdated or incomplete plugin. Running sessions keep the
+stay disabled during an update. `cotal status` checks the resolved payload's manifest version and
+file contents. A folder-backed plugin can retain older version metadata in Claude's installation
+records; that metadata does not override the files Claude loads. Running sessions keep the
 code they loaded; reload plugins or reopen Claude to load the update.
 The install mechanics and the invariants behind them are in
 [setup internals](setup-internals.md).
