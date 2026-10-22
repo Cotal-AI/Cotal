@@ -51,12 +51,12 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
-// A second broker for the "down" connection alone, so one cell can take its transport away.
-const DOWN_PORT = await pickFreePort();
-const downServers = `nats://127.0.0.1:${DOWN_PORT}`;
-const downDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const downSrv = spawn("nats-server", ["-js", "-p", String(DOWN_PORT), "-sd", join(downDir, "js")], { stdio: "ignore" });
-const releaseDownBroker = teardownOnSignal(downSrv, downDir);
+// A second broker for the "severed" connection alone, so one cell can take its transport away.
+const SEVERED_PORT = await pickFreePort();
+const severedServers = `nats://127.0.0.1:${SEVERED_PORT}`;
+const severedDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+const severedSrv = spawn("nats-server", ["-js", "-p", String(SEVERED_PORT), "-sd", join(severedDir, "js")], { stdio: "ignore" });
+const releaseSeveredBroker = teardownOnSignal(severedSrv, severedDir);
 // The bound this embedder sets for cotal_wait, short enough for a suite and long enough for a DM.
 const WAIT = 20;
 
@@ -74,7 +74,7 @@ const configFor = (name: string): AgentConfig => {
   return {
   space,
   name,
-  servers: name.startsWith("down") ? downServers : servers,
+  servers: name.startsWith("severed") ? severedServers : servers,
   subscribe: [channel],
   allowSubscribe: [channel],
   allowPublish: [channel],
@@ -181,7 +181,7 @@ observer.on("message", (m: CotalMessage, d: Delivery) => {
 let failure: unknown;
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
-  await awaitBrokerReady(() => isReachable(downServers), { servers: downServers, attempts: 50, delayMs: 200 });
+  await awaitBrokerReady(() => isReachable(severedServers), { servers: severedServers, attempts: 50, delayMs: 200 });
   await observer.start();
 
   const a = await clientFor("tok-a");
@@ -532,22 +532,22 @@ try {
 
   // A connection whose transport is already down when it closes still ends a wait held on it: its
   // agent's stop then has no transport left to report going down.
-  const downSeat = idOf(await call(a, "cotal_connect", { name: "down_seat" }));
-  const downAgent = live.get(downSeat)!.conn.agent;
-  await killAndAwaitExit(downSrv);
-  for (let i = 0; i < 50 && downAgent.transportConnected; i++) await sleep(100);
-  check("the stopped broker takes that connection's transport down", !downAgent.transportConnected);
-  const downWait = call(a, "cotal_wait", { connection_id: downSeat });
+  const severedSeat = idOf(await call(a, "cotal_connect", { name: "severed_seat" }));
+  const severedAgent = live.get(severedSeat)!.conn.agent;
+  await killAndAwaitExit(severedSrv);
+  for (let i = 0; i < 50 && severedAgent.transportConnected; i++) await sleep(100);
+  check("the stopped broker takes that connection's transport down", !severedAgent.transportConnected);
+  const severedWait = call(a, "cotal_wait", { connection_id: severedSeat });
   await sleep(500);
-  const downAt = Date.now();
-  const downClose = call(a, "cotal_disconnect", { connection_id: downSeat });
-  const downEnded = await downWait;
+  const severedAt = Date.now();
+  const severedClose = call(a, "cotal_disconnect", { connection_id: severedSeat });
+  const severedEnded = await severedWait;
   check(
     "disconnecting a connection whose transport is down ends its held wait",
-    downEnded.isError && downEnded.text.startsWith("CONNECTION_REQUIRED") && Date.now() - downAt < 3000,
-    { ...downEnded, ms: Date.now() - downAt },
+    severedEnded.isError && severedEnded.text.startsWith("CONNECTION_REQUIRED") && Date.now() - severedAt < 3000,
+    { ...severedEnded, ms: Date.now() - severedAt },
   );
-  await downClose;
+  await severedClose;
 
   // A run turn the gateway has no way to surface. Set by hand: a gateway connection cannot take one
   // through any tool it offers, so this is the only way to hold one open here.
@@ -661,8 +661,8 @@ try {
   await observer.stop().catch(() => {});
   await killAndAwaitExit(srv);
   releaseBroker();
-  await killAndAwaitExit(downSrv);
-  releaseDownBroker();
+  await killAndAwaitExit(severedSrv);
+  releaseSeveredBroker();
 }
 if (failure !== undefined) {
   console.error(failure);
