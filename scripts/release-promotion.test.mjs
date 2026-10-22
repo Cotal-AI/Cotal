@@ -32,10 +32,11 @@ const prefix = process.argv[process.argv.indexOf("--prefix") + 1];
 fs.mkdirSync(path.join(prefix, "bin"), { recursive: true });
 fs.writeFileSync(path.join(prefix, "bin", "cotal"), ${JSON.stringify(`#!${process.execPath}\nprocess.stdout.write("cotal-ai 1.2.3\\n");\n`)}, { mode: 0o755 });
 `, { mode: 0o755 });
-    for (const session of ["first", "second"]) {
-      const output = execFileSync(process.execPath, [join(import.meta.dirname, "verify-release-installable.mjs"), "1.2.3", "--deadline-ms=5000"], {
+    for (const session of ["first", "second", "late"]) {
+      const flags = session === "late" ? [`--requested-at=${new Date(Date.now() - 3_600_000).toISOString()}`] : [];
+      const output = execFileSync(process.execPath, [join(import.meta.dirname, "verify-release-installable.mjs"), "1.2.3", "--deadline-ms=5000", ...flags], {
         cwd: workspace, encoding: "utf8", timeout: 10_000,
-        env: { ...coldOsEnvironment(), PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(root, session), GITHUB_TOKEN: "synthetic-not-a-credential", COTAL_HOME: join(root, "synthetic-operator", session) },
+        env: { ...coldOsEnvironment(), PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(root, session), GITHUB_TOKEN: "synthetic-not-a-credential", COTAL_HOME: join(root, "synthetic-operator", session), ...(session === "late" ? { RELEASE_ATTEMPT_STARTED_AT: new Date().toISOString() } : {}) },
       });
       assert.match(output, /VERDICT: INSTALLABLE/);
       const captured = JSON.parse(readFileSync(capture, "utf8"));
@@ -98,12 +99,14 @@ test("real registry reads bind every version, archive, integrity and dist-tag", 
     assert.equal(receipt.complete, true); assert.equal(receipt.withinPublicationBudget, true);
     assert.equal(receipt.packages.length, 2); assert.equal(reads, 6);
     for (mode of ["missing", "old-tag"]) {
-      await assert.rejects(() => verifyPromotedArchives({ ...options, requestedAt: new Date(Date.now() - 599_800).toISOString() }), /ten-minute availability deadline/);
+      await assert.rejects(() => verifyPromotedArchives({ ...options, requestedAt: new Date(Date.now() - 599_800).toISOString() }), /execution deadline/);
     }
     for (mode of ["wrong-bytes", "wrong-integrity"]) {
       await assert.rejects(() => verifyPromotedArchives({ ...options, requestedAt: new Date().toISOString() }), (error) => error.code === "ERR_RELEASE_ARTIFACT");
     }
     mode = "ready";
+    const late = await verifyPromotedArchives({ ...options, requestedAt: new Date(Date.now() - 601_000).toISOString(), attemptStartedAt: new Date().toISOString() });
+    assert.equal(late.complete, true); assert.equal(late.withinPublicationBudget, false); assert.equal(late.recheck, false);
     const recovery = await verifyPromotedArchives({ ...options, requestedAt: new Date(Date.now() - 601_000).toISOString(), recheck: true });
     assert.equal(recovery.complete, true); assert.equal(recovery.withinPublicationBudget, false); assert.equal(recovery.recheck, true);
     await assert.rejects(() => verifyPromotedArchives({ ...options, requestedAt: new Date().toISOString(), expectedSha256: "f".repeat(64) }), /another candidate/);
@@ -175,5 +178,12 @@ test("recorded outcomes never turn accepted uploads or late recovery into a time
     const late = record("late", 601_000);
     assert.equal(late.available, true); assert.equal(late.withinPublicationBudget, false);
     assert.equal(late.elapsedMs, 601_000);
+    const output = join(root, "late-cli.json");
+    const cli = execFileSync(process.execPath, [join(import.meta.dirname, "record-publication-outcome.mjs"), publicationFile, archivesFile, output], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    assert.match(cli, /availability verified=true; within original ten-minute budget=false/);
+    const recorded = JSON.parse(readFileSync(output, "utf8"));
+    assert.equal(recorded.available, true);
+    assert.equal(recorded.withinPublicationBudget, false);
+    assert.equal(recorded.requestedAt, requestedAt);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

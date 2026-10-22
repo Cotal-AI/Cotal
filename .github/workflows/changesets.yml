@@ -12,7 +12,7 @@ on:
         type: string
         required: true
       qualification_run:
-        description: "Successful first-attempt Cold setup run prepared before publish-go."
+        description: "Successful first-attempt Cold setup run for the frozen release candidate."
         type: string
         required: true
       candidate_sha256:
@@ -120,6 +120,9 @@ jobs:
       RELEASE_QUALIFICATION_RUN: ${{ inputs.qualification_run }}
       RELEASE_TAG: ${{ inputs.snapshot || 'latest' }}
     steps:
+      - name: Record this execution attempt without resetting the original command time
+        run: printf 'RELEASE_ATTEMPT_STARTED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -168,7 +171,7 @@ jobs:
         if: inputs.snapshot != ''
         run: node scripts/apply-cold-versions.mjs "$COLD_CANDIDATE/manifest.json"
 
-      - name: Publish the qualified bytes with one original deadline
+      - name: Publish the qualified bytes within this bounded execution attempt
         run: node scripts/publish-cold-candidate.mjs "$RELEASE_TAG"
 
       - name: Verify every registry archive and dist-tag
@@ -240,7 +243,8 @@ jobs:
           INSTALL_OK: ${{ steps.install-gate.outputs.install_ok }}
         run: node scripts/record-publication-outcome.mjs "$PUBLISH_RECEIPT" "$RUNNER_TEMP/registry-archives.json" "$RUNNER_TEMP/publication-outcome.json"
 
-      # Announce a normal release only after archive, metadata, private-install and budget checks.
+      # Announce only after archive, metadata and private-install checks. Late availability
+      # remains an explicit warning and a failed timing target in the outcome receipt.
       # Use the oldest first-parent carrier rather than a later recovery commit. Unreadable history
       # or a missing version carrier refuses the tag.
       - name: Tag and cut the GitHub Release on publish

@@ -17,9 +17,11 @@ command. Do not add serial reviews, unrelated changes, another native matrix or 
 after it. Keep security, credential and repository protections. Report a platform refusal or a
 missed deadline rather than calling an accepted upload a published release.
 
-GitHub runner admission and npm propagation are external dependencies. The workflow enforces the
-original deadline and records breaches; it cannot guarantee those services' response times. A local
-smoke or dry run is not production evidence for the ten-minute target.
+GitHub runner admission and npm propagation are external dependencies. The workflow records the
+original deadline and any breach; it cannot guarantee those services' response times. A delayed
+release can finish under the original authorization, but is never reported as timely. Each execution
+attempt has one ten-minute timeout recorded before checkout. Later steps cannot restart that timeout.
+A local smoke or dry run is not production evidence for the ten-minute target.
 
 ## CI policy
 
@@ -138,8 +140,9 @@ publisher controls' tree. All three source identities are retained in the outcom
 
 The publisher checks the live GitHub run and immutable artifact selection. It rejects forks,
 foreign repositories and workflows, failed or unfinished runs, partial reruns, expired or ambiguous
-artifacts, qualification completed after the command, a changed candidate digest and a different
-source tree. A PR run's API head is checked against the qualified merge snapshot's head parent;
+artifacts, invalid completion timestamps, a changed candidate digest and a different source tree.
+Qualification should finish before the command. If preparation was late, a successful qualification
+of the frozen source is still required before any write; the original command time stays unchanged. A PR run's API head is checked against the qualified merge snapshot's head parent;
 it is not relabelled as the checkout. All 18 native receipts retain their original source and
 candidate hash.
 
@@ -196,8 +199,8 @@ pnpm publish <archive> --provenance --access=public --no-git-checks --ignore-scr
 The tag is `latest` or the qualified snapshot tag. Package scripts already ran during preparation.
 The publisher runs on the POSIX GitHub runner. A live supervisor keeps ownership of each client's
 process group until client completion. The owner then terminates and observes that group, including
-same-group descendants whose wrapper exited with ignored stdio. Its original deadline also stops
-the group. It admits no new work after an error and waits for admitted groups to settle. Unobserved
+same-group descendants whose wrapper exited with ignored stdio. The execution attempt's deadline
+also stops the group. It admits no new work after an error and waits for admitted groups to settle. Unobserved
 settlement prevents further admission and leaves installation scratch in place for investigation. Receipts distinguish not-started,
 running, accepted, refused and unknown outcomes. Accepted means the publisher client completed,
 not that consumers can install the version. An interrupted running outcome requires investigation.
@@ -212,12 +215,15 @@ with the qualified bytes, checks its registry SHA-512 integrity and verifies eve
 dist-tag. It then installs `cotal-ai@<version>` into a fresh private home, config and cache and runs
 `cotal --version`. Its environment excludes operator credentials and personal state. Upload and
 install commands own their child groups and wait for closure before scratch cleanup. Normal
-cancellation stops those groups and prevents new admissions. All stages share the original
-ten-minute deadline, including the install check.
+cancellation stops those groups and prevents new admissions. All stages share the execution
+attempt's ten-minute timeout, including the install check. Availability is measured separately
+against the original command time.
 
 The normal release retains the full-closure metadata gate. Its `UNSETTLED` and `NONE` outcomes do not
-create a GitHub Release. The overall publication outcome still fails unless actual archive and
-install verification completed inside the original deadline. Accepted uploads alone cannot pass it.
+create a GitHub Release. Publication fails unless actual archive and install verification complete.
+Late verification records a failed timing target and emits a warning, but does not prevent the
+verified release from becoming available or receiving its announcement. Accepted uploads alone
+cannot pass verification.
 Publication outcomes and immutable artifact identities are uploaded even on failure when the runner
 can finish cleanup.
 
