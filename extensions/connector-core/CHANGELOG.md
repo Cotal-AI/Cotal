@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.94.4
+
+### Patch Changes
+
+- 489e9c6: Explain the native data sharing a person approves: new user messages, assistant replies, tool inputs and tool results are published to readers permitted by the space's activity policy. Reasoning is off by default, and history from before approved activation is not shared. Correct the event-plane documentation's old transcript-boundary description. No event behavior or permission is changed.
+
 ## 0.94.3
 
 No changes in this release.

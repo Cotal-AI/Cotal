@@ -1,5 +1,9 @@
 # @cotal-ai/connector-opencode
 
+## 0.94.4
+
+No changes in this release.
+
 ## 0.94.3
 
 No changes in this release.
