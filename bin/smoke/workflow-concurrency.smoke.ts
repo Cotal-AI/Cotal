@@ -76,8 +76,11 @@ function check(name: string, cond: boolean, extra?: unknown): void {
  *  push-to-main startable and neither declares a group of its own. `custody-lifetime.yml` starts on a
  *  schedule or a dispatch, and its group already queues. `windows-identity.yml` IS push-to-main
  *  startable, so the push-to-main count moves by one, and it declares no group, so it cannot evict
- *  and EXPECTED_GROUPED is unchanged. */
-const EXPECTED_WORKFLOWS = 12;
+ *  and EXPECTED_GROUPED is unchanged.
+ *
+ *  Lowered to 11 when `attribution.yml` was removed (9cc9117c6). It was pull_request only, so it
+ *  never counted toward push-to-main or EXPECTED_GROUPED, and only the total moves. */
+const EXPECTED_WORKFLOWS = 11;
 const EXPECTED_PUSH_TO_MAIN = 7;
 /** Of those, the ones that declare a concurrency group and therefore CAN evict. Every push-to-main
  *  workflow but `windows-identity.yml` carries one: `docs.yml` and `mutation-reproof.yml` were groupless until 2026-09-10,
