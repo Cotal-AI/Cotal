@@ -15,8 +15,9 @@ permissions:
 # publication past its ten-minute target.
 
 # The CLI runs for real in these jobs; its usage telemetry would count our runners as users.
+# DO_NOT_TRACK also reaches the suites that drop every COTAL_ variable from a child's env.
 env:
-  COTAL_TELEMETRY: off
+  DO_NOT_TRACK: 1
 
 jobs:
   select:
