@@ -31,9 +31,10 @@
  *  C12 a connection held past two 60 s access-bearer lifetimes stays connected or connecting (never
  *      unavailable or ended), is connected for at least 80% of 1 s samples and at the end, and the
  *      space still reads it ready. The sample counts are printed, so each documented reconnect is visible;
- *  C13 (runs last, on its own space) broker loss while connected: with the broker stopped and
- *      unreachable, no 500 ms sample over 8 s says connected (all say connecting); after the broker
- *      returns it is connected again, which needs a fresh ready;
+ *  C13 (runs last, on its own space) broker loss while connected: the daemon's own broker path for
+ *      this space (a TCP pass-through the suite cuts) is unreachable while the space's auth service
+ *      keeps its broker; no 500 ms sample over 8 s says connected (all say connecting); after the
+ *      path returns it is connected again, which needs a fresh ready, and the space reads ready;
  *  C14 the SHIPPED binary (`node bin/dist/cotal.js daemon serve`) with its 0600 ready record corrupted:
  *      the connect answers unavailable with fixed text, status agrees (nothing left running), the
  *      process keeps running, and with the record restored the same daemon connects.
@@ -41,7 +42,7 @@
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { connect as netConnect, type AddressInfo, type Socket } from "node:net";
+import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
 import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -216,12 +217,27 @@ try {
   handles.push(...svc);
 
   // The participant records each space from the bundle the real public face serves, behind a counting relay.
+  // C13: the BRK space's participant reaches the broker through a TCP pass-through the suite can cut,
+  // so a broker loss is the daemon's alone; the auth services keep their own broker connections.
+  let brokerPathUp = true;
+  const pathSockets = new Set<Socket>();
+  const brokerPath: NetServer = createNetServer((inbound) => {
+    if (!brokerPathUp) { inbound.destroy(); return; }
+    const outbound = netConnect(port, "127.0.0.1");
+    pathSockets.add(inbound); pathSockets.add(outbound);
+    const drop = () => { inbound.destroy(); outbound.destroy(); pathSockets.delete(inbound); pathSockets.delete(outbound); };
+    inbound.on("error", drop); outbound.on("error", drop); inbound.on("close", drop); outbound.on("close", drop);
+    inbound.pipe(outbound); outbound.pipe(inbound);
+  });
+  await new Promise<void>((r) => brokerPath.listen(0, "127.0.0.1", () => r()));
+  const brokerPathUrl = `nats://127.0.0.1:${(brokerPath.address() as AddressInfo).port}`;
+  const cutBrokerPath = () => { brokerPathUp = false; for (const s of pathSockets) s.destroy(); pathSockets.clear(); };
   for (const [i, c] of ctx.entries()) {
     const face = await relay(c.space, svc[i]!.publicUrl!.replace(/\/$/, ""));
     const bundle = await (await fetch(`${svc[i]!.publicUrl!.replace(/\/$/, "")}/.well-known/cotal-mesh`)).json() as { server: string; userAuth: MeshEntry["userAuth"]; sentinelCreds: string };
     const dir = userAuthStateDir(participant, c.space); mkSecretDir(dir);
     const sentinelCredsPath = join(dir, "sentinel.creds"); writeSecretFileAtomic(sentinelCredsPath, bundle.sentinelCreds);
-    recordMesh({ space: c.space, server: bundle.server, root: participant, mode: "user", origin: "manual",
+    recordMesh({ space: c.space, server: i === 3 ? brokerPathUrl : bundle.server, root: participant, mode: "user", origin: "manual",
       userAuth: { ...bundle.userAuth!, endpoints: { ...bundle.userAuth!.endpoints, url: face }, remote: true, sentinelCredsPath }, ts: new Date().toISOString() });
   }
   saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
@@ -454,25 +470,22 @@ try {
       const a = await approve(brkHost, BRK, brkOwner);
       const first = await connectS(BRK);
       check("C13 instrument: approved and connected before the broker stops", a.decided.state === "approved" && stateOf(first) === "connected", first);
-      await killAndAwaitExit(nats!, "SIGTERM");
+      cutBrokerPath();
       const during: string[] = [];
       let gone = false;
       try {
-        gone = !(await isReachable(`nats://127.0.0.1:${port}`));
+        gone = !(await isReachable(brokerPathUrl));
         const t0 = Date.now();
         while (Date.now() - t0 < 8000) { during.push(String(stateOf(await statusS(BRK)))); await sleep(500); }
-      } finally {
-        nats = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
-        for (let i = 0; i < 50 && !(await isReachable(`nats://127.0.0.1:${port}`)); i++) await sleep(200);
-      }
+      } finally { brokerPathUp = true; }
       console.log(`  C13 broker down: ${during.length} samples, ${during.filter((s) => s === "connected").length} connected, states ${[...new Set(during)].join(",")}`);
-      check("C13 instrument: the broker is unreachable", gone);
+      check("C13 instrument: the daemon's broker path is unreachable while the space stays up", gone && (await isReachable(`nats://127.0.0.1:${port}`)));
       check("C13 no sample after the broker stopped says connected", during.length >= 12 && during.every((s) => s !== "connected"), during);
       check("C13 the state is connecting while the broker is down (not ended)", during.every((s) => s === "connecting"), [...new Set(during)]);
-      const back = await waitState(BRK, (s) => s === "connected", 180_000);
-      check("C13 after the broker returns, connected again (a fresh ready was accepted)", back === "connected", back);
+      const back = await waitState(BRK, (s) => s === "connected", 90_000);
+      check("C13 after the broker path returns, connected again and the space reads ready", back === "connected" && (await instanceStatus(BRK)) === "ready", back);
     });
-  } finally { await d.close(); }
+  } finally { await d.close(); brokerPath.close(); for (const s of pathSockets) s.destroy(); }
 } catch (e) {
   fail++;
   console.error("  ✗ smoke crashed:", e instanceof Error ? (e.stack ?? e.message) : e);
