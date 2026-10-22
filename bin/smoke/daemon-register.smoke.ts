@@ -36,6 +36,14 @@
  *      renewal proof; no manager-instance file appears;
  *  R10 `cotal daemon register --space <s> --json` through the composition root prints the daemon's
  *      outcome.
+ *  R11 (B1) the machine's IdP session is rejected (expired or revoked) before the first send: the
+ *      daemon reports not-signed-in with the fixed sign-in sentence, never unconfirmed; 0 POST; the
+ *      CLI refuses AUTH_REQUIRED (exit 2);
+ *  R12 (F2) a refusal without a stock reason (here a malformed register request record, which the
+ *      server's catch answers) is DEPENDENCY_UNAVAILABLE, not PERMISSION_DENIED; 0 POST;
+ *  R13 (B2) schema: an answer carrying an unknown denial reason, an unknown pending phase or a
+ *      proposal id of the wrong shape yields only fixed text in the frame. The CLI's only input is
+ *      that frame, so its output cannot carry the remote text either.
  *
  * Run: tsx bin/smoke/daemon-register.smoke.ts   (Linux only; needs nats-server)
  */
@@ -60,6 +68,7 @@ import { recordMesh, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspac
 import { freePort, killAndAwaitExit, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
+import { registerAnswer } from "../daemon/register.js";
 
 if (process.platform !== "linux") {
   console.log("daemon-register smoke: Linux only; skipped on " + process.platform);
@@ -133,9 +142,12 @@ const jwk = { ...await exportJWK(key.publicKey), kid: "a2b2-idp" };
 const SESSION = "a2b2-session-handle-not-a-secret";
 let idpOrigin = "";
 const jwtsIssued: string[] = [];
+/** R11: the IdP rejects the session handle, as for an expired or revoked session. */
+let idpRevoked = false;
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/jwks") return void res.end(JSON.stringify({ keys: [jwk] }));
+  if (req.url === "/api/auth/token" && idpRevoked) { res.writeHead(401); return void res.end("{}"); }
   if (req.url === "/api/auth/token" && (req.headers.authorization ?? "") === `Bearer ${SESSION}`) {
     const now = Math.floor(Date.now() / 1000);
     const token = await new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + 120).sign(key.privateKey);
@@ -225,12 +237,35 @@ try {
   const regRecord = (space: string) => { const f = regFile(space); return f ? JSON.parse(readFileSync(join(home, "daemon", f), "utf8")) as Record<string, unknown> : undefined; };
 
   let d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+  const cli = async (space: string): Promise<{ status: number | null; doc: Record<string, any>; out: string; err: string }> => {
+    const child = spawn(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "bin", "cotal.ts"), "daemon", "register", "--space", space, "--json"], {
+      cwd: root, env: { ...process.env, XDG_RUNTIME_DIR: rtDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "", err = "";
+    child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
+    const status = await Promise.race([new Promise<number | null>((r) => child.once("exit", (c) => r(c))), sleep(40000).then(() => { child.kill("SIGKILL"); return -1; })]);
+    let doc: Record<string, any> = {};
+    try { doc = JSON.parse(out) as Record<string, any>; } catch { /* reported by the caller */ }
+    return { status, doc, out, err };
+  };
   try {
     await cell("R7 register for a space this machine has not registered", async () => {
       const before = hits.length;
       const r = await ask(paths.socket, { op: "register", space: "not-registered-here" });
       check("R7 not-registered (the readiness check runs first and stops it)", r.ok === true && resultOf(r).outcome === "not-registered", r);
       check("R7 0 requests reached any space", hits.length === before, hits.slice(before));
+    });
+
+    await cell("R11 (B1) the IdP rejects the machine's session before the first send", async () => {
+      idpRevoked = true;
+      try {
+        const before = posts(ON);
+        const r = await ask(paths.socket, { op: "register", space: ON });
+        check("R11 not-signed-in with the fixed sign-in sentence (not unconfirmed)", resultOf(r).outcome === "not-signed-in" && /cotal daemon login/.test(String(resultOf(r).message)), r);
+        const c = await cli(ON);
+        check("R11 CLI refuses AUTH_REQUIRED with exit 2", c.status === 2 && c.doc.error?.code === "AUTH_REQUIRED", { status: c.status, out: c.out.slice(0, 400) });
+        check("R11 0 POST reached the authority route", posts(ON) === before, hits.filter((h) => h.space === ON));
+      } finally { idpRevoked = false; }
     });
 
     let proposalId = "", requestId = "";
@@ -292,6 +327,34 @@ try {
       const r = await ask(paths.socket, { op: "register", space: DENY });
       check("R6 the daemon reports refused with the stock code proposal-refused", resultOf(r).outcome === "refused" && resultOf(r).reason === "proposal-refused", r);
       check("R6 the persisted requestId is unchanged (no fresh key)", regRecord(DENY)?.requestId === req1, regRecord(DENY));
+    });
+
+    await cell("R12 (F2) a refusal without a stock reason is not a permission denial", async () => {
+      const f = regFile(DENY)!;
+      writeFileSync(join(home, "daemon", f), "{\"v\":1}");
+      const before = posts(DENY);
+      const r = await ask(paths.socket, { op: "register", space: DENY });
+      check("R12 instrument: the daemon answers refused with no reason", resultOf(r).outcome === "refused" && !("reason" in resultOf(r)), r);
+      const c = await cli(DENY);
+      check("R12 CLI refuses DEPENDENCY_UNAVAILABLE with exit 2", c.status === 2 && c.doc.error?.code === "DEPENDENCY_UNAVAILABLE", { status: c.status, out: c.out.slice(0, 400) });
+      check("R12 0 POST", posts(DENY) === before, hits.filter((h) => h.space === DENY));
+    });
+
+    await cell("R13 (B2) unknown remote text never reaches the frame", async () => {
+      const marker = "Zq9-remote-text-" + "x".repeat(100);
+      const ids = { space: ON, requestId: "0".repeat(32), endpoint: "ai.cotal.machine", instanceId: "i" };
+      const answers = [
+        registerAnswer({ state: "denied", reason: marker } as never, ids),
+        registerAnswer({ state: "pending", operationId: "o", phase: marker } as never, ids),
+        registerAnswer({ state: "approval-required", proposalId: marker, proposalDigest: "d" } as never, ids),
+      ];
+      const text = JSON.stringify(answers);
+      check("R13 3 answers mapped, none carries the remote text", answers.length === 3 && !text.toLowerCase().includes(marker.toLowerCase()), answers);
+      check("R13 unknown reason is one fixed generic refusal", answers[0]!.outcome === "refused" && (answers[0] as { reason?: string }).reason === "unrecognized", answers[0]);
+      check("R13 unknown phase is the fixed value", answers[1]!.outcome === "pending" && (answers[1] as { phase?: string }).phase === "unrecognized", answers[1]);
+      check("R13 a proposal id of the wrong shape is not passed on", answers[2]!.outcome === "unconfirmed", answers[2]);
+      const known = registerAnswer({ state: "denied", reason: "proposal-refused" } as never, ids);
+      check("R13 a documented code keeps its code and fixed sentence", known.outcome === "refused" && (known as { reason?: string }).reason === "proposal-refused" && !known.message.includes("("), known);
     });
 
     await cell("R8 closed contract", async () => {

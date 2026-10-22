@@ -89,6 +89,13 @@ export async function registerDaemon(space: string, home: string = homeCotalDir(
     return { outcome: "unconfirmed", ...ids,
       message: "the space did not confirm the registration request; run the same command again to replay it unchanged" };
   }
+  return registerAnswer(result, ids);
+}
+
+type Ids = { space: string; requestId: string; endpoint: string; instanceId: string };
+
+/** The daemon's outcome for one stock register answer. */
+export function registerAnswer(result: ServiceAuthorityResult, ids: Ids): RegisterResult {
   switch (result.state) {
     case "approval-required":
       return { outcome: "approval-required", ...ids, proposalId: result.proposalId,
