@@ -75,6 +75,25 @@ export function retainedStopRequest(value: ServiceInstance): NativeStopEvidence 
   return publishedNativeStop(value);
 }
 
+/** Settle the native stop this record retains from its adapter's own evidence. The caller holds the
+ *  definition's writer lock. When the adapter confirms that request's `completed` receipt and the
+ *  exact process exit, it has released its reservation, and the record is recorded `stopped` with
+ *  that result, as a stop confirmed within its call would be. Any other record, including one whose
+ *  adapter confirms less, is returned unchanged. */
+export async function settleRetainedNativeStop(definition: ServiceDefinitionSnapshot, row: ServiceInstanceSnapshot): Promise<ServiceInstanceSnapshot> {
+  const value = row.record.value, launch = definition.record.value.launch, retained = retainedStopRequest(value);
+  if (!retained || retained.publication !== "published" || launch.type !== "adapter" || !value.process) return row;
+  const declared = resolveServiceAdapter(launch.adapter, launch.options);
+  if (declared.declaration.stop !== "native" || !sameServiceAdapterPin(value.adapter, declared.pin) || value.definitionRevision !== definition.record.revision) return row;
+  const provider = await loadServiceAdapter(declared, launch.options);
+  const raw = provider.settleStop?.({ ...adapterContext(definition, value), process: { ...value.process }, requestId: retained.requestId });
+  if (raw === undefined) return row;
+  const result = serviceAdapterStopResult(raw);
+  if (result.nativeStop !== "returned" || result.requestId !== retained.requestId || result.process.pid !== value.process.pid || result.process.token !== value.process.token || !gone(observeServiceProcess(value)))
+    throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the adapter's settlement did not answer the retained request and its exact process exit; the record was kept", { target: instanceProjection(row) });
+  return transition(row, { state: "stopped", requestId: retained.requestId, readiness: "not-checked", nativeStop: result });
+}
+
 /** The refusal for a retained native stop, made before any readiness probe, stop request or record
  *  write. This command has no effect, so it is refused; only the earlier stop's outcome is unknown. A
  *  request file that does not read as this launch's own is named an unknown publication. */

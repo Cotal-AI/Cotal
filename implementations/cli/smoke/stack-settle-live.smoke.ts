@@ -21,6 +21,11 @@
  *     request, and `service start` refuses before any readiness probe and keeps the record. After it
  *     is killed `down` still refuses and nothing is stopped or cleaned up; `up` refuses the same way
  *     and launches no manager.
+ *  7. A native manager stop that completes after `down` stopped waiting. The manager is frozen once
+ *     it publishes its accepted receipt, so the first `down` reports the stop unknown, then resumed,
+ *     so it records the stop completed and exits. The next bare `down` settles the record `stopped`
+ *     from that receipt, releases the stop reservation and stops the rest of the stack; in a second
+ *     stack the next bare `up` settles it the same way and starts a manager that a later `down` stops.
  *  6. An interrupted redefinition. An `up` whose `--max-sessions` redefines the manager is killed
  *     while the replacement manager is frozen before its readiness is recorded. The next bare `down`
  *     adopts the journaled replacement and stops it; in a second stack the next bare `up` adopts it
@@ -36,7 +41,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { mintLifecycleUid } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, MANAGER_DELIVERY_AWARE_MARKER, readServiceStopRequest } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, readServiceStopRequest, stopReservationPath } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -303,6 +308,51 @@ try {
     check("no member was stopped and no registration was removed", delivery !== null && alive(delivery) && broker !== null && alive(broker) && findMesh(space) !== undefined, { delivery, broker, registered: findMesh(space) !== undefined });
     const restart = cli(root, "up", "--json");
     check("after the manager exits, up refuses the same way and launches no manager", names(restart) && held(), shown(restart));
+  }
+
+  // 7. A native manager stop the manager completes after `down` stopped waiting for it. It is frozen
+  //    once its accepted receipt appears, past the first down's wait, then resumed.
+  const completeLate = async (space: string) => {
+    const root = prepare(space);
+    const port = await freePort();
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track(space);
+    const manager = serviceInstances(space, "stack-manager")[0];
+    const pid = manager?.record.value.process?.pid ?? null;
+    const states = serviceInstanceStore(space).directory();
+    let frozen = false;
+    const watcher = states && pid !== null ? watch(states, (_event, name) => {
+      if (frozen || !String(name ?? "").endsWith(".accepted.json")) return;
+      frozen = true;
+      try { process.kill(pid, "SIGSTOP"); } catch { /* the checks below report it */ }
+    }) : undefined;
+    const first = await cliAsync(root, "down", "--yes", "--json");
+    watcher?.close();
+    let request: string | undefined;
+    try { request = manager && states ? readServiceStopRequest({ space, instanceId: manager.name, launchRequestId: manager.record.value.launchRequestId, stateDirectory: states })?.requestId : undefined; } catch { request = undefined; }
+    const marker = stopReservationPath(canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space }));
+    const markerHeld = () => { try { return lstatSync(marker).isFile(); } catch { return false; } };
+    check(`${space}: the first down reports the accepted manager stop unknown and keeps its reservation`, started.status === 0 && frozen && first.env?.outcome === "unknown" && first.env.error?.code === "OPERATION_UNKNOWN" && request !== undefined && markerHeld(), { up: shown(started), frozen, first: shown(first), request, marker: markerHeld() });
+    if (pid !== null) process.kill(pid, "SIGCONT");
+    const exitedLate = pid !== null && await until(() => !alive(pid), 30_000);
+    const completed = states !== undefined && readdirSync(states).some((name) => name.endsWith(".completed.json"));
+    check(`${space}: the resumed manager records its stop completed and exits`, exitedLate && completed, { exitedLate, completed });
+    const settled = (row = serviceInstances(space, "stack-manager").find((entry) => entry.name === manager?.name)) => row?.record.value.state === "stopped" && row.record.value.nativeStop?.requestId === request && row.record.value.nativeStop?.nativeStop === "returned";
+    return { root, request, markerHeld, settled };
+  };
+  {
+    const { root, markerHeld, settled } = await completeLate("latedown");
+    const recovered = cli(root, "down", "--yes", "--json");
+    check("bare down settles the late-completed manager stop from its receipt and stops the rest of the stack", recovered.status === 0 && recovered.env?.outcome === "ok" && settled() && !markerHeld() && gone("latedown", "stack-delivery") && gone("latedown", "stack-broker") && findMesh("latedown") === undefined, { ...shown(recovered), settled: settled(), marker: markerHeld() });
+  }
+  {
+    const { root, markerHeld, settled } = await completeLate("lateup");
+    const recovered = cli(root, "up", "--json");
+    track("lateup");
+    const relaunched = serviceInstances("lateup", "stack-manager").some((row) => observeServiceProcess(row.record.value) === "running");
+    check("bare up settles the late-completed manager stop from its receipt and starts a manager", recovered.status === 0 && settled() && !markerHeld() && relaunched, { ...shown(recovered), settled: settled(), marker: markerHeld(), relaunched });
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("down then stops the relaunched manager under a new reservation", stopped.status === 0 && stopped.env?.outcome === "ok" && gone("lateup", "stack-manager") && !markerHeld(), shown(stopped));
   }
 
   // 6. A redefinition cut off before its replacement's readiness is recorded (B2-2). After a clean up

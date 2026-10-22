@@ -117,6 +117,18 @@ export function clearRefusedServiceStopRequest(context: StopContext, expected: N
   rmSync(serviceStopRequestPath(context));
 }
 
+/** Remove a retained request's reservation once the stopper that took it is gone. A marker that names
+ *  another PID, is not a plain file, or whose stopper still runs or cannot be read, is kept. Returns
+ *  whether no reservation remains. */
+export function releaseRetainedServiceStop(marker: string, stopper: ProcessIdentityRecord): boolean {
+  let current;
+  try { current = lstatSync(marker); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; }
+  const holder = assertRecordIdentity(stopper).kind;
+  if (!current.isFile() || readLocalRecordSource(marker, 128, true)?.toString("utf8") !== String(stopper.pid) || holder !== "gone" && holder !== "mismatch") return false;
+  rmSync(marker);
+  return true;
+}
+
 /** The new controller refuses every existing native reservation, including stale or malformed
  *  ones. It does not reuse the legacy PID-only reclaim path or silently steal another attempt. */
 export function reserveNativeServiceStop(marker: string): { stopper: ProcessIdentityRecord; release(): void } {
