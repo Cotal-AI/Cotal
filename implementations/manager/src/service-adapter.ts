@@ -4,10 +4,10 @@ import {
   CommandFailure, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, armManagerShutdownIntent,
   assertRecordIdentity, canonicalLocalProcessPath, canonicalRoot, clearRefusedServiceStopRequest,
   colorEnabled, commandIsCotalSupervisor, controllerAttemptBinding, cutController, localProcessPath, maintenanceAdmitsStackWork, publishServiceStopRequest,
-  readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts, readServiceStopRequest, releaseRetainedServiceStop,
+  readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts, readServiceStopRequest, releaseRetainedServiceStop, clearRetainedRefusedServiceStopRequest,
   reserveNativeServiceStop, resolveNativeServiceTarget, serviceAdapterAttempt, serviceMetadataDigest,
   stopReservationPath, type LocalProcess, type NativeServiceStopRequest, type ProcessIdentityRecord, type ServiceAdapterAttempt, type ServiceAdapterContext,
-  type ServiceAdapterStopContext, type ServiceAdapterStopPlan, type ServiceAdapterStopResult,
+  type ServiceAdapterStopContext, type ServiceAdapterStopPlan, type ServiceAdapterStopRefusal, type ServiceAdapterStopResult,
   type ServicePreset,
 } from "@cotal-ai/workspace";
 import { managerServiceLaunchSpec, managerServicePreservedExitScope, managerServiceStopScope } from "./service-child.js";
@@ -108,18 +108,26 @@ async function stop(context: ServiceAdapterStopContext & { requestId: string; pl
 }
 
 /** Settle an ordinary request that outlived its stop call from this launch's own evidence: its
- *  published request, that request's `completed` receipt and the exact process exit. Only then is
- *  the reservation the request took released, and only once its stopper is gone. Anything less
- *  retains the request and the reservation. A preserved-exit request is left to its maintenance
- *  attempt, which reads its own receipts. */
-function settleStop(context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly requestId: string }): ServiceAdapterStopResult | undefined {
+ *  published request and either that request's `completed` receipt with the exact process exit, or
+ *  a `refused` receipt as its only one, which a child writes when it started no stop. Only then is
+ *  the reservation the request took released, and only once its stopper is gone; a refused request
+ *  is also removed, as a refusal within the stop call removes it. Anything less retains the request
+ *  and the reservation. A preserved-exit request is left to its maintenance attempt, which reads
+ *  its own receipts. */
+function settleStop(context: ServiceAdapterContext & { readonly process: ProcessIdentityRecord; readonly requestId: string }): ServiceAdapterStopResult | ServiceAdapterStopRefusal | undefined {
   const request = readServiceStopRequest(context);
   if (!request || request.preserved || request.requestId !== context.requestId || request.target.pid !== context.process.pid || request.target.token !== context.process.token) return undefined;
-  const completed = readServiceStopReceipts(context, request).find((row) => row.phase === "completed");
+  const phases = readServiceStopReceipts(context, request);
+  const marker = stopReservationPath(canonicalLocalProcessPath(MANAGER_PIDFILE, { root: String(context.options.root), space: context.space }));
+  const refused = phases.length === 1 ? phases.find((row) => row.phase === "refused") : undefined;
+  if (refused) {
+    if (!releaseRetainedServiceStop(marker, request.stopper) || !clearRetainedRefusedServiceStopRequest(context, request)) return undefined;
+    return { requestId: request.requestId, nativeStop: "refused", observedAt: refused.observedAt };
+  }
+  const completed = phases.find((row) => row.phase === "completed");
   const identity = assertRecordIdentity(request.target).kind;
   if (!completed || identity !== "gone" && identity !== "mismatch") return undefined;
-  const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: String(context.options.root), space: context.space });
-  if (!releaseRetainedServiceStop(stopReservationPath(pidPath), request.stopper)) return undefined;
+  if (!releaseRetainedServiceStop(marker, request.stopper)) return undefined;
   return { requestId: request.requestId, scopeSha256: request.scopeSha256, process: { ...request.target }, nativeStop: "returned", cleanup: "not-checked", observedAt: completed.observedAt };
 }
 

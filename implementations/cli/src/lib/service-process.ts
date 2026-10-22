@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { CommandFailure, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, resolveOnPath, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopResult, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, isWorkspaceTargetError, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
+import { CommandFailure, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, resolveOnPath, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, isWorkspaceTargetError, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
 import { serviceUninstallIntents } from "./service-uninstall-intent.js";
@@ -78,8 +78,10 @@ export function retainedStopRequest(value: ServiceInstance): NativeStopEvidence 
 /** Settle the native stop this record retains from its adapter's own evidence. The caller holds the
  *  definition's writer lock. When the adapter confirms that request's `completed` receipt and the
  *  exact process exit, it has released its reservation, and the record is recorded `stopped` with
- *  that result, as a stop confirmed within its call would be. Any other record, including one whose
- *  adapter confirms less, is returned unchanged. */
+ *  that result, as a stop confirmed within its call would be. When it reports the child's refusal,
+ *  it has removed the request and released the reservation, and the record returns to what its
+ *  process shows, as after a refusal within the call. Any other record, including one whose adapter
+ *  confirms less, is returned unchanged. */
 export async function settleRetainedNativeStop(definition: ServiceDefinitionSnapshot, row: ServiceInstanceSnapshot): Promise<ServiceInstanceSnapshot> {
   const value = row.record.value, launch = definition.record.value.launch, retained = retainedStopRequest(value);
   if (!retained || retained.publication !== "published" || launch.type !== "adapter" || !value.process) return row;
@@ -88,6 +90,12 @@ export async function settleRetainedNativeStop(definition: ServiceDefinitionSnap
   const provider = await loadServiceAdapter(declared, launch.options);
   const raw = provider.settleStop?.({ ...adapterContext(definition, value), process: { ...value.process }, requestId: retained.requestId });
   if (raw === undefined) return row;
+  if ((raw as { nativeStop?: unknown }).nativeStop === "refused") {
+    const refusal = serviceAdapterStopRefusal(raw);
+    if (refusal.requestId !== retained.requestId || publishedNativeStop(value) !== undefined)
+      throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the adapter's settled refusal did not retire the retained request; the record was kept", { target: instanceProjection(row) });
+    return transition(row, { state: observeServiceProcess(value) === "running" ? "running" : "unknown", readiness: "not-checked" });
+  }
   const result = serviceAdapterStopResult(raw);
   if (result.nativeStop !== "returned" || result.requestId !== retained.requestId || result.process.pid !== value.process.pid || result.process.token !== value.process.token || !gone(observeServiceProcess(value)))
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the adapter's settlement did not answer the retained request and its exact process exit; the record was kept", { target: instanceProjection(row) });
