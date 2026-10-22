@@ -25,6 +25,7 @@ import {
   type ServicePrincipal, type ServiceRegistrationWitness, type ServiceSpec, type ServiceUidCustodyV1,
 } from "@cotal-ai/core";
 import { SERVICE_HOST_INVOCATION_MS, openAuthorityClient, serviceHostEffectGrants, serviceHostEffectLabel, type ServiceHostEffectReads } from "./authority-client.js";
+import { callerParentRefs } from "./service-caller-ancestry.js";
 import { findActorUnified, findInteractiveActor } from "./ledger.js";
 import { openLifecycleRegistry, registryMaxPayload, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { activatedServiceGateRow, approvedServiceGateRow, assertApprovableServiceGate, type ServiceAssignmentBinding, type ServiceGateRows } from "./native-service-gate.js";
@@ -265,7 +266,7 @@ function plan(raw: unknown): Plan {
         nameAuthorityRevision: ms(o.nameAuthorityRevision), expectedPolicyRevision: ms(o.expectedPolicyRevision),
         request: structuredClone(o.request) as ServiceHostInputs["caller-grant"], grant: grantBody(o.grant) };
       const src = p.grant.source;
-      if (src.kind !== "service-owner" || src.approvalDigest !== p.approvalDigest || src.nameAuthorityRevision !== p.nameAuthorityRevision || p.grant.parentRefs.length !== 0
+      if (src.kind !== "service-owner" || src.approvalDigest !== p.approvalDigest || src.nameAuthorityRevision !== p.nameAuthorityRevision
         || p.grant.endpoint !== p.request?.service?.endpoint || p.grant.instanceId !== p.request?.service?.instanceId || p.approvalDigest !== p.request?.service?.approvalDigest
         || canonicalJson(p.grantee) !== canonicalJson(p.request?.grantee) || p.expectedPolicyRevision !== p.request?.expectedPolicyRevision)
         bad("the caller grant plan does not match its request");
@@ -1693,7 +1694,8 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       let row: ReturnType<typeof findActorUnified>;
       try { row = findActorUnified(opts.ledgerDir, grantee.owner, grantee.actor); } catch { return out(denied("not-found")); }
       if (row === undefined) return out(denied("not-found"));
-      if (row.kind !== "interactive" || row.parent !== undefined) return out(denied("unsupported"));
+      if (row.kind === "interactive" && row.parent !== undefined) return out(denied("unsupported"));
+      if (row.kind === "managed-agent" && row.parent === undefined) return out(denied("unsupported"));
       if (row.lifecycleUid !== grantee.lifecycleUid) return out(denied("not-found"));
       const asg = await readAssignment(ctx, service.endpoint, service.instanceId);
       if (asg.state === "absent" || asg.row.owner !== granterOwner || asg.row.state !== "bound" || asg.row.cancel !== null) return out(denied("not-found"));
@@ -1711,12 +1713,18 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       if (capabilities.some((c) => c.journal === true)) return out(denied("unsupported"));
       if (capabilities.some((c) => c.target?.mode === "any" || c.target?.mode === "ledger")) return out(denied("permission-denied"));
       if (!withinCeiling(gate.row.serviceAuthority.callerCeiling, capabilities, grantee, service)) return out(denied("permission-denied"));
+      let parentRefs: ServiceCallerGrant["parentRefs"];
+      try {
+        parentRefs = await callerParentRefs({ space, ledgerDir: opts.ledgerDir, grantee, capabilities, service,
+          readPolicy: async (p) => { const read = await readPolicy(ctx, p.lifecycleUid); if (read.state === "absent") return undefined;
+            if (!boundTo(read.row, p)) throw new EpEnvelopeError("permission-denied", "parent policy has another exact principal"); return read.row; } });
+      } catch (e) { if (e instanceof EpEnvelopeError) return out(denied("permission-denied")); throw e; }
       const policy = await readPolicy(ctx, grantee.lifecycleUid);
       if (policy.state === "value" && !boundTo(policy.row, grantee)) return out(denied("conflict"));
       if ((policy.state === "value" ? policy.revision : 0) !== expectedPolicyRevision) return out(denied("conflict"));
       const body: GrantBody = { grantId: callerGrantId(space, operationId), endpoint: service.endpoint, instanceId: service.instanceId,
         serviceApprovalDigest: service.approvalDigest, capabilities,
-        source: { kind: "service-owner", owner: granterOwner, approvalDigest: service.approvalDigest, nameAuthorityRevision: gate.row.nameAuthorityRevision }, parentRefs: [] };
+        source: { kind: "service-owner", owner: granterOwner, approvalDigest: service.approvalDigest, nameAuthorityRevision: gate.row.nameAuthorityRevision }, parentRefs };
       const step = callerAppendStep(policy.state === "value" ? { row: policy.row, revision: policy.revision } : undefined, emptyPolicy(grantee),
         expectedPolicyRevision, withStatus(body, { state: "active" }));
       if (step.kind === "headroom") return out(denied("resource-exhausted"));
@@ -1829,6 +1837,13 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
       if (!serviceGateApprovalLive(gate.row.serviceAuthority, seconds(Date.now()))) return refuse("expired");
       const name = await nameOf(ctx, p.grant.endpoint);
       if (name === undefined || name.owner !== op.projection.subjectOwner || name.revision !== p.nameAuthorityRevision) return refuse("conflict");
+      try {
+        const refs = await callerParentRefs({ space, ledgerDir: opts.ledgerDir, grantee: p.grantee, capabilities: p.grant.capabilities, expectedRefs: p.grant.parentRefs,
+          service: { endpoint: p.grant.endpoint, instanceId: p.grant.instanceId, approvalDigest: p.approvalDigest },
+          readPolicy: async (parent) => { const read = await readPolicy(ctx, parent.lifecycleUid); if (read.state === "absent") return undefined;
+            if (!boundTo(read.row, parent)) throw new EpEnvelopeError("permission-denied", "parent policy binding changed"); return read.row; } });
+        if (canonicalJson(refs) !== canonicalJson(p.grant.parentRefs)) return refuse("revoked");
+      } catch (e) { if (e instanceof EpEnvelopeError) return refuse("revoked"); throw e; }
       const step = callerAppendStep(found.pol.state === "value" ? { row: found.pol.row, revision: found.pol.revision } : undefined, emptyPolicy(p.grantee),
         p.expectedPolicyRevision, candidate);
       if (step.kind === "moved") return refuse("conflict");

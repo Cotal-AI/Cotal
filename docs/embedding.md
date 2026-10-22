@@ -1417,10 +1417,20 @@ can no longer change. Commands must be ephemeral and declare
 no governed trait.
 
 `caller-grant` takes an owner granter with an interactive row who holds the approved instance, and a
-grantee that is an interactive actor with no parent, named by owner, actor and lifecycle UID. Every
+grantee is a current exact owner, actor and lifecycle UID. A managed grantee also needs its actual
+same-owner parent chain, with each current ancestor holding active covering grants for the same
+service approval. The operation records those immutable grant ids and lifecycle UIDs in `parentRefs`
+and rechecks them before append. An admin scope never substitutes for endpoint caller rights. Every
 capability must name that instance with `instanceOnly: true`, carry no journal access and no `any` or
 `ledger` target, and sit within the approval's caller ceiling. The answer is `granted` with the grant
-as stored. An `active` grant is recorded, not effective: nothing issues rights from caller policy yet.
+as stored. Ordinary user-auth agent connects now derive their endpoint rows from this policy through
+core's native grant builder, including reserved Describe for each authorized exact instance. The
+callout rechecks grantee lifecycle, named ancestor grants, current name, assignment, root, activation,
+approval and ceiling, then checks the policy evidence again after signing and native-key recording.
+The original connection expiry is at most 60 seconds from issuance, and capped by root and approval
+expiry. These are fresh leader reads,
+not a linearized revoke fence. Existing issued connections keep their original expiry, and caller
+revocation remains deny-new, not terminal absence proof.
 One instance indexes at most 256 grants over its life, including attempts refused after indexing, and
 a full index answers `resource-exhausted`; a new instance is the remedy. `caller-revoke` admits the
 grant's source owner, its grantee owner and an operator. It answers `pending` with
@@ -1441,9 +1451,11 @@ it, and replay that body after a lost reply, a 503 or a `held` answer. Never swi
 while an earlier answer is unknown. A settled `refused` or `expired` ends the attempt, and a grant
 replayed after its 10-minute window adopts a grant that landed and otherwise answers `expired`.
 
-This is registration and serving, not a complete service endpoint. Issuance from caller policy and
-scoped Describe are not available, so callers cannot yet be authorized against the service, and revoke, terminal
-retirement and restore stay unsupported: a host revoke refuses new activation, renewal, readiness
+Caller issuance is generic, not tied to Linear: the same provider-independent contract discovery and
+invoke path works for ordinary and managed user-auth callers. Controlled policy append currently
+requires the application's approved service-host instance. Native control endpoints retain their
+existing ledger/scope and typed authority contracts, not fabricated application approvals. Scoped
+Describe is not available, and complete terminal retirement and restore remain unsupported. A host revoke refuses new activation, renewal, readiness
 and connections, but a connection already open keeps its original expiry of at most 60 s. Approval
 runs service bootstrap and revoke runs cancellation, while complete observer evidence and writer
 exclusion remain unavailable. Do not seed service reservations in an existing space, adopt old
