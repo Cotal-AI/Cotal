@@ -88,6 +88,9 @@ export interface DeviceLoginOpts {
   /** Shows the human the verification URL + code. Called exactly once; polling starts only after
    *  it settles, a rejection fails the login, and the device code's lifetime bounds it. */
   onPrompt: (prompt: DeviceLoginPrompt) => void | Promise<void>;
+  /** Stops this sign-in: no further IdP request is sent and nothing is persisted. It is local only
+   *  and revokes nothing at the IdP. Omitted, the sign-in runs until approval, denial or expiry. */
+  signal?: AbortSignal;
 }
 
 /** Normalize + guard the IdP base URL: https (or http on a loopback IP literal for dev), no
@@ -142,14 +145,54 @@ function idpTimeoutMs(): number {
 /** An IdP request that got no answer: the transport failed or the per-request timeout fired. */
 export class IdpUnreachableError extends Error {}
 
+/** A sign-in stopped by the caller's AbortSignal. It stops this local operation only: nothing
+ *  is revoked at the IdP, and an approval already given there is left as it is. */
+export class IdpLoginCancelled extends Error {}
+
+const CANCELLED = "idp login: the sign-in was cancelled on this machine; nothing was saved and nothing was revoked at the IdP";
+
+/** Throw {@link IdpLoginCancelled} when the caller's signal has fired. */
+function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new IdpLoginCancelled(CANCELLED);
+}
+
+/** A promise that rejects with {@link IdpLoginCancelled} once `signal` fires, and never settles
+ *  without one. `dispose` removes the listener so a finished race leaves nothing attached. */
+function cancelled(signal: AbortSignal | undefined): { promise: Promise<never>; dispose: () => void } {
+  if (!signal) return { promise: new Promise<never>(() => {}), dispose: () => {} };
+  let onAbort: () => void = () => {};
+  const promise = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new IdpLoginCancelled(CANCELLED));
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+  promise.catch(() => {});
+  return { promise, dispose: () => signal.removeEventListener("abort", onAbort) };
+}
+
+/** Sleep `ms`, or reject with {@link IdpLoginCancelled} as soon as `signal` fires. */
+async function sleepUnlessCancelled(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stop = cancelled(signal);
+  try {
+    await Promise.race([new Promise<void>((r) => { timer = setTimeout(r, ms); }), stop.promise]);
+  } finally {
+    clearTimeout(timer);
+    stop.dispose();
+  }
+}
+
 /** `fetch` with a hard per-request timeout, so a hung IdP connection can never stall the client
  *  (Node's global fetch has no default timeout). A timeout or transport failure surfaces as a
  *  legible sentence rather than a raw DOMException/TypeError. */
-async function idpFetch(url: string, init?: RequestInit): Promise<Response> {
+async function idpFetch(url: string, init?: RequestInit, cancel?: AbortSignal): Promise<Response> {
   const ms = idpTimeoutMs();
+  throwIfCancelled(cancel);
   try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+    const timeout = AbortSignal.timeout(ms);
+    return await fetch(url, { ...init, signal: cancel ? AbortSignal.any([timeout, cancel]) : timeout });
   } catch (e) {
+    throwIfCancelled(cancel);
     if (e instanceof DOMException && e.name === "TimeoutError")
       throw new IdpUnreachableError(`idp request to ${url} timed out after ${ms}ms - the IdP is unreachable or not responding`);
     throw new IdpUnreachableError(`idp request to ${url} failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -160,10 +203,11 @@ async function idpFetch(url: string, init?: RequestInit): Promise<Response> {
  *  DURING the body read (an IdP that flushes headers then stalls or truncates the body), and that
  *  abort is raised from `res.json()` — outside idpFetch's catch — so without this it would leak a
  *  raw DOMException/parse error instead of the legible "idp request to …" sentence. */
-async function idpJson<T>(url: string, res: Response): Promise<T> {
+async function idpJson<T>(url: string, res: Response, cancel?: AbortSignal): Promise<T> {
   try {
     return (await res.json()) as T;
   } catch (e) {
+    throwIfCancelled(cancel);
     if (e instanceof DOMException && e.name === "TimeoutError")
       throw new IdpUnreachableError(`idp request to ${url} timed out reading the response body - the IdP flushed headers then stalled`);
     throw new Error(`idp request to ${url} returned an unreadable response body: ${e instanceof Error ? e.message : String(e)}`);
@@ -206,7 +250,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ client_id: opts.clientId }),
-  });
+  }, opts.signal);
   if (!res.ok) {
     const e = await oauthError(res);
     throw new Error(
@@ -220,7 +264,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     verification_uri_complete: string;
     expires_in: number;
     interval: number;
-  }>(`${base}/device/code`, res);
+  }>(`${base}/device/code`, res, opts.signal);
   // The WHOLE grant is shape-checked before anything is shown or polled — the timing fields
   // especially: a malicious IdP handing back `interval: "abc"` or a non-finite/absurd
   // `expires_in` would otherwise turn the poll loop into a tight (setTimeout coerces garbage to
@@ -241,6 +285,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   // expiry instead of holding it open.
   const deadline = Date.now() + grant.expires_in * 1000;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const stop = cancelled(opts.signal);
   try {
     await Promise.race([
       opts.onPrompt({
@@ -250,15 +295,17 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
         expiresInSec: grant.expires_in,
       }),
       new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(expired)), deadline - Date.now()); }),
+      stop.promise,
     ]);
   } finally {
     clearTimeout(timer);
+    stop.dispose();
   }
 
   // RFC 8628 §3.5: poll at the server's interval; `slow_down` adds 5s to it, permanently.
   let intervalSec = Math.max(1, grant.interval || 5);
   for (;;) {
-    await new Promise((r) => setTimeout(r, intervalSec * 1000));
+    await sleepUnlessCancelled(intervalSec * 1000, opts.signal);
     if (Date.now() > deadline) throw new Error(expired);
     const poll = await idpFetch(`${base}/device/token`, {
       method: "POST",
@@ -268,9 +315,9 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
         device_code: grant.device_code,
         client_id: opts.clientId,
       }),
-    });
+    }, opts.signal);
     if (poll.ok) {
-      const tok = await idpJson<{ access_token: string; expires_in: number }>(`${base}/device/token`, poll);
+      const tok = await idpJson<{ access_token: string; expires_in: number }>(`${base}/device/token`, poll, opts.signal);
       // Bound the session lifetime like the device grant's timing fields above (finite, positive,
       // not past a year). `expiresAt` is advisory only — the server is the revocation authority —
       // so this is a legibility/symmetry guard, not a security boundary: it refuses a hostile
@@ -303,15 +350,15 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
 /** Fetch a fresh short-lived IdP user JWT for the cached session — the input to the bridge
  *  exchange. A 401 means the session was revoked or expired at the IdP: the error says exactly
  *  how to recover. The JWT is returned, never stored. */
-async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string): Promise<{ jwt: string; response: Response }> {
+async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?: AbortSignal): Promise<{ jwt: string; response: Response }> {
   const base = normalizeIdpUrl(idpUrl);
-  const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } });
+  const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } }, cancel);
   if (res.status === 401)
     throw new Error(
       `idp session: ${base} rejected the cached session (expired or revoked) - run \`cotal login --idp ${base}\` to sign in again`,
     );
   if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
-  const body = await idpJson<{ token?: string }>(`${base}/token`, res);
+  const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
   if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
   return { jwt: body.token, response: res };
 }
@@ -332,7 +379,7 @@ export async function establishIdpSession(
 ): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
   const previousSub = loadIdpSession(opts.dir, opts.idpUrl)?.sub;
   const session = await deviceLogin(opts);
-  const tokenResult = await fetchIdpJwtResponse(opts.idpUrl, session.token);
+  const tokenResult = await fetchIdpJwtResponse(opts.idpUrl, session.token, opts.signal);
   const jwt = tokenResult.jwt;
   let claims: Record<string, unknown>;
   try {
@@ -346,6 +393,9 @@ export async function establishIdpSession(
   if (typeof sub !== "string" || !sub)
     throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} minted a user JWT without a sub - refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
   session.sub = sub; // proven above — cached so owner derivation (spawn paths) stays offline
+  // The persistence fence: a cancel that lands after approval, while the proof was in flight,
+  // must leave no session and no catalog entry on disk.
+  throwIfCancelled(opts.signal);
   saveIdpSession(opts.dir, opts.idpUrl, session);
   saveCatalogAdvertisement(opts.dir, opts.idpUrl, claims.iss, sub, tokenResult.response.headers.get("link"));
   const label = [claims.email, claims.name, claims.preferred_username].find(

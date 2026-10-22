@@ -71,6 +71,8 @@ export {
   requireIdpSession,
   normalizeIdpUrl,
   probeIdpJwks,
+  IdpLoginCancelled,
+  IdpUnreachableError,
   type IdpSession,
   type DeviceLoginOpts,
   type DeviceLoginPrompt,
