@@ -1354,10 +1354,13 @@ the same body after a restart: a replay is safe, a changed body under the same r
 `conflict`, and one instance accepts at most 64 distinct requests, so fresh keys per refresh or
 restart exhaust it. A 503 means the request may be bound: replay the same request, or read its
 status with `target: { kind: "operation", operation, requestId }`; the selector names the operation
-since this release, and the old `{ kind: "operation", requestId }` no longer parses. `registered` and
-`ready` in a status mean only that the request's registration is current. A pre-activation
-re-registration sends `expected: { state: "registered", witness }` and yields a new witness; once a
-service has activated, its registration can no longer change. Commands must be ephemeral and declare
+since this release, and the old `{ kind: "operation", requestId }` no longer parses. An owner reads
+status only while it holds an interactive row, and a service proof reads only its own instance.
+`registered` and `ready` in a status mean only that the request's registration is current. A
+pre-activation re-registration sends `expected: { state: "registered", witness }` and yields a new
+witness; a register that another request overtakes before its barrier freezes answers `conflict`,
+so read the instance and expect its current witness. Once a service has activated, its registration
+can no longer change. Commands must be ephemeral and declare
 no governed trait.
 
 This is registration and serving, not a complete service endpoint. Caller policy and scoped Describe

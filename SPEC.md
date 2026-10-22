@@ -1718,7 +1718,10 @@ Otherwise it requires the gate open, or frozen by this same request's operation,
 `expected` to match the stamp; and a live approval. It then publishes each submitted artifact
 create-only to the contract store and runs the native registration barrier and spec registration
 under the request's operation id, with no repair cursor (a service's credential family is empty
-before activation). It answers `registered` only once the stamp names this request. A first
+before activation). The barrier freezes the gate revision it observes after those publishes, so a
+request that did not resume checks `expected` again on exactly that revision: a gate that moved
+answers `conflict`, or `approval-revoked` once revoked, and nothing is frozen or written. It
+answers `registered` only once the stamp names this request. A first
 registration keeps process epoch 0; a pre-activation re-registration advances it. Activate requires
 the gate open with a live approval and native root, the request witness to be the current stamp's,
 and then lands the monotonic `activationIssued` CAS unless it already holds. Renew requires the same
@@ -1732,8 +1735,9 @@ the gate's epoch. It answers `ready`. Every write of a serving request goes thro
 invocation, whose effect credential publishes exactly its intent and index keys and that operation's
 effect keys (the endpoint gate for register and activate, the spec and governance head for register,
 the status for ready), reads those records keys by Direct Get, and publishes and reads back exactly
-the submitted artifacts. The native registration writes through its own client on that connection,
-and a fatal latch closes the connection, so none of its requests is issued after the fence.
+the submitted artifacts. The native registration and the ready status write through their own
+client on that connection, and a fatal latch closes the connection, so none of their requests is
+issued after the fence; a request already issued stays unknown.
 
 A serving client keeps one requestId per (operation, witness), persisted with the witness and its
 renewal material in its single-owner store before dispatch, and reuses it, with an unchanged body,
@@ -1744,8 +1748,13 @@ reached only by a client that draws fresh keys.
 Status takes `target:{kind:"instance"}` or `target:{kind:"operation", operation, requestId}`, where
 `operation` is one of `register`, `activate`, `renew`, `ready` and `revoke`; this selector replaced
 `{kind:"operation", requestId}`, which no longer parses. An owner's IdP proof reads that owner's own
-requests and assignment. A renewal or access proof reads only intents whose witness digest is its
-own, and the instance only as its own incarnation; a register with no intent is not readable by it.
+requests and assignment, and only while the owner holds an interactive row, as for every owner
+request: without one it is `denied` `permission-denied` (403) before any read. A renewal or access
+proof reads only intents whose witness digest is its own, and the instance only as its own
+incarnation; a register with no intent is not readable by it. A witness naming another selector
+reads `not-found` before any read, and on a bound assignment a witness that does not name the
+binding reads `not-found` before the precedence below, so another instance's revocation is never
+visible to it.
 Another owner's request reads `not-found`. `revoke` answers `denied` `unsupported`. Every required
 record that is unreadable, missing where it must exist, or inconsistent with another answers 503,
 never `not-found` and never a `superseded` whose ids were not read from records. An operation status
