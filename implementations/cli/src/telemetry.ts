@@ -1,4 +1,4 @@
-import { release } from "node:os";
+import { homedir, release } from "node:os";
 import { basename } from "node:path";
 import { Worker } from "node:worker_threads";
 import { findSubcommand, type Command, type Registry } from "@cotal-ai/core";
@@ -20,14 +20,63 @@ import { cliVersion } from "./seed/paths.js";
 /**
  * Anonymous usage telemetry for the CLI: one small event per command, sent as the process exits, and
  * at `regular` one install event per UTC day. docs/telemetry.md lists every field. Nothing here
- * reads an argument value, a path, a name or an error message, and nothing here can change a
- * command's outcome: every failure is swallowed, and the send is bounded by {@link SEND_TIMEOUT_MS}.
+ * reads an argument value, a path or a name; the error text a failure carries at `regular` goes
+ * through {@link scrubErrorText} first. Nothing here can change a command's outcome: every failure
+ * is swallowed, and the send is bounded by {@link SEND_TIMEOUT_MS}.
  */
 
 export const TELEMETRY_URL = "https://cotal.ai/v1/telemetry";
 export const SEND_TIMEOUT_MS = 1500;
 export const TELEMETRY_NOTICE =
-  'Cotal collects anonymous usage data at the "regular" level (command names, outcomes, version, OS, installed connectors; never arguments, paths, names or content). Change it with "cotal telemetry minimal" or "cotal telemetry off". Details: https://docs.cotal.ai/telemetry';
+  'Cotal collects anonymous usage data at the "regular" level (command names, outcomes, error text with values and paths masked, version, OS, installed connectors; never arguments, paths, names or content). Change it with "cotal telemetry minimal" or "cotal telemetry off". Details: https://docs.cotal.ai/telemetry';
+
+const MAX_MESSAGE = 500;
+const MAX_STACK = 2000;
+const MAX_FRAMES = 12;
+const HOME = homedir();
+const QUOTED = /(["'`])(?:(?!\1)[^\n]){0,400}\1/g;
+const URL = /\b[a-z][a-z0-9+.-]*:\/\/[^\s'"`)]+/gi;
+const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
+const IPV4 = /\b\d{1,3}(?:\.\d{1,3}){3}\b/g;
+const PATH = /(?:~|[A-Za-z]:)?(?:[\\/][^\s\\/'"`:)]+){2,}/g;
+const TOKEN = /[A-Za-z0-9_-]{32,}/g;
+const FRAME_PATH = /(?:file:\/\/)?(?:[A-Za-z]:)?[\\/][^\s()]+/g;
+
+/** An error message with what could identify someone masked: quoted words (the CLI quotes every
+ *  user value it echoes), URLs, email addresses, IPv4 addresses, paths (the home directory first,
+ *  so a path under it reads as one) and any token-shaped run of 32 characters or more. */
+export function scrubErrorText(text: string, max = MAX_MESSAGE): string {
+  return text
+    .split(HOME).join("~")
+    .replace(QUOTED, "$1<value>$1")
+    .replace(URL, "<url>")
+    .replace(EMAIL, "<email>")
+    .replace(IPV4, "<ip>")
+    .replace(PATH, "<path>")
+    .replace(TOKEN, "<token>")
+    .slice(0, max);
+}
+
+/** The frames of a stack with every file path cut down to its part inside `node_modules` (the
+ *  installed package and file, never the directory it is installed under); a frame outside one is
+ *  `<path>`. The first line, the message, is not part of it. */
+export function scrubStack(stack: string): string {
+  const frames = stack.split("\n").slice(1).map((line) => line.trim()).filter((line) => line.startsWith("at ")).slice(0, MAX_FRAMES);
+  return frames
+    .map((line) => line.replace(FRAME_PATH, (p) => { const inside = /.*node_modules[\\/]/.exec(p); return inside ? p.slice(inside[0].length) : "<path>"; }))
+    .join("\n")
+    .slice(0, MAX_STACK);
+}
+
+interface ErrorText {
+  readonly message: string;
+  readonly stack: string | null;
+}
+
+function errorText(error: unknown): ErrorText {
+  if (error instanceof Error) return { message: scrubErrorText(error.message), stack: error.stack ? scrubStack(error.stack) : null };
+  return { message: scrubErrorText(String(error)), stack: null };
+}
 
 /** The intake: the public one, or `COTAL_TELEMETRY_URL` for a self-hosted intake. */
 export function telemetryUrl(env: NodeJS.ProcessEnv = process.env): string {
@@ -73,13 +122,23 @@ interface Pending {
   readonly startedAt: number;
   readonly version: string;
   failure?: { outcome: Outcome; code: ErrorCode };
+  error?: ErrorText;
 }
 
 let pending: Pending | undefined;
 
-/** Record the typed failure the kernel is exiting with, so the event carries its code. */
-export function recordTelemetryFailure(outcome: Outcome, code: ErrorCode): void {
-  if (pending) pending.failure = { outcome, code };
+/** Record the typed failure the kernel is exiting with, so the event carries its code, and its
+ *  text unless {@link recordTelemetryError} already recorded the error it was classified from. */
+export function recordTelemetryFailure(outcome: Outcome, code: ErrorCode, error?: unknown): void {
+  if (!pending) return;
+  pending.failure = { outcome, code };
+  if (error !== undefined) recordTelemetryError(error);
+}
+
+/** Record the error a command threw, once: the first one recorded is the original, and a wrapper
+ *  the kernel builds from it afterwards does not replace it. */
+export function recordTelemetryError(error: unknown): void {
+  if (pending && !pending.error) pending.error = errorText(error);
 }
 
 /**
@@ -161,11 +220,14 @@ function commandEvent(p: Pending, exitCode: number, now: Date) {
   const { outcome, errorCode } = classify(p, exitCode);
   const minimal = { ...base(p), event: "command" as const, command: p.command, outcome, exitCode, durationMs: now.getTime() - p.startedAt };
   if (p.level === "minimal") return minimal;
+  const error = outcome === "ok" ? undefined : p.error;
   return {
     ...minimal,
     subcommand: p.subcommand,
     flags: p.flags,
     errorCode,
+    errorMessage: error?.message ?? null,
+    errorStack: error?.stack ?? null,
     interactive: process.stdout.isTTY === true,
     shell: process.env.SHELL ? basename(process.env.SHELL) : null,
     terminal: process.env.TERM_PROGRAM || null,
