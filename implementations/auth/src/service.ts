@@ -77,6 +77,7 @@ import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, validateUserToken, ty
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions, type UserCallerIssuer, type EndpointCallerResolver } from "./permissions.js";
+import { bootstrapServiceCallerPayload, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
 import { effectiveEndpointCaller } from "./service-caller-effective.js";
 import { handleRemoteRunCancel, parseRemoteRunCancelRequest, admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
@@ -522,8 +523,9 @@ export interface OpenAuthAuthorityPlaneOptions extends AuthServiceRuntimeOptions
   /** Default off. Present: the plane also opens the service endpoint host over its own plane claim
    *  hold, account and actor ledger. `startup` is required and only `normal` is supported; a restore
    *  or a missing startup refuses the whole open. Absent: no engine, no discovery connection and no
-   *  admission write. */
-  serviceEndpoints?: { startup: NonNullable<ServiceHostOperationsOptions["startup"]> };
+   *  admission write. `callerPayload` explicitly enables actual standalone-broker payload bootstrap
+   *  from fresh host-only VARZ observer credentials; omission never enables positive caller issuance. */
+  serviceEndpoints?: { startup: NonNullable<ServiceHostOperationsOptions["startup"]>; callerPayload?: ServiceCallerPayloadBootstrap };
   /** SMOKE-ONLY service host hooks: the discovery registry with a kill switch for its connection,
    *  and each effect after it opens and before the engine uses it. Production compositions never
    *  set this. */
@@ -821,6 +823,17 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     }
     if (failed.length > 0) throw new AggregateError(failed, `${failed.length} service host effect connection(s) did not close`);
   };
+  let verifyCallerPayload: (() => Promise<void>) | undefined;
+  const payloadFlights = new Set<Promise<void>>();
+  const checkCallerPayload = async (): Promise<void> => {
+    refuseIfFenced();
+    const flight = verifyCallerPayload!();
+    payloadFlights.add(flight);
+    try { await flight; refuseIfFenced(); }
+    finally { payloadFlights.delete(flight); }
+  };
+  const drainCallerPayload = async () => { await Promise.allSettled([...payloadFlights]); };
+  unwind.push(drainCallerPayload);
   if (opts.serviceEndpoints !== undefined) {
     const label = `cotal:service-host-discovery:${space}`;
     const d = discoveryClient = await openAuthorityClient({ onConnection, server, space, dataAccount, label, grants: (id) => serviceHostDiscoveryGrants(space, id), log,
@@ -855,6 +868,10 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       },
     });
     unwind.push(() => engine.close());
+    if (opts.serviceEndpoints.callerPayload !== undefined) {
+      verifyCallerPayload = await bootstrapServiceCallerPayload({ onConnection, registry: discovery, hold: hold!, servers: server,
+        accountPublicKey: dataAccount.pub, dataAccount, source: opts.serviceEndpoints.callerPayload });
+    }
     serviceHost = engine;
     SERVICE_HOST_ENGINES.set(engine.handle, engine);
     // A fence while the engine was opening latches it now.
@@ -1101,8 +1118,13 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       refuseIfFenced();
       const grantee = { owner: t.owner, actor: t.act.actor, lifecycleUid: assertLifecycleToken(t.act.lifecycleUid ?? "", "caller lifecycleUid") };
       const effective = await effectiveEndpointCaller(registry, dataAccount.pub, opts.dir, grantee);
+      if (effective.capabilities.length && !verifyCallerPayload)
+        throw new EpEnvelopeError("failed-precondition", "endpoint caller rights require actual host payload bootstrap");
+      if (effective.capabilities.length) await checkCallerPayload();
       const image = canonicalJson(effective);
       return { ...effective, ...(effective.expiresAt === undefined ? {} : { expiresAt: Math.min(effective.expiresAt, Math.floor(Date.now() / 1000) + SERVICE_ACCESS_TTL_SECONDS) }), recheck: async () => {
+        refuseIfFenced();
+        if (effective.capabilities.length) await checkCallerPayload();
         refuseIfFenced();
         const current = await effectiveEndpointCaller(registry, dataAccount.pub, opts.dir, grantee);
         if (canonicalJson(current) !== image) throw new EpEnvelopeError("permission-denied", "endpoint caller authority changed before release");
@@ -2105,6 +2127,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       closing = true;
       // Before the first await: no service host call enters once close has begun.
       serviceHost?.refuse();
+      await drainCallerPayload();
       await stopPrune();
       await stopChatSweep();
       // Every service host call that entered returns, discovery and effects included, then every

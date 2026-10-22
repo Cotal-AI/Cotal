@@ -142,8 +142,8 @@ Initial writes require no prior native key history. A deletion arriving after an
 cannot recreate a policy or a pending service gate.
 Revocation begins with a revision-pinned deny-new intent that unrelated appends preserve.
 These are storage operations, not entitlement checks; the service endpoint host below is their only
-writer. The effective policy resolver, issuance from caller policy, receipts and terminal caller
-revocation are not implemented yet.
+writer. The effective resolver and native caller issuance are described under the service endpoint
+host below. Receipts and terminal caller revocation remain unsupported.
 
 Scoped Describe callbacks also receive an optional immutable local context with the actual subject,
 complete-envelope fingerprint, serving identity and receive-relative deadline information.
@@ -1462,12 +1462,34 @@ cutoff marker. It never answers `revoked`, and the result parser refuses that ar
 `caller-policy-read` gives an owner its own grantees, and another owner's grantee only filtered to a
 service it holds; `caller-policy-list` needs a service selector.
 
-Caller grants need a payload precondition: every broker server's `max_payload` of at least 2 MiB plus
-1 KiB, an auth stream with no per-message limit, and an operator's assertion of both recorded in the
-auth store. Cotal's generated broker configuration keeps the 1 MiB default and no command records the
-assertion yet, so on a stock deployment `caller-grant` answers `unsupported`. Reads and revokes do not
-need it. A revoke whose policy row would not fit holds `payload-precondition` and writes nothing, and
-a failed check withdraws the recorded assertion until an operator records it again.
+Caller grants need `max_payload >= 2098176` (2 MiB plus 1 KiB), `max_control_line >= 4096`,
+and an auth stream with `max_msg_size: -1`. Broker generation accepts an explicit
+`serverConfig(broker, accounts, { ...options, maxPayload: 2098176 })`; omission leaves the native
+1 MiB default unchanged. No startup path raises limits automatically.
+
+For a **standalone broker only**, pass `serviceEndpoints.callerPayload.observerCreds` to
+`startAuthService` (or the corresponding authority-plane option). The callback returns fresh
+host-private credentials from the broker owner's
+`mintServiceCallerPayloadObserverCreds({ pub: broker.sys.pub, signingSeed: broker.sys.signingSeed })`.
+Keep that registered SYS signer with the broker owner, never in the data account, a sandbox or a
+participant client. The helper returns an in-memory, at-most-60-second VARZ-only credential.
+The callback only supplies credentials, owns no authority resource, and may finish after its
+10-second observation deadline has refused the operation. It is not a cancellation callback.
+
+Startup authenticates native VARZ, matches the observer and data connection's broker incarnation,
+checks config/system-account evidence and live stream limits, then writes an exact-key assertion
+bound to that broker, configuration and genuine plane claim. Configured clusters, gateways and
+leaf links refuse, regardless of connected peer count. This is not multi-broker proof. A default
+1 MiB broker fails startup with the required byte limit and creates no assertion.
+
+Positive caller issuance repeats the observation and checks the exact assertion revision, complete
+plane hold and effective authority again before native JWT release. Withdrawal, config changes or
+claim loss refuse new issuance. Reopening needs an explicit bootstrap to reassert for the new claim;
+a prior-plane broker-bound assertion cannot authorize another append. Legacy assertion syntax still
+parses for existing trusted storage fixtures but alone never enables production caller issuance.
+Shutdown drains in-flight observations and closes their owned connections before releasing the claim.
+Reads and revokes do not need a positive assertion. A revoke whose policy row would not fit holds
+`payload-precondition` without writing it, and a failed live-limit check withdraws the assertion.
 
 Give each caller operation a fresh random requestId, record it with the exact body before you send
 it, and replay that body after a lost reply, a 503 or a `held` answer. Never switch to a new requestId
