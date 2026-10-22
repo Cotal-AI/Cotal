@@ -4,7 +4,10 @@
  * without one implementation importing another (AGENTS.md, repository map).
  *
  * This slice serves a local, authenticated status endpoint and nothing else: no sign-in, no
- * Manager, no service install. Linux only.
+ * Manager, no service install. Linux only. It is a foreground foundation, not a resilient machine
+ * service: a daemon killed without cleanup leaves its socket behind, and the next start refuses
+ * until the operator removes it (see the ALREADY_RUNNING remedy). `state: "ready"` means the local
+ * control listener is bound and verified; it says nothing about any mesh or Cloud connection.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -41,7 +44,7 @@ const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVA
   UNSUPPORTED_PLATFORM: { code: "UNSUPPORTED" },
   NO_RUNTIME_DIR: { code: "TARGET_UNAVAILABLE", remedy: "run from a logged-in session with a per-user runtime directory (systemd-logind sets XDG_RUNTIME_DIR)" },
   NOT_RUNNING: { code: "TARGET_UNAVAILABLE", remedy: "start it with cotal daemon serve" },
-  ALREADY_RUNNING: { code: "CONFLICT", remedy: "check it with cotal daemon status" },
+  ALREADY_RUNNING: { code: "CONFLICT", remedy: "run cotal daemon status: if it answers, a daemon is already running. If it refuses NOT_RUNNING, a previous daemon exited without cleanup and the entry is stale; confirm no cotal daemon process is running, then remove the socket path named above by hand and start again. The daemon never removes it for you" },
   DIR_NOT_DIRECTORY: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
   DIR_SYMLINK: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
   DIR_WRONG_OWNER: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
@@ -106,7 +109,7 @@ const daemonCommand: Command = {
   flags: daemonFlags,
   subcommands: [
     { name: "status", summary: "ask the running daemon for its status over the local endpoint", outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
-    { name: "serve", summary: "run the daemon in the foreground and serve its local endpoint", flagNames: [], prepareMeshTarget: false },
+    { name: "serve", summary: "run the daemon in the foreground and serve its local endpoint (refusals honor --json)", flagNames: ["json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
   ],
   prepareMeshTarget: false,
   examples: ["cotal daemon serve", "cotal daemon status", "cotal daemon status --json"],

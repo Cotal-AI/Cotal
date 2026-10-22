@@ -19,6 +19,7 @@ export interface DaemonRequest {
 export type ProtocolErrorCode = "BAD_JSON" | "NOT_OBJECT" | "BAD_VERSION" | "UNKNOWN_FIELD" | "BAD_ID" | "UNKNOWN_OP" | "LINE_TOO_LONG";
 
 export interface DaemonStatus {
+  /** The local control listener is bound and verified. It does NOT mean connected to a mesh or Cloud. */
   readonly state: "ready";
   readonly protocol: typeof DAEMON_PROTOCOL_VERSION;
   readonly version: string;
