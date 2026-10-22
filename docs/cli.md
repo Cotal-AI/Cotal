@@ -5536,6 +5536,9 @@ It is not OS-supervised installation or platform parity.
 
 The real child exclusively claims its creation-pinned native PID custody before hosted authority
 preparation or local endpoint initialization. That starting record is not readiness; another existing slot is not adopted or reclaimed.
+After a crash, the record the killed child left names a dead pid. The manager adapter removes that
+record before the next launch, so the next `up` relaunches the manager; a live, foreign or
+unreadable record still refuses.
 It binds its actual native identity before endpoint construction. A startup phase appears only
 after native start, settled custody and signal handlers. On authenticated meshes the adapter also
 requires a current status response pinned to that native instance and epoch, with the same process
