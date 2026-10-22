@@ -47,14 +47,14 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
 import {
-  composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams,
+  composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig, setupSpaceStreams,
   writeSecretFileAtomic, type SecretStore,
 } from "@cotal-ai/core";
 import {
   deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadOwnerSecret, saveIdpSession,
   saveServiceKeys, startAuthService, type AuthServiceHandle,
 } from "@cotal-ai/auth";
-import { mkSecretDir, recordMesh, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
+import { recordMesh, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
 import { freePort, killAndAwaitExit, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
@@ -67,7 +67,17 @@ if (process.platform !== "linux") {
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
 const authRequire = createRequire(join(repo, "implementations", "auth", "package.json"));
-const { SignJWT, exportJWK, generateKeyPair } = await import(pathToFileURL(authRequire.resolve("jose")).href) as typeof import("jose");
+// jose is a dependency of implementations/auth, not of this package; resolve it from its owner, as the
+// daemon-login smoke resolves better-auth. Typed structurally for what this file uses.
+type Jose = {
+  generateKeyPair(alg: string): Promise<{ publicKey: CryptoKey; privateKey: CryptoKey }>;
+  exportJWK(key: CryptoKey): Promise<Record<string, unknown>>;
+  SignJWT: new (payload: Record<string, unknown>) => {
+    setProtectedHeader(h: Record<string, unknown>): any; setIssuer(v: string): any; setAudience(v: string): any; setSubject(v: string): any;
+    setIssuedAt(v: number): any; setExpirationTime(v: number): any; sign(k: CryptoKey): Promise<string>;
+  };
+};
+const { SignJWT, exportJWK, generateKeyPair } = await import(pathToFileURL(authRequire.resolve("jose")).href) as Jose;
 const peerUid = (s: Socket) => peerCredentials(s).uid;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -144,7 +154,9 @@ async function relay(space: string, target: string): Promise<string> {
     for await (const c of req) chunks.push(c as Buffer);
     hits.push({ space, method: req.method ?? "", path: new URL(req.url!, "http://x").pathname });
     const up = await fetch(`${target}${req.url}`, { method: req.method, headers: { "content-type": req.headers["content-type"] ?? "application/json" }, body: chunks.length ? Buffer.concat(chunks) : undefined, redirect: "manual" });
-    res.writeHead(up.status, Object.fromEntries([...up.headers].filter(([k]) => k !== "content-length" && k !== "transfer-encoding")));
+    const headers: Record<string, string> = {};
+    up.headers.forEach((v, k) => { if (k !== "content-length" && k !== "transfer-encoding") headers[k] = v; });
+    res.writeHead(up.status, headers);
     res.end(Buffer.from(await up.arrayBuffer()));
   });
   await new Promise<void>((r) => s.listen(0, "127.0.0.1", () => r()));
