@@ -260,6 +260,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: true,
   },
+  // Anonymous usage telemetry: the bare form reports the level, a level word writes it.
+  telemetry: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
   // Guarded maintenance over the hidden `reconcile-gate` and `seats` command objects below.
   manager: { flags: ["drain:boolean", "dry-run:boolean", "endpoint:string", "instance:string", "json:boolean:j", "plain:boolean", "server:string", "space:string:s", "yes:boolean:y"], positionals: true },
 
