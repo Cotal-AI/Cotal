@@ -287,7 +287,9 @@ wake reader as a child of the same host that runs the MCP server. Each server us
 in a private directory. Short messages arrive in full with their sender, message ID and reply
 context. Claude can answer these without calling `cotal_inbox`. The module uses Claude's
 plugin-sender attribution, never the person's own identity. While Claude is busy, delivery happens
-at the next main-conversation tool or model-request boundary instead of waiting for the turn to end.
+at a main-conversation tool boundary before the next request. A request already being sent has a
+fixed message snapshot. A later arrival waits for another tool boundary or starts its own attributed
+turn when the current turn ends; storing a note alone does not count as delivery to that request.
 
 Each inline batch carries at most eight whole messages. Each rendered message must fit within
 1,024 Unicode code points, and the encoded socket frame must fit within 4,096 characters. Larger

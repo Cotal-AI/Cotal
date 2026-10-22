@@ -315,10 +315,10 @@ export function register(on) {
     return result;
   });
   on('turn.step', async function* ($, e, next) {
-    if (e.agentId === undefined) {
-      active = true;
-      if (!next.signal.aborted) await submit($, true);
-    }
+    // This request already owns its message snapshot. Appending here stores a row without
+    // putting it in that request, and a final response would leave no next request to read it.
+    // Keep late arrivals queued for a tool boundary or an attributed prompt after this turn.
+    if (e.agentId === undefined) active = true;
     return yield* next(e);
   });
   on('turn.complete', async ($, e, next) => {
