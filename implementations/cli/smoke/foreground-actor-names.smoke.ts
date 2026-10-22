@@ -20,23 +20,33 @@ if (process.argv[2] === "worker") {
   const { registry, eventChannel } = await import("@cotal-ai/core");
   type Connector = import("@cotal-ai/core").Connector;
   const { cotalAuthProvider } = await import("@cotal-ai/auth");
-  registry.unregister("auth-provider", cotalAuthProvider.name);
-  const provisioningDouble: typeof cotalAuthProvider = {
-    ...cotalAuthProvider,
-    async postAgentProvisioning({ actor }: { actor: string }) {
-      const response = await fetch(process.env.FOREGROUND_NAMES_URL!, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actor }),
-      });
-      if (!response.ok) throw new Error('foreground actor material for "denied" is already held');
-      return response.json();
-    },
-    async postAgentEnrollment({ url }: { url: string }) {
-      const response = await fetch(url, { method: "POST" });
-      if (!response.ok) throw new Error("fixture enrollment refused");
-      return response.json();
-    },
-  };
-  registry.register(provisioningDouble);
+  const { credentialFailure } = await import("@cotal-ai/workspace");
+  // With no FOREGROUND_NAMES_URL the real provider runs. This fixture has no sign-in, so it refuses
+  // before any request.
+  if (process.env.FOREGROUND_NAMES_URL) {
+    registry.unregister("auth-provider", cotalAuthProvider.name);
+    // The provisioning double throws what the real provider throws for each answer: a 401 is
+    // signed-out, a 403 is refused, and any other failure carries no code.
+    const provisioningDouble: typeof cotalAuthProvider = {
+      ...cotalAuthProvider,
+      async postAgentProvisioning({ actor }: { actor: string }) {
+        const response = await fetch(process.env.FOREGROUND_NAMES_URL!, {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actor }),
+        });
+        if (response.ok) return response.json();
+        const reason = ((await response.json().catch(() => ({}))) as { error?: string }).error;
+        if (response.status === 401) throw credentialFailure("signed-out", `the mesh refused this login for agent provisioning: ${reason} - your session may have expired; re-run \`cotal login --idp https://idp.example/api/auth\``);
+        const refusal = `the mesh refused to provision agent "${actor}": ${reason}`;
+        throw response.status === 403 ? credentialFailure("refused", refusal) : new Error(refusal);
+      },
+      async postAgentEnrollment({ url }: { url: string }) {
+        const response = await fetch(url, { method: "POST" });
+        if (!response.ok) throw new Error("fixture enrollment refused");
+        return response.json();
+      },
+    };
+    registry.register(provisioningDouble);
+  }
   const connector: Connector = {
     kind: "connector", name: "foreground-names-fixture", requires: [], eventChannel,
     buildLaunch: (options) => ({
@@ -85,6 +95,12 @@ const provisioning = createServer(async (request, response) => {
   if (actor === "denied") {
     response.statusCode = 403;
     response.end('{"error":"fixture_denied"}');
+  } else if (actor === "expired") {
+    response.statusCode = 401;
+    response.end('{"error":"fixture_expired"}');
+  } else if (actor === "unavailable") {
+    response.statusCode = 503;
+    response.end('{"error":"fixture_unavailable"}');
   } else if (granted.has(actor)) {
     response.end('{"exists":true}');
   } else {
@@ -188,15 +204,39 @@ try {
   assert.equal(await enrolled.closed, 3, `a held actor after a redeemed enrollment is not reported as a refusal: ${enrolled.output}`);
   assert(/Outcome: unknown/.test(enrolled.output) && /Code:\s+OPERATION_UNKNOWN/.test(enrolled.output) && enrolled.output.includes("foreground actor material"), `the spent enrollment's outcome is reported unconfirmed: ${enrolled.output}`);
   assert(redeemed.join() === "default_agent_2" && requests.length === beforeEnrolled, "the enrollment was redeemed once and nothing was provisioned besides it");
+  // The real provider, with no sign-in on this machine, refuses before it sends anything.
+  writePersona("signed_out");
+  const beforeSignedOut = requests.length;
+  const signedOut = launch([], { FOREGROUND_NAMES_URL: "" });
+  assert.equal(await signedOut.ready, false, "a launch with no sign-in never launches");
+  assert.equal(await signedOut.closed, 2, `a launch with no sign-in exits as a refusal: ${signedOut.output}`);
+  assert(/Outcome: refused/.test(signedOut.output) && /Code:\s+AUTH_REQUIRED/.test(signedOut.output) && signedOut.output.includes("cotal login --idp"), `the real provider's missing sign-in is a sign-in refusal: ${signedOut.output}`);
+  assert.equal(requests.length, beforeSignedOut, "a launch with no sign-in sends no provisioning request");
   writePersona("denied");
   const beforeDenied = requests.length;
   const denied = launch();
   assert.equal(await denied.ready, false, "ordinary authorization refusal never launches");
-  // The provider's failure reaches the command unclassified, so its outcome is reported unconfirmed.
-  assert.equal(await denied.closed, 3, `ordinary authorization refusal remains an error: ${denied.output}`);
+  // The endpoint's own 403 is a refusal: it answered before issuing anything for the actor.
+  assert.equal(await denied.closed, 2, `ordinary authorization refusal exits as a refusal: ${denied.output}`);
+  assert(/Outcome: refused/.test(denied.output) && /Code:\s+PERMISSION_DENIED/.test(denied.output) && denied.output.includes("fixture_denied"), `the endpoint's 403 is reported as a refusal with its own reason: ${denied.output}`);
   assert.deepEqual(requests.slice(beforeDenied), ["denied"], "ordinary authorization refusal is not retried under another actor");
+  writePersona("expired");
+  const beforeExpired = requests.length;
+  const expired = launch();
+  assert.equal(await expired.ready, false, "a refused login never launches");
+  assert.equal(await expired.closed, 2, `a refused login exits as a refusal: ${expired.output}`);
+  assert(/Outcome: refused/.test(expired.output) && /Code:\s+AUTH_REQUIRED/.test(expired.output) && expired.output.includes("cotal login --idp"), `the endpoint's 401 is reported as a sign-in refusal: ${expired.output}`);
+  assert.deepEqual(requests.slice(beforeExpired), ["expired"], "a refused login is not retried under another actor");
+  writePersona("unavailable");
+  const beforeUnavailable = requests.length;
+  const unavailable = launch();
+  assert.equal(await unavailable.ready, false, "a failing endpoint never launches");
+  // A 5xx says nothing about what the endpoint did, so its outcome stays unconfirmed.
+  assert.equal(await unavailable.closed, 3, `a failing endpoint's outcome is unconfirmed: ${unavailable.output}`);
+  assert(/Outcome: unknown/.test(unavailable.output) && /Code:\s+OPERATION_UNKNOWN/.test(unavailable.output), `a 5xx stays an unknown outcome: ${unavailable.output}`);
+  assert.deepEqual(requests.slice(beforeUnavailable), ["unavailable"], "a failing endpoint is not retried under another actor");
   console.log("FOREGROUND ACTOR NAMING: all real-process collision controls passed");
-  emitSentinel({ passed: 20, failed: 0 });
+  emitSentinel({ passed: 33, failed: 0 });
   passed = true;
 } finally {
   for (const worker of workers) await stop(worker);
