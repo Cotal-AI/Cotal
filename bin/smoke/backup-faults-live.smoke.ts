@@ -89,7 +89,7 @@ async function backupStageFaultScenario(): Promise<void> {
   const sourcePath = join(root, ".cotal", "nats");
   try {
     must("up", run("up", "--detach", "--open", "--server", server, "--space", space));
-    must("seed registry", run("channels", "set", "preserved", "--desc", "survives every fault", "--space", space));
+    must("seed registry", run("channel", "set", "preserved", "--desc", "survives every fault", "--space", space));
     must("preserve cut", run("down", "--preserve-state"));
     assert.equal(journalState(root), "ready");
     const sourceBefore = lstatSync(sourcePath, { bigint: true });
@@ -118,7 +118,7 @@ async function backupStageFaultScenario(): Promise<void> {
       assert.deepEqual(attemptResidue(root), [], `${stage} retry leaves no attempt residue`);
     }
     must("ordinary resume after every fault", run("up", "--detach", "--open", "--server", server, "--space", space));
-    const listed = run("channels", "list", "--space", space);
+    const listed = run("channel", "--space", space);
     must("list registry after every fault", listed);
     assert.match(listed.stdout, /#preserved/, "the faulted attempts never touched the preserved registry");
     must("down", run("down"));
@@ -166,7 +166,7 @@ async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
   const seeded = ["first seeded message", "second seeded message", "third seeded message"];
   try {
     must("up", run("up", "--detach", "--server", server, "--space", space));
-    must("seed registry", run("channels", "set", "seeded", "--desc", "survives the replay", "--space", space));
+    must("seed registry", run("channel", "set", "seeded", "--desc", "survives the replay", "--space", space));
     must("seed TASK durable", spawnSync(tsx, [taskSeedPath, root, server, space, "reviewer"], {
       cwd: join(worktree, "implementations", "cli"), env, encoding: "utf8", timeout: 30_000,
     }));
@@ -228,7 +228,7 @@ async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
       restore: { attemptId: string };
     };
     assert.equal(active.state, "active", "the replayed attempt commits to active");
-    const listed = run("channels", "list", "--space", space);
+    const listed = run("channel", "--space", space);
     must("list replayed registry", listed);
     assert.match(listed.stdout, /#seeded/, "the replayed restore lists the seeded channel");
 

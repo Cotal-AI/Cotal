@@ -93,7 +93,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
 
   try {
     must("up", run("up", "--detach", ...(mode === "open" ? ["--open"] : []), "--server", server, "--space", space));
-    must("seed registry", run("channels", "set", "preserved", "--desc", "survives", "--space", space));
+    must("seed registry", run("channel", "set", "preserved", "--desc", "survives", "--space", space));
     if (mode === "auth") {
       must("seed TASK durable", spawnSync(tsx, [taskSeedPath, root, server, space, "reviewer"], {
         cwd: join(worktree, "implementations", "cli"), env, encoding: "utf8", timeout: 30_000,
@@ -265,7 +265,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
 
     const restoreArtifact = mode === "open" ? registryArtifact : artifact;
     must("restore", run("up", "--restore", restoreArtifact, "--detach", "--server", server, "--space", space));
-    const listed = run("channels", "list", "--space", space);
+    const listed = run("channel", "--space", space);
     must("list restored registry", listed);
     assert.match(listed.stdout, /#preserved/);
     const active = JSON.parse(readFileSync(join(root, ".cotal", "maintenance", "v1", "journal.json"), "utf8")) as {
@@ -598,7 +598,7 @@ async function missingPidfileListenerScenario(): Promise<void> {
   let foreign: ChildProcess | undefined;
   try {
     assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
-    assert.equal(run("channels", "set", "preserved", "--desc", "listener probe", "--space", space).status, 0);
+    assert.equal(run("channel", "set", "preserved", "--desc", "listener probe", "--space", space).status, 0);
     const brokerPid = Number(readFileSync(pidPath, "utf8"));
     rmSync(pidPath);
     const refusedCut = run("down", "--preserve-state");
@@ -791,7 +791,7 @@ async function backupRestoreCycleScenario(): Promise<void> {
   };
   try {
     must("up", run("up", "--detach", "--server", server, "--space", space));
-    must("seed registry", run("channels", "set", "cycled", "--desc", "survives two cycles", "--space", space));
+    must("seed registry", run("channel", "set", "cycled", "--desc", "survives two cycles", "--space", space));
     must("seed TASK durable", spawnSync(tsx, [taskSeedPath, root, server, space, "reviewer"], {
       cwd: join(worktree, "implementations", "cli"), env, encoding: "utf8", timeout: 30_000,
     }));
@@ -827,7 +827,7 @@ async function backupRestoreCycleScenario(): Promise<void> {
     assert.ok(secondCheckpoints.length >= firstCheckpoints.length, "restored durables validate as backup input again");
     assert.ok(secondCheckpoints.some((checkpoint) => checkpoint.stream === taskStream(space) && checkpoint.name === "svc_reviewer"));
     must("restore 2", run("up", "--restore", second, "--detach", "--server", server, "--space", space));
-    const listed = run("channels", "list", "--space", space);
+    const listed = run("channel", "--space", space);
     must("list twice-restored registry", listed);
     assert.match(listed.stdout, /#cycled/);
     must("down", run("down"));

@@ -130,7 +130,7 @@ try {
   // the cut's refusal as the finding.
   let railsUp = false;
   for (let i = 0; i < 30 && !railsUp; i++) {
-    if (runSync(["channels", "set", "railprobe", "--desc", "rails", "--space", space]).status === 0) railsUp = true;
+    if (runSync(["channel", "set", "railprobe", "--desc", "rails", "--space", space]).status === 0) railsUp = true;
     else await sleep(5_000);
   }
   ok("the manager answers on the ep rails before the cut", railsUp);

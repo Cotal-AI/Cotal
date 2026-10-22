@@ -138,7 +138,7 @@ async function cutPreserved(space: string): Promise<void> {
   // reporting the cut's refusal as the finding.
   let railsUp = false;
   for (let i = 0; i < 30 && !railsUp; i++) {
-    const probe = run(["channels", "set", "railprobe", "--desc", "rails", "--space", space]);
+    const probe = run(["channel", "set", "railprobe", "--desc", "rails", "--space", space]);
     await within(once(probe, "exit"), 30_000);
     if (probe.exitCode === 0) railsUp = true;
     else await sleep(5_000);
