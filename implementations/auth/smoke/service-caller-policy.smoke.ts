@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,7 +8,7 @@ import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { contractDigest, createEndpointStreams, epgateKey, isReachable, mintLifecycleUid } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createPendingServiceGate } from "../src/native-service-gate.js";
 import { openLifecycleRegistry, registryStores } from "../src/lifecycle-registry.js";
 import {
@@ -16,6 +16,9 @@ import {
   recordNativeServiceCallerCutoff,
 } from "../src/service-caller-policy.js";
 import type { ServiceCallerGrant } from "../src/service-host-contract.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const space = "service-policy", port = await freePort(), servers = `nats://127.0.0.1:${port}`;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
@@ -151,6 +154,7 @@ try {
   await nc.close();
   await assert.rejects(readNativeServiceCallerPolicy(reg, binding), "failed reader is not an empty policy");
   console.log("service caller policy: real shared-store CAS, immutable grants, binding and preserved deny-new intents passed; native authorization and terminal retirement remain separate");
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   await nc?.close(); await killAndAwaitExit(broker);
   rmSync(dir, { recursive: true, force: true }); release();

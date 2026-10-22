@@ -1,6 +1,10 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { contractDigest } from "@cotal-ai/core";
 import { parseServiceHostRequest, type ServiceHostInputs } from "../src/service-host-contract.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const owner = "u_aaaaaaaaaaaaaaaaaaaaaaaaaa";
 const principal = { owner, actor: "cli", lifecycleUid: "p".repeat(32) };
@@ -44,3 +48,4 @@ assert.throws(() => parseServiceHostRequest(Object.assign(Object.create({}), app
 const list = requests.find((r) => r.operation === "proposal-list")!;
 assert.throws(() => parseServiceHostRequest({ ...list, input: { ...list.input, limit: 51 } }), /between 1 and 50/);
 console.log(`service-host-contract: ${requests.length} operation shapes and closed-field checks passed (structural only)`);
+emitSentinel({ passed: counted.cells(), failed: 0 });

@@ -1,4 +1,5 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -10,6 +11,9 @@ import type { SecretStore } from "@cotal-ai/core";
 import { createAccount } from "@nats-io/nkeys";
 import { ServiceAuthorityTransportError, contractDigest, epRequestSubject, serviceEndpointActor, type ServiceAuthorityEnvelope } from "@cotal-ai/core";
 import { postRemoteServiceAuthority, readRemoteServiceAuthorityInfo, serviceAuthorityUrl } from "../src/service-authority-client.js";
+
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
 
 const accountPublicKey = createAccount().getPublicKey();
 const request = {
@@ -157,6 +161,7 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(requests, beforeSlow, "late preparation cannot dispatch after the original provider deadline");
   console.log("service-authority-client: live HTTP, provider projection, result binding, read-only Describe/no-store/full-flow deadlines and no-retry checks passed");
+  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   rmSync(dir, { recursive: true, force: true });
   server.closeAllConnections();
