@@ -478,7 +478,11 @@ spawned agent needs the matching `role:<r>` capability in the spawner's scope. T
 delegation chain is checked, not just the last link, and re-checked at every bearer
 exchange, so narrowing a user's grant reaches their agents within minutes, and revoking
 the user revokes everything under them, grandchildren included. A spawn beyond the
-envelope is refused with the exact widening re-grant to ask the operator for.
+envelope is refused with the exact widening re-grant to ask the operator for. One post entry is
+not taken from the spawner's lists: a spawner whose grant covers its own event channel may hand each
+child that child's own event channel, `events.<owner>.<child>`, and no other. It names the child, so
+it reaches nothing the spawner holds, and the spawner's own event channel is still checked against
+its parent.
 
 **Control ops ride your own login**, gated by ledger scope. `spawn` covers launching,
 `ps`, and stop/attach of the agents under **your own owner**: the owner is the
