@@ -76,7 +76,7 @@ function view(r: TelemetryResult): Report {
               ["file", r.file],
             ],
           },
-          { kind: "lines", lines: [`Levels: ${TELEMETRY_LEVELS.join(", ")}. Details: https://cotal.ai/telemetry`] },
+          { kind: "lines", lines: [`Levels: ${TELEMETRY_LEVELS.join(", ")}. Details: https://docs.cotal.ai/telemetry`] },
         ],
       },
     ],

@@ -27,7 +27,7 @@ import { cliVersion } from "./seed/paths.js";
 export const TELEMETRY_URL = "https://cotal.ai/v1/telemetry";
 export const SEND_TIMEOUT_MS = 1500;
 export const TELEMETRY_NOTICE =
-  'Cotal collects anonymous usage data at the "regular" level (command names, outcomes, version, OS, installed connectors; never arguments, paths, names or content). Change it with "cotal telemetry minimal" or "cotal telemetry off". Details: https://cotal.ai/telemetry';
+  'Cotal collects anonymous usage data at the "regular" level (command names, outcomes, version, OS, installed connectors; never arguments, paths, names or content). Change it with "cotal telemetry minimal" or "cotal telemetry off". Details: https://docs.cotal.ai/telemetry';
 
 /** The intake: the public one, or `COTAL_TELEMETRY_URL` for a self-hosted intake. */
 export function telemetryUrl(env: NodeJS.ProcessEnv = process.env): string {
