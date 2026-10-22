@@ -13,8 +13,9 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, assertLinux, checkSocket, ensureDir, refuseExisting, type DaemonPaths, type PeerUid } from "./endpoint.js";
-import { encode, parseRequest, type DaemonResponse, type DaemonStatus } from "./protocol.js";
+import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
+import { connectCheck } from "./connect.js";
 import { homeCotalDir } from "@cotal-ai/workspace";
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
@@ -30,6 +31,7 @@ export interface ServerCounters {
   loginsStarted: number;
   loginsRefused: number;
   cancelsAnswered: number;
+  connectChecksAnswered: number;
 }
 
 export interface RunningDaemon {
@@ -77,8 +79,9 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
   const dirOutcome = ensureDir(paths.dir, uid);
   refuseExisting(paths.socket);
 
-  const counters: ServerCounters = { accepted: 0, peerRejected: 0, framesDecoded: 0, requestsRefused: 0, statusAnswered: 0, loginsStarted: 0, loginsRefused: 0, cancelsAnswered: 0 };
-  const login = opts.login ?? createLoginCoordinator({ sessionDir: opts.sessionDir ?? homeCotalDir() });
+  const counters: ServerCounters = { accepted: 0, peerRejected: 0, framesDecoded: 0, requestsRefused: 0, statusAnswered: 0, loginsStarted: 0, loginsRefused: 0, cancelsAnswered: 0, connectChecksAnswered: 0 };
+  const machineHome = opts.sessionDir ?? homeCotalDir();
+  const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
   const startedAt = new Date();
   const status = (): DaemonStatus => ({
     state: "ready",
@@ -142,6 +145,14 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
       if (req.op === "status") {
         counters.statusAnswered++;
         void write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result: status() });
+        return;
+      }
+      if (req.op === "connect-check") {
+        void connectCheck(req.space, machineHome).catch((): ConnectCheckResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the check" }))
+          .then((result) => {
+            counters.connectChecksAnswered++;
+            return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
+          });
         return;
       }
       if (req.op === "login-cancel") {

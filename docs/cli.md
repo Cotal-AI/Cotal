@@ -229,7 +229,7 @@ failure.
 | Agents & personas | [`persona`](#persona) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Deprecated and hidden from help: run a manager daemon; use the `manager` service preset |
 | Agents & personas | [`service`](#service) | Save, start, stop and inspect owned local services, from a preset or a definition file |
-| Agents & personas | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in |
+| Agents & personas | [`daemon`](#daemon) | Linux: serve the local machine daemon's control endpoint, read its status, sign it in, check whether it can connect to a space |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Agents & personas | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
 | Agents & personas | [`endpoint deregister`](#endpoint-deregister) | Remove the service registration of an instance whose host is gone, when the broker affirms nothing is subscribed on its rail |
@@ -3033,10 +3033,12 @@ condition.
 cotal daemon serve [--json|--plain]
 cotal daemon status [--json|--plain]
 cotal daemon login --idp <auth base URL> [--client-id <id>] [--json|--plain]
+cotal daemon connect-check --space <s> [--json|--plain]
 ```
 
-This release serves a local endpoint for status and sign-in only: it does not start a Manager,
-connect to a mesh or Cloud, or install a system service. It supports Linux only. On other
+This release serves a local endpoint for status, sign-in and a connection check only: it does not
+register with a space, start a Manager, connect to a mesh or Cloud, or install a system service. It
+supports Linux only. On other
 platforms, an unset `XDG_RUNTIME_DIR` produces
 `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`); with it set, the platform check refuses `UNSUPPORTED`.
 
@@ -3077,6 +3079,28 @@ approval refuses `PERMISSION_DENIED` (`DENIED` or `EXPIRED`), and an unreachable
 (`REFUSED`). Such a failure can come after the session was saved, so run `login` again. A failure
 is reported with a fixed sentence; the provider's own error text is never relayed. `status`
 keeps answering while a sign-in waits.
+
+`connect-check` asks the running daemon whether it could register with a space as its own service.
+The daemon is not a Manager and never borrows a Manager's identity or authority. The check reads
+the space's registration on this machine and the daemon's sign-in, then the space's public account
+identity from its auth service (`GET <exchange>/service-endpoint-authority`, no redirects). It sends
+no registration and holds no credential. A space whose auth service does not host service endpoints
+refuses `UNSUPPORTED` (`UNSUPPORTED_BY_SPACE`). The daemon does not fall back to anything else.
+
+The other refusals are `TARGET_NOT_FOUND` (`NOT_REGISTERED`) for a space this machine has not
+registered, `UNSUPPORTED` (`NOT_USER_AUTH`) for a space without user sign-in, `AUTH_REQUIRED`
+(`NOT_SIGNED_IN`) when the machine is not signed in to the space's provider, and
+`DEPENDENCY_UNAVAILABLE` (`UNREACHABLE` or `REFUSED`) when the auth service cannot be reached or
+answers with something unusable.
+
+On success it reports `ready-to-register` with the space's account, the daemon's service name
+`ai.cotal.machine` and the daemon's own instance ID. Nothing has been registered. The space owner must
+still approve the daemon, and the service name needs the space operator's binding. The first
+success creates the daemon's identity for that space at
+`<COTAL_HOME>/daemon/<space segment>/service-identity.json` (mode `0600`). It holds the instance ID
+and the account, and no credential. Later checks reuse it. If the space later answers with a
+different account, the check refuses `CONFLICT` (`ACCOUNT_MISMATCH`) and changes nothing: confirm
+the space was not replaced before you remove that file by hand.
 
 ## service
 
