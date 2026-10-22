@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, createSpaceAuth, evictDeniedPrincipalWithCreds, evictDeniedPrincipalsWithCreds, isReachable, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
+import { CotalEndpoint, LEASE_TTL_MS, createSpaceAuth, evictDeniedPrincipalWithCreds, evictDeniedPrincipalsWithCreds, isReachable, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { readRecord, recordPath } from "@cotal-ai/seat";
 import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, makeSeatRoot } from "@cotal-ai/smoke-kit";
@@ -58,7 +58,7 @@ for (const key of Object.keys(ambientEnv)) if (key.startsWith("COTAL_")) delete 
 
 const port = await freePort(); const servers = `nats://127.0.0.1:${port}`; const space = `spawnwin-${randomUUID().slice(0, 8)}`; const auth = await createSpaceAuth(space); const observerCreds = await mintMembershipObserverCreds(auth, newIdentity()); const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(dir, "ws"); const seatRoot = makeSeatRoot("seats-"); mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth); writeFileSync(join(root, ".cotal", "agents", "hangworker.md"), "---\nname: hangworker\nrole: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n"); writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
-const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir); let daemon: CotalEndpoint | undefined; const managers: ChildProcess[] = []; const pids: number[] = [];
+const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir); let daemon: CotalEndpoint | undefined; let leaseRenewal: ReturnType<typeof setInterval> | undefined; const managers: ChildProcess[] = []; const pids: number[] = [];
 type Ready = { managerPid: number; managerInstanceId: string; seatPid: number; reference: { kind: string; id: string }; actor: string; lifecycleUid: string };
 async function startManager(tag: string, spawnSeat: boolean, opts: { hangMarker?: string } = {}): Promise<{ child: ChildProcess; ready?: Ready; stdout: () => string; stderr: () => string }> {
   const child = spawn(tsx, [host], { cwd: repo, env: { ...ambientEnv, REPRO_ROOT: root, REPRO_SPACE: space, REPRO_SERVERS: servers, REPRO_OBSERVER_CREDS: observerCreds, REPRO_EVICTOR_CREDS: evictorCreds, REPRO_ACCOUNT_ID: auth.account.pub, REPRO_SPAWN: spawnSeat ? "1" : "0", REPRO_ALIAS: "hangworker", ...(opts.hangMarker ? { REPRO_HANG_AFTER_SPAWN: "1", REPRO_MARKER: opts.hangMarker } : {}), COTAL_SEAT_ROOT: seatRoot, COTAL_SERVER: "", COTAL_SERVERS: "", COTAL_CREDS: "", NATS_URL: "" }, detached: true, stdio: ["ignore", "pipe", "pipe"] }); managers.push(child); let out = "", err = ""; child.stdout?.on("data", (b) => out += String(b)); child.stderr?.on("data", (b) => err += String(b)); const deadline = Date.now() + 120_000;
@@ -81,8 +81,13 @@ try {
   const did = newIdentity(); daemon = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, did, "delivery"), card: { id: did.id, name: "delivery", role: "delivery", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false }); daemon.on("error", () => {}); await daemon.start(); await daemon.startPlane3(async () => undefined, { evictPrincipal: async (principal) => evictDeniedPrincipalWithCreds({ servers, observerCreds, evictorCreds, accountId: auth.account.pub, principal, options: { maxVerifyRounds: 12 } }), evictPrincipals: async (principals) => evictDeniedPrincipalsWithCreds({ servers, observerCreds, evictorCreds, accountId: auth.account.pub, principals, options: { maxVerifyRounds: 12 } }), reloadStoreIdentity: () => workspaceSecretStore(root).identity });
   // The manager's #1694 binding requires the answer to name a real holder of the delivery
   // lease rather than assert it; acquire it the way manager-reconcile-startup.smoke.ts does so
-  // `holdsDeliveryLease` below is truthful.
-  await daemon.acquireDeliveryLease(0).catch(() => {});
+  // `holdsDeliveryLease` below is truthful. The successor asks more than 21s after the first
+  // manager starts, so on a loaded host the row would outlive its 30s TTL unless it is renewed,
+  // as the real daemon renews it.
+  let leaseRevision = await daemon.acquireDeliveryLease(0).catch(() => undefined);
+  leaseRenewal = setInterval(() => {
+    if (leaseRevision !== undefined) void daemon!.renewDeliveryLease(0, leaseRevision).then((next) => { leaseRevision = next; }, () => { leaseRevision = undefined; });
+  }, Math.floor(LEASE_TTL_MS / 2));
   const marker = join(dir, "hang.json");
   const hung = await startManager("hang-window", true, { hangMarker: marker });
   const spawned = JSON.parse(readFileSync(marker, "utf8")) as { managerPid: number; seatPid: number; reference: { kind: string; id: string } };
@@ -109,6 +114,7 @@ try {
   for (const child of managers) if (child.exitCode === null) stopGroup(child.pid);
   await Promise.all(managerExits);
   for (const pid of pids) stopGroup(pid);
+  clearInterval(leaseRenewal);
   await daemon?.stop().catch(() => {});
   broker.kill("SIGKILL");
   await wait(300);
