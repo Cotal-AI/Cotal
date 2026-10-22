@@ -16,14 +16,19 @@
  *     recovers to `current` once the door is back;
  *  L6 a revoked assignment ends the source: `ended approval-revoked`, and a later pull refuses with
  *     no dispatch;
- *  L7 expired renewal material is refused before dispatch: `ended expired`, 0 requests;
+ *  L7 an expired renewal proof (approval and root live) reactivates under the same persisted
+ *     activate id with the signed-in login: current, 1 POST, no new intent, and the bearer connects;
  *  L8 close() settles a pull in flight as closed without waiting for its answer, rejects new pulls
  *     with no request, and a second close is a no-op;
  *  L9 no token appears in state(), in thrown errors, or in the persisted record's non-material fields;
  *  L10 a revoke whose cause is `restore-quarantine` (how quarantine reaches an active instance; the
  *      admission gate itself guards only new requests) ends the source as approval-revoked;
  *  L11 a real `CotalEndpoint` starts with the source as its bearer function. It does not outlive a
- *      bearer here; the endpoint's own refresh schedule is covered by its own suites.
+ *      bearer here; the endpoint's own refresh schedule is covered by its own suites;
+ *  L12 that reactivation with no sign-in is `unavailable` (not ended), sends nothing, says so in
+ *      fixed text, and recovers once signed in again;
+ *  L13 a store read or write failure and a corrupt record are fixed text and `unavailable`, and
+ *      the source recovers under the same ids once they are restored.
  */
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -39,7 +44,7 @@ import {
 import { cotalAuthProvider } from "../src/provider.js";
 import { deriveOwnerForIdpSubject } from "../src/derive.js";
 import { grantActor } from "../src/ledger.js";
-import { saveIdpSession } from "../src/login.js";
+import { deleteIdpSession, saveIdpSession } from "../src/login.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../src/store.js";
 import type { ServiceEndpointHost, ServiceHostRequest, ServiceHostResult } from "../src/service-host-contract.js";
@@ -282,20 +287,78 @@ try {
     c.check("L10 ended approval-revoked, never unavailable", st.state === "ended" && (st as { reason: string }).reason === "approval-revoked", st);
   });
 
-  await cell("L7 expired renewal material is refused before dispatch", async () => {
+  /** Age a witness's stored material past its renewal expiry, as a machine offline for over 24 h leaves it. */
+  const expireStored = async (w: ServiceRegistrationWitness) => {
+    const { key: k, ...rec } = (await recordOf(w))!;
+    rec.material.renewalExpiresAt = nowS() - 1; rec.material.accessExpiresAt = nowS() - 1;
+    clientStore.values.set(k, JSON.stringify(rec));
+    return rec;
+  };
+
+  await cell("L7 an expired renewal proof reactivates under the same persisted activate id", async () => {
     const three = await registeredWitness(ep);
     const s = source(three.witness);
     tokensSeen.push(await s.bearer());
     await s.close();
-    const { key: k, ...rec } = (await recordOf(three.witness))!;
-    rec.material.renewalExpiresAt = nowS() - 1; rec.material.accessExpiresAt = nowS() - 1;
-    clientStore.values.set(k, JSON.stringify(rec));
+    const rec0 = await expireStored(three.witness);
+    const intents0 = (await indexOf(ep, three.instanceId))?.intents.length;
     const s3 = source(three.witness);
     const posts0 = doorPosts;
+    let b = "", thrown = "";
+    try { b = await s3.bearer(); tokensSeen.push(b); } catch (e) { thrown = e instanceof Error ? e.message : String(e); }
+    const rec1 = await recordOf(three.witness);
+    const intents1 = (await indexOf(ep, three.instanceId))?.intents.length;
+    c.check("L7 current with fresh material after 1 POST", s3.state().state === "current" && doorPosts === posts0 + 1 && b !== "" && expOf(b) > nowS(), { st: s3.state(), thrown, posts: doorPosts - posts0 });
+    c.check("L7 the same activate and renew ids; no new intent; still 1 activate", rec1?.activateRequestId === rec0.activateRequestId && rec1?.renewRequestId === rec0.renewRequestId
+      && intents0 === intents1 && await count(ep, three.instanceId, "activate") === 1, { intents0, intents1 });
+    c.check("L7 the reactivated bearer connects, and the next pull renews", b !== "" && await dialOk(b) && (tokensSeen.push(await s3.bearer()), s3.state().state === "current"));
+  });
+
+  await cell("L12 reactivation without a sign-in is unavailable, then recovers", async () => {
+    const seven = await registeredWitness(ep);
+    const s = source(seven.witness);
+    tokensSeen.push(await s.bearer());
+    await s.close();
+    await expireStored(seven.witness);
+    deleteIdpSession(home, idpUrl);
+    const s2 = source(seven.witness);
+    const posts0 = doorPosts;
     let thrown = "";
-    try { await s3.bearer(); } catch (e) { thrown = e instanceof Error ? e.message : String(e); }
-    const st = s3.state();
-    c.check("L7 ended expired with 0 POST", st.state === "ended" && (st as { reason: string }).reason === "expired" && doorPosts === posts0 && thrown !== "", { st, posts: doorPosts - posts0 });
+    try {
+      try { await s2.bearer(); } catch (e) { thrown = e instanceof Error ? e.message : String(e); }
+      c.check("L12 unavailable, not ended, with 0 POST", s2.state().state === "unavailable" && doorPosts === posts0 && thrown !== "", { st: s2.state(), thrown, posts: doorPosts - posts0 });
+      c.check("L12 the error is fixed text naming the sign-in, with no token or session", /sign-in/.test(thrown) && !jwtLike.test(thrown) && !thrown.includes("session-a"), thrown);
+    } finally { saveIdpSession(home, idpUrl, { token: "session-a", expiresAt: nowS() + 3600, sub: "user-a" }); }
+    tokensSeen.push(await s2.bearer());
+    c.check("L12 once signed in again, the same source recovers to current", s2.state().state === "current" && await count(ep, seven.instanceId, "activate") === 1);
+  });
+
+  await cell("L13 store and record failures are fixed text and unavailable", async () => {
+    const eight = await registeredWitness(ep);
+    const s = source(eight.witness);
+    tokensSeen.push(await s.bearer());
+    const marker = "Zq9-store-text";
+    const get = clientStore.get.bind(clientStore), put = clientStore.put.bind(clientStore);
+    const fail = async (patch: () => void): Promise<string> => {
+      patch();
+      try { await s.bearer(); return ""; } catch (e) { return e instanceof Error ? e.message : String(e); } finally { clientStore.get = get; clientStore.put = put; }
+    };
+    const onRecord = (k: string) => k.includes("/service-renewal/");
+    const gotErr = await fail(() => { clientStore.get = async (k) => { if (onRecord(k)) throw new Error(marker); return get(k); }; });
+    const stGet = s.state().state;
+    const putErr = await fail(() => { clientStore.put = async (k, v) => { if (onRecord(k)) throw new Error(marker); return put(k, v); }; });
+    const stPut = s.state().state;
+    const { key: k, ...rec } = (await recordOf(eight.witness))!;
+    clientStore.values.set(k, `not-json ${marker}`);
+    let corrupt = "";
+    try { await s.bearer(); } catch (e) { corrupt = e instanceof Error ? e.message : String(e); }
+    const stCorrupt = s.state().state;
+    clientStore.values.set(k, JSON.stringify(rec));
+    const texts = [gotErr, putErr, corrupt];
+    c.check("L13 3 failures, each rejected with fixed text (no store or record bytes)", texts.every((t) => t !== "" && !t.includes(marker) && !t.includes("not-json")), texts);
+    c.check("L13 each failure leaves the source unavailable, not idle or current", stGet === "unavailable" && stPut === "unavailable" && stCorrupt === "unavailable", { stGet, stPut, stCorrupt });
+    tokensSeen.push(await s.bearer());
+    c.check("L13 with the store and record restored, the same source recovers under the same ids", s.state().state === "current" && await count(ep, eight.instanceId, "renew") === 1);
   });
 
   await cell("L8 close aborts a pull in flight and rejects new pulls", async () => {
