@@ -63,18 +63,18 @@
     {
       "name": "Changesets version job drops the npm-publish Environment",
       "file": ".github/workflows/changesets.yml",
-      "find": "    environment: npm-publish\n    permissions:\n      contents: write\n      pull-requests: write\n      id-token: write\n",
-      "replace": "    permissions:\n      contents: write\n      pull-requests: write\n      id-token: write\n",
-      "expectRed": "changesets.yml version is bound to the npm-publish Environment",
-      "cell": "changesets.yml version is bound to the npm-publish Environment"
+      "find": "    environment: npm-publish\n    permissions:\n      contents: write\n      actions: read\n      id-token: write\n",
+      "replace": "    permissions:\n      contents: write\n      actions: read\n      id-token: write\n",
+      "expectRed": "normal and snapshot publication share the npm-publish Environment",
+      "cell": "normal and snapshot publication share the npm-publish Environment"
     },
     {
-      "name": "Changesets snapshot job drops the npm-publish Environment",
+      "name": "Snapshot publication skips qualified version replay",
       "file": ".github/workflows/changesets.yml",
-      "find": "    environment: npm-publish\n    permissions:\n      contents: read\n",
-      "replace": "    permissions:\n      contents: read\n",
-      "expectRed": "changesets.yml snapshot is bound to the npm-publish Environment",
-      "cell": "changesets.yml snapshot is bound to the npm-publish Environment"
+      "find": "        run: node scripts/apply-cold-versions.mjs \"$COLD_CANDIDATE/manifest.json\"\n",
+      "replace": "        run: echo skip-qualified-version-replay\n",
+      "expectRed": "snapshot publication replays qualified versions before the shared publisher",
+      "cell": "snapshot publication replays qualified versions before the shared publisher"
     },
     {
       "name": "Cold candidate drops the Windows native dependency",
@@ -109,12 +109,12 @@
       "cell": "cold candidate assembles Windows natives before packing"
     },
     {
-      "name": "Release install probe skips Windows native assembly",
-      "file": ".github/workflows/changesets.yml",
+      "name": "Prepared package probe skips Windows native assembly",
+      "file": ".github/workflows/cold-setup.yml",
       "find": "        run: node scripts/workspace-assemble-natives.mjs\n",
       "replace": "        run: echo skip-workspace-native-assembly\n",
-      "expectRed": "release install probe assembles both Windows native artifacts before packing",
-      "cell": "release install probe assembles both Windows native artifacts before packing"
+      "expectRed": "pre-publication package probe uses the original Windows native assembly",
+      "cell": "pre-publication package probe uses the original Windows native assembly"
     }
   ]
 }

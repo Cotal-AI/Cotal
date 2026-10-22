@@ -1,7 +1,7 @@
 /**
- * The install-probe job must exist in changesets.yml and must depend on the version job.
- * The version job must contain the closure gate and the GitHub Release step. This file reads
- * the workflow text and checks structural invariants.
+ * The package-shape probe runs during preparation, before native lifecycle qualification.
+ * The publication job retains its registry closure gate and GitHub Release step.
+ * This file reads the workflow text and checks structural invariants.
  *
  * Run: pnpm smoke:install-probe-ci
  * Prove: pnpm mutation-proof --config bin/smoke/mutations/install-probe-ci.json
@@ -46,28 +46,15 @@ function jobs(text: string): Map<string, string> {
   return out;
 }
 
-function needsList(body: string): string[] {
-  const inline = body.match(/^\s+needs:\s*\[([^\]]*)\]/m);
-  if (inline) {
-    return inline[1].split(",").map((s) => s.trim()).filter(Boolean);
-  }
-  return [];
-}
-
 const csText = readFileSync(CHANGESETS, "utf8");
 const csJobs = jobs(csText);
 
-// A. The install-probe job exists
-const probeBody = csJobs.get("install-probe") ?? "";
-check("changesets.yml declares job install-probe", probeBody.length > 0);
+const coldJobs = jobs(readFileSync(join(ROOT, ".github/workflows/cold-setup.yml"), "utf8"));
+const probeBody = coldJobs.get("candidate") ?? "";
+check("cold setup owns the pre-publication package-shape probe", probeBody.length > 0 && !csJobs.has("install-probe"));
 
-// B. install-probe depends on version
-const probeNeeds = needsList(probeBody);
-check(
-  "install-probe needs the version job",
-  probeNeeds.includes("version"),
-  { probeNeeds },
-);
+const lifecycleNeeds = (coldJobs.get("lifecycle") ?? "").match(/^\s+needs:\s*(\S+)/m)?.[1];
+check("native qualification depends on the probed candidate", lifecycleNeeds === "candidate", { lifecycleNeeds });
 
 // C. install-probe runs the probe script
 check(

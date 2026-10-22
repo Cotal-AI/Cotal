@@ -313,14 +313,12 @@ check(
 // the status the step leaves, whether `closure_ok` was published, and whether the quiet arms end
 // the script themselves rather than delegating their outcome to whatever follows them.
 
-/** `node`, `git` and `jq` as the gate's prologue calls them, so the run script reaches its branch
- *  chain without a network, a repo object or the real verifier. `node` is the one under control:
- *  it exits with `$STUB_RC`, which is how each rc below is induced. Bash scripts with a shebang,
- *  so nothing here resolves through a package.json and TMPDIR cannot change their meaning. */
+/** Control the verifier and deadline wrapper so the workflow's script reaches every exit branch.
+ *  The wrapper checks the wired budget and kill signal without depending on GNU timeout locally.
+ *  No fixture command resolves through a package.json or calls a registry. */
 const STUB_BIN = mkdtempSync(join(tmpdir(), "closure-gate-stub-"));
-writeFileSync(join(STUB_BIN, "node"), '#!/usr/bin/env bash\nexit "${STUB_RC:-0}"\n', { mode: 0o755 });
-writeFileSync(join(STUB_BIN, "git"), '#!/usr/bin/env bash\necho \'{"version":"9.9.9"}\'\n', { mode: 0o755 });
-writeFileSync(join(STUB_BIN, "jq"), '#!/usr/bin/env bash\necho 9.9.9\n', { mode: 0o755 });
+writeFileSync(join(STUB_BIN, "node"), '#!/usr/bin/env bash\ncase "$1" in\n  scripts/publication-budget.mjs) printf "60\\n"; exit 0 ;;\n  scripts/verify-publish-closure.mjs) exit "${STUB_RC:-0}" ;;\n  *) exit 99 ;;\nesac\n', { mode: 0o755 });
+writeFileSync(join(STUB_BIN, "timeout"), '#!/usr/bin/env bash\n[[ "$1" == "--signal=KILL" && "$2" == "60s" ]] || exit 98\nshift 2\nexec "$@"\n', { mode: 0o755 });
 
 interface StepRun {
   /** The status the step leaves behind, which is what reds or passes the job. */
@@ -350,6 +348,7 @@ function runGateStep(run: string, rc: number): StepRun {
       PATH: `${STUB_BIN}:${process.env["PATH"] ?? ""}`,
       STUB_RC: String(rc),
       GITHUB_SHA: "0000000000000000000000000000000000000000",
+      VERSION: "9.9.9",
       GITHUB_OUTPUT: outPath,
     },
     stdio: "ignore",

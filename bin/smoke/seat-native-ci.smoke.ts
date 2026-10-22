@@ -111,8 +111,6 @@ const ciJobs = jobs(ciText);
 const csJobs = jobs(csText);
 const pack = ciJobs.get("seat-pack") ?? "";
 const version = csJobs.get("version") ?? "";
-const snapshot = csJobs.get("snapshot") ?? "";
-const installProbe = csJobs.get("install-probe") ?? "";
 const rootPkg = JSON.parse(readFileSync(PKG, "utf8")) as { scripts?: Record<string, string> };
 const ciPublish = rootPkg.scripts?.["ci:publish"] ?? "";
 
@@ -146,19 +144,17 @@ check("cold candidate downloads both Windows native artifacts", ["workspace-nati
 check("cold candidate assembles Windows natives before packing", candidate.indexOf("workspace-assemble-natives.mjs") >= 0 && candidate.indexOf("workspace-assemble-natives.mjs") < candidate.indexOf("pack-cold-candidate.mjs"));
 
 console.log("\nC. Qualified archive publication");
-for (const [name, body] of [["version", version], ["snapshot", snapshot]]) {
-  check(`changesets.yml ${name} requires cold qualification`, needsList(body).includes("cold-setup"));
-  check(`changesets.yml ${name} downloads the qualified candidate and receipts`, downloaded(body).includes("cold-candidate") && /pattern:\s*cold-result-\*/.test(body));
-  check(`changesets.yml ${name} is bound to the npm-publish Environment`, /^\s+environment:\s*npm-publish\s*$/m.test(body));
-}
-check("normal publication invokes the qualified archive publisher", /publish:\s*pnpm ci:publish/.test(version) && ciPublish === "node scripts/publish-cold-candidate.mjs");
-check("snapshot publication invokes the qualified archive publisher", /run: node scripts\/publish-cold-candidate\.mjs/.test(snapshot));
-check("archive publisher reaches the secure preflight before publication", publisher.indexOf("await preflight({ root, env, exec })") >= 0 && publisher.indexOf("await preflight({ root, env, exec })") < publisher.indexOf('exec("pnpm", ["publish"'));
+check("publication verifies completed cross-run qualification before writing", version.indexOf("release-qualification.mjs verify") >= 0 && version.indexOf("release-qualification.mjs verify") < version.indexOf("publish-cold-candidate.mjs"));
+check("publication downloads pinned immutable artifact IDs from the selected run", /artifact-ids:.*steps\.qualification\.outputs\.artifact-ids/.test(version) && /run-id:.*inputs\.qualification_run/.test(version));
+check("normal and snapshot publication share the npm-publish Environment", /^\s+environment:\s*npm-publish\s*$/m.test(version) && !csJobs.has("snapshot"));
+check("normal publication invokes the qualified archive publisher", /run: node scripts\/publish-cold-candidate\.mjs/.test(version) && ciPublish === "node scripts/publish-cold-candidate.mjs");
+check("snapshot publication replays qualified versions before the shared publisher", version.indexOf("apply-cold-versions.mjs") >= 0 && version.indexOf("apply-cold-versions.mjs") < version.indexOf("publish-cold-candidate.mjs"));
+check("archive publisher reaches the secure preflight before publication", publisher.indexOf("await preflight({ root, env, exec, deadline, tag })") >= 0 && publisher.indexOf("await preflight({ root, env, exec, deadline, tag })") < publisher.indexOf('await publish("pnpm", ["publish"'));
 check("archive publisher does not rebuild or rerun package hooks", publisher.includes('["publish", pkg.archive, "--provenance", "--access=public", "--no-git-checks", "--ignore-scripts"') && !/"build"|"seat-assemble-natives"|"-r"/.test(publisher));
-check("release install probe assembles both Windows native artifacts before packing",
-  ["workspace-native-x64", "workspace-native-arm64"].every((name) => downloaded(installProbe).includes(name)) &&
-  installProbe.indexOf("workspace-assemble-natives.mjs") >= 0 &&
-  installProbe.indexOf("workspace-assemble-natives.mjs") < installProbe.indexOf("post-publish-install-probe.mjs"));
+check("pre-publication package probe uses the original Windows native assembly",
+  ["workspace-native-x64", "workspace-native-arm64"].every((name) => downloaded(candidate).includes(name)) &&
+  candidate.indexOf("workspace-assemble-natives.mjs") >= 0 &&
+  candidate.indexOf("workspace-assemble-natives.mjs") < candidate.indexOf("post-publish-install-probe.mjs"));
 
 console.log(`\n${fail === 0 ? "SEAT NATIVE CI SMOKE OK" : "SEAT NATIVE CI SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);

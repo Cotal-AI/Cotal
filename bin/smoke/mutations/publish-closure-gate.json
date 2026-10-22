@@ -28,15 +28,15 @@
     {
       "name": "the release step stops referencing the closure-gate output",
       "file": ".github/workflows/changesets.yml",
-      "find": "        id: release-step\n        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true'",
-      "replace": "        id: release-step\n        if: success() && github.event_name == 'push' && true",
+      "find": "        id: release-step\n        if: success() && inputs.snapshot == '' && steps.closure-gate.outputs.closure_ok == 'true'",
+      "replace": "        id: release-step\n        if: success() && inputs.snapshot == '' && true",
       "expectRed": "the release step's 'if' references the closure-gate step output",
       "cell": "the release step's 'if' references the closure-gate step output"
     },
     {
       "name": "the closure-gate step stops invoking verify-publish-closure.mjs",
       "file": ".github/workflows/changesets.yml",
-      "find": "          node scripts/verify-publish-closure.mjs \"$version\"\n",
+      "find": "          timeout --signal=KILL \"${seconds}s\" node scripts/verify-publish-closure.mjs \"$version\" --recheck\n",
       "replace": "          echo \"skipping closure check\"\n",
       "expectRed": "the closure-gate step invokes verify-publish-closure.mjs",
       "cell": "the closure-gate step invokes verify-publish-closure.mjs"

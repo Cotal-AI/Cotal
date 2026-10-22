@@ -84,7 +84,7 @@
     {
       "name": "clean release skips per-package OIDC exchanges",
       "file": "scripts/preflight-npm-publish.mjs",
-      "find": "  } else if (hasOidcUrl) {\n    for (const row of rows) {\n      try {\n        const exchanged = await exchangePackageIdentity(row, registryBase, env, fetchImpl);\n        row.oidc = exchanged.oidc;\n        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl, env);\n        } else {\n          row.direct = \"not-run\";\n        }\n      } catch (error) {\n        row.oidc = `refused:${error instanceof Error ? error.message : String(error)}`;\n        row.direct = \"not-run\";\n      }\n    }\n",
+      "find": "  } else if (hasOidcUrl) {\n    await publicationMap(rows, concurrency, async (row) => {\n      try {\n        const exchanged = await exchangePackageIdentity(row, registryBase, env, timedFetch);\n        row.oidc = exchanged.oidc;\n        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, timedFetch, env);\n        } else {\n          row.direct = \"not-run\";\n        }\n      } catch (error) {\n        row.oidc = `refused:${error instanceof Error ? error.message : String(error)}`;\n        row.direct = \"not-run\";\n      }\n    });\n",
       "replace": "  } else if (hasOidcUrl) {\n    for (const row of rows) {\n      row.oidc = \"exchanged\";\n      row.direct = \"createPackage\";\n    }\n",
       "expectRed": "clean preflight exchanges OIDC for every package before publishing",
       "cell": "clean preflight exchanges OIDC for every package before publishing"
@@ -100,15 +100,15 @@
     {
       "name": "partial release begins OIDC exchanges before the complete registry census",
       "file": "scripts/preflight-npm-publish.mjs",
-      "find": "  for (const pkg of packages) {\n    rows.push({\n      ...pkg,\n      registry: await readExactVersion(pkg, registryBase, fetchImpl),\n      oidc: \"not-run\",\n      direct: \"not-run\",\n    });\n    try {\n      if (!await hasPackageRecord(pkg, registryBase, fetchImpl)) noRecord.push(pkg.name);\n    } catch (error) {\n      unreadableRecords.push(`${pkg.name}: ${error instanceof Error ? error.message : String(error)}`);\n    }\n  }\n",
-      "replace": "  for (const pkg of packages) {\n    if (env.ACTIONS_ID_TOKEN_REQUEST_URL) await exchangePackageIdentity(pkg, registryBase, env, fetchImpl);\n    rows.push({\n      ...pkg,\n      registry: await readExactVersion(pkg, registryBase, fetchImpl),\n      oidc: \"not-run\",\n      direct: \"not-run\",\n    });\n    try {\n      if (!await hasPackageRecord(pkg, registryBase, fetchImpl)) noRecord.push(pkg.name);\n    } catch (error) {\n      unreadableRecords.push(`${pkg.name}: ${error instanceof Error ? error.message : String(error)}`);\n    }\n  }\n",
+      "find": "  const inspected = await publicationMap(packages, concurrency, async (pkg) => {\n",
+      "replace": "  const inspected = await publicationMap(packages, concurrency, async (pkg) => {\n    if (env.ACTIONS_ID_TOKEN_REQUEST_URL) await exchangePackageIdentity(pkg, registryBase, env, timedFetch);\n",
       "expectRed": "partial prior publish refuses before any OIDC exchange, trust GET, or publish call",
       "cell": "partial prior publish refuses before any OIDC exchange, trust GET, or publish call"
     },
     {
       "name": "an opaque HTTP 201 exchange is treated as direct-publish proof",
       "file": "scripts/preflight-npm-publish.mjs",
-      "find": "        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, fetchImpl, env);\n        } else {\n          row.direct = \"not-run\";\n        }\n",
+      "find": "        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = await readDirectPublishAuthorization(row, registryBase, exchanged.token, timedFetch, env);\n        } else {\n          row.direct = \"not-run\";\n        }\n",
       "replace": "        if (exchanged.oidc === \"exchanged\" && exchanged.token) {\n          row.direct = \"createPackage\";\n        } else {\n          row.direct = \"not-run\";\n        }\n",
       "expectRed": "an opaque HTTP 201 exchange is not treated as direct-publish proof",
       "cell": "an opaque HTTP 201 exchange is not treated as direct-publish proof"
@@ -542,8 +542,8 @@
     {
       "name": "the absent bucket call is captured by a same-name predicate in the ladder's destructured parameter list",
       "file": "scripts/preflight-npm-publish.mjs",
-      "find": "  log = console.log,\n}) {\n",
-      "replace": "  log = console.log,\n  isAbsentRegistry = (registry) => registry === \"absent\" || registry === \"gone\",\n}) {\n",
+      "find": "  log = console.log,\n  deadline = Date.now() + 60_000,\n  concurrency = 6,\n}) {\n",
+      "replace": "  log = console.log,\n  deadline = Date.now() + 60_000,\n  concurrency = 6,\n  isAbsentRegistry = (registry) => registry === \"absent\" || registry === \"gone\",\n}) {\n",
       "expectRed": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
       "cell": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
       "note": "The ladder's only parameter is an ObjectBindingPattern, so a same-name predicate given a default inside it binds over the whole body and captures the absent rung's call. It leaves every bucket line byte-identical, so no control anchor is disturbed. This mutation also changes the emitted declaration, so the committed .d.mts must be regenerated for the run to isolate this cell; without that the dts-freshness cell reds instead, which is staleness and not detection. The kill must come from the absent binding's structural symbol-identity cell."
@@ -551,8 +551,8 @@
     {
       "name": "the packument read is dropped before the OIDC exchange",
       "file": "scripts/preflight-npm-publish.mjs",
-      "find": "      if (!await hasPackageRecord(pkg, registryBase, fetchImpl)) noRecord.push(pkg.name);\n",
-      "replace": "",
+      "find": "      hasPackageRecord(pkg, registryBase, timedFetch)\n",
+      "replace": "      Promise.resolve(true)\n",
       "expectRed": "a no-record package refuses before any exchange and names the package and bootstrap remedy",
       "cell": "a no-record package refuses before any exchange and names the package and bootstrap remedy",
       "afterRestore": "pnpm smoke:npm-publish-preflight"

@@ -33,8 +33,8 @@
     {
       "name": "changesets.yml goes back to the short concurrency form",
       "file": ".github/workflows/changesets.yml",
-      "find": "concurrency:\n  group: ${{ github.workflow }}-${{ github.ref }}\n  cancel-in-progress: false\n  queue: max\n",
-      "replace": "concurrency: ${{ github.workflow }}-${{ github.ref }}\n",
+      "find": "concurrency:\n  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}\n  cancel-in-progress: false\n  queue: max\n",
+      "replace": "concurrency: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}\n",
       "expectRed": "changesets.yml: uses the mapping form",
       "cell": "uses the mapping form, so it can carry"
     },
