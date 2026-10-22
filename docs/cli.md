@@ -4427,7 +4427,9 @@ explicitly when PowerShell inherited another shell's `SHELL`. On supported POSIX
 
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
 ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symlink, untrusted
-owner or unsafe file access. On Windows, PowerShell script generation works but automatic
+owner or unsafe file access. A startup file its owner made read-only is never replaced. `install`
+still writes its stub, then fails, exit 5, and names the line to add to that file yourself.
+`uninstall` refuses it, exit 2, and changes nothing until you remove that line. On Windows, PowerShell script generation works but automatic
 profile editing remains unsupported: the guarded POSIX file writer cannot safely replace
 Windows reparse-point paths. Installing files does not establish that the host runs its
 profile or permits scripts under its execution policy.

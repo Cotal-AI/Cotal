@@ -175,8 +175,11 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
       }
       else record.wiring = null;
     }
+    // A startup file its owner made read-only is never replaced. Asked once its next content is known.
+    const readOnly = () => paths.rc !== undefined && nextStartup !== current && startup !== undefined && (startup.mode & 0o200) === 0;
     if (operation === "uninstall") {
       if (paths.rc && nextStartup.includes(paths.stub)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an unowned startup reference still names this stub; removing the file would break custom wiring", { remedy: "review and remove that custom reference manually before uninstalling" });
+      if (readOnly()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is read-only, so its completion line was not removed; nothing was changed`, { target: { shell, path: paths.rc }, remedy: `remove the line ${completionSourceLine(paths.stub, shell)} from ${paths.rc} yourself, then run cotal completion uninstall ${shell} again` });
       if (paths.rc && nextStartup !== current) { write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644); changed.push(paths.rc); }
       if (stub) { remove(paths.stub, stub); changed.push(paths.stub); }
       if (owned.snapshot) { remove(recordPath(paths), owned.snapshot); changed.push(recordPath(paths)); }
@@ -187,16 +190,20 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
         nextStartup = current + installedBlock;
       }
       if (!stub || text(stub) !== script) { write(paths.stub, stub, script, stub?.mode ?? 0o644); changed.push(paths.stub); }
-      if (paths.rc && nextStartup !== current) { write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644); changed.push(paths.rc); }
+      if (paths.rc && nextStartup !== current && !readOnly()) { write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644); changed.push(paths.rc); }
       record.stubHash = hash(script);
-      record.wiring = paths.rc ? { path: paths.rc, block: installedBlock } : null;
+      // A read-only startup file keeps the wiring it had, so the record keeps naming that.
+      if (!readOnly()) record.wiring = paths.rc ? { path: paths.rc, block: installedBlock } : null;
       const serialized = JSON.stringify(record, null, 2) + "\n";
       if (text(owned.snapshot) !== serialized) { write(recordPath(paths), owned.snapshot, serialized, 0o600); changed.push(recordPath(paths)); }
+      if (readOnly()) throw new CommandFailure("failed", "OPERATION_FAILED", `${changed.includes(paths.stub) ? "wrote" : "kept the current"} ${paths.stub} but could not add its line to ${paths.rc}, which is read-only; that file was not changed`, { target: { shell, path: paths.rc }, changed: [...changed], remedy: `add this line to ${paths.rc} yourself: ${completionSourceLine(paths.stub, shell)}` });
     }
     return { operation, shell, changed, noOp: !changed.length, stub: paths.stub, startup: paths.rc ?? null, parentShellUnloaded: false };
   } catch (error) {
     const confirmed = [...changed, ...(error instanceof CommandFailure ? error.changed ?? [] : [])];
     if (error instanceof CommandFailure && error.outcome === "unknown") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", error.message, { target: { shell, detail: error.target }, changed: confirmed, remedy: error.remedy });
+    // Only the read-only startup file fails this way, after its stub was written as intended.
+    if (error instanceof CommandFailure && error.outcome === "failed") throw error;
     if (confirmed.length) throw new CommandFailure("partial", "OPERATION_PARTIAL", "some owned completion material changed, but the remaining integration was preserved after a refusal", { target: { shell }, changed: confirmed, remedy: "inspect completion status and the named paths; do not overwrite modified startup content" });
     if (error instanceof CommandFailure) throw error;
     throw new CommandFailure("refused", "PERMISSION_DENIED", "the owned shell-file operation could not complete; file contents were not printed", { target: { shell }, remedy: "review file access and completion status before another attempt" });
