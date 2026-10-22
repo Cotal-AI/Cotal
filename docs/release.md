@@ -72,14 +72,13 @@ A new public package needs its npm record and trusted publisher before release p
 1. Add a changeset with each public package change. Packages are 0.x, so a breaking change is minor.
    List every affected first-party package and describe the change. Check whether an older branch's
    change has already shipped before keeping its changeset.
-2. Merge reviewed source to `main`. The required `attribution` check needs a current
-   `Approved-at: <sha>` paragraph in the PR body. Add it after reviewing that head, outside code
-   blocks and HTML comments. A new push requires a new review and paragraph. Advisory checks report
-   results but do not require waiting for terminal-green CI.
+2. Merge reviewed source to `main`. Keep the review tied to the current head. The Attribution
+   workflow and its required-status rule have been removed; no `Approved-at` paragraph is required.
+   Advisory checks report results but do not require waiting for terminal-green CI.
 3. The push-only `Changesets` job opens or updates the version PR. `pnpm ci:version` bumps package
    versions, updates changelogs, rebuilds the Claude connector and materializes the committed plugin
-   bundles and manifests. The action rewrites the PR body, so add its current approval after its last
-   update. Keep generated operator-literal counts current when their examples change.
+   bundles and manifests. Review the final version update before merging it. Keep generated
+   operator-literal counts current when their examples change.
 4. Finish the version PR's native `Cold setup` run and independent source reviews. Use a successful
    first attempt, not artifacts mixed across partial reruns. A fresh run is the remedy for an
    ineligible rerun. Merge the eligible version PR before publish-go.
