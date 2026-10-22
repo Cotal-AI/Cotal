@@ -27,7 +27,10 @@
  *  C11 the CLI through the composition root, after C9's restart: `service-status` is not connected
  *      (state is per daemon process), `service-connect` for the revoked registration refuses and never
  *      connects, `service-connect` with no register request refuses TARGET_NOT_FOUND, and
- *      `service-disconnect` answers disconnected.
+ *      `service-disconnect` answers disconnected;
+ *  C12 a connection held past two 60 s access-bearer lifetimes stays connected or connecting (never
+ *      unavailable or ended), is connected for at least 80% of 1 s samples and at the end, and the
+ *      space still reads it ready. The sample counts are printed, so each documented reconnect is visible.
  *
  * Run: tsx bin/smoke/daemon-service-connect.smoke.ts   (Linux only; needs nats-server)
  */
@@ -324,6 +327,17 @@ try {
       const after = filesUnder(daemonDir).filter((p) => p.includes("service-renewal") && p.endsWith(".json")).map((p) => JSON.parse(readFileSync(join(daemonDir, p), "utf8")) as Record<string, string>);
       check("C6 connected again", stateOf(r) === "connected", r);
       check("C6 the same activate and renew ids", ids0.length === 1 && after.length === 1 && ids0[0] === `${after[0]!.activateRequestId}/${after[0]!.renewRequestId}`, { ids0, after: after.map((o) => `${o.activateRequestId}/${o.renewRequestId}`) });
+    });
+
+    await cell("C12 held past two access-bearer lifetimes: the space keeps it ready and connected returns after each reconnect", async () => {
+      const samples: string[] = [];
+      const t0 = Date.now();
+      while (Date.now() - t0 < 130_000) { samples.push(String(stateOf(await statusS(ON)))); await sleep(1000); }
+      const connected = samples.filter((s) => s === "connected").length, other = samples.filter((s) => s !== "connected" && s !== "connecting");
+      console.log(`  C12 ${samples.length} samples: ${connected} connected, ${samples.length - connected - other.length} connecting, ${other.length} other`);
+      check("C12 never unavailable or ended while the space stands; only connected or connecting", other.length === 0, other.slice(0, 5));
+      check("C12 connected for most of the window and connected at the end", connected >= samples.length * 0.8 && samples.at(-1) === "connected", { connected, n: samples.length });
+      check("C12 the space still reads the instance as ready", (await instanceStatus(ON)) === "ready");
     });
 
     await cell("C7 outage: not connected while the door is gone, connected again after", async () => {
