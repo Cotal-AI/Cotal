@@ -203,8 +203,7 @@ jobs:
         run: pnpm smoke:cooperative-stop:live
 
   windows-ok:
-    # Single status for the native-Windows gate: the deterministic `required` lane. Like ci-ok it is
-    # advisory on main, where `attribution` is the only required context. The
+    # Single advisory status for the native-Windows gate: the deterministic `required` lane. The
     # sharded smoke lane is advisory (see the lane note at the top) and is deliberately NOT a
     # dependency here — listing it would keep gating on it even while it is continue-on-error.
     if: always()
