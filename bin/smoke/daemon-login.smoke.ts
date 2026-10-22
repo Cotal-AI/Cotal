@@ -206,6 +206,13 @@ async function runCli(rt: string, idp: string): Promise<{ status: number | null;
   const status = await Promise.race([exited, sleep(20000).then(() => { child.kill("SIGKILL"); return -1; })]);
   return { status, out, err };
 }
+/** The CLI's --json envelope says the sign-in failed, as a typed failure rather than an internal error. */
+const failedEnvelope = (out: string): boolean => {
+  try {
+    const doc = JSON.parse(out) as { outcome?: string; error?: { code?: string } };
+    return doc.outcome === "failed" && doc.error?.code === "OPERATION_FAILED";
+  } catch { return false; }
+};
 
 try {
   // ---- L1: approve against the real IdP ----
@@ -514,7 +521,7 @@ try {
       tokenOverride = cases[0]![1];
       const run = await runCli(rt, sBase);
       check("L14 the CLI exits non-zero for the failure", run.status !== 0 && run.status !== -1, { status: run.status, out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
-      check("L14 instrument: the CLI reported the failed sign-in", /"daemon login"|daemon login/.test(run.out + run.err) && /fail|refus|denied/i.test(run.out + run.err), { out: run.out.slice(0, 600), err: run.err.slice(0, 600) });
+      check("L14 instrument: the CLI reported a failed sign-in (failed, OPERATION_FAILED)", failedEnvelope(run.out), { status: run.status, out: run.out.slice(0, 600) });
       check("L14 neither stdout nor stderr carries the provider's text", !run.out.includes(needle) && !run.err.includes(needle), { out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
     } finally { await d.close(); }
   });
@@ -531,7 +538,7 @@ try {
     try {
       const run = await runCli(rt, sBase);
       check("L15 instrument: the sign-in failed and the session was written", run.status !== 0 && run.status !== -1 && sessionSaved(home), { status: run.status, saved: sessionSaved(home), out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
-      check("L15 instrument: the CLI reported the failed sign-in", /"daemon login"|daemon login/.test(run.out + run.err) && /fail|refus/i.test(run.out + run.err), { out: run.out.slice(0, 600), err: run.err.slice(0, 600) });
+      check("L15 instrument: the CLI reported a failed sign-in (failed, OPERATION_FAILED)", failedEnvelope(run.out), { status: run.status, out: run.out.slice(0, 600) });
       check("L15 the CLI does not claim nothing was saved", !/no session was saved|nothing was saved/i.test(run.out + run.err), { out: run.out.slice(0, 300), err: run.err.slice(0, 300) });
     } finally { await d.close(); }
   });
