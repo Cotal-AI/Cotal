@@ -941,6 +941,7 @@
     "smoke:environment-manager-bootstrap-mint": "tsx implementations/auth/smoke/environment-manager-bootstrap-mint.smoke.ts",
     "smoke:manager-run-owned-agents": "tsx implementations/manager/smoke/run-owned-agents.smoke.ts",
     "smoke:native-conversation-capabilities": "tsx implementations/manager/smoke/native-conversation-capabilities.smoke.ts",
+    "smoke:native-conversation-run": "tsx implementations/manager/smoke/native-conversation-run.smoke.ts",
     "smoke:claude-mcp-default": "tsx extensions/connector-claude-code/smoke/mcp-default.smoke.ts",
     "smoke:presence-runtime": "tsx packages/core/smoke/presence-runtime.smoke.ts"
   },
