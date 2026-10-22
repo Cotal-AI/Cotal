@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.91.1
+
+### Patch Changes
+
+- 1c7792f: Serialize Claude plugin setup, skills installation and refresh through their final native verification. Overlapping Cotal commands can no longer replace the shared plugin generation while another command is checking it.
+
 ## 0.91.0
 
 ### Patch Changes

@@ -1,5 +1,7 @@
 # @cotal-ai/seat
 
+## 0.91.1
+
 ## 0.91.0
 
 ### Patch Changes

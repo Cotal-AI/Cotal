@@ -1,5 +1,13 @@
 # @cotal-ai/manager
 
+## 0.91.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.91.1
+- @cotal-ai/workspace@0.91.1
+- @cotal-ai/seat@0.91.1
+
 ## 0.91.0
 
 ### Minor Changes
