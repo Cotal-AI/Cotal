@@ -1387,7 +1387,8 @@ preserved source, or the maintenance attempt tree.
 `backup create` checks its preconditions before it claims the cut or creates any maintenance state.
 A root with no preserved cut refuses and names `cotal down --preserve-state`. A cut in another state
 refuses and names that state and its space. A destination that already exists is a `CONFLICT`
-refusal, because create writes only a new directory.
+refusal, because create writes only a new directory. Any other refusal or failure shows the check's
+own sentence as its native detail, such as a broker still listening at the cut's recorded endpoint.
 
 `backup inspect` reads the bounded manifest and exact declared file-name inventory. It does not
 hash snapshot or checkpoint contents. `backup verify` additionally reads each named regular file
