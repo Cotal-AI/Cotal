@@ -2272,9 +2272,10 @@ state wins). An optional component that is not installed prints `not-installed`,
 That exit replaces the report's own, so a partial report followed by a clean pass exits 0:
 
 - **manager**: local PID record, its liveness-lease holder and PID, then the manager's own typed
-  `status` service reachability from this host. Manager builds that do not report static
-  reconciliation say `static reconciliation not reported by this manager build`; the line stays
-  visible even when the manager is otherwise `serving`.
+  `status` service reachability from this host. A manager that answers without reporting static
+  reconciliation says `static reconciliation not reported by this manager build`; the line stays
+  visible even when the manager is otherwise `serving`. A row that reached no manager does not
+  carry it.
 - **delivery**: local PID record, its ready lease (`ready` is the daemon's own bound-control
   signal), and the latest `renewal.<spaceKey>.json` adoption verdict, the record of the space the
   command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
