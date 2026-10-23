@@ -55,6 +55,9 @@
  *     that killed `down` took.
  * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
  *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
+ * 11. An `up` killed while its broker readies, before it registers the space. The broker keeps
+ *     running unregistered, so the next `up` refuses `LIFECYCLE_BLOCKED` naming its pid and
+ *     `cotal down --yes`, and starts nothing; following it, `down --yes` then `up` start the stack.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -651,6 +654,34 @@ try {
     const spared = cli(root, "down", "--yes", "--json");
     const refused = cli(root, "down", "--with-agents", "--yes", "--json");
     check(`${space}: after a down without --with-agents it still refuses LIFECYCLE_BLOCKED`, restarted.status === 0 && spared.status === 0 && refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED", { up: shown(restarted), down: shown(spared), refused: shown(refused) });
+  }
+
+  // 11. An up killed before it registers the space leaves its broker running unregistered.
+  {
+    const space = "stranded";
+    const root = prepare(space);
+    const port = await freePort();
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: "ignore" });
+    // Freeze the broker once its process is pinned, so the up is provably waiting on it when it dies.
+    const pinned = await until(() => pidOf(space, "stack-broker") !== null, 120_000);
+    const broker = pidOf(space, "stack-broker");
+    if (broker !== null) process.kill(broker, "SIGSTOP");
+    track(space);
+    check("the up still waits on broker readiness when it is killed", pinned && child.exitCode === null, { pinned, exitCode: child.exitCode });
+    child.kill("SIGKILL");
+    await exited(child);
+    if (broker !== null) process.kill(broker, "SIGCONT");
+    check("the killed up left its broker running and the space unregistered", broker !== null && alive(broker) && findMesh(space) === undefined, { broker, registered: findMesh(space) !== undefined });
+    const blocked = cli(root, "up", "--json");
+    check("the next up refuses LIFECYCLE_BLOCKED naming the broker's pid and down --yes, and starts nothing",
+      blocked.status === 2 && blocked.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(blocked.env.error.message.includes(`pid ${broker}`)) && Boolean(blocked.env.error.remedy?.includes("cotal down --yes")) && pidOf(space, "stack-delivery") === null && broker !== null && alive(broker), shown(blocked));
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("down --yes stops that broker", stopped.status === 0 && await until(() => broker === null || !alive(broker), 10_000), shown(stopped));
+    const started = cli(root, "up", "--json");
+    track(space);
+    check("up then starts the whole stack", started.status === 0 && pidOf(space, "stack-manager") !== null, shown(started));
+    const last = cli(root, "down", "--yes", "--json");
+    check("and down --yes stops it", last.status === 0, shown(last));
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");

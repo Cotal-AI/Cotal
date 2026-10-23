@@ -347,6 +347,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     throw new CommandFailure("refused", "CONFLICT", "the space is registered to another root, broker address or external origin; nothing was prepared or started", { target: { root, space }, remedy: `inspect it with cotal space show ${space}` });
   if (!registration && (!preparedSpace || canonicalRoot(preparedSpace.root) !== root))
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the space has no prepared or locally started registration at this root; nothing was prepared or started", { target: { root, space }, remedy: `prepare it with cotal space create ${space} --root ${root}, then run cotal up` });
+  // An up stopped after its broker served and before it registered the space leaves a broker whose
+  // stream setup and registration only that up's own preparation could finish, and trust is never
+  // prepared again under a running broker. This start refuses before any write and names the stop.
+  const strandedRows = registration ? [] : serviceInstances(space, STACK_DEFINITION.broker);
+  const stranded = strandedRows.length === 1 && observeServiceProcess(strandedRows[0]!.record.value) === "running" ? strandedRows[0]!.record.value : undefined;
+  if (stranded)
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the stack's broker runs as pid ${stranded.process?.pid}, but the cotal up that started it stopped before it registered the space, so this up cannot finish that start; nothing was changed`, { target: { root, space, broker: stranded.instanceId, pid: stranded.process?.pid }, remedy: "stop that broker with cotal down --yes, then run cotal up again" });
   // An earlier up or down that never recorded its outcome is settled from its members' process
   // evidence under the held maintenance lock. Only a preserve or resume can remain unsettled here.
   // A member stop an earlier down could not confirm in time is settled from its own receipt first.
