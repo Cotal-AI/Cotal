@@ -149,7 +149,7 @@ export function selectServiceInstance(rows: ServiceInstanceSnapshot[], id: strin
     return found;
   }
   if (!rows.length) { if (allowMissing) return undefined; throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition"); }
-  if (rows.length !== 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", `this definition has several instance records; choose --instance with one full ID:\n${rows.map((row) => row.name).join("\n")}`, { target: { candidates: rows.map((row) => row.name) } });
+  if (rows.length !== 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", `this definition has several instance records; choose --instance with one full ID: ${rows.map((row) => row.name).join(", ")}`, { target: { candidates: rows.map((row) => row.name) } });
   return rows[0];
 }
 
