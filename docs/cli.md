@@ -2571,7 +2571,9 @@ every row and no manager is asked. Otherwise every registered manager is asked f
 seat is matched on its lifecycle UID. In a user-auth space the manager answers only for the
 caller's own seats, so other seats show `managed: null` with a `MANAGED_SCOPE` warning. An
 identity the broker does not let ask the managers, such as a user whose grant has no `admin`, sees
-every seat `null` with a `MANAGERS_DENIED` warning. These two warnings say how far the identity's
+every seat `null` with a `MANAGERS_DENIED` warning. So does a credential passed with `--creds`: it
+carries no caller the managers accept from this command, so they are not asked. These two warnings
+say how far the identity's
 grant reaches; the roster itself was read in full, so they do not make the run partial. A manager
 that does not answer leaves every unmatched seat `null` with a warning.
 

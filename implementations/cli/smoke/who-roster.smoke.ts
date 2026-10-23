@@ -257,6 +257,15 @@ try {
   const denied = await run(["who", "--json", "--creds", probe, "--space", space, "--server", servers]);
   check("a credential that may not read presence is a PERMISSION_DENIED refusal, exit 2, not an empty roster", denied.status === 2 && denied.envelope?.outcome === "refused" && denied.envelope.error?.code === "PERMISSION_DENIED" && denied.envelope.result === null, shown(denied));
 
+  // ── a --creds credential that may read the roster, with the manager still on it ──────────────────
+  const reader = join(home, "reader.creds");
+  writeFileSync(reader, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid() }), { mode: 0o600 });
+  const credsRead = await run(["who", "--json", "--creds", reader, "--space", space, "--server", servers]);
+  check("a --creds credential is a complete read, exit 0, with the managers labelled denied and not left unread",
+    credsRead.status === 0 && credsRead.envelope?.outcome === "ok" && credsRead.envelope.completeness === "complete" && credsRead.envelope.result?.managers === "denied" &&
+    credsRead.envelope.warnings.some((w) => w.code === "MANAGERS_DENIED") && !credsRead.envelope.warnings.some((w) => w.code === "MANAGERS_UNREAD") &&
+    rowsOf(credsRead).alice?.managed === null, shown(credsRead));
+
   // ── whoami ──────────────────────────────────────────────────────────────────────────────────────
   const me = await run(["whoami", "--json"]);
   check("whoami on a signer's mesh is one complete envelope naming the signer", me.status === 0 && me.envelope?.outcome === "ok" && me.envelope.result?.identity?.kind === "space-signer" && me.envelope.result.read === "all" && me.envelope.result.dms === true, shown(me));
