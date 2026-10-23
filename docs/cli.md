@@ -4501,6 +4501,10 @@ lists.
 
 Plain diagnosis starts no repair or connection. A required legacy credential or user-auth directory
 migration refuses instead of silently moving files or reading canonical absence as an empty scope.
+A credential file that other accounts can open is a finding that names its mode, with `chmod 600`
+on the file as its repair. Each file is also parsed the way `--creds` checks one, so a file the NATS
+client cannot parse is a finding even when its claims are legible, such as one with Windows (CRLF)
+line endings.
 A credential with no expiry claim is a finding whatever its kind, since a copy stays valid until its
 signer rotates. `--fix` re-signs only the static daemon credentials, so an unbounded agent credential,
 such as one `auth mint` wrote without `--expires-in` or `--expires-at`, stays a finding until it is
