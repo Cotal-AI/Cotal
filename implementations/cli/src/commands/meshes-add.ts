@@ -18,6 +18,7 @@ import {
   JoinRefusal,
   preflightCode,
   preflightTarget,
+  readNatsInfoGreeting,
   PREFLIGHT_CONFIRM_TIMEOUT_MS,
   recordMesh,
   setCurrent,
@@ -375,7 +376,22 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
  *  settled what the broker is. */
 export async function verifyTarget(target: MeshTarget): Promise<Check<void>> {
   const r = await preflightTarget(target);
-  return r.ok ? good(undefined) : bad(verifyFailureMessage(r.kind, target.space, target.server, target.root), preflightCode(r.kind));
+  if (r.ok) return good(undefined);
+  const wrongScheme = r.kind === "unreachable" ? await plainNatsAt(target.server) : undefined;
+  if (wrongScheme) return bad(wrongScheme, preflightCode(r.kind));
+  return bad(verifyFailureMessage(r.kind, target.space, target.server, target.root), preflightCode(r.kind));
+}
+
+/** When a `tls://`, `ws://` or `wss://` address did not answer, whether a NATS broker greets on its
+ *  port in plain NATS: then the scheme is what failed, not the broker. The message for that case. */
+async function plainNatsAt(server: string): Promise<string | undefined> {
+  const url = new URL(server);
+  const scheme = url.protocol.slice(0, -1);
+  if (scheme !== "tls" && scheme !== "ws" && scheme !== "wss") return undefined;
+  const address = `${url.hostname}:${url.port || (scheme === "wss" ? "443" : scheme === "ws" ? "80" : "4222")}`;
+  const info = await readNatsInfoGreeting(`nats://${address}`);
+  if (!info || (scheme === "tls" && info.tls_required === true)) return undefined;
+  return `✗ a NATS broker answered at ${address}, but not over ${scheme}:// - register it as ${info.tls_required === true ? "tls" : "nats"}://${address}, or point --server at a port that serves ${scheme}://`;
 }
 
 /** Write the record. Returns whether it became the default — same policy as `cotal up`: adopt only

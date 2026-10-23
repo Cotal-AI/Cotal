@@ -150,7 +150,7 @@ export async function preflightTarget(
 /** Read the pre-auth NATS INFO greeting (plaintext, before any STARTTLS). Returns null if nothing
  *  usable answered. Used to distinguish a TLS-required NATS listener from a plaintext substitute
  *  without a TLS handshake. It does NOT establish mesh identity — INFO is unauthenticated. */
-async function readNatsInfoGreeting(
+export async function readNatsInfoGreeting(
   server: string,
   timeoutMs = 1_000,
 ): Promise<{ tls_required?: boolean } | null> {

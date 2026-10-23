@@ -1779,7 +1779,9 @@ input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `TARGET_NOT_FOUND`, `DEPENDENCY_UNA
 `UNSUPPORTED`, `AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name that is already
 registered is a `CONFLICT`, and its remedy offers `--force` only for a registration added by hand.
 A broker that requires auth, with a `--root` that holds another space's trust, is a
-`DEPENDENCY_UNAVAILABLE` that names the space the folder holds.
+`DEPENDENCY_UNAVAILABLE` that names the space the folder holds. An address where nothing answers is
+a `TARGET_UNAVAILABLE`. So is a `tls://`, `ws://` or `wss://` address whose port greets as a plain
+NATS broker, and that refusal names the scheme that failed and the URL to register instead.
 `--force` replaces a registration added by hand, never one this machine started or a catalog lists,
 and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Declining the question is a

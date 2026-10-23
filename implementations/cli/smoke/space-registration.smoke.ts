@@ -189,7 +189,12 @@ setCurrent("keep");
 
   const before = registryFiles();
   const dead = await json(["space", "add", "dead1", "--server", DEAD, "--root", root]);
-  check("a broker that does not answer is TARGET_UNAVAILABLE, exit 2", refused(dead, 2, "TARGET_UNAVAILABLE"), shown(dead));
+  check("a broker that does not answer is TARGET_UNAVAILABLE, exit 2", refused(dead, 2, "TARGET_UNAVAILABLE") && /no broker answered/.test(dead.env?.error?.message ?? ""), shown(dead));
+  for (const scheme of ["tls", "wss"]) {
+    const wrong = await json(["space", "add", "open3", "--server", LIVE.replace("nats://", `${scheme}://`), "--root", root]);
+    check(`a plain broker reached over ${scheme}:// is TARGET_UNAVAILABLE naming the scheme and the nats:// address`,
+      refused(wrong, 2, "TARGET_UNAVAILABLE") && (wrong.env?.error?.message ?? "").includes(`but not over ${scheme}://`) && (wrong.env?.error?.message ?? "").includes(`register it as ${LIVE}`), shown(wrong));
+  }
   const unserved = await json(["space", "add", "open", "--server", LIVE, "--mode", "open", "--root", root]);
   check("an open name the broker does not serve is TARGET_NOT_FOUND, exit 2, naming the spaces it serves",
     refused(unserved, 2, "TARGET_NOT_FOUND") && unserved.env?.error?.message === `the broker at ${LIVE} serves no space named "open"; it serves ${SERVED.map((space) => `"${space}"`).join(", ")}` && /--force/.test(unserved.env?.error?.remedy ?? ""), shown(unserved));
