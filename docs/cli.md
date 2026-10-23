@@ -5423,7 +5423,10 @@ separate read.
 attachment is pinned to the attributed accepting manager and the allocated identity/incarnation,
 not a second display-name guess. `--detach/-d` returns a finite JSON/plain-capable receipt after
 the same readiness result. The terminal receipt shows the full lifecycle, original request, accepted goal where reported,
-role and model request separately from any provider acceptance claim. Its Next section names the actual agent, space and accepting manager
+role and model request separately from any provider acceptance claim. When the host granted the
+agent other read or post channels than it asked for, as a host that narrows a request to your grant
+does, the receipt adds a `Granted` line with the channels it got and the ones it asked for, and
+`--json` carries both as `acl.requested` and `acl.effective`. Its Next section names the actual agent, space and accepting manager
 in attach/status commands when their tokens are safe shell words; it otherwise retains
 placeholders beside the full identity fields. Without usable input/output terminals, default attachment refuses
 before allocation and names detached or direct execution. A shell tool's inherited parent PTY

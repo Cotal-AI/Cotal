@@ -724,6 +724,28 @@ export function remoteManagedAgentEnrollmentMaterial(
   return m;
 }
 
+/** A managed agent's read and post channels as its enrollment asked for them and as the host
+ *  granted them. */
+export interface EnrolledAcl {
+  requested: { allowSubscribe: string[]; allowPublish: string[] };
+  effective: { allowSubscribe: string[]; allowPublish: string[] };
+}
+
+/** What the host granted beside what `requested` asked for, when the host's read or post list is
+ *  not the one asked for: a host may narrow a request to the account's grant instead of refusing
+ *  it. Undefined when the host granted what was asked. */
+export function enrolledAcl(
+  requested: { allowSubscribe?: readonly string[]; allowPublish?: readonly string[] },
+  material: Pick<RemoteManagedAgentEnrollmentResult["material"], "allowSubscribe" | "allowPublish">,
+): EnrolledAcl | undefined {
+  const asked = { allowSubscribe: [...(requested.allowSubscribe ?? [])], allowPublish: [...(requested.allowPublish ?? [])] };
+  const granted = { allowSubscribe: [...material.allowSubscribe], allowPublish: [...material.allowPublish] };
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((channel) => b.includes(channel));
+  return same(asked.allowSubscribe, granted.allowSubscribe) && same(asked.allowPublish, granted.allowPublish)
+    ? undefined
+    : { requested: asked, effective: granted };
+}
+
 /** Build one host-owned prepare-retirement request (#1972 phase P0/P1). The opId is DERIVED from the
  *  target lifecycle, so a retry converges on the host's existing operation instead of opening a
  *  second barrier over one head. */

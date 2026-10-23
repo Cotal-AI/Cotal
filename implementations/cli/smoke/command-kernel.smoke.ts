@@ -1261,4 +1261,20 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.equal(await managerChoiceFailure(new ManagerPinUnmatched("x", [], 0), async () => [], ["ps", "--on", "x"]), undefined, "with no manager to offer, the refusal stands as it is");
 }
 
+{
+  // A host that granted a managed agent other channels than it asked for: the receipt shows what was
+  // granted on one line, and the result `--json` writes carries both lists.
+  const { managedLaunchAcl, managedLaunchView } = await import("../src/commands/spawn.js");
+  const { renderReport } = await import("@cotal-ai/workspace");
+  const acl = { requested: { allowSubscribe: [">"], allowPublish: [">"] }, effective: { allowSubscribe: ["general"], allowPublish: [] } };
+  assert.deepEqual(managedLaunchAcl(acl), acl, "the manager's acl field is carried as it was sent");
+  assert.equal(managedLaunchAcl(undefined), null, "a launch without one carries null");
+  assert.equal(managedLaunchAcl({ requested: acl.requested }), undefined, "one that cannot be read is told apart from none");
+  const result = { kind: "managed-launch", name: "worker", id: "u_own.worker", lifecycleUid: "a".repeat(26), space: "demo", managerInstanceId: "b".repeat(26), harness: "probe", runtime: "pty", role: null, request: null, intent: null, readiness: "joined", requestedModel: null, detached: true } as const;
+  const narrowed = renderReport(managedLaunchView({ ...result, acl }), "plain");
+  assert.match(narrowed, /Granted:\s+read general [·-] post none; asked for read > [·-] post >\n/, "the receipt lists what was granted");
+  assert.equal(narrowed.match(/Granted/g)?.length, 1, "on one line");
+  assert.doesNotMatch(renderReport(managedLaunchView({ ...result, acl: null }), "plain"), /Granted/, "a launch granted what it asked for shows no such line");
+}
+
 console.log("✓ command-kernel smoke passed");
