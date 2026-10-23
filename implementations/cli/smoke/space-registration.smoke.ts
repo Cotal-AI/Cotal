@@ -3,7 +3,8 @@
  * in a sandboxed `COTAL_HOME`. An open broker and one that refuses a bare connect answer for real,
  * another address has nothing listening, and a stand-in exchange answers for a user-auth bundle's
  * pins. Each refusal is checked for its code and exit, and for writing nothing; each success for the
- * record it writes and for leaving the selection as it was. On Linux, a space started as a controller
+ * record it writes and for leaving the selection as it was. An open space must be one the broker
+ * serves, so the open broker serves the names that are added and refuses one it does not. On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, and one naming a missing channels file, have refused and left the root as
@@ -45,7 +46,7 @@ const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => 
 
 const brokerPort = await freePort();
 const LIVE = `nats://127.0.0.1:${brokerPort}`;
-const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort), "-js", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
 teardownOnSignal(broker);
 const authPort = await freePort();
 const AUTH_LIVE = `nats://127.0.0.1:${authPort}`;
@@ -119,6 +120,12 @@ for (let i = 0; i < 50; i++) {
   if ((await isReachable(LIVE)) && (await isReachable(AUTH_LIVE))) break;
   await new Promise((r) => setTimeout(r, 100));
 }
+// An open space must be one the broker serves, so the open broker serves the names added below.
+const SERVED = ["open1", "open3", "open4", "open5"];
+{
+  const { setupSpaceStreams } = await import("@cotal-ai/core");
+  for (const space of SERVED) await setupSpaceStreams({ servers: LIVE, space });
+}
 
 const root = projectRoot("proj");
 const ISSUER = "https://idp.example.test/";
@@ -178,6 +185,9 @@ setCurrent("keep");
   const before = registryFiles();
   const dead = await json(["space", "add", "dead1", "--server", DEAD, "--root", root]);
   check("a broker that does not answer is TARGET_UNAVAILABLE, exit 2", refused(dead, 2, "TARGET_UNAVAILABLE"), shown(dead));
+  const unserved = await json(["space", "add", "open", "--server", LIVE, "--mode", "open", "--root", root]);
+  check("an open name the broker does not serve is TARGET_NOT_FOUND, exit 2, naming the spaces it serves",
+    refused(unserved, 2, "TARGET_NOT_FOUND") && unserved.env?.error?.message === `the broker at ${LIVE} serves no space named "open"; it serves ${SERVED.map((space) => `"${space}"`).join(", ")}` && /--force/.test(unserved.env?.error?.remedy ?? ""), shown(unserved));
   const wantsAuth = await json(["space", "add", "o2", "--server", AUTH_LIVE, "--mode", "open", "--root", root]);
   check("an open claim on a broker that requires auth is CONFLICT", refused(wantsAuth, 2, "CONFLICT"), shown(wantsAuth));
   check("its refusal and the copy cost it names are one line", (wantsAuth.env?.error?.message ?? "").includes("signing seed") && !(wantsAuth.env?.error?.message ?? "").includes("\n"), wantsAuth.env?.error?.message);
@@ -206,7 +216,7 @@ setCurrent("keep");
 
   const human = await run(["space", "add", "open4", "--server", LIVE, "--root", root], { FORCE_COLOR: "1" });
   const text = human.stdout.replace(/\x1b\[[0-9;]*m/g, "");
-  check("the human report says it was added and how to select it", human.status === 0 && /✓ added open4/.test(text) && /broker answered/.test(text) && /select it with `cotal use open4`/.test(text), shown(human));
+  check("the human report says it was added and how to select it", human.status === 0 && /✓ added open4/.test(text) && /broker answered and serves this space/.test(text) && /select it with `cotal use open4`/.test(text), shown(human));
   const plain = await run(["space", "add", "open5", "--server", LIVE, "--root", root, "--plain"], { FORCE_COLOR: "1" });
   check("--plain writes it with no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && /added open5/.test(plain.stdout), shown(plain));
 }

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { listSpaces, token } from "@cotal-ai/core";
 import {
   CommandFailure,
   authDir,
@@ -189,6 +190,7 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   if (verified) {
     take(checkEnforcement(mode, await probeEnforcement(server), server, name, root), target);
     take(await verifyTarget(candidateTarget(name, server, root, mode, auth, tlsRequired)), target);
+    if (mode === "open") await servedOrThrow(server, name, target);
   }
   const warnings: OutputWarning[] = [];
   if (dial.residual) warnings.push({ code: "UNENCRYPTED_OVERLAY", target, message: dial.residual });
@@ -199,12 +201,24 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
     ["broker", `${server}${tlsRequired ? " (TLS required)" : ""}`],
     ["mode", mode === "auth" ? `auth, with the trust under ${authDir(root)}` : "open, with no credentials"],
     ["root", root],
-    ["checked", verified ? "the broker answers and enforces this mode" : "nothing: --force adds it unchecked"],
+    ["checked", verified ? `the broker answers and enforces this mode${mode === "open" ? ", and serves this space" : ""}` : "nothing: --force adds it unchecked"],
   ];
   if (!(await review(prompt, v.yes === true, rows, `Add ${name}`, true))) return undefined;
   const entry: MeshEntry = { space: name, server, root, mode, origin: "manual", ...(tlsRequired ? { tlsRequired: true } : {}), ...(dial.residual ? { unencryptedOverlay: true } : {}), ts: new Date().toISOString() };
   recordMesh(entry);
   return { result: { kind: "space-added", space: detail(entry, getCurrent() ?? null, verified ? "reachable" : "not-checked"), verified, replaced }, warnings };
+}
+
+/** An open broker answers for any name, so an open space must be one it serves, or a mistyped
+ *  name is recorded and every later operation on it fails without naming it. The spaces it serves
+ *  are read back from their streams, which a bare connection to an open broker may list. */
+async function servedOrThrow(server: string, name: string, target: unknown): Promise<void> {
+  let served: string[];
+  try { served = (await listSpaces({ servers: server })).map((info) => info.space); }
+  catch { throw refuse("TARGET_UNAVAILABLE", `the broker at ${server} answered, but the spaces it serves could not be read`, target, `retry, or pass --force to add "${name}" unchecked`); }
+  if (served.includes(token(name))) return;
+  throw refuse("TARGET_NOT_FOUND", served.length ? `the broker at ${server} serves no space named "${name}"; it serves ${served.map((space) => `"${space}"`).join(", ")}` : `the broker at ${server} serves no space yet, so "${name}" is not running there`,
+    target, served.length ? `add one of those names, or pass --force to add "${name}" before it starts there` : `start it there with \`cotal up --open\`, or pass --force to add "${name}" unchecked`);
 }
 
 /** A user-auth space: its pins come from a bundle exported where it runs, or from its HTTPS
@@ -318,7 +332,7 @@ function addedView(r: SpaceAdded | AddCancelled): Report {
     ["server", s.server],
     ["mode", s.mode],
     ["root", s.root],
-    ["checked", r.verified ? { text: "broker answered", tone: "ok" } : { text: "not checked (--force)", tone: "waiting" }],
+    ["checked", r.verified ? { text: s.mode === "open" ? "broker answered and serves this space" : "broker answered", tone: "ok" } : { text: "not checked (--force)", tone: "waiting" }],
   ];
   if (s.userAuth) fields.push(["login", s.userAuth.idp.url]);
   const hints: Cell[] = s.current ? [] : [{ text: `select it with \`cotal use ${s.space}\``, tone: "hint" }];

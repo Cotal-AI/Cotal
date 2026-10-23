@@ -1738,12 +1738,14 @@ address for that broker; `--from` fetches the space's discovery
 document instead, after you agree to the fetch, and needs a terminal. Before anything is written,
 `space add` checks that the address may carry credentials, that the trust composes, that the
 broker enforces the mode, and that the credentials open the space; a user-auth space's exchange
-must answer as the issuer it pins. On a terminal it then shows what it will trust and asks; `--yes`
+must answer as the issuer it pins. An open broker answers for any name, so an open space must also
+be one the broker serves, as its streams show. A name it does not serve is refused with
+`TARGET_NOT_FOUND`, exit 2, naming the spaces it does serve. On a terminal it then shows what it will trust and asks; `--yes`
 skips that question, but not the confirmation of fetched pins. It never changes the selection.
 
 A refusal writes nothing and carries its code: `USAGE_INVALID` or `SCHEMA_INVALID` (exit 1) for
-input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `DEPENDENCY_UNAVAILABLE`, `UNSUPPORTED`,
-`AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name that is already
+input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `TARGET_NOT_FOUND`, `DEPENDENCY_UNAVAILABLE`,
+`UNSUPPORTED`, `AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name that is already
 registered is a `CONFLICT`, and its remedy offers `--force` only for a registration added by hand.
 A broker that requires auth, with a `--root` that holds another space's trust, is a
 `DEPENDENCY_UNAVAILABLE` that names the space the folder holds.
