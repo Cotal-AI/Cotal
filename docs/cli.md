@@ -4934,6 +4934,11 @@ cotal completion script powershell | Out-String | Invoke-Expression
 offline. The stable hidden `__complete` entry reads registered command specifications and local
 persona files. It does not contact the mesh or refresh extensions.
 
+In bash and zsh, a file argument such as `team check <file>`, `up -f <file>` or `--channels <path>`
+completes from the shell's own file names. A value with a fixed set of choices does not offer files.
+A stub installed by an earlier release offers no files. `cotal completion` reports it as differing
+from this version, and `completion install` refreshes it.
+
 `install` and `uninstall` take a shell name or detect it from `SHELL`. Pass `powershell`
 explicitly when PowerShell inherited another shell's `SHELL`. On supported POSIX hosts:
 
