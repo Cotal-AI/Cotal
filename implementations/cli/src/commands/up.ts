@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { createConnection, createServer } from "node:net";
+import { createConnection, createServer, isIP } from "node:net";
 import { homedir, hostname } from "node:os";
 import {
   accessSync,
@@ -340,6 +340,8 @@ export function validateUpArguments(args: ParsedArgs): void {
   // A manifest boot checks its own `--server` override against `broker.servers`.
   const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
   if (serverProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${serverProblem}; nothing was started or written`, { remedy: "pass the address the local broker listens on, for example --server nats://127.0.0.1:4222" });
+  const hostProblem = typeof args.values.host === "string" && !args.values.file ? upHostProblem(args.values.host) : undefined;
+  if (hostProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${hostProblem}; nothing was started or written`, { remedy: "pass an IPv4 bind address, for example --host 127.0.0.1" });
   // A URL or port-bearing --host, or one naming another address than --server, refuses here, before
   // the controller stack writes its journal or trust.
   if (args.values.host !== undefined && !args.values.file) reconcileHostAndServer(String(args.values.host), args.values.server === undefined ? undefined : String(args.values.server));
@@ -395,7 +397,18 @@ function upServerProblem(server: string): string | undefined {
   // An explicit address is taken as given, so a missing port is never filled in with the default.
   if (!url.port) return "--server names no port";
   if (url.port === "0") return "--server needs a TCP port from 1 to 65535";
+  if (url.hostname.startsWith("[")) return IPV6_UNSERVED("--server");
   return undefined;
+}
+
+/** The local stack's own clients cannot reach a broker on an IPv6 address, so neither flag may name one. */
+const IPV6_UNSERVED = (flag: string): string => `${flag} names an IPv6 address, and the local stack's own clients cannot reach a broker there`;
+
+/** Why `--host` cannot be the local broker's bind address, or undefined when it can. A wildcard bind
+ *  keeps a loopback URL, so only a concrete IPv6 address refuses here. */
+function upHostProblem(host: string): string | undefined {
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  return isIP(bare) === 6 && !/^[0:]+$/.test(bare) ? IPV6_UNSERVED("--host") : undefined;
 }
 
 function inheritedMachineHomeRoot(): string | undefined {

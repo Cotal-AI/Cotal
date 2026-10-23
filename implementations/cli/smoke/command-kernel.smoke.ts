@@ -489,22 +489,25 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
-// --- up refuses a --server with no port before project lookup ------------------------------------
+// --- up refuses a --server with no port, and an IPv6 --server or --host, before project lookup ---
 {
   const cmd = registry.resolve<Command>("command", "up")!;
   const missingRoot = join(tmpdir(), "cotal-up-address-no-project", `${process.pid}-${Date.now()}`);
   const refused: [string[], RegExp][] = [
     [["--server", "nats://127.0.0.1"], /^--server names no port/],
+    [["--server", "nats://[::1]:4222"], /^--server names an IPv6 address/],
+    [["--host", "::1"], /^--host names an IPv6 address/],
+    [["--host", "[::1]"], /^--host names an IPv6 address/],
   ];
   for (const [flags, said] of refused) {
     assert.throws(() => cmd.validate!(parseCommandArgs(cmd, [...flags, "--root", missingRoot])), (error: unknown) =>
       isCommandFailure(error) && error.code === "USAGE_INVALID" && said.test(error.message) && Boolean(error.remedy),
     `${flags.join(" ")} is refused as usage before project lookup`);
   }
-  for (const flags of [["--server", "nats://127.0.0.1:4222"]]) {
+  for (const flags of [["--server", "nats://127.0.0.1:4222"], ["--host", "::"], ["--host", "0.0.0.0"]]) {
     assert.throws(() => cmd.validate!(parseCommandArgs(cmd, [...flags, "--root", missingRoot])), (error: unknown) =>
-      isCommandFailure(error) && !/names no port/.test(error.message),
-    `${flags.join(" ")} passes the address check and stops only at the missing root`);
+      isCommandFailure(error) && !/names no port|IPv6/.test(error.message),
+    `${flags.join(" ")} passes the address checks and stops only at the missing root`);
   }
 }
 
