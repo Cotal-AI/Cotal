@@ -204,7 +204,9 @@ import {
   markPreparedRestoreDegraded,
   heldRestoreAttempt,
   heldClaim,
+  movedFolderRefusal,
   prepareRestore,
+  preservedSourceState,
   recordPreparedRestoreManagerCommit,
   rehydratePreparedRestore,
   replacePreparedDeadRestoreListener,
@@ -740,6 +742,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
           pendingRestores.set(recoveredRestore.attemptId, recoveredRestore);
         }
       } else if (journal?.state === "ready") {
+        const source = preservedSourceState(root, journal.source);
+        if (source.state === "moved") throw movedFolderRefusal(root, journal.space, journal.source.path, source, "run cotal up");
+        if (source.state === "missing")
+          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved store recorded at ${journal.source.path} is missing, so up cannot resume it; nothing was started`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "if this folder was moved, move it back so that path exists again; if the store is lost, restore a backup here with cotal backup restore <dir> --accept-missing-source" });
         const resume = readMaintenanceResumeDocument(root, journal.resume);
         const attemptId = `resume-${randomUUID()}`;
         const launch = resume.launch as { server?: unknown; storeDir?: unknown; maxFileStore?: unknown };

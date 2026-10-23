@@ -12,11 +12,11 @@ import { down } from "../src/commands/down.js";
 import { backup, backupComplete, chunkQueue, isStoppedKvWatcher } from "../src/commands/backup.js";
 import { upComplete } from "../src/commands/up.js";
 import { createAttemptClone, ensurePrivateAttemptsDir } from "../src/lib/isolated-broker.js";
-import { isManagerCommitResult, isManagerFinalizeResult, prepareRestore } from "../src/lib/restore.js";
+import { isManagerCommitResult, isManagerFinalizeResult, movedFolderRefusal, prepareRestore, preservedSourceState } from "../src/lib/restore.js";
 import { authorityFingerprint } from "../src/lib/maintenance-files.js";
 import { assertEndpointUnreachable } from "../src/lib/endpoint-cut.js";
 import { consumerConfigFromCheckpoint, createSpaceAuth, dmStream, rotateSystemAccount, taskStream } from "@cotal-ai/core";
-import { acquireMaintenanceLock, authDir, beginMaintenanceCut, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, authDir, beginMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { DeliverPolicy, type ConsumerInfo } from "@nats-io/jetstream";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -357,6 +357,25 @@ try {
     process.chdir(previousCwd);
     if (previousHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = previousHome;
+  }
+
+  // A preserved store is found where its journal recorded it, moved with its folder, or missing.
+  {
+    const before = join(root, "moved-before"), after = join(root, "moved-after");
+    mkdirSync(join(before, ".cotal", "nats"), { recursive: true });
+    const source = ensureStoreIdentity(join(before, ".cotal", "nats")), recordedRoot = realpathSync(before);
+    assert.deepEqual(preservedSourceState(before, source), { state: "present" }, "a store at its recorded path is present");
+    execFileSync("mv", [before, after]);
+    const moved = preservedSourceState(after, source);
+    assert.ok(moved.state === "moved" && moved.recordedRoot === recordedRoot && moved.store === realpathSync(join(after, ".cotal", "nats")), "a store that moved with its folder names the folder it was recorded in");
+    if (moved.state === "moved") {
+      const refusal = movedFolderRefusal(after, "demo", source.path, moved, "run cotal up");
+      assert.ok(refusal.code === "CONFLICT" && refusal.message.includes(`moved from ${recordedRoot}`) && refusal.remedy === `move this folder back to ${recordedRoot}, then run cotal up there`, "the moved refusal names the old folder and the step that works there");
+    }
+    rmSync(join(after, ".cotal", "nats"), { recursive: true });
+    mkdirSync(join(after, ".cotal", "nats"));
+    ensureStoreIdentity(join(after, ".cotal", "nats"));
+    assert.deepEqual(preservedSourceState(after, source), { state: "missing" }, "another store in the new folder is not the moved one");
   }
 
   console.log("backup CLI smoke: ok");

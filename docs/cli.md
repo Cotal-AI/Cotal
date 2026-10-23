@@ -619,6 +619,11 @@ and reports them; unknown operations are retained and never retried automaticall
 initializing streams or recording the broker registration is attributed to the broker, not the next
 unstarted member. The failure target names that stage. Typed JetStream API errors retain their
 numeric code and status without copying the server's description or changing the unknown outcome.
+The journal records the absolute root it was written in, and the stack runs only from that folder.
+In a copy of a controller project, or after the folder is moved, commands that read the journal
+refuse `CONFLICT`, exit 2, and name the recorded folder: a copy is told to use the stack from the
+original, and a moved folder to move back there first. `space create` in a copy whose records name
+another root says so and names that root.
 
 A journal root always keeps that controller route and its recorded mode and broker address, even
 when a completed stop removed its mesh registration. Bare `up` reuses that address; an explicit
@@ -998,6 +1003,11 @@ that command. `--preserve-state` takes its agent inventory from the manager that
 When no manager holds the space's lease, as on a stack started with `--no-manager`, it refuses
 `TARGET_UNAVAILABLE`, exit 2, before it stops anything or writes a maintenance record. Start the
 manager with `cotal up`, then run `cotal down --preserve-state` again.
+The preserved state records its store by absolute path. If the project folder is moved after
+`down --preserve-state`, `up`, `backup create` and `backup restore` refuse `CONFLICT`, exit 2, name
+the folder it was moved from, and say to move it back there first. A store missing from its recorded
+path is refused `TARGET_NOT_FOUND` with that path; only `backup restore --accept-missing-source`
+restores over a lost store.
 
 After those checks, a retained bare apply stops the selected space's service instances before its
 pidfile sweep. Each goes through the service controller with the checks and receipt of
@@ -1789,7 +1799,8 @@ it starts in, before it writes anything, so it never starts a stack that `down` 
 stop from that root. `cotal up` starts a space only under a name of 1 to 200 letters, digits,
 underscores or hyphens, so any other name refuses with `USAGE_INVALID`, exit 1, before anything is
 written. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
-space's root, and the home folder, whose `.cotal` holds this machine's own records. `space` lists
+space's root, and the home folder, whose `.cotal` holds this machine's own records. A folder this
+account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written. `space` lists
 prepared spaces under their own heading, and `space show` and `use` accept one. A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
 and so does `cotal up --space <name>` run from another folder. `cotal up --space <name>` in a folder
@@ -1942,7 +1953,8 @@ readable coordinates in JSON.
 It appears only when there is something to inspect. A missing fresh summary
 does not prove the original broker never started; an additive intent does not
 prove which resources changed. This read grants neither retry nor stop
-authority. If the folder inherits
+authority. A fresh summary that names another folder, as one does after its folder was moved or
+copied, is listed with its recorded path and is not counted as unreadable. If the folder inherits
 the machine's home `.cotal`, status warns that unqualified `up` refuses instead of starting
 there. Prepare the intended folder first with
 `space create <space> --root .`; `up --root .` then names it.
@@ -5382,7 +5394,10 @@ responder stays unsettled and
 blocks a later fresh boot. `team show <id>` and the team inventory expose the original intent without
 claiming whether its broker started. `team show` displays up to 100 declared names from a
 summary and retains the complete list in JSON; none are claimed to have joined. A missing
-or refused summary after boot is not a reason to boot again.
+or refused summary after boot is not a reason to boot again. A summary records the absolute folder
+`up -f` ran in. After that folder is moved or copied, the summary still reads but names the old
+path. It settles nothing in the new folder and blocks no `up` or `down` there, and `team show <id>`
+refuses it with CONFLICT, naming the folder it was recorded at.
 The inventory stays partial because older fresh boots may have no summary. The
 terminal lists up to 100 records; JSON retains all readable records. Its Next column
 says inspect the stack for a fresh record or review the native scoped teardown plan for an

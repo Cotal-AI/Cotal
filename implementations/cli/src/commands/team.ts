@@ -4,7 +4,7 @@ import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure,
 import { personaCatalog } from "../lib/persona-files.js";
 import { formatIssue, loadManifest, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manifest/ledger.js";
-import { findFreshTeamAttempt, findFreshTeamSummary, freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries, type FreshTeamSummary } from "../lib/team-fresh.js";
+import { findFreshTeamAttempt, findFreshTeamSummary, freshTeamAttemptSettled, freshTeamSummaryRecordedElsewhere, listFreshTeamAttempts, listFreshTeamSummaries, type FreshTeamSummary } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, findAdditiveTeamAttempt, listAdditiveTeamAttempts, removedAdditiveDeploymentIds } from "../lib/team-additive-attempt.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { inspectTeamDeployment, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
@@ -90,6 +90,13 @@ function cardStepText(phase: string): string {
     : phase === "observed-removed" ? "removed after an unconfirmed delete; remover unknown" : phase === "observed-superseded" ? "replaced after an unconfirmed delete; not owned" : "delete submitted; outcome not implied";
 }
 
+/** Refuses a summary that reads cleanly but was recorded at another root, as one is after its folder
+ *  was moved or copied. It reports only that root's earlier boot. */
+function assertSummaryNotElsewhere(root: string, deploymentId: string): void {
+  const recordedRoot = freshTeamSummaryRecordedElsewhere(root, deploymentId);
+  if (recordedRoot) throw new CommandFailure("refused", "CONFLICT", `the fresh launch summary ${deploymentId} was recorded at ${recordedRoot}, not at this folder; the folder was moved or copied since, so it reports only that earlier boot`, { target: { root, recordedRoot, deploymentId }, remedy: "nothing in this folder depends on it; cotal status here shows this folder's own stack" });
+}
+
 function freshRecorded(summary: FreshTeamSummary) {
   const responderMismatch = summary.deliveryResponderBound !== undefined && (summary.authMode === "open" ? summary.deliveryResponderBound !== null
     : summary.authMode === "auth" || summary.authMode === "user" ? summary.deliveryResponderBound !== true : false);
@@ -117,7 +124,10 @@ export async function team(args: ParsedArgs): Promise<void> {
     let additiveAttempt: ReturnType<typeof findAdditiveTeamAttempt>;
     if (/^[a-f0-9]{16}$/.test(subject!)) {
       try { summary = findFreshTeamSummary(catalog.root, subject!); }
-      catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this full ID is unreadable or does not match its recorded root; it was not treated as absent", { target: { space: catalog.space, deploymentId: subject } }); }
+      catch {
+        assertSummaryNotElsewhere(catalog.root, subject!);
+        throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this full ID is unreadable; it was not treated as absent", { target: { space: catalog.space, deploymentId: subject } });
+      }
       try { additiveAttempt = findAdditiveTeamAttempt(catalog.root, subject!); }
       catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive attempt for this full ID is unreadable or does not match its recorded root; its effects were not inferred", { target: { space: catalog.space, deploymentId: subject } }); }
     }
@@ -373,7 +383,10 @@ async function previewRemove(deploymentId: string, values: TeamValues): Promise<
   recordOperationSpace(catalog.space);
   let summary: FreshTeamSummary | undefined;
   try { summary = findFreshTeamSummary(catalog.root, deploymentId); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this ID is unreadable; it cannot be treated as absent or as an additive removal target", { target: { space: catalog.space, deploymentId } }); }
+  catch {
+    assertSummaryNotElsewhere(catalog.root, deploymentId);
+    throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this ID is unreadable; it cannot be treated as absent or as an additive removal target", { target: { space: catalog.space, deploymentId } });
+  }
   if (summary) throw new CommandFailure("refused", "CONFLICT", "this ID belongs to a fresh boot summary, not an additive ownership ledger; team remove did not infer whole-stack stop authority", { target: { recordedSpace: summary.space, recordedRoot: summary.root, selectedSpace: catalog.space, deploymentId }, remedy: "from the recorded root, inspect cotal down --space <recorded-space> --dry-run; guarded bare down is not integrated in this source" });
   let freshAttempt: ReturnType<typeof findFreshTeamAttempt>;
   try { freshAttempt = findFreshTeamAttempt(catalog.root, deploymentId); }
@@ -505,7 +518,7 @@ async function previewBoot(file: string, values: TeamValues): Promise<void> {
     additiveRecords = controlDir === "real" ? listLedgerFiles(root, { requireReadable: true }) : { valid: [], refused: [] };
     additiveAttempts = controlDir === "real" ? listAdditiveTeamAttempts(root) : { valid: [], steps: [], agentSteps: [], returned: [], refused: [] };
     bootAttempts = controlDir === "real" ? listFreshTeamAttempts(root) : { valid: [], refused: [] };
-    bootSummaries = controlDir === "real" ? listFreshTeamSummaries(root) : { valid: [], refused: [] };
+    bootSummaries = controlDir === "real" ? listFreshTeamSummaries(root) : { valid: [], refused: [], elsewhere: [] };
   } catch (error) {
     if (error instanceof CommandFailure) throw error;
     throw new CommandFailure("refused", "CONFLICT", "the boot root's control directory, tenant inventory, maintenance state, additive ledgers, process records or selected-space service records could not be read safely; no startup eligibility was inferred", { target: { space, root } });

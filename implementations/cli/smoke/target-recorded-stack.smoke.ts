@@ -14,7 +14,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -41,8 +41,8 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-const run = (args: string[]) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], cwd = root) => {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
@@ -77,6 +77,24 @@ check("status names no default broker address", noDefault(status), shown(status)
 
 const components = run(["status", "--components"]);
 check("status --components refuses the target and probes no default broker", /target\s+refused · not-started/.test(components.stdout) && noDefault(components), shown(components));
+
+// The journal names the folder that recorded it. In a copy or a moved folder that is another folder,
+// whose stack this one does not hold, so the refusal names it rather than calling the shape invalid.
+const copy = `${root}-copy`, moved = `${root}-moved`;
+spawnSync("cp", ["-a", root, copy]);
+const copied = run(["up", "--json"], copy);
+check("up in a copied folder refuses CONFLICT, exit 2, naming the folder its journal was recorded at",
+  copied.status === 2 && copied.envelope?.error?.code === "CONFLICT" && (copied.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was copied from there`) && copied.envelope.error.remedy === `use the stack from ${root}, which holds it; this copy does not`, shown(copied));
+renameSync(root, moved);
+const movedUp = run(["up", "--json"], moved);
+renameSync(moved, root);
+check("up in a moved folder refuses CONFLICT and says to move it back",
+  movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === `move this folder back to ${root}, then run cotal up there`, shown(movedUp));
+writeFileSync(join(copy, ".cotal", "stack-controller.json"), JSON.stringify({ schemaVersion: 1, kind: "cotal-stack-controller", root: copy, space: "la07" }) + "\n", { mode: 0o600 });
+const malformed = run(["up", "--json"], copy);
+check("a malformed journal is still SCHEMA_INVALID, and its remedy names the journal's own path",
+  malformed.status === 1 && malformed.envelope?.error?.code === "SCHEMA_INVALID" && (malformed.envelope.error.remedy ?? "").includes(join(copy, ".cotal", "stack-controller.json")) && !(malformed.envelope.error.remedy ?? "").includes("<root>"), shown(malformed));
+rmSync(copy, { recursive: true, force: true });
 
 finish();
 process.exit(process.exitCode ?? 0);

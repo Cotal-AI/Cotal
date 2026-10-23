@@ -410,6 +410,10 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
     // `cotal up` from this root starts it again on its own launcher. Only that one space can run here.
     // A root with a controller stack journal is not offered that, because its start needs a prepared
     // or locally started registration.
+    // Records copied or moved here keep naming the folder they came from as their space's root.
+    const origin = held.length === 1 ? findPreparedSpace(held[0]!)?.root ?? findMesh(held[0]!)?.root : undefined;
+    if (origin !== undefined && !here(origin))
+      throw refuse("CONFLICT", `${root} holds records copied or moved from ${origin}, the root of "${held[0]}"`, target, `create "${name}" in another folder with ${flag} <dir>`);
     const stopped = held.length === 1 && journaled === undefined && !loadMeshes().some((m) => here(m.root)) && preparedSpaceAt(root) === undefined;
     throw refuse("CONFLICT", `${root} is already the root of "${held.join('", "')}"`, target, stopped
       ? `start "${held[0]}" again with \`cotal up\` from ${root}${held[0] === name ? "" : `, or create "${name}" in another folder with ${flag} <dir>`}`
@@ -422,7 +426,12 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
  *  Returns the record it wrote and when. */
 export function recordLocalSpace(name: string, root: string): { file: string; preparedAt: string } {
   protectedLocalDirectory(root, "the project root");
-  mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 });
+  // Making `.cotal` is the first write, so a root this account cannot write is refused with nothing written.
+  try { mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 }); }
+  catch (error) {
+    if (!["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, { space: name, root }, "create the space in a folder you own, or pass --root <dir>");
+  }
   protectedLocalDirectory(join(root, ".cotal"), "the project's .cotal directory");
   const preparedAt = new Date().toISOString();
   return { file: recordPreparedSpace({ space: name, root, ts: preparedAt }), preparedAt };
