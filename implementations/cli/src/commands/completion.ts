@@ -9,7 +9,7 @@ import {
   type ParsedArgs,
   type Subcommand,
 } from "@cotal-ai/core";
-import { CommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
 import { metadataPositionals } from "../lib/command-path.js";
 import { servicePresetCommand } from "../lib/service-presets.js";
 import { commandSurface } from "../ext-loader.js";
@@ -211,7 +211,7 @@ export function completionStatus(): { status: CompletionStatus; unread: OutputWa
   const read = (shell: string, path: string): string | undefined | null => {
     const text = readText(path);
     if (typeof text !== "object") return text;
-    unread.push({ code: "COMPLETION_UNREADABLE", target: { shell }, message: `${path} could not be read: ${text.code ?? text.message}` });
+    unread.push({ code: "COMPLETION_UNREADABLE", target: { shell }, message: `${path} could not be read: ${isCommandFailure(text) ? text.message : text.code ?? text.message}` });
     return null;
   };
   const shells = Object.keys(SCRIPTS).map((shell): ShellCompletion => {

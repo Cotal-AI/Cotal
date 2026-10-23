@@ -35,7 +35,7 @@ export function stageSeedPayload(generation: string, name: string, opts: { force
   const staging = `${dest}.staging`;
   rmSync(staging, { recursive: true, force: true });
   rmSync(dest, { recursive: true, force: true });
-  mkdirSync(dirname(dest), { recursive: true });
+  mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
   cpSync(src, staging, { recursive: true, filter: (from) => payloadFilter(src, from) });
   renameSync(staging, dest); // atomic within the store: the final path only ever holds a complete payload
   // Announce the write on the provenance channel. This store is operator-global (a sibling of the
