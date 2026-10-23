@@ -312,8 +312,8 @@ async function serveManagerWithForeignRefusal(): Promise<{ close(): Promise<void
   return {
     close: async () => {
       await service.stop();
-      await health.releaseDeliveryLease(0, deliveryLeaseRevision);
-      await health.releaseManagerLease(SERVED_INSTANCE, managerLeaseRevision);
+      await health.releaseDeliveryLease(0, deliveryLeaseRevision).catch(() => {});
+      await health.releaseManagerLease(SERVED_INSTANCE, managerLeaseRevision).catch(() => {});
       await health.stop().catch(() => {});
       await nc.drain().catch(() => nc.close());
     },
