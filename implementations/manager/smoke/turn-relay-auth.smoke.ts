@@ -28,14 +28,14 @@ import { connect } from "@nats-io/transport-node";
 import {
   createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
   DEV_OWNER, epCall, invokeCommand, resolveService, readAcceptedRow, readGoalResult, readGoalIndex, registry,
-  startTimerWriter,
-  type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec, type TimerWriterHandle,
+  type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, workspaceSecretStore } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { bootBroker } from "./_boot-broker.js";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
+import { hostTimerWriter, type HostedTimerWriter } from "./_timer-writer.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -70,7 +70,7 @@ registry.register(stubCon);
 
 let manager: Manager | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
-let writer: TimerWriterHandle | undefined;
+let writer: HostedTimerWriter | undefined;
 let writerNc: Awaited<ReturnType<typeof connect>> | undefined;
 let runnerNc: Awaited<ReturnType<typeof connect>> | undefined;
 let seatNc: Awaited<ReturnType<typeof connect>> | undefined;
@@ -84,7 +84,7 @@ try {
   // The timer writer the delivery daemon hosts on a live mesh, under the delivery credential: the
   // deadline cell below waits on a pause armed through it, never through a suite pump.
   writerNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "delivery"), tls: false }), maxReconnectAttempts: 0 });
-  writer = await startTimerWriter(writerNc, space, { pollMs: 1_000 });
+  writer = await hostTimerWriter(writerNc, space, { pollMs: 1_000 });
 
   manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
   await manager.start();

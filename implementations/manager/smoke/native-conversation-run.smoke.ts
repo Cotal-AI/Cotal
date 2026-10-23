@@ -37,7 +37,7 @@ async function main(): Promise<void> {
   process.env.COTAL_HOME = home;
   const {
     CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, remoteManagerActors, remoteManagerRegistrationProof, serverConfig, setupSpaceStreams,
-    standaloneConnectOpts, startTimerWriter,
+    standaloneConnectOpts,
   } = await import("@cotal-ai/core");
   const { connect } = await import("@nats-io/transport-node");
   const { assertUserAuthInfo, authDir, recordMesh, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
@@ -51,6 +51,7 @@ async function main(): Promise<void> {
   const remote = await import("../src/remote-authority.js");
   await import("@cotal-ai/runtime");
   const { bootDeliveryDaemon } = await import("./_boot-delivery.js");
+  const { hostTimerWriter } = await import("./_timer-writer.js");
   type ManagerOptions = import("../src/manager.js").ManagerOptions;
   const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
   const until = async (test: () => boolean | Promise<boolean>, message: string, ms = 30_000) => {
@@ -73,7 +74,7 @@ async function main(): Promise<void> {
   let authChild: import("node:child_process").ChildProcess | undefined;
   let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
   let writerNc: Awaited<ReturnType<typeof connect>> | undefined;
-  let writer: Awaited<ReturnType<typeof startTimerWriter>> | undefined;
+  let writer: Awaited<ReturnType<typeof hostTimerWriter>> | undefined;
   let manager: InstanceType<typeof Manager> | undefined;
   let host: ReturnType<typeof createAppHost> | undefined;
   let served: { close(): Promise<void> } | undefined;
@@ -109,7 +110,7 @@ async function main(): Promise<void> {
     delivery = await bootDeliveryDaemon({ space, servers, auth, reloadStoreIdentity: hostStore.identity! });
     // The timer writer the delivery daemon hosts on a live mesh fires the run's durable sleep.
     writerNc = await connect({ servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "delivery"), tls: false }), maxReconnectAttempts: 0 });
-    writer = await startTimerWriter(writerNc, space, { pollMs: 1_000 });
+    writer = await hostTimerWriter(writerNc, space, { pollMs: 1_000 });
     authChild = spawn(process.execPath, [...process.execArgv, import.meta.filename, "auth-service", "--space", space, "--server", servers, "--exchange-public-port", "0"], { cwd: hostRoot, env: process.env, stdio: "ignore" });
     await until(async () => {
       if (authChild!.exitCode !== null) throw new Error("stock auth service exited during boot");
