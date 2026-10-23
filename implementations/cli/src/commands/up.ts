@@ -355,7 +355,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
   // A manifest boot checks its own `--server` override against `broker.servers`.
   const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
-  if (serverProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${serverProblem}; nothing was started or written`, { remedy: "pass the address the local broker listens on, for example --server nats://127.0.0.1:4222" });
+  if (serverProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${serverProblem}; nothing was started or written`, { remedy: `pass the address the local broker listens on, for example --server ${upServerExample(String(args.values.server))}` });
   // A --host that is no bind host, or a bind that does not serve --server's address, refuses here,
   // before the controller stack writes its journal or trust.
   const hostProblem = !args.values.file ? upHostProblem(args.values.host as string | undefined, args.values.server as string | undefined) : undefined;
@@ -415,6 +415,17 @@ function upServerProblem(server: string): string | undefined {
   if (url.port === "0") return "--server needs a TCP port from 1 to 65535";
   if (url.hostname.startsWith("[")) return IPV6_UNSERVED("--server");
   return undefined;
+}
+
+/** The `--server` example a refusal of `server` names: 127.0.0.1 with its scheme and port when it has
+ *  them, so pasting it keeps the port and TLS the person chose, and nats://127.0.0.1:4222 otherwise.
+ *  It never repeats the host or a credential. */
+function upServerExample(server: string): string {
+  try {
+    const url = new URL(server);
+    if ((url.protocol === "nats:" || url.protocol === "tls:") && url.port && url.port !== "0") return `${url.protocol}//127.0.0.1:${url.port}`;
+  } catch { /* not a URL, so the default address is the example */ }
+  return "nats://127.0.0.1:4222";
 }
 
 /** The local stack's own clients cannot reach a broker on an IPv6 address, so neither flag may name one. */
