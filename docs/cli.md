@@ -1811,8 +1811,10 @@ instead of showing missing resources as absent. The snapshot is non-atomic and p
 authoritative liveness or membership check. User-auth deletion inventory and apply
 are not supported. The dry-run removes no live or local state, and a read that covers its whole scope
 exits 0. A space that is prepared and not running, including one stopped with `cotal down`, has no
-live broker to read or delete from: `space delete` refuses it with `TARGET_UNAVAILABLE`, exit 2,
-naming the root to start it in, and `space forget` removes only its local record.
+live broker to read or delete from: `space delete` refuses it with `TARGET_UNAVAILABLE`, exit 2.
+For a stopped stack it names `cotal reset store <space> --yes`, which removes the stored streams, and
+`space forget`, which removes only its local record. For a space that never ran it names only
+`space forget`, because no streams were stored.
 
 On a space this machine started, the apply refuses `LIFECYCLE_BLOCKED` while the space's own stack
 still runs here, before any broker connection. On a controller root that is any service instance of

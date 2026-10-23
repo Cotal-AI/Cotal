@@ -26,7 +26,7 @@ interface PresenceImpact { id: string; name: string | null; status: string | nul
  *  service instance of the space other than its broker counts, and on a legacy root every recorded
  *  daemon other than the broker, unless its process is proven gone. The delete needs the broker
  *  itself, so it is not counted. A space registered for another machine's broker is not checked. */
-function liveStackRefusal(entry: MeshEntry, space: string): CommandFailure | undefined {
+function liveStackRefusal(entry: MeshEntry, space: string, preview = false): CommandFailure | undefined {
   if (entry.origin !== "up") return undefined;
   let controller: boolean, users: string[];
   try {
@@ -36,7 +36,8 @@ function liveStackRefusal(entry: MeshEntry, space: string): CommandFailure | und
       : localProcessSurface().filter((component) => !component.stopLast && pidfileState(localProcessPath(component.pidFile, { root: entry.root, space })).liveness !== "dead").map((component) => component.label);
   } catch { return new CommandFailure("refused", "TARGET_UNAVAILABLE", "this space's local service and process records could not be read, so a running stack was not ruled out; no broker was contacted", { target: { space, root: entry.root } }); }
   if (!users.length) return undefined;
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this space's stack still runs here (${[...new Set(users)].join(", ")}) and uses these streams; no broker was contacted and nothing was deleted`, { target: { space, root: entry.root, running: [...new Set(users)] }, remedy: controller
+  // A preview reads the broker before it reports this, so only the apply says no broker was contacted.
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this space's stack still runs here (${[...new Set(users)].join(", ")}) and uses these streams${preview ? "" : "; no broker was contacted and nothing was deleted"}`, { target: { space, root: entry.root, running: [...new Set(users)] }, remedy: controller
     ? `stop it with cotal down --yes from ${entry.root}, then remove its stored streams with cotal reset store ${space} --yes`
     : `stop it with cotal down from ${entry.root}, then remove its stored streams with cotal clean store --force there` });
 }
@@ -51,7 +52,15 @@ async function readSpaceDeletion(name: string) {
     let prepared: ReturnType<typeof findPreparedSpace>;
     try { prepared = findPreparedSpace(name); }
     catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local prepared-space records could not be read; no live space deletion target was inferred", { target: { space: name } }); }
-    if (prepared) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `"${oneLine(name)}" is prepared and not running, so it has no live broker to delete from; no broker was contacted`, { target: { space: name, root: prepared.root }, remedy: `start it with cotal up in ${oneLine(prepared.root)} and delete it then, or remove only the local record with cotal space forget ${oneLine(name)}` });
+    if (prepared) {
+      // Starting a stopped stack to delete its streams meets the running-stack refusal, so name the
+      // command that removes them while it is stopped. One that never ran has no streams to remove.
+      let stopped: boolean;
+      try { stopped = readStackJournal(prepared.root)?.journal.space === name; } catch { stopped = true; }
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `"${oneLine(name)}" is prepared and not running, so it has no live broker to delete from; no broker was contacted`, { target: { space: name, root: prepared.root }, remedy: stopped
+        ? `remove its stored streams with cotal reset store ${oneLine(name)} --yes, or remove only the local record with cotal space forget ${oneLine(name)}`
+        : `no stack has run for it in ${oneLine(prepared.root)}, so it has no stored streams; remove its local record with cotal space forget ${oneLine(name)}` });
+    }
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no registered space has this exact name; no broker was contacted", { target: { space: name }, remedy: "see the registered spaces with cotal space" });
   }
   if (entry.mode === "user") throw new CommandFailure("refused", "UNSUPPORTED", "this native deletion inventory has no supported user-auth view; no open or static identity was substituted", { target: { space: name } });
@@ -254,7 +263,7 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   if (args.values["dry-run"] === true) {
     // The preview reads its whole scope, so it is complete; its limits are a note, not a partial read.
     const { result, entry } = await readSpaceDeletion(name);
-    const blocked = liveStackRefusal(entry, name);
+    const blocked = liveStackRefusal(entry, name, true);
     writeResult(presentation, { command: "space delete", target: { space: name }, result: { ...result, applyBlockedBy: blocked?.detail() ?? null },
       ...(blocked ? { warnings: [{ code: blocked.code, target: blocked.target, message: `the apply would refuse: ${blocked.message}; ${blocked.remedy}` }] } : {}) },
       (data) => ({ sections: [...previewView(data).sections, { blocks: [{ kind: "lines", lines: ["This is a non-atomic native read of first-party stream targets and presence entries, not a guarded deletion plan. A fresh exact-scope check and confirmation are still required before any apply."] }] }] }));
