@@ -3733,10 +3733,11 @@ message body.
 Every request and record carries `"schemaVersion":1`. A request names its `type` and an `id` you
 choose, 1 to 128 printable ASCII characters, and its `result` record repeats that id. A request that
 reuses the id of one still in flight is refused with `USAGE_INVALID`, in a result under that same
-id. Requests run one at a time in arrival order, so results come back in that order. `message`,
-`presence` and `gap` records can arrive between results, so match each result by its id. A missing
-field, a field the type does not take or a malformed value refuses with `USAGE_INVALID` before the
-session sees the request. A channel must be a valid channel name with no `*` or `>`, and a role a
+id that follows the first request's result. Requests run one at a time in arrival order, and a
+refusal waits its turn too, so every `result` and `error` record comes back in the order its line
+arrived. `message`, `presence` and `gap` records can arrive between results, so match each result
+by its id. A missing field, a field the type does not take or a malformed value refuses with
+`USAGE_INVALID` before the session sees the request. A channel must be a valid channel name with no `*` or `>`, and a role a
 valid role name.
 
 | `type` | Fields | Result |

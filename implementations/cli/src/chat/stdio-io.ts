@@ -6,7 +6,7 @@
  */
 import { StringDecoder } from "node:string_decoder";
 import type { Readable, Writable } from "node:stream";
-import { MAX_REQUEST_LINE, StdioParticipant, serializeRecord } from "./stdio.js";
+import { MAX_REQUEST_LINE, StdioParticipant } from "./stdio.js";
 import type { AdmittedChatSession, CloseReport } from "./session.js";
 
 /** Bound on buffered output records waiting for a slow reader before input is paused. Provisional. */
@@ -140,7 +140,7 @@ export async function runStdio(opts: {
     const participant = new StdioParticipant(session, write, (close) => resolveEnded(close));
     const framer = new LineFramer(
       (line) => participant.acceptLine(line),
-      () => write(serializeRecord({ schemaVersion: 1, type: "error", id: null, error: { code: "USAGE_INVALID", message: `request line exceeds ${MAX_REQUEST_LINE} characters; discarded` } })),
+      () => participant.refuseLine({ code: "USAGE_INVALID", message: `request line exceeds ${MAX_REQUEST_LINE} characters; discarded` }),
     );
 
     return await new Promise<CloseReport | undefined>((resolve) => {
