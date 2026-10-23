@@ -425,6 +425,22 @@ try {
     namedManager,
   );
 
+  // An empty manager pidfile records no pid, so nothing is signalled and no manager could have reaped
+  // its agents. Bare down clears the husk and must not print the legacy spare warning (#3553).
+  const huskRoot = mkdtempSync(join(tmpdir(), "cotal-empty-manager-pidfile-"));
+  mkdirSync(join(huskRoot, ".cotal"), { recursive: true });
+  const huskPidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: huskRoot, space: "main" });
+  writeFileSync(huskPidPath, "", { mode: 0o600 });
+  recordMesh({ space: "main", server: "nats://127.0.0.1:1", root: huskRoot, mode: "open", origin: "up", ts: "2026-07-27T00:00:00.000Z" });
+  const husk = await bareDownIn(huskRoot);
+  check(
+    "bare down over an empty manager pidfile clears it without the legacy spare warning",
+    husk.error === undefined && !husk.exitCode && /manager had an empty pidfile/.test(husk.out) &&
+      !/manager version could not be verified/.test(husk.out) && !existsSync(huskPidPath),
+    husk,
+  );
+  rmSync(huskRoot, { recursive: true, force: true });
+
   // A pinned record can become ESRCH-dead before the manager policy hook runs. That path performs
   // no signal and therefore needs neither spare capability nor destructive intent. It must clear the
   // stale pid + identity pair without invoking the hook.

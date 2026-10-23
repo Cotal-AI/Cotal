@@ -595,6 +595,7 @@ export function writePidPair(
 
 /** What {@link verifyIdentityPin} found for one pidfile. */
 export type PinVerdict =
+  | { kind: "no-pid" }        // the pidfile is absent, empty or holds no pid: there is nothing to verify
   | { kind: "legacy" }        // no sibling: a pre-identity record. Windows launches write a sibling (#1437)
   | { kind: "match"; record: ProcessIdentityRecord } // pinned, and the live process carries the recorded start
   | { kind: "gone" }          // pinned, and the pid is ESRCH-dead: the recorded process is gone
@@ -606,6 +607,7 @@ export type PinVerdict =
 /**
  * THE open-verify step every teardown runs BEFORE signalling (#969). Read the pidfile's bare pid,
  * then the sibling pin, and adjudicate the pairing:
+ *   - no-pid              -> no pid is recorded, so there is no process to verify or signal
  *   - legacy              -> the caller warns and signals for upgrade compatibility
  *   - match               -> safe to signal; the process behind the pid is the recorded one
  *   - gone                -> ESRCH-proven dead; the caller may clear the record
@@ -616,14 +618,9 @@ export type PinVerdict =
  * from it here so the pairing check cannot drift from however the caller read the pid.
  */
 export function verifyIdentityPin(pidfilePath: string, tokenAt: ProcessStartTokenReader = defaultStartToken): PinVerdict {
-  let rawPid: string;
-  try {
-    rawPid = readFileSync(pidfilePath, "utf8");
-  } catch {
-    return { kind: "legacy" }; // no pidfile at all: nothing is pinned; callers treat as absent
-  }
-  const pidRead = parsePid(rawPid);
-  if (pidRead === undefined) return { kind: "legacy" }; // husk/unattributable: existing callers own it
+  const rawPid = readPidfile(pidfilePath);
+  const pidRead = rawPid === undefined ? undefined : parsePid(rawPid);
+  if (pidRead === undefined) return { kind: "no-pid" };
   let rawPin: string;
   try {
     rawPin = readFileSync(identityPinPath(pidfilePath), "utf8");
