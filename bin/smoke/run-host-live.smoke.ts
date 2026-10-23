@@ -377,9 +377,10 @@ try {
               COTAL_ACCEPTED_TOKEN: asked.issued?.acceptedToken ?? "",
             },
           }).then(({ stdout }) => {
-            const out = JSON.parse(stdout) as { command?: unknown; outcome?: unknown; result?: { kind?: unknown; action?: unknown; result?: { token?: unknown; answerId?: unknown } } };
+            const out = JSON.parse(stdout) as { command?: unknown; outcome?: unknown; target?: { run?: unknown }; result?: { kind?: unknown; action?: unknown; result?: { token?: unknown; answerId?: unknown } } };
             const reply = out.result?.result;
-            return out.command === "run" && out.outcome === "ok" && out.result?.kind === "run-receipt" && out.result.action === "answer"
+            // The manager's answer does not repeat the run id, so the receipt names the run the command did.
+            return out.command === "run" && out.outcome === "ok" && out.target?.run === runId && out.result?.kind === "run-receipt" && out.result.action === "answer"
               && typeof reply?.token === "string" && typeof reply.answerId === "string"
               ? { ok: true as const, token: reply.token, answerId: reply.answerId }
               : { ok: false as const, error: `the CLI returned no answer coordinate: ${stdout}` };

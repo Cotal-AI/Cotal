@@ -4920,8 +4920,8 @@ each live manager.
 pin never falls back to another manager. Rich run reports label an explicit pin
 as the requested manager, and the JSON target carries `requestedManagerInstance`.
 Follow-up commands printed by the CLI retain the same explicit pin and fill
-in a returned run ID only when it matches the native run-token shape. Keep the
-pin on later status, answer and resume calls.
+in the run ID the command named or the manager returned, only when it matches the native
+run-token shape. Keep the pin on later status, answer and resume calls.
 
 A hosted verb the manager refuses reports the outcome and code as other commands do, and with
 `--json` as one refusal envelope on stdout. A refusal the manager makes before acting, such as a

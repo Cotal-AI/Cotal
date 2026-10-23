@@ -807,7 +807,7 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
     ...(verb === "amend" ? { amend: true } : {}),
   });
-  runReceipt(verb, space, result, values);
+  runReceipt(verb, space, result, values, a);
 }
 
 /** `cotal run <start|resume|ps|journal|answer|amend>` — dispatch. The manager hosts by default;
