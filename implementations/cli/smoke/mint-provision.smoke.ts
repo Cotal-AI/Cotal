@@ -476,6 +476,11 @@ try {
     const r1 = await runMint(["x", "--profile", "observer", "--expires-in", "3600", "--expires-at", "2000000000", "--out", out]);
     check("--expires-in with --expires-at exits 1 with the reason", r1.code === 1 && /choose --expires-in or --expires-at, not both/.test(r1.out), r1.out);
     check("  and mints nothing", !existsSync(out));
+    // A past or present expiry used to write a credential the broker already refuses.
+    for (const at of ["1", String(Math.floor(Date.now() / 1000))]) {
+      const r = await runMint(["x", "--profile", "observer", "--expires-at", at, "--out", out]);
+      check(`--expires-at ${at === "1" ? "in the past" : "now"} exits 1 with the reason and mints nothing`, r.code === 1 && /--expires-at is not in the future/.test(r.out) && !existsSync(out), r.out);
+    }
     for (const bad of ["0", "-5", "1.5", "abc"]) {
       // A leading-dash value needs the `=` form to get past parseArgs' strict token parser; the
       // point is that it reaches THE COMMAND's validation and is refused there. The refusal does not
