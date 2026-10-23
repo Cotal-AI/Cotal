@@ -227,7 +227,7 @@ try {
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
 
   // A user interrupt after a wake does NOT re-drive it: an explicit Stop is a turn someone ENDED,
-  // not one that failed, so the nudge is dismissed the same way the surfaced batch is (ackSurfaced),
+  // not one that failed, so the nudge is dismissed the same way the surfaced batch is (acked),
   // never re-armed the way a genuine failure re-arms it above.
   await pub.multicast("@Otto second look", { channel: "team", mentions: ["Otto"] });
   await waitForPrompts(7);
@@ -422,7 +422,7 @@ try {
     // with nothing pending, so no drive fires), then hold `busy` across the publish window: the
     // incoming handler buffers while busy, so the pair cannot drive its own prompt_async. The
     // human prompt that follows is the one frame that carries both — `injectIntoPrompt` is gated
-    // on driving/awaitingTurnEnd, not on busy.
+    // on driving and an open batch, not on busy.
     await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
     await sleep(300);
     await fire(hooks, { type: "session.status", properties: { sessionID: SID, status: { type: "busy" } } });
@@ -715,6 +715,26 @@ try {
     check(
       "2.x: session.execution.succeeded ends the turn (a later DM drives a second prompt)",
       prompts2.length === 2 && prompts2[1]?.body.text?.includes("second turn via 2.x") === true,
+      prompts2,
+    );
+
+    // A native prompt while the driven batch is open is left as typed, as on 1.x: that batch is
+    // still in the inbox, so injecting would carry it a second time, and the turn end would then
+    // ack a message no turn was driven for. The waiting message goes out as its own prompt.
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 3 }, data: { sessionID: SID2 } });
+    await pub2.unicast(otto2Id!, "third waits behind the open batch");
+    await sleep(700); // ingest; nothing drives while the execution holds the session
+    const promptHook2 = ctx2.sessionHooks.get("prompt") as (e: { sessionID: string; prompt: { text: string } }) => void;
+    const typed2 = { sessionID: SID2, prompt: { text: "typed while a batch is open" } };
+    promptHook2(typed2);
+    check("2.x: a native prompt while a driven batch is open is left as typed", typed2.prompt.text === "typed while a batch is open", typed2.prompt.text);
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 4 }, data: { sessionID: SID2 } });
+    for (let i = 0; i < 50 && prompts2.length < 3; i++) await sleep(100);
+    check(
+      "2.x: the turn end acks only the driven batch, and the waiting message drives its own prompt",
+      prompts2.length === 3 &&
+        prompts2[2]?.body.text?.includes("third waits behind the open batch") === true &&
+        prompts2[2]?.body.text?.includes("second turn via 2.x") === false,
       prompts2,
     );
 

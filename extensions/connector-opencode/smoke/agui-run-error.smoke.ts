@@ -16,7 +16,7 @@
  * could not testify here: the claim is about what an observer of the channel sees, in order.
  *
  * **WHAT WOULD MAKE THIS THE WRONG EXPERIMENT**, named before the run rather than discovered after:
- *   - `session.error` returns early unless a turn is in flight (`busy || awaitingTurnEnd`), so a
+ *   - `session.error` returns early unless a turn is in flight (`busy || batch.open`), so a
  *     phase that forgets to drive `session.status: busy` first would exercise nothing and every
  *     ordering cell below would grade an absence. The `control:` cells fail in that case.
  *   - an emitter that never started publishes nothing, and a suite that reads zero everywhere

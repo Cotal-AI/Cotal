@@ -111,7 +111,8 @@ in-process plugin does everything.
   the role. A failed turn or a stop releases the batch and a crashed seat stops renewing it, so
   the broker redelivers it after one ack wait; a finished turn or a user Stop acks it. On 2.x only
   the end of an execution that started after the batch was submitted settles it, so an earlier end,
-  or a replay of one, leaves the batch held. Messages
+  or a replay of one, leaves the batch held. A prompt typed while a batch is open runs as typed on
+  both lines, and messages that arrived behind the batch go out once its turn ends. Messages
   still queued behind the turn are not renewed, and a full inbox evicts those, never the batch the
   turn carries. Renewal stops once the seat can no longer vouch that it holds a message, for
   example after its link was down for longer than the ack wait, and the broker may then
