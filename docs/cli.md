@@ -1414,7 +1414,9 @@ come from the preserved cut, so no selector can rebind them. An artifact of anot
 `CONFLICT` (exit 2) and names both spaces; the preserved cut is not changed. A receipt means the
 active journal was written. Its `seatResume` field says whether retained seats were handed to the
 manager's resume (`requested`) or dropped by a registry restore (`not-requested`). It does not
-confirm that any seat joined. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
+confirm that any seat joined. `--store-dir` names a store the restore creates, so a path that
+already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
+is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
 maintenance journal refuses before the restore takes its maintenance lock, so the folder keeps no
 state from the attempt, and `up --restore` refuses the same way. A restore that fails after it
 began names its attempt in the text and in the JSON target, which also carries `journalState`, and
