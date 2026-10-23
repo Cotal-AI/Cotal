@@ -5290,7 +5290,9 @@ or unknown outcome and never repeats effects. A failed summary write also keeps 
 
 `team boot --foreground` holds the stack's lifetime in the terminal. Ctrl-C or SIGTERM invokes the
 same guarded whole-stack stop as bare `cotal down`, without force killing members. Terminal loss
-or an external kill is not a confirmed stop. Foreground apply takes neither JSON nor plain output;
+or an external kill is not a confirmed stop. When a `cotal down` from another terminal completes,
+it prints `Foreground stack released` and exits 0, as a foreground `up` does, although its start
+receipt was partial. Foreground apply takes neither JSON nor plain output;
 a dry-run remains a finite preview. It does not establish native apply readiness or platform support.
 `up -f --foreground` still refuses on its retained launcher path.
 

@@ -452,7 +452,9 @@ function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM"): Promis
 /** Foreground controller stack: the terminal holds the stack's lifetime until SIGINT or SIGTERM,
  *  which runs the same guarded whole-stack stop as bare `down`. `start`, when given, is the startup
  *  this terminal already holds: a signal during it lets the start settle, then runs that stop. A
- *  failed start still runs the stop, and its failure is thrown once the stop returns. */
+ *  failed start still runs the stop, and its failure is thrown once the stop returns. The hold's end
+ *  sets the exit code: 0 when another command completed the stop or preserve, 130 or 143 after a
+ *  signal, whatever the start receipt set. */
 export async function holdForegroundStack(root: string, start?: () => Promise<void>): Promise<void> {
   if (start) {
     let requested: "SIGINT" | "SIGTERM" | undefined;
@@ -485,6 +487,7 @@ export async function holdForegroundStack(root: string, start?: () => Promise<vo
       process.off("SIGINT", interrupt); process.off("SIGTERM", terminate);
       clearInterval(lifetime);
       process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", terminalWidth(process.stderr))}\n`);
+      process.exitCode = 0;
       resolveHold();
     }, 1000);
     const stop = (signal: "SIGINT" | "SIGTERM") => {
