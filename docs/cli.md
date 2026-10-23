@@ -2742,6 +2742,9 @@ may read DM history: on an open mesh, or with the space signer's audit credentia
 reads local configuration and does not contact the broker to check its authentication requirements.
 So an address no registration names is reported as unknown, never as open; adding the space with
 `cotal space add` checks the broker.
+In a folder whose `.cotal/` names no space, as after `space forget`, the held default `main` is
+assumed. The report keeps `Mesh: main` and says under it that the default was assumed, and the JSON
+`target` is `{"root": <folder>, "assumed": "main"}`.
 An unregistered `--space` is refused even with `--server`. Server addresses in the identity report
 and connection refusals omit URL user information, query strings and fragments, and escape terminal
 controls. Addresses need a host and a supported broker scheme. TCP addresses cannot have a path;
@@ -6528,7 +6531,9 @@ connects to the broker, redeems enrollment, provisions or allocates an agent. Th
 is currently partial: it retains requested selectors but cannot resolve host-local persona and
 cwd facts offline. It does not substitute the caller's files. With `--foreground`, the preview
 resolves the local persona, harness precedence and physical working directory. Binary, login,
-model-policy and live authority checks are labeled not performed.
+model-policy and live authority checks are labeled not performed. In a folder whose `.cotal/` names
+no space, as after `space forget`, the preview keeps `Mesh: main`, says under it that the held
+default was assumed, and its JSON `target` names the folder as `root` and the space as `assumed`.
 
 `spawn --foreground --enrollment-file <private-file> --space <name>` uses the existing one-seat
 foreground enrollment path. The file is opened with protected ownership/mode and bounded input

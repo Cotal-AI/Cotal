@@ -1,5 +1,5 @@
 import { resolveAuthProvider, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
-import { brokerAddressForDisplay, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Report, type Section } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 
 export const whoamiFlags = [spaceFlag, serverFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
@@ -48,7 +48,10 @@ export async function whoami(args: ParsedArgs): Promise<void> {
     if (isMeshRegistryError(error)) throw registryFailure(error);
     throw error;
   }
-  const target = { space: t.space };
+  // A folder whose records name no space was given the held default only to report on it, so the
+  // target names the folder and the space it assumed.
+  const assumed = t.namesNoSpace === true;
+  const target = assumed ? { root: t.root, assumed: t.space } : { space: t.space };
   recordOperationSpace(t.space);
   const warnings: OutputWarning[] = [];
   const server = brokerAddressForDisplay(t.server);
@@ -107,7 +110,7 @@ export async function whoami(args: ParsedArgs): Promise<void> {
         ? { message: "whoami could not tell what this identity may do at that address; the warning names why", remedy: "add the space with `cotal space add <name> --server <url> --root <dir>`, which checks the broker, then run `cotal whoami --space <name>`" }
         : { message: "whoami could not read this identity's grant; the warning names why", remedy: "run `cotal whoami` on the machine that hosts the space's auth service" } } : {}),
     },
-    whoamiView,
+    (r) => whoamiView(r, assumed),
   );
 }
 
@@ -122,7 +125,7 @@ const KIND_TEXT: Record<WhoamiResult["identity"]["kind"], string> = {
   unknown: "unknown: this address is not registered here, and whoami does not contact the broker",
 };
 
-function whoamiView(r: WhoamiResult): Report {
+function whoamiView(r: WhoamiResult, assumed: boolean): Report {
   const id = r.identity;
   const rows: (readonly [string, Cell])[] = [
     ["space", { text: r.space, tone: "selected" }],
@@ -138,5 +141,8 @@ function whoamiView(r: WhoamiResult): Report {
   if (id.kind === "user" && !id.subject) hints.push({ text: "sign in with `cotal login`", tone: "hint" });
   else if (id.grant === "not-granted") hints.push({ text: "the space's operator grants this identity with `cotal actor grant cli`", tone: "hint" });
   if (id.kind === "no-credential") hints.push({ text: "commands against this space need `--creds <file>`", tone: "hint" });
-  return { sections: [{ title: "Identity and access", blocks: [{ kind: "fields", rows }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] }] };
+  const identity: Section = { title: "Identity and access", blocks: [{ kind: "fields", rows }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] };
+  // The heading names the space the folder was given; the line under it says it was only assumed.
+  if (!assumed) return { sections: [identity] };
+  return { space: r.space, sections: [{ blocks: [{ kind: "lines", lines: [{ text: `this folder names no space; the held default ${r.space} was assumed`, tone: "hint" }] }] }, identity] };
 }
