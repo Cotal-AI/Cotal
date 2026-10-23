@@ -260,7 +260,37 @@ if (mode === "plain" || mode === "stdio") {
     await run;
   }
 
-  console.log("8. /history on an open mesh reads the channel itself; the other modes ask the delivery daemon");
+  console.log("8. a typed @name that reaches no one is refused at :to, and the numbered list opens");
+  {
+    const close: CloseReport = { retirement: "retired", connectionClosed: "confirmed", message: "" };
+    const { session } = standIn(close);
+    const asked: unknown[] = [];
+    Object.assign(session, {
+      connection: async () => ({ outcome: "failed", message: "not read" }),
+      roster: async () => ({ outcome: "ok", value: { view: "current", rows: [{ id: "u_a.bob", name: "bob", kind: "agent", status: "idle" }] } }),
+      resolveDm: async (to: unknown) => {
+        asked.push(to);
+        return to === "bob" ? { outcome: "ok", value: { id: "u_a.bob", name: "bob" } } : { outcome: "refused", code: "TARGET_NOT_FOUND", message: `no peer "${String(to)}" in this space` };
+      },
+    });
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let printed = "";
+    output.setEncoding("utf8").on("data", (d: string) => { printed += d; });
+    const run = runPlain({ session, input, output, width: Number.POSITIVE_INFINITY });
+    input.write(":to @niemand\n");
+    input.write("\n");
+    input.write(":to @bob\n");
+    input.write("/quit\n");
+    await Promise.race([run, new Promise<undefined>((resolve) => setTimeout(resolve, 5_000))]);
+    check("`:to @niemand` is refused with the reason a send to it would get, and is never the recipient", printed.includes('no peer "niemand" in this space') && !printed.includes("[to DM niemand]"), printed);
+    check("...and the numbered list opens with the roster", printed.includes("1. DM bob"), printed);
+    check("a name that resolves is chosen, and each choice was resolved once", printed.includes("[to DM bob]") && JSON.stringify(asked) === JSON.stringify(["niemand", "bob"]), { asked, printed });
+    input.end();
+    await run;
+  }
+
+  console.log("9. /history on an open mesh reads the channel itself; the other modes ask the delivery daemon");
   {
     const reads: string[] = [];
     const page = { items: [], complete: true };

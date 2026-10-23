@@ -4074,7 +4074,9 @@ and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
 In `--plain`, a line you type becomes the draft, and it is sent only when you answer `y` to the
 question that follows. `:to` lists the recipients by number, and `:to <target>` sets one directly:
 `#<channel>`, `@<name>`, `@<owner>.<actor>` or `role:<role>`. A target in another form, such as a
-name without `@`, is refused with that list of forms, and the numbered list opens. A `#<channel>`
+name without `@`, is refused with that list of forms, and the numbered list opens. An `@<name>`
+that names no present peer and no sender the session heard from is refused there with the reason a
+send to it would get, and the numbered list opens. A `#<channel>`
 holding `*` or `>` is refused with the sentence `cotal send -c` gives. In the list, an empty line
 keeps the current recipient, and `/quit` leaves. `:multi` starts a message of several lines, which a line
 holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
