@@ -1247,6 +1247,10 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.equal(managerLabel(row("factory", { host: "pc" }, "supervisor (tmux)")), "factory", "a named manager shows by its name");
   assert.equal(managerLabel(row("manager", { host: "pc" }, "supervisor (tmux)")), "pc/tmux", "an unnamed one shows by <host>/<runtime>");
   assert.equal(managerLabel(row("manager", { host: "pc" }, "busy")), "pc", "without a runtime in its activity, by its host");
+  assert.equal(managerLabel(row("manager", {}, "supervisor (orca)")), "orca", "without a host, as a manager started by a cotal before 0.100.0, by its runtime");
+  const { CommandFailure, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
+  const hostless = new CommandFailure("refused", "PERMISSION_DENIED", "2 of your managers are live, and this command needs exactly one of them", { native: { detail: { managers: [{ name: "orca", instanceId: "c".repeat(30), host: null, activity: "supervisor (orca)", since: null }] } } });
+  assert.match(renderReport(commandFailureReport(hostless), "plain"), /orca\s+c{30}\s+not reported \(started by an older cotal\)\s+supervisor \(orca\)/, "a manager with no host in its presence reads as started by an older cotal, not as a bare dash");
   const candidates = [
     { name: "factory", instanceId: "a".repeat(30), host: "pc", activity: "supervisor (tmux)", since: null },
     { name: "pc/pty", instanceId: "b".repeat(30), host: "pc", activity: "supervisor (pty)", since: null },

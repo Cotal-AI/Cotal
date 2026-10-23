@@ -346,11 +346,12 @@ export function commandFailureReport(failure: CommandFailure): Report {
     ...(typeof native?.unconfirmed === "string" ? [{ state: "unconfirmed", name: native.unconfirmed }] : []),
     ...names(native?.remaining).filter((name) => name !== native?.refused && name !== native?.unconfirmed).map((name) => ({ state: "remaining or unresolved", name })),
   ];
-  // The live managers a refused selection could not choose between, one row each.
-  const text = (value: unknown): string => typeof value === "string" && value ? value : "-";
+  // The live managers a refused selection could not choose between, one row each. Only a manager
+  // started by a cotal before 0.100.0 puts no host in its presence.
+  const text = (value: unknown, absent = "-"): string => typeof value === "string" && value ? value : absent;
   const managers = (Array.isArray(native?.managers) ? native.managers : []).flatMap((item) => {
     const row = object(item);
-    return typeof row?.instanceId === "string" ? [{ name: text(row.name), instanceId: row.instanceId, host: text(row.host), activity: text(row.activity), since: text(row.since) }] : [];
+    return typeof row?.instanceId === "string" ? [{ name: text(row.name), instanceId: row.instanceId, host: text(row.host, "not reported (started by an older cotal)"), activity: text(row.activity), since: text(row.since) }] : [];
   });
   return { ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}), sections: [
     { title: failure.outcome === "unknown" ? "Outcome unconfirmed" : failure.outcome === "partial" ? "Partly completed" : failure.outcome === "refused" ? "Request refused" : "Request failed", blocks: [{ kind: "lines", lines: [{ text: failure.message, tone: failure.outcome === "unknown" || failure.outcome === "partial" ? "waiting" : "failed" }] }, { kind: "fields", rows: fields }] },

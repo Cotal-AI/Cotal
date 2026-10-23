@@ -21,12 +21,13 @@ export interface ManagerCandidate {
 }
 
 /** How a manager is shown: the name it was started with, or `<host>/<runtime>` for one left at the
- *  default name, with the runtime read from its `supervisor (<runtime>)` activity. */
+ *  default name, with the runtime read from its `supervisor (<runtime>)` activity. A manager whose
+ *  presence names no host, as one started by a cotal before 0.100.0, is shown by its runtime. */
 export function managerLabel(p: Presence): string {
   if (p.card.name !== DEFAULT_MANAGER_NAME) return p.card.name;
   const host = presenceHost(p);
   const runtime = /^supervisor \((.+)\)$/.exec(p.activity ?? "")?.[1];
-  return host !== null && runtime ? `${host}/${runtime}` : host ?? p.card.name;
+  return host !== null && runtime ? `${host}/${runtime}` : host ?? runtime ?? p.card.name;
 }
 
 const presenceHost = (p: Presence): string | null => typeof p.card.meta?.host === "string" && p.card.meta.host ? p.card.meta.host : null;
