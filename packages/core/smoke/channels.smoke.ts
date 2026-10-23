@@ -2,6 +2,8 @@
  * Channel-registry test (open mode — no auth). Spins up its OWN nats-server and verifies the
  * registry + replay mechanism end-to-end:
  *   - registry round-trip: seed → read, effective-replay precedence, merge-on-write, validation;
+ *   - an entry that does not decode is reported by the registry read, and `cotal up`'s default write
+ *     refuses to overwrite defaults that do not decode;
  *   - concurrent writers on different fields all keep their field, and a write that keeps losing
  *     the revision race refuses rather than overwriting;
  *   - replay on join: a replay channel backfills history (as `historical`), a no-replay one doesn't;
@@ -22,7 +24,7 @@ import type { KV } from "@nats-io/kv";
 import {
   CotalEndpoint, seedChannelRegistry, readChannelRegistry, deleteChannels, clearChannel, effectiveReplay, effectiveDeliveryClass,
   ensureDefaultDeliveryClass, validateChannelConfig, mintLifecycleUid, openChannelRegistry, writeChannelConfig, writeChannelDefaults,
-  ChannelRegistryConflict,
+  ChannelRegistryConflict, UndecodableChannelDefaults,
   isReachable, chatSubject, DEV_OWNER, type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -76,7 +78,7 @@ try {
   // ---- registry round-trip ----
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { log: { replay: true }, incident: { replay: true }, chat: { replay: false }, review: { description: "Design critique", instructions: "Be specific." } } } });
   const reg = await readChannelRegistry({ servers, space });
-  check("registry round-trips", reg.defaults?.replay === false && reg.channels?.log.replay === true && reg.channels?.review.description === "Design critique");
+  check("registry round-trips", reg.defaults?.replay === false && reg.channels?.log.replay === true && reg.channels?.review.description === "Design critique" && reg.undecodable.length === 0);
   check("effective replay precedence", effectiveReplay(reg.channels!.log, reg.defaults) === true && effectiveReplay(reg.channels!.review, reg.defaults) === false && effectiveReplay(undefined, undefined) === true);
   await seedChannelRegistry({ servers, space, file: { channels: { review: { description: "Critique v2" } } } });
   const reg2 = await readChannelRegistry({ servers, space });
@@ -138,6 +140,30 @@ try {
   check("idempotent re-write is a no-op", (await ensureDefaultDeliveryClass({ servers, space: dcSpace, deliveryClass: "durable" })) === false);
   check("clobber-safe: an existing class wins over the profile default", (await ensureDefaultDeliveryClass({ servers, space: dcSpace, deliveryClass: "live" })) === false
     && (await readChannelRegistry({ servers, space: dcSpace })).defaults?.deliveryClass === "durable");
+
+  // ---- an entry that does not decode is reported, never read as absent (#3526) ----
+  {
+    const badSpace = `${space}-undecodable`;
+    const nc = await connect({ servers });
+    try {
+      const kv = await openChannelRegistry(nc, badSpace, { create: true });
+      await kv.put("good", JSON.stringify({ description: "a good channel" }));
+      await kv.put("garbled", "not json");
+      await kv.put("=defaults", "not json");
+      for (const directGet of [false, true]) {
+        const bad = await readChannelRegistry({ servers, space: badSpace, directGet });
+        check(`a ${directGet ? "Direct Get" : "scan"} registry read reports each entry that does not decode, with its error, outside defaults and channels`,
+          bad.defaults === undefined && Object.keys(bad.channels ?? {}).join() === "good"
+            && bad.undecodable.map((u) => u.key).sort().join() === "=defaults,garbled" && bad.undecodable.every((u) => u.error.length > 0), bad);
+      }
+      await assert.rejects(ensureDefaultDeliveryClass({ servers, space: badSpace, deliveryClass: "live" }), UndecodableChannelDefaults);
+      const kept = await kv.get("=defaults");
+      check("ensureDefaultDeliveryClass refuses to write over defaults that do not decode and leaves them in place",
+        kept !== null && new TextDecoder().decode(kept.value) === "not json");
+    } finally {
+      await nc.drain();
+    }
+  }
 
   // ---- replay on join ----
   const A = new CotalEndpoint({ space, servers, card: { name: "A", kind: "agent", id: "A_pub" }, channels: ["log", "chat", "general", "incident"], lifecycleUid: mintLifecycleUid() });

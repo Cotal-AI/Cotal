@@ -4081,6 +4081,15 @@ retained messages. In `--json`, `result.removed` says whether a saved entry was 
 removal nor replay settings revoke grants or stop participants; future posts can create retained
 history again.
 
+A registry entry that does not decode, such as a raw put that is not a JSON object, is reported
+with its decode error as a warning on stderr. In `--json` it is a `CHANNEL_ENTRY_UNDECODABLE`
+warning, and `result.registry.undecodable` lists it. The inventory reports every such entry. `show`
+reports its channel's entry and the space defaults, and its Metadata row says `does not decode`.
+`defaults` reports the space defaults. Endpoints ignore such an entry until a valid one is saved:
+`set` or `defaults` with a setting replaces it, and `remove` deletes it. `cotal up` leaves space
+defaults that do not decode in place and warns, and does not write its default delivery class over
+them.
+
 
 | Flag | Default | Meaning |
 |---|---|---|

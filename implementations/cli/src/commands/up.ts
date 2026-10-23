@@ -43,6 +43,7 @@ import {
   presenceBucket,
   seedChannelRegistry,
   ensureDefaultDeliveryClass,
+  UndecodableChannelDefaults,
   LEASE_TTL_MS,
   mkSecretDir,
   openPrivateAppend,
@@ -4027,12 +4028,14 @@ async function postStart(
   // discoverable on the wire, never inferred from the `?? "durable"` resolution fallback. Auth mode
   // (`setup` present ⇒ the delivery daemon is up) is local/self-hosted ⇒ `durable`; open mode has no
   // daemon and is live-only ⇒ `live`. Runs after the seed so an explicit `channels.json` default wins.
-  await ensureDefaultDeliveryClass({
-    servers: server,
-    space,
-    creds: setup?.creds,
-    deliveryClass: setup ? "durable" : "live",
-  });
+  // Saved defaults that do not decode are left for the operator to replace, and `up` carries on.
+  const deliveryClass = setup ? "durable" : "live";
+  try {
+    await ensureDefaultDeliveryClass({ servers: server, space, creds: setup?.creds, deliveryClass });
+  } catch (e) {
+    if (!(e instanceof UndecodableChannelDefaults)) throw e;
+    console.error(c.yellow(`! ${e.message}; endpoints ignore it until you save valid defaults with cotal channel defaults --delivery ${deliveryClass}`));
+  }
 }
 
 /** A resume or restore skips `postStart` because the preserved store already holds every canonical

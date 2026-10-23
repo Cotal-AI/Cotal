@@ -6,7 +6,8 @@
  * and as lines, and a retention gap (on an open broker, one sender posts past the chat stream's
  * per-sender limit). The user-auth result rendering is driven against a stand-in endpoint. On the
  * same broker, `cotal channel remove` says whether it removed a saved entry, and on the open broker
- * `cotal channel members` refuses with `UNSUPPORTED`.
+ * `cotal channel members` refuses with `UNSUPPORTED` and `cotal channel` names a registry entry that
+ * does not decode.
  * smoke:ps-user-mode and smoke:user-spawn:live exercise the native user-auth history path.
  *
  * Isolation: every CLI child gets a sandboxed HOME / XDG_CONFIG_HOME / TMPDIR / COTAL_HOME, and
@@ -21,12 +22,15 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import {
   BACKUP_MAX_MSGS_PER_SUBJECT,
+  CHANNEL_DEFAULTS_KEY,
   CotalEndpoint,
   createSpaceAuth,
+  dialerFor,
   isReachable,
   mintCreds,
   mintLifecycleUid,
   newIdentity,
+  openChannelRegistry,
   provisionAgent,
   seedChannelRegistry,
   serverConfig,
@@ -355,6 +359,28 @@ try {
     check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
     const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
+  }
+
+  // ── channel names a registry entry that does not decode (#3526); last, as it garbles the defaults ──
+  {
+    const nc = await dialerFor(openServers)({ servers: openServers });
+    try {
+      const kv = await openChannelRegistry(nc, openSpace);
+      await kv.put("garbled", "not json");
+      await kv.put(CHANNEL_DEFAULTS_KEY, "not json");
+    } finally {
+      await nc.drain();
+    }
+    const named = (stderr: string, key: string) => stderr.includes(`entry ${JSON.stringify(key)} does not decode`);
+    const listed = await run(["channel", "--space", openSpace]);
+    check("channel names each registry entry that does not decode", listed.status === 0 && named(listed.stderr, "garbled") && named(listed.stderr, CHANNEL_DEFAULTS_KEY), shown(listed));
+    const json = await run(["channel", "--space", openSpace, "--json"]);
+    const keys = (json.envelope?.warnings ?? []).filter((w) => w.code === "CHANNEL_ENTRY_UNDECODABLE").map((w) => ((w as { target?: { key?: string } }).target?.key)).sort();
+    check("in --json each one is a CHANNEL_ENTRY_UNDECODABLE warning", json.status === 0 && keys.join() === `${CHANNEL_DEFAULTS_KEY},garbled`, shown(json));
+    const show = await run(["channel", "show", "garbled", "--space", openSpace]);
+    check("channel show says the entry does not decode, never no saved entry", show.status === 0 && /Metadata:\s+does not decode/.test(show.stdout) && named(show.stderr, "garbled"), shown(show));
+    const defaults = await run(["channel", "defaults", "--space", openSpace]);
+    check("channel defaults names the defaults entry and no channel's", defaults.status === 0 && named(defaults.stderr, CHANNEL_DEFAULTS_KEY) && !named(defaults.stderr, "garbled"), shown(defaults));
   }
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});

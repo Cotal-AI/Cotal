@@ -57,7 +57,8 @@ export function validateChannelDefaults(d: ChannelDefaults): void {
 /** Decode one registry entry and hold it to the checks its writer ran: a raw or foreign put can
  *  bypass {@link writeChannelConfig}, so a value that does not parse, is not a JSON object, or
  *  fails {@link validateChannelDefaults} (the defaults key) or {@link validateChannelConfig}
- *  throws, and every reader drops it as it drops a value that does not parse. */
+ *  throws. The policy readers drop such an entry, so its key resolves to the default policy;
+ *  {@link readChannelRegistry} reports it. */
 export function decodeChannelEntry(e: KvEntry): ChannelConfig | ChannelDefaults {
   const value: unknown = e.json();
   if (typeof value !== "object" || value === null || Array.isArray(value))
@@ -120,7 +121,7 @@ export async function openChannelRegistry(
   return opts.create ? kvm.create(channelBucket(space)) : kvm.open(channelBucket(space));
 }
 
-/** Read one channel's config (or undefined if unset/deleted). */
+/** Read one channel's config (or undefined if unset, deleted or undecodable). */
 export async function readChannelConfig(
   kv: KV,
   channel: string,
@@ -128,7 +129,7 @@ export async function readChannelConfig(
   return decode(kv, channel);
 }
 
-/** Read the space-wide defaults (or undefined if unset). */
+/** Read the space-wide defaults (or undefined if unset or undecodable). */
 export async function readChannelDefaults(kv: KV): Promise<ChannelDefaults | undefined> {
   return decode(kv, CHANNEL_DEFAULTS_KEY);
 }
@@ -236,11 +237,16 @@ export async function seedChannelRegistry(opts: {
   }
 }
 
+/** {@link ensureDefaultDeliveryClass} found a space defaults entry that does not decode. Such an
+ *  entry is not unset, so nothing was written over it. */
+export class UndecodableChannelDefaults extends Error {}
+
 /** Write the space-wide default delivery class at space creation IF it is not already set (SPEC §4:
  *  `defaults.deliveryClass` MUST be on the wire so the effective default is discoverable, never
  *  inferred from the `?? "durable"` resolution fallback). Clobber-safe and idempotent: an explicit
  *  value already in the registry (e.g. seeded from a `channels.json` default) wins, so a re-up never
- *  overrides an operator's choice. Returns true if it wrote. Called by `cotal up` with the profile
+ *  overrides an operator's choice. Returns true if it wrote; a defaults entry that does not decode
+ *  throws {@link UndecodableChannelDefaults}. Called by `cotal up` with the profile
  *  class — local/self-hosted (auth, daemon present) ⇒ `durable`, open/dev (no daemon) ⇒ `live`. */
 export async function ensureDefaultDeliveryClass(opts: {
   servers: string;
@@ -251,7 +257,16 @@ export async function ensureDefaultDeliveryClass(opts: {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const kv = await openChannelRegistry(nc, opts.space, { create: true });
-    if ((await readChannelDefaults(kv))?.deliveryClass !== undefined) return false;
+    const entry = await kv.get(CHANNEL_DEFAULTS_KEY);
+    if (entry?.operation === "PUT") {
+      let defaults: ChannelDefaults;
+      try {
+        defaults = decodeChannelEntry(entry);
+      } catch (e) {
+        throw new UndecodableChannelDefaults(`the channel registry entry ${JSON.stringify(CHANNEL_DEFAULTS_KEY)} does not decode, so the default delivery class was not written over it: ${(e as Error).message}`);
+      }
+      if (defaults.deliveryClass !== undefined) return false;
+    }
     await writeChannelDefaults(kv, channelDeliveryDefaultPatch(opts.deliveryClass));
     return true;
   } finally {
@@ -289,9 +304,21 @@ export async function deleteChannels(opts: {
   }
 }
 
+/** A registry entry that is present but does not decode ({@link decodeChannelEntry}), and why. */
+export interface UndecodableChannelEntry {
+  key: string;
+  error: string;
+}
+
+/** The whole registry as read: the entries that decode, and those that do not, which `defaults`
+ *  and `channels` leave out. */
+export interface ChannelRegistryRead extends ChannelRegistryFile {
+  undecodable: UndecodableChannelEntry[];
+}
+
 /** Connect, read the whole registry (defaults + every channel entry) into a
- *  {@link ChannelRegistryFile}, disconnect. The read side of {@link seedChannelRegistry},
- *  used by `cotal channels list`. */
+ *  {@link ChannelRegistryRead}, disconnect. The read side of {@link seedChannelRegistry},
+ *  used by `cotal channel`. */
 export async function readChannelRegistry(opts: {
   servers: string;
   space: string;
@@ -304,7 +331,7 @@ export async function readChannelRegistry(opts: {
    *  that holds the bare `$JS.API.DIRECT.GET` row on the registry stream (the `operator` profile) and
    *  no CONSUMER.DELETE there: the default scan's consumer outlives the read by five minutes (#4091). */
   directGet?: boolean;
-}): Promise<ChannelRegistryFile> {
+}): Promise<ChannelRegistryRead> {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     // Read-only: never CREATE the bucket — a scoped read cred (operator) has no STREAM.CREATE, and a
@@ -313,6 +340,7 @@ export async function readChannelRegistry(opts: {
     const kv = await openChannelRegistry(nc, opts.space, { create: false });
     const channels: Record<string, ChannelConfig> = {};
     let defaults: ChannelDefaults | undefined;
+    const undecodable: UndecodableChannelEntry[] = [];
     try {
       // ONE pass: this was a `keys()` scan plus a per-key `get()`, so one round trip per channel.
       // A Direct Get to a missing stream has no responder, so its 404 comes from STREAM.INFO first.
@@ -320,27 +348,31 @@ export async function readChannelRegistry(opts: {
         ? (await kv.status(), (await lastKvEntries(kv)).filter((e) => e.operation !== "DEL" && e.operation !== "PURGE"))
         : await liveKvEntries(kv);
       for (const e of entries) {
-        if (e.key === CHANNEL_DEFAULTS_KEY) {
-          try { defaults = decodeChannelEntry(e); } catch { /* garbled defaults — treat as unset */ }
+        let value: ChannelConfig | ChannelDefaults;
+        try {
+          value = decodeChannelEntry(e);
+        } catch (err) {
+          undecodable.push({ key: e.key, error: (err as Error).message });
           continue;
         }
-        let cfg: ChannelConfig | undefined;
-        try { cfg = decodeChannelEntry(e); } catch { /* skip undecodable */ }
+        if (e.key === CHANNEL_DEFAULTS_KEY) {
+          defaults = value;
+          continue;
+        }
         // Channel tokens such as `__proto__` are valid. Define an own data property instead of
         // invoking Object.prototype setters, while preserving the reader's normal-object shape.
-        if (cfg)
-          Object.defineProperty(channels, e.key, {
-            value: cfg,
-            enumerable: true,
-            configurable: true,
-            writable: true,
-          });
+        Object.defineProperty(channels, e.key, {
+          value,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
       }
     } catch (e) {
       // No channel bucket yet ⇒ empty registry, not an error (and not an over-privileged auto-create).
       if ((e as { code?: number }).code !== 404 && !/not found/i.test((e as Error).message)) throw e;
     }
-    return { defaults, channels };
+    return { defaults, channels, undecodable };
   } finally {
     await nc.drain();
   }
