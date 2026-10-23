@@ -407,8 +407,13 @@ function noSpaceFailure(error: unknown, observed: BackupObservation, args: Parse
   const destination = resolve(args.positionals[1]!);
   const { what, directory } = observed.writing;
   const written = what === "backup" ? "it removed the partial backup and published none" : `it removed the partial copy and wrote nothing to ${destination}`;
+  return new CommandFailure("failed", "OPERATION_FAILED", `backup create ran out of disk space (${code}) writing the ${what} in ${directory}; ${written}, and the preserved cut is still ready`, { target, native: { detail: error instanceof Error ? error.message : String(error) }, remedy: `free space on the disk that holds ${directory}, then run ${retryCreate(args)} again` });
+}
+
+/** The same `backup create`, for a failure that left the preserved cut ready to try again. */
+function retryCreate(args: ParsedArgs): string {
   const flags = [args.values.only === undefined ? "" : ` --only ${args.values.only}`, args.values["store-dir"] === undefined ? "" : ` --store-dir ${args.values["store-dir"]}`].join("");
-  return new CommandFailure("failed", "OPERATION_FAILED", `backup create ran out of disk space (${code}) writing the ${what} in ${directory}; ${written}, and the preserved cut is still ready`, { target, native: { detail: error instanceof Error ? error.message : String(error) }, remedy: `free space on the disk that holds ${directory}, then run cotal backup create ${destination}${flags} again` });
+  return `cotal backup create ${resolve(args.positionals[1]!)}${flags}`;
 }
 
 export function validateBackupArguments(args: ParsedArgs): void {
@@ -455,7 +460,7 @@ export async function backup(args: ParsedArgs): Promise<void> {
     // The guard's own sentence is the operator's evidence, as on restore: it names the cause, such as
     // a broker still answering at the cut's endpoint. Snapshot bytes and credentials never reach it.
     const detail = error instanceof Error ? error.message : String(error);
-    throw new CommandFailure(outcome, outcome === "refused" ? "LIFECYCLE_BLOCKED" : outcome === "failed" ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", outcome === "refused" ? "backup preparation did not establish an eligible stopped preserved cut; no published artifact was established" : outcome === "failed" ? "backup creation failed and its native attempt cleanup completed; no published artifact was established" : "the backup attempt did not confirm publication and cleanup; its original attempt is retained without a retry", { target, native: { ...(isMaintenanceError(error) ? { code: error.code } : {}), detail }, remedy: "inspect the preserved-cut maintenance state and original attempt before recovery; snapshot bytes and credentials were not printed" });
+    throw new CommandFailure(outcome, outcome === "refused" ? "LIFECYCLE_BLOCKED" : outcome === "failed" ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", outcome === "refused" ? "backup preparation did not establish an eligible stopped preserved cut; no published artifact was established" : outcome === "failed" ? "backup creation failed and its native attempt cleanup completed; no published artifact was established" : "the backup attempt did not confirm publication and cleanup; its original attempt is retained without a retry", { target, native: { ...(isMaintenanceError(error) ? { code: error.code } : {}), detail }, remedy: outcome === "failed" ? `the preserved cut is still ready; fix the cause in the native detail, then run ${retryCreate(args)} again` : "inspect the preserved-cut maintenance state and original attempt before recovery; snapshot bytes and credentials were not printed" });
   }
   writeResult(presentationOf(args.values), { command: "backup create", target: { space: observed.published!.space, directory: observed.published!.directory }, result: { ...observed.published!, cleanupConfirmed: observed.cleanupConfirmed } }, backupCreateView);
 }

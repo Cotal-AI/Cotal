@@ -133,6 +133,9 @@ async function backupStageFaultScenario(): Promise<void> {
       });
       assert.notEqual(faulted.status, 0, `${stage} fault must fail the backup\nstdout:\n${faulted.stdout}`);
       assert.match(faulted.stderr, injected, `${stage} fault reports its injected failure`);
+      // The cleanup completed, so the next step is the same create, not a recovery.
+      assert.match(faulted.stderr, new RegExp(`then run cotal backup create \\S*artifact-${stage} again`), `${stage} fault names the same create as its next step`);
+      if (stage !== "nospace") assert.match(faulted.stderr, /the preserved cut is still ready; fix the cause in the native detail/, `${stage} fault says the cut is still ready`);
       assert.equal(journalState(root), "ready", `${stage} fault returns the maintenance journal to ready`);
       assert.equal(existsSync(destination), false, `${stage} fault leaves no unpublished artifact at the destination`);
       assert.deepEqual(attemptResidue(root), [], `${stage} fault leaves no clone, config, or broker residue in the attempts dir`);
