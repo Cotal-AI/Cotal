@@ -215,7 +215,7 @@ export async function runPlain(opts: {
           if (!parsed.ok) { state = addNotice(state, "failed", parsed.error); return; }
           if (parsed.command.name === "quit") return state.draft ? void (mode = { kind: "confirm-leave" }) : leave();
           if (state.connection !== "connected" && !runsOffline(parsed.command)) {
-            state = addNotice(state, "waiting", "not connected: only /reconnect, /connection, /whoami and /reply run now");
+            state = addNotice(state, "waiting", "not connected: only /reconnect, /connection, /whoami, /reply and /help run now");
             return;
           }
           const { state: next, ack } = await runSlash(session, state, parsed.command);
