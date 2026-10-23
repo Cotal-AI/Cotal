@@ -16,6 +16,7 @@ import { nativeEndpointRefusal } from "../lib/endpoint-errors.js";
 import { onInstance } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
+import { reservedPersonaName } from "../lib/persona-files.js";
 import type { PersonaValues } from "./persona.js";
 
 const INPUT_LIMIT = 1024 * 1024;
@@ -41,6 +42,8 @@ export function validateRemotePersonaArguments(args: ParsedArgs): void {
   if (values.yes !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--yes is not a remote persona write override; existing ownership rules remain in force");
   if (mode !== "create" && CONTENT_FLAGS.some((flag) => values[flag] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "definition and announcement inputs belong to persona create");
   if (mode === "create") {
+    const reserved = reservedPersonaName(name!);
+    if (reserved) throw new CommandFailure("refused", "USAGE_INVALID", reserved, { remedy: "choose another name" });
     if ([values.file, values.prompt, values.from].filter((value) => value !== undefined).length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", "remote persona creation needs one of --file, --prompt or --from");
     if (values.role !== undefined) {
       try { assertValidRole(values.role); } catch { throw new CommandFailure("refused", "USAGE_INVALID", "use a valid role token"); }

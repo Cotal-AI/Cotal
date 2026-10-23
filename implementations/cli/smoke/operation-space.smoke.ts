@@ -10,8 +10,8 @@
  * ends the process. The persona cells run the built binary: `persona create` over an existing file
  * refuses with a target-less CONFLICT on a prepared space, and a `--file` the agent-file rules refuse
  * names the field and the reason, as does a role token `send -r` would refuse. An edit that is not
- * saved keeps its draft and names it, and a malformed `--on` names the command to rerun. No broker
- * is started.
+ * saved keeps its draft and names it, a malformed `--on` names the command to rerun, and no create
+ * takes the seeded default's launch name. No broker is started.
  *
  * Run: pnpm smoke:operation-space
  */
@@ -127,6 +127,17 @@ for (const [argv, rerun] of [
   const said = `${pinned.envelope?.error?.message ?? ""} ${pinned.envelope?.error?.remedy ?? ""}`;
   check(`${argv.slice(0, -2).join(" ")} --on bad names ${rerun} and never --on twice`,
     pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as ${rerun}`) && !said.includes("--on --on"), shown(pinned));
+}
+
+// The seeded default's agents launch as default_agent, so no create takes that name.
+for (const argv of [
+  ["persona", "create", "default_agent", "--prompt", "x", "--subscribe", ""],
+  ["personas", "new", "default_agent", "--prompt", "x", "--subscribe", ""],
+  ["persona", "create", "default_agent", "--prompt", "x", "--on", "a".repeat(26)],
+]) {
+  const reserved = cotal(...argv);
+  check(`${argv.slice(0, 3).join(" ")}${argv.includes("--on") ? " --on" : ""} refuses the reserved default_agent and writes nothing`,
+    reserved.status === 1 && reserved.stderr.includes("'default_agent' is reserved") && !existsSync(agentFilePath(root, "default_agent")), shown(reserved));
 }
 
 // An edit that is not saved keeps its draft and names it: a draft the agent-file rules refuse says

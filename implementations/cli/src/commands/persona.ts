@@ -10,7 +10,7 @@ import { completedFlagValue, completingFlagValue, positionalsForCompletion } fro
 import { readPersonas } from "../lib/personas.js";
 import {
   commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource,
-  requirePersonaSource, serializePersona, validatePersona, type PersonaCatalog,
+  requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog,
 } from "../lib/persona-files.js";
 import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -73,6 +73,8 @@ export async function persona(args: ParsedArgs): Promise<void> {
     return;
   }
   if (sub === "create") {
+    const reserved = reservedPersonaName(name!);
+    if (reserved) throw new CommandFailure("refused", "USAGE_INVALID", reserved, { remedy: "choose another name" });
     const expected = readPersonaSource(path);
     if (expected !== undefined) throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`);
     const bytes = createSource(name!, path, values);

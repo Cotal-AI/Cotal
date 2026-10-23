@@ -11,6 +11,7 @@ import {
   cachedPreferences, CommandFailure, inputDisabledByFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes,
   resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
+import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 
 export interface PersonaCatalog { root: string; space: string }
 export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeMs: number }
@@ -47,6 +48,12 @@ function catalogAt(root: string, space: string): PersonaCatalog {
   } catch {
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected persona catalog root is unavailable");
   }
+}
+
+/** Why a new persona cannot take `name`: the seeded default's agents already launch under it, so a
+ *  second definition would launch under the same name. */
+export function reservedPersonaName(name: string): string | undefined {
+  return name === DEFAULT_AGENT_NAME ? `'${name}' is reserved: the seeded default persona launches its agents under that name` : undefined;
 }
 
 /** Why `name` cannot name a persona, or undefined when it can. */

@@ -3374,7 +3374,8 @@ naming the flag and the entry. `--harness` must name a harness this machine know
 `config set harness` requires, or creation refuses with `USAGE_INVALID` and writes nothing.
 Creation refuses an existing definition. Mutation receipts contain names and paths, not bodies.
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
-persona is one: its file is `default.md` and its agents launch as `default_agent`.
+persona is one: its file is `default.md` and its agents launch as `default_agent`. That name is
+reserved, so a create under it is refused with `USAGE_INVALID`.
 
 Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
 preferences). The value runs as a shell command, so quote a path that holds spaces. With no editor
