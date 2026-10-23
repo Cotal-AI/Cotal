@@ -6,7 +6,8 @@
  * started, name the recorded broker and say how to start it: `space create` prepares the journal's
  * space at the root again, then `cotal up`. A folder whose `.cotal` is a link to the project's is
  * told it is a link, and its status names the link once. A journal cut short or emptied, as an
- * interrupted write leaves it, is named with its path and the way out, and status warns about it.
+ * interrupted write leaves it, is named with its path and the way out, and status warns about it. A
+ * moved folder is told to move back, and to move aside first any folders found at the old path.
  *
  * The journal is written by hand in the shape `cotal up` leaves when its broker never started; the
  * resolver reads only its server and space fields. Driven through the built binary in a sandboxed COTAL_HOME.
@@ -109,9 +110,15 @@ check("up in a copied folder refuses CONFLICT, exit 2, naming the folder its jou
   copied.status === 2 && copied.envelope?.error?.code === "CONFLICT" && (copied.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was copied from there`) && copied.envelope.error.remedy === `use the stack from ${root}, which holds it; this copy does not`, shown(copied));
 renameSync(root, moved);
 const movedUp = run(["up", "--json"], moved);
+// A broker from an earlier release that kept running after the move created empty store folders there.
+mkdirSync(join(root, ".cotal", "nats", "jetstream"), { recursive: true });
+const recreatedUp = run(["up", "--json"], moved);
+rmSync(root, { recursive: true });
 renameSync(moved, root);
 check("up in a moved folder refuses CONFLICT and says to move it back",
-  movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === `move this folder back to ${root}, then run cotal up there`, shown(movedUp));
+  movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === `move this folder back to ${root}, then run the command again there`, shown(movedUp));
+check("with empty folders at the old path it is still moved, and says to move them aside first",
+  recreatedUp.status === 2 && (recreatedUp.envelope?.error?.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && recreatedUp.envelope?.error?.remedy === `move what is now at ${root} aside, such as empty folders a running broker created there, then move this folder back to ${root} and run the command again there`, shown(recreatedUp));
 // A folder whose .cotal links to this project's reads the same journal through the link.
 const linked = `${root}-linked`;
 mkdirSync(linked);

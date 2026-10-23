@@ -18,7 +18,9 @@
  *     and pins nothing: `down --yes` stops nothing and the next `up` starts at another address. The
  *     refusal says the stack started no member. A running broker keeps its file store cap; a stopped
  *     one takes a new `--max-file-store`, and a recorded cap too small for the space's streams fails
- *     naming that cap and the flag.
+ *     naming that cap and the flag. A project folder renamed while its stack runs: the broker names
+ *     its store relative to the root, so it does not create the old path again; `send` and `up` from
+ *     the renamed folder name the move and the way back, and after the move back `down` stops it.
  *  4. Orphan manager. With the broker killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
@@ -72,7 +74,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -299,6 +301,28 @@ try {
     track(space);
     check("up with a new cap on the stopped broker records it and starts", fixed.status === 0 && (JSON.parse(readFileSync(path, "utf8")) as { broker: { maxFileStore?: number } }).broker.maxFileStore === 134217728, shown(fixed));
     check("down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
+  }
+
+  // 3d. A project folder renamed while its stack runs.
+  {
+    const space = "renamed";
+    const root = prepare(space);
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
+    track(space);
+    check("up starts the stack", started.status === 0, shown(started));
+    check("its broker configuration names the store relative to the root", readFileSync(join(root, ".cotal", "auth", "server.conf"), "utf8").includes(`jetstream { store_dir: ${JSON.stringify(join(".cotal", "nats"))}`));
+    const moved = `${root}-renamed`;
+    renameSync(root, moved);
+    const send = cli(moved, "send", "--space", space, "-c", "general", "after the move", "--json");
+    check("send from the renamed folder refuses CONFLICT, naming the move and the way back", send.status === 2 && send.env?.error?.code === "CONFLICT" && send.env.error.message.includes(`was started in ${root}`) && send.env.error.message.endsWith("so this folder was moved from there") && send.env.error.remedy === `move this folder back to ${root}, then run the command again there`, shown(send));
+    const up = cli(moved, "up", "--json");
+    check("up there refuses CONFLICT, saying the folder was moved", up.status === 2 && up.env?.error?.code === "CONFLICT" && up.env.error.message.includes(`recorded at ${root}, so this folder was moved from there`), shown(up));
+    // The stack's own clients create consumers within seconds; a broker that named its store by the
+    // old absolute path created that path again for them.
+    await sleep(10_000);
+    check("the running broker did not create the old path again", !existsSync(root), existsSync(root) ? readdirSync(root, { recursive: true }) : []);
+    renameSync(moved, root);
+    check("after the move back, down --yes stops it", cli(root, "down", "--yes", "--json").status === 0);
   }
 
   // 3b. A first up refused at a port another program holds pins nothing.

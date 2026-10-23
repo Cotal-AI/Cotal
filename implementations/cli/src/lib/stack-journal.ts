@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, cotalDirLink, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, preparedSpaceAt, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, cotalDirLink, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, movedRootRemedy, parsePid, preparedSpaceAt, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -84,10 +84,12 @@ function recordedElsewhere(root: string, recordedRoot: string, space: string): n
       target: { root, recordedRoot, space, link },
       remedy: `use the stack from ${recordedRoot}, which holds it; this folder only links to its records`,
     });
-  const moved = !existsSync(recordedRoot);
+  // The recorded root still holds its journal after a copy; after a move it does not, even where a
+  // running broker created empty folders at that path again.
+  const moved = !existsSync(stackJournalPath(recordedRoot));
   throw new CommandFailure("refused", "CONFLICT", `this folder's stack journal was recorded at ${recordedRoot}, so this folder was ${moved ? "moved" : "copied"} from there; a controller stack runs only from the folder it started in`, {
     target: { root, recordedRoot, space },
-    remedy: moved ? `move this folder back to ${recordedRoot}, then run cotal up there` : `use the stack from ${recordedRoot}, which holds it; this copy does not`,
+    remedy: moved ? movedRootRemedy(recordedRoot) : `use the stack from ${recordedRoot}, which holds it; this copy does not`,
   });
 }
 

@@ -206,7 +206,7 @@ import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
-import { assertStoreDirArgument } from "../lib/store-dir.js";
+import { assertStoreDirArgument, configuredStoreDir } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -1749,7 +1749,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // A terminal sends Ctrl-C to the whole foreground process group. Keep the broker outside it
   // on POSIX so only this owner receives the interrupt and can finish manager-first teardown
   // before signalling the broker. Keep the child referenced and its output in this terminal.
-  const child = spawn(bin, natsArgs, { stdio: "inherit", detached: process.platform !== "win32" });
+  // The configuration names a store inside the root relative to it, so the broker runs from the root.
+  const child = spawn(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
   let activationFinished = !resumeAttempt;
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
   releaseStartupLock();
@@ -3545,7 +3546,7 @@ export async function startMeshDetached(
   const fd = openBrokerLog(logPath);
   const startOffset = fstatSync(fd).size;
   const listenerStartedAt = new Date().toISOString();
-  const child = spawn(bin, args, { detached: true, stdio: ["ignore", fd, fd] });
+  const child = spawn(bin, args, { cwd: cotalRoot(), detached: true, stdio: ["ignore", fd, fd] });
   closeSync(fd);
   await recordSpawnedListener(child, listenerStartedAt, opts.boundListener);
   child.unref();
@@ -4433,7 +4434,7 @@ function lastServedStore(storeDir: string): string | undefined {
     if (!existsSync(conf)) continue;
     // The core renderer writes the path as a JSON string.
     const named = /jetstream \{ store_dir: ("(?:[^"\\]|\\.)*")/.exec(readFileSync(conf, "utf8"))?.[1];
-    const last = named === undefined ? undefined : resolve(JSON.parse(named) as string);
+    const last = named === undefined ? undefined : resolve(cotalRoot(), JSON.parse(named) as string);
     if (last !== undefined && last !== resolve(storeDir) && existsSync(join(last, "jetstream"))) return last;
   }
   return undefined;
@@ -4472,7 +4473,7 @@ function writeOpenBrokerConf(storeDir: string, opts: { port: number; host: strin
   const confPath = cotalPath("server-open.conf");
   writeSecretFile(
     confPath,
-    openServerConfig({ port: opts.port, host: opts.host, storeDir, maxFileStore: opts.maxFileStore, transport: opts.transport }),
+    openServerConfig({ port: opts.port, host: opts.host, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore: opts.maxFileStore, transport: opts.transport }),
   );
   return confPath;
 }
@@ -4620,7 +4621,7 @@ async function authSetup(
   }
   // Owner-private regardless of umask, as `writeOpenBrokerConf` writes the open configuration: the
   // broker preset refuses a configuration that other local users can write.
-  writeSecretFile(confPath, serverConfig(auth, spaces, { transport, port, storeDir, maxFileStore, host, wsPort, wsHost: host, extraAccounts }));
+  writeSecretFile(confPath, serverConfig(auth, spaces, { transport, port, storeDir: configuredStoreDir(cotalRoot(), storeDir), maxFileStore, host, wsPort, wsHost: host, extraAccounts }));
   // Ephemeral setup cred: used only to probe reachability, pre-create the space streams/buckets
   // (setupSpaceStreams) and seed the channel registry (seedChannelRegistry) — all within the
   // enumerated `provisioner` scope. No broad `manager` residual for the up path.

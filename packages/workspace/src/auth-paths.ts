@@ -46,6 +46,29 @@ export function stackJournalPath(root: string): string {
   return join(root, ".cotal", "stack-controller.json");
 }
 
+/** The root a folder's stack journal names, read for that field alone. Undefined when the folder has
+ *  no journal, or one that is not a small regular file naming a root. */
+export function stackJournalRoot(root: string): string | undefined {
+  const path = stackJournalPath(root);
+  try {
+    const file = lstatSync(path);
+    if (!file.isFile() || file.size > 64 * 1024) return undefined;
+    const value = JSON.parse(readFileSync(path, "utf8")) as { root?: unknown } | null;
+    return typeof value?.root === "string" ? value.root : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The way back for a project folder moved away from `recordedRoot`, the folder its records name. A
+ *  broker from an earlier release that kept running there may have created empty folders at that path,
+ *  which a plain move back would nest the project inside. */
+export function movedRootRemedy(recordedRoot: string): string {
+  return existsSync(recordedRoot)
+    ? `move what is now at ${recordedRoot} aside, such as empty folders a running broker created there, then move this folder back to ${recordedRoot} and run the command again there`
+    : `move this folder back to ${recordedRoot}, then run the command again there`;
+}
+
 /** The ONE injective, case-safe space key: lowercase hex of the space's UTF-8 bytes. Every
  *  tenant-keyed namespace derives its key from this — the account filename, the user-auth state
  *  dir, the auth secret-store keys, and the machine mesh registry — because every namespace that
