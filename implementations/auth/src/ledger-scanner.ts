@@ -60,12 +60,13 @@
  *    pre-clean/create/fetch/delete on the literal name with a live scan (a per-instance lock cannot
  *    see a sibling instance). Cross-PROCESS duplication is the two-authority-planes split-brain
  *    class, excluded by the one-plane-per-space composition; a foreign re-resolution of the name is
- *    made loud by the per-message exact-prefix validation in the drain.
+ *    made loud by the per-message filter validation in the drain.
  */
-import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, assertInboxConnId, assertLifecycleToken, endpointToken, epAuthBucket, isConsumerNotFound, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, assertLifecycleToken, endpointToken, epAuthBucket, type PlaneConnTuple } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
+import { drainLiteralConsumer, type LiteralConsumerProbe } from "./literal-consumer.js";
 import { guardedScan, type ScanGuard } from "./plane-claim.js";
 import { serializedFor } from "./serialized.js";
 
@@ -77,19 +78,6 @@ const SCANNER_CONSUMER_NAME = "cotal-ledger-scan";
 /** fact-5 ENFORCED (panel HIGH): the serialization critical section for a space's literal consumer
  *  name lives at MODULE level, keyed by space, shared by every instance for that space. */
 const SPACE_SCAN_CHAINS = new Map<string, Promise<unknown>>();
-/** Bounded inactivity (ns): a leaked orphan (a run that crashed before its unconditional delete)
- *  is broker-collected within this window, and the next run's pre-clean removes it by name. */
-const INACTIVE_THRESHOLD_NS = 30_000_000_000;
-/** Drain bounds (fail-closed, not spin). A LastPerSubject consumer over a quiescent family settles
- *  to zero pending in a handful of rounds; a concurrent same-subject overwrite (a mint that won its
- *  fence, or a crashing revoker) adds at most a bounded burst that the next round re-reads and
- *  drains. NOT "a frozen gate permits no new family writes" — the staged-mint/concurrent-revoke
- *  analysis disproves that; the completeness fence is the freshly-observed zero, and a run that
- *  cannot reach it (unbounded churn, a stuck delivery) fails closed rather than looping. */
-const MAX_DRAIN_ROUNDS = 4096;
-/** Consecutive rounds that observe pending > 0 yet deliver nothing before the scan fails closed —
- *  a consumer that claims pending but never delivers is a completeness hazard, not a slow one. */
-const MAX_NO_PROGRESS_ROUNDS = 8;
 
 /** One KV key segment (no dots — the separator — no wildcards): the closed ops validate every
  *  id token before it forms a filter, so a dot/wildcard can never widen the scan. */
@@ -216,23 +204,11 @@ export async function openAuthLedgerScannerCandidate(opts: {
  * `close()` does NOT close the caller's connection (the harness owns it); it is never a production
  * composition path and is never registered as a mintable profile.
  */
-export function makeLedgerScannerOverConnection(nc: NatsConnection, space: string, probe?: ScannerProbe, guard?: ScanGuard): AuthLedgerScanner {
+export function makeLedgerScannerOverConnection(nc: NatsConnection, space: string, probe?: LiteralConsumerProbe, guard?: ScanGuard): AuthLedgerScanner {
   return buildScanner(nc, space, async () => { /* the harness owns nc */ }, probe, guard);
 }
 
-/** SMOKE-ONLY probes (precedent: AuthorityClient.probeRenewal). Never set in production.
- *  - `afterCreate` fires ONCE after the consumer is created + bind-verified but BEFORE the drain,
- *    forcing the create→drain race: a subject overwritten `active→revoked` (evicting the pre-scan
- *    revision) is still returned at its CURRENT last.
- *  - `afterFirstFetch` fires ONCE after the FIRST drain fetch completes, forcing the mid-drain race:
- *    a subject delivered old in round 1 then overwritten re-appears as pending and is fetched in a
- *    later round (proving the drain re-reads `num_pending` to a fresh zero, not a stale local count). */
-export interface ScannerProbe {
-  afterCreate?: () => Promise<void>;
-  afterFirstFetch?: () => Promise<void>;
-}
-
-function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<void>, probe?: ScannerProbe, guard?: ScanGuard): AuthLedgerScanner {
+function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<void>, probe?: LiteralConsumerProbe, guard?: ScanGuard): AuthLedgerScanner {
   const bucket = epAuthBucket(space);
   const stream = `KV_${bucket}`;
   const keyPrefixLen = `$KV.${bucket}.`.length;
@@ -249,121 +225,12 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   // The RAW scan — MODULE-PRIVATE (a closure over the owned connection): no caller ever supplies
   // `prefix`; the closed ops below force it from a validated id.
   const scanOnce = async (prefix: string): Promise<RawScanEntry[]> => {
-    const jsm = await jsmOf();
-    const js = jsOf();
-    const filterBase = `$KV.${bucket}.${prefix}`; // every returned subject MUST start with this
-    const filter = `${filterBase}>`;
-
-    // 1. FAIL-CLOSED pre-clean: PROVE the literal name absent before create (a leftover from a run
-    // that crashed before its unconditional delete). Absence is proved ONLY by a confirmed delete
-    // (`delete(...) === true`) or a structured ConsumerNotFound; a `false` return, a timeout, a
-    // permission/leader error, or any other shape fails the scan (a surviving stale AckNone consumer
-    // with an outstanding pull could otherwise advance deliveries and make this run silently omit
-    // rows).
-    let provedAbsent = false;
-    try {
-      provedAbsent = (await jsm.consumers.delete(stream, SCANNER_CONSUMER_NAME)) === true;
-    } catch (e) {
-      if (isConsumerNotFound(e)) provedAbsent = true;
-      else throw new EpEnvelopeError("unavailable", `the sealed scanner could not prove its literal consumer absent on ${stream} before create (pre-clean fails closed, SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
-    }
-    if (!provedAbsent)
-      throw new EpEnvelopeError("unavailable", `the sealed scanner's pre-clean did not confirm the literal consumer deleted or absent on ${stream}; refusing to create over an unproven consumer (fail-closed, SPEC 13.9)`);
-
-    // 2. Create with the FORCED config ONLY (the seam derives every field; no caller config).
-    try {
-      await jsm.consumers.add(stream, {
-        name: SCANNER_CONSUMER_NAME,
-        filter_subject: filter,
-        ack_policy: AckPolicy.None,
-        deliver_policy: DeliverPolicy.LastPerSubject,
-        mem_storage: true,
-        inactive_threshold: INACTIVE_THRESHOLD_NS,
-      });
-    } catch (e) {
-      throw new EpEnvelopeError("unavailable", `the sealed scanner could not create its consumer on ${stream} (${prefix}); the scan fails closed (SPEC 13.9): ${(e as Error)?.message ?? String(e)}`);
-    }
-
-    try {
-      // 3. FULL bind-verify: the created consumer must carry EXACTLY the forced shape — the exact
-      // name and single filter (no `filter_subjects` multi-filter), pull (no `deliver_subject`),
-      // ephemeral (no `durable_name`), AckNone/LastPerSubject, memory storage, the bounded exact
-      // inactivity. A drifted or foreign consumer of this name never feeds a scan.
-      const info = await jsm.consumers.info(stream, SCANNER_CONSUMER_NAME);
-      const cfg = info.config as {
-        name?: string; filter_subject?: string; filter_subjects?: string[];
-        deliver_subject?: string; durable_name?: string; ack_policy?: string; deliver_policy?: string;
-        mem_storage?: boolean; inactive_threshold?: number;
-      };
-      const drift =
-        cfg.name !== SCANNER_CONSUMER_NAME ? `name=${cfg.name}` :
-        cfg.filter_subject !== filter ? `filter=${cfg.filter_subject}` :
-        (Array.isArray(cfg.filter_subjects) && cfg.filter_subjects.length > 0) ? `filter_subjects=${JSON.stringify(cfg.filter_subjects)}` :
-        cfg.deliver_subject !== undefined ? `deliver_subject=${cfg.deliver_subject}` :
-        cfg.durable_name !== undefined ? `durable=${cfg.durable_name}` :
-        cfg.ack_policy !== AckPolicy.None ? `ack=${cfg.ack_policy}` :
-        cfg.deliver_policy !== DeliverPolicy.LastPerSubject ? `deliver=${cfg.deliver_policy}` :
-        cfg.mem_storage !== true ? `mem_storage=${cfg.mem_storage}` :
-        cfg.inactive_threshold !== INACTIVE_THRESHOLD_NS ? `inactive_threshold=${cfg.inactive_threshold}` :
-        undefined;
-      if (drift !== undefined)
-        throw new EpEnvelopeError("failed-precondition", `the sealed scanner's consumer on ${stream} does not carry the forced pull/LastPerSubject shape (${drift}); refusing the scan (SPEC 13.9)`);
-
-      // SMOKE-ONLY race window: force a concurrent `active→revoked` overwrite between create and
-      // drain, so the history=1 proof runs against the real broker. Never set in production.
-      if (probe?.afterCreate) await probe.afterCreate();
-
-      // 4. Drain to a FRESHLY-OBSERVED zero. `num_pending` is re-read each round (never a stale
-      // initial count): a subject delivered old (a@1) and then overwritten while draining (a@4)
-      // re-appears as pending and is fetched in a later round, so the result is one CURRENT row per
-      // subject. The completeness fence is num_pending===0 — NOT a per-fetch `got===want` assertion,
-      // which a concurrent eviction (a@1 replaced by a@4 between the info read and the fetch) would
-      // trip falsely. Last-write-wins by concrete subject, keeping the HIGHEST safe sequence.
-      const latest = new Map<string, { data: Uint8Array; seq: number; op: string | undefined }>();
-      const consumer = await js.consumers.get(stream, SCANNER_CONSUMER_NAME);
-      let noProgress = 0;
-      for (let round = 0; ; round++) {
-        const pending = (await consumer.info()).num_pending;
-        if (pending === 0) break;
-        if (round >= MAX_DRAIN_ROUNDS)
-          throw new EpEnvelopeError("unavailable", `the sealed scanner under ${prefix} never settled to zero pending after ${round} rounds; the scan fails closed (SPEC 13.9)`);
-        const want = Math.min(pending, 256);
-        const iter = await consumer.fetch({ max_messages: want, expires: 5_000 });
-        let got = 0;
-        for await (const m of iter) {
-          got++;
-          // CLOSED subject validation: a delivered subject MUST start with the exact computed
-          // prefix before we slice its key (a foreign subject never enters the result).
-          if (!m.subject.startsWith(filterBase))
-            throw new EpEnvelopeError("internal", `the sealed scanner received subject ${m.subject} outside the forced prefix ${filterBase}; refusing (SPEC 13.9)`);
-          // Safe positive stream sequence before any ordering decision (a garbled/zero seq never
-          // wins a last-write-wins comparison).
-          if (!Number.isSafeInteger(m.seq) || m.seq <= 0)
-            throw new EpEnvelopeError("internal", `the sealed scanner received a non-positive/unsafe sequence ${m.seq} for ${m.subject}; refusing (SPEC 13.9)`);
-          const prev = latest.get(m.subject);
-          if (prev === undefined || m.seq > prev.seq)
-            latest.set(m.subject, { data: m.data, seq: m.seq, op: m.headers?.get("KV-Operation") || undefined });
-        }
-        // SMOKE-ONLY mid-drain race window: fire once after the FIRST fetch so a test can overwrite
-        // an already-delivered subject and prove the fresh-zero re-read (not a stale local count)
-        // picks up the new revision in a later round. Never set in production.
-        if (round === 0 && probe?.afterFirstFetch) await probe.afterFirstFetch();
-        // A round that observed pending > 0 yet delivered nothing makes no progress toward the
-        // fresh zero; a bounded run of those fails closed rather than looping to the round cap.
-        if (got === 0) {
-          if (++noProgress >= MAX_NO_PROGRESS_ROUNDS)
-            throw new EpEnvelopeError("unavailable", `the sealed scanner under ${prefix} reported pending but delivered nothing for ${noProgress} rounds; the scan fails closed (SPEC 13.9)`);
-        } else {
-          noProgress = 0;
-        }
-      }
-      const out: RawScanEntry[] = [];
-      for (const [subject, v] of latest) out.push({ key: subject.slice(keyPrefixLen), data: v.data, seq: v.seq, op: v.op });
-      return out;
-    } finally {
-      // 5. Unconditional cleanup (a leaked orphan is collected by the bounded inactivity).
-      try { await jsm.consumers.delete(stream, SCANNER_CONSUMER_NAME); } catch { /* orphan collected by inactivity */ }
-    }
+    const latest = await drainLiteralConsumer(await jsmOf(), jsOf(), {
+      label: "the sealed scanner", stream, name: SCANNER_CONSUMER_NAME, filter: `$KV.${bucket}.${prefix}>`, probe,
+    });
+    const out: RawScanEntry[] = [];
+    for (const [subject, v] of latest) out.push({ key: subject.slice(keyPrefixLen), data: v.data, seq: v.seq, op: v.op });
+    return out;
   };
 
   // FROZEN before branding (capability integrity): the brand keys this exact reference, and the

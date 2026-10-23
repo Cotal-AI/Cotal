@@ -34,7 +34,7 @@ import {
   recordsKvStreamName,
   remoteManagerActors,
   serverConfig,
-} from "@cotal-ai/core";
+} from "../../../packages/core/dist/index.js";
 import { issueRemoteManagerAuthority } from "@cotal-ai/auth";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
