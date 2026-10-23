@@ -65,7 +65,7 @@ import {
   type RunHostPlanes,
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
-import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
+import { LangErrors, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import { CommandFailure, presentationOf, recordOperationSpace, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
@@ -554,17 +554,26 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
   }
   const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
   const source = sourceOf(values.file);
-  const report = await migrateRun({
-    endpoint,
-    runId,
-    source,
-    file: values.file,
-    entries: replay.records.flatMap((r) => (r.record.kind === "step" ? [r.record.entry as JournalEntry] : [])),
-    pins: record.spec.value.pins as RunPins,
-    kv: planes.kv,
-    actor: "cotal run migrate",
-    now: () => Date.now(),
-  });
+  let report: MigrateReport;
+  try {
+    report = await migrateRun({
+      endpoint,
+      runId,
+      source,
+      file: values.file,
+      entries: replay.records.flatMap((r) => (r.record.kind === "step" ? [r.record.entry as JournalEntry] : [])),
+      pins: record.spec.value.pins as RunPins,
+      kv: planes.kv,
+      actor: "cotal run migrate",
+      now: () => Date.now(),
+    });
+  } catch (e) {
+    if (!(e instanceof LangErrors)) throw e;
+    // Every problem with its position, cause and fix, as `run validate` lists them.
+    console.error(`run migrate: ${values.file} is not valid cotal-lang (${e.errors.length} problem${e.errors.length === 1 ? "" : "s"}), so it was not checked against the journal`);
+    for (const item of e.errors) console.error(`  ${item.code} ${item.title} (${item.span.file}:${item.span.line}:${item.span.column})\n    ${item.cause}\n    fix: ${item.fix}`);
+    process.exit(1);
+  }
   printMigrateReport(report);
   if (!report.admissible) process.exitCode = 1;
 }

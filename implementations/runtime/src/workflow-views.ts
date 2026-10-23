@@ -60,6 +60,8 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
   const errored = [...steps.values()].filter((row) => row.errorMessage !== undefined);
   const failure = view.status?.state === "failed" ? view.status.failure : undefined;
   const failedStep = failure && errored.find((row) => row.errorMessage === failure.message);
+  // A failure raised outside any step is in no journal row; a hosted run's manager logged its cause.
+  const unrecorded = view.status?.state === "failed" && !errored.length;
   const unreadable = view.revocationUnreadable !== undefined;
   writeResult(presentationOf(values), {
     command: "run", target: { space, endpoint: view.endpoint, run: view.runId, requestedManagerInstance: values.on ?? null }, result: { kind: "run", view },
@@ -77,13 +79,18 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
     ...(answers.length ? [{ title: "Answers", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "record", label: "Record" }, { key: "value", label: "Value" }, { key: "by", label: "By" }, ...(artifacts ? [{ key: "artifact", label: "Artifact" }] : []), { key: "at", label: "At" }, { key: "id", label: "Answer id" }], rows: answers }, { kind: "lines" as const, lines: [{ text: "The run acted on the answered value. Each amended line records a later position, and the last one is current.", tone: "hint" as const },
       ...(cut ? [{ text: `A value longer than ${ANSWER_VALUE_SHOWN} characters is cut here; --json carries it whole.`, tone: "hint" as const }] : [])] }] }] : []),
     // The run's failure, as its status records it. When a step's error is that failure, it is
-    // printed once, under Step errors, and named here.
+    // printed once, under Step errors, and named here. A failure no journal row records is named
+    // as raised outside any step.
     ...(failure ? [{ title: "Failure", blocks: [{ kind: "lines" as const, lines: failedStep
       ? [{ text: `${failedStep.step} failed the run; its error is under Step errors.`, tone: "failed" as const }]
-      : failure.message.split("\n").map((line) => ({ text: oneLine(line), tone: "failed" as const })) }] }] : []),
-    ...(errored.length ? [{ title: "Step errors", blocks: [{ kind: "lines" as const, lines: errored.flatMap((row) => [{ text: `${row.step}  ${row.outcome}`, tone: "failed" as const }, ...row.errorMessage!.split("\n").map((line) => `  ${oneLine(line)}`)]) }] }] : []),
+      : [...failure.message.split("
+").map((line) => ({ text: oneLine(line), tone: "failed" as const })),
+        ...(unrecorded ? [{ text: "No journal row records why this run failed, so the program raised it outside any step. A hosted run's cause is in its manager's log.", tone: "hint" as const }] : [])] }] }]
+      : unrecorded ? [{ title: "Failure", blocks: [{ kind: "lines" as const, lines: ["No journal row records why this run failed, so the program raised it outside any step. A hosted run's cause is in its manager's log."] }] }] : []),
+    ...(errored.length ? [{ title: "Step errors", blocks: [{ kind: "lines" as const, lines: errored.flatMap((row) => [{ text: `${row.step}  ${row.outcome}`, tone: "failed" as const }, ...row.errorMessage!.split("
+").map((line) => `  ${oneLine(line)}`)]) }] }] : []),
     { title: `Journal · last ${shown.length} of ${view.journal.length}`, blocks: [shown.length ? { kind: "table", columns: [{ key: "number", label: "Entry" }, { key: "step", label: "Step" }, { key: "outcome", label: "Recorded outcome" }], rows: shown.map((row) => ({ number: String(row.n), step: row.kind === "activation" ? "holder activation" : row.step, outcome: row.kind === "activation" ? `epoch ${row.epoch}` : row.outcome })) } : { kind: "lines", lines: ["No journal entries in this view."] }, { kind: "lines", lines: [{ text: "Use --limit <n> for up to 1000 rows, or --json for the full returned journal. A step outcome is not proof that every external task succeeded.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [...(needsAnswer.length && !view.revoked ? [{ command: `cotal r answer ${runToken(view.runId)} '<step-key>' --value '<json>'${managerPin(values)}`, description: "Answer an open request under the native caller policy" }] : []), { command: `cotal r show ${runToken(view.runId)} --json${managerPin(values)}`, description: "Read the complete returned status and journal" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [...(needsAnswer.length && !view.revoked ? [{ command: `cotal r answer ${runToken(view.runId)} '<step-key>' --value '<json>'${managerPin(values)}`, description: "Answer an open request under the native caller policy" }] : []), { command: `cotal r show ${runToken(view.runId)} --json${managerPin(values)}`, description: "Read the complete returned status and journal" }, ...(unrecorded ? [{ command: `cotal service logs stack-manager --space ${space}`, description: "Read the stack manager's log, where a hosted run's failure outside any step is recorded" }] : [])] }] },
   ] }));
 }
 

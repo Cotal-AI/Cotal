@@ -5385,7 +5385,9 @@ escape. A run that failed records its cause on its status. Its recorded state re
 `failed (<code>)` in `ps` and the run view when the error carries a language code, and the run
 view prints the message under `Failure`. When a step's error is the run's failure, `Failure` names
 that step and the message stays under `Step errors`. A run that failed before its status recorded a
-cause shows only `failed`.
+cause shows only `failed`. A failure raised by program code outside any step is recorded in no
+journal row. The view says so under `Failure` and names
+`cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its manager's log.
 `--json` on `ps` or `journal` prints each row the manager answers with (or `--local` reads) as one
 JSON object per line. A `ps` row carries `runId`, `endpoint`, `state`, `holder`, `epoch`,
 `journalHigh`, `forkedFrom`, `startedAt` and `programHash` (the values the program's `run()`
@@ -5420,12 +5422,13 @@ value it filed or that none was given, any artifact and the answer id. With `--j
 `result.answer`, where `valueGiven` says whether a value was sent. `amend` records a changed
 position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an
-answer refuses an amend. A spawned seat may amend only an answer recorded under its own name. `migrate` runs the migrate check of an
-edited program against a run's journal, from this terminal under a read credential (`--local`
-only; the manager serves no run-migrate command): it prints whether the migration is admissible,
-every orphaned step with its verdict and code, and exits 0 on admissible and non-zero on not. It
-writes nothing: the commit that would file the migration is not reachable yet, and the report
-says so. `migrate` refuses `--adopt`, `--release` and `--discard-approvals`, since they decide what a
+answer refuses an amend. A spawned seat may amend only an answer recorded under its own name.
+`migrate` replays a run's journal against an edited program, from this terminal under a read
+credential (`--local` only; the manager serves no run-migrate command). It prints whether the
+migration is admissible, every orphaned step with its verdict and code, and exits 0 on admissible
+and non-zero on not. An edited program that does not validate is refused before the replay, with
+each problem's code, position, cause and fix. It writes nothing: the commit that would file the
+migration is not reachable yet, and the report says so. `migrate` refuses `--adopt`, `--release` and `--discard-approvals`, since they decide what a
 commit does and the check files nothing. `--timeout` sets the default
 checkpoint timeout for a drive (default 1h). `--on <instance>` sends a hosted verb to one manager
 instance, with the same rules as [`ps`](#managed-seats). On a user-auth mesh where you run more than one
@@ -5635,8 +5638,9 @@ Start takes a positional source file. A source file a `run` verb cannot read is 
 its path and the cause: `TARGET_NOT_FOUND` for a missing file or a link whose target does not exist,
 `USAGE_INVALID` for a directory and `PERMISSION_DENIED` for a file it may not read. `-` is a file
 name there, since `run` does not read a program from standard input. Resume uses the host's recorded program. Hosted answers
-and amendments are attributed to the authenticated caller, never a supplied name. Check reads
-the recorded journal through the existing local check; it commits no migration. Revocation keeps
+and amendments are attributed to the authenticated caller, never a supplied name. `check <run-id> <file>`
+runs `cotal run migrate <runId> --local --file <program>`: it replays the run's recorded journal
+against the edited program and prints whether the migration is admissible, and it files no migration. Revocation keeps
 the existing local trust and explicit actor/reason requirements and does not cancel a task.
 Hosted start, resume, answer and amend have JSON and plain receipts. The local drive and local
 check retain their native output rather than claiming an unsupported structured format.
