@@ -678,7 +678,7 @@ function validateAuthArguments(args: ParsedArgs): void {
   if (mode === "mint") { validateCredentialMintArguments({ ...args, positionals: args.positionals.slice(1) }); return; }
   if (mode === "retire") {
     if (!actor || extra.length || Object.keys(args.values).some((key) => !["space", "yes", "json", "plain", "no-color", "no-input"].includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", "use auth retire <full-lifecycle-uid> [--space <space>] [--yes] without actor, credential or grant selectors");
-    try { assertLifecycleToken(actor); } catch { throw new CommandFailure("refused", "USAGE_INVALID", "auth retire needs one exact native lifecycle UID; no alias or prefix was resolved"); }
+    try { assertLifecycleToken(actor); } catch { throw new CommandFailure("refused", "USAGE_INVALID", "auth retire needs one exact native lifecycle UID, 26 to 32 lowercase letters and digits; no alias or prefix was resolved", { remedy: "`cotal ps --wide` shows each seat's lifecycle uid" }); }
     return;
   }
   if (mode === "redeem") {

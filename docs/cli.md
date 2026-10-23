@@ -6513,11 +6513,12 @@ and is labeled accordingly. Output backpressure pauses the reader instead of gro
 without bounds. Ctrl-C, termination and closed output end the view, not the service.
 
 `auth retire <full-lifecycle-uid> [--space <space>] [--yes]` validates the native UID and resolves
-the selected auth target, then refuses `UNSUPPORTED` (exit 2): the registered auth endpoint accepts
-retirement only from the requester's own current serve identity and gate, which this CLI does not
-have. It neither borrows a manager identity nor substitutes the interactive or managed loopback
-host doors. `--yes` cannot create authority, and no retirement request is sent. The refusal names
-the lever that works, rotating the space identity, which stops every credential the space issued
+the selected auth target. A lifecycle UID is 26 to 32 lowercase letters and digits, and
+`cotal ps --wide` shows each seat's. The CLI then refuses `UNSUPPORTED` (exit 2): the registered auth
+endpoint accepts retirement only from the requester's own current serve identity and gate, which this
+CLI does not have. It neither borrows a manager identity nor substitutes the interactive or managed
+loopback host doors. `--yes` cannot create authority, and no retirement request is sent. The refusal
+names the lever that works, rotating the space identity, which stops every credential the space issued
 (see [auth mint](#auth-mint)).
 
 `auth redeem <private-handle-file> [--space <space>]` selects the existing local auth target and
