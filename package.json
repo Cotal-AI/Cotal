@@ -190,6 +190,7 @@
     "smoke:owner-token": "tsx packages/core/smoke/owner-token.smoke.ts",
     "smoke:self-serve-join:auth": "tsx packages/core/smoke/self-serve-join-auth.smoke.ts",
     "smoke:self-serve-join-coverage:auth": "tsx packages/core/smoke/self-serve-join-coverage-auth.smoke.ts",
+    "smoke:late-chat-refusal": "tsx packages/core/smoke/late-chat-refusal.smoke.ts",
     "smoke:e2e:acl": "tsx packages/core/smoke/e2e-acl.smoke.ts",
     "smoke:agent-file": "tsx packages/core/smoke/agent-file.smoke.ts",
     "smoke:persona-frontmatter": "tsx packages/core/smoke/persona-frontmatter.smoke.ts",
