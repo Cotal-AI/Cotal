@@ -15,18 +15,20 @@
  * It owns no timer: the endpoint calls it ahead of each expiry and on reconnect. Concurrent pulls share
  * one request. A transport failure, a rate limit, a missing or rejected sign-in, or a store failure is
  * an outage the next pull retries with the same request; any other door denial ends the source for
- * good. Tokens leave only through `bearer()`; state and errors carry fixed text and expiries.
+ * good. Tokens leave only through `bearer()` and `credential()`, and the renewal proof never
+ * leaves at all; state and errors carry fixed text and expiries.
  */
 import { randomBytes } from "node:crypto";
 import {
   ServiceAuthorityTransportError, serviceWitnessDigest,
-  type AuthProvider, type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceEndpointRenewal,
+  type AuthProvider, type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceEndpointCredential, type ServiceEndpointRenewal,
   type ServiceEndpointRenewalState, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { spaceSegment } from "@cotal-ai/workspace";
 
 const KIND = "service-endpoint-renewal";
 type Credential = Extract<ServiceAuthorityResult, { state: "credential" }>;
+type Shared = { credential: ServiceEndpointCredential; bearer: string };
 
 interface Material { accessBearer: string; accessExpiresAt: number; renewalProof: string; renewalExpiresAt: number }
 interface RenewalRecord { v: 1; kind: typeof KIND; witnessDigest: string; activateRequestId: string; renewRequestId: string; material: Material | null }
@@ -68,7 +70,7 @@ export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: Se
   const witnessDigest = serviceWitnessDigest(witness), key = serviceRenewalKey(witness);
   let state: ServiceEndpointRenewalState = { state: "idle" };
   let sentinelCreds: string | undefined;
-  let inflight: Promise<Credential> | undefined;
+  let inflight: Promise<Shared> | undefined;
   let closed = false;
   const abort = new AbortController();
 
@@ -100,7 +102,7 @@ export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: Se
     }
   }
 
-  async function pull(): Promise<Credential> {
+  async function pull(): Promise<Shared> {
     const rec = await readRecord();
     const m = rec.material;
     // No material, or a renewal proof past its expiry: replay the persisted activate on the signed-in login.
@@ -132,11 +134,12 @@ export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: Se
     catch { outage("service renewal could not store its new material; the next pull replays the same request"); }
     sentinelCreds = answer!.sentinelCreds;
     state = { state: "current", accessExpiresAt: material.accessExpiresAt, renewalExpiresAt: material.renewalExpiresAt };
-    return c;
+    const { renewalProof: _proof, renewalExpiresAt: _renewal, ...credential } = c;
+    return { credential, bearer: c.accessBearer };
   }
 
   /** One pull, shared by every concurrent `bearer()` and `credential()` call. */
-  const credential = (): Promise<Credential> => {
+  const shared = (): Promise<Shared> => {
     if (closed) return Promise.reject(new Error("service renewal is closed"));
     if (state.state === "ended") return Promise.reject(new Error(`service renewal ended (${state.reason}); nothing more will be requested for this registration`));
     inflight ??= pull().finally(() => { inflight = undefined; });
@@ -144,8 +147,8 @@ export function serviceEndpointRenewal(provider: AuthProvider, opts: { store: Se
   };
 
   return {
-    credential,
-    bearer: () => credential().then((c) => c.accessBearer),
+    credential: () => shared().then((s) => structuredClone(s.credential)),
+    bearer: () => shared().then((s) => s.bearer),
     state: () => state,
     get sentinelCreds() { return sentinelCreds; },
     async close() {

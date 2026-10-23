@@ -33,6 +33,7 @@ import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervi
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
 import { ISSUANCE_GATE_OP_KINDS, type EndpointRepairCursor, type GateStateOp } from "./lifecycle-state.js";
+import type { ServiceEndpointCredential } from "./auth-provider.js";
 
 // ---- value shapes (§13.7 "Descriptor and describe") ------------------------------------------
 
@@ -1833,8 +1834,9 @@ function verifyServiceAccessBearer(bearer: string, witness: ServiceRegistrationW
 export async function authorizeGuestServeGrant(args: {
   /** The pinned DATA-account public key of the authority the result came from. */
   accountPublicKey: string;
-  /** The `credential` result as {@link parseServiceAuthorityResult} returned it. */
-  result: Extract<ServiceAuthorityResult, { state: "credential" }>;
+  /** The `credential` result as {@link parseServiceAuthorityResult} returned it, or the renewal
+   *  source's copy of it without the renewal material; the seam reads no renewal field. */
+  result: ServiceEndpointCredential;
   /** The guest's embedded closure: the registration it submitted. */
   registration: ServiceRegistration;
   /** The pinned issuer and its published keys, read from the origin the guest already pins. */

@@ -576,14 +576,18 @@ export type ServiceEndpointRenewalState =
   | { readonly state: "closed" };
 
 /** A service endpoint's renewal source (see {@link AuthProvider.serviceEndpointRenewal}). */
+/** A validated `credential` result without its renewal material: what a guest's serve grant reads. */
+export type ServiceEndpointCredential = Omit<Extract<ServiceAuthorityResult, { state: "credential" }>, "renewalProof" | "renewalExpiresAt">;
+
 export interface ServiceEndpointRenewal {
   /** The bearer function: a fresh, unexpired service access bearer. Concurrent calls share one request. */
   bearer(): Promise<string>;
-  /** The same pull as `bearer()`, answering the whole validated `credential` result: the witness,
-   *  the host-authorized snapshot and the access bearer a guest hands to `authorizeGuestServeGrant`.
+  /** The same pull as `bearer()`, answering the validated `credential` result a guest hands to
+   *  `authorizeGuestServeGrant`: the witness, the host-authorized snapshot and the access bearer,
+   *  without the renewal proof, which never leaves the source. Each caller gets its own copy.
    *  Concurrent `bearer()` and `credential()` calls share one request; the persisted request ids
    *  and the terminal behaviour are the same. */
-  credential(): Promise<Extract<ServiceAuthorityResult, { state: "credential" }>>;
+  credential(): Promise<ServiceEndpointCredential>;
   /** The current state, with expiries only. */
   state(): ServiceEndpointRenewalState;
   /** The space's deny-all sentinel creds the endpoint presents with the bearer, known after the first success. */
