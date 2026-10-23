@@ -22,7 +22,7 @@ export function personaCatalog(values: { space?: string; server?: string }): Per
     return catalogAt(target.root, target.space);
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
-    if (error.code === "not-started" && !values.server && error.details.root && error.details.space)
+    if (error.code === "not-started" && !values.server && error.details.root && error.details.space && !error.details.rootMissing)
       return catalogAt(error.details.root, error.details.space);
     const { message, remedy } = workspaceErrorParts({ kind: "target", error });
     // Every caller selects with --space, and some take no --server, so the shared remedy's

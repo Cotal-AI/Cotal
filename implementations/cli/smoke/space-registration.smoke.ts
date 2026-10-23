@@ -527,6 +527,20 @@ setCurrent("keep");
   rmSync(workersManifest);
   rmSync(separate, { recursive: true });
 
+  // A prepared space whose folder was deleted cannot start there: every surface says the folder is gone.
+  const goneRoot = join(home, "gone");
+  mkdirSync(goneRoot);
+  await json(["space", "create", "gone"], goneRoot);
+  rmSync(goneRoot, { recursive: true });
+  const goneTarget = await json(["who", "--space", "gone"]);
+  check("a prepared space whose folder was deleted is TARGET_UNAVAILABLE, saying the folder is gone and naming space forget",
+    refused(goneTarget, 2, "TARGET_UNAVAILABLE") && (goneTarget.env?.error?.message ?? "").includes(`${goneRoot}, which no longer exists`) && (goneTarget.env?.error?.remedy ?? "").includes("cotal space forget gone"), shown(goneTarget));
+  const gonePersona = await json(["persona", "--space", "gone"]);
+  check("persona names the deleted folder and space forget",
+    refused(gonePersona, 2, "TARGET_UNAVAILABLE") && (gonePersona.env?.error?.message ?? "").includes(`${goneRoot}, which no longer exists`) && (gonePersona.env?.error?.remedy ?? "").includes("cotal space forget gone"), shown(gonePersona));
+  const goneForgot = await run(["space", "forget", "gone"]);
+  check("forget says the folder no longer exists", goneForgot.status === 0 && goneForgot.stdout.includes(`its folder ${goneRoot} no longer exists`) && findPreparedSpace("gone") === undefined, shown(goneForgot));
+
   const later = join(home, "later");
   mkdirSync(later);
   await json(["space", "create", "later"], later);

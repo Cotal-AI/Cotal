@@ -1767,6 +1767,11 @@ A command run without `--space` targets the selection. When the selected space's
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
 it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
 
+A prepared space whose project folder was deleted cannot start. A command that targets it, `persona`
+included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming
+`cotal space forget <space>`. `cotal space create <space> --root <dir>` then prepares it again.
+`use`, `up --space` and `space forget` also say the folder no longer exists.
+
 With nothing selected, a command run in a project targets the space registered for that project's
 root. A root with no registration whose `.cotal/` holds the stack journal `cotal up` writes is
 refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorded and
