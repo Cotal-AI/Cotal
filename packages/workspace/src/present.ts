@@ -326,11 +326,18 @@ export function commandFailureReport(failure: CommandFailure): Report {
     ...(typeof native?.unconfirmed === "string" ? [{ state: "unconfirmed", name: native.unconfirmed }] : []),
     ...names(native?.remaining).filter((name) => name !== native?.refused && name !== native?.unconfirmed).map((name) => ({ state: "remaining or unresolved", name })),
   ];
+  // The live managers a refused selection could not choose between, one row each.
+  const text = (value: unknown): string => typeof value === "string" && value ? value : "-";
+  const managers = (Array.isArray(native?.managers) ? native.managers : []).flatMap((item) => {
+    const row = object(item);
+    return typeof row?.instanceId === "string" ? [{ instanceId: row.instanceId, host: text(row.host), activity: text(row.activity), since: text(row.since) }] : [];
+  });
   return { ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}), sections: [
     { title: failure.outcome === "unknown" ? "Outcome unconfirmed" : failure.outcome === "partial" ? "Partly completed" : failure.outcome === "refused" ? "Request refused" : "Request failed", blocks: [{ kind: "lines", lines: [{ text: failure.message, tone: failure.outcome === "unknown" || failure.outcome === "partial" ? "waiting" : "failed" }] }, { kind: "fields", rows: fields }] },
     ...(purges.length ? [{ title: "Acknowledged history changes", blocks: [{ kind: "table" as const, columns: [{ key: "stream", label: "Native stream" }, { key: "purged", label: "Messages purged" }], rows: purges }] }] : []),
     ...(nativeRows.length ? [{ title: "Native target details", blocks: [{ kind: "table" as const, columns: [{ key: "state", label: "State" }, { key: "name", label: "Target" }], rows: nativeRows.slice(0, 100) }, ...(nativeRows.length > 100 ? [{ kind: "lines" as const, lines: [`Showing 100 of ${nativeRows.length} targets; --json retains every row.`] }] : [])] }] : []),
     ...(failure.changed?.length && !purges.length && !nativeRows.length ? [{ title: "Confirmed changes", blocks: [{ kind: "lines" as const, lines: [`${failure.changed.length} change receipt(s) retained. Choose structured output before the operation to retain their data; do not repeat a mutation merely to view its receipt.`] }] }] : []),
+    ...(managers.length ? [{ title: "Live managers", blocks: [{ kind: "table" as const, columns: [{ key: "instanceId", label: "Instance" }, { key: "host", label: "Host" }, { key: "activity", label: "Activity" }, { key: "since", label: "Running since" }], rows: managers }] }] : []),
     ...(failure.remedy ? [{ title: "Next", blocks: [{ kind: "lines" as const, lines: [failure.remedy] }] }] : []),
   ] };
 }
