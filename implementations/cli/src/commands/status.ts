@@ -47,7 +47,7 @@ import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/serv
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
-import { restoreNextStep } from "../lib/restore.js";
+import { preservedSourceState, restoreNextStep } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 
@@ -291,6 +291,15 @@ export async function status(args: ParsedArgs): Promise<void> {
   if (values.components) await printComponentHealth(cwd, values);
 }
 
+/** A ready journal's next step. Resume and backup use the store at its recorded path, so a folder
+ *  moved after the cut is told to move back, and a missing store is named. */
+function readyNextStep(root: string, source: Parameters<typeof preservedSourceState>[1]): string {
+  const where = preservedSourceState(root, source);
+  if (where.state === "moved") return `this folder was moved from ${where.recordedRoot} after its state was preserved: move it back there, then create a backup or resume with bare ${displayCmd()} up`;
+  if (where.state === "missing") return `the preserved store recorded at ${source.path} is missing: if this folder was moved, move it back; if the store is lost, restore a backup with ${displayCmd()} backup restore <dir> --accept-missing-source`;
+  return `create a backup with ${displayCmd()} backup create <dir>, or resume with bare ${displayCmd()} up`;
+}
+
 /** The folder's maintenance journal, read only. An unreadable one is reported, never taken for none. */
 function readMaintenance(root: string, gaps: Gaps): NonNullable<StatusResult["maintenance"]> | null {
   try {
@@ -298,7 +307,7 @@ function readMaintenance(root: string, gaps: Gaps): NonNullable<StatusResult["ma
     if (!journal) return null;
     const attemptId = "restore" in journal ? journal.restore.attemptId : journal.state === "claimed" ? journal.claim.attemptId : journal.cut.attemptId;
     const next = "restore" in journal ? restoreNextStep(journal.state, attemptId)
-      : journal.state === "ready" ? `create a backup with ${displayCmd()} backup create <dir>, or resume with bare ${displayCmd()} up`
+      : journal.state === "ready" ? readyNextStep(root, journal.source)
       : journal.state === "claimed" ? claimedNextStep(root, journal.claim) : null;
     return { root, space: journal.space, state: journal.state, attemptId, next };
   } catch {

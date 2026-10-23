@@ -45,7 +45,7 @@ import { refuseControllerCut } from "../lib/stack-journal.js";
 import { authorityFingerprint } from "../lib/maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, createAttemptClone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "../lib/isolated-broker.js";
 import { cotalRoot } from "../lib/paths.js";
-import { heldClaim, restoreNextStep } from "../lib/restore.js";
+import { heldClaim, movedFolderRefusal, preservedSourceState, restoreNextStep } from "../lib/restore.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { liveMeshProcesses } from "./clean.js";
 import { backupMaintenance } from "./backup-maintenance.js";
@@ -111,6 +111,10 @@ function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal
 function requireReady(root: string, storeDir: string): MaintenanceReadyRecord {
   const record = readMaintenanceJournal(root);
   if (!record || record.state !== "ready") throw notReady(root, record);
+  const source = preservedSourceState(root, record.source);
+  if (source.state === "moved") throw movedFolderRefusal(root, record.space, record.source.path, source, "create the backup");
+  if (source.state === "missing")
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved store recorded at ${record.source.path} is missing; nothing was backed up`, { target: { root, space: record.space, recordedStore: record.source.path }, remedy: "if this folder was moved, move it back so that path exists again" });
   const actual = readStoreIdentity(storeDir);
   if (!sameStoreIdentity(record.source, actual))
     throw new CommandFailure("refused", "CONFLICT", `--store-dir does not match the preserved source ${record.source.path}`, { target: { root, space: record.space }, remedy: "omit --store-dir, or name the preserved store" });

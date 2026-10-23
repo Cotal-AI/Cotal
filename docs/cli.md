@@ -998,6 +998,11 @@ that command. `--preserve-state` takes its agent inventory from the manager that
 When no manager holds the space's lease, as on a stack started with `--no-manager`, it refuses
 `TARGET_UNAVAILABLE`, exit 2, before it stops anything or writes a maintenance record. Start the
 manager with `cotal up`, then run `cotal down --preserve-state` again.
+The preserved state records its store by absolute path. If the project folder is moved after
+`down --preserve-state`, `up`, `backup create` and `backup restore` refuse `CONFLICT`, exit 2, name
+the folder it was moved from, and say to move it back there first. A store missing from its recorded
+path is refused `TARGET_NOT_FOUND` with that path; only `backup restore --accept-missing-source`
+restores over a lost store.
 
 After those checks, a retained bare apply stops the selected space's service instances before its
 pidfile sweep. Each goes through the service controller with the checks and receipt of

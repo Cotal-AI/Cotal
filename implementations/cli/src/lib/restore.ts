@@ -79,6 +79,8 @@ import {
   type RestoreDegradedRecord,
   type RestoreListenerProof,
   type RestoreManagerCommittedRecord,
+  readStoreIdentity,
+  type StoreIdentity,
 } from "@cotal-ai/workspace";
 import { readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
@@ -645,6 +647,28 @@ function removeOwnedDirectory(path: string, identity: { dev: bigint; ino: bigint
   } catch { /* absent or identity cannot be proven */ }
 }
 
+/** Where a preserved store is relative to the path its journal recorded. `moved` means that path is
+ *  gone and this root's own `.cotal/nats` is the same store, by device, inode and generation, so the
+ *  folder was moved after the cut and `recordedRoot` is where it was. Resume and restore use the
+ *  recorded path, so moving the folder back is what lets them run. */
+export function preservedSourceState(root: string, source: StoreIdentity): { state: "present" } | { state: "missing" } | { state: "moved"; recordedRoot: string; store: string } {
+  // Only a confirmed absence is classified here; any other lstat failure is left to the store checks.
+  try { lstatSync(source.path); return { state: "present" }; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { state: "present" }; }
+  if (basename(source.path) !== "nats" || basename(dirname(source.path)) !== ".cotal") return { state: "missing" };
+  const recordedRoot = dirname(dirname(source.path));
+  let here: StoreIdentity;
+  try { here = readStoreIdentity(join(root, ".cotal", "nats")); }
+  catch { return { state: "missing" }; }
+  return here.dev === source.dev && here.ino === source.ino && here.generation === source.generation ? { state: "moved", recordedRoot, store: here.path } : { state: "missing" };
+}
+
+/** The refusal for a folder moved after its state was preserved: where the journal recorded the
+ *  store, where it is now, and the folder to move back to before `then` runs there. */
+export function movedFolderRefusal(root: string, space: string, recordedStore: string, moved: { recordedRoot: string; store: string }, then: string): CommandFailure {
+  return new CommandFailure("refused", "CONFLICT", `this folder was moved from ${moved.recordedRoot} after its state was preserved: the maintenance journal records the preserved store at ${recordedStore}, and that store is now ${moved.store}`, { target: { root, space, recordedRoot: moved.recordedRoot, recordedStore, store: moved.store }, remedy: `move this folder back to ${moved.recordedRoot}, then ${then} there` });
+}
+
 /** The step that moves a full restore attempt on from `state`, for a refusal to name. A committed or
  *  degraded attempt goes forward through bare `up`, which continues it. */
 export function restoreNextStep(state: string, attemptId: string): string {
@@ -731,6 +755,12 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       journal = rollbackRestoreWithBroker(lock, { unrecordedOwnersDead });
     }
     if (!journal || journal.state !== "ready") throw notRestorable(root, journal);
+    // A preserved store gone from its recorded path either moved with this folder, which no restore
+    // here may replace, or is lost, which only --accept-missing-source restores over.
+    const source = preservedSourceState(root, journal.source);
+    if (source.state === "moved") throw movedFolderRefusal(root, journal.space, journal.source.path, source, "run the restore");
+    if (source.state === "missing" && !flags["accept-missing-source"])
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved store recorded at ${journal.source.path} is missing; the restore did not start`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "if this folder was moved, move it back so that path exists again; pass --accept-missing-source only after verifying disaster recovery intent" });
     // A controller cut restores only through its recorded members,
     // checked here before staging, a claim or any store move. Its broker address is the cut's.
     const controller = cutController(journal.cut);

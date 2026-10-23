@@ -1,0 +1,5 @@
+---
+"@cotal-ai/cli": patch
+---
+
+A project folder moved after `down --preserve-state` no longer blocks resume and restore with an unknown outcome and no path. The maintenance journal records the preserved store by absolute path. When that path is gone and the folder's own `.cotal/nats` is the same store by device, inode and generation, `up`, `backup create` and `backup restore` (with or without `--accept-missing-source`) now refuse `CONFLICT` (exit 2), naming the folder it was moved from, and say to move it back there first. `status` gives the same next step instead of "resume with bare cotal up". A store that is missing from its recorded path is refused `TARGET_NOT_FOUND` with that path, rather than exiting 3, and `backup restore --accept-missing-source` still restores over a lost store. Previously `up` exited 3 with "store path is missing", restore exited 3 with "preserved source is missing", the flag gave "store path must be absent", and `backup create` blamed a `--store-dir` that was never passed.
