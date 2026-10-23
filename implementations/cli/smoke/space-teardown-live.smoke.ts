@@ -11,10 +11,12 @@
  *     stack still stops cleanly.
  *  3. Reset verdicts. On the live stack `reset store --dry-run` exits 0 with a refused verdict and
  *     a remedy naming `cotal down`, and `reset space --dry-run` refuses with that remedy.
- *  4. Reset after a normal down. `reset store` is offered and removes the store, and `up` starts
- *     again. `reset space` is offered and removes the identity, keeping the prepared record and
- *     the stack journal, and `up` starts again with a new account. It clears the credentialRef of a
- *     saved service whose credential the removed account issued, names it, and keeps any other.
+ *  4. Reset after a normal down. `reset store` is offered and removes the store, naming the
+ *     workflow runs that go with it in its preview and receipt and saying why the down listed
+ *     none, and `up` starts again. `reset space` is offered and removes the identity, keeping the
+ *     prepared record and the stack journal, and `up` starts again with a new account. It clears
+ *     the credentialRef of a saved service whose credential the removed account issued, names it,
+ *     and keeps any other.
  *  5. A forgotten name starts elsewhere. After `down --yes`, `space forget` removes the stack
  *     definitions saved for the root, and another folder starts a stack under the same name.
  *  6. Space delete under a stopped stack. With only the broker running the delete applies, and its
@@ -143,9 +145,11 @@ try {
 
     // 4. Reset after a normal down (B4-02).
     const storeStopped = cli(root, "reset", "store", space, "--dry-run", "--json");
-    check("reset store --dry-run after down offers the apply", storeStopped.status === 0 && storeStopped.env?.result?.applyVerdict?.offered === true, shown(storeStopped));
+    // This stack runs with --no-manager, so its down recorded why it could not read the runs.
+    const contents = storeStopped.env?.result?.storeContents as { removed?: string[]; listed?: boolean; runsAtLastDown?: { read?: boolean; reason?: string } | null } | undefined;
+    check("reset store --dry-run after down offers the apply, names the workflow runs it removes and says why the down listed none", storeStopped.status === 0 && storeStopped.env?.result?.applyVerdict?.offered === true && contents?.removed?.includes("workflow runs and their journals") === true && contents.listed === false && contents.runsAtLastDown?.read === false && contents.runsAtLastDown.reason === "the stack's manager was not running", shown(storeStopped));
     const storeApplied = cli(root, "reset", "store", space, "--yes", "--json");
-    check("reset store --yes removes the stopped store", storeApplied.status === 0 && storeApplied.env?.result?.selectedBy === "stopped-stack" && Array.isArray(storeApplied.env.result.removedPaths) && (storeApplied.env.result.removedPaths as unknown[]).length > 0, shown(storeApplied));
+    check("reset store --yes removes the stopped store and names the workflow runs that went with it", storeApplied.status === 0 && storeApplied.env?.result?.selectedBy === "stopped-stack" && Array.isArray(storeApplied.env.result.removedPaths) && (storeApplied.env.result.removedPaths as unknown[]).length > 0 && (storeApplied.env.result.removedContents as string[] | undefined)?.includes("workflow runs and their journals") === true, shown(storeApplied));
     const restarted = cli(root, "up", "--json");
     check("bare up starts the stack again on an empty store", restarted.status === 0, shown(restarted));
     // A saved service naming a credential this account issued would hand its child a credential the

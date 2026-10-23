@@ -467,7 +467,7 @@ async function answer(values: RunValues, reader: Planes, runId: string | undefin
         now: Date.now(),
       },
     );
-    console.log(JSON.stringify(result, null, 2));
+    runReceipt("answer", reader.space, result, values, runId, { step: stepKey, ...(values.value !== undefined ? { value: parsedValue } : {}), ...(values.artifact !== undefined ? { artifact: values.artifact } : {}) });
   } finally {
     await writer.close();
   }
@@ -500,7 +500,7 @@ async function amend(values: RunValues, reader: Planes, runId: string | undefine
         now: Date.now(),
       },
     );
-    console.log(JSON.stringify(result, null, 2));
+    runReceipt("amend", reader.space, result, values, runId, { step: stepKey, ...(values.value !== undefined ? { value: parsedValue } : {}), ...(values.artifact !== undefined ? { artifact: values.artifact } : {}) });
   } finally {
     await writer.close();
   }
@@ -807,7 +807,7 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
     ...(verb === "amend" ? { amend: true } : {}),
   });
-  runReceipt(verb, space, result, values, a);
+  runReceipt(verb, space, result, values, a, { step: b, ...(values.value !== undefined ? { value } : {}), ...(values.artifact !== undefined ? { artifact: values.artifact } : {}) });
 }
 
 /** `cotal run <start|resume|ps|journal|answer|amend>` — dispatch. The manager hosts by default;
@@ -913,6 +913,6 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     try { assertLifecycleToken(values.on, "instanceId"); }
     catch { usage("--on requires the full manager instance id as cotal ps prints it"); }
   }
-  if ((values.json || values.plain) && values.local && !["ps", "journal"].includes(verb)) usage("the local drive does not implement structured or plain receipts; use the hosted form");
+  if ((values.json || values.plain) && values.local && !["ps", "journal", "answer", "amend"].includes(verb)) usage("the local drive does not implement structured or plain receipts; use the hosted form");
   return { values, verb, ...(a === undefined ? {} : { a }), ...(b === undefined ? {} : { b }) };
 }

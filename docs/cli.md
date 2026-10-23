@@ -962,7 +962,11 @@ implied. A dry run reads records only, takes no lock, does not establish native 
 its JSON marks `completeness` as `partial`. It lists members in stop order, says when the stop would
 first settle an earlier operation, and names a scope check the real stop would refuse as a warning.
 A member whose recorded process is already gone is recorded as stopped without loading its adapter
-or credential, so a second `down --yes` stops nothing and is a no-op. When the manager is
+or credential, so a second `down --yes` stops nothing and is a no-op. Before it stops a live
+manager, `down` reads the workflow runs it hosts and records the unfinished ones, with the steps
+they wait on, in the stack journal, where `reset store` lists them. A read that fails is recorded
+with its reason and does not stop the `down`; the JSON receipt carries the record as
+`operation.runs`. When the manager is
 live but the broker is not, `down` cannot read the manager's agent impact and refuses before any
 stop, from a managed seat's shell too. Run `cotal up --space <space>` to restart the broker from its recorded inputs while the
 manager keeps running, then run `cotal down`. Controller roots refuse
@@ -1352,6 +1356,15 @@ then `cotal down --yes`. A legacy root has no stack journal, and its `down` drop
 a reset selects, so no reset reaches it once stopped. There the step after `cotal down` is
 `cotal clean store --force` from its root for `reset store`, or `cotal clean all --force` for
 `reset space`, with `--store-dir <dir>` when the registration records a custom store.
+
+Removing the store removes what the broker kept in it: workflow runs and their journals, channel
+history, stored messages and every other record. A run still waiting for an answer goes with it and
+cannot be answered or resumed afterwards. Only the broker reads the store, and it is stopped, so
+`cotal down` reads the stack's runs from its manager before stopping it and records them in the
+stack journal with the steps they wait on. The preview, the confirmation and the receipt list those
+runs as of the last down, and `--json` carries them as `storeContents.runsAtLastDown` and
+`removedRuns`. When that down could not read them, or no down recorded them, the preview says so.
+To see the runs then, run `cotal up` and `cotal run ps`, then `cotal down --yes`.
 
 The store dry-run is a local-impact preview that exits 0. It requires a space selected that way, a
 real project `.cotal` and a root readable as one local tenant. It opens with a verdict: the apply is
@@ -5194,8 +5207,11 @@ required ([workflows](workflows.md)).
 `answer` resolves an open
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
 answerer from your credential, so no `--by` is taken there. A settled step refuses a second
-`answer`. `amend` records a changed position on a settled checkpoint or `ask`: it files a new
-answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
+`answer`. An answer without `--value` carries no value: the step settles as answered, and the
+program's checkpoint result has no `value`. The receipt of `answer` and `amend` names the step, the
+value it filed or that none was given, any artifact and the answer id. With `--json` they are in
+`result.answer`, where `valueGiven` says whether a value was sent. `amend` records a changed
+position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an
 answer refuses an amend. A spawned seat may amend only an answer recorded under its own name. `migrate` runs the migrate check of an
 edited program against a run's journal, from this terminal under a read credential (`--local`
@@ -5210,7 +5226,8 @@ live manager, an unpinned hosted verb is refused and `--on` picks one. `--local`
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
 (`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
-`--by <who>`, and `start --local` requires `--admit-read` and `--admit-publish` (comma-separated
+`--by <who>` and print the same receipt as the hosted path, and `start --local` requires
+`--admit-read` and `--admit-publish` (comma-separated
 patterns or `none`), the run's channel ceiling. On a
 user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
 there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
