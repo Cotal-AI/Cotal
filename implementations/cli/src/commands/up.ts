@@ -20,6 +20,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   isReachable,
   DEFAULT_SERVER,
+  DEFAULT_SPACE,
   createSpaceAuth,
   serverConfig,
   openServerConfig,
@@ -677,6 +678,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Refuse first-enable IdP failures and explicit pin conflicts before even recovery's lock
     // creates its layout. Existing recovery keeps its own recorded startup and trust checks.
     const stackSpace = values.space ?? folderSpace();
+    if (values.space === undefined) assertSelectionNotMoved(root, stackSpace);
     recordOperationSpace(stackSpace);
     if (!readMaintenanceJournal(root) && controllerStackApplies(root, stackSpace, values)) {
       const recordedStack = readStackJournal(root);
@@ -3570,6 +3572,20 @@ function folderSpace(): string {
     if (named.length === 1) return named[0];
   }
   return resolveSpace(process.cwd());
+}
+
+/** A bare `up` in a folder that names no space starts the default space. When the selected space
+ *  is prepared in a folder that no longer exists, as after that folder was moved, the default is not
+ *  what was meant, so `up` refuses with the step that prepares the selection here. */
+function assertSelectionNotMoved(root: string, space: string): void {
+  if (space !== DEFAULT_SPACE || soleSpaceOf(authDir(root)) !== undefined || preparedSpaceAt(root) || localMeshesForRoot(root).length || readStackJournal(root)) return;
+  const current = getCurrent();
+  const prepared = current === undefined || current === space ? undefined : findPreparedSpace(current);
+  if (!prepared || existsSync(prepared.root)) return;
+  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the selected space "${current}" is prepared in ${prepared.root}, which no longer exists, and this folder names no space, so up did not start "${space}" here`, {
+    target: { root, space: current, preparedRoot: prepared.root },
+    remedy: `if this is that folder moved, forget it with \`cotal space forget ${current}\`, then prepare it here with \`cotal space create ${current}\` and run \`cotal up\`; to start "${space}" here, pass --space ${space}`,
+  });
 }
 
 function realpathSafe(p: string): string {

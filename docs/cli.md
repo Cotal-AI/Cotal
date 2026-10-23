@@ -1805,7 +1805,12 @@ prepared spaces under their own heading, and `space show` and `use` accept one. 
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
 and so does `cotal up --space <name>` run from another folder. `cotal up --space <name>` in a folder
 that is already another space's root refuses with `CONFLICT`, exit 2. `space add` refuses a prepared
-name.
+name. A prepared space records its folder by path, and moving the folder leaves nothing in it that
+names the space. A bare `cotal up` in a folder that names no space, while the selected space is
+prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2, rather than start the
+default space there. Forget the space with `cotal space forget <name>`, prepare it again in its new
+folder with `cotal space create <name>`, then run `cotal up`. Until then, `space create` of that name
+says its recorded folder no longer exists.
 
 `space forget <name>` removes a registration this machine keeps. It stops nothing, deletes nothing on
 the broker, and keeps the files under its root. It refuses a space this machine is running with

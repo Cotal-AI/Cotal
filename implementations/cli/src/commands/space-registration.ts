@@ -393,7 +393,10 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   const prepared = findPreparedSpace(name);
   if (prepared) {
     if (again && here(prepared.root)) return "prepared";
-    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}`, target, `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
+    const gone = !existsSync(prepared.root);
+    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${gone ? ", which no longer exists" : ""}`, target, gone
+      ? `forget it with \`cotal space forget ${name}\`, then run this create again`
+      : `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
   }
   const held = [...new Set([...take(spacesAtRoot(root), target), ...loadMeshes().filter((m) => here(m.root)).map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
   // A space started here before and stopped since keeps its trust in this root.
