@@ -347,7 +347,7 @@ const NO_OWNER_MATCHES = "-no-owner-";
  *  getter or `toString` throws. A handler that throws while building its text skips the work after
  *  it, and on a detached chain ends the manager with an unhandled rejection, so the coercion to text
  *  runs inside the guard. */
-function rejectionText(e: unknown): string {
+export function rejectionText(e: unknown): string {
   try {
     return String((e as Error)?.message ?? e);
   } catch {
@@ -3392,7 +3392,7 @@ export class Manager {
       if (own !== undefined && own.info.pid === process.pid)
         await this.ep.releaseManagerLease(this.managerInstanceId, own.revision);
     } catch {
-      // Best-effort, like the release it wraps: a broker failure here is recovered by the bucket TTL.
+      // Best-effort: a release that did not commit is reported by the re-read below.
     }
     try {
       const stillOurs = await this.ep.readOwnManagerLease(this.managerInstanceId);

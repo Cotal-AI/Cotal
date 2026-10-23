@@ -30,7 +30,7 @@ import {
   type Tone,
 } from "./view.js";
 import { closeSession, runPublish, runSlash } from "./controller.js";
-import { discloseChoice, listChoices, parseRecipient, type Choice } from "./picker.js";
+import { discloseChoice, listChoices, parseRecipient, refusedDm, type Choice } from "./picker.js";
 
 const TONE_COLOR: Record<Tone, string | undefined> = {
   ok: "green",
@@ -146,6 +146,9 @@ export function ChatView({ session, initialRecipient, notice, shiftEnterDistinct
   }, [session, update]);
 
   const choose = useCallback(async (recipient: Recipient) => {
+    // A typed name that reaches no one is refused with the picker still open.
+    const refused = await refusedDm(session, recipient);
+    if (refused) return update(addNotice(latest.current, "failed", refused));
     setPicker(undefined);
     const warning = await discloseChoice(session, recipient);
     let s = setRecipient(latest.current, recipient);

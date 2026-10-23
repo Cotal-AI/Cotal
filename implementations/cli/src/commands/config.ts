@@ -105,6 +105,7 @@ export async function config(args: ParsedArgs): Promise<void> {
 
   if (sub === undefined) {
     if (rest.length) throw usage("usage: cotal config [--user | --space <name>]");
+    if (v.space !== undefined) assertKnownSpace(v.space, prefs, true);
     const scope = readScope(v);
     const result: PreferencesResult = { kind: "preferences", file: preferencesPath(), revision: prefs.revision, scope, settings: PREFERENCE_KEYS.map((key) => setting(key, scope, prefs)) };
     writeResult(presentation, { command: "config", target: target(scope), result, warnings: invalidEnvironmentValues(result.settings) }, (value) => preferencesView(value, Boolean(v.verbose)));
@@ -113,6 +114,7 @@ export async function config(args: ParsedArgs): Promise<void> {
   if (sub === "get") {
     if (rest.length !== 1) throw usage("usage: cotal config get <key> [--user | --space <name>]");
     const key = keyOf(rest[0]!);
+    if (v.space !== undefined) assertKnownSpace(v.space, prefs, true);
     const scope = readScope(v);
     const result: PreferenceResult = { kind: "preference", file: preferencesPath(), revision: prefs.revision, scope, setting: setting(key, scope, prefs) };
     writeResult(presentation, { command: "config", target: target(scope), result, warnings: invalidEnvironmentValues([result.setting]) }, preferenceView);
@@ -128,15 +130,9 @@ export async function config(args: ParsedArgs): Promise<void> {
     if (key === "persona" && value?.trim()) checkPersona(value);
     const scope: Scope = v.space !== undefined ? { space: v.space, from: "flag" } : { space: null, from: null };
     // A value saved for a space that is neither registered nor prepared would never apply, so a typo
-    // is refused with the spaces there are, once the write's own checks pass. Unset stays open, so a
-    // value left for a gone space can go.
-    const space = sub === "set" ? scope.space : null;
-    if (space !== null && !preferenceSpaceProblem(space) && preferenceInfo(key).perSpace && !preferenceValueProblem(key, value!) && !findMesh(space) && !findPreparedSpace(space)) {
-      const known = [...new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space)])].sort();
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named ${JSON.stringify(space)} is registered or prepared here${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
-        remedy: `name a known space with --space, or prepare it first with \`cotal space create ${space}\` or register it with \`cotal space add ${space} --server <url>\``,
-      });
-    }
+    // is refused with the spaces there are, once the write's own checks pass. Unset also takes a space
+    // that still holds a saved value, so a value left for a gone space can go.
+    if (scope.space !== null && preferenceInfo(key).perSpace && (sub === "unset" || !preferenceValueProblem(key, value!))) assertKnownSpace(scope.space, prefs, sub === "unset");
     const previous = (scope.space === null ? prefs.defaults[key] : prefs.spaces[scope.space]?.[key]) ?? null;
     const { changed, revision } = writePreference(scope.space === null ? {} : { space: scope.space }, key, value, prefs.revision);
     // What a command here uses next: through the written space, or the selected one for a default.
@@ -147,6 +143,18 @@ export async function config(args: ParsedArgs): Promise<void> {
     return;
   }
   throw usage(`cotal config has no subcommand "${sub}" - run \`cotal help config\``);
+}
+
+/** Refuse a `--space` this machine does not know, naming the spaces it does. A registered or prepared
+ *  space is known. With `saved`, for a read or an unset, so is a space that still holds a saved value,
+ *  so a value left for a removed space can be read and removed. */
+function assertKnownSpace(space: string, prefs: Preferences, saved: boolean): void {
+  const holdsValue = (name: string) => Object.keys(prefs.spaces[name] ?? {}).length > 0;
+  if (findMesh(space) || findPreparedSpace(space) || (saved && holdsValue(space))) return;
+  const known = [...new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space), ...(saved ? Object.keys(prefs.spaces).filter(holdsValue) : [])])].sort();
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named ${JSON.stringify(space)} is ${saved ? "registered, prepared or holding a saved value here" : "registered or prepared here"}${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
+    remedy: `name a known space with --space, or prepare it first with \`cotal space create ${space}\` or register it with \`cotal space add ${space} --server <url>\``,
+  });
 }
 
 /** A read looks through `--space`, or the selected space when neither scope flag is given. */

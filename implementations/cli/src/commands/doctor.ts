@@ -86,6 +86,15 @@ export function validateDoctorArguments(args: ParsedArgs): void {
   if (args.positionals.length !== 1 || args.positionals[0] !== "auth") throw new CommandFailure("refused", "USAGE_INVALID", "use doctor auth [--fix] [--space <space>] [--json|--plain]");
 }
 
+/** The space registered as open at this root, if any. Missing signing trust alone is never read as
+ *  an open space. */
+function recordedOpenSpace(root: string, space: string | undefined): string | undefined {
+  try {
+    const target = resolveMeshTarget(root, { ...(space === undefined ? {} : { space }), readOnly: true });
+    return target.mode === "open" && target.origin !== undefined && canonicalRoot(target.root) === canonicalRoot(root) ? target.space : undefined;
+  } catch { return undefined; }
+}
+
 /** Local credential observations only; native repair remains an explicit, separately labeled phase. */
 export async function doctor(args: ParsedArgs): Promise<void> {
   validateDoctorArguments(args);
@@ -103,6 +112,11 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   try { auth = values.space ? await getSpaceAuth(workspaceSecretStore(root), values.space) : await getSoleSpaceAuth(workspaceSecretStore(root), authDir(root)); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the local authority inventory could not be validated; no repair was attempted", { target: { root, space: values.space ?? null } }); }
   if (!auth) {
+    const open = values.fix ? undefined : recordedOpenSpace(root, values.space);
+    if (open !== undefined) {
+      writeResult(presentationOf(values), { command: "doctor auth", target: { root, space: open }, result: { kind: "credential-health", root, space: open, localFindings: null, credentialScope: "open-space", brokerAuthorization: "not-checked", repair }, noOp: true }, () => ({ sections: [{ title: "No credentials to check", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", open], ["Mode", "open, as registered"]] }, { kind: "lines", lines: [{ text: "This space is open: it authenticates no one and issues no credentials, so there are none to check.", tone: "hint" }] }] }] }));
+      return;
+    }
     if (values.fix || values.space) throw new CommandFailure("refused", "AUTH_REQUIRED", "no validated signing trust for the named local diagnostic scope is present; no open mode or broader authority was inferred", { target: { root, space: values.space ?? null } });
     writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh.", remedy: "run `cotal doctor auth` in a space's root folder; `cotal space` lists each space's root" } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
     return;

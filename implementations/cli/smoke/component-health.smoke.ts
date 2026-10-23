@@ -312,8 +312,9 @@ async function serveManagerWithForeignRefusal(): Promise<{ close(): Promise<void
   return {
     close: async () => {
       await service.stop();
-      await health.releaseDeliveryLease(0, deliveryLeaseRevision);
-      await health.releaseManagerLease(SERVED_INSTANCE, managerLeaseRevision);
+      // Nothing renews these rows, so by now the bucket TTL may have expired them and a release refused.
+      await health.releaseDeliveryLease(0, deliveryLeaseRevision).catch(() => {});
+      await health.releaseManagerLease(SERVED_INSTANCE, managerLeaseRevision).catch(() => {});
       await health.stop().catch(() => {});
       await nc.drain().catch(() => nc.close());
     },

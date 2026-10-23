@@ -32,7 +32,7 @@ import {
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   deprecatedDaemonEntry, type MeshEntry,
 } from "@cotal-ai/workspace";
-import { Manager } from "./manager.js";
+import { Manager, rejectionText } from "./manager.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, type ManagerServiceChild } from "./service-child.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
@@ -251,7 +251,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       throw new Error("execution: none on supervise requires a genuine hosting user-auth root, not a participant registration");
   } catch (e) {
     if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   const { space, server } = target;
@@ -481,7 +481,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     } catch (e) {
       if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm hosted authority preparation; it was not retried");
       console.error(c.red(
-        `✗ remote supervision for space "${space}" was refused: ${(e as Error).message}. ` +
+        `✗ remote supervision for space "${space}" was refused: ${rejectionText(e)}. ` +
         `Foreground \`cotal spawn\` remains available; detached/managed agents require a live host-approved manager-service authority.`,
       ));
       process.exit(1);
@@ -503,7 +503,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try { resumeDurableCommitToken = resumeCommitToken(v, !service); }
   catch (e) {
     if (service) throw e;
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   // The registration policy is read AFTER every local refusal above and before the first dial: a
@@ -514,7 +514,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     eventsRequired = (await refreshRegistrationPolicy(target))?.events === "required";
   } catch (e) {
     if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   if (!(await isReachable(server))) {
@@ -534,7 +534,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     maxSessions = parsePositiveIntegerFlag("--max-sessions", v["max-sessions"]);
   } catch (e) {
     if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   // A name given here is recorded for this root's manager once it is up, so a restart keeps it.
@@ -574,7 +574,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     });
   } catch (e) {
     if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   const managerContext = { root: managerRoot, space };
@@ -622,7 +622,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
           catch { /* Missing terminal evidence stays unknown to the original controller. */ }
         }
         console.error(c.red("✗ the native managed manager stop did not confirm completion; its phase evidence was retained"));
-      } else console.error(c.red(`✗ ${(e as Error).message}`));
+      } else console.error(c.red(`✗ ${rejectionText(e)}`));
       if (!startFailed) process.exit(1);
     });
   };
@@ -713,7 +713,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       try {
         configPath = materializePersona(root, launchSpec.runId, la);
       } catch (e) {
-        console.error(c.red(`✗ ${la.name}: ${(e as Error).message}`));
+        console.error(c.red(`✗ ${la.name}: ${rejectionText(e)}`));
         continue;
       }
       const reply = await mgr.startAgent(launchAgentToStartOpts(la, configPath, launchSpec.owner, launchSpec.runId));

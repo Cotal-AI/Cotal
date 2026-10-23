@@ -429,7 +429,7 @@ export const cotalLangRunHost: RunHost = {
       rows.push({
         runId,
         endpoint,
-        ...(st !== undefined ? { state: st.state, holder: st.holder, epoch: st.epoch, journalHigh: st.journalHigh } : {}),
+        ...(st !== undefined ? { state: st.state, holder: st.holder, epoch: st.epoch, journalHigh: st.journalHigh, ...(st.failure !== undefined ? { failure: st.failure } : {}) } : {}),
         ...(lineage !== undefined ? { forkedFrom: lineage } : {}),
         startedAt: record.spec.value.pins.startedAt,
         ...(program !== undefined ? { programHash: programHashOf(program.source) } : {}),

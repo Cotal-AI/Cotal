@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, relative, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
@@ -519,12 +519,6 @@ async function downCommand(args: ParsedArgs): Promise<void> {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-// The pid parser + liveness probe are the SHARED pid-attribution contract (`lib/pid.ts`), the same
-// one `auth-proc` uses - so `cotal down`'s stop of the auth-service (a callout SIGNER) attributes a
-// torn pidfile exactly as the direct helper does, instead of the old unbounded parser + two-state
-// probe that mapped a kernel-unsignalable value to "dead" and orphaned the process under a clean
-// stop. `isAlive` = the probe says the process EXISTS; every caller below feeds it a parsed pid.
-export const isAlive = (pid: number): boolean => probeLiveness(pid) === "alive";
 
 /** Registered brokers for this root that answer and have no nats pidfile. Never a kill list. */
 async function liveUnownedBrokers(context: LocalProcessContext): Promise<Array<{ space: string; server: string }>> {
@@ -539,10 +533,7 @@ async function liveUnownedBrokers(context: LocalProcessContext): Promise<Array<{
 }
 
 export function processAlive(component: LocalProcess, context: LocalProcessContext): boolean {
-  const raw = readPidfile(localProcessPath(component.pidFile, context));
-  if (raw === undefined) return false;
-  const pid = parsePid(raw);
-  return pid !== undefined && isAlive(pid);
+  return pidfileState(localProcessPath(component.pidFile, context)).liveness === "alive";
 }
 
 /** Whether a component MIGHT still be running. It fails CLOSED on uncertainty. A component with NO
@@ -554,11 +545,7 @@ export function processAlive(component: LocalProcess, context: LocalProcessConte
  *  stopping" but WRONG for those questions: it would count a live auth signer behind a torn pidfile
  *  as stopped. Only an ESRCH-confirmed death (or no record) clears a component. */
 export function mayBeRunning(component: LocalProcess, context: LocalProcessContext): boolean {
-  const raw = readPidfile(localProcessPath(component.pidFile, context));
-  if (!raw) return false; // no record, or an empty pre-protocol husk: no process behind it
-  const pid = parsePid(raw);
-  if (pid === undefined) return true; // unattributable content: cannot prove it gone → may be running
-  return probeLiveness(pid) !== "dead"; // alive OR unknown → may be running; only ESRCH clears it
+  return pidfileState(localProcessPath(component.pidFile, context)).liveness !== "dead";
 }
 
 /** The principal keys of every retained agent in a preservation inventory — the dot-form ids that
@@ -1144,16 +1131,11 @@ export function pidfileTargets(space: string, root: string): Array<[file: string
  *  `cotal down` refuses them as possibly fronting a live process. */
 export type PidfileState = { pid?: number; liveness: "alive" | "dead" | "unknown"; note?: string };
 
-/** Shared hardened pid probe: positive integers only, and EPERM means the process exists. */
+/** The one classifier of a pidfile, read through the shared `readPidfile`: positive integers only,
+ *  and EPERM means the process exists. `processAlive` and `mayBeRunning` are its two directions. */
 export function pidfileState(path: string): PidfileState {
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8").trim();
-  } catch (e) {
-    // A process removes its own record on exit, so the file can be gone by the time it is read.
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { liveness: "dead", note: "no pidfile" };
-    throw e;
-  }
+  const raw = readPidfile(path);
+  if (raw === undefined) return { liveness: "dead", note: "no pidfile" };
   if (raw.startsWith("removing:")) return { liveness: "unknown", note: "extension removal in progress" };
   const pid = parsePid(raw);
   if (!pid) return { liveness: raw ? "unknown" : "dead", note: "bad pidfile" };

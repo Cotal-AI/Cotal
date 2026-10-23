@@ -51,7 +51,7 @@ import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/worksp
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 60;
+const EXPECTED = 62;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -373,6 +373,14 @@ try {
   const empty = await run(["send", "-c", "general", "", "--json"]);
   check("an empty quoted body says the message is empty and suggests the same channel",
     empty.code === 1 && empty.stdout.includes('"message":"the message is empty"') && empty.stdout.includes('run cotal send -c general \\"<message>\\"'), empty);
+  // An empty recipient used to be told to choose one body, with a `-t` remedy whatever flag was given.
+  const blanks = await Promise.all([["-t", ""], ["--to=", null], ["-r", ""], ["-c", "#"]].map(([option, value]) => run(["send", option!, ...(value === null ? [] : [value!]), "x", "--json"])));
+  check("an empty --to, --role or --channel value is refused for that flag, with a remedy that keeps it",
+    blanks.every((r) => r.code === 1 && r.stdout.includes('"code":"USAGE_INVALID"') && !r.stdout.includes("exactly one body"))
+      && blanks[0]!.stdout.includes('"message":"--to/-t is empty; name one agent or full instance id"') && blanks[0]!.stdout.includes('run cotal send -t <agent> \\"<message>\\"')
+      && blanks[1]!.stdout.includes('"message":"--to/-t is empty;')
+      && blanks[2]!.stdout.includes('"message":"--role/-r is empty; name one role"') && blanks[2]!.stdout.includes('run cotal send -r <role> \\"<message>\\"')
+      && blanks[3]!.stdout.includes('"message":"--channel/-c is empty; name one channel"') && blanks[3]!.stdout.includes('run cotal send -c <channel> \\"<message>\\"'), blanks);
   // A channel or role name the subject rules refuse gets their reason; only a wildcard gets the wildcard one.
   const unsafe = await run(["send", "-c", "kanäle", "x", "--json"]);
   check("`cotal send -c` with a name that is not NATS-safe is USAGE_INVALID, exit 1, naming the segment",
@@ -383,6 +391,12 @@ try {
   const badRole = await run(["send", "-r", "bad role!", "x", "--json"]);
   check("`cotal send -r` with a role that is not one NATS-safe token is USAGE_INVALID, exit 1, with the role rule",
     badRole.code === 1 && badRole.stdout.includes('"code":"USAGE_INVALID"') && badRole.stdout.includes('invalid role \\"bad role!\\": must be a single NATS-safe token'), badRole);
+  // A name no participant can carry used to wait out the presence lookup; a legal display name still gets it.
+  const [backslash, long, legal] = await Promise.all([["a\\b"], ["n".repeat(129)], ["Bad Name!"]].map(([to]) => run(["send", "-t", to!, "x", "--json"])));
+  check("`cotal send -t` with a name the endpoint refuses is USAGE_INVALID with the name rule; a legal display name is looked up",
+    backslash.code === 1 && backslash.stdout.includes('"code":"USAGE_INVALID"') && backslash.stdout.includes('is reserved (a Windows path separator)')
+      && long.code === 1 && long.stdout.includes("exceeds the 128-character limit")
+      && legal.code === 2 && legal.stdout.includes('"code":"TARGET_NOT_FOUND"'), { backslash, long, legal });
   const wildcard = await run(["send", "-c", "team.*", "x", "--json"]);
   check("`cotal send -c` with a wildcard says to name one concrete channel", wildcard.code === 1 && wildcard.stdout.includes("name one concrete channel, without wildcards"), wildcard);
   const starred = await run(["send", "-c", "gen*", "x", "--json"]);

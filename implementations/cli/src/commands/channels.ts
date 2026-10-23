@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import {
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
-  ChannelRegistryConflict, isConcreteChannel, readChannelRegistry, seedChannelRegistry, validateChannelConfig,
+  ChannelRegistryConflict, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, validateChannelConfig,
   type ChannelConfig, type ChannelRegistryFile, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
@@ -12,6 +12,8 @@ import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { channelMembers } from "./channel-members.js";
+import { earlierMessages } from "./send.js";
+import { deniedWrite } from "../lib/denied-write.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 
 export const channelFlags = [
@@ -111,6 +113,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, registryView);
     return;
   }
+  if (action === "remove") await refuseUnknownRemoval(name!, values, target);
   if (action === "remove" && !await confirmRemoval(name!, connection.space, values, presentation)) {
     writeResult(presentation, { command: "channel", target, result: { action: "cancelled", channel: name }, noOp: true }, () => ({ sections: [{ blocks: [{ kind: "lines", lines: ["Channel removal cancelled. Nothing was deleted."] }] }] }));
     return;
@@ -130,6 +133,11 @@ export async function channels(args: ParsedArgs): Promise<void> {
     // A write that kept losing the revision race to other writers saved nothing.
     if (error instanceof ChannelRegistryConflict)
       throw new CommandFailure("refused", "CONFLICT", `${error.message}; this change was not saved`, { target, remedy: "read the channel with cotal ch show, then repeat the change" });
+    // A write the broker refused before any purge was acknowledged applied nothing.
+    if (purged === undefined && isPublishPermissionDenied(error)) {
+      const write = action === "remove" ? values.purge ? `purge #${name}'s history and remove its metadata` : "remove channel metadata" : action === "defaults" ? "write channel defaults" : "write channel metadata";
+      throw deniedWrite(connection, values.creds !== undefined, write, action === "remove" ? "removed" : "saved", error, { target });
+    }
     throw new CommandFailure(purged === undefined ? "unknown" : "partial", purged === undefined ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL",
       purged === undefined ? "The channel change did not return a confirmed outcome. It may have been applied." : `The purge reported ${purged} messages removed, but channel metadata removal was not confirmed.`,
       { target, ...(purged === undefined ? {} : { changed: [{ kind: "channel-history", channel: name, purged }] }), remedy: "Read the channel and its history before retrying; do not assume the change failed." });
@@ -144,6 +152,30 @@ export async function channels(args: ParsedArgs): Promise<void> {
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch", description: "See saved channel metadata" }, { command: "cotal history <channel>", description: "Read retained messages within your grant" }] }] },
   ] }));
+}
+
+/** A remove names a channel the space has: one with a saved entry or retained messages. Any other
+ *  name, often a typo or another case of a registered one, is refused with the registered channels
+ *  before anything is confirmed or deleted. The registry is read on the operator credential, as
+ *  `cotal channel` reads it, because the writer and purger may not read it. When the registry or the
+ *  history cannot be read with this credential, such as an explicit `--creds` without that grant, the
+ *  remove goes ahead and reports what the broker does with it. */
+async function refuseUnknownRemoval(name: string, values: Values, target: object): Promise<void> {
+  const reader = await connectOrThrow(values, "operator");
+  const auth = reader.bearer ? { bearer: reader.bearer, sentinelCreds: reader.sentinelCreds } : { creds: reader.creds };
+  let registry: ChannelRegistryFile;
+  try { registry = await readChannelRegistry({ servers: reader.server, space: reader.space, ...auth, directGet: !reader.bearer }); }
+  catch (error) {
+    if (isPublishPermissionDenied(error)) return;
+    throw error;
+  }
+  const registered = Object.keys(registry.channels ?? {}).sort();
+  if (registered.includes(name) || (await earlierMessages(values, name)) !== false) return;
+  const spelled = registered.find((channel) => channel.toLowerCase() === name.toLowerCase());
+  const known = registered.length ? `registered channels: ${registered.map((channel) => `#${channel}`).join(", ")}` : "this space registers no channels";
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND",
+    `#${name} has no saved entry and no retained messages; ${spelled ? `channel names are case-sensitive, and the registered one is #${spelled}` : known}`,
+    { target, remedy: spelled ? `name it as registered: cotal channel remove ${spelled}` : "name a channel the space has; cotal ch lists the registered ones" });
 }
 
 function policyFields(config: ChannelConfig | undefined, defaults: ChannelRegistryFile["defaults"]): [string, string][] {

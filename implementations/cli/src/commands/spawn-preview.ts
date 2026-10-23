@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { agentFilePath, token, type AgentDef, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, presentationOf, resolveAgentType, resolveMeshTarget, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
-import { callerHarness, spawnPersona } from "../lib/spawn-defaults.js";
+import { callerHarness, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import type { spawnFlags } from "./spawn.js";
 
 type Values = FlagValues<typeof spawnFlags>;
@@ -28,7 +28,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   const { ref, from } = spawnPersona(values.config, args.positionals, { space, preferences: cachedPreferences() });
   const requested = { persona: ref, source: values.file ? "file" : from ?? "explicit-or-product-default", harness: values.agent ?? null, name: values.name ?? null, model: values.model ?? null, cwd: values.cwd ?? null, instanceId: values.on ?? null, restarts: values.restarts === undefined ? null : Number(values.restarts), restartWindowMs: values["restart-window"] === undefined ? null : Number(values["restart-window"]) };
   const target = { space, broker, authMode: targetMode };
-  if (!values.foreground) {
+  if (spawnUsesManager(values)) {
     writeResult(presentationOf(values), { command: "spawn", target, result: { kind: "managed-launch-preview", dryRun: true, requested, executionHost: "manager-selected-at-launch", personaValidation: "not-checked-on-execution-host", effectiveHarness: null, effectiveCwd: null, enrollment: "not-read-or-redeemed", allocated: false, launched: false }, completeness: "partial", partial: { message: "Offline managed preview retains the requested selectors only. The selected manager's persona, effective harness and working directory were not read, so this is not a fully resolved launch plan.", remedy: "do not treat the caller's local files as the manager's files; execution-host validation still applies at launch" } }, (result): Report => ({ sections: [
       { title: "Managed launch preview", blocks: [{ kind: "fields", rows: [["Space", space], ["Broker", broker ?? "not checked"], ["Persona request", result.requested.persona], ["Persona source", result.requested.source], ["Manager pin", result.requested.instanceId ?? "not selected"], ["Harness request", result.requested.harness ?? "manager/persona precedence; not checked"], ["Working-directory request", result.requested.cwd ?? "manager default; not read"], ["View", values.detach ? "return after readiness" : "attach after readiness"], ["Execution-host validation", { text: "not performed", tone: "waiting" }]] }, { kind: "lines", lines: ["No broker request, connector import, file upload, enrollment redemption, provisioning, identity allocation or launch occurred. No local file was substituted for an unreadable remote persona."] }] },
     ] }));

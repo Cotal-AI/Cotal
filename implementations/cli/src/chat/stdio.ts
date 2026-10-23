@@ -137,11 +137,16 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
     if (max !== undefined && (v.length === 0 || v.length > max)) return usage(id, `${type}.${key} must be 1-${max} characters`);
     return v;
   };
+  // A message body that is empty or only whitespace is refused with the sentence `cotal send` gives.
+  const body = (): string | ParsedLine => {
+    const text = str("text");
+    return typeof text === "string" && !text.trim() ? usage(id, "the message is empty") : text;
+  };
   const isErr = (v: unknown): v is ParsedLine => typeof v === "object" && v !== null && "ok" in v;
   const ok = (request: StdioRequest): ParsedLine => ({ ok: true, request });
   switch (type) {
     case "send": {
-      const text = str("text");
+      const text = body();
       if (isErr(text)) return text;
       const problem = channelProblem(type, r.channel);
       if (problem) return usage(id, problem);
@@ -153,7 +158,7 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
     case "dm": {
       const to = str("to", MAX_DM_TARGET);
       if (isErr(to)) return to;
-      const text = str("text");
+      const text = body();
       if (isErr(text)) return text;
       if (r.replyTo !== undefined) {
         const replyTo = str("replyTo", MAX_MESSAGE_ID);
@@ -170,7 +175,7 @@ function validateFields(id: string, type: RequestType, r: Record<string, unknown
       } catch (e) {
         return usage(id, (e as Error).message);
       }
-      const text = str("text");
+      const text = body();
       if (isErr(text)) return text;
       return ok({ type, id, role, text });
     }

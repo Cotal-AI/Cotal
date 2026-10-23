@@ -35,6 +35,7 @@ const session: AdmittedChatSession = {
   subscribe: () => () => {},
   send: publish,
   dm: publish,
+  resolveDm: unused,
   anycast: publish,
   setStatus: unused,
   setAttention: unused,

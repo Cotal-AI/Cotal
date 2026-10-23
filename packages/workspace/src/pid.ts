@@ -440,16 +440,14 @@ function parsePinLines(raw: string): ProcessIdentityRecord[] | undefined {
  *  or an old pidfile that had no pin. The line reads as legacy, never as a torn pairing. */
 const NO_START_TOKEN = "-";
 
-/** The pin line of the pid the pidfile names right now. A pidfile with no pin at all is a legacy
- *  record, so its line carries {@link NO_START_TOKEN} and the bridge keeps it legacy. A pin that is
- *  unreadable or has no line for that pid has nothing to carry. */
+/** The pin line of the pid the pidfile names right now. The pidfile is read through
+ *  {@link readPidfile}, so only a missing pidfile is a first start and any other read error throws. A
+ *  pidfile with no pin at all is a legacy record, so its line carries {@link NO_START_TOKEN} and the
+ *  bridge keeps it legacy. A pin that is unreadable or has no line for that pid has nothing to carry. */
 function currentPinLine(pidfilePath: string): ProcessIdentityRecord | undefined {
-  let current: number | undefined;
-  try {
-    current = parsePid(readFileSync(pidfilePath, "utf8"));
-  } catch {
-    return undefined; // no pidfile: a first start, there is no old line to carry
-  }
+  const raw = readPidfile(pidfilePath);
+  if (raw === undefined) return undefined; // no pidfile: a first start, there is no old line to carry
+  const current = parsePid(raw);
   if (current === undefined) return undefined;
   let rawPin: string;
   try {
@@ -526,7 +524,9 @@ function sleepSync(ms: number): void {
  *  line. After `publish-pin`, the NEW complete record. No state is torn and none drops to the unpinned
  *  legacy shape. A legacy old record (a pidfile with no pin) is carried as a {@link NO_START_TOKEN}
  *  line, so it stays legacy until the commit. An old pin that is torn or has no line for the old pid
- *  has nothing to carry, so until the commit it refuses as a torn pairing, as it already did.
+ *  has nothing to carry, so until the commit it refuses as a torn pairing, as it already did. A
+ *  pidfile that exists but cannot be read is not a first start: the publish throws before its first
+ *  rename, leaving the record as it was.
  *
  *  When `identityRecord` cannot establish a token (ps-less host, or a pid whose start could not be
  *  read - same rule as {@link writeIdentityPin}), the new line carries {@link NO_START_TOKEN} and

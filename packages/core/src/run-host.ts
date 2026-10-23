@@ -109,9 +109,10 @@ export interface RunHostLocateRequest {
   readonly stepKey: string;
 }
 
-/** An open pause, located: its token and the holder that armed it. What a hosting daemon mints
- *  the answering credential for, so the answer's writes are pinned to this one pause. */
+/** An open pause, located: its run, its token and the holder that armed it. What a hosting daemon
+ *  mints the answering credential for, so the answer's writes are pinned to this one pause. */
 export interface RunHostOpenPause {
+  readonly runId: string;
   readonly token: string;
   readonly holder: { readonly id: string; readonly lifecycleUid: string };
 }
@@ -156,6 +157,8 @@ export interface RunListRow {
   readonly holder?: string;
   readonly epoch?: number;
   readonly journalHigh?: number;
+  /** A failed run's cause, as its status records it. */
+  readonly failure?: RunStatusValue["failure"];
   readonly forkedFrom?: { readonly run: string; readonly step: string };
   /** The run's pinned `startedAt`: the logical epoch its program's `run()` reports. */
   readonly startedAt: number;
