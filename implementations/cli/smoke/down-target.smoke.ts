@@ -308,7 +308,7 @@ try {
   // any saved-definition lookup, so it refuses as not found and says how to name a space.
   const noMesh = await rejection(run(["web"]));
   check("no meshes: `down web` refuses TARGET_NOT_FOUND, naming no mesh to look in",
-    noMesh?.code === "TARGET_NOT_FOUND" && /no mesh running/.test(noMesh.message ?? "") && !/no saved service definition/.test(noMesh.message ?? "") &&
+    noMesh?.code === "TARGET_NOT_FOUND" && /no space is selected, and this folder is not a space's project/.test(noMesh.message ?? "") && !/no saved service definition/.test(noMesh.message ?? "") &&
       /name a prepared or registered space with `--space <name>`/.test(noMesh.remedy ?? ""),
     noMesh && { code: noMesh.code, message: noMesh.message, remedy: noMesh.remedy });
 
