@@ -5291,6 +5291,9 @@ the manager's answer deadline.
 never takes a caller-supplied one), drives it in its own process, and answers with the id once the
 run is recorded; a program that does not validate is refused with every problem listed. A program
 file that cannot be read is refused with `TARGET_NOT_FOUND`, exit 2, by every verb that takes one.
+A `start` interrupted with Ctrl-C or `SIGTERM` after its request went out reports outcome `unknown`,
+because the manager may already have recorded the run, and exits 130 or 143. List the runs with
+`cotal run ps` before starting it again.
 `resume` asks the manager to take an existing run back and continue it from its step journal; the
 source is the recorded program, so no `--file` is taken. A run recorded `completed` or `failed` is
 refused `LIFECYCLE_BLOCKED` (exit 2) and gets no new activation, because nothing is left to continue. Neither takes `--endpoint`: the manager records

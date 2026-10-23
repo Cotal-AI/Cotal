@@ -66,7 +66,7 @@ import {
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
 import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
-import { CommandFailure, presentationOf, recordOperationSpace, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, commandFailureReport, failureEnvelope, presentationOf, recordOperationSpace, renderReport, terminalWidth, writeEnvelope, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
 import { printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
@@ -635,6 +635,26 @@ function managerRefusal(command: string, space: string, args: Record<string, unk
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: "read the run with cotal run show or cotal run ps before trying again; it was not retried" });
 }
 
+/** While a hosted start's request may be with the manager, a SIGINT or SIGTERM reports that the run
+ *  may already be recorded and exits as the signal would. The manager does not stop on the caller's
+ *  signal, so the process used to die silently with the run started, and a retry started a second
+ *  one. Returns the release. */
+function reportInterruptedStart(values: RunValues, space: string): () => void {
+  const exit = (signal: "SIGINT" | "SIGTERM"): void => {
+    const failure = new CommandFailure("unknown", "OPERATION_UNKNOWN", "interrupted after the start request was sent, so the manager may already have recorded the run", {
+      target: { space }, remedy: "list the recorded runs with cotal run ps before starting it again",
+    });
+    if (values.json) writeEnvelope(failureEnvelope("run", failure));
+    process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  const onInterrupt = () => exit("SIGINT");
+  const onTerminate = () => exit("SIGTERM");
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGTERM", onTerminate);
+  return () => { process.off("SIGINT", onInterrupt); process.off("SIGTERM", onTerminate); };
+}
+
 /** One command to the mesh's manager over the endpoint rails: a fresh resolve (describe, store
  *  fetch, digest-verified recompile), then the invoke, re-issued after a bind split
  *  ({@link invokeRepairingSplit}). The reply's data on success; a refusal throws as
@@ -666,10 +686,16 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     // A start or resume is answered only once the drive has activated, which the manager waits on
     // for a bounded time; the deadline here outlives that wait, so the manager's own "still
     // launching" refusal is what a slow activation reads as, never a manager that did not answer.
-    const r = await invokeRepairingSplit(nc, t.space, service, command, args, {
-      deadlineMs: RUN_LAUNCH_DEADLINE_MS,
-      ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
-    });
+    const interrupt = command === "run-start" ? reportInterruptedStart(values, t.space) : undefined;
+    let r: Awaited<ReturnType<typeof invokeRepairingSplit>>;
+    try {
+      r = await invokeRepairingSplit(nc, t.space, service, command, args, {
+        deadlineMs: RUN_LAUNCH_DEADLINE_MS,
+        ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
+      });
+    } finally {
+      interrupt?.();
+    }
     if (r.reply.ok !== true) {
       const err = r.reply.error;
       // A validation refusal carries every problem as the language's own records; print them the
