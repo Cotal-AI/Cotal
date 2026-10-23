@@ -4,8 +4,7 @@
 > ("The remaining hosted gap is signer isolation"). Wire contract unchanged: no new subject, no new
 > stream, no new message type. This is a composition-root and OS-custody seam.
 
-**Status:** design. Nothing here is implemented. Review gate: this doc is approved before any code
-lands.
+Review gate: this doc is approved before any code lands.
 
 **Citations.** Every `file` / function below was read in this worktree at `c5c462886`. No seed, key,
 or credential value is reproduced.
@@ -161,7 +160,7 @@ are not only JWT minting:
 |---|---|---|
 | JWT `encodeUser` | `startAuthCallout` (`callout.ts`) `fromSeed(opts.dataAccount.signingSeed)` as `userSigner` | connect-time user JWTs |
 | JWT `encodeUser` | `openAuthorityClient` (`authority-client.ts`) `fromSeed(opts.dataAccount.signingSeed)` | self-minted infra connections |
-| JWT `mintCreds` | `withDeliveryAdminEndpoint` (`delivery-admin.ts`) mints `supervisor` or `endpoint-evictor` from `dataAccountAuth` (`store.ts`), the same stripped `SpaceAuth` the plane signs with | per-call delivery-admin evictors and liveness oracles (`barrier-evict.ts`, `plane-claim.ts`) |
+| JWT `mintCreds` | `withDeliveryAdminEndpoint` (`delivery-admin.ts`) mints `supervisor` or `endpoint-evictor` from `dataAccountAuth` (`store.ts`), the same stripped `SpaceAuth` the plane signs with | per-call delivery-admin evictors and liveness oracles (`barrier-evict.ts`, `plane-claim.ts`), and `cotal actor revoke` eviction (`commands.ts`) |
 | JWT `openAuthorityClient` | `makeDrainRepairers` (`drain-repair.ts`) | per-repair applier credential |
 | JWT `mintPublicUserJwt` | `openAuthAuthorityPlane` (`service.ts`) `issueManagerServiceAuthority` | remote-manager user JWTs |
 | HMAC-SHA256 | `remoteManagerCurrentRegistrationProof` (`retained-manager-validation.ts`) `createHmac("sha256", secret)` | registration proof over a domain-separated payload |
