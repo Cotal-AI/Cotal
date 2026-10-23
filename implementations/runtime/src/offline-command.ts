@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { dryRun, LangErrors, validate, type SimScript } from "@cotal-ai/lang";
 import { CommandFailure, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 
@@ -8,10 +8,21 @@ export interface OfflineValues {
   handler?: string;
 }
 
-/** A workflow program's source, or the TARGET_NOT_FOUND refusal every run verb gives a file it cannot read. */
+/** A workflow program's source. A file it cannot read refuses naming the path and the cause: it is
+ *  missing or a dangling link, a directory, or not readable. `-` is a path here, not standard input. */
 export function sourceOf(file: string): string {
   try { return readFileSync(file, "utf8"); }
-  catch { throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the workflow source file could not be read", { target: { file } }); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    let link = false;
+    try { link = lstatSync(file).isSymbolicLink(); } catch { /* the path itself is absent */ }
+    const [refusal, cause] = code === "ENOENT"
+      ? ["TARGET_NOT_FOUND", link ? "is a link whose target does not exist" : file === "-" ? "does not exist; run reads its program from a file, and - does not mean standard input" : "does not exist"] as const
+      : code === "EISDIR" ? ["USAGE_INVALID", "is a directory, not a workflow source file"] as const
+      : code === "EACCES" || code === "EPERM" ? ["PERMISSION_DENIED", "is not readable with this user's permissions"] as const
+      : ["TARGET_NOT_FOUND", `could not be read (${code ?? "unknown error"})`] as const;
+    throw new CommandFailure("refused", refusal, `the workflow source ${file} ${cause}`, { target: { file } });
+  }
 }
 
 function scriptOf(file: string | undefined): SimScript {

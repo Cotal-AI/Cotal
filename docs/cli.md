@@ -5341,7 +5341,10 @@ cotal r check <run-id> ./edited.cotal.js
 cotal r revoke <run-id> --local --by <actor> --reason '<text>'
 ```
 
-Start takes a positional source file. Resume uses the host's recorded program. Hosted answers
+Start takes a positional source file. A source file a `run` verb cannot read is refused naming
+its path and the cause: `TARGET_NOT_FOUND` for a missing file or a link whose target does not exist,
+`USAGE_INVALID` for a directory and `PERMISSION_DENIED` for a file it may not read. `-` is a file
+name there, since `run` does not read a program from standard input. Resume uses the host's recorded program. Hosted answers
 and amendments are attributed to the authenticated caller, never a supplied name. Check reads
 the recorded journal through the existing local check; it commits no migration. Revocation keeps
 the existing local trust and explicit actor/reason requirements and does not cancel a task.

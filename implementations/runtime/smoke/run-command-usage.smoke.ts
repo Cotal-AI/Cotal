@@ -10,7 +10,7 @@
  *
  * Run: pnpm smoke:runtime-run-command-usage   (no broker)
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EpEnvelopeError, EP_UNANSWERED, registry, type Command } from "@cotal-ai/core";
@@ -167,6 +167,29 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const said = ERR.join(" ").replace(/\s+/g, " ");
   c("a validator warning names its code, title, position and fix on stderr",
     said.includes(`L3021 \`fanOut\` has no stable key (${program}:1:7)`) && said.includes("Fix: Pass a key function"), said);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// A workflow source that cannot be read is refused naming its path and the cause, before any plane.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-source-"));
+  mkdirSync(join(dir, "adir"));
+  symlinkSync(join(dir, "nowhere.cotal.js"), join(dir, "dangling.cotal.js"));
+  writeFileSync(join(dir, "locked.cotal.js"), "x\n", { mode: 0o000 });
+  const cases: [string, string, string][] = [
+    ["missing.cotal.js", "TARGET_NOT_FOUND", "does not exist"],
+    ["adir", "USAGE_INVALID", "is a directory"],
+    ["dangling.cotal.js", "TARGET_NOT_FOUND", "is a link whose target does not exist"],
+    // root reads a mode-000 file, so the permission case runs only for another user.
+    ...(process.getuid?.() === 0 ? [] : [["locked.cotal.js", "PERMISSION_DENIED", "is not readable"] as [string, string, string]]),
+  ];
+  for (const [name, code, says] of cases) {
+    const path = join(dir, name);
+    const got = await attempt(["start", path]);
+    c(`run start of ${name} refuses ${code} naming its path and cause`, isCommandFailure(got) && got.code === code && got.message.includes(path) && got.message.includes(says), got);
+  }
+  const dash = await attempt(["start", "-"]);
+  c("run start - says that - does not mean standard input", isCommandFailure(dash) && dash.code === "TARGET_NOT_FOUND" && dash.message.includes("- does not mean standard input"), dash);
   rmSync(dir, { recursive: true, force: true });
 }
 
