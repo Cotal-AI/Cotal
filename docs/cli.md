@@ -5566,9 +5566,9 @@ cotal r check <run-id> ./edited.cotal.js
 cotal r revoke <run-id> --local --by <actor> --reason '<text>'
 ```
 
-Start takes a positional source file. A run verb that reads a source file refuses an empty one
-with `SCHEMA_INVALID`, before it checks or sends anything, because a run's source must not be empty.
-Resume uses the host's recorded program. Hosted answers
+Start takes a positional source file. A run verb that reads a source file refuses an empty one or
+one that is not valid UTF-8 with `SCHEMA_INVALID`, before it checks or sends anything, because a
+run's source must not be empty and its text is never replaced. Resume uses the host's recorded program. Hosted answers
 and amendments are attributed to the authenticated caller, never a supplied name. Check reads
 the recorded journal through the existing local check; it commits no migration. Revocation keeps
 the existing local trust and explicit actor/reason requirements and does not cancel a task.

@@ -8,15 +8,17 @@ export interface OfflineValues {
   handler?: string;
 }
 
-/** A workflow program's source, or the refusal every run verb gives a file it cannot read or that
- *  is empty. A run's source must not be empty (the manager's `run-start` schema), so validate refuses
- *  that file as start does. */
+/** A workflow program's source, or the refusal every run verb gives a file it cannot read, that is
+ *  empty or that is not UTF-8. A run's source must not be empty (the manager's `run-start` schema),
+ *  so validate refuses that file as start does. Bytes that are not UTF-8 are refused rather than
+ *  replaced, so the program a run records is the file's own text. */
 export function sourceOf(file: string): string {
-  let source: string;
-  try { source = readFileSync(file, "utf8"); }
+  let bytes: Buffer;
+  try { bytes = readFileSync(file); }
   catch { throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the workflow source file could not be read", { target: { file } }); }
-  if (source === "") throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow source file is empty, and a run's source must not be empty", { target: { file }, remedy: `write the program into ${file}` });
-  return source;
+  if (bytes.length === 0) throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow source file is empty, and a run's source must not be empty", { target: { file }, remedy: `write the program into ${file}` });
+  try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
+  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the workflow source file is not valid UTF-8, so it was not read as a program", { target: { file }, remedy: `save ${file} as UTF-8 text` }); }
 }
 
 function scriptOf(file: string | undefined): SimScript {
