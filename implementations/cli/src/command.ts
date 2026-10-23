@@ -305,6 +305,11 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // History also accepts a root channel positional; only its reserved clear token is a mode.
   if (cmd.subcommands?.length && first !== undefined && cmd.name !== "history" && !findSubcommand(cmd, first))
     usageExit(`cotal ${cmd.name} has no subcommand "${first}" - run \`cotal help ${cmd.name}\``, cmd, json);
+  // Target resolution reads an empty space as no space and falls back to the selected one, so a script
+  // whose variable is unset would act on whichever space is selected.
+  const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
+  if (spaceFlag && typeof parsed.values.space === "string" && !parsed.values.space.trim())
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true);
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
   if (structured(cmd, first) && parsed.values.json === true) disableInput();
   const canonical = canonicalSubcommand(cmd, parsed);

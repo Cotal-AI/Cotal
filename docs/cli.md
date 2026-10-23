@@ -2007,6 +2007,9 @@ it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh. Inside a proje
 registered space other than the selection, the command still targets the selection. Before it acts,
 it warns on stderr and in its JSON `warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming both spaces
 and the `--space` that targets the folder's space.
+An empty `--space` value, such as `--space "$S"` with `S` unset, is refused with `USAGE_INVALID`,
+exit 1, by every command that takes `--space`, before anything is read or written. It never falls
+back to the selection.
 
 A prepared space whose project folder was deleted cannot start. A command that targets it, `persona`
 included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming
