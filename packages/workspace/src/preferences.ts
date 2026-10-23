@@ -271,6 +271,36 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
   }
 }
 
+/**
+ * Clear every value saved for `space`, under the same lock and `expectedRevision` check as
+ * {@link writePreference}, in one atomic replace. Returns what was removed, empty when the space had none.
+ */
+export function removeSpacePreferences(space: string, expectedRevision: number): { removed: Partial<Record<PreferenceKey, string>>; revision: number } {
+  const problem = preferenceSpaceProblem(space);
+  if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
+  // A space with nothing saved needs no write, so no lock and no configuration folder.
+  const before = readPreferences();
+  if (!Object.keys(before.spaces[space] ?? {}).length) return { removed: {}, revision: before.revision };
+  const lock = acquireLock(`${preferencesPath()}.lock`, { label: "a preferences write", waitMs: 10_000 });
+  try {
+    const current = readPreferences();
+    if (current.revision !== expectedRevision)
+      throw new CommandFailure("refused", "CONFLICT", `the preferences changed while this command ran (revision ${expectedRevision} became ${current.revision})`, {
+        remedy: "run the command again",
+      });
+    const removed = { ...current.spaces[space] };
+    if (!Object.keys(removed).length) return { removed, revision: current.revision };
+    const spaces: Record<string, Partial<Record<PreferenceKey, string>>> = { ...current.spaces };
+    delete spaces[space];
+    const next: Preferences = { schemaVersion: PREFERENCES_SCHEMA_VERSION, revision: current.revision + 1, defaults: { ...current.defaults }, spaces };
+    writeSecretFileAtomic(preferencesPath(), `${JSON.stringify(next, null, 2)}\n`);
+    cached = { path: preferencesPath(), prefs: next };
+    return { removed, revision: next.revision };
+  } finally {
+    lock.release();
+  }
+}
+
 /** Context for one resolution: the flag and persona pin the command has, the space it acts on, and
  *  the environment and saved preferences to read. */
 export interface PreferenceContext {

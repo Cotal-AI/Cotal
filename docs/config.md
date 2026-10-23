@@ -130,7 +130,8 @@ Preferences are the defaults your own commands use when nothing more specific na
 them with [`cotal config`](cli.md#config), for yourself or for one space, and they are saved in
 `preferences.json` in the configuration directory (see [Configuration files](#configuration-files)).
 `cotal setup` saves the application it sets up as the space's `harness`, and as yours when you have
-none, so a space you prepare later starts with it.
+none, so a space you prepare later starts with it. `cotal space forget` removes the values saved for
+the space it forgets.
 
 | Key | Values | Per space | Environment | Default | Read by |
 |---|---|---|---|---|---|

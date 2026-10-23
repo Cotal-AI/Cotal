@@ -1796,7 +1796,10 @@ running while any stack member's process may still run. The refusal names one su
 writes nothing: the registration, the selection and the root's files stay. A member whose process
 is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
 that it was never stopped cleanly. A prepared space is forgotten the same way, and the `.cotal/`
-that `space create` made stays. Forgetting the selected space clears the selection.
+that `space create` made stays. Forgetting the selected space clears the selection. Forget also
+removes the per-space preferences saved under that name, so a later space with the same name starts
+without them, and the receipt lists each removed key and value so you can set them again. If that
+removal fails after the record is gone, the run is `partial` and names the `config unset` to finish it.
 `status` in a forgotten space's root then selects no space and probes no broker.
 
 `space delete <name> --dry-run` reads the registered broker in open or static-auth mode.
