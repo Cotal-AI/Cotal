@@ -171,7 +171,8 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
 }
 
 // A scripted checkpoint result is read by the simulator only for an `expired` status, so a
-// malformed one would simulate as an answer. The results file is refused before the simulation.
+// malformed one would simulate as an answer. The results file is refused before the simulation,
+// and a simulation that stops names why.
 {
   const dir = mkdtempSync(join(tmpdir(), "run-simulate-script-"));
   const program = join(dir, "p.cotal.js");
@@ -189,6 +190,14 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const at = await simulate({ checkpoints: { go: { status: "resolved", at: 5 } } });
   c("a scripted checkpoint at is refused, since the simulator stamps it from virtual time",
     scriptRefusal(at, "at is stamped from virtual time"), at);
+  // A step the script does not cover stops the simulation, and the failure names which one.
+  const unscripted = await simulate({});
+  c("an unscripted checkpoint fails naming its table, name and step key, with the entry to add as the remedy",
+    isCommandFailure(unscripted) && unscripted.code === "OPERATION_FAILED" && unscripted.message.includes('no checkpoints entry for "go" (step /checkpoint:go#0)') && Boolean(unscripted.remedy?.includes('{ checkpoints: { "go": <result> } }')), unscripted);
+  writeFileSync(program, 'throw "boom";\n');
+  const thrown = await simulate({});
+  c("a program that throws fails naming what it threw, not an unscripted effect",
+    isCommandFailure(thrown) && thrown.code === "OPERATION_FAILED" && thrown.message.includes('the program threw "boom"') && !thrown.message.includes("unscripted"), thrown);
   rmSync(dir, { recursive: true, force: true });
 }
 

@@ -134,8 +134,13 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   let report: Awaited<ReturnType<typeof dryRun>>;
   try { report = await dryRun(source, script, { file }); }
   catch (error) {
-    const code = (error as { code?: unknown }).code;
-    throw new CommandFailure("failed", "OPERATION_FAILED", "the offline simulation did not complete; unscripted effects are not invented", { target: { file }, ...(typeof code === "string" && /^L[0-9]+$/.test(code) ? { native: { code } } : {}) });
+    // The language's own text names an unscripted effect's step and the entry to add, or a
+    // program fault's code and cause, so it is carried as written, with its Fix as the remedy.
+    const code = (error as { code?: unknown } | null)?.code;
+    const parts = error instanceof Error ? error.message.split("\n\n") : [`the program threw ${JSON.stringify(error) ?? String(error)}`];
+    const fix = parts.find((part) => part.startsWith("Fix: "));
+    const cause = parts.filter((part) => part !== fix).join(": ").replace(/\s*\n\s*/g, " ");
+    throw new CommandFailure("failed", "OPERATION_FAILED", `the offline simulation did not complete: ${cause}`, { target: { file, handler: values.handler ?? null }, ...(fix ? { remedy: code === "L6001" ? `in the --handler file, ${fix.slice(5)}` : fix.slice(5) } : {}), ...(typeof code === "string" && /^L[0-9]+$/.test(code) ? { native: { code } } : {}) });
   }
   const result = { kind: "workflow-simulation", steps: report.steps, elapsedMs: report.elapsedMs, effects: report.effects, agents: report.agents, waits: report.waits, checkpoints: report.checkpoints, unusedScript: report.unusedScript };
   writeResult(presentation, { command: "run", target: { file }, result, warnings }, (r): Report => ({ sections: [
