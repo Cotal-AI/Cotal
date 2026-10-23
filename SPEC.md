@@ -6044,7 +6044,10 @@ delegated authority.
 idempotent, written under the same `run-admitter` profile, never removed. A revoked run performs
 no further channel effect, its open waits refuse at their next fetch (the linearization point is
 the leader-served read the host makes before returning any channel bytes), and no resume,
-takeover or boot reconcile continues it. Revocation authorizes no new resource and no cleanup
+takeover or boot reconcile continues it. An answer to one of its open checkpoints or asks MUST be
+refused before anything is filed: the host reads the marker leader-served before it files the
+answer record, and that read orders the answer against the revocation. A marker the host cannot
+read refuses the answer too. Revocation authorizes no new resource and no cleanup
 beyond what the run's own journal already justifies. Caller disconnect or credential expiry after
 admission does not revoke a run.
 
@@ -6565,6 +6568,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-23 | **A revoked run takes no answer (§14.8).** An answer to an open checkpoint or ask of a revoked run, or of a run whose marker cannot be read, is refused before anything is filed. The leader-served marker read before the answer record orders the answer against the revocation. |
 | 2026-10-23 | **A failed run records its cause (§13.7), additive.** A `failed` run status MAY carry `failure: { code?, message }`, the error the program failed with, so a reader of the record learns why without the host's log. It is optional on read and absent from every other state. |
 | 2026-10-21 | **Own-DM-only reader (§8), additive.** A client may read its DM inbox holding only its own `dm_` durable: it binds an existing durable, never creates one, refuses when it is missing, keeps the §5 sender check, and issues only CONSUMER.INFO, MSG.NEXT and ack requests on that durable. No credential profile is added. |
 | 2026-10-21 | **Handler refusals before any effect (§13.3), additive.** A handler that refuses before its command's first effect has started SHOULD carry `not-executed`, and one that refuses after an effect may have started MUST NOT carry it. |

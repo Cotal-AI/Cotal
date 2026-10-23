@@ -42,7 +42,9 @@ import {
   readCheckpointAnswer,
   readCheckpointSpec,
   readCheckpointStatus,
+  readRunRevocation,
   resumeCheckpoint,
+  EpEnvelopeError,
   type CheckpointSettleFact,
   type CheckpointSpecValue,
 } from "@cotal-ai/core";
@@ -85,8 +87,9 @@ export interface ResolveCheckpointDeps {
   readonly endpoint: string;
 }
 
-/** The open pause at a step, located: its token and the holder that armed it. */
+/** The open pause at a step, located: its run, its token and the holder that armed it. */
 export interface OpenCheckpoint {
+  readonly runId: string;
   readonly token: string;
   readonly holder: { readonly id: string; readonly lifecycleUid: string };
 }
@@ -136,7 +139,7 @@ export async function locateOpenCheckpoint(
       + `refusing to guess a presenter — reconcile the store before answering`,
     );
   }
-  return { token, holder: spec.holder };
+  return { runId: req.runId, token, holder: spec.holder };
 }
 
 /** Reads long enough to tell a mint in flight from a torn store, and no longer.
@@ -174,16 +177,31 @@ async function readSpecPastTheMintWindow(
   return undefined;
 }
 
+/** An answer the run's revocation marker refuses before anything is filed (SPEC 14.8): the run was
+ *  revoked, or its marker could not be read. */
+export class RunAnswerBlocked extends EpEnvelopeError {
+  constructor(message: string) {
+    super("failed-precondition", `${message}; no answer was filed (SPEC 14.8)`, undefined, "not-executed");
+    this.name = "RunAnswerBlocked";
+  }
+}
+
 /**
  * The WRITE half of an answer: file the answer record for the located pause, then present its
  * token as the arming holder. Every write is keyed by `open.token`, so a credential minted for this
- * half is pinned to the one pause being answered (SPEC 14.3).
+ * half is pinned to the one pause being answered (SPEC 14.3). A revoked run's pause takes no
+ * answer: the marker is read leader-served before the record is filed, and that read orders the
+ * answer against the revocation. A marker that cannot be read refuses the answer too.
  */
 export async function answerOpenCheckpoint(
   deps: ResolveCheckpointDeps,
   req: { readonly open: OpenCheckpoint; readonly by: string; readonly value?: unknown; readonly artifact?: string; readonly now: number },
 ): Promise<ResolveCheckpointResult> {
-  const { token, holder } = req.open;
+  const { runId, token, holder } = req.open;
+  const revoked = await readRunRevocation(deps.jsm, deps.space, deps.endpoint, runId).catch((e: unknown) => {
+    throw new RunAnswerBlocked(`run ${runId}: its revocation marker could not be read (${e instanceof Error ? e.message : String(e)})`);
+  });
+  if (revoked !== undefined) throw new RunAnswerBlocked(`run ${runId} was revoked by ${revoked.by} (${revoked.reason}), so its open requests take no answer`);
   const answerId = checkpointAnswerId({
     token,
     by: req.by,

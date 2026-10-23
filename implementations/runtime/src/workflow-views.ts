@@ -61,7 +61,10 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
       ...(view.revoked ? [["Admission", { text: "admission revoked", tone: "failed" }], ["Revoked by", view.revoked.by], ["Revocation reason", view.revoked.reason]] as [string, string | Styled][] : []),
       ...(unreadable ? [["Revocation", { text: "revocation not checked", tone: "waiting" }]] as [string, Styled][] : []),
       ["Journal rows", String(view.journal.length)]] }] },
-    ...(needsAnswer.length ? [{ title: "Needs an answer", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "asks", label: "Request" }], rows: needsAnswer.map((row) => ({ step: row.step, asks: row.asks ?? "" })) }] }] : []),
+    // A revoked run's open requests stay listed, because the pauses are still open, but they take
+    // no answer, so the view says that and offers no answer command.
+    ...(needsAnswer.length ? [{ title: "Needs an answer", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "asks", label: "Request" }], rows: needsAnswer.map((row) => ({ step: row.step, asks: row.asks ?? "" })) },
+      ...(view.revoked ? [{ kind: "lines" as const, lines: [{ text: "The run's admission is revoked, so these requests take no answer.", tone: "failed" as const }] }] : [])] }] : []),
     ...(answers.length ? [{ title: "Answers", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "record", label: "Record" }, { key: "value", label: "Value" }, { key: "by", label: "By" }, ...(artifacts ? [{ key: "artifact", label: "Artifact" }] : []), { key: "at", label: "At" }, { key: "id", label: "Answer id" }], rows: answers }, { kind: "lines" as const, lines: [{ text: "The run acted on the answered value. Each amended line records a later position, and the last one is current.", tone: "hint" as const }] }] }] : []),
     // The run's failure, as its status records it. When a step's error is that failure, it is
     // printed once, under Step errors, and named here.
@@ -70,7 +73,7 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
       : failure.message.split("\n").map((line) => ({ text: oneLine(line), tone: "failed" as const })) }] }] : []),
     ...(errored.length ? [{ title: "Step errors", blocks: [{ kind: "lines" as const, lines: errored.flatMap((row) => [{ text: `${row.step}  ${row.outcome}`, tone: "failed" as const }, ...row.errorMessage!.split("\n").map((line) => `  ${oneLine(line)}`)]) }] }] : []),
     { title: `Journal · last ${shown.length} of ${view.journal.length}`, blocks: [shown.length ? { kind: "table", columns: [{ key: "number", label: "Entry" }, { key: "step", label: "Step" }, { key: "outcome", label: "Recorded outcome" }], rows: shown.map((row) => ({ number: String(row.n), step: row.kind === "activation" ? "holder activation" : row.step, outcome: row.kind === "activation" ? `epoch ${row.epoch}` : row.outcome })) } : { kind: "lines", lines: ["No journal entries in this view."] }, { kind: "lines", lines: [{ text: "Use --json for the full returned journal. A step outcome is not proof that every external task succeeded.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [...(needsAnswer.length ? [{ command: `cotal r answer ${runToken(view.runId)} '<step-key>' --value '<json>'${managerPin(values)}`, description: "Answer an open request under the native caller policy" }] : []), { command: `cotal r show ${runToken(view.runId)} --json${managerPin(values)}`, description: "Read the complete returned status and journal" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [...(needsAnswer.length && !view.revoked ? [{ command: `cotal r answer ${runToken(view.runId)} '<step-key>' --value '<json>'${managerPin(values)}`, description: "Answer an open request under the native caller policy" }] : []), { command: `cotal r show ${runToken(view.runId)} --json${managerPin(values)}`, description: "Read the complete returned status and journal" }] }] },
   ] }));
 }
 

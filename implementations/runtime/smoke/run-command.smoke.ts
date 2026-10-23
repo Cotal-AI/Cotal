@@ -458,7 +458,7 @@ let P = "";
 // the control below is a live `running` row rather than an arranged one.
 {
   reset();
-  const { rid, open: openPause, driven } = await holdAtCheckpoint();
+  const { rid, open: openPause } = await holdAtCheckpoint();
   c("the run to be revoked is open and held, so the control below reads a live record", openPause && rid !== "", captured());
 
   // THE CONTROL, and it is what makes the cell after it mean anything: the same run, the same
@@ -494,10 +494,20 @@ let P = "";
   c("and the run record is untouched, so no host is credited with an outcome it never wrote",
     revokedRec?.status?.value.state === "running", revokedRec?.status?.value.state);
 
-  // Settle the held driver so the suite leaves no drive behind it. Bounded, and its result is not
-  // a cell: what a revoked run's answer does is decided at the effect, and is graded elsewhere.
-  await wf(["answer", rid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).catch(() => undefined);
-  await Promise.race([driven, wait(15_000)]);
+  // A revoked run takes no answer (SPEC 14.8): its open pause is refused before anything is filed,
+  // so the run stays parked where the revoke found it. The held driver ends with the suite.
+  reset();
+  const answered = await wf(["answer", rid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).then(() => undefined, (e: Error) => e);
+  c("an answer to the revoked run's open checkpoint is refused LIFECYCLE_BLOCKED, naming who revoked it and why",
+    isCommandFailure(answered) && answered.code === "LIFECYCLE_BLOCKED" && answered.message.includes("revoked by smoke-operator (broker outage)") && answered.message.includes("no answer was filed"), answered?.message ?? captured());
+  const parked: string[] = [];
+  for (const r of (await journal(rid)).records) {
+    if (r.record.kind !== "step") continue;
+    const e = r.record.entry as JournalEntry;
+    if (e.kind === "checkpoint") parked.push(e.state);
+  }
+  c("...and the checkpoint is still open, so the run did not move on",
+    parked.length > 0 && parked.every((state) => state === "pending") && (await record(rid))?.status?.value.state === "running", parked);
 }
 
 // ── 10) a marker ps could not read: the state column says so, and so does the exit status ─────
@@ -540,9 +550,12 @@ let P = "";
     listed === undefined && stateOf(psRow(P)) === "completed", listed ?? psRow(P));
   c("...and exits 4, because the listing is partial", listedExit === 4, listedExit);
 
-  // Settle the held driver, bounded, as block 9 does; its outcome is not this block's claim.
-  await wf(["answer", uid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).catch(() => undefined);
-  await Promise.race([held.driven, wait(15_000)]);
+  // A marker that cannot be read does not show the run may continue, so its open pause takes no
+  // answer either. The held driver ends with the suite.
+  reset();
+  const unreadAnswer = await wf(["answer", uid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).then(() => undefined, (e: Error) => e);
+  c("an answer to a run whose marker cannot be read is refused LIFECYCLE_BLOCKED and names the unread marker",
+    isCommandFailure(unreadAnswer) && unreadAnswer.code === "LIFECYCLE_BLOCKED" && unreadAnswer.message.includes("its revocation marker could not be read (run revocation is malformed)"), unreadAnswer?.message ?? captured());
 }
 
 // ── 11) a revoke that names nobody and no reason is refused before it writes ─────────────────
@@ -649,7 +662,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 62;
+const DECLARED = 65;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

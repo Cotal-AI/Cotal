@@ -74,7 +74,7 @@ import { cotalLangRunHost as runHost, journalRows } from "./run-host.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
-import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
+import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer, RunAnswerBlocked } from "./resolve-checkpoint.js";
 
 const USAGE =
   'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] [--page [--limit <n>] [--cursor <cursor>]] | journal <runId> [--endpoint <ep>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--on <instance>] [--space <s>] [--server <url>] [--creds <path>]';
@@ -466,7 +466,10 @@ async function answer(values: RunValues, reader: Planes, runId: string | undefin
         ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
         now: Date.now(),
       },
-    );
+    ).catch((e: unknown) => {
+      if (e instanceof RunAnswerBlocked) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", e.message, { target: { space: writer.space, endpoint, run: runId }, native: { code: e.code } });
+      throw e;
+    });
     runReceipt("answer", reader.space, result, values, runId, { step: stepKey, ...(values.value !== undefined ? { value: parsedValue } : {}), ...(values.artifact !== undefined ? { artifact: values.artifact } : {}) });
   } finally {
     await writer.close();

@@ -5243,7 +5243,8 @@ required ([workflows](workflows.md)).
 `answer` resolves an open
 checkpoint through the manager, presenting as the holder that armed it; the manager records the
 answerer from your credential, so no `--by` is taken there. A settled step refuses a second
-`answer`. An answer without `--value` carries no value: the step settles as answered, and the
+`answer`, and a revoked run refuses every answer with `LIFECYCLE_BLOCKED` and files nothing. An
+answer without `--value` carries no value: the step settles as answered, and the
 program's checkpoint result has no `value`. The receipt of `answer` and `amend` names the step, the
 value it filed or that none was given, any artifact and the answer id. With `--json` they are in
 `result.answer`, where `valueGiven` says whether a value was sent. `amend` records a changed
