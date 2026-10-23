@@ -1,9 +1,9 @@
 import * as prompts from "../lib/prompts.js";
-import { chatStream, dmStream, dialerFor, standaloneConnectOpts } from "@cotal-ai/core";
+import { chatStream, dmStream, dialerFor, isPublishPermissionDenied, standaloneConnectOpts } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { PermissionViolationError } from "@nats-io/transport-node";
 import { CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, credentialRefusalMessage, isConnectRefusal, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
+import { deniedWrite } from "../lib/denied-write.js";
 
 interface Values { space?: string; server?: string; creds?: string; dms?: boolean; yes?: boolean; json?: boolean; plain?: boolean; "dry-run"?: boolean }
 interface PurgeReceipt { stream: string; purged: number }
@@ -54,11 +54,13 @@ export async function historyClear(values: Values): Promise<void> {
   } catch (error) {
     if (submitted === undefined && !acknowledged.length) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the native purge client could not be prepared; no purge request was submitted", { target, native: { outcome: "not-executed" } });
     const api = error && typeof error === "object" && "api_error" in error ? (error as { api_error?: { code?: unknown; err_code?: unknown } }).api_error : undefined;
-    const denied = error instanceof PermissionViolationError || api?.code === 403;
+    // The client reports a refused publish as the cause of the request error it raises.
+    const denied = isPublishPermissionDenied(error) || api?.code === 403;
     const absent = api?.code === 404;
     const knownRefusal = denied || absent;
     const detail = { acknowledged, unconfirmedStream: submitted ?? null, notSubmitted: streams.filter((stream) => !acknowledged.some((row) => row.stream === stream) && stream !== submitted) };
-    if (knownRefusal && !acknowledged.length) throw new CommandFailure("refused", denied ? "PERMISSION_DENIED" : "TARGET_NOT_FOUND", "the native broker refused the purge before executing it", { target, native: { code: denied ? "permission-denied" : "not-found", outcome: "not-executed", detail } });
+    if (denied && !acknowledged.length) throw deniedWrite(conn, values.creds !== undefined, "purge retained history", "purged", error, { target, native: { code: "permission-denied", outcome: "not-executed", detail } });
+    if (knownRefusal && !acknowledged.length) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the native broker refused the purge before executing it", { target, native: { code: "not-found", outcome: "not-executed", detail } });
     if (knownRefusal) throw new CommandFailure("partial", "OPERATION_PARTIAL", "some history purges were acknowledged, but the next stream was refused; no retry was made", { target, changed: acknowledged, native: { outcome: "not-executed", detail } });
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "a history purge was submitted without a confirmed outcome; it was not retried", { target, changed: acknowledged, native: { outcome: "unknown", detail }, remedy: "inspect retained history on the original broker before another purge; an unknown result does not mean nothing changed" });
   } finally { await nc.close(); }

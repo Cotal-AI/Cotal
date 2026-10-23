@@ -4074,7 +4074,9 @@ and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
 In `--plain`, a line you type becomes the draft, and it is sent only when you answer `y` to the
 question that follows. `:to` lists the recipients by number, and `:to <target>` sets one directly:
 `#<channel>`, `@<name>`, `@<owner>.<actor>` or `role:<role>`. A target in another form, such as a
-name without `@`, is refused with that list of forms, and the numbered list opens. A `#<channel>`
+name without `@`, is refused with that list of forms, and the numbered list opens. An `@<name>`
+that names no present peer and no sender the session heard from is refused there with the reason a
+send to it would get, and the numbered list opens. A `#<channel>`
 holding `*` or `>` is refused with the sentence `cotal send -c` gives. In the list, an empty line
 keeps the current recipient, and `/quit` leaves. `:multi` starts a message of several lines, which a line
 holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
@@ -4148,7 +4150,8 @@ refusal waits its turn too, so every `result` and `error` record comes back in t
 arrived. `message`, `presence` and `gap` records can arrive between results, so match each result
 by its id. A missing field, a field the type does not take or a malformed value refuses with
 `USAGE_INVALID` before the session sees the request. A channel must be a valid channel name with no `*` or `>`, and is refused with the sentence `cotal send -c` gives for that name. A role must be a
-valid role name.
+valid role name. A `text` that is empty or only whitespace is refused with `the message is empty`,
+as `cotal send` refuses an empty message.
 
 | `type` | Fields | Result |
 |---|---|---|
@@ -4242,11 +4245,17 @@ records. A missing feed remains unknown rather than an empty confirmed census. T
 writes that feed, and an open mesh runs none, so `members` refuses an open mesh with `UNSUPPORTED`.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
-space and history scope. Scripts pass `--yes`. Removing a channel that has no saved entry is a
-`no-op`, and its Metadata row says `no saved entry`; `--purge` still deletes that channel's
-retained messages. In `--json`, `result.removed` says whether a saved entry was removed. Neither
+space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
+is refused with `TARGET_NOT_FOUND` before the confirmation, listing the registered channels, or
+naming the registered spelling when only the case differs. Removing a channel that has retained
+messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`; `--purge`
+still deletes that channel's retained messages. In `--json`, `result.removed` says whether a saved entry was removed. Neither
 removal nor replay settings revoke grants or stop participants; future posts can create retained
-history again.
+history again. A `set`, `defaults` or `remove` that the broker refuses for the credential's grant
+applied nothing, so it is refused with `PERMISSION_DENIED` (exit 2), naming the credential's profile,
+the write it lacks and the subject the broker refused. With `--creds`, the Next is to run it without
+`--creds`, on the operator credential this machine records. A remove whose credential may not read
+the registry skips the name check, and the broker's answer to the remove decides.
 
 
 | Flag | Default | Meaning |
@@ -4256,7 +4265,12 @@ history again.
 | `--window <duration>` | none | `set`/`defaults`: replay window, for example `24h` |
 | `--delivery <live|durable>` | none | `set`/`defaults`: choose the live-only or durable-backstop delivery class; history retention is separate. Shell completion offers both values |
 | `--desc <text>` | none | `set`: channel description |
-| `--instructions <s>` | none | `set`: instructions shown to joiners |
+| `--instructions <text>` | none | `set`: instructions shown to joiners |
+| `--purge` | off | `remove`: also delete the channel's retained history |
+| `--yes` / `-y` | off | `remove`: confirm the stated channel and deletion scope without a question |
+| `--follow` | off | `members`: follow broker-observed membership changes |
+| `--json` / `-j` | off | One JSON document; `members --follow --json` emits NDJSON records |
+| `--plain` | off | The same report without color |
 
 Inspects and edits the channel registry: replay and delivery policy, description, and joiner instructions. `live` has no per-member backstop; it does not disable ACL-bounded retained history. Changing a channel's delivery class does not settle already pending durable copies. `--delivery durable` requires a registered static-auth or user-auth space; an open or unregistered target has no established delivery-service support. A recorded auth mode does not prove that daemon is currently healthy. ACL
 semantics (who may read or post) are set at mint / provision time, not here; see
@@ -4340,6 +4354,9 @@ code is the snapshot's.
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
 purging. These inputs cannot narrow a clear operation. It is the same operation as [`clean history`](#clean). On a user-auth mesh the purge rides a short-lived
 purger view over your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
+A purge the broker refuses for the credential's grant purged nothing, so it is refused with
+`PERMISSION_DENIED` (exit 2), naming the credential's profile; with `--creds`, the Next is to run it
+without `--creds`, on the operator credential this machine records.
 
 ## console
 

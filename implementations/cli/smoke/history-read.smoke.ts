@@ -2,11 +2,13 @@
  * `cotal history [channel]` on the structured output contract, against brokers this suite owns. Real
  * agents post to channels and DM each other; the CLI child reads with its own one-shot credential.
  * Covers one channel and every channel, `--limit`, `--since` by sequence and by time, `--from` and
- * `--grep`, `--dms`, the usage refusals, a credential that may not read history, one another space's
+ * `--grep`, `--dms`, the usage refusals, a credential that may not read history, writes an observer
+ * credential may not make, one another space's
  * account issued, `--follow` as NDJSON
  * and as lines, and a retention gap (on an open broker, one sender posts past the chat stream's
  * per-sender limit). The user-auth result rendering is driven against a stand-in endpoint. On the
- * same broker, `cotal channel remove` says whether it removed a saved entry, and on the open broker
+ * same broker, `cotal channel remove` says whether it removed a saved entry and refuses a name with
+ * no saved entry and no retained messages, and on the open broker
  * `cotal channel members` refuses with `UNSUPPORTED`.
  * smoke:ps-user-mode and smoke:user-spawn:live exercise the native user-auth history path.
  *
@@ -244,6 +246,25 @@ try {
   const foreign = await run(["history", "general", "--json", "--creds", sameName, "--space", space, "--server", servers]);
   check("a rejected credential naming this space keeps the plain rejection", foreign.status === 2 && foreign.envelope?.error?.code === "PERMISSION_DENIED" && /^credentials rejected at \S+$/.test(foreign.envelope.error.message), shown(foreign));
 
+  // ── a write the broker refuses for the credential's grant applied nothing ───────────────────────
+  // An observer credential may read but not write channel metadata or purge history. Each refusal
+  // names the profile and the write, points at the operator credential, and leaves the state that
+  // the later sections read as it was.
+  const observer = join(home, "observer.creds");
+  writeFileSync(observer, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
+  const asObserver = ["--creds", observer, "--space", space, "--server", servers, "--json"];
+  const deniedWrites: [string, string[], RegExp][] = [
+    ["channel set", ["channel", "set", "general", "--desc", "x"], /^this observer credential may not write channel metadata in \S+, so nothing was saved: Permissions Violation/],
+    ["channel remove", ["channel", "remove", "general", "--yes"], /^this observer credential may not remove channel metadata in \S+, so nothing was removed: Permissions Violation/],
+    ["channel remove --purge", ["channel", "remove", "general", "--purge", "--yes"], /^this observer credential may not purge #general's history and remove its metadata in \S+, so nothing was removed: Permissions Violation/],
+    ["history clear", ["history", "clear", "--yes"], /^this observer credential may not purge retained history in \S+, so nothing was purged: Permissions Violation/],
+  ];
+  for (const [what, args, message] of deniedWrites) {
+    const r = await run([...args, ...asObserver]);
+    check(`a ${what} the broker refuses is PERMISSION_DENIED, exit 2, naming the profile and the write, with the operator credential as the Next`,
+      r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "PERMISSION_DENIED" && message.test(r.envelope.error.message) && (r.envelope.error.remedy ?? "").startsWith("run it without --creds to use the operator credential this machine records for"), shown(r));
+  }
+
   // ── --follow ────────────────────────────────────────────────────────────────────────────────────
   const f = follow(["history", "general", "--follow", "--json"]);
   const snap = await f.until((l) => l.includes('"type":"snapshot"'));
@@ -348,15 +369,22 @@ try {
     check("a space with no channel registry has the built-in replay policy, and the read is complete", bare.status === 0 && bare.envelope?.completeness === "complete" && JSON.stringify(r?.replay) === JSON.stringify([{ channel: "general", replay: true, window: null }]) && r?.items.length === 0, shown(bare));
   }
 
-  // ── channel remove says whether it removed a saved entry ──────────────────────────────────────
+  // ── channel remove says whether it removed a saved entry, and refuses a name the space lacks ──
   {
     const removedOf = (r: { envelope?: Envelope }) => (r.envelope?.result as { removed?: boolean } | null | undefined)?.removed;
     const removed = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
     check("removing a saved channel is ok and says it removed the entry", removed.status === 0 && removed.envelope?.outcome === "ok" && removedOf(removed) === true, shown(removed));
+    // history clear above left #ops with no retained message, so with its entry gone the space lacks it.
     const again = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
-    check("removing it again is a no-op that removed nothing", again.status === 0 && again.envelope?.outcome === "no-op" && removedOf(again) === false, shown(again));
-    const typo = await run(["channel", "remove", "opz", "--yes", "--space", space]);
-    check("a name with no saved entry says nothing was removed", typo.status === 0 && typo.stdout.includes("Nothing removed · #opz") && typo.stdout.includes("no saved entry"), shown(typo));
+    check("removing it again is TARGET_NOT_FOUND, exit 2, listing the registered channels",
+      again.status === 2 && again.envelope?.error?.code === "TARGET_NOT_FOUND" && /#ops has no saved entry and no retained messages; registered channels: #general$/.test(again.envelope.error.message), shown(again));
+    const cased = await run(["channel", "remove", "General", "--purge", "--yes", "--space", space, "--json"]);
+    check("another case of a registered channel is refused before any purge, naming the registered spelling",
+      cased.status === 2 && cased.envelope?.error?.code === "TARGET_NOT_FOUND" && /channel names are case-sensitive, and the registered one is #general$/.test(cased.envelope.error.message), shown(cased));
+    // A channel with retained messages and no saved entry is one the space has, so its remove is a no-op.
+    const posted = await run(["send", "-c", "opz", "kept", "--space", space]);
+    const typo = await run(["channel", "remove", "opz", "--yes", "--space", space, "--json"]);
+    check("a channel with retained messages and no saved entry is a no-op that removed nothing", posted.status === 0 && typo.status === 0 && typo.envelope?.outcome === "no-op" && removedOf(typo) === false, { posted: shown(posted), typo: shown(typo) });
   }
 
   // ── channel members on an open mesh, which runs no delivery service to write the feed ─────────

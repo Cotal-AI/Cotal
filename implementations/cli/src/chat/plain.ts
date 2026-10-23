@@ -42,7 +42,7 @@ import {
   type Recipient,
 } from "./view.js";
 import { closeSession, publish, runSlash } from "./controller.js";
-import { discloseChoice, listChoices, parseRecipient, type Choice } from "./picker.js";
+import { discloseChoice, listChoices, parseRecipient, refusedDm, type Choice } from "./picker.js";
 
 type Mode =
   | { readonly kind: "compose" }
@@ -133,6 +133,13 @@ export async function runPlain(opts: {
   };
 
   const choose = async (r: Recipient): Promise<void> => {
+    // A typed name that reaches no one is refused when it is chosen, with the list to pick from,
+    // rather than after a send is confirmed.
+    const refused = await refusedDm(session, r);
+    if (refused) {
+      state = addNotice(state, "failed", refused);
+      return startPick();
+    }
     const warning = await discloseChoice(session, r);
     state = setRecipient(state, r);
     if (warning) state = addNotice(state, "waiting", warning);
