@@ -1740,8 +1740,6 @@ export interface ServiceIssuerKey {
 export interface GuestServeAuthenticity {
   issuer: string;
   keys: readonly ServiceIssuerKey[];
-  /** The validator's clock in Unix seconds; defaults to now. */
-  nowSec?: number;
 }
 
 /** The user-token `ver` a service access bearer carries (the host validator's constant). */
@@ -1786,7 +1784,9 @@ function verifyServiceAccessBearer(bearer: string, witness: ServiceRegistrationW
   const act = closedRecord(payload!.act, ["owner", "actor", "scope", "lifecycleUid", "credentialId", "view", "service"]);
   const service = act && closedRecord(act.service, ["duty", "witness"]);
   const { iat, nbf, exp } = payload! as { iat: unknown; nbf: unknown; exp: unknown };
-  const now = auth.nowSec ?? Math.floor(Date.now() / 1000);
+  // The process clock, never a caller's: a clock the caller picks would brand an expired or
+  // not-yet-issued bearer the host then refuses.
+  const now = Math.floor(Date.now() / 1000);
   if (payload!.iss !== auth.issuer) refuseBearer("was not minted by the pinned issuer");
   if (payload!.aud !== witness.space) refuseBearer("is not scoped to exactly this space");
   if (payload!.sub !== witness.principal.owner) refuseBearer("subject is not the registered owner");
@@ -1805,26 +1805,27 @@ function verifyServiceAccessBearer(bearer: string, witness: ServiceRegistrationW
 }
 
 /**
- * The guest-side reconstitution seam (SPEC §13.9: "Registration returns the host-authorized
+ * The guest-side reconstitution seam (SPEC §13.6: "Registration returns the host-authorized
  * serving snapshot ... An additive stock reconstitution seam explicitly validates this
  * authenticated host-to-guest direction and produces the process-local branded serve grant").
  * A service that registered through the service door holds a parsed `credential` result and its
  * own embedded contract closure, and no store access, so {@link authorizeServeGrant} is out of
- * its reach and {@link authorizeTrustedServeSnapshot} is the host's. This seam takes only those
- * inputs plus the pinned issuer's published keys, never a caller-selected surface, and proves
- * the binding before it brands:
+ * its reach and {@link authorizeTrustedServeSnapshot} is the host's. This seam takes those
+ * inputs plus the pinned issuer's published keys and proves the binding before it brands:
  *   - the result is a `credential` for the serve duty whose witness names the pinned account
  *     (the parser already bound the snapshot's owner, revisions and epoch to the witness);
  *   - the access bearer the guest will present is a signed credential: its EdDSA signature
  *     verifies under the key the pinned issuer publishes, and its closed claims name the pinned
  *     issuer, this space, the registered owner, the serve duty and exactly this witness
- *     ({@link verifyServiceAccessBearer}, the host callout's checks);
+ *     ({@link verifyServiceAccessBearer}, the claim checks the host's token validator runs);
  *   - the snapshot's closure set is the guest's embedded closure, digest for digest, and every
  *     artifact the host answered is byte-identical to the guest's own copy;
  *   - every closure verifies as manifest and root, the same §13.7 read the registry runs.
- * A fabricated result, witness or bearer cannot pass: the bearer must be signed by the issuer's
- * private key for exactly this witness. Pools are provisioning truth a guest cannot assert, so
- * the grant carries none.
+ * What the bearer signs is the witness: the account, instance, epoch and revisions the grant
+ * carries are signed values, so a bearer the issuer did not sign for exactly this witness cannot
+ * pass. The closure is not in the witness; it is bound to the caller's own registration, which is
+ * the guest's embedded contract and nothing a bearer vouches for. Pools are provisioning truth a
+ * guest cannot assert, so the grant carries none.
  */
 export async function authorizeGuestServeGrant(args: {
   /** The pinned DATA-account public key of the authority the result came from. */

@@ -1421,12 +1421,14 @@ as well as the signed-in login.
 The `credential` answer carries no store access and no serve grant, so a service turns it into the
 process-local grant `serveEndpoint` consumes with `authorizeGuestServeGrant({ accountPublicKey,
 result, registration, authenticity })`: the parsed result, the service's own embedded closure, and
-the pinned issuer's `iss` and published keys, nothing caller-selected. The issuer and keys must
+the pinned issuer's `iss` and published keys. The issuer and keys must
 come from the registered space's authority URL the service already pins, tenant path included,
 read through the auth provider; `serviceEndpointInfo` does not expose them yet, so no shipped
 service serves through this seam until the provider does.
 It verifies the access bearer's EdDSA signature under the published key its `kid` names and the
-same closed claims the callout checks, so a fabricated result or bearer brands nothing. It refuses
+same closed claims the host's token validator checks, so a bearer the issuer did not sign for
+this witness brands nothing; the closure is bound to the service's own embedded contract, not to
+the bearer. It refuses
 another account, a bearer from another issuer, space, subject or key, one that names another
 witness or no serve duty, a closure set or artifact that is not the embedded one, and a closure
 that does not read at its digest. `authorizeTrustedServeSnapshot` stays the host's.

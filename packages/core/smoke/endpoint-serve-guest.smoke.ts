@@ -1,5 +1,5 @@
 /**
- * Guest-side serve grant smoke (SPEC §13.9 "Registration returns the host-authorized serving
+ * Guest-side serve grant smoke (SPEC §13.6 "Registration returns the host-authorized serving
  * snapshot"): a service that registered through the service door holds a parsed `credential`
  * result, its embedded closure and the pinned issuer's published keys, and no store access.
  *   - Reproduction: the only public constructors were the store-backed `authorizeServeGrant` and
@@ -8,8 +8,9 @@
  *   - `authorizeGuestServeGrant` brands a grant from the parsed result, the embedded closure and
  *     a bearer whose EdDSA signature verifies under the issuer's published key.
  *   - It refuses another account; a bearer signed by another key, naming an unpublished kid, with
- *     no signature or a tampered payload, from another issuer or audience, expired, for another
- *     subject, without the serve duty, or for another witness; a closure set that is not the
+ *     no signature or a tampered payload, from another issuer or audience, expired or issued in
+ *     the future, for another subject, without the serve duty, for another instance, or for
+ *     another witness of this same principal; a closure set that is not the
  *     embedded one; an artifact the guest did not embed; a closure that does not read at its
  *     claimed digest; and a mutated copy of the grant it produced.
  *
@@ -25,9 +26,10 @@ import {
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
-const refuses = async (n: string, fn: () => Promise<unknown> | unknown, code: string) => {
+const refuses = async (n: string, fn: () => Promise<unknown> | unknown, code: string, message?: string) => {
   try { await fn(); c(n, false, "no throw"); } catch (e) {
-    c(n, e instanceof EpEnvelopeError && e.code === code, `code ${(e as EpEnvelopeError).code ?? (e as Error).message}`);
+    const matches = e instanceof EpEnvelopeError && e.code === code && (message === undefined || e.message.includes(message));
+    c(n, matches, `code ${(e as EpEnvelopeError).code ?? "?"}: ${(e as Error).message}`);
   }
 };
 
@@ -58,8 +60,9 @@ const ISSUER = "https://auth.example/exchange";
 const keyPair = generateKeyPairSync("ed25519"), otherPair = generateKeyPairSync("ed25519");
 const jwkOf = (key: KeyObject, kid: string): ServiceIssuerKey => ({ ...(key.export({ format: "jwk" }) as { kty: "OKP"; crv: "Ed25519"; x: string }), kid });
 const published: ServiceIssuerKey = jwkOf(keyPair.publicKey, "kid-1");
-const NOW = 1_800_000_000;
-const authenticity: GuestServeAuthenticity = { issuer: ISSUER, keys: [published], nowSec: NOW + 10 };
+// Bearers are minted on the real clock: the seam reads the process clock, never a caller's.
+const NOW = Math.floor(Date.now() / 1000);
+const authenticity: GuestServeAuthenticity = { issuer: ISSUER, keys: [published] };
 
 const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 const signed = (header: unknown, payload: unknown, key: KeyObject = keyPair.privateKey) => {
@@ -138,7 +141,8 @@ await refuses("a bearer with embedded key material refuses", () => withBearer(si
 await refuses("a bearer from another issuer refuses", () => withBearer(signed(HEADER, claimsFor(witness, { iss: "https://other.example" }))), "permission-denied");
 await refuses("a bearer for another space refuses", () => withBearer(signed(HEADER, claimsFor(witness, { aud: "epsother" }))), "permission-denied");
 await refuses("a bearer scoped to two audiences refuses", () => withBearer(signed(HEADER, claimsFor(witness, { aud: [space, "epsother"] }))), "permission-denied");
-await refuses("an expired bearer refuses at its original expiry", () => guest({ authenticity: { ...authenticity, nowSec: NOW + 60 } }), "permission-denied");
+await refuses("an expired bearer refuses", () => withBearer(signed(HEADER, claimsFor(witness, { iat: NOW - 120, nbf: NOW - 120, exp: NOW - 60 }))), "permission-denied", "has expired");
+await refuses("a bearer issued in the future refuses", () => withBearer(signed(HEADER, claimsFor(witness, { iat: NOW + 3600, nbf: NOW + 3600, exp: NOW + 3660 }))), "permission-denied", "issued in the future");
 await refuses("a bearer with a lifetime past the fixed cap refuses", () => withBearer(signed(HEADER, claimsFor(witness, { exp: NOW + 61 }))), "permission-denied");
 await refuses("a bearer for another subject refuses", () => withBearer(signed(HEADER, claimsFor(witness, { sub: `u_${"b".repeat(26)}` }, { owner: `u_${"b".repeat(26)}` }))), "permission-denied");
 await refuses("a bearer without the serve duty refuses", () => withBearer(signed(HEADER, claimsFor(witness, {}, {}, { duty: "call" }))), "permission-denied");
@@ -148,6 +152,11 @@ await refuses("a bearer with ordinary scope refuses", () => withBearer(signed(HE
   // credential cannot brand this instance's grant.
   const other = witnessFor(mintLifecycleUid());
   await refuses("a bearer validly signed for another instance refuses", () => withBearer(signed(HEADER, claimsFor(other))), "permission-denied");
+  // Signed by the real issuer for this same principal, but for another witness of it (a stale
+  // epoch): the actor claims all match, and only the witness equality refuses it. That check is
+  // what makes the grant's epoch and revisions signed values.
+  await refuses("a bearer validly signed for another witness of this principal refuses",
+    () => withBearer(signed(HEADER, claimsFor({ ...witness, processEpoch: 2 }))), "permission-denied", "names another registration witness");
 }
 await refuses("a bearer that is not a JWS refuses", () => withBearer("not-a-token"), "permission-denied");
 
