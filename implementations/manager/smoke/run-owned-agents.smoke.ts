@@ -488,7 +488,8 @@ try {
   managerB = undefined;
   writeFileSync(tracePath, "");
   writeFileSync(join(root, ".cotal", "agents", "toolowned.md"), "---\nname: toolowned\nagent: u4-seat\ncapabilities: [run]\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nNative connector workflow caller.\n");
-  const toolParent = await start('await spawn("toolowned"); await checkpoint("tool-parent", "Keep managed tool child alive", { timeout: "1m" });');
+  // The hold stays open through MC-1 to MC-6, which take over a minute on a loaded host.
+  const toolParent = await start('await spawn("toolowned"); await checkpoint("tool-parent", "Keep managed tool child alive", { timeout: "5m" });');
   await until(() => trace().some((e) => e.actor === "toolowned" && (e.kind === "tool-status" || e.kind === "tool-failure")), "native tool child checkpoint status");
   const firstToolStatus = trace().find((e) => e.kind === "tool-status");
   if (firstToolStatus) {
