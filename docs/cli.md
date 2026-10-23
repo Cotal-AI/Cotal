@@ -509,7 +509,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh and reused by every later manager launch, so a repair or resume does not silently drop back to 64. A running manager cannot change it: `cotal down` first, then `cotal up --max-sessions <n>` |
 | `--manager-name <name>` | none | Name this root's manager. `who --all` and the manager choice show the name, and on a user-auth mesh `--on` takes it. It is recorded in the root, so a restart or repair keeps it. A running manager keeps the name it started with, so a different name is refused until `cotal down`. The name is one line of at most 128 characters with no `/` or `\`, and it may not look like an instance id (26 to 32 lowercase letters and digits). Cannot be combined with `--no-manager`, `--file` or `--restore` |
 | `--no-manager` | off | Broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager. A refresh under the flag of a mesh whose manager is live refuses rather than keeping or stopping it. For a controller stack, use `cotal service stop stack-manager --space <s> --yes` first. A legacy stack has no command that stops only its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it broker-only. Cannot be combined with `--runtime`, `--max-sessions`, or an agent-declaring manifest |
-| `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open` |
+| `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused with `--open`. A controller stack takes it once every member is stopped |
 
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs. It runs in the background by default and records the mesh so `cotal spawn` from
@@ -863,10 +863,17 @@ cotal up --rotate-sys --detach     # agents reconnect; nothing is re-provisioned
 cotal doctor auth                  # both $SYS creds healthy again, 30 days out
 ```
 
+A controller stack rotates the same way. Outside a terminal its `down` needs `--yes`. The `up`
+receipt adds a `System account rotated` section with the new generation and the creds' expiry, and
+its JSON carries them as `result.rotatedSystemAccount`, which is `null` on an `up` that did not
+rotate.
+
 A rotation is a stopped, fresh boot, and anything that is not one refuses it, all for the same reason
 (the on-disk material and the broker it runs on must never end up on different generations):
 
-- a live mesh, because the running broker would keep serving the retired account;
+- a live mesh, because the running broker would keep serving the retired account. On a controller
+  stack any running member refuses it `LIFECYCLE_BLOCKED`, and the refusal names
+  `cotal down --yes`;
 - an open mesh, whether that comes from `--open` or from `broker.auth: false` in a manifest, which
   has no system account at all;
 - `--restore`, because reinstating a trust root and superseding it in one command leaves no way to
