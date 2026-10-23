@@ -1,6 +1,7 @@
-import { remoteManagerActors, type Presence } from "@cotal-ai/core";
+import { BASELINE_LIFECYCLE_ENDPOINT, invokeCommand, remoteManagerActors, resolveService, type Presence } from "@cotal-ai/core";
 import { CommandFailure, DEFAULT_MANAGER_NAME, instanceIdShaped, resolveMeshTarget } from "@cotal-ai/workspace";
 import { onInstance, onInstanceId } from "./control.js";
+import { openEndpointConnection } from "./endpoint-client.js";
 import { shellWord } from "./endpoint-errors.js";
 import { displayCmd } from "./self-exec.js";
 import { openTransient } from "./transient.js";
@@ -113,6 +114,29 @@ export async function managerPin(values: { on?: unknown; space?: unknown; server
   const matched = managers.filter((m) => selects(m, on));
   if (matched.length === 1) return matched[0]!.instanceId;
   throw new ManagerPinUnmatched(on, matched.length ? matched : managers, matched.length);
+}
+
+/** Your other live managers on a user-auth mesh whose catalog holds `persona`, each as the
+ *  shortest `--on` value that picks it. A manager that does not answer is left out, and any other
+ *  mesh gives none. */
+export async function managersWithPersona(values: { space?: unknown; server?: unknown }, exclude: string | undefined, persona: string): Promise<string[]> {
+  const flags = targetFlags(values);
+  if (resolveMeshTarget(process.cwd(), flags).mode !== "user") return [];
+  const managers = await yourLiveManagers(flags);
+  const holding: ManagerCandidate[] = [];
+  for (const manager of managers.filter((m) => m.instanceId !== exclude)) {
+    let connection: Awaited<ReturnType<typeof openEndpointConnection>> | undefined;
+    try {
+      connection = await openEndpointConnection(flags, "control-caller-privileged", BASELINE_LIFECYCLE_ENDPOINT, manager.instanceId);
+      const service = await resolveService(connection.nc, connection.space, BASELINE_LIFECYCLE_ENDPOINT, connection.auth.epCaller!, { instanceId: manager.instanceId, deadlineMs: 5_000 });
+      // The list names every persona in the catalog; a card it cannot show you is listed by name.
+      const listed = service.commands.has("list-personas") ? (await invokeCommand(connection.nc, connection.space, service, "list-personas", undefined, { deadlineMs: 5_000 })).reply : undefined;
+      const personas = listed?.ok ? (listed.data as { personas?: unknown } | undefined)?.personas : undefined;
+      if (Array.isArray(personas) && personas.some((row) => (row as { name?: unknown } | null)?.name === persona)) holding.push(manager);
+    } catch { /* a manager that cannot be asked is not named */ }
+    finally { await connection?.nc.close().catch(() => {}); }
+  }
+  return holding.map((m) => selectorFor(m, managers));
 }
 
 /** `argv` with `--on` set to `selector`, replacing a `--on` it already holds. `--on` goes before a

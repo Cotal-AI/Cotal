@@ -100,7 +100,7 @@ import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { askManager, failIfNotOk, onInstance, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
-import { managerPin } from "../lib/manager-choice.js";
+import { managerPin, managersWithPersona, rerunOn } from "../lib/manager-choice.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { callerHarness, spawnPersona } from "../lib/spawn-defaults.js";
 import { defaultPersonaFix } from "../lib/default-persona.js";
@@ -618,7 +618,13 @@ export async function launchManagedPersona(
     const refusal: Record<string, RefusalCode> = { "permission-denied": "PERMISSION_DENIED", "unauthenticated": "AUTH_REQUIRED", "not-found": "TARGET_NOT_FOUND", "unavailable": "TARGET_UNAVAILABLE", "bad-request": "SCHEMA_INVALID", "failed-precondition": "LIFECYCLE_BLOCKED", "already-exists": "CONFLICT", "unimplemented": "UNSUPPORTED" };
     const code = reply.code === undefined ? undefined : refusal[reply.code];
     const native = { code: reply.code, outcome: reply.nativeOutcome, ...(reply.request || reply.intent ? { detail: { request: reply.request ?? null, intent: reply.intent ?? null, observation: reply.observationCause ?? null } } : {}) };
-    if (reply.nativeOutcome === "not-executed" && code) throw new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : "the manager refused the launch before execution", { target, native, remedy: "nothing was launched; fix what the manager reported, then run the spawn again" });
+    if (reply.nativeOutcome === "not-executed" && code) {
+      // A manager without the default persona: name your other live managers whose catalog has one.
+      const elsewhere = ref === "default" && managerConfigRef === undefined && reply.error?.startsWith('no persona "default"') ? await managersWithPersona(flags, reply.managerInstanceId ?? on, "default").catch((): string[] => []) : [];
+      throw new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : "the manager refused the launch before execution", { target, native, remedy: elsewhere.length
+        ? `nothing was launched; ${elsewhere.length === 1 ? "this manager of yours has" : "these managers of yours have"} a default persona: ${elsewhere.map((selector) => rerunOn(process.argv.slice(2), selector)).join(" or ")}`
+        : "nothing was launched; fix what the manager reported, then run the spawn again" });
+    }
     const unknown = reply.nativeOutcome !== "executed" || reply.unanswered;
     throw new CommandFailure(unknown ? "unknown" : "failed", unknown ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", reply.error ? oneLine(reply.error) : "the manager did not confirm launch readiness", { target, native, remedy: "inspect cotal ps and the selected manager before retrying; this launch was not submitted again" });
   }

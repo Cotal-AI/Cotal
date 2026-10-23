@@ -2406,7 +2406,9 @@ a managed handoff, and an enrollment onto a mesh this machine has not registered
 persona file against the working directory. A missing
 persona is refused with the catalog directory or the file that was checked. A missing `default`
 persona also names the command that writes one: `cotal up` in the root of a space this machine
-started, or `cotal persona create default` for any other space. The launch flags
+started, or `cotal persona create default` for any other space. When a managed launch on a
+user-auth mesh is refused because the chosen manager's catalog has no `default`, the Next gives the
+spawn again with `--on` for each of your other live managers whose catalog lists one. The launch flags
 override the file. On a user-auth mesh the
 effective name is also the agent's actor token, so it must match the token grammar (no `-`); the
 spawn is refused with that explanation before any request is sent. `--foreground` runs the agent
