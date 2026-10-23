@@ -25,6 +25,8 @@ import {
   createRecordEntry, updateRecordEntry, deleteRecordEntry, assertStatusValue,
 } from "./endpoint-records.js";
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
+import { canonicalJson, contractDigest } from "./canonical.js";
+import type { ServiceAuthorityResult, ServiceRegistration } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
@@ -1600,65 +1602,7 @@ export async function authorizeServeGrant(
   // old-owner credential.
   const nameAuthorityRevision = await assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
 
-  // §13.7 two-stage content-address read: the registered digest is a CLOSURE digest naming a
-  // MANIFEST; the manifest's `root` names the cluster DOCUMENT. Both fetched, both verified —
-  // a raw root document presented at a closure-digest key would conflate the two identities.
-  const read = async (digest: string, what: string): Promise<unknown> => {
-    let raw: unknown;
-    try {
-      raw = await args.readClusterArtifact(digest);
-    } catch (err) {
-      throw new EpEnvelopeError("unavailable", `the contract-store read seam failed for ${what} ${digest}; serve authorization fails closed (SPEC 13.7): ${(err as Error)?.message ?? String(err)}`);
-    }
-    if (raw === undefined)
-      throw new EpEnvelopeError("failed-precondition", `${what} ${digest} is not readable from the contract store; an unverifiable registered surface never authorizes (SPEC 13.7)`);
-    return raw;
-  };
-  // Null-prototype: "constructor" is a valid command token, and on a plain `{}` the duplicate
-  // check below would resolve the inherited `Object.prototype.constructor` (falsely refusing a
-  // legitimate command as "declared twice") while every downstream `surface[command]` lookup
-  // (serve construction, governed-surface verification) would leak through the prototype.
-  const surface: Record<string, EpCommandAuthority> = Object.create(null);
-  const commands: string[] = [];
-  const clusters: { digest: string; document: ClusterDocument; raw: Record<string, unknown> }[] = [];
-  for (const closureDigest of spec.clusterDigests) {
-    const manifestRaw = await read(closureDigest, "registered cluster manifest");
-    let root: string;
-    try {
-      ({ root } = verifyClusterManifest(closureDigest, manifestRaw));
-    } catch (err) {
-      throw new EpEnvelopeError("internal", `registered cluster manifest ${closureDigest} of "${args.endpoint}/${args.instanceId}" fails verification; mediated registered state that does not verify is a writer/store bug, never authority (SPEC 13.7): ${(err as Error).message}`);
-    }
-    const rootRaw = await read(root, "registered cluster document");
-    let document: ClusterDocument;
-    try {
-      document = verifyClusterRoot(root, rootRaw);
-    } catch (err) {
-      throw new EpEnvelopeError("internal", `registered cluster document ${root} (closure ${closureDigest}) fails verification; mediated registered state that does not verify is never authority (SPEC 13.7): ${(err as Error).message}`);
-    }
-    for (const cmd of document.commands) {
-      if (surface[cmd.name] !== undefined)
-        throw new EpEnvelopeError("internal", `the registered clusters of "${args.endpoint}" declare command "${cmd.name}" twice; an ambiguous registered surface never authorizes (SPEC 13.7)`);
-      surface[cmd.name] = Object.freeze({
-        clusterDigest: closureDigest,
-        class: cmd.class,
-        targeted: cmd.targeted,
-        modes: Object.freeze([...(cmd.modes ?? [])]) as readonly EpAuthzMode[],
-        capability: cmd.capability,
-        inputDigest: cmd.inputDigest,
-        outputDigest: cmd.outputDigest,
-        traits: Object.freeze([...(cmd.traits ?? [])]) as readonly string[],
-      });
-      commands.push(cmd.name);
-    }
-    // The inline copy for describe is the verified ROOT cluster DOCUMENT (its command
-    // declarations), never the manifest: a consumer verifies it against the advertised closure
-    // digest by reconstructing the single-member manifest `{v:1, root: digest(document),
-    // members:[]}` (§13.7 two-digest read). Inlining the manifest would ship bytes whose
-    // `commands` disagree with the sibling command list.
-    clusters.push({ digest: closureDigest, document, raw: rootRaw as Record<string, unknown> });
-  }
-  commands.sort(); // deterministic full surface
+  const { surface, commands, clusters, journalClass } = await verifiedServeSurface(spec, iId, args.readClusterArtifact);
 
   // §13.9 bind-row inputs: journal class is REGISTERED truth (derived from the verified
   // surface, never caller-asserted); pools are PROVISIONING truth (the authorizing provisioner
@@ -1666,7 +1610,6 @@ export async function authorizeServeGrant(
   // names, routes are per-acceptance policy decisions, §13.6). Pools without a journal-class
   // surface are refused: only journal acceptances route to pools, so the combination is a
   // caller bug, never a silent no-op.
-  const journalClass = commands.some((cmd) => surface[cmd].class === "journal");
   const pools = [...(args.pools ?? [])].map((p) => assertPoolToken(p)).sort();
   if (new Set(pools).size !== pools.length)
     throw new EpEnvelopeError("internal", `the pools list for "${args.endpoint}/${args.instanceId}" carries duplicates; the provisioner enumerates each pre-created pool once (SPEC 13.9)`);
@@ -1700,6 +1643,177 @@ export async function authorizeServeGrant(
     space: args.space, endpoint: spec.endpoint, instanceId: iId, epoch: args.epoch,
     owner: spec.owner, registrationRevision: specEntry.revision, nameAuthorityRevision, commands: [...commands],
     journalClass, pools: [...pools],
+  });
+  return grant;
+}
+
+/** The §13.7 two-stage content-address read behind every serve authorization: a registered
+ *  digest is a CLOSURE digest naming a MANIFEST, whose `root` names the cluster DOCUMENT. Both
+ *  are fetched through `readClusterArtifact` and both are verified; a raw root document presented
+ *  at a closure-digest key would conflate the two identities. */
+async function verifiedServeSurface(
+  spec: ServiceSpec,
+  instanceId: string,
+  readClusterArtifact: (digest: string) => Promise<unknown> | unknown,
+): Promise<{
+  surface: Record<string, EpCommandAuthority>;
+  commands: string[];
+  clusters: { digest: string; document: ClusterDocument; raw: Record<string, unknown> }[];
+  journalClass: boolean;
+}> {
+  const read = async (digest: string, what: string): Promise<unknown> => {
+    let raw: unknown;
+    try {
+      raw = await readClusterArtifact(digest);
+    } catch (err) {
+      throw new EpEnvelopeError("unavailable", `the contract-store read seam failed for ${what} ${digest}; serve authorization fails closed (SPEC 13.7): ${(err as Error)?.message ?? String(err)}`);
+    }
+    if (raw === undefined)
+      throw new EpEnvelopeError("failed-precondition", `${what} ${digest} is not readable from the contract store; an unverifiable registered surface never authorizes (SPEC 13.7)`);
+    return raw;
+  };
+  // Null-prototype: "constructor" is a valid command token, and on a plain `{}` the duplicate
+  // check below would resolve the inherited `Object.prototype.constructor` (falsely refusing a
+  // legitimate command as "declared twice") while every downstream `surface[command]` lookup
+  // (serve construction, governed-surface verification) would leak through the prototype.
+  const surface: Record<string, EpCommandAuthority> = Object.create(null);
+  const commands: string[] = [];
+  const clusters: { digest: string; document: ClusterDocument; raw: Record<string, unknown> }[] = [];
+  for (const closureDigest of spec.clusterDigests) {
+    const manifestRaw = await read(closureDigest, "registered cluster manifest");
+    let root: string;
+    try {
+      ({ root } = verifyClusterManifest(closureDigest, manifestRaw));
+    } catch (err) {
+      throw new EpEnvelopeError("internal", `registered cluster manifest ${closureDigest} of "${spec.endpoint}/${instanceId}" fails verification; mediated registered state that does not verify is a writer/store bug, never authority (SPEC 13.7): ${(err as Error).message}`);
+    }
+    const rootRaw = await read(root, "registered cluster document");
+    let document: ClusterDocument;
+    try {
+      document = verifyClusterRoot(root, rootRaw);
+    } catch (err) {
+      throw new EpEnvelopeError("internal", `registered cluster document ${root} (closure ${closureDigest}) fails verification; mediated registered state that does not verify is never authority (SPEC 13.7): ${(err as Error).message}`);
+    }
+    for (const cmd of document.commands) {
+      if (surface[cmd.name] !== undefined)
+        throw new EpEnvelopeError("internal", `the registered clusters of "${spec.endpoint}" declare command "${cmd.name}" twice; an ambiguous registered surface never authorizes (SPEC 13.7)`);
+      surface[cmd.name] = Object.freeze({
+        clusterDigest: closureDigest,
+        class: cmd.class,
+        targeted: cmd.targeted,
+        modes: Object.freeze([...(cmd.modes ?? [])]) as readonly EpAuthzMode[],
+        capability: cmd.capability,
+        inputDigest: cmd.inputDigest,
+        outputDigest: cmd.outputDigest,
+        traits: Object.freeze([...(cmd.traits ?? [])]) as readonly string[],
+      });
+      commands.push(cmd.name);
+    }
+    // The inline copy for describe is the verified ROOT cluster DOCUMENT (its command
+    // declarations), never the manifest: a consumer verifies it against the advertised closure
+    // digest by reconstructing the single-member manifest `{v:1, root: digest(document),
+    // members:[]}` (§13.7 two-digest read). Inlining the manifest would ship bytes whose
+    // `commands` disagree with the sibling command list.
+    clusters.push({ digest: closureDigest, document, raw: rootRaw as Record<string, unknown> });
+  }
+  commands.sort(); // deterministic full surface
+  // Journal class is REGISTERED truth: derived from the verified surface, never caller-asserted.
+  const journalClass = commands.some((cmd) => surface[cmd].class === "journal");
+  return { surface, commands, clusters, journalClass };
+}
+
+/** The payload of a compact JWS, decoded and not verified: the guest seam binds the bearer it
+ *  will present to the witness it serves under; the signature is the broker callout's check. */
+function jwsPayload(token: string): Record<string, unknown> {
+  const parts = token.split(".");
+  let payload: unknown;
+  try {
+    if (parts.length !== 3) throw new Error();
+    payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+  } catch {
+    throw new EpEnvelopeError("permission-denied", "the access bearer is not a compact JWS with a JSON payload; nothing unreadable binds a serve grant (SPEC 13.9)");
+  }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload))
+    throw new EpEnvelopeError("permission-denied", "the access bearer payload is not an object; nothing unreadable binds a serve grant (SPEC 13.9)");
+  return payload as Record<string, unknown>;
+}
+
+/**
+ * The guest-side reconstitution seam (SPEC §13.9: "Registration returns the host-authorized
+ * serving snapshot ... An additive stock reconstitution seam explicitly validates this
+ * authenticated host-to-guest direction and produces the process-local branded serve grant").
+ * A service that registered through the service door holds a parsed `credential` result and its
+ * own embedded contract closure, and no store access, so {@link authorizeServeGrant} is out of
+ * its reach and {@link authorizeTrustedServeSnapshot} is the host's. This seam takes only those
+ * two inputs, never a caller-selected surface, and proves the binding before it brands:
+ *   - the result is a `credential` for the serve duty whose witness names the pinned account
+ *     (the parser already bound the snapshot's owner, revisions and epoch to the witness);
+ *   - the access bearer the guest will present names the same witness and the serve duty;
+ *   - the snapshot's closure set is the guest's embedded closure, digest for digest, and every
+ *     artifact the host answered is byte-identical to the guest's own copy;
+ *   - every closure verifies as manifest and root, the same §13.7 read the registry runs.
+ * Bearer authenticity is the broker callout's check at connect, not this seam's. Pools are
+ * provisioning truth a guest cannot assert, so the grant carries none.
+ */
+export async function authorizeGuestServeGrant(args: {
+  /** The pinned DATA-account public key of the authority the result came from. */
+  accountPublicKey: string;
+  /** The `credential` result as {@link parseServiceAuthorityResult} returned it. */
+  result: Extract<ServiceAuthorityResult, { state: "credential" }>;
+  /** The guest's embedded closure: the registration it submitted. */
+  registration: ServiceRegistration;
+}): Promise<EpServeGrant> {
+  const { result } = args;
+  if (result.state !== "credential" || result.duty !== "serve")
+    throw new EpEnvelopeError("permission-denied", "a guest serve grant needs a serve-duty credential result (SPEC 13.9)");
+  const { witness, snapshot } = result;
+  if (witness.accountPublicKey !== args.accountPublicKey || witness.space !== result.space)
+    throw new EpEnvelopeError("permission-denied", "the credential's witness belongs to another native account or space (SPEC 13.9)");
+  const spec = snapshot.spec.value;
+  if (spec.endpoint !== witness.endpoint || spec.owner !== witness.principal.owner
+    || snapshot.spec.revision !== witness.registrationRevision || snapshot.name.authorized !== true
+    || snapshot.name.revision !== witness.nameAuthorityRevision || snapshot.processEpoch !== witness.processEpoch)
+    throw new EpEnvelopeError("permission-denied", "the snapshot disagrees with the registration witness (SPEC 13.9)");
+  const act = jwsPayload(result.accessBearer).act as Record<string, unknown> | undefined;
+  const service = act?.service as Record<string, unknown> | undefined;
+  if (act?.view !== "service-endpoint" || service?.duty !== "serve" || canonicalJson(service.witness) !== canonicalJson(witness))
+    throw new EpEnvelopeError("permission-denied", "the access bearer does not name this witness and the serve duty (SPEC 13.9)");
+  const sorted = (digests: readonly string[]) => canonicalJson([...digests].sort());
+  if (sorted(spec.clusterDigests) !== sorted(args.registration.clusterDigests))
+    throw new EpEnvelopeError("permission-denied", `the host registered a closure set for "${spec.endpoint}" that is not the guest's embedded closure (SPEC 13.7)`);
+  const embedded = new Map(args.registration.contractArtifacts.map((artifact) => [contractDigest(artifact), canonicalJson(artifact)] as const));
+  const answered = new Map<string, unknown>();
+  for (const artifact of snapshot.contractArtifacts) {
+    const digest = contractDigest(artifact);
+    if (embedded.get(digest) !== canonicalJson(artifact))
+      throw new EpEnvelopeError("permission-denied", `the host answered contract artifact ${digest} that the guest did not embed (SPEC 13.7)`);
+    answered.set(digest, artifact);
+  }
+  if (answered.size !== embedded.size)
+    throw new EpEnvelopeError("permission-denied", `the host answered ${answered.size} contract artifacts for ${embedded.size} embedded (SPEC 13.7)`);
+  const iId = assertLifecycleToken(witness.instanceId, "instanceId");
+  const { surface, commands, clusters, journalClass } = await verifiedServeSurface(spec, iId, (digest) => answered.get(digest));
+  const grant: EpServeGrant = Object.freeze({
+    space: witness.space,
+    endpoint: spec.endpoint,
+    instanceId: iId,
+    epoch: witness.processEpoch,
+    owner: spec.owner,
+    registrationRevision: snapshot.spec.revision,
+    nameAuthorityRevision: snapshot.name.revision,
+    commands: Object.freeze([...commands]) as readonly string[],
+    surface: Object.freeze(surface),
+    journalClass,
+    pools: Object.freeze([]) as readonly string[],
+    descriptor: deriveDescriptor(
+      { endpoint: spec.endpoint, owner: spec.owner, ...(spec.endpointType !== undefined ? { endpointType: spec.endpointType } : {}) },
+      clusters,
+    ),
+  });
+  AUTHORIZED_SERVE.set(grant, {
+    space: witness.space, endpoint: spec.endpoint, instanceId: iId, epoch: witness.processEpoch,
+    owner: spec.owner, registrationRevision: snapshot.spec.revision, nameAuthorityRevision: snapshot.name.revision,
+    commands: [...commands], journalClass, pools: [],
   });
   return grant;
 }
