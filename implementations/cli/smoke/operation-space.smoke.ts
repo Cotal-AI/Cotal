@@ -7,8 +7,9 @@
  * later failure whose target has no `space` field.
  *
  * The kernel cells run the src kernel over a fixture command in a child, because a classified failure
- * ends the process. The persona cell runs the built binary: `persona create` over an existing file
- * refuses with a target-less CONFLICT on a prepared space, and no broker is started.
+ * ends the process. The persona cells run the built binary: `persona create` over an existing file
+ * refuses with a target-less CONFLICT on a prepared space, and a `--file` the agent-file rules refuse
+ * names the field and the reason. No broker is started.
  *
  * Run: pnpm smoke:operation-space
  */
@@ -88,6 +89,21 @@ writeFileSync(otherFile, "---\nname: bernie\nrole: reviewer\nsubscribe: []\n---\
 const mismatch = cotal("persona", "create", "ex11", "--file", otherFile, "--json");
 check("a --file naming another persona is SCHEMA_INVALID, naming the file's name and its own create",
   mismatch.status === 1 && mismatch.envelope?.error?.code === "SCHEMA_INVALID" && (mismatch.envelope.error.message ?? "").includes(`${otherFile} names 'bernie'`) && (mismatch.envelope.error.remedy ?? "").includes(`cotal persona create bernie --file ${otherFile}`), shown(mismatch));
+// A file the agent-file rules refuse: the refusal names the field and the reason. A YAML error keeps
+// only its position, since the parser's text can quote the document.
+for (const [label, text, reason] of [
+  ["no frontmatter", "no frontmatter\n", 'missing "---" frontmatter block'],
+  ["the legacy channels key", "---\nname: bad\nchannels: [general]\n---\n", '"channels" was renamed'],
+  ["a read channel outside allowSubscribe", "---\nname: bad\nsubscribe: [ops]\nallowSubscribe: [general]\n---\n", 'subscribe "ops" is not within allowSubscribe [general]'],
+  ["a YAML error", "---\nname: bad\nrole: [secret-value\n---\n", "the frontmatter is not valid YAML at line 3"],
+] as const) {
+  const badFile = join(root, "bad.md");
+  writeFileSync(badFile, text);
+  const refused = cotal("persona", "create", "bad", "--file", badFile, "--json");
+  const message = refused.envelope?.error?.message ?? "";
+  check(`a --file with ${label} is SCHEMA_INVALID naming the file and the reason`,
+    refused.status === 1 && refused.envelope?.error?.code === "SCHEMA_INVALID" && message.includes(`invalid persona definition ${badFile}: ${reason}`) && !message.includes("secret-value"), shown(refused));
+}
 
 finish();
 process.exit(process.exitCode ?? 0);

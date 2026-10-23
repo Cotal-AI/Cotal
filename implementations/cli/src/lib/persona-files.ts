@@ -82,13 +82,24 @@ export function requirePersonaSource(path: string): PersonaSource {
   return source;
 }
 
-/** Keep parser diagnostics private: YAML errors can contain the document's own sensitive values.
- *  `name` is required of a new definition only. A stored one may launch under another name: the
+/** Why the agent-file parser refused a definition. A YAML error keeps only its position: the
+ *  parser's own text can quote the document's sensitive values. */
+function definitionProblem(error: unknown, path: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const prefix = `agent file ${path}: `;
+  const reason = message.startsWith(prefix) ? message.slice(prefix.length) : message;
+  if (!reason.startsWith("invalid YAML frontmatter")) return reason;
+  // The parser counts lines from the first line after the opening `---`.
+  const at = /at line (\d+), column (\d+)/.exec(reason);
+  return `the frontmatter is not valid YAML${at ? ` at line ${Number(at[1]) + 1}, column ${at[2]}` : ""}`;
+}
+
+/** `name` is required of a new definition only. A stored one may launch under another name: the
  *  seeded `default` persona launches as `default_agent`. */
 export function validatePersona(bytes: Buffer, path: string, name?: string): AgentDef {
   let def: AgentDef;
   try { def = parseAgentFileSource(bytes.toString("utf8"), path); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition: ${path}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
+  catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${path}: ${definitionProblem(error, path)}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
   if (name !== undefined && def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'`);
   return def;
 }
