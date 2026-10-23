@@ -2,7 +2,8 @@
  * With no space to act on, `cotal auth mint` and `cotal doctor auth` name the next step. `auth mint`
  * refuses with TARGET_NOT_FOUND (exit 2) and the remedy the workspace gives for a missing mesh.
  * `doctor auth` in a folder whose root holds no space reports a partial result (exit 4) whose
- * remedy says to run it in a space's root, in JSON and in the text report. `cotal persona` with
+ * remedy says to run it in a space's root, in JSON and in the text report; in the root of a space
+ * registered as open it is a no-op that says the space issues no credentials. `cotal persona` with
  * nothing selected, or with a `--server` no registration names, refuses with TARGET_NOT_FOUND and
  * says no space is selected here, since its catalog is read offline. Nothing is written.
  * Broker-free; the mesh registry is private to this run.
@@ -14,7 +15,7 @@ import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import { exitCode, findCotalRoot, isCommandFailure, type CommandFailure } from "@cotal-ai/workspace";
+import { exitCode, findCotalRoot, isCommandFailure, recordMesh, type CommandFailure } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
 import { mint } from "../src/commands/mint.js";
 import { persona } from "../src/commands/persona.js";
@@ -41,8 +42,8 @@ async function personaRefusal(values: Record<string, string | boolean | undefine
   throw new Error(`persona ${positionals.join(" ")} did not refuse`);
 }
 
-/** One doctor run in `bare`: what it wrote to stdout and stderr, and its exit code. */
-async function diagnose(values: Record<string, string | boolean | undefined>): Promise<{ out: string; err: string; code: number | undefined }> {
+/** One doctor run in `cwd`: what it wrote to stdout and stderr, and its exit code. */
+async function diagnose(values: Record<string, string | boolean | undefined>, cwd = bare): Promise<{ out: string; err: string; code: number | undefined }> {
   const out: string[] = [];
   const err: string[] = [];
   const write = process.stdout.write.bind(process.stdout);
@@ -51,7 +52,7 @@ async function diagnose(values: Record<string, string | boolean | undefined>): P
   process.stdout.write = ((chunk: string | Uint8Array) => (out.push(String(chunk)), true)) as typeof process.stdout.write;
   console.log = (...a: unknown[]) => { out.push(`${a.join(" ")}\n`); };
   console.error = (...a: unknown[]) => { err.push(`${a.join(" ")}\n`); };
-  process.chdir(bare);
+  process.chdir(cwd);
   try {
     process.exitCode = undefined;
     await doctor({ values, positionals: ["auth"], raw: [] });
@@ -119,6 +120,23 @@ try {
     assert.equal(failure.code, "TARGET_NOT_FOUND", `${what}: code (${failure.message})`);
     assert.equal(failure.message, "no space registered here is at nats://127.0.0.1:1, and this folder is not a space's project", `${what}: the refusal names the address`);
     assert.deepEqual(readdirSync(bare), [], `${what} writes nothing here`);
+  }
+
+  // 5. doctor auth in the root of a space registered as open: it issues no credentials, so there is
+  //    nothing to check, and the report says so rather than sending the user to a space's root.
+  {
+    const openRoot = join(base, "open");
+    mkdirSync(join(openRoot, ".cotal"), { recursive: true });
+    recordMesh({ space: "offen", server: "nats://127.0.0.1:2", root: openRoot, mode: "open", ts: new Date().toISOString(), origin: "manual" });
+    const { out, code } = await diagnose({ json: true }, openRoot);
+    const envelope = JSON.parse(out) as { outcome: string; result: { space: string | null; credentialScope: string } };
+    assert.equal(envelope.outcome, "no-op", "doctor in an open space's root: no-op");
+    assert.equal(envelope.result.space, "offen", "doctor in an open space's root: names the space");
+    assert.equal(envelope.result.credentialScope, "open-space", "doctor in an open space's root: an open-space scope");
+    assert.ok(code === undefined || code === 0, `doctor in an open space's root: exit 0 (${code})`);
+    const text = await diagnose({}, openRoot);
+    assert.ok(text.out.replace(/\s+/g, " ").includes("This space is open: it authenticates no one and issues no credentials, so there are none to check."), `doctor text in an open space's root says why: ${text.out}`);
+    assert.ok(!`${text.out}${text.err}`.includes("in a space's root folder"), "doctor in an open space's root does not send the user to a space's root");
   }
 } finally {
   process.chdir(startCwd);

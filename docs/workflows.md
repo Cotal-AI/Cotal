@@ -246,7 +246,8 @@ The manager hosts runs. `cotal run start` hands the program to the manager of th
 it in its own process, and answers with the id once the run is recorded. The terminal is free the
 moment the id prints; the run continues on the manager through every pause, and a manager restart
 takes back every run it had recorded running, from the journal, under the next epoch. `resume`
-names a run the manager recorded and is refused while the manager is already driving it. `ps` and
+names a run the manager recorded and is refused while the manager is already driving it, and for
+a run recorded `completed` or `failed`, whose journal already holds its outcome. `ps` and
 `journal` read; `answer` resolves an open checkpoint, or an open `ask` attempt, from any terminal
 or agent that holds the `run` capability.
 
@@ -260,7 +261,8 @@ files a new answer beside the accepted one, naming the answer it supersedes, and
 each amendment under the step as an `amended` line, in the order the store committed them. The last
 line is the current position, whatever clock each amender's `at` came from. The pause stays settled
 and the run keeps the answer it acted on. A step that is still open, or that settled with no answer,
-refuses an amend. The manager records the amender from the credential, as for an answer, and a
+refuses an amend. So does a step whose answer was just accepted and is not in the run's journal
+yet, and that refusal says so. The manager records the amender from the credential, as for an answer, and a
 spawned seat may amend only an answer recorded under its own name.
 
 ```bash
@@ -393,8 +395,11 @@ request can read the same marker and a current holder, then report its own obser
 from the project folder. An empty `--by` or `--reason` is refused before anything is written. The
 admission itself is never rewritten. Every host reads the marker
 before its next channel effect, so an open `wait` refuses at its next poll, and no resume,
-takeover or manager restart continues the run. Revoking twice is not an error, and the first
-reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
+takeover or manager restart continues the run. An open checkpoint or `ask` stays listed under
+`Needs an answer`, but `run answer`, hosted or `--local`, refuses it with `LIFECYCLE_BLOCKED`
+naming the revoker and the reason, and files nothing, so the run stays parked at that pause. A
+marker that cannot be read refuses the answer the same way. Revoking twice is not an error, and
+the first reason stands. A run whose admission is missing or revoked is left parked by the manager's boot
 reconcile, named in its log.
 
 `run ps`, hosted or `--local`, reads the marker beside each run record and prints `revoked` for a

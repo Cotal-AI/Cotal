@@ -284,6 +284,11 @@ try {
   check("probe: garbage pidfile is 'bad pidfile'", pidfileState(join(probeDir, "junk.pid")).note === "bad pidfile");
   writeFileSync(join(probeDir, "self.pid"), String(process.pid));
   check("probe: a live pid reads alive", pidfileState(join(probeDir, "self.pid")).liveness === "alive");
+  // The probe reads through the shared `readPidfile`, so a record it cannot read throws naming it.
+  mkdirSync(join(probeDir, "dir.pid"));
+  let unreadable = "";
+  try { pidfileState(join(probeDir, "dir.pid")); } catch (e) { unreadable = (e as Error).message; }
+  check("probe: an unreadable pidfile throws naming its path", unreadable.includes(join(probeDir, "dir.pid")), unreadable);
   if (process.platform !== "win32") {
     writeFileSync(join(probeDir, "init.pid"), "1");
     check("probe: an unsignalable pid (EPERM) reads ALIVE", pidfileState(join(probeDir, "init.pid")).liveness === "alive");

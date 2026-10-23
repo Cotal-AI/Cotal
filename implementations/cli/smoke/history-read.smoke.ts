@@ -2,11 +2,13 @@
  * `cotal history [channel]` on the structured output contract, against brokers this suite owns. Real
  * agents post to channels and DM each other; the CLI child reads with its own one-shot credential.
  * Covers one channel and every channel, `--limit`, `--since` by sequence and by time, `--from` and
- * `--grep`, `--dms`, the usage refusals, a credential that may not read history, one another space's
+ * `--grep`, `--dms`, the usage refusals, a credential that may not read history, writes an observer
+ * credential may not make, one another space's
  * account issued, `--follow` as NDJSON
  * and as lines, and a retention gap (on an open broker, one sender posts past the chat stream's
  * per-sender limit). The user-auth result rendering is driven against a stand-in endpoint. On the
- * same broker, `cotal channel remove` says whether it removed a saved entry, and on the open broker
+ * same broker, `cotal channel remove` says whether it removed a saved entry and refuses a name with
+ * no saved entry and no retained messages, and on the open broker
  * `cotal channel members` refuses with `UNSUPPORTED`.
  * smoke:ps-user-mode and smoke:user-spawn:live exercise the native user-auth history path.
  *
@@ -37,6 +39,7 @@ import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, te
 import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, nodePty } from "./_console-pty.js";
+import { credentialEnded } from "../src/lib/connect.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -244,6 +247,25 @@ try {
   const foreign = await run(["history", "general", "--json", "--creds", sameName, "--space", space, "--server", servers]);
   check("a rejected credential naming this space keeps the plain rejection", foreign.status === 2 && foreign.envelope?.error?.code === "PERMISSION_DENIED" && /^credentials rejected at \S+$/.test(foreign.envelope.error.message), shown(foreign));
 
+  // ── a write the broker refuses for the credential's grant applied nothing ───────────────────────
+  // An observer credential may read but not write channel metadata or purge history. Each refusal
+  // names the profile and the write, points at the operator credential, and leaves the state that
+  // the later sections read as it was.
+  const observer = join(home, "observer.creds");
+  writeFileSync(observer, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
+  const asObserver = ["--creds", observer, "--space", space, "--server", servers, "--json"];
+  const deniedWrites: [string, string[], RegExp][] = [
+    ["channel set", ["channel", "set", "general", "--desc", "x"], /^this observer credential may not write channel metadata in \S+, so nothing was saved: Permissions Violation/],
+    ["channel remove", ["channel", "remove", "general", "--yes"], /^this observer credential may not remove channel metadata in \S+, so nothing was removed: Permissions Violation/],
+    ["channel remove --purge", ["channel", "remove", "general", "--purge", "--yes"], /^this observer credential may not purge #general's history and remove its metadata in \S+, so nothing was removed: Permissions Violation/],
+    ["history clear", ["history", "clear", "--yes"], /^this observer credential may not purge retained history in \S+, so nothing was purged: Permissions Violation/],
+  ];
+  for (const [what, args, message] of deniedWrites) {
+    const r = await run([...args, ...asObserver]);
+    check(`a ${what} the broker refuses is PERMISSION_DENIED, exit 2, naming the profile and the write, with the operator credential as the Next`,
+      r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "PERMISSION_DENIED" && message.test(r.envelope.error.message) && (r.envelope.error.remedy ?? "").startsWith("run it without --creds to use the operator credential this machine records for"), shown(r));
+  }
+
   // ── --follow ────────────────────────────────────────────────────────────────────────────────────
   const f = follow(["history", "general", "--follow", "--json"]);
   const snap = await f.until((l) => l.includes('"type":"snapshot"'));
@@ -267,6 +289,34 @@ try {
   await fp.exited;
   check("--follow --plain appends each matching message as a line", shownLine && fp.lines.some((l) => /#ops\s+bob: a plain line/.test(l)) && !fp.lines.some((l) => l.includes("filtered out")), fp.lines.slice(-4));
   check("a followed line shows the local time, not the ISO time", fp.lines.some((l) => /bob: a plain line/.test(l) && !/^\d{4}-\d\d-\d\dT/.test(l)), fp.lines.slice(-4));
+
+  // A follow whose credential expires ends on its own, with the refusal a one-shot read of that file gets.
+  const brief = join(home, "brief.creds");
+  writeFileSync(brief, await mintCreds(auth, newIdentity(), "observer", { expiresInSeconds: 8 }), { mode: 0o600 });
+  const briefArgs = ["--creds", brief, "--space", space, "--server", servers];
+  const fj = follow(["history", "general", "--follow", "--json", ...briefArgs]);
+  const fl = follow(["history", "general", "--follow", "--plain", ...briefArgs]);
+  const briefSnap = await fj.until((l) => l.includes('"type":"snapshot"')) && await fl.until((l) => /replay to new members/.test(l));
+  const ended = await Promise.race([Promise.all([fj.exited, fl.exited]), wait(40_000).then(() => undefined)]);
+  const once = await run(["history", "general", "--json", ...briefArgs]);
+  const briefRecords = fj.lines.map((l) => JSON.parse(l) as { type: string; data: { code?: string; message?: string; remedy?: string; reason?: string } });
+  const refusal = briefRecords.filter((r) => r.type === "error");
+  check("an expired credential ends a --json follow: one AUTH_REQUIRED error record with the one-shot's message and Next, then end, exit 2",
+    briefSnap && ended?.[0] === 2 && once.envelope?.error?.code === "AUTH_REQUIRED" && refusal.length === 1 && refusal[0]?.data.code === "AUTH_REQUIRED" && refusal[0].data.message === once.envelope.error.message && refusal[0].data.remedy === once.envelope.error.remedy && briefRecords.at(-1)?.type === "end" && briefRecords.at(-1)?.data.reason === "refused",
+    { ended, records: fj.lines.slice(-3), stderr: fj.stderr(), once: shown(once) });
+  check("an expired credential ends a --plain follow with the one-shot's refusal and no re-establishing line, exit 2",
+    ended?.[1] === 2 && once.envelope?.error !== undefined && fl.stderr().includes(once.envelope.error.message) && fl.stderr().includes(once.envelope.error.remedy ?? "?") && !/re-establish|Authentication Expired/.test(fl.stderr() + fl.lines.join("\n")),
+    { ended, lines: fl.lines.slice(-3), stderr: fl.stderr() });
+
+  // A credential the broker rejects, as after `reset space` replaced the trust it was minted from.
+  // Given as a file it ends a follow with the one-shot's Next; minted by the follow from the space's
+  // trust, the Next says to run it again.
+  const rejected = await mintCreds(await createSpaceAuth(space), newIdentity(), "observer");
+  const given = await credentialEnded({ server: servers, space, tls: false, creds: rejected });
+  const minted = await credentialEnded({ server: servers, space, tls: false, creds: rejected, auth });
+  check("a rejected --creds file ends a follow PERMISSION_DENIED with the one-shot's Next", given?.code === "PERMISSION_DENIED" && given.failure().remedy === foreign.envelope?.error?.remedy, { given: given?.failure(), oneShot: foreign.envelope?.error });
+  check("a rejected credential the follow minted ends it PERMISSION_DENIED saying to run it again",
+    minted?.code === "PERMISSION_DENIED" && minted.failure().message === given?.failure().message && /run it again/.test(minted.failure().remedy ?? ""), minted?.failure());
 
   // A followed line is drawn for the terminal it is shown in, as the window above it is.
   const tty = nodePty([BIN, "history", "--follow", "--grep", "wrapped"], { cwd: shell, env: isolatedEnv as Record<string, string>, cols: 60, rows: 30 });
@@ -348,15 +398,22 @@ try {
     check("a space with no channel registry has the built-in replay policy, and the read is complete", bare.status === 0 && bare.envelope?.completeness === "complete" && JSON.stringify(r?.replay) === JSON.stringify([{ channel: "general", replay: true, window: null }]) && r?.items.length === 0, shown(bare));
   }
 
-  // ── channel remove says whether it removed a saved entry ──────────────────────────────────────
+  // ── channel remove says whether it removed a saved entry, and refuses a name the space lacks ──
   {
     const removedOf = (r: { envelope?: Envelope }) => (r.envelope?.result as { removed?: boolean } | null | undefined)?.removed;
     const removed = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
     check("removing a saved channel is ok and says it removed the entry", removed.status === 0 && removed.envelope?.outcome === "ok" && removedOf(removed) === true, shown(removed));
+    // history clear above left #ops with no retained message, so with its entry gone the space lacks it.
     const again = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
-    check("removing it again is a no-op that removed nothing", again.status === 0 && again.envelope?.outcome === "no-op" && removedOf(again) === false, shown(again));
-    const typo = await run(["channel", "remove", "opz", "--yes", "--space", space]);
-    check("a name with no saved entry says nothing was removed", typo.status === 0 && typo.stdout.includes("Nothing removed · #opz") && typo.stdout.includes("no saved entry"), shown(typo));
+    check("removing it again is TARGET_NOT_FOUND, exit 2, listing the registered channels",
+      again.status === 2 && again.envelope?.error?.code === "TARGET_NOT_FOUND" && /#ops has no saved entry and no retained messages; registered channels: #general$/.test(again.envelope.error.message), shown(again));
+    const cased = await run(["channel", "remove", "General", "--purge", "--yes", "--space", space, "--json"]);
+    check("another case of a registered channel is refused before any purge, naming the registered spelling",
+      cased.status === 2 && cased.envelope?.error?.code === "TARGET_NOT_FOUND" && /channel names are case-sensitive, and the registered one is #general$/.test(cased.envelope.error.message), shown(cased));
+    // A channel with retained messages and no saved entry is one the space has, so its remove is a no-op.
+    const posted = await run(["send", "-c", "opz", "kept", "--space", space]);
+    const typo = await run(["channel", "remove", "opz", "--yes", "--space", space, "--json"]);
+    check("a channel with retained messages and no saved entry is a no-op that removed nothing", posted.status === 0 && typo.status === 0 && typo.envelope?.outcome === "no-op" && removedOf(typo) === false, { posted: shown(posted), typo: shown(typo) });
   }
 
   // ── channel members on an open mesh, which runs no delivery service to write the feed ─────────

@@ -23,6 +23,8 @@ import { Kvm, type KV } from "@nats-io/kv";
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
+  hasDuplicateNames,
+  assertIdToken,
   assertLifecycleToken,
   LANG_PROBLEM_DETAIL_KIND,
   dialerFor,
@@ -64,7 +66,7 @@ import {
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
 import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
-import { CommandFailure, presentationOf, recordOperationSpace, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, commandFailureReport, failureEnvelope, presentationOf, recordOperationSpace, renderReport, terminalWidth, writeEnvelope, connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget, type RefusalCode } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
 import { printRunDetail, printRunList, runReceipt } from "./workflow-views.js";
@@ -74,7 +76,7 @@ import { cotalLangRunHost as runHost, journalRows } from "./run-host.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
-import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
+import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer, RunAnswerBlocked } from "./resolve-checkpoint.js";
 
 const USAGE =
   'usage: cotal run <start --file <program> [--timeout <dur>] | resume <runId> [--local --file <program>] | ps [--endpoint <ep>] [--json] [--page [--limit <n>] [--cursor <cursor>]] | journal <runId> [--endpoint <ep>] [--json] | answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>] | revoke <runId> --local --by <who> --reason <text> [--endpoint <ep>] | migrate <runId> --local --file <program> [--endpoint <ep>]> [--local [--admit-read <channels> --admit-publish <channels>]] [--on <instance>] [--space <s>] [--server <url>] [--creds <path>]';
@@ -466,7 +468,10 @@ async function answer(values: RunValues, reader: Planes, runId: string | undefin
         ...(values.artifact !== undefined ? { artifact: values.artifact } : {}),
         now: Date.now(),
       },
-    );
+    ).catch((e: unknown) => {
+      if (e instanceof RunAnswerBlocked) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", e.message, { target: { space: writer.space, endpoint, run: runId }, native: { code: e.code } });
+      throw e;
+    });
     runReceipt("answer", reader.space, result, values, runId, { step: stepKey, ...(values.value !== undefined ? { value: parsedValue } : {}), ...(values.artifact !== undefined ? { artifact: values.artifact } : {}) });
   } finally {
     await writer.close();
@@ -623,11 +628,41 @@ const REFUSED_BEFORE_EFFECT: Readonly<Record<string, RefusalCode>> = {
 function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined): CommandFailure {
   const message = renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err);
   const options = { target: { space }, native: { code: err?.code ?? "unreported" } };
-  const code = err?.code === undefined ? undefined : REFUSED_BEFORE_EFFECT[err.code];
-  const remedy = err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run ps" };
+  // A manager at its launch limit refuses `resource-exhausted` before writing anything, and says
+  // so with `not-executed`.
+  const busy = err?.code === "resource-exhausted" && err.outcome === "not-executed";
+  const code = err?.code === undefined ? undefined : busy ? "LIFECYCLE_BLOCKED" : REFUSED_BEFORE_EFFECT[err.code];
+  const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; cotal run ps lists a run once it has` }
+    : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" ? `read the run's open requests with cotal run show ${args.runId}` : "list the recorded runs with cotal run ps" };
   if (code) return new CommandFailure("refused", err!.details?.some((d) => d.kind === LANG_PROBLEM_DETAIL_KIND) ? "SCHEMA_INVALID" : code, message, { ...options, ...remedy });
   if (command === "run-status" || command === "run-ps") return new CommandFailure("failed", "OPERATION_FAILED", message, options);
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: "read the run with cotal run show or cotal run ps before trying again; it was not retried" });
+}
+
+/** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
+function payloadRefused(error: unknown): boolean {
+  for (let e: unknown = error; e instanceof Error; e = e.cause) if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
+  return false;
+}
+
+/** While a hosted start's request may be with the manager, a SIGINT or SIGTERM reports that the run
+ *  may already be recorded and exits as the signal would. The manager does not stop on the caller's
+ *  signal, so the process used to die silently with the run started, and a retry started a second
+ *  one. Returns the release. */
+function reportInterruptedStart(values: RunValues, space: string): () => void {
+  const exit = (signal: "SIGINT" | "SIGTERM"): void => {
+    const failure = new CommandFailure("unknown", "OPERATION_UNKNOWN", "interrupted after the start request was sent, so the manager may already have recorded the run", {
+      target: { space }, remedy: "list the recorded runs with cotal run ps before starting it again",
+    });
+    if (values.json) writeEnvelope(failureEnvelope("run", failure));
+    process.stderr.write(`${renderReport(commandFailureReport(failure), values.plain ? "plain" : "rich", terminalWidth(process.stderr))}\n`);
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  const onInterrupt = () => exit("SIGINT");
+  const onTerminate = () => exit("SIGTERM");
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGTERM", onTerminate);
+  return () => { process.off("SIGINT", onInterrupt); process.off("SIGTERM", onTerminate); };
 }
 
 /** One command to the mesh's manager over the endpoint rails: a fresh resolve (describe, store
@@ -661,10 +696,23 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     // A start or resume is answered only once the drive has activated, which the manager waits on
     // for a bounded time; the deadline here outlives that wait, so the manager's own "still
     // launching" refusal is what a slow activation reads as, never a manager that did not answer.
-    const r = await invokeRepairingSplit(nc, t.space, service, command, args, {
-      deadlineMs: RUN_LAUNCH_DEADLINE_MS,
-      ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
-    });
+    const interrupt = command === "run-start" ? reportInterruptedStart(values, t.space) : undefined;
+    let r: Awaited<ReturnType<typeof invokeRepairingSplit>>;
+    try {
+      r = await invokeRepairingSplit(nc, t.space, service, command, args, {
+        deadlineMs: RUN_LAUNCH_DEADLINE_MS,
+        ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
+      });
+    } catch (e) {
+      if (!payloadRefused(e)) throw e;
+      const source = command === "run-start" && typeof args?.source === "string" ? args.source : undefined;
+      const limit = `this broker's ${nc.info?.max_payload ?? "unreported"}-byte message limit`;
+      throw new CommandFailure("refused", "UNSUPPORTED", source !== undefined
+        ? `the program is ${Buffer.byteLength(source)} bytes, and the start request that carries it exceeds ${limit}; nothing was sent`
+        : `the ${command} request exceeds ${limit}; nothing was sent`, { target: { space: t.space }, ...(source !== undefined ? { remedy: "shorten the program; a hosted start sends it to the manager in one message" } : {}) });
+    } finally {
+      interrupt?.();
+    }
     if (r.reply.ok !== true) {
       const err = r.reply.error;
       // A validation refusal carries every problem as the language's own records; print them the
@@ -850,6 +898,30 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
   }
 }
 
+/** How deep an answer value may nest. Serializing it recurses, and a host runs out of stack a few
+ *  thousand levels down, at a depth that depends on the host, so the bound sits well below that. */
+const ANSWER_VALUE_DEPTH = 1000;
+
+/** `--value` as the answer record carries it, refused before anything is sent when the record
+ *  would differ from what was typed: JSON keeps only the last of two equal names, writes a number
+ *  past the double range as null, and cannot send a value nested past the serializer's stack. */
+function checkAnswerValue(text: string, usage: (message: string) => never): void {
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { usage("--value must be valid JSON"); }
+  const refuse = (message: string): never => { throw new CommandFailure("refused", "SCHEMA_INVALID", `${message}; nothing was sent`); };
+  const duplicate = hasDuplicateNames(text);
+  if (duplicate.duplicate) refuse(`--value names "${duplicate.name}" twice in one object, and JSON keeps only the last`);
+  // Iterative, because the value can nest deeper than the stack a recursive walk has.
+  const pending: Array<{ v: unknown; depth: number }> = [{ v: value, depth: 1 }];
+  while (pending.length > 0) {
+    const { v, depth } = pending.pop()!;
+    if (typeof v === "number" && !Number.isFinite(v)) refuse("--value holds a number outside the range JSON carries, which would be recorded as null");
+    if (v === null || typeof v !== "object") continue;
+    if (depth > ANSWER_VALUE_DEPTH) refuse(`--value nests more than ${ANSWER_VALUE_DEPTH} levels deep, deeper than an answer can be sent`);
+    for (const child of Object.values(v)) pending.push({ v: child, depth: depth + 1 });
+  }
+}
+
 /** Public workflow grammar, before catalog preparation or native requests. */
 export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: string; a?: string; b?: string } {
   const values = { ...args.values } as RunValues;
@@ -858,6 +930,11 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   const verb = ({ list: "ps", show: "journal", check: "migrate" } as Record<string, string>)[raw] ?? raw;
   const usage = (message: string): never => { throw new CommandFailure("refused", "USAGE_INVALID", message); };
   if (extra.length || !["start", "resume", "ps", "journal", "answer", "amend", "revoke", "migrate", "validate", "plan", "simulate", "turns", "yield"].includes(verb)) usage("choose a declared run command; run it bare to list workflows");
+  // A run id is an id token, so a malformed one is refused here, before any contact, rather than
+  // by whichever plane reads it first.
+  if (["journal", "resume", "revoke", "answer", "amend", "migrate"].includes(verb) && first !== undefined) {
+    try { assertIdToken(first, "run id"); } catch { usage(`run ${raw}: ${JSON.stringify(first)} is not a run id, which is 1 to 64 letters, digits, "_" or "-"; cotal run ps lists them`); }
+  }
   let a: string | undefined = first;
   let b: string | undefined = second;
   if (verb === "start") {
@@ -894,10 +971,11 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (values.plain) usage("diagnostic pages produce bounded JSON and take no --plain");
   }
   if ((values["admit-read"] !== undefined || values["admit-publish"] !== undefined) && values.local !== true) usage("admission ceilings belong to the explicit local start");
+  // Revoke is local only and needs --by, so its own requirement is named before the hosted --by refusal.
+  if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
   if (values.by !== undefined && values.local !== true) usage("the hosted manager records the authenticated caller; --by is only for the local path");
   if ((verb === "start" || verb === "resume") && values.endpoint !== undefined && values.local !== true) usage("a hosted run uses the manager's endpoint; --endpoint is only for the local path");
-  if (verb === "revoke" && (values.local !== true || !values.by?.trim() || !values.reason?.trim())) usage("run revoke requires --local --by <actor> --reason <text> under the existing trust checks");
-  if (values.value !== undefined) { try { JSON.parse(values.value); } catch { usage("--value must be valid JSON"); } }
+  if (values.value !== undefined) checkAnswerValue(values.value, usage);
   if (values.handler !== undefined && verb !== "simulate") usage("--handler belongs to run simulate");
   if ((values.status !== undefined || values.to !== undefined || values.note !== undefined) && verb !== "yield") usage("--status, --to and --note belong to run yield");
   if (verb === "yield") {

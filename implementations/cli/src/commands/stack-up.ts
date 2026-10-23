@@ -17,7 +17,7 @@ import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isR
 import {
   CommandFailure, accountInventory, authDir, canonicalRoot, deliveryCredsKey, findMesh, findPreparedSpace, getCurrent, getSpaceAuth, hasUserAuthState,
   homeCotalDir, isCommandFailure, loadMeshes, localMeshesForRoot, presentationOf, readMaintenanceJournal, renderReport, resolveNativeServiceTarget, resolveOnPath,
-  stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
+  rotateSystemCreds, stackHomeRemedy, stackRunsUnderOtherHome, terminalWidth, workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report, type ServiceDefinitionInput, type UserAuthInfo,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses } from "./clean.js";
 import { brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
@@ -115,6 +115,10 @@ export interface StackUpRequest {
    *  read by its eligibility gate under the same maintenance lock. Any change before this call's
    *  own read refuses; nothing is re-planned from different records. */
   expectPriorDown?: { journalSha256: string; operationId: string };
+  /** `--rotate-sys`: rotate the space's system account and re-mint its two `$SYS` creds just before
+   *  the broker is prepared, so the broker this start launches loads the successor. Only a stopped
+   *  static-auth or user-auth stack takes it. */
+  rotateSys?: boolean;
 }
 
 /** The domain outcome of a successful whole-stack start, for a caller that renders its own receipt.
@@ -133,9 +137,12 @@ export interface StackUpResult {
   brokerExecutable?: NatsServer;
   /** This call created the space's streams again on the running broker it reused. */
   streamsRecreated?: true;
+  /** The system-account rotation this call made before it prepared the broker. */
+  rotation?: { generation: number; expiresAt: string | null };
 }
 
-/** Inputs that name a legacy-only startup refuse on the controller route. They are not dropped. */
+/** Inputs that name a legacy-only startup refuse on the controller route. They are not dropped. A
+ *  recorded stack takes `rotate-sys` on a stopped start; a first start keeps the retained path. */
 const CONTROLLER_UNSUPPORTED = ["file", "dry-run", "restore", "restore-only", "accept-missing-source", "accept-stale-checkpoint", "rotate-sys", "exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "tls-cert", "tls-key"] as const;
 
 /** Any account record, readable or not, means the root carries static trust an open stack would bypass. */
@@ -161,7 +168,7 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   const requested = requestedStackMode(values);
   const unsupportedNow = (name: string) => values[name] !== undefined && values[name] !== false && (CONTROLLER_UNSUPPORTED as readonly string[]).includes(name);
   if (recorded) {
-    const unsupported = CONTROLLER_UNSUPPORTED.filter(unsupportedNow);
+    const unsupported = CONTROLLER_UNSUPPORTED.filter((name) => name !== "rotate-sys" && unsupportedNow(name));
     if (unsupported.length) throw new CommandFailure("refused", "UNSUPPORTED", "this root's stack is owned by the service controller; the requested startup option has no controller-owned route and was not applied through the legacy launcher", { target: { root: canonical, options: unsupported } });
     if (requested !== undefined && requested !== recorded.journal.mode) throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is pinned to ${recorded.journal.mode === "open" ? "open" : recorded.journal.mode === "user" ? "user auth" : "static auth"}; the requested mode does not convert it`, { target: { root: canonical, recorded: recorded.journal.mode, requested }, remedy: "run bare cotal up to keep the recorded mode" });
     if (values.idp !== undefined && recorded.journal.mode !== "user") throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack", { target: { root: canonical } });
@@ -263,7 +270,7 @@ function membersView(journal: StackJournal, title: string, executable?: NatsServ
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its
  *  own receipt. The stack is up by then, so a persona that cannot be written is a warning. */
 export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
-  const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated } = await startControllerStack(request, native);
+  const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated, rotation } = await startControllerStack(request, native);
   const { root, space, server, mode } = journal;
   const managed = journal.members.some((row) => row.role === "manager" && (row.state === "started" || row.state === "reused"));
   // The start keeps another selected space; the receipt says so, as a legacy `up` does.
@@ -277,7 +284,7 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   } catch (error) {
     warnings.push({ code: "PERSONA_NOT_WRITTEN", target: { root, space }, message: `the default persona was not written in ${root}: ${(error as Error).message}` });
   }
-  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, written }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
+  writeResult(request.presentation, { command: "up", target: { root, space, server }, result: { kind: "controller-stack-up", root, space, server, mode, operation: journal.operation, members: journal.members, changed, foreground: request.foreground, admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null, brokerExecutable: brokerExecutable ?? null, streamsRecreated: streamsRecreated === true, rotatedSystemAccount: rotation ?? null, written }, warnings, ...(allReused && written.length === 0 && !streamsRecreated ? { noOp: true } : {}) }, (result) => {
     const members = membersView({ ...journal, members: result.members }, allReused ? "Controller stack already running" : "Controller stack started", result.brokerExecutable, result.streamsRecreated);
     const view: Report = result.written.length ? { ...members, sections: [...members.sections, { blocks: [{ kind: "fields", rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] } : members;
     const next: Report["sections"] = request.foreground ? [] : [{ title: "Next", blocks: [{ kind: "commands", items: [
@@ -286,7 +293,11 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
       { command: "cotal down", description: "Stop every recorded member" },
     ] }] }];
     const kept: Report["sections"] = keptCurrent ? [{ blocks: [{ kind: "lines", lines: [{ text: `"${space}" up; current is still "${keptCurrent}" - \`cotal use ${space}\` to switch`, tone: "hint" }] }] }] : [];
-    return { ...view, sections: [...view.sections, ...(admittedRestore ? [{ title: "Retained restore journal", blocks: [{ kind: "lines" as const, lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] : []), ...kept, ...next] };
+    const rotated: Report["sections"] = result.rotatedSystemAccount ? [{ title: "System account rotated", blocks: [
+      { kind: "fields", rows: [["Generation", String(result.rotatedSystemAccount.generation)], ["$SYS creds valid to", result.rotatedSystemAccount.expiresAt?.slice(0, 10) ?? "no expiry"]] },
+      { kind: "lines", lines: ["membership-observer.creds and connection-evictor.creds were minted against the new system account, and the broker started on a configuration rendered from it. The data account, every agent credential and the JetStream store are unchanged. Old $SYS creds are refused by any broker that loads this configuration."] },
+    ] }] : [];
+    return { ...view, sections: [...view.sections, ...rotated, ...(admittedRestore ? [{ title: "Retained restore journal", blocks: [{ kind: "lines" as const, lines: [`Active restore ${admittedRestore} stays in this root's maintenance journal. It was read and not changed.`] }] }] : []), ...kept, ...next] };
   });
 }
 
@@ -398,6 +409,15 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const running = serviceInstances(space, STACK_DEFINITION.manager).filter((row) => observeServiceProcess(row.record.value) === "running");
     if (running.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--no-manager cannot keep an already-running controller manager; no member was started or stopped", { target: { root, space, instances: running.map((row) => row.name) }, remedy: `stop the recorded manager with cotal service stop ${STACK_DEFINITION.manager} --space ${space} --yes before requesting --no-manager` });
   }
+  // A rotation is a stopped, fresh boot. A member that still runs would keep the retired system
+  // account, so every member must be stopped before anything is rotated or started.
+  if (request.rotateSys) {
+    if (mode === "open") throw new CommandFailure("refused", "UNSUPPORTED", "an open stack has no system account or $SYS credentials to rotate; nothing was started", { target: { root, space }, remedy: `run bare cotal up from ${root} to start it` });
+    const running = STACK_ROLES.flatMap((role) => serviceInstances(space, STACK_DEFINITION[role])).filter((row) => observeServiceProcess(row.record.value) === "running");
+    if (running.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this stack has running members, and a running broker keeps serving the retired system account; nothing was rotated or started", { target: { root, space, instances: running.map((row) => row.name) }, remedy: "stop the stack with cotal down --yes, then run cotal up --rotate-sys" });
+    const trust = await getSpaceAuth(workspaceSecretStore(root), space);
+    if (!trust?.operator.seed) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", trust ? "this root holds the space's trust without the broker operator seed, so it cannot rotate the system account; nothing was started" : "this stack has no system account yet, so nothing was rotated or started", { target: { root, space }, remedy: trust ? "run the rotation where the broker trust record lives" : `run bare cotal up from ${root}; a first start mints the $SYS creds` });
+  }
   // Check provider inputs before preparation or a journal write. A supplied IdP is always checked,
   // including a live refresh; only an unpinned first enable probes JWKS. Preparation checks again.
   if (mode === "user") {
@@ -456,6 +476,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   let launch: { path: string; sha256: string } | undefined;
   // Only a broker this call starts gets the space's streams created.
   let brokerReused = false;
+  let rotation: StackUpResult["rotation"];
   try {
     // Broker. Trust and configuration are prepared only when this broker is not already serving
     // under its own recorded instance, never as an adapter planning step.
@@ -490,6 +511,18 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     }
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;
     if (!brokerRunning) {
+      if (request.rotateSys) {
+        // Rotated here, after the address check, so no broker can still serve the retired account.
+        // Preparation then renders the broker configuration from the rotated trust record.
+        failedRole = "broker";
+        try {
+          const rotated = await rotateSystemCreds(root, space);
+          rotation = { generation: rotated.gen, expiresAt: rotated.expiresAt ? new Date(rotated.expiresAt * 1000).toISOString() : null };
+        } catch (error) {
+          throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the system account rotation did not finish: ${(error as Error).message}`, { target: { root, space } });
+        }
+        failedRole = undefined;
+      }
       prepared = await native.prepareBroker({ transport: request.transport, server, space, open: mode === "open", ...(mode === "user" ? { userAuth: request.idp !== undefined ? { idpUrl: request.idp } : {} } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(brokerStore ? { storeDir: brokerStore } : {}), ...(storePin ? { existingStore: storePin } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
       if (canonicalRoot(prepared.root) !== root || prepared.space !== space || prepared.server !== server || (prepared.setup === undefined) !== (mode === "open") || (prepared.user === undefined) !== (mode !== "user")) throw new CommandFailure("refused", "CONFLICT", "the prepared broker configuration names another root, space, address or auth mode; the stack did not continue");
       if (mode === "user") assertUserStackTransport(server, prepared.transport.kind === "tls-required");
@@ -668,7 +701,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       : "the user stack's other members were already running and were reused; the manager was not attempted because no signed-in, granted login exists. This is not whole-stack readiness", { target: detail, changed, native: { code: "AUTH_REQUIRED", outcome: "refused", detail: loginBlock.message }, ...(loginBlock.remedy ? { remedy: loginBlock.remedy } : {}) });
   }
   const allReused = journal.members.every((row) => row.state === "reused" || row.state === "not-attempted");
-  return { journal, changed, allReused, ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}), ...(brokerExecutable ? { brokerExecutable } : {}), ...(streamsRecreated ? { streamsRecreated: true as const } : {}) };
+  return { journal, changed, allReused, ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}), ...(brokerExecutable ? { brokerExecutable } : {}), ...(streamsRecreated ? { streamsRecreated: true as const } : {}), ...(rotation ? { rotation } : {}) };
 }
 
 /** Stop a broker this call started, through its exact kernel stop, and read whether its log says it

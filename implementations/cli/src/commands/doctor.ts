@@ -86,6 +86,15 @@ export function validateDoctorArguments(args: ParsedArgs): void {
   if (args.positionals.length !== 1 || args.positionals[0] !== "auth") throw new CommandFailure("refused", "USAGE_INVALID", "use doctor auth [--fix] [--space <space>] [--json|--plain]");
 }
 
+/** The space registered as open at this root, if any. Missing signing trust alone is never read as
+ *  an open space. */
+function recordedOpenSpace(root: string, space: string | undefined): string | undefined {
+  try {
+    const target = resolveMeshTarget(root, { ...(space === undefined ? {} : { space }), readOnly: true });
+    return target.mode === "open" && target.origin !== undefined && canonicalRoot(target.root) === canonicalRoot(root) ? target.space : undefined;
+  } catch { return undefined; }
+}
+
 /** Local credential observations only; native repair remains an explicit, separately labeled phase. */
 export async function doctor(args: ParsedArgs): Promise<void> {
   validateDoctorArguments(args);
@@ -103,6 +112,11 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   try { auth = values.space ? await getSpaceAuth(workspaceSecretStore(root), values.space) : await getSoleSpaceAuth(workspaceSecretStore(root), authDir(root)); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the local authority inventory could not be validated; no repair was attempted", { target: { root, space: values.space ?? null } }); }
   if (!auth) {
+    const open = values.fix ? undefined : recordedOpenSpace(root, values.space);
+    if (open !== undefined) {
+      writeResult(presentationOf(values), { command: "doctor auth", target: { root, space: open }, result: { kind: "credential-health", root, space: open, localFindings: null, credentialScope: "open-space", brokerAuthorization: "not-checked", repair }, noOp: true }, () => ({ sections: [{ title: "No credentials to check", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", open], ["Mode", "open, as registered"]] }, { kind: "lines", lines: [{ text: "This space is open: it authenticates no one and issues no credentials, so there are none to check.", tone: "hint" }] }] }] }));
+      return;
+    }
     if (values.fix || values.space) throw new CommandFailure("refused", "AUTH_REQUIRED", "no validated signing trust for the named local diagnostic scope is present; no open mode or broader authority was inferred", { target: { root, space: values.space ?? null } });
     writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh.", remedy: "run `cotal doctor auth` in a space's root folder; `cotal space` lists each space's root" } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
     return;
@@ -233,6 +247,13 @@ function agentUnrenewableRepair(): string {
   return "native renewal skips unbounded or unreadable material; inspect the exact lifecycle and authority before choosing an explicit replacement. This diagnosis does not prove the agent is stopped or authorize a blind respawn";
 }
 
+/** The two ways out for an agent credential with no expiry: rotating the space identity retires it
+ *  with everything the space issued, and a bounded replacement ends it once the file is gone. */
+function agentUnboundedRepair(path: string, space: string): string {
+  const cmd = displayCmd();
+  return `native renewal skips unbounded material. Retire it, with every other credential the space issued, by rotating the space identity: \`${cmd} down\`, \`${cmd} reset space ${space}\`, then \`${cmd} up\`. Or bound it: stop what uses it, remove ${path} and mint a replacement with --expires-in <seconds> or --expires-at <unix-seconds>; a copy made before stays valid until that rotation. This diagnosis does not prove the agent is stopped or authorize a blind respawn`;
+}
+
 /** Classify every `agent` file by alias family, so a superseded incarnation is never reported as a
  *  broken fleet (#1576 ask 3).
  *
@@ -320,7 +341,7 @@ function inventory(root: string, space: string, sysPub?: string, readOnly = fals
   const agentDir = agentCredsDir(root, space, { readOnly, onMigrated });
   if (existsSync(agentDir)) {
     for (const f of readdirSync(agentDir).filter((f) => f.endsWith(".creds") && !f.endsWith(".sentinel.creds")).sort()) {
-      reports.push(report(basename(f), "agent", join(agentDir, f)));
+      reports.push(report(basename(f), "agent", join(agentDir, f), undefined, undefined, undefined, space));
     }
   }
   // SECOND PASS over the agent files (#1576). Supersession is a property of an alias's FAMILY, not of
@@ -329,11 +350,11 @@ function inventory(root: string, space: string, sysPub?: string, readOnly = fals
   // classified once every member is known, and the affected rows are re-derived with that role.
   const roles = classifyAgentFamilies(reports);
   return reports.map((r) =>
-    r.kind === "agent" && r.health ? report(r.label, r.kind, r.path, undefined, undefined, { role: roles.get(r.label) ?? "sole" }) : r,
+    r.kind === "agent" && r.health ? report(r.label, r.kind, r.path, undefined, undefined, { role: roles.get(r.label) ?? "sole" }, space) : r,
   );
 }
 
-function report(label: string, kind: CredentialKind, path: string, sysPub?: string, stale?: StaleSystemCred, live?: LocalCredentialFamily): CredReport {
+function report(label: string, kind: CredentialKind, path: string, sysPub?: string, stale?: StaleSystemCred, live?: LocalCredentialFamily, space?: string): CredReport {
   let health: CredHealth;
   // A cause the operator can act on, reported in place of the generic parse finding. Its text is
   // fixed and never quotes the file.
@@ -411,8 +432,8 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
       // so it is a finding even where no renewal owner bounds it.
       r.problem = standing
         ? "unbounded standing credential (minted before the renewal slice) - a copied cred never dies"
-        : "unbounded credential (no expiry claim) - a copied cred never dies";
-      r.repair = kind === "agent" && live?.role !== "superseded" ? agentUnrenewableRepair() : repair;
+        : "unbounded credential (no expiry claim) - a copy stays valid until the space identity rotates";
+      r.repair = kind === "agent" && live?.role !== "superseded" && space !== undefined ? agentUnboundedRepair(path, space) : repair;
       break;
   }
   return r;
