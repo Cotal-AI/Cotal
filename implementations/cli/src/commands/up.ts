@@ -392,6 +392,8 @@ function upServerProblem(server: string): string | undefined {
   if (url.username || url.password) return "--server must not embed credentials";
   if (url.search || url.hash || (url.pathname && url.pathname !== "/") || server.includes(",")) return "--server must be one broker URL without a path, query or fragment";
   if (!url.hostname) return "--server names no host";
+  // An explicit address is taken as given, so a missing port is never filled in with the default.
+  if (!url.port) return "--server names no port";
   if (url.port === "0") return "--server needs a TCP port from 1 to 65535";
   return undefined;
 }
