@@ -1661,7 +1661,6 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
   if (processVerdict(record) === "refused") {
     if (record.kind === "unattributable") facts.push("unattributable pidfile");
     if (record.kind === "unknown") facts.push("pid liveness unestablishable");
-    facts.push("static reconciliation not reported by this manager build");
     return { name: "manager", verdict: "refused", facts };
   }
   if (record.kind === "dead") facts.push("stale pidfile");
@@ -1673,7 +1672,6 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
       // A bare probe of an authenticated broker reports an Authorization Violation that describes
       // our own missing credential, not the manager's health. `refused` (not absent): the pass
       // could not read this component's control surface, which is exactly what that verdict means.
-      facts.push("static reconciliation not reported by this manager build");
       facts.push(`probe needs the signed-in login: ${credential.reason}`);
       return { name: "manager", verdict: "refused", facts };
     }
@@ -1727,7 +1725,6 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
     // `ps` grades a user-mode manager by.
     return { name: "manager", verdict: lease || credential.kind === "user" ? "serving" : "not-serving", facts };
   } catch (e) {
-    facts.push("static reconciliation not reported by this manager build");
     // A no-responder service rail or an absent manager registry is definitive no-service evidence.
     // The lease and PID answer whether that missing service belongs to an extant component (not
     // serving) or an absent one; any other failed probe remains a refusal.
