@@ -440,10 +440,35 @@ function assertFreshTeamBootOwnership(root: string, space: string, mode?: "open"
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a prior fresh boot attempt lacks a matching readable summary, or an attempt/summary is unreadable; its outcome was not treated as absent", { target: { root, space, unsettledIds: unsettled.map((attempt) => attempt.deploymentId), unreadable: [...bootAttempts.refused, ...summaries.refused].map(({ path }) => path) }, remedy: "inspect each full boot attempt and its original listener before another fresh start; do not retry an unknown boot" });
 }
 
+/** The guarded whole-stack stop a foreground signal runs, acknowledged by that signal's exit code. A
+ *  failed or unknown stop is reported with its retained members; nothing is force-killed. */
+function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM"): Promise<void> {
+  return stackDown(root, { yes: true }).catch((error) => {
+    process.stderr.write(`${renderReport(commandFailureReport(isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the foreground stack stop did not confirm its outcome; its members were retained")), "rich", terminalWidth(process.stderr))}\n`);
+  }).finally(() => { process.exitCode = signal === "SIGINT" ? 130 : 143; });
+}
+
 /** Foreground controller stack: the terminal holds the stack's lifetime until SIGINT or SIGTERM,
- *  which runs the same guarded whole-stack stop as bare `down`, acknowledged by the signal. A failed
- *  or unknown stop is reported with its retained members; nothing is force-killed. */
-export function holdForegroundStack(root: string): Promise<void> {
+ *  which runs the same guarded whole-stack stop as bare `down`. `start`, when given, is the startup
+ *  this terminal already holds: a signal during it lets the start settle, then runs that stop. A
+ *  failed start still runs the stop, and its failure is thrown once the stop returns. */
+export async function holdForegroundStack(root: string, start?: () => Promise<void>): Promise<void> {
+  if (start) {
+    let requested: "SIGINT" | "SIGTERM" | undefined;
+    const request = (signal: "SIGINT" | "SIGTERM") => {
+      if (requested) return;
+      requested = signal;
+      process.stderr.write("Stop requested; the whole-stack stop runs once the start settles\n");
+    };
+    const interrupt = () => request("SIGINT"), terminate = () => request("SIGTERM");
+    process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
+    let failure: { error: unknown } | undefined;
+    try { await start(); } catch (error) { failure = { error }; }
+    finally { process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); }
+    if (requested) await stopForegroundStack(root, requested);
+    if (failure) throw failure.error;
+    if (requested) return;
+  }
   return new Promise<void>((resolveHold) => {
     // The hold ends on its own when another command completes a whole-stack stop or preserve of this
     // root: a later operation recorded as completed is that evidence. Any other later operation,
@@ -466,9 +491,7 @@ export function holdForegroundStack(root: string): Promise<void> {
       stopping = true;
       process.off("SIGINT", interrupt); process.off("SIGTERM", terminate);
       clearInterval(lifetime);
-      void stackDown(root, { yes: true }).catch((error) => {
-        process.stderr.write(`${renderReport(commandFailureReport(isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the foreground stack stop did not confirm its outcome; its members were retained")), "rich", terminalWidth(process.stderr))}\n`);
-      }).finally(() => { process.exitCode = signal === "SIGINT" ? 130 : 143; resolveHold(); });
+      void stopForegroundStack(root, signal).finally(resolveHold);
     };
     const interrupt = () => stop("SIGINT");
     const terminate = () => stop("SIGTERM");
@@ -989,11 +1012,15 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const presentation = presentationOf(values);
     const stackLock = acquireStackOperationLock(meshRoot);
     const native = controllerStackNative();
-    try {
-      if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace);
-      await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), foreground: values.foreground === true, presentation }, native);
-    } finally { releaseMaintenanceLock(stackLock); }
-    if (values.foreground) await holdForegroundStack(meshRoot);
+    // A foreground terminal holds the start as well, so a signal during it stops what it started.
+    const start = async () => {
+      try {
+        if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace);
+        await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), foreground: values.foreground === true, presentation }, native);
+      } finally { releaseMaintenanceLock(stackLock); }
+    };
+    if (values.foreground) await holdForegroundStack(meshRoot, start);
+    else await start();
     return;
   }
   if (values.json || values.plain) throw new CommandFailure("refused", "UNSUPPORTED", "this startup uses the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot }, remedy: "use a fresh prepared root with static auth, --open, or plain-loopback --user-auth for the controller-owned stack, or omit --json/--plain" });

@@ -551,11 +551,15 @@ path.
 
 A foreground `up` holds the root's maintenance lock only while it starts the stack. A bare
 `cotal down` from another terminal can then stop the stack; the foreground `up` sees the completed
-stop or preserve, prints `Foreground stack released` and exits 0. A systemd unit that runs
-`up --foreground` should set `KillMode=mixed`, so the stop signal reaches only `cotal up`, which runs
-the guarded stack stop, and a `TimeoutStopSec` long enough for that stop. The default
-`control-group` mode signals every member at the same time, and a manager signalled directly does
-not stop through its request-bound stop.
+stop or preserve, prints `Foreground stack released` and exits 0. On a controller stack, Ctrl-C or
+`SIGTERM` in that terminal runs the same guarded stop as bare `cotal down` and exits 130 or 143. A
+signal while the stack is still starting lets the start settle, then runs that stop. When the start
+fails, the stop still runs before the start failure is printed. A hangup, such as a closed terminal,
+runs no stop: the command exits 129 and the stack keeps running until `cotal down` stops it. A
+systemd unit that runs `up --foreground` should set `KillMode=mixed`, so the stop signal reaches
+only `cotal up`, which runs the guarded stack stop, and a `TimeoutStopSec` long enough for that stop.
+The default `control-group` mode signals every member at the same time, and a manager signalled
+directly does not stop through its request-bound stop.
 
 The generated broker configuration is owner-private (`0600`) in open and authenticated modes,
 even with a group-writable umask. `up` creates `.cotal` and the broker store owner-private (`0700`)
