@@ -93,6 +93,12 @@ export function spaceConfigPath(root: string): string {
   return join(root, ".cotal", "config.json");
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Every refusal the reader throws: the file named, then what is wrong in it. */
+const configError = (path: string, what: string): Error => new Error(`cotal config ${path}: ${what}`);
+
 /** Parse one config file. A missing file is empty (no config is a valid state); malformed JSON or a
  *  non-object top level throws — a typo in your settings should be loud, not silently ignored. */
 export function readCotalConfigFile(path: string): CotalConfig {
@@ -101,56 +107,45 @@ export function readCotalConfigFile(path: string): CotalConfig {
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch (e) {
-    throw new Error(`cotal config ${path}: invalid JSON - ${(e as Error).message}`);
+    throw configError(path, `invalid JSON - ${(e as Error).message}`);
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-    throw new Error(`cotal config ${path}: top level must be a JSON object`);
-  const policy = (parsed as { modelPolicy?: unknown }).modelPolicy;
-  if (policy !== undefined) checkModelPolicy(path, policy);
-  const connectors = (parsed as { connectors?: unknown }).connectors;
-  if (connectors !== undefined) checkConnectors(path, connectors);
-  const spawn = (parsed as { spawn?: unknown }).spawn;
-  if (spawn !== undefined) checkSpawn(path, spawn);
+  if (!isRecord(parsed)) throw configError(path, "top level must be a JSON object");
+  if (parsed.modelPolicy !== undefined) checkModelPolicy(path, parsed.modelPolicy);
+  if (parsed.connectors !== undefined) checkConnectors(path, parsed.connectors);
+  if (parsed.spawn !== undefined) checkSpawn(path, parsed.spawn);
   return parsed as CotalConfig;
 }
 
 /** A model policy that cannot be read as written is refused, never skipped: skipping it would launch
  *  every seat it was written to constrain. */
 function checkModelPolicy(path: string, policy: unknown): void {
-  const bad = (what: string) => new Error(`cotal config ${path}: ${what}`);
-  if (typeof policy !== "object" || policy === null || Array.isArray(policy))
-    throw bad("modelPolicy must be an object keyed by role");
+  if (!isRecord(policy)) throw configError(path, "modelPolicy must be an object keyed by role");
   for (const [role, entry] of Object.entries(policy)) {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry))
-      throw bad(`modelPolicy.${role} must be an object with a models list`);
+    if (!isRecord(entry)) throw configError(path, `modelPolicy.${role} must be an object with a models list`);
     const extra = Object.keys(entry).find((key) => key !== "models" && key !== "variants");
-    if (extra !== undefined) throw bad(`modelPolicy.${role} has unsupported field "${extra}" (expected models, variants)`);
+    if (extra !== undefined) throw configError(path, `modelPolicy.${role} has unsupported field "${extra}" (expected models, variants)`);
     for (const field of ["models", "variants"] as const) {
-      const list = (entry as Record<string, unknown>)[field];
+      const list = entry[field];
       if (list === undefined && field === "variants") continue;
       if (!Array.isArray(list) || list.length === 0 || list.some((id) => typeof id !== "string" || id.trim() === ""))
-        throw bad(`modelPolicy.${role}.${field} must be a non-empty list of ${field === "models" ? "model" : "variant"} ids`);
+        throw configError(path, `modelPolicy.${role}.${field} must be a non-empty list of ${field === "models" ? "model" : "variant"} ids`);
     }
   }
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** A shared server that cannot launch as written is refused, never forwarded: past the reader every
  *  connector takes a spec at the type {@link McpServerSpec} declares, and a server with no transport
  *  to start would be shared in name only. */
 function checkConnectors(path: string, connectors: unknown): void {
-  const bad = (what: string) => new Error(`cotal config ${path}: ${what}`);
-  if (!isRecord(connectors)) throw bad("connectors must be an object keyed by connector");
+  if (!isRecord(connectors)) throw configError(path, "connectors must be an object keyed by connector");
   for (const [name, connector] of Object.entries(connectors)) {
-    if (!isRecord(connector)) throw bad(`connectors.${name} must be an object`);
+    if (!isRecord(connector)) throw configError(path, `connectors.${name} must be an object`);
     const servers = connector.mcpServers;
     if (servers === undefined) continue;
-    if (!isRecord(servers)) throw bad(`connectors.${name}.mcpServers must be an object keyed by server name`);
+    if (!isRecord(servers)) throw configError(path, `connectors.${name}.mcpServers must be an object keyed by server name`);
     for (const [server, spec] of Object.entries(servers)) {
       const problem = mcpServerProblem(`connectors.${name}.mcpServers.${server}`, spec);
-      if (problem !== undefined) throw bad(problem);
+      if (problem !== undefined) throw configError(path, problem);
     }
   }
 }
@@ -181,11 +176,10 @@ export function mcpServerProblem(where: string, spec: unknown): string | undefin
  *  spread a string `env` into one-letter names, widening a seat's environment while dropping the
  *  name the operator meant. */
 function checkSpawn(path: string, spawn: unknown): void {
-  const bad = (what: string) => new Error(`cotal config ${path}: ${what}`);
-  if (!isRecord(spawn)) throw bad("spawn must be an object");
+  if (!isRecord(spawn)) throw configError(path, "spawn must be an object");
   const env = spawn.env;
   if (env !== undefined && !(Array.isArray(env) && env.every((name) => typeof name === "string" && name.trim() !== "")))
-    throw bad("spawn.env must be a list of environment variable names");
+    throw configError(path, "spawn.env must be a list of environment variable names");
 }
 
 /** Layer `over` onto `base`: per connector, a server in `over` replaces the same-named server in
