@@ -4634,7 +4634,9 @@ is not JSON or has no `version` is reported as corrupt, naming the package and i
 
 Removing an extension that owns a running local process is refused with the mesh root and its
 `cotal down <component>` command; stop it first so uninstalling the package never strands a process
-whose lifecycle provider is gone.
+whose lifecycle provider is gone. While it uninstalls, `remove` reserves each process record the package
+declares under every mesh root, and a record folder it creates there is mode `0700`, even with a
+group-writable umask.
 
 Loading an installed extension takes the same locks as `add`, `remove` and `cotal update`. When another
 `cotal` process holds them, the load waits up to five seconds in total (one deadline for both locks)

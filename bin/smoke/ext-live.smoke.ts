@@ -21,7 +21,7 @@
  * Run: pnpm smoke:ext:live   (needs npm on PATH)
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { recordMesh } from "@cotal-ai/workspace";
@@ -512,6 +512,19 @@ registry.register(
     whole.status === 0 && !alive(fixturePid) && !existsSync(join(sandbox, ".cotal", "fixture.pid")) && !existsSync(join(sandbox, ".cotal", "fixture.secret")),
     whole.stdout + whole.stderr);
   ok("provider extension removes cleanly", cotal(["ext", "remove", "cotal-ext-providers"]).status === 0);
+
+  // A provider whose records sit in a folder of their own: remove reserves that folder before the
+  // process has ever run, and under a group-writable umask, which the binary inherits, it is 0700.
+  const nested = fixture("cotal-ext-nested", `import { registry } from "@cotal-ai/core";
+registry.register({ kind: "local-process", name: "nested-worker", label: "nested worker", order: 36, pidFile: "nested-worker/{space}.pid" });
+`);
+  ok("an extension with a nested process record adds", cotal(["ext", "add", nested]).status === 0);
+  const previousUmask = process.umask(0o002);
+  const nestedRemoved = cotal(["ext", "remove", "cotal-ext-nested"]);
+  process.umask(previousUmask);
+  const folder = join(sandbox, ".cotal", "nested-worker");
+  ok("under umask 0002, remove creates the provider's record folder 0700",
+    nestedRemoved.status === 0 && (process.platform === "win32" || (statSync(folder).mode & 0o777) === 0o700), nestedRemoved.stderr.slice(-300));
 }
 
 // -- G: remove -------------------------------------------------------------------------------------
