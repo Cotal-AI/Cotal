@@ -600,7 +600,7 @@ try {
       await runWorkflow({ values: { server: brokerA.servers, space: spaceA, local: true, ...values }, positionals, raw: [] });
       return LOGS.join("\n");
     };
-    let localId = "", journal = "", answer = "", finished = "";
+    let localId = "", journal = "", answer = "", finished = "", answered = "";
     try {
       // The drive holds this process until the pause is answered; it runs beside the answer below.
       // A local start names its own ceiling (SPEC 14.8): the operator's evidence, on the command line.
@@ -609,13 +609,19 @@ try {
       for (let i = 0; i < 50 && !journal.includes("asks        Ship it?"); i++) { await wait(200); journal = await cli(["journal", localId]); }
       answer = await cli(["answer", localId, "/checkpoint:approve#0"], { by: "dana", value: '"yes"' });
       finished = await driven;
+      answered = await cli(["journal", localId]);
     } finally {
       console.log = realLog;
       process.exitCode = undefined;
     }
     c("a local start on the auth broker activates under the run-driver credential it minted for itself", localId !== "", localId);
     c("a local journal read rides a one-shot run-operator READ credential", journal.includes("/checkpoint:approve#0  pending"), journal);
-    c("a local answer rides the ANSWERING form and names the answerer with --by", answer.includes('"settle": "resumed"') && answer.includes('"answerId"'), answer);
+    // The receipt names the step, the value and the answer id; the answerer `--by` named is on the
+    // journal's answered line.
+    c("a local answer rides the ANSWERING form and names the answerer with --by",
+      answer.includes("Answer accepted") && /Step:\s+\/checkpoint:approve#0/.test(answer) && /Value:\s+"yes"/.test(answer) && /Answer id:\s+\S+/.test(answer)
+        && answered.split("\n").some((l) => l.includes("/checkpoint:approve#0") && l.includes("answered") && l.includes("dana")),
+      { answer, answered });
     c("and the held local drive then completes", finished.includes(`run ${localId}: completed`), finished);
     // A revoked run is not resumed: the marker is written from the folder's trust material, the
     // resume refuses by name, and a second revoke is not an error.
