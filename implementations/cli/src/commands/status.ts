@@ -31,6 +31,7 @@ import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
+import { signedInSpace } from "../lib/conversation-identity.js";
 import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { pidfileState, type PidfileState } from "./down.js";
@@ -368,7 +369,10 @@ async function readMachine(selected: Selected, gaps: Gaps): Promise<StatusResult
   } catch (e) {
     gaps.add("CONNECTORS_UNREADABLE", `the installed connectors could not be listed: ${(e as Error).message}`);
   }
-  if (connectors) for (const r of await connectorStatusRows(connectors)) integrations.push({ name: r.label, state: r.state, text: r.text });
+  if (connectors) {
+    const signedIn = selected.ok && selected.target.mode === "user" ? await signedInSpace(selected.target) : undefined;
+    for (const r of await connectorStatusRows(connectors, signedIn)) integrations.push({ name: r.label, state: r.state, text: r.text });
+  }
   let installed: boolean | null = null;
   let installedError: string | null = null;
   try {

@@ -13,6 +13,8 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -140,10 +142,19 @@ try {
     selection: JSON.stringify(conversationSelection({ capabilities: ["run"] })) });
   check("a selection does not open one either", selected.code === 1 && noApproval.test(selected.reply?.error) && credDirs().length === before, selected.out);
   // A per-user sign-in mesh, recorded the way `cotal meshes add` records one. It is refused before
-  // anything dials it, so its addresses only need to parse.
+  // anything dials its broker or provisioning; only its public discovery document is read, for the
+  // hosted connector that an app without a native session joins through.
+  let hosted: unknown = { version: 1, url: "https://cloud.example/mcp" };
+  const discovery = createServer((req, res) => {
+    res.writeHead(req.url === "/agents/.well-known/cotal-mesh" ? 200 : 404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ space: "usermesh", cloudCapabilities: hosted === undefined ? {} : { hostedConnector: hosted } }));
+  });
+  await new Promise<void>((resolve) => discovery.listen(0, "127.0.0.1", resolve));
+  cleanup.push(() => new Promise<void>((resolve) => discovery.close(() => resolve())));
+  const exchange = `http://127.0.0.1:${(discovery.address() as AddressInfo).port}/agents`;
   recordMesh({ space: "usermesh", server: "nats://127.0.0.1:9", root: userRoot, mode: "user", origin: "manual", userAuth: {
     provider: "cotal", idp: { url: "https://idp.example/api/auth", issuer: "https://idp.example", audience: "https://idp.example" },
-    endpoints: { url: "https://cotal.example/agents", agentProvisioningUrl: "https://cotal.example/agents" }, remote: true,
+    endpoints: { url: exchange, agentProvisioningUrl: exchange }, remote: true,
   }, ts: new Date().toISOString() } as never);
   const userMesh = await run(["provision"], { space: "usermesh", name: "claude_app" });
   check(
@@ -151,6 +162,13 @@ try {
     userMesh.code === 1 && /native session identity before connecting/.test(userMesh.reply?.error),
     userMesh.out,
   );
+  check("  and names the hosted connector the space advertises", userMesh.reply?.error.endsWith('the hosted connector of "usermesh" instead: https://cloud.example/mcp'), userMesh.out);
+  hosted = undefined;
+  const noHosted = await run(["provision"], { space: "usermesh", name: "claude_app" });
+  check("  or says the space advertises none", noHosted.code === 1 && noHosted.reply?.error.endsWith('"usermesh" advertises no hosted connector'), noHosted.out);
+  hosted = { version: 1, url: "http://cloud.example/mcp" };
+  const plain = await run(["provision"], { space: "usermesh", name: "claude_app" });
+  check("  and takes no hosted connector without HTTPS", plain.code === 1 && /hosted connector of "usermesh" could not be read/.test(plain.reply?.error) && !plain.out.includes("http://cloud.example"), plain.out);
 
   // ── an identity opened before approval still retires, with its broker footprint ─────────────
   const live = await earlier(process.ppid);

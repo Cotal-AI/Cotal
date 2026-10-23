@@ -1,4 +1,4 @@
-import { registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef } from "@cotal-ai/core";
+import { registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef, type SignedInSpace } from "@cotal-ai/core";
 import { assertRecordIdentity, extensionConnectors, installedExtensionVersion, loadExtensionsManifest, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveOnPath, serviceWebSessionPath, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { resolveNatsServer } from "./nats-bin.js";
@@ -111,12 +111,12 @@ export function connectorHarnesses(): HarnessStatus[] {
     .map(([name, { requires, setup }]) => ({ name, requires, missing: requires.filter((bin) => !resolveOnPath(bin)), setup }));
 }
 
-/** The rows each connector's setup provider reports about what it installed. Only a connector that
- *  declares a provider is imported; one whose cached metadata predates the setup ref is read from the
- *  connector itself. A declared provider that cannot be resolved renders as one red row naming the
- *  error, so the rest of status still prints. */
-export async function connectorStatusRows(harnesses: readonly HarnessStatus[]): Promise<ConnectorStatusRow[]> {
-  const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup --skills` };
+/** The rows each connector's setup provider reports about what it installed, for the selected space
+ *  when `signedIn` names it. Only a connector that declares a provider is imported; one whose cached
+ *  metadata predates the setup ref is read from the connector itself. A declared provider that cannot
+ *  be resolved renders as one red row naming the error, so the rest of status still prints. */
+export async function connectorStatusRows(harnesses: readonly HarnessStatus[], signedIn?: SignedInSpace): Promise<ConnectorStatusRow[]> {
+  const input = { version: cliVersion(), skillsRemedy: `${displayCmd()} setup --skills`, ...(signedIn ? { signedIn } : {}) };
   const rows: ConnectorStatusRow[] = [];
   for (const harness of harnesses) {
     try {

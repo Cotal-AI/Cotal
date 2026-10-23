@@ -371,9 +371,17 @@ the plugin copy under `~/.cotal/claude-plugin`. Quit and reopen Claude Desktop t
 file that is not valid JSON is refused and left as it was. Setup can use Desktop's bundled Code
 executable when there is no standalone `claude` CLI. Its installed MCP and command hooks use the
 recorded Node executable, so the app need not find Node on `PATH`. On Linux, setup writes nothing
-for Desktop Chat. Desktop Chat supplies no native Code transcript binding, so this local server
-refuses its signed-in connection path before identity issuance. The hosted connector is a separate
-connection path; it does not supply autonomous chat wake.
+for Desktop Chat.
+
+Desktop Chat supplies no native Code transcript binding, so this local server cannot join a
+signed-in space, such as one on Cotal Cloud, and refuses before identity issuance. Desktop Chat joins
+a signed-in space only through the hosted connector that the space's discovery document advertises
+as `cloudCapabilities.hostedConnector`, version 1 with an HTTPS URL. Add that URL in Claude under
+Settings > Connectors > Add custom connector. Setup for a signed-in space writes no Desktop entry and
+prints the URL instead. `cotal status` prints it on the Claude Desktop row when the selected space is
+signed in, and the refusal names it. When the space advertises none, all three say so. The Desktop
+server's instructions tell the model to use the hosted connector for a signed-in space. The hosted
+connector is a separate connection path; it does not supply autonomous chat wake.
 
 Desktop's working directory is not your project, so its mesh is the `cotal use` mesh, else the only
 one running. Desktop runs no monitor, so a Desktop conversation hears messages when it calls a tool,

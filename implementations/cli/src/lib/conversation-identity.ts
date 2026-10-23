@@ -1,8 +1,8 @@
 import {
   assertLifecycleToken, canonicalJson, checkConversationApprovalDecision, conversationGrant, principalKey,
-  type ConversationApprovalDecision, type ConversationGrant, type ConversationSelection,
+  type ConversationApprovalDecision, type ConversationGrant, type ConversationSelection, type SignedInSpace,
 } from "@cotal-ai/core";
-import { checkUserBundle, discoveryDocumentUrl, type MeshTarget, type UserBundle } from "@cotal-ai/workspace";
+import { checkUserBundle, discoveryDocumentUrl, pinnedFetch, type MeshTarget, type UserBundle } from "@cotal-ai/workspace";
 
 export interface ConversationAuthority {
   url: string;
@@ -38,6 +38,31 @@ export async function discoverConversationAuthority(target: MeshTarget): Promise
     throw new Error("conversation identity authority does not name the selected origin and space");
   return { url: authority.href, bundle, selection: capabilities?.conversationIdentitySelection?.version === 1,
     approval: capabilities?.connectionApproval?.version === 1 };
+}
+
+/** A signed-in space with the hosted connector its discovery document advertises, read the way
+ *  `meshes add --from` reads that document. Only version 1 with an HTTPS URL is a hosted connector. */
+export async function signedInSpace(target: Pick<MeshTarget, "space" | "userAuth">): Promise<SignedInSpace> {
+  const { space } = target;
+  try {
+    const exchange = target.userAuth?.endpoints?.url;
+    if (!exchange) throw new Error("its registration pins no exchange");
+    const response = await pinnedFetch(discoveryDocumentUrl(new URL(exchange)).href, "its discovery document");
+    if (!response.ok) throw new Error(`its discovery document answered HTTP ${response.status}`);
+    let doc: { space?: unknown; cloudCapabilities?: { hostedConnector?: { version?: unknown; url?: unknown } } } | null;
+    try { doc = JSON.parse(await response.text()); }
+    catch { throw new Error("its discovery document is not JSON"); }
+    if (doc?.space !== space) throw new Error("its discovery document names another space");
+    const hosted = doc.cloudCapabilities?.hostedConnector;
+    if (hosted === undefined) return { space };
+    let url: URL | undefined;
+    try { url = hosted?.version === 1 && typeof hosted.url === "string" ? secureUrl(hosted.url) : undefined; }
+    catch { url = undefined; }
+    if (!url) throw new Error("its hosted connector is not version 1 with a canonical HTTPS URL");
+    return { space, hostedConnector: url.href };
+  } catch (error) {
+    return { space, unread: (error as Error).message.replace(/^✗ /, "") };
+  }
 }
 
 export interface ConversationMaterial {

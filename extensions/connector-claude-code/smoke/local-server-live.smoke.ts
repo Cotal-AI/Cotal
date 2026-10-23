@@ -101,7 +101,9 @@ try {
   const unrecorded = await serve(plugin("unrecorded", false));
   const missing = await unrecorded.call("cotal_connect", { name: "unrecorded" });
   check("an uninstalled plugin refuses with the setup remedy", /not installed by `cotal setup`/.test(missing) && /Run `cotal setup` again/.test(missing));
-  for (const server of [code, await serve(installed, ["--desktop"])]) {
+  const desktop = await serve(installed, ["--desktop"]);
+  check("the Desktop server sends a signed-in space to its hosted connector", /cannot join a signed-in Cotal space/.test(desktop.instructions) && !/use this one unless/.test(desktop.instructions));
+  for (const server of [code, desktop]) {
     const refused = await server.call("cotal_connect", { name: "without_approval" });
     check("the installed native or Desktop server refuses a static connection without human approval", /no human approval for app conversations/.test(refused) && !/Connected as|connection_id:/.test(refused));
     check("the refused connection creates no credential directory", heldBy(server.p.pid).length === 0);

@@ -15,6 +15,7 @@ import {
   type ConnectorStatusInput,
   type ConnectorStatusRow,
   type McpServerSpec,
+  type SignedInSpace,
 } from "@cotal-ai/core";
 import { ENV_REFERENCE } from "@cotal-ai/connector-core";
 import { CLI_RECORD } from "./cli-record.js";
@@ -88,11 +89,22 @@ function desktopEntry(cotal: readonly string[]): DesktopEntry {
   };
 }
 
+/** Desktop chat supplies no native session, so its local server cannot join a signed-in space. It
+ *  joins one only through the hosted connector the space advertises. */
+function hostedConnector(s: SignedInSpace): string {
+  const next = s.hostedConnector ? `add ${s.hostedConnector} under Settings > Connectors > Add custom connector`
+    : s.unread ? `its hosted connector could not be read (${s.unread})`
+    : `"${s.space}" advertises no hosted connector`;
+  return `chat joins signed-in space "${s.space}" only through a hosted connector: ${next}`;
+}
+
 /** Write the `cotal` entry into Claude Desktop's config where Desktop is installed. With `add` false
- *  only an entry already there is brought current. `undefined` when there was nothing to do. */
-function desktop(cotal: readonly string[], add: boolean): string | undefined {
+ *  only an entry already there is brought current. Setup for a signed-in space writes nothing there
+ *  and names the hosted connector instead. `undefined` when there was nothing to do. */
+function desktop(cotal: readonly string[], add: boolean, signedIn?: SignedInSpace): string | undefined {
   const path = desktopConfigPath();
   if (!path || !existsSync(dirname(path))) return undefined;
+  if (signedIn) return `Claude Desktop ${hostedConnector(signedIn)}`;
   if (!add && readDesktopEntry(path) === undefined) return undefined;
   const state = writeDesktopEntry(path, desktopEntry(cotal));
   return `Claude Desktop ${state}${state === "current" ? "" : "; quit and reopen Claude Desktop to load it"}`;
@@ -481,8 +493,8 @@ function pluginRow(entries: PluginEntry[] | undefined, { version }: ConnectorSta
 }
 
 /** Cotal's entry in Claude Desktop's config, where Desktop is installed. It must run the server setup
- *  materialized. */
-function desktopRow(): ConnectorStatusRow | undefined {
+ *  materialized, and for a signed-in selected space the row names the hosted connector instead. */
+function desktopRow(signedIn?: SignedInSpace): ConnectorStatusRow | undefined {
   const path = desktopConfigPath();
   if (!path || !existsSync(dirname(path))) return undefined;
   const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude Desktop", state, text });
@@ -492,6 +504,7 @@ function desktopRow(): ConnectorStatusRow | undefined {
   } catch (e) {
     return row("error", (e as Error).message);
   }
+  if (signedIn) return entry === undefined ? row("off", hostedConnector(signedIn)) : row("warn", `added, but Desktop ${hostedConnector(signedIn)}`);
   if (entry === undefined) return row("off", "not added · run `cotal setup`");
   const server = (entry as { args?: unknown }).args;
   const expected = join(marketplaceDir(), "cotal", "dist", "mcp.cjs");
@@ -541,12 +554,12 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     title: "Install the Claude Code plugin",
     explain: "Installs Cotal messaging for Claude Code, including supported local sessions in Desktop's Code tab. Reopen Claude after setup.",
     context: [DOCS_URL],
-    run({ cotal }) {
+    run({ cotal, signedIn }) {
       return withPluginLock(() => {
         const version = materializeCotal(cotal);
         install("cotal", "user", version);
         // Desktop first: a per-project install that cannot be removed fails the step after it.
-        const app = desktop(cotal, true);
+        const app = desktop(cotal, true, signedIn);
         const removed = retireProjectInstalls();
         const replaced = removed ? `, replacing ${removed} project install${removed === 1 ? "" : "s"}` : "";
         return `cotal@${MARKETPLACE} (user scope${replaced})${app ? `; ${app}` : ""}`;
@@ -630,7 +643,7 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
   },
   status(input) {
     const plugins = pluginList();
-    const app = desktopRow();
+    const app = desktopRow(input.signedIn);
     return [pluginRow(plugins, input), ...(app ? [app] : []), skillsRow(plugins, input)];
   },
 };

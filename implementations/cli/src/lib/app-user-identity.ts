@@ -9,7 +9,7 @@ import {
 } from "@cotal-ai/core";
 import { getSpaceAuth, homeCotalDir, resolveTargetOrThrow, userAuthStateDir, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
 import {
-  checkConversationMaterial, conversationRetirementPhase, discoverConversationAuthority, selectionRefusal,
+  checkConversationMaterial, conversationRetirementPhase, discoverConversationAuthority, selectionRefusal, signedInSpace,
   type ConversationAuthority, type ConversationMaterial,
 } from "./conversation-identity.js";
 
@@ -142,14 +142,23 @@ export interface UserAppConnection {
   grant: ConversationGrant;
 }
 
+/** The refusal for an app that supplies no native session, such as Claude Desktop chat: it names
+ *  the hosted connector the space advertises, the path such an app joins through. */
+async function noNativeSession(target: MeshTarget): Promise<string> {
+  const s = await signedInSpace(target);
+  const next = s.hostedConnector ? `connect this app through the hosted connector of "${s.space}" instead: ${s.hostedConnector}`
+    : s.unread ? `the hosted connector of "${s.space}" could not be read (${s.unread})`
+    : `"${s.space}" advertises no hosted connector`;
+  return `a signed-in conversation needs its native session identity before connecting, and this app supplies none; ${next}`;
+}
+
 /** The session key is supplied by the native host, not guessed from a parent pid or an open inbox.
  *  A new request waits for a person's approval: until it is decided this returns `pending`, and
  *  connecting again replays the same saved request and secret. */
 export async function provisionUserApp(
   target: MeshTarget, name: string, session: string | undefined, events: boolean, selection?: ConversationSelection,
 ): Promise<UserAppConnection | { pending: ConversationPending }> {
-  if (!session || !/^[A-Za-z0-9_-]{1,128}$/.test(session))
-    throw new Error("a signed-in conversation needs its native session identity before connecting");
+  if (!session || !/^[A-Za-z0-9_-]{1,128}$/.test(session)) throw new Error(await noNativeSession(target));
   const store = workspaceSecretStore(target.root);
   const infra = target.userAuth?.remote === true ? undefined : await getSpaceAuth(store, target.space);
   const authority = infra ? undefined : await discoverConversationAuthority(target);
