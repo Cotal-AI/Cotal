@@ -1,7 +1,7 @@
 import stringWidth from "string-width";
 import { c } from "./colors.js";
 import { oneLine } from "@cotal-ai/core";
-import { CommandFailure, exitCode, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
+import { CommandFailure, exitCode, operationWarnings, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
 
 /**
  * The terminal presentation every command surface shares: one view model of a finished report,
@@ -296,7 +296,7 @@ export function writeResult<R>(
       outcome,
       completeness: out.completeness ?? "complete",
       result: out.result,
-      warnings: out.warnings ?? [],
+      warnings: [...operationWarnings(), ...(out.warnings ?? [])],
       ...(error ? { error } : {}),
       ...(out.failure?.changed === undefined ? {} : { changed: out.failure.changed }),
     });
@@ -306,6 +306,7 @@ export function writeResult<R>(
     console.log(renderReport({ ...report, ...(typeof target?.space === "string" && target.space ? { space: target.space } : {}) }, presentation, terminalWidth(process.stdout)));
     const errWidth = terminalWidth(process.stderr);
     const say = (cell: Styled, hang: number) => { for (const line of drawWrapped(cell, presentation, errWidth, hang)) console.error(line); };
+    // The run's own warnings were printed on stderr when they were recorded.
     for (const warning of out.warnings ?? []) say({ text: `! ${warning.message}`, tone: "waiting" }, 2);
     if (error) {
       say({ text: `${marks(presentation) ? "✗" : "!"} ${error.message}`, tone: outcome === "partial" || outcome === "unknown" ? "waiting" : "failed" }, 2);

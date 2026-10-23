@@ -1854,7 +1854,10 @@ the selection. A selection that names a space no longer registered is reported w
 
 A command run without `--space` targets the selection. When the selected space's broker is down it
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
-it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
+it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh. Inside a project whose root has a
+registered space other than the selection, the command still targets the selection. Before it acts,
+it warns on stderr and in its JSON `warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming both spaces
+and the `--space` that targets the folder's space.
 
 A prepared space whose project folder was deleted cannot start. A command that targets it, `persona`
 included, refuses with `TARGET_UNAVAILABLE`, exit 2, saying the folder no longer exists and naming
@@ -2088,7 +2091,7 @@ into agent runs or copy channel and DM text into an event stream. This launch po
 additional broker authorization boundary. The broker still enforces each endpoint's grants.
 
 The selection `cotal use` sets applies from every directory, including inside another mesh's
-project. `status` is a read-only report in this order: this machine
+project, where the command warns that it targets the selection. `status` is a read-only report in this order: this machine
 (the installed `cotal-ai` version, NATS and each named integration), the installed extensions and
 their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh (its connection, the
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { accountInventory, authDir, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, stackJournalPath, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
+import { recordOperationWarning } from "./output.js";
 import { parsePid, probeLiveness, readPidfile } from "./pid.js";
 import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
 import {
@@ -365,12 +366,29 @@ function stackRecord(root: string): { server?: string; stackSpace?: string; home
   }
 }
 
+/** The selection is the target from every folder. Inside a project whose root has registered spaces
+ *  and none of them is the selection, say so before the command acts, with the `--space` that
+ *  targets this folder's space instead. */
+function noteSelectionOutsideFolder(cwd: string, current: string, meshes: readonly MeshEntry[]): void {
+  const root = findCotalRoot(cwd);
+  if (!isGenuineSpace(root)) return;
+  const here = meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space);
+  if (here.length === 0 || here.includes(current)) return;
+  const folder = here.length === 1 ? `this folder's space "${here[0]}"` : `this folder's spaces ${here.map((s) => `"${s}"`).join(", ")}`;
+  recordOperationWarning({
+    code: "SELECTION_NOT_FOLDER_SPACE",
+    target: { space: current, folderSpaces: here, root },
+    message: `this targets the selected space "${current}", not ${folder}; pass --space ${here.length === 1 ? here[0] : "<space>"} to target ${here.length === 1 ? "it" : "one of them"}`,
+  });
+}
+
 /**
  * Resolve the mesh target by precedence (first match wins):
  *  1. `--space` — registry lookup (errors if that space isn't running).
  *  2. `--server` — registry entry on that server (for creds/personas), else the local project.
  *  3. The `current` selected by `cotal use`, from any directory. It stays the target when its broker
  *     is down, and a selection that names no registration refuses rather than reaching another mesh.
+ *     Inside a project whose root has a different registered space, the run warns first.
  *  4. A genuine local project (`cwd` walks up to a real `.cotal/`).
  *  5. The registry's *running* meshes: 0 ⇒ error; 1 ⇒ use it; N ⇒ error naming
  *     each + its root. `flags.offline` (from a sweep) is excluded here; a named `--space` and
@@ -425,6 +443,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   const meshes = loadMeshes();
   const current = getCurrent();
   if (current) {
+    noteSelectionOutsideFolder(cwd, current, meshes);
     const cur = meshes.find((m) => m.space === current);
     if (!cur) {
       notStarted(current);

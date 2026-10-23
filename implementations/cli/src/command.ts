@@ -16,6 +16,7 @@ import {
   isConnectRefusal,
   isSeededCommand,
   isWorkspaceTargetError,
+  operationWarnings,
   outputDeclarationProblems,
   renderReport,
   renderWorkspaceError,
@@ -25,6 +26,7 @@ import {
   targetErrorCode,
   terminalWidth,
   type OperationScope,
+  type OutputWarning,
 } from "@cotal-ai/workspace";
 import { c, staleStoreHint, stderrLine } from "./ui.js";
 import {
@@ -112,7 +114,7 @@ function debugStacks(failure: Error): void {
 /** A classified failure: its line and remedy on stderr, its envelope on stdout when one was asked
  *  for, and the exit code its outcome sets. The envelope is written synchronously, because stdout
  *  to a pipe is asynchronous on some platforms and `exit` would cut it short. */
-function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false): never {
+function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, warnings: readonly OutputWarning[] = operationWarnings()): never {
   recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
   // missing --yes or a missing scripted input is not a grammar mistake, and its remedy says the
@@ -127,7 +129,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   writeSync(2, `${renderReport(commandFailureReport(failure), plain ? "plain" : "rich", terminalWidth(process.stderr))}
 `);
   // The refusal is on stderr and its exit status below stands whether or not the envelope lands.
-  if (json) try { writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure))); } catch (error) { reportLostOutput(error as NodeJS.ErrnoException); }
+  if (json) try { writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure, warnings))); } catch (error) { reportLostOutput(error as NodeJS.ErrnoException); }
   debugStacks(failure);
   process.exit(exitCode(failure.outcome, failure.code));
 }
@@ -513,19 +515,19 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // and the command again with `--on` for it.
     const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
     const choice = async (failure: CommandFailure) => (await managerChoiceFailure(failure, () => rosterOf(target), argv)) ?? failure;
-    if (isCommandFailure(e)) failureExit(cmd, inOperationSpace(await choice(e), scope.space), json, parsed.values.plain === true);
+    if (isCommandFailure(e)) failureExit(cmd, inOperationSpace(await choice(e), scope.space), json, parsed.values.plain === true, scope.warnings);
     // A command that declares a structured output reports by the outcome table. A target it could
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
     if (structured(cmd, mode)) {
-      if (isConnectRefusal(e)) failureExit(cmd, inOperationSpace(await choice(e.failure()), scope.space), json, parsed.values.plain === true);
+      if (isConnectRefusal(e)) failureExit(cmd, inOperationSpace(await choice(e.failure()), scope.space), json, parsed.values.plain === true, scope.warnings);
       if (isWorkspaceTargetError(e)) {
         const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
         const target = spaceRootTarget(e.details);
-        failureExit(cmd, inOperationSpace(new CommandFailure("refused", targetErrorCode(e.code), message, { ...(remedy ? { remedy } : {}), ...(target ? { target } : {}) }), scope.space), json, parsed.values.plain === true);
+        failureExit(cmd, inOperationSpace(new CommandFailure("refused", targetErrorCode(e.code), message, { ...(remedy ? { remedy } : {}), ...(target ? { target } : {}) }), scope.space), json, parsed.values.plain === true, scope.warnings);
       }
-      if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json, parsed.values.plain === true);
-      failureExit(cmd, inOperationSpace(new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e), { cause: e }), scope.space), json, parsed.values.plain === true);
+      if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json, parsed.values.plain === true, scope.warnings);
+      failureExit(cmd, inOperationSpace(new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e), { cause: e }), scope.space), json, parsed.values.plain === true, scope.warnings);
     }
     // A workspace TARGET error carries structured recovery — which entry, whether it was removed,
     // what to run next — and has its own renderer. Its raw `.message` is deliberately dev-safe
