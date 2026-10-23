@@ -454,6 +454,13 @@ setCurrent("keep");
   check("space show shows it as prepared", show.status === 0 && show.env?.result.kind === "prepared-space" && show.env.result.root === fresh, shown(show));
   const named = await json(["who", "--space", "demo"]);
   check("a command naming it with --space is TARGET_UNAVAILABLE, naming its root", refused(named, 2, "TARGET_UNAVAILABLE") && /prepared but not started/.test(named.env?.error?.message ?? "") && named.env?.error?.remedy?.includes(fresh), shown(named));
+  const channelForms = [["channel"], ["channel", "show", "general"], ["channel", "set", "general", "--desc", "x"], ["channel", "defaults"], ["channel", "members", "general"], ["channel", "remove", "general", "--yes"]];
+  const channelRefusals: Awaited<ReturnType<typeof json>>[] = [];
+  for (const form of channelForms) channelRefusals.push(await json([...form, "--space", "demo"]));
+  check("every channel form naming it is TARGET_UNAVAILABLE, exit 2, naming its root",
+    channelRefusals.every((r) => refused(r, 2, "TARGET_UNAVAILABLE") && r.env?.error?.remedy?.includes(fresh)), channelRefusals.map(shown));
+  const channelHuman = await run(["channel", "set", "general", "--desc", "x", "--space", "demo"]);
+  check("the human channel refusal gives its code and Next", channelHuman.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(channelHuman.stderr) && channelHuman.stderr.includes(fresh), shown(channelHuman));
   const inRoot = await json(["who"], fresh);
   check("a command run in its root with nothing selected is TARGET_UNAVAILABLE", refused(inRoot, 2, "TARGET_UNAVAILABLE") && /prepared but not started/.test(inRoot.env?.error?.message ?? ""), shown(inRoot));
   // The refusal's target names the space and its root, from the resolver and from the connect path.

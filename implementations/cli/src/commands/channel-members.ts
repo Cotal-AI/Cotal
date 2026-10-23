@@ -1,6 +1,6 @@
 import { CotalEndpoint, subjectMatches, type FlagValues, type MembershipSnapshot } from "@cotal-ai/core";
 import { streamRecord, writeStreamRecord, writeResult, renderReport, terminalWidth, type Presentation, type Report } from "@cotal-ai/workspace";
-import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
+import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import type { channelFlags } from "./channels.js";
 
 type Values = FlagValues<typeof channelFlags>;
@@ -13,7 +13,7 @@ interface Members {
 
 /** An invisible reader of the broker-derived feed, never an input to channel authorization. */
 export async function channelMembers(values: Values, channel: string, presentation: Presentation): Promise<void> {
-  const connection = await connectOrExit(values, "admin");
+  const connection = await connectOrThrow(values, "admin");
   const user = connection.bearer ? await userViewAuthOrExit(connection, "admin") : undefined;
   const ep = new CotalEndpoint({
     space: connection.space, servers: connection.server,

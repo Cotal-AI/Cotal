@@ -8,7 +8,7 @@ import {
   CommandFailure, jsonFlag, loadMeshes, plainFlag, presentationOf, targetFlags, writeResult,
   type Presentation, type Report,
 } from "@cotal-ai/workspace";
-import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
+import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { channelMembers } from "./channel-members.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -95,7 +95,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
   if (action === "members") return channelMembers(values, name!, presentation);
   const writes = action === "set" || action === "remove" || (action === "defaults" && Object.keys(patch(values)).length > 0);
   const profile = action === "remove" && values.purge ? "channel-purger" : writes ? "channel-writer" : "operator";
-  const connection = await connectOrExit(values, profile);
+  const connection = await connectOrThrow(values, profile);
   if (values.delivery === "durable" && connection.mode !== "auth" && connection.mode !== "user")
     throw new CommandFailure("refused", "UNSUPPORTED", "the selected mesh has no recorded authenticated delivery service; durable membership was not promised by a metadata write", { target: { space: connection.space, mode: connection.mode ?? "unrecorded" }, remedy: "select a registered authenticated space with its delivery service, or use --delivery live for a live-only channel" });
   const user = connection.bearer && writes ? await userViewAuthOrExit(connection, profile === "channel-purger" ? "channel-purger" : "channel-writer") : undefined;
