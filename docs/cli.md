@@ -3605,8 +3605,10 @@ cotal send -r <role> "<text>"
 
 Choose one destination: `--to/-t` for a direct message, `--channel/-c` for a channel,
 or `--role/-r` for the role's native work queue. Choose one body source: a quoted positional
-argument, `--file/-f <path>`, or explicit `--stdin`. There are no implicit stdin reads. Files and
-stdin must contain nonempty UTF-8 text; their content is preserved and never printed in the receipt.
+argument, `--file/-f <path>`, or explicit `--stdin`; `--file -` reads stdin as `--stdin` does. There
+are no implicit stdin reads. Files and stdin must contain nonempty UTF-8 text; their content is
+preserved and never printed in the receipt. A file that cannot be read is refused with its path,
+`TARGET_NOT_FOUND` when it does not exist.
 No destination, several destinations, several body sources or an empty message is refused.
 The recipient grammar is checked before connector installation or target preparation. Channel
 and role names use the native subject grammar; a channel publication cannot name a wildcard.
