@@ -39,7 +39,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, removeMesh, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, recordPreparedSpace, removeMesh, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 await import("../src/lib/broker-service.js");
@@ -561,6 +561,14 @@ setCurrent("keep");
   mkdirSync(longest);
   const sixtyFour = await json(["space", "create", "b".repeat(64)], longest);
   check("a 64-character name is prepared", sixtyFour.status === 0 && findPreparedSpace("b".repeat(64)) !== undefined, shown(sixtyFour));
+  // A record an earlier release prepared under a name `up` cannot start: the refusal says no member
+  // was started, and its next step quotes the name.
+  const legacy = join(home, "legacy");
+  mkdirSync(join(legacy, ".cotal", "agents"), { recursive: true, mode: 0o700 });
+  recordPreparedSpace({ space: "sp ace", root: legacy, ts: new Date().toISOString() });
+  const legacyUp = await json(["up", "--root", legacy, "--space", "sp ace", "--server", `nats://127.0.0.1:${await freePort()}`], legacy);
+  check("up of a legacy name that is not a routing token says no member was started and quotes the name in its next step",
+    refused(legacyUp, 1, "SCHEMA_INVALID") && /no member was started/.test(legacyUp.env?.error?.message ?? "") && (legacyUp.env?.error?.remedy ?? "").includes("--space 'sp ace'"), shown(legacyUp));
   const human = await run(["space", "--plain"]);
   check("the listing shows it under its own heading", /Prepared, not started/.test(human.stdout) && /demo \(selected\)/.test(human.stdout), shown(human));
   const target = await json(["who"]);

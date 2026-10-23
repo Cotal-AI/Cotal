@@ -28,6 +28,7 @@ import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { foreignLocalProcesses, newStackOperation, readStackJournal, runningStackRoles, settleRetainedStackStops, settleStackOperation, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackSettlementNotice, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackRoleApplies, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { assertUserStackTransport, confirmUserAuthEndpoints, preflightUserStack, provisionalUserAuth, userLoginRequired, userLoginState, userRegistrationIncomplete, type StackUserPrepared } from "./stack-user-auth.js";
 
 /** Callbacks into the native broker preparation that `up.ts` owns. They hold private authority
@@ -582,7 +583,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         : undefined;
     // The member's own sentence and remedy are what a reader can act on, such as a busy broker port.
     const cause = pending && failure ? ` (${pending.role}: ${failure.message})` : "";
-    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, `the controller stack did not start every planned member${cause}; started members were kept and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${space} before another cotal up; a later bare cotal down stops only the recorded members` });
+    const kept = journal.members.some((row) => row.state === "started" || row.state === "reused") ? "started members were kept" : "no member was started";
+    throw new CommandFailure(outcome, uncertain ? "OPERATION_UNKNOWN" : changed.length ? "OPERATION_PARTIAL" : failure!.code, `the controller stack did not start every planned member${cause}; ${kept} and nothing was retried`, { target: { root, space, operation: journal.operation.id, members: journal.members, ...(failedStage ? { stage: failedStage } : {}) }, changed, ...(nativeCause ? { native: nativeCause } : {}), remedy: !uncertain && failure?.remedy ? failure.remedy : `inspect the stack's members with cotal service --space ${shellWord(space)} before another cotal up; a later bare cotal down stops only the recorded members` });
   }
   if (loginBlock) {
     mark("manager", { state: "not-attempted", code: "AUTH_REQUIRED" });
