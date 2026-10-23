@@ -52,6 +52,7 @@ import {
 } from "./meshes-add.js";
 import { canPrompt, clackIO } from "./meshes-wizard.js";
 import { detail, type SpaceDetail } from "./space.js";
+import { MissingFlags } from "../lib/missing-flags.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 
 /** The flags only `space add` takes. */
@@ -181,7 +182,10 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   const server = take(checkServer(v.server, "--server"), target);
   const tlsRequired = tlsIntent(server, v.tls === true);
   const dial = take(checkDialPolicy(server, { tlsRequired, allowUnencryptedOverlay: v["allow-unencrypted-overlay"] === true }), target);
-  const root = take(checkRoot(v.root, process.cwd()), target);
+  const rootCheck = checkRoot(v.root, process.cwd());
+  // With no --root, the one way it fails is the flag left out: its line and remedy, not the help.
+  if (!rootCheck.ok && v.root === undefined) throw new MissingFlags(rootCheck.message.replace(/^✗ /, ""), "pass --root <dir>: for an open space any folder will do, such as a new empty one; for an auth space, the folder whose .cotal/auth holds its trust", target);
+  const root = take(rootCheck, target);
   const accounts = take(spacesAtRoot(root), target);
   const mode = take(checkMode(name, root, accounts, v.mode, false), target);
   const auth = take(checkTrust(mode, root, name), target);

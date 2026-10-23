@@ -199,6 +199,9 @@ setCurrent("keep");
   check("a --root that is not a directory is USAGE_INVALID", refused(noRoot, 1, "USAGE_INVALID"), shown(noRoot));
   const fromHome = await json(["space", "add", "r3", "--server", LIVE]);
   check("with no --root, the home folder is no project: USAGE_INVALID naming --root", refused(fromHome, 1, "USAGE_INVALID") && /--root <dir> is required/.test(fromHome.env?.error?.message ?? ""), shown(fromHome));
+  const fromHomeText = await run(["space", "add", "r3", "--server", LIVE, "--mode", "open"]);
+  check("its human refusal is one line and a remedy that says what to pass, without the command's help",
+    fromHomeText.status === 1 && /--root <dir> is required/.test(fromHomeText.stderr) && /any folder will do/.test(fromHomeText.stderr) && !/Usage/.test(fromHomeText.stderr), shown(fromHomeText));
   const link = `${home}-link`;
   symlinkSync(home, link, "junction");
   const viaLink = await run(["space", "add", "r4", "--server", LIVE, "--json"], { HOME: link, USERPROFILE: link, COTAL_HOME: join(link, ".cotal") }, link);

@@ -1732,7 +1732,9 @@ so is a bare `space show` with nothing selected. Each entry under `prepared` has
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. With
 `--server`, the trust comes from `--root`'s `.cotal/auth`, and the mode is `auth` when that folder
-holds the space's trust, `open` otherwise. With `--file`, a user-auth connection bundle exported
+holds the space's trust, `open` otherwise. `--root` defaults to this project. Outside one it is
+required, and leaving it out is a one-line `USAGE_INVALID` refusal whose remedy says what to pass:
+an open space keeps no credentials there, so any folder will do. With `--file`, a user-auth connection bundle exported
 where the space runs supplies the login pins and the server, unless `--server` names another
 address for that broker; `--from` fetches the space's discovery
 document instead, after you agree to the fetch, and needs a terminal. Before anything is written,

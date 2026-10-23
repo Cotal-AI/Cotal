@@ -29,7 +29,7 @@ export const spaceFlags = [
   jsonFlag,
   plainFlag,
   { name: "server", type: "string", value: "<url>", description: "add: the space's broker URL" },
-  { name: "root", type: "string", value: "<dir>", description: "add: the folder whose .cotal/auth holds the space's trust (default: this project); create: the folder it starts in (default: this one)" },
+  { name: "root", type: "string", value: "<dir>", description: "add: the folder for the space's personas and, for an auth space, its .cotal/auth trust (default: this project; required outside one); create: the folder it starts in (default: this one)" },
   { name: "mode", type: "string", value: "<auth|open|user>", description: "add: how the broker authenticates (default: auth when --root holds the space's trust, else open)" },
   { name: "file", short: "f", type: "string", value: "<bundle.json>", description: "add: a user-auth connection bundle exported where the space runs" },
   { name: "from", type: "string", value: "<https url>", description: "add: fetch the space's discovery document; its pins are shown and confirmed" },
