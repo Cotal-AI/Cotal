@@ -1424,6 +1424,13 @@ definitions and stopped-instance records, installed packages, login sessions
 and remote data remain. Local cleanup does not revoke a remote credential or
 clear Cloud data.
 
+A saved service definition whose `credentialRef` names a credential this space's account issued,
+such as one `cotal auth mint` wrote, would hand its child a credential the next identity rejects.
+Reset reads the issuing account from each such file and clears that `credentialRef`, and both the
+preview and the receipt name the service and the file. A file it cannot read as a credential is
+left as it is. To give the service a credential again, mint one after `cotal up`, then remove the
+service and add it again with that `credentialRef`.
+
 ## Backups
 
 ```bash
@@ -1845,7 +1852,9 @@ stop from that root. `cotal up` starts a space only under a name of 1 to 200 let
 underscores or hyphens, so any other name refuses with `USAGE_INVALID`, exit 1, before anything is
 written. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
 space's root, and the home folder, whose `.cotal` holds this machine's own records. A folder this
-account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written. `space` lists
+account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written, and so
+does a Cotal home (`~/.cotal` or `COTAL_HOME`) it cannot write. A `.cotal` that links to a folder that
+does not exist refuses `TARGET_NOT_FOUND`, exit 2, naming the link and its target. `space` lists
 prepared spaces under their own heading, and `space show` and `use` accept one. A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
 and so does `cotal up --space <name>` run from another folder. `cotal up --space <name>` in a folder
@@ -1971,7 +1980,10 @@ refusal names the file. A missing file is `TARGET_NOT_FOUND`, exit 2. A director
 a file the client cannot parse are `SCHEMA_INVALID`, exit 1, with the cause: no complete JWT block,
 no seed block, an invalid seed, or Windows (CRLF) line endings. A file that other accounts can read
 is still used, with a warning on stderr that gives the `chmod 600` command. `join --creds` reads its
-file the same way.
+file the same way. A credential the broker rejects is `PERMISSION_DENIED`, exit 2. When the
+credential's own permissions name one other space, the refusal names that space, such as
+`credentials rejected at <server>: <file> is a credential for space "<owner>", not "<space>"`, and
+its Next is `--space <owner>`.
 
 A manifest's `space:` is the target of native `up -f` and the new team
 check/boot/deploy routes. A `--space` that names another space is refused before
@@ -2614,6 +2626,7 @@ session, so there is no unread count or connection state to report.
 | Static auth, signer on this machine | `space-signer` | Everything; each command mints its own short-lived credential for its task, so there is no standing principal |
 | Static auth, no signer here | `no-credential` | Nothing without `--creds <file>` |
 | User auth | `user` | The signed-in user's `cli` actor: `read`, `post` and `capabilities` are its ledger row |
+| A `--server` no registration here names, with no trust for it in this folder | `unknown` | Unknown: `mode` and the access fields are `null`, and the run is `partial` (exit 4) with `BROKER_NOT_PROBED` |
 
 A user who is not signed in has no principal. A signed-in user with no ledger row (`grant:
 "not-granted"`) may read and post nothing. When the grant ledger is on another machine the grant
@@ -2624,6 +2637,8 @@ principal unknown on this machine, rather than calling the user signed out. The 
 advisory and the command does not verify the login with the IdP. `dms` says whether the identity
 may read DM history: on an open mesh, or with the space signer's audit credential on an authenticated mesh. The report
 reads local configuration and does not contact the broker to check its authentication requirements.
+So an address no registration names is reported as unknown, never as open; adding the space with
+`cotal space add` checks the broker.
 An unregistered `--space` is refused even with `--server`. Server addresses in the identity report
 and connection refusals omit URL user information, query strings and fragments, and escape terminal
 controls. Addresses need a host and a supported broker scheme. TCP addresses cannot have a path;
