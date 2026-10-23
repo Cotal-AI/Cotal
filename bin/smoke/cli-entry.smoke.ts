@@ -17,7 +17,7 @@
  * Run: pnpm smoke:cli-entry
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -265,6 +265,17 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("control: personas edit runs the editor", edited.status === 0 && edited.stdout.includes('saved "x"'), shown(edited));
   const forbidden = cotal(["personas", "edit", "x", "--no-input"], persona, editor);
   check("personas edit --no-input refuses to open an editor", forbidden.status === 1 && /--no-input forbids one/.test(forbidden.stderr) && !forbidden.stdout.includes("saved"), shown(forbidden));
+  // An edit refused because the persona changed or was removed while the editor was open keeps the
+  // draft and names it. The editors write to the draft, then change the catalog file behind it.
+  for (const [what, behind, next] of [["changed", "printf B >> .cotal/agents/x.md", /compare it with `cotal persona show x`/], ["was removed", "rm .cotal/agents/x.md", /restore it with `cotal persona create x --file /]] as const) {
+    const racing = `sh -c 'printf "edit-A\\n" >> "$1"; ${behind}' sh`;
+    const r = cotal(["persona", "edit", "x"], persona, { ...noSeed, VISUAL: racing, EDITOR: racing });
+    const draft = /your edit is kept in (\S+\.md);/.exec(r.stderr)?.[1];
+    const kept = draft !== undefined && existsSync(draft) && readFileSync(draft, "utf8").includes("edit-A");
+    if (draft) rmSync(dirname(draft), { recursive: true, force: true });
+    check(`persona edit refused because the persona ${what} keeps the edited draft and says how to use it`,
+      r.status === 2 && r.stderr.includes("CONFLICT") && r.stderr.includes(`persona ${what} while the operation was open`) && next.test(r.stderr) && kept, shown(r));
+  }
   // The seeded default is `default` in the catalog and launches as `default_agent`.
   const seeded = (home: string) => {
     mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });

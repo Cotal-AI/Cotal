@@ -3118,7 +3118,9 @@ preferences). The value runs as a shell command, so quote a path that holds spac
 set, or one the shell cannot find or run, editing refuses with `DEPENDENCY_UNAVAILABLE` (exit 2)
 and names the setting to fix. A successful editor exit and valid definition are required before
 saving. A changed
-or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. Local
+or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. The
+refusal says which one happened and keeps your edited draft in its private folder, naming it, so
+the edit is not lost. Local
 CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
 editor or confirmation is open. Manager and external writes do not participate in that lock.
 Create, edit and remove refuse a catalog folder you cannot write, such as one set to mode 0500,

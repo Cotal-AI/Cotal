@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 628,
+    "total": 627,
     "honest-text": 37,
     "presence-only-glyph/count": 57,
     "command-ack": 10,
-    "non-render/control": 524
+    "non-render/control": 523
   },
   "renderers": [
     {
@@ -4248,13 +4248,6 @@
       "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Live-name lookup: filters offline peers out of the roster to collect taken names; the token is a filter predicate."
-    },
-    {
-      "path": "implementations/cli/src/lib/persona-files.ts",
-      "kind": "derived-output",
-      "anchor": "commitPersona(path, source, edited)",
-      "class": "non-render/control",
-      "rationale": "Persona edit control flow: commits the edited persona file; no rendering."
     },
     {
       "path": "implementations/cli/src/lib/space-schema-report.ts",
