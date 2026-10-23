@@ -223,6 +223,9 @@ export const MULTI_FILTER_READ_CONCURRENCY = 4;
  *  across the gap between pulls on a slow link. */
 const HISTORY_READER_INACTIVE_MS = 5 * 60_000;
 
+/** The longest delay `setTimeout` honors, 2^31-1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+
 /** One read's hold on a history-reader name (see {@link CotalEndpoint}'s `acquireHistoryReader`). */
 type HistoryReader = {
   nc: NatsConnection;
@@ -1326,9 +1329,12 @@ export class CotalEndpoint extends EventEmitter {
         ? credsExp * 1000
         : undefined;
     if (expiryMs === undefined || this.stopped) return;
-    this.authExpiryReconnectTimer = setTimeout(() => {
-      if (this.nc === nc) this.disableLibraryReconnect(nc);
-    }, Math.max(0, expiryMs - Date.now() - 500));
+    // Node fires a delay above 2^31-1 ms (about 24.8 days) after 1 ms, which would disable reconnect
+    // at once. A later expiry waits in steps of that bound, and the fence is armed again from there.
+    const delay = Math.max(0, expiryMs - Date.now() - 500);
+    this.authExpiryReconnectTimer = delay > MAX_TIMER_MS
+      ? setTimeout(() => { if (this.nc === nc) this.armAuthExpiryReconnectFence(nc); }, MAX_TIMER_MS)
+      : setTimeout(() => { if (this.nc === nc) this.disableLibraryReconnect(nc); }, delay);
     this.authExpiryReconnectTimer.unref?.();
   }
 
@@ -4594,8 +4600,8 @@ export class CotalEndpoint extends EventEmitter {
     return (await this.deliveryRegistry()).update(leaseKey(shardIndex), this.encodeLease(shardIndex, true), revision);
   }
 
-  /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (best
-   *  effort, a crash just lets the bucket TTL expire it).
+  /** Release the held lease on clean shutdown so a replacement daemon re-acquires immediately (a
+   *  crash just lets the bucket TTL expire it).
    *
    *  THE REVISION IS WHAT MAKES THIS A RELEASE RATHER THAN A DELETE. An unconditional delete removes
    *  whatever row is there, and by shutdown time the row is not necessarily still ours: the exit
@@ -4604,6 +4610,10 @@ export class CotalEndpoint extends EventEmitter {
    *  no holder at all. Passing the revision this endpoint last owned makes the delete a compare-and-
    *  swap (`previousSeq` becomes JetStream's `ExpectedLastSubjectSequence`), so a row that has moved
    *  on is left alone.
+   *
+   *  A RELEASE THAT DID NOT COMMIT REJECTS. The broker's CAS refusal and any broker failure reach the
+   *  caller, because only the caller knows whether that matters: a shutdown that must finish anyway
+   *  catches it, and a close that reports whether a successor can start learns the outcome here.
    *
    *  THE ARGUMENT IS REQUIRED, AND EXPLICITLY NULLABLE RATHER THAN OPTIONAL. `undefined` means "this
    *  process no longer holds a revision it can argue for", which is the takeover paths' honest
@@ -4615,12 +4625,7 @@ export class CotalEndpoint extends EventEmitter {
    *  and the next acquire was refused. A caller must now say which it means. */
   async releaseDeliveryLease(shardIndex: number, revision: number | undefined): Promise<void> {
     if (revision === undefined) return;
-    try { await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision }); }
-    catch {
-      // Intentionally best-effort for EVERY failure: the lease TTL is the crash-safe release authority,
-      // and clean shutdown must continue even when the broker is already gone or draining. A refused
-      // CAS lands here too, which is the correct outcome, someone else owns the row.
-    }
+    await (await this.deliveryRegistry()).delete(leaseKey(shardIndex), { previousSeq: revision });
   }
 
   /** Read a shard's delivery lease (the daemon-availability signal), or `undefined` if none is live.
@@ -4821,8 +4826,8 @@ export class CotalEndpoint extends EventEmitter {
     try {
       await (await this.managerLeaseRegistry()).delete(MANAGER_RENEWAL_LEASE_KEY, { previousSeq: held });
     } catch {
-      // Best-effort, like releaseManagerLease: a moved revision means it is not ours, and a broker
-      // failure is recovered by the bucket TTL. Shutdown must not claim deletion.
+      // Best-effort: a moved revision means it is not ours, and a broker failure is recovered by the
+      // bucket TTL. Shutdown must not claim deletion.
     }
   }
 
@@ -4872,17 +4877,13 @@ export class CotalEndpoint extends EventEmitter {
     return { info: JSON.parse(new TextDecoder().decode(e.value)) as ManagerLeaseInfo, revision: e.revision, created: e.created.getTime() };
   }
   /** Release THIS instance's key on clean shutdown so a same-id restart re-acquires immediately. CAS-guarded
-   *  by `revision`: if we already LOST it (renew gap) the stored revision has moved, the conditional delete
-   *  no-ops. Keyed per instance, so a release NEVER touches a sibling manager's key (security pin 6). */
+   *  by `revision`: if we already LOST it (renew gap) the stored revision has moved, and the conditional
+   *  delete is refused and rejects, like any broker failure; a shutdown that must finish anyway catches
+   *  it. Keyed per instance, so a release NEVER touches a sibling manager's key (security pin 6). */
   async releaseManagerLease(instanceId: string, revision?: number): Promise<void> {
-    try {
-      const kv = await this.managerLeaseRegistry();
-      if (revision === undefined) await kv.delete(managerLeaseKey(instanceId));
-      else await kv.delete(managerLeaseKey(instanceId), { previousSeq: revision });
-    } catch {
-      // Intentionally best-effort for EVERY failure: a revision mismatch means the lease is no longer
-      // ours, while a broker failure is recovered by the bucket TTL. Shutdown must not claim deletion.
-    }
+    const kv = await this.managerLeaseRegistry();
+    if (revision === undefined) await kv.delete(managerLeaseKey(instanceId));
+    else await kv.delete(managerLeaseKey(instanceId), { previousSeq: revision });
   }
   /** Read a live manager liveness lease, or undefined if NONE (no manager instance holds the space). A
    *  presence/existence check for the CLI's `spawn -f` reuse and `waitLeaseGone`, which only need "is any

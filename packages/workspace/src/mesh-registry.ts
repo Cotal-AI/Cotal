@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
@@ -206,6 +206,19 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
 export function homeCotalDir(): string {
   if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
   return userCotalDir();
+}
+
+/** Why `COTAL_HOME` can hold no record, or undefined when it is unset, a directory, or not created
+ *  yet. A file, or a path under one, can never be read or written as the machine-home dir. */
+export function cotalHomeProblem(): string | undefined {
+  const home = process.env.COTAL_HOME;
+  if (!home) return undefined;
+  try {
+    if (statSync(home).isDirectory()) return undefined;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOTDIR") return undefined;
+  }
+  return `COTAL_HOME ${home} is not a directory, so it can hold no Cotal records`;
 }
 
 /** The OS user's own Cotal directory, which `COTAL_HOME` never redirects: POSIX `~/.cotal`, Windows

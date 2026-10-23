@@ -286,7 +286,7 @@ const baseCommands: Command[] = [
     prepareMeshTarget: false,
     subcommands: [
       { name: "recover", flagNames: ["yes", "dry-run", "json", "plain"], summary: "roll back a stale pre-commit restore, or release an interrupted backup create, under native guards", outputs: ["json", "plain"], prepareMeshTarget: false },
-      { name: "cleanup-fallback", flagNames: ["yes", "dry-run", "json", "plain"], summary: "clean only the unchanged old source of a healthy active restore", outputs: ["json", "plain"], prepareMeshTarget: false },
+      { name: "cleanup-fallback", flagNames: ["yes", "dry-run", "discard-history", "json", "plain"], summary: "clean only the unchanged old source of a healthy active restore", usage: "cotal backup cleanup-fallback <restore-attempt-id> [--yes|--dry-run] [--discard-history] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
       { name: "create", flagNames: ["only", "store-dir", "json", "plain"], summary: "create a private artifact from the native stopped preservation cut", outputs: ["json", "plain"], prepareMeshTarget: false },
       { name: "inspect", flagNames: ["json", "plain"], summary: "read manifest and exact file inventory; integrity is not checked", reads: true, outputs: ["json", "plain"], prepareMeshTarget: false },
       { name: "verify", flagNames: ["json", "plain"], summary: "read and hash files against the manifest; restore is not tested", reads: true, outputs: ["json", "plain"], prepareMeshTarget: false },
@@ -304,13 +304,14 @@ const baseCommands: Command[] = [
     summary:
       "configurable cleanup - history/store/all, plus explicit committed-restore fallback cleanup",
     usage:
-      "cotal clean <history|store|all> --force [--dms] [--space <s>] [--server <url>] [--creds <path>] [--store-dir <dir>] | cotal clean <restore-attempt|restore-fallback> --attempt <id> --force",
+      "cotal clean <history|store|all> --force [--dms] [--space <s>] [--server <url>] [--creds <path>] [--store-dir <dir>] | cotal clean <restore-attempt|restore-fallback> --attempt <id> --force [--discard-history]",
     positionals: "<history|store|all|restore-attempt|restore-fallback>",
     flags: [
       ...targetFlags,
       { name: "dms", type: "boolean", description: "history: also clear DM history" },
       { name: "store-dir", type: "string", value: "<dir>", description: "store/all: JetStream store directory (default .cotal/nats)" },
       { name: "attempt", type: "string", value: "<id>", description: "restore-fallback: matching committed restore attempt" },
+      { name: "discard-history", type: "boolean", description: "restore-fallback: also delete a registry-only restore's previous store, the only copy of the history it left out" },
       { name: "force", type: "boolean", description: "required - destructive, no prompting" },
     ],
     run: clean,
@@ -570,7 +571,7 @@ const baseCommands: Command[] = [
     aliases: ["sp"],
     group: "Agents",
     summary:
-      "launch through the manager and attach; -d returns after readiness, --foreground runs the application directly",
+      "run an agent in this terminal; -d launches it through a manager and returns once it joins, --on <instance> launches through that manager and attaches",
     usage: "spawn [<persona>] [--file <persona-file>] [-d | --foreground] [--dry-run] [options]",
     positionals: "[<persona>]",
     flags: spawnFlags,

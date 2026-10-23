@@ -7,10 +7,14 @@ import {
   isCommandFailure,
   describeLayer,
   extensionProvides,
+  findMesh,
+  findPreparedSpace,
   getCurrent,
   jsonFlag,
   knownHarnesses,
   loadExtensionsManifest,
+  loadMeshes,
+  loadPreparedSpaces,
   plainFlag,
   preferenceInfo,
   preferenceSpaceProblem,
@@ -121,6 +125,16 @@ export async function config(args: ParsedArgs): Promise<void> {
     // A blank persona is left to the key's own check, which names it empty.
     if (key === "persona" && value?.trim()) checkPersona(value);
     const scope: Scope = v.space !== undefined ? { space: v.space, from: "flag" } : { space: null, from: null };
+    // A value saved for a space that is neither registered nor prepared would never apply, so a typo
+    // is refused with the spaces there are, once the write's own checks pass. Unset stays open, so a
+    // value left for a gone space can go.
+    const space = sub === "set" ? scope.space : null;
+    if (space !== null && !preferenceSpaceProblem(space) && preferenceInfo(key).perSpace && !preferenceValueProblem(key, value!) && !findMesh(space) && !findPreparedSpace(space)) {
+      const known = [...new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space)])].sort();
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named ${JSON.stringify(space)} is registered or prepared here${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
+        remedy: `name a known space with --space, or prepare it first with \`cotal space create ${space}\` or register it with \`cotal space add ${space} --server <url>\``,
+      });
+    }
     const previous = (scope.space === null ? prefs.defaults[key] : prefs.spaces[scope.space]?.[key]) ?? null;
     const { changed, revision } = writePreference(scope.space === null ? {} : { space: scope.space }, key, value, prefs.revision);
     // What a command here uses next: through the written space, or the selected one for a default.

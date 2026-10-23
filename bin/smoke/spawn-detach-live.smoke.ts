@@ -375,7 +375,14 @@ try {
     env: subEnv,
   });
   ok("foreground --creds exits non-zero", fg.status === 1, fg.status);
-  ok("foreground --creds is refused as a manager credential", /direct --foreground execution takes no .*manager credential/.test(fg.stderr), fg.stderr.slice(0, 200));
+  ok("foreground --creds is refused as a manager credential", /a spawn in this terminal takes no .*manager credential/.test(fg.stderr), fg.stderr.slice(0, 200));
+  // A bare spawn is the spawn in this terminal: without -d or --on no manager is asked, so the same
+  // manager credential is refused the same way, not as a managed attachment without terminals.
+  const bare = spawnSync(TSX, [join(import.meta.dirname, "..", "cotal.ts"), "spawn", "poet", "--creds", "/tmp/x.creds"], {
+    encoding: "utf8",
+    env: subEnv,
+  });
+  ok("a bare spawn runs in this terminal, so --creds without -d is refused as a manager credential", bare.status === 1 && /a spawn in this terminal takes no .*manager credential/.test(bare.stderr) && !/managed attachment|attaching to a manager/.test(bare.stderr), bare.stderr.slice(0, 300));
 
   console.log(`\nspawn-detach live e2e: ${pass} checks passed`);
 } finally {

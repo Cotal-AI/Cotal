@@ -300,10 +300,19 @@ let P = "";
     lines().filter((l) => l.includes("checkpoint") || l.includes("Ship it")).join(" | "));
   // A THROW here must fail the cell rather than kill the suite: the holder-bound presenter is the
   // load-bearing part of `answer`, and a suite that dies names no claim.
-  const answered = await wf(["answer", cid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"', artifact: "artifact://run-command" })
-    .then(() => true, (e: Error) => e);
+  // Its receipt is the hosted path's, read here as the envelope `--json` writes to stdout.
+  const receiptOut: string[] = [];
+  const stdoutWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => { receiptOut.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); return true; }) as typeof process.stdout.write;
+  const answered = await wf(["answer", cid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"', artifact: "artifact://run-command", json: true })
+    .then(() => true, (e: Error) => e)
+    .finally(() => { process.stdout.write = stdoutWrite; });
+  const receipt = (() => { try { return JSON.parse(receiptOut.join("")) as { result?: { kind?: string; result?: { settle?: { settle?: string } }; answer?: { step?: string; value?: unknown; artifact?: string; valueGiven?: boolean } } }; } catch { return undefined; } })();
   c("answer presents as the arming holder and is accepted", answered === true, answered);
-  c("and reports the resumed settle", captured().includes('"settle": "resumed"'), captured());
+  c("and its receipt reports the resumed settle and echoes the step, value and artifact it filed",
+    receipt?.result?.kind === "run-receipt" && receipt.result.result?.settle?.settle === "resumed"
+      && receipt.result.answer?.step === "/checkpoint:approve#0" && receipt.result.answer.value === "yes" && receipt.result.answer.artifact === "artifact://run-command" && receipt.result.answer.valueGiven === true,
+    receiptOut.join(""));
   // Bounded on purpose: a refused answer leaves the run paused forever, and a suite that awaits it
   // unconditionally HANGS on that defect instead of failing on it. A hang is not a red.
   const outcome = await Promise.race([driven.then(() => "completed"), wait(15_000).then(() => "still-paused")]);
@@ -333,6 +342,20 @@ let P = "";
     settled?.answer?.value === "yes" && settled.answer.by === "smoke" && settled.answer.artifact === "artifact://run-command"
       && typeof settled.answer.answerId === "string" && typeof settled.answer.at === "number",
     settled ?? shown);
+  // A long value is cut in the table, so one answer cannot widen every row to its own width.
+  const long = "z".repeat(1000);
+  reset();
+  await wf(["amend", cid, "/checkpoint:approve#0"], { by: "smoke", value: JSON.stringify(long) });
+  reset();
+  await wf(["journal", cid]);
+  const amendedLine = lines().find((l) => l.includes("/checkpoint:approve#0") && l.includes("amended")) ?? "";
+  c("a long amended value is cut in the Answers table, and a line says so and points to --json",
+    amendedLine.includes(`"${"z".repeat(100)}`) && amendedLine.includes("…") && !amendedLine.includes(long) && Math.max(...lines().map((l) => l.length)) < 400
+      && captured().includes("A value longer than 120 characters is cut here; --json carries it whole."),
+    { amendedLine: amendedLine.slice(0, 300), longest: Math.max(...lines().map((l) => l.length)) });
+  const amendedRow = ((await envelopeOf(["journal", cid]))?.result as { view?: { journal?: Array<JournalRowJson & { amendments?: Array<{ value?: unknown }> }> } } | undefined)?.view?.journal
+    ?.find((r) => r.step === "/checkpoint:approve#0" && r.amendments !== undefined);
+  c("show --json still carries the long value whole", amendedRow?.amendments?.at(-1)?.value === long, amendedRow?.amendments?.length);
 }
 
 // ── 6b) an ask addressed outside the run's roster is refused, with the reason, through the command
@@ -354,8 +377,8 @@ let P = "";
   const aid = startedId() ?? "";
   c("the asking run starts and is named", aid !== "", captured());
   const rec = await record(aid);
-  c("a program asking an agent it never spawned fails the run rather than relaying to a forged seat",
-    rec?.status?.value.state === "failed", rec?.status?.value.state);
+  c("a program asking an agent it never spawned fails the run rather than relaying to a forged seat, and the status records why",
+    rec?.status?.value.state === "failed" && rec.status.value.failure?.message.includes("is not in this run's roster") === true, rec?.status?.value);
   c("and the reason names the handle and the rule, so an operator knows what to write instead",
     refused !== undefined && refused.message.includes("is not in this run's roster") && refused.message.includes("dev#u"),
     refused?.message?.slice(0, 200));
@@ -399,7 +422,8 @@ let P = "";
   c("a fresh holder's resume of a parked run strands nothing: no step settles failed", open && failedSteps.length === 0, failedSteps.length);
   const answered = await wf(["answer", cid, "/checkpoint:approve#0"], { by: "smoke", value: '"go"' })
     .then(() => true, (e: Error) => e);
-  c("the answer is accepted with no holder supplied: the resolver reads the arming holder off the record", answered === true, answered);
+  c("the answer is accepted with no holder supplied: the resolver reads the arming holder off the record, and its receipt names the step and value",
+    answered === true && rendered("Step:", "/checkpoint:approve#0") && rendered("Value:", '"go"'), answered === true ? lines().filter((l) => l.includes("Step:") || l.includes("Value:")).join(" | ") : answered);
   const outcome = await Promise.race([resumed.then(() => "completed"), wait(15_000).then(() => "still-paused")]);
   c("and the RESUME completes the run under its own holder", outcome === "completed" && captured().includes(`run ${cid}: completed`), outcome);
   // Bounded like the raced completions above: when every answer is refused, the abandoned driver
@@ -448,7 +472,7 @@ let P = "";
 // the control below is a live `running` row rather than an arranged one.
 {
   reset();
-  const { rid, open: openPause, driven } = await holdAtCheckpoint();
+  const { rid, open: openPause } = await holdAtCheckpoint();
   c("the run to be revoked is open and held, so the control below reads a live record", openPause && rid !== "", captured());
 
   // THE CONTROL, and it is what makes the cell after it mean anything: the same run, the same
@@ -484,10 +508,20 @@ let P = "";
   c("and the run record is untouched, so no host is credited with an outcome it never wrote",
     revokedRec?.status?.value.state === "running", revokedRec?.status?.value.state);
 
-  // Settle the held driver so the suite leaves no drive behind it. Bounded, and its result is not
-  // a cell: what a revoked run's answer does is decided at the effect, and is graded elsewhere.
-  await wf(["answer", rid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).catch(() => undefined);
-  await Promise.race([driven, wait(15_000)]);
+  // A revoked run takes no answer (SPEC 14.8): its open pause is refused before anything is filed,
+  // so the run stays parked where the revoke found it. The held driver ends with the suite.
+  reset();
+  const answered = await wf(["answer", rid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).then(() => undefined, (e: Error) => e);
+  c("an answer to the revoked run's open checkpoint is refused LIFECYCLE_BLOCKED, naming who revoked it and why",
+    isCommandFailure(answered) && answered.code === "LIFECYCLE_BLOCKED" && answered.message.includes("revoked by smoke-operator (broker outage)") && answered.message.includes("no answer was filed"), answered?.message ?? captured());
+  const parked: string[] = [];
+  for (const r of (await journal(rid)).records) {
+    if (r.record.kind !== "step") continue;
+    const e = r.record.entry as JournalEntry;
+    if (e.kind === "checkpoint") parked.push(e.state);
+  }
+  c("...and the checkpoint is still open, so the run did not move on",
+    parked.length > 0 && parked.every((state) => state === "pending") && (await record(rid))?.status?.value.state === "running", parked);
 }
 
 // ── 10) a marker ps could not read: the state column says so, and so does the exit status ─────
@@ -530,9 +564,12 @@ let P = "";
     listed === undefined && stateOf(psRow(P)) === "completed", listed ?? psRow(P));
   c("...and exits 4, because the listing is partial", listedExit === 4, listedExit);
 
-  // Settle the held driver, bounded, as block 9 does; its outcome is not this block's claim.
-  await wf(["answer", uid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).catch(() => undefined);
-  await Promise.race([held.driven, wait(15_000)]);
+  // A marker that cannot be read does not show the run may continue, so its open pause takes no
+  // answer either. The held driver ends with the suite.
+  reset();
+  const unreadAnswer = await wf(["answer", uid, "/checkpoint:approve#0"], { by: "smoke", value: '"yes"' }).then(() => undefined, (e: Error) => e);
+  c("an answer to a run whose marker cannot be read is refused LIFECYCLE_BLOCKED and names the unread marker",
+    isCommandFailure(unreadAnswer) && unreadAnswer.code === "LIFECYCLE_BLOCKED" && unreadAnswer.message.includes("its revocation marker could not be read (run revocation is malformed)"), unreadAnswer?.message ?? captured());
 }
 
 // ── 11) a revoke that names nobody and no reason is refused before it writes ─────────────────
@@ -588,6 +625,8 @@ let P = "";
   const answered = await answerCheckpoint(rid);
   const outcome = await Promise.race([driven.then(() => "completed"), wait(15_000).then(() => "held")]);
   c("the run the admissible edit migrates completed with its decision recorded", paused && answered === true && outcome === "completed", { answered: String(answered), outcome });
+  // The answer's receipt set its own exit code; the check below reads the migrate's alone.
+  process.exitCode = undefined;
   const migrated = await wf(["migrate", rid], { file: CHECKPOINT }).then(() => undefined, (e: Error) => e);
   c("an admissible edit prints the report and exits 0",
     migrated === undefined && process.exitCode === undefined && captured().includes("admissible"),
@@ -637,7 +676,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 62;
+const DECLARED = 67;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

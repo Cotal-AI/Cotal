@@ -1,5 +1,5 @@
 import { resolveAuthProvider, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
-import { brokerAddressForDisplay, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 
 export const whoamiFlags = [spaceFlag, serverFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
@@ -13,12 +13,14 @@ export interface WhoamiResult {
   readonly kind: "identity";
   readonly space: string;
   readonly server: string;
-  readonly mode: "open" | "auth" | "user";
+  /** `null` when no registration here names the server, so its auth mode is not known. */
+  readonly mode: "open" | "auth" | "user" | null;
   readonly identity: {
     /** `open`: the broker authenticates nothing. `space-signer`: this machine holds the space's
      *  signing key and each command mints its own short-lived credential. `no-credential`: it holds
-     *  none. `user`: the signed-in user's `cli` actor. */
-    readonly kind: "open" | "space-signer" | "no-credential" | "user";
+     *  none. `user`: the signed-in user's `cli` actor. `unknown`: a `--server` no registration here
+     *  names, with no trust for it in this folder; whoami does not contact the broker. */
+    readonly kind: "open" | "space-signer" | "no-credential" | "user" | "unknown";
     readonly principal: string | null;
     readonly owner: string | null;
     readonly actor: string | null;
@@ -54,7 +56,12 @@ export async function whoami(args: ParsedArgs): Promise<void> {
   const base = { kind: "identity" as const, space: t.space, server, mode: t.mode };
   const none = { principal: null, owner: null, actor: null, subject: null, loginExpiresAt: null, grant: null };
   let result: WhoamiResult;
-  if (t.mode === "open") {
+  // A `--server` no registration names is resolved as open only because this folder holds no trust
+  // for it. That says nothing about the broker, and whoami does not contact it.
+  if (t.source === "flag-server" && t.mode === "open" && findMesh(t.space)?.server !== t.server) {
+    warnings.push({ code: "BROKER_NOT_PROBED", target: { ...target, server }, message: `${server} is not registered here and this folder holds no trust for it; whoami does not contact the broker, so whether it authenticates, and what this identity may do there, is unknown` });
+    result = { ...base, mode: null, identity: { kind: "unknown", ...none }, read: null, post: null, dms: null, capabilities: null };
+  } else if (t.mode === "open") {
     result = { ...base, identity: { kind: "open", ...none }, read: "all", post: "all", dms: true, capabilities: "all" };
   } else if (t.mode === "auth") {
     result = t.auth
@@ -96,7 +103,9 @@ export async function whoami(args: ParsedArgs): Promise<void> {
       result,
       completeness: warnings.length ? "partial" : "complete",
       warnings,
-      ...(warnings.length ? { partial: { message: "whoami could not read this identity's grant; the warning names why", remedy: "run `cotal whoami` on the machine that hosts the space's auth service" } } : {}),
+      ...(warnings.length ? { partial: result.identity.kind === "unknown"
+        ? { message: "whoami could not tell what this identity may do at that address; the warning names why", remedy: "add the space with `cotal space add <name> --server <url> --root <dir>`, which checks the broker, then run `cotal whoami --space <name>`" }
+        : { message: "whoami could not read this identity's grant; the warning names why", remedy: "run `cotal whoami` on the machine that hosts the space's auth service" } } : {}),
     },
     whoamiView,
   );
@@ -110,6 +119,7 @@ const KIND_TEXT: Record<WhoamiResult["identity"]["kind"], string> = {
   "space-signer": "this machine's space signer; each command mints its own short-lived credential",
   "no-credential": "none: this machine holds no signer for the space",
   user: "cached user login",
+  unknown: "unknown: this address is not registered here, and whoami does not contact the broker",
 };
 
 function whoamiView(r: WhoamiResult): Report {

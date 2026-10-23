@@ -809,6 +809,33 @@ export interface DeprovisionResourceAccounting {
   members: { examined: number; deleted: number; absent: number; refused: number; disappeared: number };
 }
 
+/** Add `part` into `total`. A null `deleted` on either side keeps the sum null, since one
+ *  unattributable removal leaves the whole count unattributable. */
+export function addDeprovisionAccounting(total: DeprovisionResourceAccounting, part: DeprovisionResourceAccounting): void {
+  total.examined += part.examined;
+  total.deleted = total.deleted === null || part.deleted === null ? null : total.deleted + part.deleted;
+  total.absent += part.absent;
+  total.refused += part.refused;
+  total.acknowledged += part.acknowledged;
+  total.disappeared += part.disappeared;
+  total.consumers.examined += part.consumers.examined;
+  total.consumers.deleted = total.consumers.deleted === null || part.consumers.deleted === null ? null : total.consumers.deleted + part.consumers.deleted;
+  total.consumers.absent += part.consumers.absent;
+  total.consumers.refused += part.consumers.refused;
+  total.consumers.acknowledged += part.consumers.acknowledged;
+  total.consumers.disappeared += part.consumers.disappeared;
+  total.acls.examined += part.acls.examined;
+  total.acls.deleted += part.acls.deleted;
+  total.acls.absent += part.acls.absent;
+  total.acls.refused += part.acls.refused;
+  total.acls.disappeared += part.acls.disappeared;
+  total.members.examined += part.members.examined;
+  total.members.deleted += part.members.deleted;
+  total.members.absent += part.members.absent;
+  total.members.refused += part.members.refused;
+  total.members.disappeared += part.members.disappeared;
+}
+
 /** Error raised when deprovisioning encounters an unexpected failure, retaining partial deletion accounting. */
 export class DeprovisionError extends Error {
   public readonly accounting: DeprovisionResourceAccounting;

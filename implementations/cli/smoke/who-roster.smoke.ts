@@ -4,7 +4,8 @@
  * its own one-shot credential. Covers the default, `--waiting` and `--all` filters, the rich and
  * plain reports, the managed column with no manager present and with a manager that does not answer
  * (a partial read, exit 4), a credential that may not read the roster, and `whoami` for a signer, an
- * open mesh and each user-auth grant state (the last through a stub provider, in process).
+ * open mesh, an unregistered `--server` (unknown, partial) and each user-auth grant state (the last
+ * through a stub provider, in process).
  *
  * Isolation: every CLI child gets a sandboxed HOME / XDG_CONFIG_HOME / TMPDIR / COTAL_HOME, and
  * inherited COTAL_* is stripped.
@@ -148,11 +149,12 @@ try {
   await setupSpaceStreams({ servers, space, creds: provisionerCreds });
   await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: {} } } });
   saveSpaceAuth(authDir(meshRoot), auth);
+  const openServer = `nats://127.0.0.1:${await pickFreePort()}`;
   const priorHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
   try {
     recordMesh({ space, server: servers, root: meshRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
-    recordMesh({ space: "openmesh", server: `nats://127.0.0.1:${await pickFreePort()}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: "openmesh", server: openServer, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     for (const entry of urlCases)
       recordMesh({ space: entry.space, server: entry.server, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: "url-auth-recovery", server: `nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
@@ -340,6 +342,16 @@ try {
   }
   const unknown = await run(["whoami", "--space", "not-registered-whoami", "--server", "nats://127.0.0.1:1", "--json"]);
   check("whoami refuses an unregistered --space even with --server", unknown.status === 2 && unknown.envelope?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
+  // An address no registration names, from a folder with no trust for it, is not reported as open:
+  // whoami does not contact the broker, so what the identity may do there is unknown.
+  const unprobed = await run(["whoami", "--server", "nats://127.0.0.1:3", "--json"]);
+  const unprobedResult = unprobed.envelope?.result as { mode?: unknown } & NonNullable<Envelope["result"]> | null | undefined;
+  check("whoami --server at an unregistered address is partial, exit 4, with the identity unknown",
+    unprobed.status === 4 && unprobed.envelope?.completeness === "partial" && unprobedResult?.identity?.kind === "unknown" && unprobedResult.mode === null && unprobedResult.read === null && unprobedResult.post === null && unprobedResult.dms === null && unprobedResult.capabilities === null && unprobed.envelope?.warnings.some((w) => w.code === "BROKER_NOT_PROBED") === true, shown(unprobed));
+  const unprobedPlain = await run(["whoami", "--server", "nats://127.0.0.1:3", "--plain"]);
+  check("its report calls the identity unknown and names no access", unprobedPlain.status === 4 && /identity:\s+unknown: this address is not registered here/.test(unprobedPlain.stdout) && /read:\s+unknown/.test(unprobedPlain.stdout) && !/:\s+all$/m.test(unprobedPlain.stdout), shown(unprobedPlain));
+  const openByServer = await run(["whoami", "--server", openServer, "--json"]);
+  check("whoami --server at the open mesh's registered address still reports it open", openByServer.status === 0 && openByServer.envelope?.result?.identity?.kind === "open" && openByServer.envelope.completeness === "complete", shown(openByServer));
   const noCreds = await run(["whoami", "--creds", probe, "--json"]);
   check("whoami takes no --creds: it is a usage error", noCreds.status === 1 && noCreds.envelope?.error?.code === "USAGE_INVALID", shown(noCreds));
   const both = await run(["who", "--json", "--plain"]);

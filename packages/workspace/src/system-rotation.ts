@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   credsClaims,
@@ -12,7 +12,7 @@ import {
 import { assertSingleSpaceBroker, authDir, getSpaceAuth, putSpaceAuth } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { retainSystemSigningSeed } from "./system-signing-seed.js";
-import { readLocalRecordSource } from "./protected-records.js";
+import { credentialFileExposure, readLocalRecordSource } from "./protected-records.js";
 import {
   connectionEvictorCredsKey,
   CONNECTION_EVICTOR_CREDS_KIND,
@@ -170,7 +170,9 @@ export interface StaleSystemCred {
  *
  * Absent files are not stale (an unprovisioned space is a different, separately reported state), and
  * the mutating/default path reports an unreadable file with no `iss`. A read-only observation
- * refuses a required migration or an unreadable protected input instead of guessing issuer state.
+ * refuses a required migration or an unreadable protected input instead of guessing issuer state,
+ * except a file other accounts can open: it is left unjudged, because the read-only caller reads
+ * each file itself and names that exposure and its repair.
  */
 export function staleSystemCreds(root: string, sysPub: string, space: string, options: MaterialPathOptions = {}): StaleSystemCred[] {
   const stale: StaleSystemCred[] = [];
@@ -191,11 +193,24 @@ export function staleSystemCreds(root: string, sysPub: string, space: string, op
         iss = credsClaims(new TextDecoder("utf-8", { fatal: true }).decode(bytes)).iss;
       } else iss = credsClaims(readFileSync(path, "utf8")).iss;
     } catch (error) {
-      if (options.readOnly) throw error;
+      if (options.readOnly) {
+        if (exposedFile(path)) continue;
+        throw error;
+      }
       stale.push({ file }); // unreadable: cannot be shown to match, so it is not assumed to
       continue;
     }
     if (iss !== sysPub) stale.push({ file, iss });
   }
   return stale;
+}
+
+/** Whether `path` is a regular file other accounts own or can open. */
+function exposedFile(path: string): boolean {
+  try {
+    const stat = lstatSync(path);
+    return stat.isFile() && credentialFileExposure(path, stat) !== undefined;
+  } catch {
+    return false;
+  }
 }

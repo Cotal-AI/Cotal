@@ -10,7 +10,8 @@ import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, cano
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
-import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
+import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
+import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, removableServiceInstances, removeStoppedInstanceRecords, resumableSignalStop, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -54,7 +55,10 @@ export interface StackJournal {
   operation: { id: string; kind: "up" | "down" | "preserve" | "resume"; phase: "planned" | "applying" | "completed" | "partial" | "unknown" | "refused" | "failed"; recordedAt: string; withAgents: boolean;
     /** The maintenance attempt a preserve or resume serves. Required for those kinds, absent otherwise;
      *  the maintenance journal stays the authority for the attempt's state and evidence. */
-    maintenanceAttemptId?: string };
+    maintenanceAttemptId?: string;
+    /** The workflow runs the manager hosted, read just before a down stopped it. Only a down
+     *  carries it, so the next operation drops it. */
+    runs?: StackRuns };
   updatedAt: string;
 }
 
@@ -97,7 +101,8 @@ function validate(input: unknown, root: string): StackJournal {
     if (!stackRoleApplies(value.mode as StackMode, role) && (member.instanceId !== null || member.state !== "not-attempted" || member.replacement !== undefined)) invalid(root);
     return member as unknown as StackMember;
   });
-  const operation = localRecordObject(value.operation, ["id", "kind", "phase", "recordedAt", "withAgents", "maintenanceAttemptId"]);
+  const operation = localRecordObject(value.operation, ["id", "kind", "phase", "recordedAt", "withAgents", "maintenanceAttemptId", "runs"]);
+  if (operation.runs !== undefined && (operation.kind !== "down" || stackRunsRecord(operation.runs) === undefined)) invalid(root);
   try { serviceOperationId(operation.id); } catch { invalid(root); }
   if (!["up", "down", "preserve", "resume"].includes(String(operation.kind)) || !PHASES.includes(String(operation.phase)) || typeof operation.recordedAt !== "string" || typeof operation.withAgents !== "boolean") invalid(root);
   const maintained = operation.kind === "preserve" || operation.kind === "resume";
@@ -273,7 +278,7 @@ function classifyStackMember(journal: StackJournal, role: StackRole, settle: boo
       ? "a stack member's process is neither live nor proven gone, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
       : retained?.publication === "unknown"
         ? "a stack member's stop request file does not read as its own, so whether a stop was published is unknown and the earlier whole-stack operation cannot be settled from evidence; nothing was retried"
-        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: retained?.publication === "published" ? `${inspect(row.name)}; ${abandonRemedy(retained.requestId)}` : abandonableSignalStop(value) ? `${inspect(row.name)}; ${abandonRemedy(value.requestId)}` : inspect(row.name) });
+        : "a stack member retains an unconfirmed stop request, so the earlier whole-stack operation cannot be settled from evidence; nothing was retried", { target: { ...target, instanceId: row.name, recordedState: value.state, process: observed, ...(stopRetained ? { requestId: retained?.requestId ?? value.requestId, ...(retained ? { stopPublication: retained.publication } : {}) } : {}) }, remedy: retained?.publication === "published" ? `${inspect(row.name)}; ${abandonRemedy(retained.requestId)}` : abandonableSignalStop(value) ? `${inspect(row.name)}; ${abandonRemedy(value.requestId)}` : resumableSignalStop(value) ? `${inspect(row.name)}; ${RESUME_REMEDY}` : inspect(row.name) });
   } finally { hold?.release(); }
 }
 
@@ -292,6 +297,9 @@ export async function settleRetainedStackStops(journal: StackJournal): Promise<v
     finally { hold.release(); }
   }
 }
+
+/** The step for a member stop whose process still runs after the command that sent it exited. */
+export const RESUME_REMEDY = "once the command that sent the stop has exited, `cotal down --yes` signals the process again";
 
 /** The remedy a refusal over a retained, published member stop names. */
 export const abandonRemedy = (requestId: string): string => `once its process and the down that sent the request have exited, \`cotal down --abandon-stop ${requestId} --yes\` abandons it`;
@@ -498,12 +506,13 @@ export function recordedProcessesUnder(root: string, spaces: readonly string[]):
   return found;
 }
 
-/** No member of this stack ever launched: no member row names an instance or a replacement, and no
- *  stack definition in its space has an instance record. No process of it runs and no broker of it
- *  wrote a store, so its journal pins nothing for the next up and a down has nothing to stop. */
+/** No member of this stack ever launched: no member row names an instance or a replacement, and every
+ *  instance record of a stack definition in its space failed before its child was spawned, as a
+ *  broker start refused at an address another program holds does. No process of it runs and no
+ *  broker of it wrote a store, so its journal pins nothing for the next up and a down has nothing to stop. */
 export function stackNeverStarted(journal: StackJournal): boolean {
   return journal.members.every((row) => row.instanceId === null && row.replacement === undefined)
-    && STACK_ROLES.every((role) => serviceInstances(journal.space, STACK_DEFINITION[role]).length === 0);
+    && STACK_ROLES.every((role) => serviceInstances(journal.space, STACK_DEFINITION[role]).every((row) => row.record.value.state === "failed" && row.record.value.process === undefined));
 }
 
 /** An observed process state that counts as stopped for a whole-stack stop. */
@@ -517,7 +526,7 @@ export const processGone = (state: string) => state === "gone" || state === "pre
 export function stackScopeRefusals(journal: StackJournal, next: string): void {
   const memberIds = new Set(journal.members.flatMap((row) => row.instanceId === null ? [] : [row.instanceId]));
   const others = serviceInstances(journal.space).filter((row) => !memberIds.has(row.name) && (!processGone(observeServiceProcess(row.record.value)) || ["starting", "stopping", "unknown"].includes(row.record.value.state)));
-  if (others.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "other service instances in this space are live or unresolved and depend on its broker; the broker was not stopped under them", { target: { space: journal.space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, remedy: `stop ${[...new Set(others.map((row) => row.record.value.definition))].join(", ")} explicitly with cotal svc stop <name>, then run ${next}` });
+  if (others.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "other service instances in this space are live or unresolved and depend on its broker; the broker was not stopped under them", { target: { space: journal.space, dependants: others.map((row) => ({ definition: row.record.value.definition, instanceId: row.name })) }, remedy: `stop each with ${others.map((row) => `cotal svc stop ${row.record.value.definition} --instance ${row.name} --space ${journal.space} --yes`).join("; ")}, then run ${next}` });
   const legacy = foreignLocalProcesses(journal.root, journal.space);
   if (legacy.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "legacy pidfile-owned processes under this root may depend on the broker; they were neither adopted nor stopped", { target: { root: journal.root, processes: legacy } });
   const sharing = loadMeshes().filter((mesh) => mesh.space !== journal.space && mesh.server === journal.server);

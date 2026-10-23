@@ -1,5 +1,6 @@
 import { peerLabel, type FlagSpec, type FlagValues, type ParsedArgs, type Presence, type PresenceCondition } from "@cotal-ai/core";
 import { CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Cell, type Column, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
+import { managerLabel } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { activityAge, c, presenceFacts } from "../ui.js";
@@ -207,7 +208,8 @@ function whoView(r: WhoResult, space: string, all: boolean, duplicate: (name: st
   const rows = r.items.map((row): Record<string, Cell> => {
     const p = byId.get(row.id);
     const facts = p ? presenceFacts(p, now) : { condition: "", ages: "" };
-    const label = peerLabel({ name: row.name, ...(row.role ? { role: row.role } : {}) });
+    // A live manager shows by its name, or by `<host>/<runtime>` when it was started without one.
+    const label = p && isManager(p) ? `manager ${peerLabel({ name: managerLabel(p) })}` : peerLabel({ name: row.name, ...(row.role ? { role: row.role } : {}) });
     return {
       name: duplicate(row.name) ? `${label} [${row.id}]` : label,
       kind: row.kind,

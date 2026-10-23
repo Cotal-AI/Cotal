@@ -6,13 +6,15 @@
  *  recorded as such under its definition's lock and is not stopped again, so a repeated stop is a
  *  no-op. Shared registry and credential cleanup follow only a complete confirmed stop. Nothing
  *  outside the recorded members is touched. The whole apply holds the root's maintenance lock. */
+import { accessSync, constants } from "node:fs";
+import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { DEFAULT_SPACE, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, canonicalRoot, deliveryCredsKey, findMesh, isCommandFailure, isConnectRefusal, oneLine, presentationOf, readBrokerPolicy, recordMesh,
+  CommandFailure, canonicalRoot, deliveryCredsKey, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf, readBrokerPolicy, recordMesh,
   releaseMaintenanceLock, removeMesh, removeMeshesByRoot, recordPreparedSpace, renderReport, terminalWidth, workspaceSecretStore, writeResult,
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
-  recordOperationSpace,
+  recordOperationSpace, stackHomeRemedy, stackRunsUnderOtherHome,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
 import { ConfirmationRequired } from "../lib/confirmation-required.js";
@@ -20,8 +22,9 @@ import { canPrompt } from "./meshes-wizard.js";
 import { kernelImpactView, nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
-import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
-import { abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, settleRetainedStackStops, settleStackOperation, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { abandonableSignalStop, assertNoServiceUnitAttempts, resumableSignalStop, prepareKernelServiceStop, prepareNativeServiceStop, retainedStopRequest, settleExitedInstance, stopProcessService } from "../lib/service-process.js";
+import { readStackRuns } from "../lib/stack-runs.js";
+import { RESUME_REMEDY, abandonRemedy, abandonRetainedStackStop, acquireStackOperationLock, newStackOperation, previewStackSettlement, processGone, readStackJournal, recordedProcessLine, recordedProcessesUnder, refuseControllerCut, settleRetainedStackStops, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, withSettledMembers, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -30,6 +33,34 @@ interface Member { role: StackRole; definition: ServiceDefinitionSnapshot; insta
 /** The controller route applies whenever the root has a stack journal. */
 export function controllerStackRecorded(root: string): boolean {
   return readStackJournal(canonicalRoot(root)) !== undefined;
+}
+
+/** The root of the controller stack this machine started for `space` in a folder other than `root`,
+ *  or undefined. `cotal down` stops only the stack of the folder it runs in, so a refusal names it. */
+export function stackRootElsewhere(space: string, root: string): string | undefined {
+  try {
+    const mesh = findMesh(space);
+    return mesh && mesh.origin === "up" && canonicalRoot(mesh.root) !== canonicalRoot(root) && controllerStackRecorded(mesh.root) ? mesh.root : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The same `down`, without `--space`, for a refusal that names the folder to run it from. */
+export const sameDown = (values: ParsedArgs["values"]): string =>
+  ["cotal down", ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
+
+/** A stop records each step in the stack journal in the root's `.cotal`, so a folder this account
+ *  cannot write refuses before the plan, naming it, rather than after the plan at the first write. */
+function assertJournalWritable(root: string, values: ParsedArgs["values"]): void {
+  const dir = dirname(stackJournalPath(root));
+  try { accessSync(dir, constants.W_OK | constants.X_OK); }
+  catch {
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dir}, where down records each step of the stop in the stack journal; no member was stopped`, {
+      target: { root, path: dir },
+      remedy: `make it writable with chmod u+w ${dir}, then run \`${sameDown({ ...values, "dry-run": undefined, yes: true })}\``,
+    });
+  }
 }
 
 export function validateStackDownArguments(root: string, values: ParsedArgs["values"]): void {
@@ -63,7 +94,7 @@ function readMembers(journal: StackJournal): Member[] {
     const retained = retainedStopRequest(instance.record.value);
     if (instance.record.value.state === "stopping" || retained) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", retained?.publication === "unknown"
       ? "a recorded stack member's stop request file does not read as its own, so whether a stop was published is unknown; nothing was resubmitted and no member was stopped"
-      : "a recorded stack member retains an unconfirmed stop request; it was not resubmitted and no member was stopped", { target: { ...instanceProjection(instance), ...(retained ? { requestId: retained.requestId, stopPublication: retained.publication } : {}) }, remedy: retained?.publication === "published" ? `${inspect}; ${abandonRemedy(retained.requestId)}` : abandonableSignalStop(instance.record.value) ? `${inspect}; ${abandonRemedy(instance.record.value.requestId)}` : inspect });
+      : "a recorded stack member retains an unconfirmed stop request; it was not resubmitted and no member was stopped", { target: { ...instanceProjection(instance), ...(retained ? { requestId: retained.requestId, stopPublication: retained.publication } : {}) }, remedy: retained?.publication === "published" ? `${inspect}; ${abandonRemedy(retained.requestId)}` : abandonableSignalStop(instance.record.value) ? `${inspect}; ${abandonRemedy(instance.record.value.requestId)}` : resumableSignalStop(instance.record.value) ? `${inspect}; ${RESUME_REMEDY}` : inspect });
     assertNoServiceUnitAttempts(journal.space, row.definition);
     members.push({ role: row.role, definition, instance, live: state === "running" });
   }
@@ -211,8 +242,16 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
   const previous = readStackJournal(root);
   if (!previous) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this root has no controller stack journal", { target: { root } });
   const journal0 = previous.journal;
+  if (values.space !== undefined && values.space !== journal0.space) {
+    const space = String(values.space), elsewhere = stackRootElsewhere(space, root);
+    recordOperationSpace(space);
+    throw new CommandFailure("refused", "CONFLICT", `--space ${space} ${elsewhere ? `names a controller stack rooted at ${elsewhere}` : "is not this folder's stack"}, and \`cotal down\` stops only the stack of the folder it runs in; this folder's stack is ${journal0.space}, so no member was stopped`, {
+      target: { root, space, recordedSpace: journal0.space, ...(elsewhere ? { stackRoot: elsewhere } : {}) },
+      remedy: elsewhere ? `run \`${sameDown(values)}\` from ${elsewhere}` : `run \`${sameDown(values)}\` from the folder whose stack is ${space}, or drop --space to stop ${journal0.space} here`,
+    });
+  }
   recordOperationSpace(journal0.space);
-  if (values.space !== undefined && values.space !== journal0.space) throw new CommandFailure("refused", "CONFLICT", "the selected space differs from this root's recorded controller stack; no member was stopped", { target: { root, selectedSpace: values.space, recordedSpace: journal0.space } });
+  if (stackRunsUnderOtherHome(root, journal0)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this root's controller stack runs under another Cotal home; this one holds no record of its members, so no member was stopped", { target: { root, space: journal0.space, cotalHome: homeCotalDir() }, remedy: stackHomeRemedy() });
   if (stackOperationUnsettled(journal0) && journal0.operation.kind !== "up" && journal0.operation.kind !== "down")
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an earlier preserve or resume on this root has no settled outcome; it is decided by its own maintenance attempt and no member was stopped", { target: { root, operation: journal0.operation }, remedy: `inspect the root's maintenance attempt and the stack's members with cotal service --space ${journal0.space}` });
   const settlement = previewStackSettlement(journal0);
@@ -228,7 +267,7 @@ function previewStackStop(root: string, values: ParsedArgs["values"], presentati
   if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) return nothingRunning(presentation, target, false);
   // A preview reports what would refuse the real stop instead of refusing itself.
   let blocked: CommandFailure | undefined, restore: string | undefined, stranded: ReturnType<typeof strandedRegistration>;
-  try { restore = scopeRefusals(journal0); stranded = strandedRegistration(journal0, members); }
+  try { restore = scopeRefusals(journal0); stranded = strandedRegistration(journal0, members); assertJournalWritable(root, values); }
   catch (error) { if (!isCommandFailure(error)) throw error; blocked = error; }
   const warnings = blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }] : stranded ? [strandedNotice(journal0, stranded.previous, true)] : [];
   // A preview that changes nothing succeeds. It is partial only in what it read: no provider and
@@ -253,6 +292,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, abandonWarnings);
   if (stackNeverStarted(journal0)) return nothingRunning(presentation, target, false, abandonWarnings);
   const admittedRestore = scopeRefusals(journal0);
+  assertJournalWritable(root, values);
   if (!values.yes && !interactive) throw new ConfirmationRequired("stopping the whole controller stack requires --yes outside an interactive terminal", { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
   // A missing or hand-added registration is rebuilt from the journal before anything resolves the
   // members, and put back as it was when the stop ends before any member stops.
@@ -287,10 +327,13 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
     putBack();
     throw error;
   }
+  // A store reset lists the runs it removes from this record, read while the manager still answers:
+  // the broker is the store's only reader and is stopped by then. A failed read never blocks the stop.
+  const runs = manager ? await readStackRuns(journal0.space) : { observedAt: new Date().toISOString(), read: false as const, reason: "the stack's manager was not running" };
   // An earlier operation with no outcome is recorded as failed from its members' evidence first.
   const { snapshot: settledSnapshot, settled } = settleStackOperation(lock, previous);
   // A replacement an earlier `up` journaled is resolved from its own record, as the stop planned it.
-  let journal: StackJournal = { ...settledSnapshot.journal, operation: newStackOperation("down", withAgents), members: withSettledMembers(settledSnapshot.journal, undefined).members.map((row) => ({ ...row, state: row.instanceId === null ? "not-attempted" : "planned", code: undefined })), updatedAt: new Date().toISOString() };
+  let journal: StackJournal = { ...settledSnapshot.journal, operation: { ...newStackOperation("down", withAgents), runs }, members: withSettledMembers(settledSnapshot.journal, undefined).members.map((row) => ({ ...row, state: row.instanceId === null ? "not-attempted" : "planned", code: undefined })), updatedAt: new Date().toISOString() };
   let snapshot: StackJournalSnapshot = writeStackJournal(root, settledSnapshot, journal);
   const mark = (role: StackRole, change: Partial<StackMember>) => {
     journal = { ...journal, members: journal.members.map((row) => row.role === role ? { ...row, ...change } : row), updatedAt: new Date().toISOString() };

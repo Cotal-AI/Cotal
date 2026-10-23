@@ -26,13 +26,13 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
+  assertManagerName, authDir, canonicalLocalProcessPath, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, publishManagerSpareCapability, readManagerName, reclaimDeadPreUpgradeRecord, recordManagerName, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, untilInputEnds,
   brokerAddressForDisplay, CommandFailure, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, terminalWidth, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   deprecatedDaemonEntry, type MeshEntry,
 } from "@cotal-ai/workspace";
-import { Manager } from "./manager.js";
+import { Manager, rejectionText } from "./manager.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, type ManagerServiceChild } from "./service-child.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
@@ -251,7 +251,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       throw new Error("execution: none on supervise requires a genuine hosting user-auth root, not a participant registration");
   } catch (e) {
     if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   const { space, server } = target;
@@ -481,7 +481,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     } catch (e) {
       if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm hosted authority preparation; it was not retried");
       console.error(c.red(
-        `✗ remote supervision for space "${space}" was refused: ${(e as Error).message}. ` +
+        `✗ remote supervision for space "${space}" was refused: ${rejectionText(e)}. ` +
         `Foreground \`cotal spawn\` remains available; detached/managed agents require a live host-approved manager-service authority.`,
       ));
       process.exit(1);
@@ -503,7 +503,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   try { resumeDurableCommitToken = resumeCommitToken(v, !service); }
   catch (e) {
     if (service) throw e;
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   // The registration policy is read AFTER every local refusal above and before the first dial: a
@@ -514,7 +514,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     eventsRequired = (await refreshRegistrationPolicy(target))?.events === "required";
   } catch (e) {
     if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   if (!(await isReachable(server))) {
@@ -532,6 +532,16 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   let maxSessions: number | undefined;
   try {
     maxSessions = parsePositiveIntegerFlag("--max-sessions", v["max-sessions"]);
+  } catch (e) {
+    if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
+    console.error(c.red(`✗ ${rejectionText(e)}`));
+    process.exit(1);
+  }
+  // A name given here is recorded for this root's manager once it is up, so a restart keeps it.
+  // Without one, the name an earlier start recorded applies.
+  let name: string | undefined;
+  try {
+    name = v.name !== undefined ? assertManagerName(v.name) : readManagerName({ root: managerRoot, space });
   } catch (e) {
     if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
     console.error(c.red(`✗ ${(e as Error).message}`));
@@ -555,6 +565,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       wsPort,
       attachHost,
       maxSessions,
+      ...(name !== undefined ? { name } : {}),
       installedExtensions: true,
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken,
@@ -563,7 +574,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     });
   } catch (e) {
     if (service) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager child did not confirm startup; inspect the original protected launch records before another start");
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
   }
   const managerContext = { root: managerRoot, space };
@@ -611,7 +622,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
           catch { /* Missing terminal evidence stays unknown to the original controller. */ }
         }
         console.error(c.red("✗ the native managed manager stop did not confirm completion; its phase evidence was retained"));
-      } else console.error(c.red(`✗ ${(e as Error).message}`));
+      } else console.error(c.red(`✗ ${rejectionText(e)}`));
       if (!startFailed) process.exit(1);
     });
   };
@@ -641,9 +652,13 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   // managed child already owns its exact starting PID slot; it settles that same process here.
   releaseSettledRecord = recordManagerPid(managerRoot, space);
   publishManagerSpareCapability(managerContext, mgr.spareSeats);
+  if (v.name !== undefined && name !== undefined) {
+    try { if (readManagerName(managerContext) !== name) recordManagerName(managerContext, name); }
+    catch (e) { console.error(c.yellow(`! the manager name was not recorded, so the next start does not keep it: ${(e as Error).message}`)); }
+  }
   if (!service) console.log(
     c.green("✓ manager up") +
-      c.dim(` (space ${space} · ${mgr.runtimeKind})`) +
+      c.dim(` (space ${space} · ${name !== undefined ? `${name} · ` : ""}${mgr.runtimeKind})`) +
       `\n  console: ${mgr.consoleUrl}` +
       c.dim("\n  spawn: cotal spawn --detach <persona>   ·   stop: cotal stop --name <n>   (Ctrl-C to shut down)"),
   );
@@ -698,7 +713,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       try {
         configPath = materializePersona(root, launchSpec.runId, la);
       } catch (e) {
-        console.error(c.red(`✗ ${la.name}: ${(e as Error).message}`));
+        console.error(c.red(`✗ ${la.name}: ${rejectionText(e)}`));
         continue;
       }
       const reply = await mgr.startAgent(launchAgentToStartOpts(la, configPath, launchSpec.owner, launchSpec.runId));
@@ -856,6 +871,7 @@ const managerCommands: Command[] = [
       { name: "launch", type: "string", description: "private native launch spec for this selected space" },
       { name: "launch-sha256", type: "string", description: "full digest pinned by the saved service definition" },
       { name: "roster", type: "string", description: "absolute roster file whose agents start at launch" },
+      { name: "name", type: "string", description: "manager name for presence and --on; recorded for this root" },
       { name: "service-instance", type: "string", description: "full controller-assigned instance ID" },
       { name: "launch-request", type: "string", description: "full original launch request ID" },
       { name: "state-directory", type: "string", description: "owned private launch state directory" },
@@ -879,7 +895,7 @@ const managerCommands: Command[] = [
     hidden: true,
     group: "Manager",
     summary:
-      "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--max-sessions <n>] [--roster <file>] [--launch <spec>] [--resume-attempt <id>]",
+      "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--max-sessions <n>] [--name <name>] [--roster <file>] [--launch <spec>] [--resume-attempt <id>]",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to supervise (default: this folder's auth space; env COTAL_SPACE when unset)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh; env COTAL_SERVER when unset)" },
@@ -889,6 +905,7 @@ const managerCommands: Command[] = [
       { name: "console-host", type: "string", value: "<host>", description: "bind host for the console endpoint (default: loopback)" },
       { name: "ws-port", type: "string", value: "<n>", description: "broker ws listener port for the console session client" },
       { name: "max-sessions", type: "string", value: "<n>", description: "live-session ceiling (default 64; one session per console pane, so size for agents × panes)" },
+      { name: "name", type: "string", value: "<name>", description: "the name who --all, the manager choice and --on use for this manager; kept for later starts in this root" },
       { name: "roster", type: "string", value: "<file>", description: "declarative roster to boot at startup" },
       { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (cotal up -f / spawn -f)" },
       { name: "resume-attempt", type: "string", value: "<id>", description: "maintenance restore attempt accepted by resumePreserved" },

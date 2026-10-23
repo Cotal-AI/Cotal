@@ -1,8 +1,8 @@
-import type { RunJournalRow, RunListRow, RunStatusView } from "@cotal-ai/core";
+import type { RunFailure, RunJournalRow, RunListRow, RunStatusView } from "@cotal-ai/core";
 import { oneLine, presentationOf, writeResult, type Report, type Styled } from "@cotal-ai/workspace";
 
-interface OutputValues { json?: boolean; plain?: boolean; on?: string }
-const recordedState = (state: string | undefined): Styled => ({ text: state ?? "not recorded", tone: state === "completed" ? "ok" : state === "failed" ? "failed" : state === "released" || state === "held" ? "waiting" : "hint" });
+interface OutputValues { json?: boolean; plain?: boolean; on?: string; local?: boolean }
+const recordedState = (state: string | undefined, failure?: RunFailure): Styled => ({ text: state === "failed" && failure?.code ? `failed (${failure.code})` : state ?? "not recorded", tone: state === "completed" ? "ok" : state === "failed" ? "failed" : state === "released" || state === "held" ? "waiting" : "hint" });
 const managerPin = (values: OutputValues) => values.on ? ` --on ${values.on}` : "";
 const runToken = (value: string | undefined) => value && /^run-[0-9a-f]{32}$/.test(value) ? value : "<run-id>";
 
@@ -15,7 +15,7 @@ export function printRunList(space: string | undefined, items: readonly RunListR
   }, (result): Report => ({ sections: [
     { title: "Workflow runs", blocks: [
       { kind: "fields", rows: [["Space", space ?? "not reported"], ...(values.on ? [["Requested manager", values.on]] as [string, string][] : [])] },
-      result.items.length ? { kind: "table", columns: [{ key: "run", label: "Run" }, { key: "endpoint", label: "Endpoint" }, { key: "state", label: "Recorded state" }, { key: "journal", label: "Journal" }], rows: result.items.map((row) => ({ run: row.runId, endpoint: row.endpoint, state: row.revoked ? { text: "admission revoked", tone: "failed" } : row.revocationUnreadable !== undefined ? { text: "revocation not checked", tone: "waiting" } : recordedState(row.state), journal: row.journalHigh === undefined ? "not reported" : String(row.journalHigh) })) } : { kind: "lines", lines: ["No workflow runs in this authorized record view."] },
+      result.items.length ? { kind: "table", columns: [{ key: "run", label: "Run" }, { key: "endpoint", label: "Endpoint" }, { key: "state", label: "Recorded state" }, { key: "journal", label: "Journal" }], rows: result.items.map((row) => ({ run: row.runId, endpoint: row.endpoint, state: row.revoked ? { text: "admission revoked", tone: "failed" } : row.revocationUnreadable !== undefined ? { text: "revocation not checked", tone: "waiting" } : recordedState(row.state, row.failure), journal: row.journalHigh === undefined ? "not reported" : String(row.journalHigh) })) } : { kind: "lines", lines: ["No workflow runs in this authorized record view."] },
       { kind: "lines", lines: [{ text: "Recorded workflow state, not a live agent-progress report. Revoking admission is not task cancellation.", tone: "hint" }] },
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal r show <run-id>${managerPin(values)}`, description: "Read state, open requests and journal steps" }, { command: `cotal r start <file>${managerPin(values)}`, description: "Start a new workflow on the selected manager" }] }] },
@@ -25,11 +25,19 @@ export function printRunList(space: string | undefined, items: readonly RunListR
 type StepRow = Extract<RunJournalRow, { kind: "step" }>;
 type AnswerFacts = { readonly value?: unknown; readonly by?: string; readonly artifact?: string; readonly at?: number; readonly answerId: string };
 
+/** The characters of an answer's value the Answers table prints; `--json` carries the value whole. */
+const ANSWER_VALUE_SHOWN = 120;
+const shownValue = (value: unknown): string => {
+  const text = [...JSON.stringify(value)];
+  return text.length > ANSWER_VALUE_SHOWN ? `${text.slice(0, ANSWER_VALUE_SHOWN - 1).join("")}…` : text.join("");
+};
+const valueCut = (answer: AnswerFacts) => Object.hasOwn(answer, "value") && [...JSON.stringify(answer.value)].length > ANSWER_VALUE_SHOWN;
+
 /** One answer or amendment line of a settled pause. */
 function answerRow(step: string, record: string, answer: AnswerFacts, artifacts: boolean): Record<string, string> {
   return {
     step, record,
-    value: Object.hasOwn(answer, "value") ? JSON.stringify(answer.value) : "no value",
+    value: Object.hasOwn(answer, "value") ? shownValue(answer.value) : "no value",
     by: answer.by ?? "not recorded",
     ...(artifacts ? { artifact: answer.artifact ?? "" } : {}),
     at: answer.at === undefined ? "not recorded" : new Date(answer.at).toISOString(),
@@ -47,30 +55,55 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
   const answered = [...steps.values()].filter((row) => row.answer !== undefined);
   const artifacts = answered.some((row) => row.answer?.artifact !== undefined || row.amendments?.some((m) => m.artifact !== undefined));
   const answers = answered.flatMap((row) => [answerRow(row.step, "answered", row.answer!, artifacts), ...(row.amendments ?? []).map((m) => answerRow(row.step, "amended", m, artifacts))]);
+  const cut = answered.some((row) => valueCut(row.answer!) || (row.amendments ?? []).some(valueCut));
   // A recorded message is the handler's or the program's text, so each of its lines is escaped.
   const errored = [...steps.values()].filter((row) => row.errorMessage !== undefined);
+  const failure = view.status?.state === "failed" ? view.status.failure : undefined;
+  const failedStep = failure && errored.find((row) => row.errorMessage === failure.message);
   const unreadable = view.revocationUnreadable !== undefined;
   writeResult(presentationOf(values), {
     command: "run", target: { space, endpoint: view.endpoint, run: view.runId, requestedManagerInstance: values.on ?? null }, result: { kind: "run", view },
     warnings: unreadable ? [{ code: "REVOCATION_NOT_CHECKED", target: { run: view.runId, endpoint: view.endpoint }, message: "The revocation marker could not be read; the recorded state does not establish that this run may continue." }] : [],
     ...(unreadable ? { completeness: "partial" as const, partial: { message: "The run revocation marker could not be read." } } : {}),
   }, (): Report => ({ sections: [
-    { title: "Workflow", blocks: [{ kind: "fields", rows: [["Run", view.runId], ["Space", space], ["Endpoint", view.endpoint], ...(values.on ? [["Requested manager", values.on]] as [string, string][] : []), ["Recorded state", recordedState(view.status?.state)],
+    { title: "Workflow", blocks: [{ kind: "fields", rows: [["Run", view.runId], ["Space", space], ["Endpoint", view.endpoint], ...(values.on ? [["Requested manager", values.on]] as [string, string][] : []), ["Recorded state", recordedState(view.status?.state, view.status?.failure)],
       ...(view.revoked ? [["Admission", { text: "admission revoked", tone: "failed" }], ["Revoked by", view.revoked.by], ["Revocation reason", view.revoked.reason]] as [string, string | Styled][] : []),
       ...(unreadable ? [["Revocation", { text: "revocation not checked", tone: "waiting" }]] as [string, Styled][] : []),
       ["Journal rows", String(view.journal.length)]] }] },
-    ...(needsAnswer.length ? [{ title: "Needs an answer", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "asks", label: "Request" }], rows: needsAnswer.map((row) => ({ step: row.step, asks: row.asks ?? "" })) }] }] : []),
-    ...(answers.length ? [{ title: "Answers", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "record", label: "Record" }, { key: "value", label: "Value" }, { key: "by", label: "By" }, ...(artifacts ? [{ key: "artifact", label: "Artifact" }] : []), { key: "at", label: "At" }, { key: "id", label: "Answer id" }], rows: answers }, { kind: "lines" as const, lines: [{ text: "The run acted on the answered value. Each amended line records a later position, and the last one is current.", tone: "hint" as const }] }] }] : []),
+    // A revoked run's open requests stay listed, because the pauses are still open, but they take
+    // no answer, so the view says that and offers no answer command.
+    ...(needsAnswer.length ? [{ title: "Needs an answer", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "asks", label: "Request" }], rows: needsAnswer.map((row) => ({ step: row.step, asks: row.asks ?? "" })) },
+      ...(view.revoked ? [{ kind: "lines" as const, lines: [{ text: "The run's admission is revoked, so these requests take no answer.", tone: "failed" as const }] }] : [])] }] : []),
+    ...(answers.length ? [{ title: "Answers", blocks: [{ kind: "table" as const, columns: [{ key: "step", label: "Step" }, { key: "record", label: "Record" }, { key: "value", label: "Value" }, { key: "by", label: "By" }, ...(artifacts ? [{ key: "artifact", label: "Artifact" }] : []), { key: "at", label: "At" }, { key: "id", label: "Answer id" }], rows: answers }, { kind: "lines" as const, lines: [{ text: "The run acted on the answered value. Each amended line records a later position, and the last one is current.", tone: "hint" as const },
+      ...(cut ? [{ text: `A value longer than ${ANSWER_VALUE_SHOWN} characters is cut here; --json carries it whole.`, tone: "hint" as const }] : [])] }] }] : []),
+    // The run's failure, as its status records it. When a step's error is that failure, it is
+    // printed once, under Step errors, and named here.
+    ...(failure ? [{ title: "Failure", blocks: [{ kind: "lines" as const, lines: failedStep
+      ? [{ text: `${failedStep.step} failed the run; its error is under Step errors.`, tone: "failed" as const }]
+      : failure.message.split("\n").map((line) => ({ text: oneLine(line), tone: "failed" as const })) }] }] : []),
     ...(errored.length ? [{ title: "Step errors", blocks: [{ kind: "lines" as const, lines: errored.flatMap((row) => [{ text: `${row.step}  ${row.outcome}`, tone: "failed" as const }, ...row.errorMessage!.split("\n").map((line) => `  ${oneLine(line)}`)]) }] }] : []),
     { title: `Journal · last ${shown.length} of ${view.journal.length}`, blocks: [shown.length ? { kind: "table", columns: [{ key: "number", label: "Entry" }, { key: "step", label: "Step" }, { key: "outcome", label: "Recorded outcome" }], rows: shown.map((row) => ({ number: String(row.n), step: row.kind === "activation" ? "holder activation" : row.step, outcome: row.kind === "activation" ? `epoch ${row.epoch}` : row.outcome })) } : { kind: "lines", lines: ["No journal entries in this view."] }, { kind: "lines", lines: [{ text: "Use --json for the full returned journal. A step outcome is not proof that every external task succeeded.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [...(needsAnswer.length ? [{ command: `cotal r answer ${runToken(view.runId)} '<step-key>' --value '<json>'${managerPin(values)}`, description: "Answer an open request under the native caller policy" }] : []), { command: `cotal r show ${runToken(view.runId)} --json${managerPin(values)}`, description: "Read the complete returned status and journal" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [...(needsAnswer.length && !view.revoked ? [{ command: `cotal r answer ${runToken(view.runId)} '<step-key>' --value '<json>'${managerPin(values)}`, description: "Answer an open request under the native caller policy" }] : []), { command: `cotal r show ${runToken(view.runId)} --json${managerPin(values)}`, description: "Read the complete returned status and journal" }] }] },
   ] }));
 }
 
+/** What an answer or amendment filed, as the caller sent it, which the host records under the
+ *  answer id it returns. `value` is absent when none was given. */
+export interface ReceiptAnswer { readonly step: string; readonly value?: unknown; readonly artifact?: string }
+
 /** `runId` is the run the caller named, for an answer or amendment whose result does not repeat it. */
-export function runReceipt(action: string, space: string | undefined, result: unknown, values: OutputValues, runId = result && typeof result === "object" && "runId" in result && typeof result.runId === "string" ? result.runId : undefined): void {
-  writeResult(presentationOf(values), { command: "run", target: { space: space ?? null, requestedManagerInstance: values.on ?? null, ...(runId ? { run: runId } : {}) }, result: { kind: "run-receipt", action, result } }, () => ({ sections: [
-    { title: action === "start" ? "Workflow started" : action === "resume" ? "Workflow resumed" : action === "amend" ? "Amendment recorded" : "Answer accepted", blocks: [{ kind: "fields", rows: [["Space", space ?? "not reported"], ...(runId ? [["Run", runId]] as [string, string][] : []), ...(values.on ? [["Requested manager", values.on]] as [string, string][] : [])] }, { kind: "lines", lines: [{ text: "The native host accepted this operation. This receipt does not claim workflow completion.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal r show ${runToken(runId)}${managerPin(values)}`, description: "Read the recorded outcome and pending requests" }] }] },
+export function runReceipt(action: string, space: string | undefined, result: unknown, values: OutputValues, runId = result && typeof result === "object" && "runId" in result && typeof result.runId === "string" ? result.runId : undefined, answer?: ReceiptAnswer): void {
+  const reply = result && typeof result === "object" ? result as { answerId?: unknown; supersedes?: unknown } : {};
+  const valueGiven = answer !== undefined && Object.hasOwn(answer, "value");
+  const answerRows: [string, string][] = answer === undefined ? [] : [
+    ["Step", answer.step],
+    ["Value", valueGiven ? JSON.stringify(answer.value) : "no value; --value was not given"],
+    ...(answer.artifact !== undefined ? [["Artifact", answer.artifact]] as [string, string][] : []),
+    ...(typeof reply.answerId === "string" ? [["Answer id", reply.answerId]] as [string, string][] : []),
+    ...(typeof reply.supersedes === "string" ? [["Supersedes", reply.supersedes]] as [string, string][] : []),
+  ];
+  writeResult(presentationOf(values), { command: "run", target: { space: space ?? null, requestedManagerInstance: values.on ?? null, ...(runId ? { run: runId } : {}) }, result: { kind: "run-receipt", action, result, ...(answer ? { answer: { ...answer, valueGiven } } : {}) } }, () => ({ sections: [
+    { title: action === "start" ? "Workflow started" : action === "resume" ? "Workflow resumed" : action === "amend" ? "Amendment recorded" : "Answer accepted", blocks: [{ kind: "fields", rows: [["Space", space ?? "not reported"], ...(runId ? [["Run", runId]] as [string, string][] : []), ...(values.on ? [["Requested manager", values.on]] as [string, string][] : []), ...answerRows] }, { kind: "lines", lines: [{ text: "The native host accepted this operation. This receipt does not claim workflow completion.", tone: "hint" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal r show ${runToken(runId)}${values.local ? " --local" : managerPin(values)}`, description: "Read the recorded outcome and pending requests" }] }] },
   ] }));
 }

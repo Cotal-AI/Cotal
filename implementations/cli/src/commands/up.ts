@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { createConnection, createServer } from "node:net";
+import { createConnection, createServer, isIP } from "node:net";
 import { homedir, hostname } from "node:os";
 import {
   accessSync,
@@ -41,8 +41,14 @@ import {
   requireBrokerFloor,
   parseServerVersion,
   presenceBucket,
+  spaceDeletionStreams,
+  isJetStreamMissing,
   seedChannelRegistry,
   ensureDefaultDeliveryClass,
+  assertValidChannel,
+  isConcreteChannel,
+  validateChannelConfig,
+  validateChannelDefaults,
   LEASE_TTL_MS,
   mkSecretDir,
   openPrivateAppend,
@@ -50,15 +56,20 @@ import {
   writeSecretFile,
   type AuthPrepared,
   type SpaceAuth,
+  type ChannelConfig,
+  type ChannelDefaults,
   type ChannelRegistryFile,
   type ParsedArgs,
   type FlagSpec,
   type CompletionResult,
 } from "@cotal-ai/core";
 import { connect } from "@nats-io/transport-node";
-import { jetstreamManager, StorageType } from "@nats-io/jetstream";
+import { JetStreamApiCodes, jetstreamManager, StorageType } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
+  assertManagerName,
+  readManagerName,
+  recordManagerName,
   CommandFailure,
   commandFailureReport,
   isCommandFailure,
@@ -160,7 +171,7 @@ import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/
 import { resolveSpace } from "../lib/status.js";
 import { c } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints, type StaleCheckpointConsent } from "../lib/seat-resume.js";
-import { resolveNatsServer } from "../lib/nats-bin.js";
+import { natsServerLabel, resolveNatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { renderDetachedSummary } from "../lib/up-report.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
@@ -168,6 +179,7 @@ import { upSystemdSupervisionWarning } from "../lib/systemd-supervision.js";
 import { deliveryStoppedByDown, deliveryUp, ensureControlPlane, ensureDelivery, stopDelivery } from "../lib/delivery-proc.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { displayCmd } from "../lib/self-exec.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { clearManagerArtifacts, liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogDisplayPath, managerRecordState, managerUp, stopManager } from "../lib/manager-proc.js";
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
@@ -179,7 +191,7 @@ import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
 import { cleanedManifestStart, retainedLegacyBroker } from "../lib/legacy-start.js";
-import { controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
+import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
 import {
@@ -212,7 +224,9 @@ import {
   preservedSourceState,
   recordPreparedRestoreManagerCommit,
   rehydratePreparedRestore,
+  registryRestoreNotes,
   replacePreparedDeadRestoreListener,
+  retainedPreviousStore,
   type PreparedRestore,
   type RestoreFlags,
 } from "../lib/restore.js";
@@ -301,6 +315,7 @@ export const upFlags: FlagSpec[] = [
   { name: "foreground", type: "boolean", description: "keep a non-manifest native stack in this terminal; -f currently refuses" },
   { name: "runtime", type: "string", value: "<name>", description: "agent runtime for the mesh manager (default pty; extension runtimes are explicit-only, see `cotal runtimes`); with -f overrides the manifest's runtime" },
   { name: "max-sessions", type: "string", value: "<n>", description: "live-session ceiling for the mesh manager (default 64; one session per console pane, so size for agents × panes). Recorded and reused by later manager launches" },
+  { name: "manager-name", type: "string", value: "<name>", description: "name this root's manager for who --all, the manager choice and --on; kept for later starts" },
   { name: "no-manager", type: "boolean", description: "broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager (refuses on a mesh whose manager is live)" },
   { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
   { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
@@ -340,9 +355,10 @@ export function validateUpArguments(args: ParsedArgs): void {
   // A manifest boot checks its own `--server` override against `broker.servers`.
   const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
   if (serverProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${serverProblem}; nothing was started or written`, { remedy: "pass the address the local broker listens on, for example --server nats://127.0.0.1:4222" });
-  // A URL or port-bearing --host, or one naming another address than --server, refuses here, before
-  // the controller stack writes its journal or trust.
-  if (args.values.host !== undefined && !args.values.file) reconcileHostAndServer(String(args.values.host), args.values.server === undefined ? undefined : String(args.values.server));
+  // A --host that is no bind host, or a bind that does not serve --server's address, refuses here,
+  // before the controller stack writes its journal or trust.
+  const hostProblem = !args.values.file ? upHostProblem(args.values.host as string | undefined, args.values.server as string | undefined) : undefined;
+  if (hostProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${hostProblem.problem}; nothing was started or written`, { remedy: hostProblem.remedy });
   if (args.values.file !== undefined && args.values.foreground === true) throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime");
   if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt");
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
@@ -392,7 +408,36 @@ function upServerProblem(server: string): string | undefined {
   if (url.username || url.password) return "--server must not embed credentials";
   if (url.search || url.hash || (url.pathname && url.pathname !== "/") || server.includes(",")) return "--server must be one broker URL without a path, query or fragment";
   if (!url.hostname) return "--server names no host";
+  // An explicit address is taken as given, so a missing port is never filled in with the default.
+  if (!url.port) return "--server names no port";
   if (url.port === "0") return "--server needs a TCP port from 1 to 65535";
+  if (url.hostname.startsWith("[")) return IPV6_UNSERVED("--server");
+  return undefined;
+}
+
+/** The local stack's own clients cannot reach a broker on an IPv6 address, so neither flag may name one. */
+const IPV6_UNSERVED = (flag: string): string => `${flag} names an IPv6 address, and the local stack's own clients cannot reach a broker there`;
+
+/** Why `--host` cannot be the local broker's bind address beside `server`, with the step that fixes
+ *  it, or undefined when it can. A wildcard bind keeps a loopback URL, so it pairs with any address.
+ *  With no `--host` the broker binds 127.0.0.1, so a `--server` naming another IPv4 address needs one. */
+function upHostProblem(host: string | undefined, server: string | undefined): { problem: string; remedy: string } | undefined {
+  if (host === undefined) {
+    const named = server === undefined ? undefined : new URL(server).hostname;
+    return named !== undefined && isIP(named) === 4 && named !== "127.0.0.1" && !WILDCARD_HOSTS.has(named)
+      ? { problem: `--server ${server} names ${named}, and with no --host the broker binds 127.0.0.1, so it would not listen where its clients connect`, remedy: `pass --host ${named} to bind the broker there` }
+      : undefined;
+  }
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) return { problem: `--host ${host} looks like a URL, and it takes a bind host only (an IP or hostname, no scheme)`, remedy: "pass the broker URL with --server instead" };
+  if (WILDCARD_HOSTS.has(host)) return undefined;
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (isIP(bare) === 6) return { problem: IPV6_UNSERVED("--host"), remedy: "pass an IPv4 bind address, for example --host 127.0.0.1" };
+  let url: URL | undefined;
+  try { url = new URL(`nats://${host}:1`); } catch { url = undefined; }
+  if (!url || url.port !== "1" || url.pathname || url.search || url.hash || url.username || url.password)
+    return { problem: `--host ${host} is not a valid bind host: an IP or hostname only, with no port; the port comes from --server (or its default)`, remedy: "pass the port in --server, for example --server nats://127.0.0.1:4222" };
+  if (server !== undefined && !bindReaches(host, server))
+    return { problem: `--host ${host} and --server ${server} name different addresses: the broker would bind ${host} but be probed at ${new URL(server).hostname}`, remedy: "pass one of them, or make both name the same address" };
   return undefined;
 }
 
@@ -588,12 +633,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     "accept-stale-checkpoint"?: boolean;
     "tls-cert"?: string; "tls-key"?: string;
     "max-sessions"?: string;
+    "manager-name"?: string;
     "no-manager"?: boolean;
     json?: boolean; plain?: boolean;
     __restoreAttempt?: string;
     __ordinaryResumeAttempt?: string;
   };
   if (freshTeamBoot && (!values.file || values.restore || values.__restoreAttempt || values.__ordinaryResumeAttempt || values["rotate-sys"] || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot accepts one manifest and its selected lifetime, not a restore, rotation or manager-free override");
+  if (values["manager-name"] !== undefined && (values.restore || values.file || values["no-manager"])) throw new CommandFailure("refused", "USAGE_INVALID", "--manager-name names the manager a plain cotal up starts; it cannot be combined with --restore, --file or --no-manager");
   // `space create` and `down` refuse a root other local accounts can write, so `up` refuses it too,
   // before anything is written: a stack started there could not be stopped from it.
   protectedLocalDirectory(canonicalRoot(cotalRoot()), "the project root");
@@ -1006,6 +1053,17 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       ensureRootForSpace(spaceForRoot);
     }
   }
+  // `--manager-name` is recorded for this root, where the manager reads it at each start. A running
+  // manager keeps the name it started with, so a different name while one runs is refused.
+  if (values["manager-name"] !== undefined) {
+    const name = assertManagerName(values["manager-name"]);
+    const named = { root: cotalRoot(), space: values.space ?? folderSpace() };
+    if (readManagerName(named) !== name) {
+      if (managerRecordState(undefined, undefined, named.space, named.root).state === "alive")
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${named.space}, and it keeps the name it started with`, { target: { root: named.root, space: named.space }, remedy: `stop it with cotal down, then run cotal up --manager-name ${shellWord(name)}` });
+      if (!values["dry-run"]) recordManagerName(named, name);
+    }
+  }
 
   // THE TRANSPORT IS DECIDED HERE, ABOVE EVERY BRANCH, AND THIS POSITION IS THE FIX.
   //
@@ -1043,6 +1101,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // require its own project root, while dry-run must write nothing to create one.
   const previewRoot = values.file && values["dry-run"] && !values.root && inheritedMachineHomeRoot() ? process.cwd() : undefined;
   const meshRoot = previewRoot ?? cotalRoot();
+  // A bare start seeds the root's default channels file, so one it would refuse is named here,
+  // before anything starts; an explicit --channels file was checked with the other flags.
+  if (!values.file && !values.restore && values.channels === undefined) loadChannelsFile();
   const transport = resolveTransport(values, undefined, meshRoot, {
     persist: false,
     quiet: true,
@@ -1570,7 +1631,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   }
 
   // A repair keeps its own store rules above, and a resume or restore names its store.
-  if (!resumeAttempt && !repairing && values["store-dir"] === undefined) refuseUnnamedLastStore(cotalPath("nats"));
+  if (!resumeAttempt && !repairing) {
+    if (values["store-dir"] === undefined) refuseUnnamedLastStore(cotalPath("nats"));
+    else refuseMissingNamedStore(resolve(values["store-dir"]));
+  }
   const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
   const boundListener: DetachOpts["boundListener"] = restored ? {
     serverName: restored.serverName,
@@ -1586,7 +1650,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   if (values.detach) {
     // A `backup restore` owns its own receipt: the native launcher's progress lines stay off stdout.
     const quietRestore = restored !== undefined && restoreSinks.has(restored.attemptId);
-    const { pid, source, authService, controlPlane, delivery, manager } = await startMeshDetached({
+    const { pid, executable, authService, controlPlane, delivery, manager } = await startMeshDetached({
       transport,
       server,
       storeDir: values["store-dir"],
@@ -1611,7 +1675,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     });
     // Transport policy is committed inside startMeshDetached before delivery launch (S5+S9).
     if (!quietRestore) {
-      console.log(c.dim(`Started nats-server (${source}).`));
+      console.log(c.dim(`Started ${executable}.`));
       console.log(c.green(renderDetachedSummary({ pid, delivery, authService: wantUser && authService, manager, machineHome: canonicalRoot(cotalRoot()) === canonicalRoot(homedir()), ...(values.root ? { root: cotalRoot() } : {}) })));
     }
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
@@ -1627,6 +1691,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       server,
       startupLock,
     );
+    if (restored?.selection === "registry" && !quietRestore)
+      for (const line of registryRestoreNotes(restored.attemptId, retainedPreviousStore(restored.root, restored.attemptId))) console.log(c.yellow(line));
     if (restored) restoreSinks.get(restored.attemptId)?.({
       attemptId: restored.attemptId, space: restored.space, root: restored.root, server: restored.server, mode: restored.mode,
       selection: restored.selection, targetPath: restored.targetPath, runtime: restored.runtime, brokerPid: pid,
@@ -1668,11 +1734,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     "-c", confPath,
     ...(boundListener ? ["--name", boundListener.serverName] : []),
   ];
-  const { bin, source } = await resolveNatsServer();
+  const natsServer = await resolveNatsServer();
+  const bin = natsServer.path;
 
   console.log(
     c.dim(
-      `Starting nats-server (JetStream, ${useAuth ? "JWT auth" : "OPEN/no-auth"}, ${source}) - store: ${storeDir}, bind: ${host}`,
+      `Starting ${natsServerLabel(natsServer)} (JetStream, ${useAuth ? "JWT auth" : "OPEN/no-auth"}) - store: ${storeDir}, bind: ${host}`,
     ),
   );
   console.log(c.dim("Press Ctrl-C to stop.\n"));
@@ -2779,9 +2846,10 @@ export function controllerStackNative(): StackUpNative {
   return {
     prepareBroker: async (opts) => {
       const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
-      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, seedFile: prepared.seedFile };
+      return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile };
     },
     initializeStreams: (server, space, setup, seedFile) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined),
+    recreateDeletedStreams: ({ seed, ...opts }) => recreateDeletedStreams({ ...opts, ...(seed !== undefined ? { seed: seed as ChannelRegistryFile } : {}) }),
     recordMesh: (entry) => recordOurMesh({ ...entry, ts: new Date().toISOString() }, "started", true),
     commitTransport: (root, chosen) => commitTransportPolicy(root, chosen, true),
   };
@@ -2872,6 +2940,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     throw new Error("--rotate-sys is for auth meshes: this manifest sets broker.auth: false (open), so there is no system account or $SYS credentials to rotate");
   // Before the dry-run print and before connector preflight or any write, as the refusals above.
   if (!opts.storeDir) refuseUnnamedLastStore(cotalPath("nats"));
+  else refuseMissingNamedStore(resolve(opts.storeDir));
 
   if (opts.dryRun) {
     // Dial-host SAN must refuse here too (S6). The real route runs assertServesDialHost after
@@ -3438,8 +3507,8 @@ export async function prepareBrokerStart(opts: DetachOpts) {
     "-c", confPath,
     ...(opts.boundListener ? ["--name", opts.boundListener.serverName] : []),
   ];
-  const { bin, source } = await resolveNatsServer();
-  return { root, server, space, useAuth, storeDir, seedFile, host, transport, setup, confPath, args, bin, source };
+  const { path: bin, source, version } = await resolveNatsServer();
+  return { root, server, space, useAuth, storeDir, seedFile, host, transport, setup, confPath, args, bin, source, version };
 }
 
 /**
@@ -3468,8 +3537,8 @@ export async function startMeshDetached(
   // The `= {}` default is gone with the optional transport: an options object that can be omitted
   // entirely cannot carry a mandatory decision.
   opts: DetachOpts,
-): Promise<{ server: string; pid: number; source: string; controlPlane: boolean; authService: boolean; deliveryResponderBound: boolean | null; delivery: boolean; manager: boolean }> {
-  const { server, space, useAuth, storeDir, seedFile, transport, setup, args, bin, source } = await prepareBrokerStart(opts);
+): Promise<{ server: string; pid: number; executable: string; controlPlane: boolean; authService: boolean; deliveryResponderBound: boolean | null; delivery: boolean; manager: boolean }> {
+  const { server, space, useAuth, storeDir, seedFile, transport, setup, args, bin, source, version } = await prepareBrokerStart(opts);
   const logPath = cotalPath("nats.log");
   const fd = openBrokerLog(logPath);
   const startOffset = fstatSync(fd).size;
@@ -3502,7 +3571,7 @@ export async function startMeshDetached(
   return {
     server,
     pid: child.pid ?? 0,
-    source,
+    executable: natsServerLabel({ path: bin, source, version }),
     controlPlane: controlPlane !== undefined,
     authService,
     deliveryResponderBound: useAuth ? controlPlane?.responderBound === true : null,
@@ -4060,6 +4129,38 @@ async function recreateAdoptedMemoryBuckets(root: string, space: string, server:
   await recreateMemoryBuckets(server, space, { creds: await mintCreds(auth, newIdentity(), "provisioner") });
 }
 
+/** `cotal space delete` removes a space's streams from a broker that keeps running. When a stack
+ *  reuses that broker and every canonical stream of the space is gone, create them again, empty, as
+ *  a broker start does, and return true. A broker that still holds any of them is left as it is. */
+async function recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: "open" | "auth" | "user"; channels?: string; seed?: ChannelRegistryFile }): Promise<boolean> {
+  let setup: { creds: string } | undefined;
+  if (opts.mode === "auth") {
+    const auth = await getSpaceAuth(workspaceSecretStore(opts.root), opts.space);
+    if (!auth) throw new Error(`space "${opts.space}" has no trust material under ${authDir(opts.root)}; cannot read its streams on the running broker`);
+    setup = { creds: await mintCreds(auth, newIdentity(), "provisioner") };
+  } else if (opts.mode !== "open") throw new Error("a user-auth stack's streams are not recreated on a running broker");
+  const nc = await connect({ servers: opts.server, ...standaloneConnectOpts({ creds: setup?.creds, tls: false }) });
+  let held = false;
+  try {
+    requireBrokerFloor(nc);
+    const jsm = await jetstreamManager(nc);
+    for (const name of spaceDeletionStreams(opts.space)) {
+      try {
+        await jsm.streams.info(name);
+        held = true;
+        break;
+      } catch (error) {
+        if (!isJetStreamMissing(error, JetStreamApiCodes.StreamNotFound)) throw error;
+      }
+    }
+  } finally {
+    await nc.drain();
+  }
+  if (held) return false;
+  await postStart(opts.server, opts.space, setup, opts.seed ?? loadChannelsFile(opts.channels));
+  return true;
+}
+
 /** Load the declarative channels-config file to seed the registry. An explicit `--channels`
  *  path that's missing is a hard error; the default `.cotal/channels.json` is optional (absent
  *  ⇒ nothing to seed). */
@@ -4067,17 +4168,57 @@ function loadChannelsFile(explicit?: string): ChannelRegistryFile | undefined {
   if (explicit) return readChannelsFile(resolve(explicit));
   const path = cotalPath("channels.json");
   if (!existsSync(path)) return undefined;
-  return JSON.parse(readFileSync(path, "utf8")) as ChannelRegistryFile;
+  return readChannelsFile(path, false);
 }
 
-/** Read and parse an explicit `--channels` file. One that is missing, unreadable or not JSON is a
- *  usage refusal that names its path. */
-function readChannelsFile(path: string): ChannelRegistryFile {
+/** Read, parse and check a channels file: `explicit` is a `--channels` path, else the root's default
+ *  `.cotal/channels.json`. One that is missing, unreadable or not JSON is a usage refusal, and one
+ *  whose content the registry would not take is a schema refusal; each names the file. */
+function readChannelsFile(path: string, explicit = true): ChannelRegistryFile {
+  const remedy = explicit ? "fix the file, or omit --channels" : `fix or remove ${path}`;
   let text: string;
   try { text = readFileSync(path, "utf8"); }
-  catch { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is missing or unreadable`, { remedy: "name an existing channels file with --channels <path>, or omit --channels" }); }
-  try { return JSON.parse(text) as ChannelRegistryFile; }
-  catch (error) { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is not valid JSON (${(error as Error).message})`, { remedy: "fix the file, or omit --channels" }); }
+  catch { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is missing or unreadable`, { remedy: explicit ? "name an existing channels file with --channels <path>, or omit --channels" : remedy }); }
+  let value: unknown;
+  try { value = JSON.parse(text); }
+  catch (error) { throw new CommandFailure("refused", "USAGE_INVALID", `the channels file ${path} is not valid JSON (${(error as Error).message})`, { remedy }); }
+  const problem = channelsFileProblem(value);
+  if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `the channels file ${path} is invalid: ${problem}`, { remedy });
+  return value as ChannelRegistryFile;
+}
+
+const CHANNEL_DEFAULT_FIELDS: Record<keyof ChannelDefaults, true> = { replay: true, replayWindow: true, deliveryClass: true };
+const CHANNEL_FIELDS: Record<keyof ChannelConfig, true> = { ...CHANNEL_DEFAULT_FIELDS, description: true, instructions: true };
+
+/** Why the registry would not take this seed: the shape, an unknown key, a channel name `channel set`
+ *  refuses, or a field value the registry's write checks refuse. Undefined when every entry passes. */
+function channelsFileProblem(value: unknown): string | undefined {
+  const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  const fieldsProblem = (where: string, entry: unknown, fields: Record<string, true>, check: (patch: Record<string, unknown>) => void): string | undefined => {
+    if (!isObject(entry)) return `${where} must be an object`;
+    for (const [field, fieldValue] of Object.entries(entry)) {
+      if (!Object.hasOwn(fields, field)) return `${where} has an unknown key ${JSON.stringify(field)}; it takes ${Object.keys(fields).join(", ")}`;
+      try { check({ [field]: fieldValue }); }
+      catch (error) { return `${where} ${field}: ${(error as Error).message}`; }
+    }
+    return undefined;
+  };
+  if (!isObject(value)) return 'it must be a JSON object with "defaults" and "channels"';
+  for (const key of Object.keys(value)) if (key !== "defaults" && key !== "channels") return `unknown key ${JSON.stringify(key)}; the file takes "defaults" and "channels"`;
+  if (value.defaults !== undefined) {
+    const problem = fieldsProblem('"defaults"', value.defaults, CHANNEL_DEFAULT_FIELDS, validateChannelDefaults);
+    if (problem) return problem;
+  }
+  if (value.channels === undefined) return undefined;
+  if (!isObject(value.channels)) return '"channels" must be an object of channel names';
+  for (const [name, config] of Object.entries(value.channels)) {
+    try { assertValidChannel(name); }
+    catch (error) { return (error as Error).message; }
+    if (!isConcreteChannel(name)) return `channel ${JSON.stringify(name)} is a wildcard; name one concrete channel`;
+    const problem = fieldsProblem(`channel ${JSON.stringify(name)}`, config, CHANNEL_FIELDS, validateChannelConfig);
+    if (problem) return problem;
+  }
+  return undefined;
 }
 
 /**
@@ -4273,20 +4414,37 @@ function validateRecorded(
   return transport;
 }
 
-/** `down` drops the record that named a custom or restored store, so a later start that names none
- *  would open an empty second store and leave the data where it was. Each real start writes its
- *  `store_dir` into the broker config it renders, and that file outlives `down`: while the store it
- *  names differs and still holds JetStream data, and the default store holds none, refuse and name it. */
-function refuseUnnamedLastStore(storeDir: string): void {
-  if (existsSync(join(storeDir, "jetstream"))) return;
+/** The store this root's last broker served, when it differs from `storeDir` and still holds
+ *  JetStream data. `down` drops the record that named a custom or restored store, but each real start
+ *  writes its `store_dir` into the broker config it renders, and that file outlives `down`. */
+function lastServedStore(storeDir: string): string | undefined {
   for (const conf of [join(authDir(cotalRoot()), "server.conf"), cotalPath("server-open.conf")]) {
     if (!existsSync(conf)) continue;
     // The core renderer writes the path as a JSON string.
     const named = /jetstream \{ store_dir: ("(?:[^"\\]|\\.)*")/.exec(readFileSync(conf, "utf8"))?.[1];
     const last = named === undefined ? undefined : resolve(JSON.parse(named) as string);
-    if (last !== undefined && last !== resolve(storeDir) && existsSync(join(last, "jetstream")))
-      throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and this start names no store, so it would open a new empty one at ${storeDir}; nothing was started`, { target: { root: cotalRoot(), storeDir: last }, remedy: `reopen it with --store-dir ${last}, or move that store away to start empty` });
+    if (last !== undefined && last !== resolve(storeDir) && existsSync(join(last, "jetstream"))) return last;
   }
+  return undefined;
+}
+
+/** A start that names no store would open an empty second store and leave the data where it was:
+ *  while the last served store holds data and the default store holds none, refuse and name it. */
+function refuseUnnamedLastStore(storeDir: string): void {
+  if (existsSync(join(storeDir, "jetstream"))) return;
+  const last = lastServedStore(storeDir);
+  if (last !== undefined)
+    throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and this start names no store, so it would open a new empty one at ${storeDir}; nothing was started`, { target: { root: cotalRoot(), storeDir: last }, remedy: `reopen it with --store-dir ${last}, or move that store away to start empty` });
+}
+
+/** A `--store-dir` that does not exist yet, while the last served store holds data, is taken for a
+ *  mistyped path: the start would open a new empty store there. Creating the directory first names a
+ *  new store on purpose. */
+function refuseMissingNamedStore(storeDir: string): void {
+  if (existsSync(storeDir)) return;
+  const last = lastServedStore(storeDir);
+  if (last !== undefined)
+    throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and --store-dir names ${storeDir}, which does not exist, so this start would open a new empty store there; nothing was started`, { target: { root: cotalRoot(), storeDir: last, requested: storeDir }, remedy: `reopen it with --store-dir ${last}, or create ${storeDir} first to start on a new empty store` });
 }
 
 /**

@@ -131,13 +131,12 @@ function brokerTarget(context: ServiceAdapterContext, purpose: BrokerPurpose = "
   return { root, space: context.space, server, host, port, scheme, config, binary };
 }
 
-/** Bind the declared client listener once and release it. nats-server exits on a bind failure with
- *  only a line in its log, so a held address is refused here, before launch, with the OS bind error.
- *  The address can still be taken between this check and the broker's own bind; that broker then
- *  exits before readiness and its log keeps the cause. */
-async function assertListenerFree(target: BrokerTarget): Promise<void> {
+/** Bind a broker address's listener once and release it: the OS error when that fails, "timeout"
+ *  when the bind does not finish, or undefined when the address is free. */
+export async function listenerBindError(server: string): Promise<NodeJS.ErrnoException | "timeout" | undefined> {
+  const target = brokerListenAddress(server);
   // The target host is URL-shaped: an IPv6 literal keeps its brackets there.
-  const host = target.host.startsWith("[") ? target.host.slice(1, -1) : target.host, address = `${target.host}:${target.port}`;
+  const host = target.host.startsWith("[") ? target.host.slice(1, -1) : target.host;
   const probe = createServer();
   let timer: NodeJS.Timeout | undefined;
   const error = await new Promise<NodeJS.ErrnoException | "timeout" | undefined>((resolve) => {
@@ -148,10 +147,20 @@ async function assertListenerFree(target: BrokerTarget): Promise<void> {
   // Closed on every path, bound or not, so a refusal leaves no handle that keeps the command alive.
   clearTimeout(timer);
   await new Promise<void>((resolve) => probe.close(() => resolve()));
+  return error;
+}
+
+/** Bind the declared client listener once and release it. nats-server exits on a bind failure with
+ *  only a line in its log, so a held address is refused here, before launch, with the OS bind error.
+ *  The address can still be taken between this check and the broker's own bind; that broker then
+ *  exits before readiness and its log keeps the cause. */
+async function assertListenerFree(target: BrokerTarget): Promise<void> {
+  const address = `${target.host}:${target.port}`;
+  const error = await listenerBindError(target.server);
   if (!error) return;
   if (error === "timeout") return refuse("TARGET_UNAVAILABLE", `the broker address ${address} could not be checked: binding it did not finish within ${LISTENER_PROBE_TIMEOUT_MS / 1000}s; no broker was launched`, { server: target.server, address });
   const reason = error.code === "EADDRINUSE" ? "address already in use" : error.code === "EACCES" ? "permission denied" : error.code === "EADDRNOTAVAIL" ? "address not available on this host" : error.code ?? "unknown error";
-  refuse(error.code === "EADDRINUSE" ? "CONFLICT" : "TARGET_UNAVAILABLE", `the broker cannot listen on ${address}: bind failed (${reason}); no broker was launched`, { server: target.server, address, bindError: error.code ?? null }, error.code === "EADDRINUSE" ? `stop the process listening on ${address}, then run the command again; the stack keeps its recorded broker address` : undefined);
+  refuse(error.code === "EADDRINUSE" ? "CONFLICT" : "TARGET_UNAVAILABLE", `the broker cannot listen on ${address}: bind failed (${reason}); no broker was launched`, { server: target.server, address, bindError: error.code ?? null }, error.code === "EADDRINUSE" ? `stop the process listening on ${address}, then run the command again` : undefined);
 }
 
 function configDigest(path: string): string {

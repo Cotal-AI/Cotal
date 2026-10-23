@@ -489,6 +489,35 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
+// --- up refuses a --server with no port, an IPv6 address, a --host that is no bind host or names
+// another address than --server, and a --server that the default bind host does not serve, before
+// project lookup ---
+{
+  const cmd = registry.resolve<Command>("command", "up")!;
+  const missingRoot = join(tmpdir(), "cotal-up-address-no-project", `${process.pid}-${Date.now()}`);
+  const refused: [string[], RegExp, string?][] = [
+    [["--server", "nats://127.0.0.1"], /^--server names no port/],
+    [["--server", "nats://[::1]:4222"], /^--server names an IPv6 address/],
+    [["--host", "::1"], /^--host names an IPv6 address/],
+    [["--host", "[::1]"], /^--host names an IPv6 address/],
+    [["--host", "nats://127.0.0.1"], /^--host nats:\/\/127\.0\.0\.1 looks like a URL/],
+    [["--host", "127.0.0.1:4222"], /^--host 127\.0\.0\.1:4222 is not a valid bind host/],
+    [["--host", "localhost:4222"], /^--host localhost:4222 is not a valid bind host/],
+    [["--server", "nats://127.0.0.1:4222", "--host", "127.0.0.2"], /^--host 127\.0\.0\.2 and --server nats:\/\/127\.0\.0\.1:4222 name different addresses/],
+    [["--server", "nats://127.0.0.2:4222"], /^--server nats:\/\/127\.0\.0\.2:4222 names 127\.0\.0\.2, and with no --host the broker binds 127\.0\.0\.1/, "pass --host 127.0.0.2 to bind the broker there"],
+  ];
+  for (const [flags, said, remedy] of refused) {
+    assert.throws(() => cmd.validate!(parseCommandArgs(cmd, [...flags, "--root", missingRoot])), (error: unknown) =>
+      isCommandFailure(error) && error.code === "USAGE_INVALID" && said.test(error.message) && Boolean(error.remedy) && (remedy === undefined || error.remedy === remedy),
+    `${flags.join(" ")} is refused as usage before project lookup`);
+  }
+  for (const flags of [["--server", "nats://127.0.0.1:4222"], ["--host", "::"], ["--host", "0.0.0.0"], ["--host", "127.0.0.2"], ["--server", "nats://127.0.0.1:4222", "--host", "127.0.0.1"], ["--server", "nats://127.0.0.1:4222", "--host", "0.0.0.0"], ["--server", "nats://127.0.0.2:4222", "--host", "127.0.0.2"]]) {
+    assert.throws(() => cmd.validate!(parseCommandArgs(cmd, [...flags, "--root", missingRoot])), (error: unknown) =>
+      isCommandFailure(error) && !/names no port|IPv6|--host/.test(error.message),
+    `${flags.join(" ")} passes the address checks and stops only at the missing root`);
+  }
+}
+
 // --- __complete offers declared flag names on a `-` prefix --------------------------------------
 {
   const spawnCmd = registry.all<Command>("command").find((c) => c.name === "spawn");
@@ -1223,18 +1252,83 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.equal(restated.outcome, "refused", "the outcome is kept");
   assert.equal(restated.code, "PERMISSION_DENIED", "the code is kept");
   assert.deepEqual((restated.native?.detail as { managers: unknown }).managers, [
-    { instanceId: "aaa1", host: "box-a", activity: "supervisor (orca)", since: "2026-10-01T00:00:00.000Z" },
-    { instanceId: "bbb2", host: null, activity: null, since: null },
-  ], "each manager carries what its presence reports, and nothing it does not");
-  assert.equal(restated.remedy, `rerun it on one: ${displayCmd()} stop --name 'x y' --json --on aaa1 or ${displayCmd()} stop --name 'x y' --json --on bbb2`, "the Next reruns the caller's own command with --on for each manager");
+    { name: "box-a/orca", instanceId: "aaa1", host: "box-a", activity: "supervisor (orca)", since: "2026-10-01T00:00:00.000Z" },
+    { name: "manager", instanceId: "bbb2", host: null, activity: null, since: null },
+  ], "each manager carries what its presence reports, and nothing it does not; one without a name shows as <host>/<runtime>");
+  assert.equal(restated.remedy, `rerun it on one: ${displayCmd()} stop --name 'x y' --json --on box-a/orca or ${displayCmd()} stop --name 'x y' --json --on bbb2`, "the Next reruns the caller's own command with --on for each manager, by the shortest value that picks it");
   const shown = renderReport(commandFailureReport(restated), "plain");
-  assert.match(shown, /Live managers[\s\S]*aaa1\s+box-a\s+supervisor \(orca\)\s+2026-10-01T00:00:00\.000Z/, "the report lists each manager on its own row");
+  assert.match(shown, /Live managers[\s\S]*Manager\s+Instance[\s\S]*box-a\/orca\s+aaa1\s+box-a\s+supervisor \(orca\)\s+2026-10-01T00:00:00\.000Z/, "the report lists each manager on its own row, by name first");
   const unread = await managerChoiceFailure(refusal, async () => { throw new Error("no roster"); }, ["ps"]);
   assert.deepEqual((unread?.native?.detail as { managers: { instanceId: string }[] }).managers.map((m) => m.instanceId), ["aaa1", "bbb2"], "an unreadable roster still names the instance ids");
   let read = false;
   const other = await managerChoiceFailure(new CommandFailure("refused", "PERMISSION_DENIED", "manager-caller selection found no manager candidate for owner u_own"), async () => { read = true; return roster; }, ["ps"]);
   assert.equal(other, undefined, "any other refusal passes through");
   assert.equal(read, false, "and reads no roster");
+}
+
+{
+  // A manager shows by the name it was started with, or by <host>/<runtime> without one. A `--on`
+  // that picks no single manager is restated with the command again on each candidate, replacing
+  // the `--on` the caller gave in either spelling.
+  const { ManagerPinUnmatched, managerChoiceFailure, managerLabel } = await import("../src/lib/manager-choice.js");
+  const { displayCmd } = await import("../src/lib/self-exec.js");
+  const row = (name: string, meta: Record<string, string>, activity?: string) => ({ card: { id: "u_own.manager_x", name, kind: "endpoint", role: "manager", meta }, status: "idle", ...(activity ? { activity } : {}), ts: 0 }) as unknown as import("@cotal-ai/core").Presence;
+  assert.equal(managerLabel(row("factory", { host: "pc" }, "supervisor (tmux)")), "factory", "a named manager shows by its name");
+  assert.equal(managerLabel(row("manager", { host: "pc" }, "supervisor (tmux)")), "pc/tmux", "an unnamed one shows by <host>/<runtime>");
+  assert.equal(managerLabel(row("manager", { host: "pc" }, "busy")), "pc", "without a runtime in its activity, by its host");
+  assert.equal(managerLabel(row("manager", {}, "supervisor (orca)")), "orca", "without a host, as a manager started by a cotal before 0.100.0, by its runtime");
+  const { CommandFailure, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
+  const hostless = new CommandFailure("refused", "PERMISSION_DENIED", "2 of your managers are live, and this command needs exactly one of them", { native: { detail: { managers: [{ name: "orca", instanceId: "c".repeat(30), host: null, activity: "supervisor (orca)", since: null }] } } });
+  assert.match(renderReport(commandFailureReport(hostless), "plain"), /orca\s+c{30}\s+not reported \(started by an older cotal\)\s+supervisor \(orca\)/, "a manager with no host in its presence reads as started by an older cotal, not as a bare dash");
+  const candidates = [
+    { name: "factory", instanceId: "a".repeat(30), host: "pc", activity: "supervisor (tmux)", since: null },
+    { name: "pc/pty", instanceId: "b".repeat(30), host: "pc", activity: "supervisor (pty)", since: null },
+  ];
+  const ambiguous = new ManagerPinUnmatched("pc", candidates, 2);
+  assert.equal(ambiguous.code, "TARGET_AMBIGUOUS", "a value that matches several managers is ambiguous");
+  assert.equal(new ManagerPinUnmatched("nosuch", candidates, 0).code, "TARGET_NOT_FOUND", "one that matches none names no target");
+  const restated = await managerChoiceFailure(ambiguous, async () => { throw new Error("not read"); }, ["ps", "--on", "pc", "--json"]);
+  assert.equal(restated?.remedy, `rerun it on one: ${displayCmd()} ps --on factory --json or ${displayCmd()} ps --on pc/pty --json`, "the Next replaces the caller's --on with the name of each candidate");
+  const equals = await managerChoiceFailure(ambiguous, async () => { throw new Error("not read"); }, ["ps", "--on=pc"]);
+  assert.equal(equals?.remedy, `rerun it on one: ${displayCmd()} ps --on factory or ${displayCmd()} ps --on pc/pty`, "and replaces an --on=<value> the same way");
+  assert.equal(await managerChoiceFailure(new ManagerPinUnmatched("x", [], 0), async () => [], ["ps", "--on", "x"]), undefined, "with no manager to offer, the refusal stands as it is");
+}
+
+{
+  // A bare spawn runs the application in this terminal; a manager runs it only with -d or --on.
+  // This process has no terminal, so an attaching launch is refused and a spawn in this terminal is not.
+  const { validateSpawnArguments } = await import("../src/commands/spawn.js");
+  const { spawnUsesManager } = await import("../src/lib/spawn-defaults.js");
+  assert.equal(spawnUsesManager({}), false, "a bare spawn asks no manager");
+  assert.equal(spawnUsesManager({ detach: true }), true, "-d hands the launch to a manager");
+  assert.equal(spawnUsesManager({ on: "a".repeat(30) }), true, "and so does --on");
+  const refusal = (values: Record<string, unknown>) => {
+    try { validateSpawnArguments({ values, positionals: [], raw: [] } as never); return undefined; } catch (error) { return error as { code?: string; message: string; remedy?: string }; }
+  };
+  assert.equal(refusal({}), undefined, "a bare spawn without a terminal is not refused as a managed attachment");
+  const json = refusal({ json: true });
+  assert.equal(json?.code, "USAGE_INVALID", "a bare spawn with --json is refused");
+  assert.match(json?.message ?? "", /a spawn in this terminal takes no structured receipt/, "because a spawn in this terminal writes no receipt");
+  assert.match(json?.remedy ?? "", /add -d/, "and the Next adds -d");
+  assert.equal(refusal({ json: true, detach: true }), undefined, "with -d, --json is a manager's receipt");
+  assert.match(refusal({ restarts: "2", "restart-window": "1000" })?.remedy ?? "", /add -d, or --on/, "--restarts without a manager names -d or --on");
+  assert.match(refusal({ on: "a".repeat(30) })?.message ?? "", /attaching to a manager's launch needs usable input and output terminals/, "--on without -d attaches, which needs terminals");
+}
+
+{
+  // A host that granted a managed agent other channels than it asked for: the receipt shows what was
+  // granted on one line, and the result `--json` writes carries both lists.
+  const { managedLaunchAcl, managedLaunchView } = await import("../src/commands/spawn.js");
+  const { renderReport } = await import("@cotal-ai/workspace");
+  const acl = { requested: { allowSubscribe: [">"], allowPublish: [">"] }, effective: { allowSubscribe: ["general"], allowPublish: [] } };
+  assert.deepEqual(managedLaunchAcl(acl), acl, "the manager's acl field is carried as it was sent");
+  assert.equal(managedLaunchAcl(undefined), null, "a launch without one carries null");
+  assert.equal(managedLaunchAcl({ requested: acl.requested }), undefined, "one that cannot be read is told apart from none");
+  const result = { kind: "managed-launch", name: "worker", id: "u_own.worker", lifecycleUid: "a".repeat(26), space: "demo", managerInstanceId: "b".repeat(26), harness: "probe", runtime: "pty", role: null, request: null, intent: null, readiness: "joined", requestedModel: null, detached: true } as const;
+  const narrowed = renderReport(managedLaunchView({ ...result, acl }), "plain");
+  assert.match(narrowed, /Granted:\s+read general [·-] post none; asked for read > [·-] post >\n/, "the receipt lists what was granted");
+  assert.equal(narrowed.match(/Granted/g)?.length, 1, "on one line");
+  assert.doesNotMatch(renderReport(managedLaunchView({ ...result, acl: null }), "plain"), /Granted/, "a launch granted what it asked for shows no such line");
 }
 
 console.log("✓ command-kernel smoke passed");

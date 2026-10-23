@@ -276,6 +276,11 @@ try {
     const settled = failed?.journal.findLast((row) => row.kind === "step" && row.state === "settled");
     c("the failed wait's step row carries the recorded refusal message beside its code",
       settled?.kind === "step" && settled.errorCode === "L4000" && settled.errorMessage?.includes('is not admitted to read channel "build"') === true, failed?.journal);
+    // The run's own status records the same cause, and its run-ps row carries it through the
+    // manager's closed row schema.
+    const listed = ((await call("run-ps", undefined)).data as RunListRowT[] | undefined)?.find((row) => row.runId === waitId);
+    c("the failed run's status and its ps row record the cause",
+      failed?.status?.failure?.code === "L4000" && failed.status.failure.message.includes('is not admitted to read channel "build"') && listed?.failure?.code === "L4000", { status: failed?.status, listed });
   }
 
   console.log("A3. a checkpoint parks the hosted run; run-answer resolves it from the outside");
@@ -389,11 +394,14 @@ try {
               COTAL_ACCEPTED_TOKEN: asked.issued?.acceptedToken ?? "",
             },
           }).then(({ stdout }) => {
-            const out = JSON.parse(stdout) as { command?: unknown; outcome?: unknown; target?: { run?: unknown }; result?: { kind?: unknown; action?: unknown; result?: { token?: unknown; answerId?: unknown } } };
+            const out = JSON.parse(stdout) as { command?: unknown; outcome?: unknown; target?: { run?: unknown }; result?: { kind?: unknown; action?: unknown; result?: { token?: unknown; answerId?: unknown }; answer?: { step?: unknown; value?: { estimate?: unknown }; valueGiven?: unknown } } };
             const reply = out.result?.result;
-            // The manager's answer does not repeat the run id, so the receipt names the run the command did.
+            const echoed = out.result?.answer;
+            // The manager's answer does not repeat the run id, so the receipt names the run the command
+            // did, and echoes the step and the value it filed.
             return out.command === "run" && out.outcome === "ok" && out.target?.run === runId && out.result?.kind === "run-receipt" && out.result.action === "answer"
               && typeof reply?.token === "string" && typeof reply.answerId === "string"
+              && echoed?.step === "/ask:size#0" && echoed.valueGiven === true && echoed.value?.estimate === 4
               ? { ok: true as const, token: reply.token, answerId: reply.answerId }
               : { ok: false as const, error: `the CLI returned no answer coordinate: ${stdout}` };
           }, (e: unknown) => ({ ok: false as const, error: String((e as Error).message) }));
@@ -592,7 +600,7 @@ try {
       await runWorkflow({ values: { server: brokerA.servers, space: spaceA, local: true, ...values }, positionals, raw: [] });
       return LOGS.join("\n");
     };
-    let localId = "", journal = "", answer = "", finished = "";
+    let localId = "", journal = "", answer = "", finished = "", answered = "";
     try {
       // The drive holds this process until the pause is answered; it runs beside the answer below.
       // A local start names its own ceiling (SPEC 14.8): the operator's evidence, on the command line.
@@ -601,13 +609,19 @@ try {
       for (let i = 0; i < 50 && !journal.includes("asks        Ship it?"); i++) { await wait(200); journal = await cli(["journal", localId]); }
       answer = await cli(["answer", localId, "/checkpoint:approve#0"], { by: "dana", value: '"yes"' });
       finished = await driven;
+      answered = await cli(["journal", localId]);
     } finally {
       console.log = realLog;
       process.exitCode = undefined;
     }
     c("a local start on the auth broker activates under the run-driver credential it minted for itself", localId !== "", localId);
     c("a local journal read rides a one-shot run-operator READ credential", journal.includes("/checkpoint:approve#0  pending"), journal);
-    c("a local answer rides the ANSWERING form and names the answerer with --by", answer.includes('"settle": "resumed"') && answer.includes('"answerId"'), answer);
+    // The receipt names the step, the value and the answer id; the answerer `--by` named is on the
+    // journal's answered line.
+    c("a local answer rides the ANSWERING form and names the answerer with --by",
+      answer.includes("Answer accepted") && /Step:\s+\/checkpoint:approve#0/.test(answer) && /Value:\s+"yes"/.test(answer) && /Answer id:\s+\S+/.test(answer)
+        && answered.split("\n").some((l) => l.includes("/checkpoint:approve#0") && l.includes("answered") && l.includes("dana")),
+      { answer, answered });
     c("and the held local drive then completes", finished.includes(`run ${localId}: completed`), finished);
     // A revoked run is not resumed: the marker is written from the folder's trust material, the
     // resume refuses by name, and a second revoke is not an error.
@@ -739,7 +753,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 72;
+const EXPECTED_CELLS = 73;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

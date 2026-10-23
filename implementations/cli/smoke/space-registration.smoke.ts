@@ -7,10 +7,14 @@
  * serves, so the open broker serves the names that are added and refuses one it does not. A forget
  * removes the space's per-space preferences with it, refuses on a preferences file it cannot read,
  * and is partial when it cannot remove them. On Linux, a space started as a controller
- * stack is written as its stack journal and instance records, with nothing launched. A prepared space
+ * stack is written as its stack journal and instance records, with nothing launched. A stack journal
+ * whose members this home has no record of, with a live manager, stands for a stack running under
+ * another Cotal home: create, down and status there name that home. A stopped stack whose broker
+ * bind does not serve its recorded address refuses up and is started again with the --host it names.
+ * A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
- * no installed provider, and one naming a missing channels file, have refused and left the root as
- * it was. Create and a later `up` write the
+ * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
+ * default channels file, have refused and left the root as it was. Create and a later `up` write the
  * default persona when the root has none, and leave an edited one byte-identical. Under umask 0002,
  * create makes `.cotal` and its persona catalog 0700. A registration
  * whose root is not an absolute path is refused at the space claim on the controller route and on the
@@ -39,7 +43,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, removeMesh, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 await import("../src/lib/broker-service.js");
@@ -446,6 +450,92 @@ setCurrent("keep");
   rmSync(exposed, { recursive: true, force: true });
 }
 
+// ── A controller stack running under another Cotal home ───────────────────────────────────────────────
+// The root's journal names member instances this home holds no record of, and its manager record
+// fronts a live process of this suite, so the stack runs under another COTAL_HOME.
+if (process.platform === "linux") {
+  const awayRoot = realpathSync.native(projectRoot("away"));
+  const ts = new Date().toISOString();
+  const row = (role: "broker" | "auth" | "delivery" | "manager") =>
+    role === "broker" || role === "manager" ? { role, definition: `stack-${role}`, instanceId: randomUUID(), state: "started" as const } : { role, definition: `stack-${role}`, instanceId: null, state: "not-attempted" as const };
+  writeStackJournal(awayRoot, undefined, {
+    schemaVersion: 1, kind: "cotal-stack-controller", root: awayRoot, space: "away", server: LIVE, mode: "open",
+    members: [row("broker"), row("auth"), row("delivery"), row("manager")],
+    operation: { id: randomUUID(), kind: "up", phase: "completed", recordedAt: ts, withAgents: false }, updatedAt: ts,
+  });
+  const awayManager = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  standIns.push(awayManager);
+  const awayRecord = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: awayRoot, space: "away" });
+  writeFileSync(awayRecord, String(awayManager.pid), { mode: 0o600 });
+  const journal = readFileSync(stackJournalPath(awayRoot), "utf8"), before = registryFiles();
+  const otherHome = (r: Awaited<ReturnType<typeof json>>) =>
+    refused(r, 2, "TARGET_UNAVAILABLE") && /another Cotal home/.test(r.env?.error?.message ?? "") && /COTAL_HOME set to the Cotal home the stack was started under/.test(r.env?.error?.remedy ?? "");
+  const unchanged = () => readFileSync(stackJournalPath(awayRoot), "utf8") === journal && JSON.stringify(registryFiles()) === JSON.stringify(before) && awayManager.exitCode === null;
+  const create = await json(["space", "create", "away", "--root", awayRoot]);
+  check("space create over a stack running under another Cotal home refuses TARGET_UNAVAILABLE with the COTAL_HOME step, and prepares nothing",
+    otherHome(create) && findPreparedSpace("away") === undefined && unchanged(), shown(create));
+  for (const args of [["down", "--yes"], ["down", "--dry-run"]]) {
+    const stop = await json(args, awayRoot);
+    check(`${args.join(" ")} there refuses TARGET_UNAVAILABLE with the COTAL_HOME step, and stops nothing`, otherHome(stop) && unchanged(), shown(stop));
+  }
+  // A space this home prepared at the root does not hide the other home.
+  recordPreparedSpace({ space: "away", root: awayRoot, ts });
+  const status = await json(["status"], awayRoot);
+  check("status there names the other home even when this home prepared a space at the root",
+    status.status === 0 && status.env?.result?.selected?.code === "not-started" && /runs under another Cotal home/.test(status.env.result.selected.message ?? ""), shown(status));
+  removePreparedSpace("away");
+  await new Promise((done) => { awayManager.once("exit", done); awayManager.kill("SIGKILL"); });
+  rmSync(awayRecord);
+} else console.log("  - other Cotal home cells skipped: a controller stack needs Linux machine and boot identity");
+
+// ── A broker bind that does not serve the recorded address ─────────────────────────────────────────────
+// A stack whose recorded bind host, or the default 127.0.0.1 when none was recorded, does not serve
+// its recorded address starts a broker no client reaches. Made here from a stopped stack's journal,
+// it refuses up before anything starts and names the --host that replaces the recorded one.
+if (process.platform === "linux") {
+  const pinned = join(home, "pinned");
+  mkdirSync(pinned);
+  const selected = getCurrent();
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const created = await json(["space", "create", "pinned"], pinned);
+  const sandbox = recordSmokeSandbox({ root: pinned, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  const started = await json(["up", "--detach", "--open", "--no-manager", "--server", server], pinned);
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: pinned, env: runEnv });
+  const stopped = await run(["down", "--yes"], {}, pinned);
+  check("a stack is started and stopped at a fresh root", created.status === 0 && started.status === 0 && stopped.status === 0, { created: shown(created), started: shown(started), stopped: shown(stopped) });
+  const journalPath = stackJournalPath(pinned);
+  const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+  writeFileSync(journalPath, JSON.stringify({ ...journal, broker: { ...journal.broker, host: "127.0.0.2" } }));
+  const pinnedBytes = readFileSync(journalPath, "utf8");
+  for (const args of [["up", "--detach", "--no-manager"], ["up", "--detach", "--no-manager", "--host", "127.0.0.3"]]) {
+    const r = await json(args, pinned);
+    check(`${args.join(" ")} over a recorded bind host that does not serve the address refuses CONFLICT, names cotal up --host 127.0.0.1, and starts nothing`,
+      refused(r, 2, "CONFLICT") && /broker binds 127\.0\.0\.2, which does not serve/.test(r.env?.error?.message ?? "") && (r.env?.error?.remedy ?? "").includes("cotal up --host 127.0.0.1") &&
+        readFileSync(journalPath, "utf8") === pinnedBytes, shown(r));
+  }
+  const recovered = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.1"], pinned);
+  check("the named --host replaces the recorded bind host and starts the stack", recovered.status === 0 && JSON.parse(readFileSync(journalPath, "utf8")).broker?.host === "127.0.0.1", shown(recovered));
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: pinned, env: runEnv });
+  const down = await run(["down", "--yes"], {}, pinned);
+  check("and down stops it", down.status === 0, shown(down));
+  // An address other than 127.0.0.1 recorded with no bind host: the broker binds the default.
+  const otherAddress = server.replace("127.0.0.1", "127.0.0.2");
+  const { host: _host, ...unbound } = JSON.parse(readFileSync(journalPath, "utf8")).broker;
+  writeFileSync(journalPath, JSON.stringify({ ...JSON.parse(readFileSync(journalPath, "utf8")), server: otherAddress, broker: unbound }));
+  const unboundBytes = readFileSync(journalPath, "utf8");
+  const bare = await json(["up", "--detach", "--no-manager"], pinned);
+  check("bare up over a recorded 127.0.0.2 address with no bind host refuses CONFLICT, names cotal up --host 127.0.0.2, and starts nothing",
+    refused(bare, 2, "CONFLICT") && /broker binds 127\.0\.0\.1, as no bind host was recorded, which does not serve/.test(bare.env?.error?.message ?? "") &&
+      (bare.env?.error?.remedy ?? "").includes("cotal up --host 127.0.0.2") && readFileSync(journalPath, "utf8") === unboundBytes, shown(bare));
+  const bound = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.2"], pinned);
+  check("--host 127.0.0.2 is recorded and starts the stack there", bound.status === 0 && JSON.parse(readFileSync(journalPath, "utf8")).broker?.host === "127.0.0.2", shown(bound));
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: pinned, env: runEnv });
+  const downAgain = await run(["down", "--yes"], {}, pinned);
+  check("and down stops it again", downAgain.status === 0, shown(downAgain));
+  // Its first up selected it; the cells after this one start from the selection before it.
+  if (selected === undefined) clearCurrent(); else setCurrent(selected);
+} else console.log("  - recorded bind host cells skipped: a controller stack needs Linux machine and boot identity");
+
 // ── Preparing a space with create, then starting it with up ────────────────────────────────────────────
 {
   const before = registryFiles();
@@ -519,7 +609,24 @@ setCurrent("keep");
     check("a --root this account cannot write is PERMISSION_DENIED, exit 2, with nothing written",
       refused(denied, 2, "PERMISSION_DENIED") && (denied.env?.error?.message ?? "").startsWith(`${readOnly} is not writable by this account`) && !existsSync(join(readOnly, ".cotal")) && findPreparedSpace("other") === undefined, shown(denied));
     chmodSync(readOnly, 0o700);
+    // A Cotal home this account cannot write is refused too, and the empty .cotal the attempt made is removed.
+    const lockedHome = join(home, "locked-home");
+    const homeless = join(home, "homeless");
+    mkdirSync(lockedHome, { mode: 0o500 });
+    mkdirSync(homeless);
+    const noHome = await run(["space", "create", "other", "--root", homeless, "--json"], { COTAL_HOME: join(lockedHome, ".cotal") });
+    const noHomeEnv = JSON.parse(noHome.stdout || "{}") as Record<string, any>;
+    check("a Cotal home this account cannot write is PERMISSION_DENIED, exit 2, naming it, with nothing left in the root",
+      refused({ ...noHome, env: noHomeEnv }, 2, "PERMISSION_DENIED") && (noHomeEnv.error?.message ?? "").startsWith(`this account cannot write this machine's Cotal home ${join(lockedHome, ".cotal")}`) && readdirSync(homeless).length === 0 && findPreparedSpace("other") === undefined, shown(noHome));
+    chmodSync(lockedHome, 0o700);
   }
+  // A .cotal that links to a folder that does not exist is refused naming both, with nothing written.
+  const dangling = join(home, "dangling");
+  mkdirSync(dangling);
+  symlinkSync(join(home, "nowhere"), join(dangling, ".cotal"));
+  const linked = await json(["space", "create", "other", "--root", dangling]);
+  check("a .cotal linking to a missing folder is TARGET_NOT_FOUND, exit 2, naming the link and its target",
+    refused(linked, 2, "TARGET_NOT_FOUND") && linked.env?.error?.message === `${join(dangling, ".cotal")} links to ${join(home, "nowhere")}, which does not exist; nothing was written` && !existsSync(join(home, "nowhere")) && findPreparedSpace("other") === undefined, shown(linked));
   // A prepared folder that is moved keeps none of its space, so a bare up there would start the
   // default. With that space selected and its recorded folder gone, up refuses and names the step.
   {
@@ -613,6 +720,41 @@ setCurrent("keep");
   check("up with a port-bearing --host refuses, exit 1, pointing at --server, and leaves the root and registrations unchanged",
     hostPort.status === 1 && /is not a valid bind host/.test(hostPort.stderr) && /the port comes from --server/.test(hostPort.stderr) &&
       cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(hostPort));
+  // --json answers these refusals in its envelope, as it does every other usage refusal.
+  const hostPair = await json(["up", "--detach", "--open", "--no-manager", "--server", server, "--host", "127.0.0.2"], fresh);
+  check("up --json with a --host naming another address than --server is a USAGE_INVALID envelope, exit 1, and leaves the root unchanged",
+    refused(hostPair, 1, "USAGE_INVALID") && /--host 127\.0\.0\.2 and --server .* name different addresses/.test(hostPair.env?.error?.message ?? "") &&
+      cotalFiles() === beforeRuntime.files, shown(hostPair));
+  const otherAddress = server.replace("127.0.0.1", "127.0.0.2");
+  const unbound = await json(["up", "--detach", "--open", "--no-manager", "--server", otherAddress], fresh);
+  check("up --json --server naming 127.0.0.2 with no --host is USAGE_INVALID, exit 1, naming --host 127.0.0.2, and leaves the root unchanged",
+    refused(unbound, 1, "USAGE_INVALID") && unbound.env?.error?.remedy === "pass --host 127.0.0.2 to bind the broker there" &&
+      cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(unbound));
+  // Content the registry would not take refuses before anything starts, naming the file and the entry.
+  const badSeeds: [string, string, string][] = [
+    ["a channel name channel set refuses", '{"channels":{"bad name!":{}}}', 'invalid channel "bad name!"'],
+    ["a replay window that is not a duration", '{"channels":{"ops":{"replayWindow":"2x"}}}', 'channel "ops" replayWindow: invalid duration "2x"'],
+    ["a file that is not an object", "[1,2]", "it must be a JSON object"],
+    ["a misspelled top-level key", '{"chanels":{"ops":{}}}', 'unknown key "chanels"'],
+    ["a misspelled channel field", '{"channels":{"ops":{"replayWindw":"6h"}}}', 'channel "ops" has an unknown key "replayWindw"'],
+  ];
+  for (const [what, text, named] of badSeeds) {
+    const seedPath = join(fresh, "bad-channels.json");
+    writeFileSync(seedPath, text);
+    const badSeed = await json(["up", "--open", "--channels", seedPath, "--server", server], fresh);
+    check(`up with ${what} in --channels is SCHEMA_INVALID, exit 1, naming the file and the entry, and leaves the root unchanged`,
+      refused(badSeed, 1, "SCHEMA_INVALID") && (badSeed.env?.error?.message ?? "").includes(seedPath) && (badSeed.env?.error?.message ?? "").includes(named) &&
+        cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(badSeed));
+  }
+  // The default file is read once the root is settled, so it refuses after the stack lock's layout
+  // exists and before a store, a broker or a registration.
+  const defaultSeed = join(fresh, ".cotal", "channels.json");
+  writeFileSync(defaultSeed, '{"chanels":{}}');
+  const badDefault = await json(["up", "--open", "--server", server], fresh);
+  check("an invalid default .cotal/channels.json refuses the same way, with a remedy to fix or remove it, before a store or a registration",
+    refused(badDefault, 1, "SCHEMA_INVALID") && (badDefault.env?.error?.message ?? "").includes(defaultSeed) && badDefault.env?.error?.remedy === `fix or remove ${defaultSeed}` &&
+      !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(badDefault));
+  unlinkSync(defaultSeed);
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");
@@ -849,8 +991,38 @@ setCurrent("keep");
   const ownStore = await json(["up", "--server", DEAD, "--store-dir", join(control, "nats"), "--restore-only", "x"], storeRoot);
   check("up --store-dir naming the root's own .cotal/nats passes the store check",
     refused(ownStore, 1, "USAGE_INVALID") && (ownStore.env?.error?.message ?? "").includes("--restore-only takes registry"), shown(ownStore));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const sealed = join(home, "store-sealed");
+    mkdirSync(sealed);
+    chmodSync(sealed, 0o500);
+    const uncreatable = await json(["up", "--server", DEAD, "--store-dir", join(sealed, "store")], storeRoot);
+    check("up --store-dir under a directory this account cannot write is PERMISSION_DENIED, exit 2, naming it",
+      refused(uncreatable, 2, "PERMISSION_DENIED") && (uncreatable.env?.error?.message ?? "").includes(`cannot be created, because this account cannot write ${sealed}`) &&
+        !existsSync(join(sealed, "store")), shown(uncreatable));
+    chmodSync(sealed, 0o700);
+  }
   check("no store refusal wrote a stack journal", !existsSync(stackJournalPath(storeRoot)));
   rmSync(exposed, { recursive: true, force: true });
+}
+
+// ── A --store-dir that does not exist, while the last served store holds data ───────────────────────
+// It is taken for a mistyped path and refused, and nothing is created. A directory created first
+// names a new store on purpose and passes.
+{
+  const lastRoot = projectRoot("store-last");
+  const last = join(lastRoot, "altstore");
+  const typo = join(lastRoot, "altstoer");
+  mkdirSync(join(last, "jetstream"), { recursive: true });
+  writeFileSync(join(lastRoot, ".cotal", "server-open.conf"), `jetstream { store_dir: ${JSON.stringify(last)} }\n`);
+  writeFileSync(join(lastRoot, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: store-last\nbroker: { servers: "${DEAD}", auth: false }\nchannels:\n  lobby: { description: "base" }\n`);
+  const mistyped = await run(["up", "-f", "cotal.yaml", "--dry-run", "--store-dir", typo], {}, lastRoot);
+  check("up -f --store-dir naming a missing path while the last store holds data refuses CONFLICT, exit 2, naming both",
+    mistyped.status === 2 && mistyped.stderr.includes("CONFLICT") && mistyped.stderr.includes(`served the store ${last}, and --store-dir names ${typo}, which does not exist`) &&
+      mistyped.stderr.includes(`reopen it with --store-dir ${last}`), shown(mistyped));
+  check("the refused start created no store", !existsSync(typo));
+  mkdirSync(typo);
+  const created = await run(["up", "-f", "cotal.yaml", "--dry-run", "--store-dir", typo], {}, lastRoot);
+  check("the same start with the directory created first is not refused", created.status === 0, shown(created));
 }
 
 finish();

@@ -23,6 +23,8 @@ export interface ResetSpaceIdentityPlan {
   providerKeys: readonly string[];
   agentKeys: readonly string[];
   secretKeys: readonly string[];
+  /** The public key of the space account this reset removes; absent on an open space. */
+  accountPub: string | undefined;
 }
 
 const within = (parent: string, path: string): boolean => {
@@ -116,7 +118,7 @@ export async function planResetSpaceIdentity(root: string, space: string, mode: 
     if (mode === "open" ? trust !== undefined : trust === undefined) throw new Error("registered authentication mode and local full trust disagree");
     const after = observePaths(root, space, planned.paths);
     if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("identity paths changed while trust was validated");
-    return { root, space, controlIdentity: planned.controlIdentity, paths: after, provider, providerKeys: planned.providerKeys, agentKeys: planned.agentKeys, secretKeys: planned.secretKeys };
+    return { root, space, controlIdentity: planned.controlIdentity, paths: after, provider, providerKeys: planned.providerKeys, agentKeys: planned.agentKeys, secretKeys: planned.secretKeys, accountPub: trust?.account.pub };
   } catch (error) {
     // A refusal about one path names it and what is wrong with it, so the reader can act.
     if (error instanceof ScopePathRefusal) {

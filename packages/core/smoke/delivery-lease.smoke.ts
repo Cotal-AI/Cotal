@@ -141,12 +141,12 @@ try {
     await launched.releaseDeliveryLease(1, (await launched.readDeliveryLeaseEntry(1))?.revision);
   } finally { await launched.stop(); }
 
-  // A STALE REVISION RELEASES NOTHING, AND SAYS SO TO NOBODY. The release is a compare-and-swap,
-  // and `releaseDeliveryLease` swallows every error by design (at shutdown the broker may already be
-  // gone), so a token one step behind frees nothing and reports success. The row then claims the
-  // shard for the rest of the bucket TTL with no process behind it, and the next daemon is refused
-  // outright: "a live lease already exists". That is #1318's outage with no starvation and no broker
-  // fault anywhere, reached by an ordinary stop and restart.
+  // A STALE REVISION RELEASES NOTHING, AND THE RELEASE SAYS SO. The release is a compare-and-swap,
+  // so a token one step behind frees nothing, and `releaseDeliveryLease` rejects with the broker's
+  // refusal rather than reporting success. A shutdown that catches it still leaves the row claiming
+  // the shard for the rest of the bucket TTL with no process behind it, and the next daemon is
+  // refused outright: "a live lease already exists". That is #1318's outage with no starvation and
+  // no broker fault anywhere, reached by an ordinary stop and restart.
   //
   // The token lags on ordinary interleavings, not only on faults. `markDeliveryLeaseReady` MOVES the
   // row, so between the broker applying that write and the daemon assigning the returned value the
@@ -160,10 +160,12 @@ try {
     const stReady = await st.markDeliveryLeaseReady(2, stAcquired);
     check("markReady MOVES the revision, so a token cached before it is stale", stReady !== stAcquired,
       { acquired: stAcquired, afterReady: stReady });
-    // THE DEFECT: release with the pre-markReady token, exactly what the swallowed catch leaves.
-    await st.releaseDeliveryLease(2, stAcquired);
-    check("a release arguing a STALE revision leaves the row in place, silently",
-      (await st.readDeliveryLease(2)) !== undefined);
+    // Release with the pre-markReady token.
+    let staleRefusal: string | undefined;
+    try { await st.releaseDeliveryLease(2, stAcquired); } catch (e) { staleRefusal = (e as Error).message; }
+    check("a release arguing a STALE revision rejects with the broker's refusal",
+      staleRefusal?.includes("wrong last sequence") === true, { staleRefusal });
+    check("and leaves the row in place", (await st.readDeliveryLease(2)) !== undefined);
     // ACCEPT CONTROL: the same call with the broker's current revision does free it, so the failure
     // above is the token rather than the release being broken for every input.
     await st.releaseDeliveryLease(2, (await st.readDeliveryLeaseEntry(2))?.revision);

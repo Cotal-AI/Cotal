@@ -27,6 +27,17 @@ export interface CredentialAction extends Extension {
   run(args: ParsedArgs): Promise<void>;
 }
 
+/** The last Unix second a JavaScript date holds (8.64e15 ms). A later expiry has no date that a
+ *  receipt or a status read can show. */
+const LAST_EXPIRY_SECONDS = 8_640_000_000_000;
+
+/** Refuse an expiry later than {@link LAST_EXPIRY_SECONDS}, before anything is written. */
+function assertExpiryInRange(values: ParsedArgs["values"]): void {
+  const expiresAt = values["expires-at"] !== undefined ? Number(values["expires-at"])
+    : values["expires-in"] !== undefined ? Math.floor(Date.now() / 1000) + Number(values["expires-in"]) : undefined;
+  if (expiresAt !== undefined && expiresAt > LAST_EXPIRY_SECONDS) throw new CommandFailure("refused", "USAGE_INVALID", `the credential would expire after ${new Date(LAST_EXPIRY_SECONDS * 1000).toISOString()}, the last date Cotal can represent; nothing was written`, { remedy: "give a shorter --expires-in or an earlier --expires-at, in seconds" });
+}
+
 export function validateCredentialMintArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (args.positionals.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", "auth mint needs one credential label");
@@ -44,6 +55,7 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
     catch { throw new CommandFailure("refused", "USAGE_INVALID", "endpoint caller minting needs one native endpoint class and valid explicit channel patterns"); }
     if (typeof values.out !== "string" || !values.out.trim() || values.out.length > 4096 || /[\u0000-\u001f\u007f]/u.test(values.out)) throw new CommandFailure("refused", "USAGE_INVALID", "endpoint caller minting needs --out with a bounded private file path");
     if (values["expires-in"] !== undefined && (typeof values["expires-in"] !== "string" || !/^[0-9]+$/.test(values["expires-in"]) || !Number.isSafeInteger(Number(values["expires-in"])) || Number(values["expires-in"]) < 1)) throw new CommandFailure("refused", "USAGE_INVALID", "endpoint caller expiry needs a positive integer of native seconds");
+    assertExpiryInRange(values);
     return;
   }
   if (values.channels !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--channels belongs to auth mint --endpoint; it was not ignored for a fixed profile");
@@ -52,6 +64,7 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
   if (profile !== "agent" && ["allow-subscribe", "allow-publish", "role", "provision"].some((key) => values[key] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "channel ACL, role and provisioning inputs belong only to the agent profile; a fixed profile was not silently widened");
   if (values["expires-in"] !== undefined && values["expires-at"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "choose --expires-in or --expires-at, not both");
   for (const key of ["expires-in", "expires-at"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !/^[0-9]+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < (key === "expires-in" ? 1 : 0))) throw new CommandFailure("refused", "USAGE_INVALID", "credential expiry needs an integer in native seconds; the supplied value was not echoed");
+  assertExpiryInRange(values);
   // A past or present expiry writes a credential the broker already refuses, under a label that is
   // then taken.
   if (values["expires-at"] !== undefined && Number(values["expires-at"]) <= Math.floor(Date.now() / 1000)) throw new CommandFailure("refused", "USAGE_INVALID", "--expires-at is not in the future, so the credential would already be expired; nothing was written", { remedy: "give a later Unix time in seconds, or a lifetime with --expires-in <seconds>" });

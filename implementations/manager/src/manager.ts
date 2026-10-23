@@ -31,6 +31,7 @@ import {
   spawnEnvAllow,
   deprovisionAgent,
   DeprovisionError,
+  addDeprovisionAccounting,
   type DeprovisionResourceAccounting,
   isConcreteChannel,
   deprovisionTargetPrincipal,
@@ -82,7 +83,7 @@ import {
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -105,6 +106,7 @@ import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaun
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { RunHosting } from "./run-hosting.js";
+import { enrolledAcl } from "./remote-authority.js";
 import { controlSession } from "./control-session.js";
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, removeSeatRecord, writeSeatRecord, type SeatRecord } from "./resume.js";
 import { TranscriptReceiver, type TranscriptClaim, type TranscriptReceiveInput } from "./transcript-receive.js";
@@ -316,9 +318,16 @@ const STATIC_RECONCILE_MAX_ATTEMPTS = STATIC_RECONCILE_RETRY_DELAYS_MS.length + 
 type StaticReconcileItem = ManagerStaticReconciliationFailure & {
   owner: string;
   timer?: ReturnType<typeof setTimeout>;
-  flight?: Promise<boolean>;
+  flight?: Promise<StaticReconcileAttempt>;
   retryFlight?: Promise<void>;
 };
+
+/** One exact-terminal attempt's outcome, with the accounting of the broker teardown that attempt
+ *  ran, whether it succeeded or failed. Absent when the attempt reached no broker teardown. */
+interface StaticReconcileAttempt {
+  succeeded: boolean;
+  deprovision?: DeprovisionResourceAccounting;
+}
 
 /** The STABLE retirement opId for one lifecycle (#29 piece 3): deterministic from the uid, so a
  *  despawn retry, a same-name-spawn nudge, and the auth service's boot resume all drive the SAME
@@ -338,7 +347,7 @@ const NO_OWNER_MATCHES = "-no-owner-";
  *  getter or `toString` throws. A handler that throws while building its text skips the work after
  *  it, and on a detached chain ends the manager with an unhandled rejection, so the coercion to text
  *  runs inside the guard. */
-function rejectionText(e: unknown): string {
+export function rejectionText(e: unknown): string {
   try {
     return String((e as Error)?.message ?? e);
   } catch {
@@ -954,6 +963,13 @@ interface ProvisionedUserAgent {
   enrolled?: { material: ManagedEnrollment; actorToken: string };
 }
 
+/** A user-mode provisioning refusal. `refused` is the host's code when the host refused the
+ *  enrollment and the attempt removed every secret it had staged, so it left nothing behind. */
+interface UserAgentRefusal {
+  error: string;
+  refused?: EpErrorCode;
+}
+
 interface ManagedAgent {
   name: string;
   role?: string;
@@ -1101,6 +1117,10 @@ export interface SpawnHooks {
    *  teardown, or a launch file written to disk. A refusal before it changed nothing, so the
    *  action path answers it `not-executed` (SPEC 13.3); one after it keeps an unknown outcome. */
   onEffect?: () => void;
+  /** Fires when a refusal after the first effect left nothing behind: the host refused the agent's
+   *  enrollment with `code`, and the spawn removed every secret it had staged. The action path
+   *  answers it `not-executed` with that code, as it answers a refusal before the first effect. */
+  onUndone?: (code: EpErrorCode) => void;
 }
 
 /** The spawn-as-action acceptance floor: the ALLOCATED agent identity (name + the
@@ -1480,7 +1500,6 @@ export class Manager {
     };
     deprovision?: DeprovisionResourceAccounting;
   };
-  public lastDeprovisionResources?: DeprovisionResourceAccounting;
   private staticReconcileSweepsInFlight = 0;
   private staticReconcileDrainWaiters: Array<() => void> = [];
   private staticReconcileStopping = false;
@@ -3373,7 +3392,7 @@ export class Manager {
       if (own !== undefined && own.info.pid === process.pid)
         await this.ep.releaseManagerLease(this.managerInstanceId, own.revision);
     } catch {
-      // Best-effort, like the release it wraps: a broker failure here is recovered by the bucket TTL.
+      // Best-effort: a release that did not commit is reported by the re-read below.
     }
     try {
       const stillOurs = await this.ep.readOwnManagerLease(this.managerInstanceId);
@@ -4360,7 +4379,7 @@ export class Manager {
    *  PREFLIGHT the bearer chain once — the spawned agent must never be the first to discover a
    *  dead auth plane. Every failure is returned as the refusal sentence, with the grant + files
    *  rolled back. */
-  private async provisionUserAgent(name: string, opts: ProvisionUserAgentOpts): Promise<ProvisionedUserAgent | { error: string }> {
+  private async provisionUserAgent(name: string, opts: ProvisionUserAgentOpts): Promise<ProvisionedUserAgent | UserAgentRefusal> {
     if (opts.delegatedIntent) {
       // startAgentActive refused a delegated launch on a manager without this callback.
       const execute = this.remoteAuthority!.executeDelegatedUserIntent!;
@@ -4495,7 +4514,7 @@ export class Manager {
     name: string,
     opts: Omit<ProvisionUserAgentOpts, "delegatedIntent">,
     enroll: NonNullable<NonNullable<ManagerOptions["remoteAuthority"]>["enrollManagedAgent"]>,
-  ): Promise<ProvisionedUserAgent | { error: string }> {
+  ): Promise<ProvisionedUserAgent | UserAgentRefusal> {
     let provider;
     try {
       provider = resolveAuthProvider();
@@ -4578,7 +4597,14 @@ export class Manager {
       for (const family of files.actorToken === staged.actorToken ? [staged] : [staged, files])
         await this.shredUserSecrets(unshredded, family);
       const leftover = unshredded.length ? `; cleanup failed: ${unshredded.join("; ")}` : "";
-      return { error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}` };
+      // A host that refused the enrollment enrolled nothing, so once every staged secret is gone
+      // this attempt left nothing behind. A failure after the host answered, or a host that did not
+      // answer, may have left a grant there.
+      const refusal = material === undefined && !unshredded.length ? caughtEnvelope(e) : undefined;
+      return {
+        error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}`,
+        ...(refusal?.outcome === "not-executed" ? { refused: refusal.code } : {}),
+      };
     }
   }
 
@@ -5061,7 +5087,8 @@ export class Manager {
    *  is NOT freed while any teardown phase is still in flight — the hold clears only after the
    *  standing-authority revoke AND the lifecycle retirement both confirm (see {@link driveRetirement}) —
    *  but the deletes here are still lifecycle-uid-pinned so even a replayed/stale teardown can never
-   *  reach a same-name successor's footprint (its names embed a different uid). */
+   *  reach a same-name successor's footprint (its names embed a different uid). Each call reports its
+   *  own accounting: the return value, or the {@link DeprovisionError} it throws once the deletes ran. */
   private async deprovisionBroker(a: { id: string; name: string; lifecycleUid: string; launch?: { allowSubscribe: readonly string[] } }): Promise<DeprovisionResourceAccounting> {
     // LIFECYCLE-PINNED (SPEC 13.1): both the credential's exact-name grants and the delete names
     // carry a.lifecycleUid, so a stale/replayed teardown for this retired incarnation is broker-denied
@@ -5082,29 +5109,20 @@ export class Manager {
     // Bound the detached broker teardown so a wedged broker can't leave the deprovision promise pending
     // forever with no log — the timeout rejects into freeSlot's fail-loud `.catch` (paired with the
     // helper's own fail-fast connect). The durables/ACL row still fall to space teardown as a backstop.
-    let accounting: DeprovisionResourceAccounting | undefined;
-    try {
-      accounting = await withTimeout(
-        deprovisionAgent({
-          servers: this.servers ?? DEFAULT_SERVER,
-          space: this.space,
-          targetId: a.id,
-          lifecycleUid: a.lifecycleUid,
-          memberChannels: [...memberChannels],
-          creds,
-        }),
-        DEPROVISION_TIMEOUT_MS,
-        `deprovision ${a.name} (${a.id}): broker teardown timed out`,
-      );
-      this.lastDeprovisionResources = accounting;
-    } catch (e) {
-      if (e instanceof DeprovisionError) {
-        this.lastDeprovisionResources = e.accounting;
-      }
-      throw e;
-    }
+    const accounting = await withTimeout(
+      deprovisionAgent({
+        servers: this.servers ?? DEFAULT_SERVER,
+        space: this.space,
+        targetId: a.id,
+        lifecycleUid: a.lifecycleUid,
+        memberChannels: [...memberChannels],
+        creds,
+      }),
+      DEPROVISION_TIMEOUT_MS,
+      `deprovision ${a.name} (${a.id}): broker teardown timed out`,
+    );
     if (!inventory.complete)
-      throw new Error(`membership inventory incomplete (${inventory.reason}); rows on channels outside its launch policy stay RETAINED for uid ${a.lifecycleUid}`);
+      throw new DeprovisionError(`membership inventory incomplete (${inventory.reason}); rows on channels outside its launch policy stay RETAINED for uid ${a.lifecycleUid}`, accounting);
     return accounting;
   }
 
@@ -6445,7 +6463,10 @@ export class Manager {
               }
             : undefined,
         });
-        if ("error" in prep) return { ok: false, error: prep.error };
+        if ("error" in prep) {
+          if (prep.refused !== undefined) hooks?.onUndone?.(prep.refused);
+          return { ok: false, error: prep.error };
+        }
         // THE HOST'S UID WINS (#1972). On the local arm this is the value passed in, unchanged. On
         // the hosted enrollment arm the host selected it, and from here every lifecycle-keyed thing
         // this spawn records — the slot, the launch, the managed row, the teardown credential — must
@@ -6766,7 +6787,9 @@ export class Manager {
       // canonicalJson (undefined never coerces to null, SPEC 13.6), so a role-less spawn would
       // otherwise fail its succeeded terminal. The CLI/connector already render an absent role as
       // "no role", so dropping the key preserves the reply (surfaced by readiness:live).
-      const okData = { name, agent, id: managed.id, mode: handle.kind, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}) };
+      // A host that granted other channels than this spawn asked for: the receipt carries both.
+      const acl = enrolled ? enrolledAcl({ allowSubscribe, allowPublish }, enrolled.material) : undefined;
+      const okData = { name, agent, id: managed.id, mode: handle.kind, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}), ...(acl ? { acl } : {}) };
       await hooks?.onOutcome?.({ kind: "succeeded", data: okData });
       return { ok: true, data: okData };
     } catch (e) {
@@ -8980,6 +9003,8 @@ export class Manager {
     let ownsGoal = false;
     // Set by onEffect. A refusal that arrives with it still false changed nothing.
     let effectStarted = false;
+    // Set by onUndone: the host's code for a later refusal that left nothing behind.
+    let undone: EpErrorCode | undefined;
 
     // The terminal commits OFF-handler on the goal-writer connection (manager-only authority; a
     // caller cannot publish it). TWO COMPOSED FENCES (defense in depth): (a) reads THIS
@@ -9097,14 +9122,16 @@ export class Manager {
       // `failed` that would race that `cancel` (first-terminal-fact-wins).
       onTerminalDeferred: () => { terminalEntered = true; },
       onEffect: () => { effectStarted = true; },
+      onUndone: (code) => { undone = code; },
     });
     bg.then((reply) => {
       // Refused BEFORE onAccepted (hard-pin collision, capacity, persona-not-found) — no goal bound.
-      // Only a refusal before the first effect states `not-executed`; a later one, such as the
-      // alias gate that re-drives a teardown, leaves the outcome unknown.
+      // Only a refusal before the first effect, or one whose effects were all removed, states
+      // `not-executed`; a later one, such as the alias gate that re-drives a teardown, leaves the
+      // outcome unknown.
       if (acceptance === undefined) {
         const details = reply.details;
-        rejectAccept(new EpEnvelopeError("failed-precondition", reply.error ?? "spawn refused at accept", details, effectStarted ? undefined : "not-executed"));
+        rejectAccept(new EpEnvelopeError(undone ?? "failed-precondition", reply.error ?? "spawn refused at accept", details, effectStarted && undone === undefined ? undefined : "not-executed"));
         return;
       }
       // H1: `run` CATCHES its own body (a throw in buildLaunch/runtime.spawn) and RESOLVES `{ok:false}`
@@ -9980,8 +10007,9 @@ export class Manager {
    *  wire principal joins {@link retiredPrincipals} (the F5 refusal index) and the name hold
    *  clears (ABA-guarded by uid). A PRE-UNIT-B lifecycle (no slot row — spawned before the
    *  durable registry existed) has nothing to terminalize: its footprint teardown runs directly
-   *  and the hold clears, the honest upgrade path. */
-  private async driveStaticRetirement(a: TeardownTarget, surfaceFailure = false): Promise<void> {
+   *  and the hold clears, the honest upgrade path. `onDeprovision` receives the accounting of the
+   *  broker teardown this call ran, on success or on a {@link DeprovisionError}. */
+  private async driveStaticRetirement(a: TeardownTarget, surfaceFailure = false, onDeprovision?: (accounting: DeprovisionResourceAccounting) => void): Promise<void> {
     // A renewal that published its flight before the synchronous terminal latch is accepted work.
     // Drain it before the durable terminal enumerates credential ids and before cleanup deletes its
     // material; a failed renewal must not block retirement because it may still have staged an id.
@@ -10011,7 +10039,15 @@ export class Manager {
         await attemptCleanup(failed, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.space)));
         await attemptCleanup(failed, `file ${creds}`, () => rmSync(creds, { force: true }));
       }
-      await attemptCleanup(failed, "broker teardown", () => this.deprovisionBroker(a));
+      await attemptCleanup(failed, "broker teardown", async () => {
+        try {
+          const accounting = await this.deprovisionBroker(a);
+          onDeprovision?.(accounting);
+        } catch (e) {
+          if (e instanceof DeprovisionError) onDeprovision?.(e.accounting);
+          throw e;
+        }
+      });
       if (failed.length) throw new Error(`cleanup failed: ${failed.join("; ")}`);
     };
     // The process goes before its footprint: reap the orphan seat by reference, then tear down.
@@ -10459,22 +10495,23 @@ export class Manager {
   /** Enter one exact terminal at most once per coordinate. Sweep and timer triggers join the same
    *  promise. A settled failed item keeps its original per-process budget; a restart builds a fresh
    *  map from the still-authoritative durable row. */
-  private attemptStaticReconcile(key: string, item: StaticReconcileItem, row: StaticManagedSlotRow, countAttempt = true): Promise<boolean> {
+  private attemptStaticReconcile(key: string, item: StaticReconcileItem, row: StaticManagedSlotRow, countAttempt = true): Promise<StaticReconcileAttempt> {
     if (item.flight) return item.flight;
-    if (item.timer) return Promise.resolve(false);
+    if (item.timer) return Promise.resolve({ succeeded: false });
     // A timer/retry driver increments before its mandatory durable re-read, then calls with
     // countAttempt=false. Let that already-consumed budget entry enter the terminal. Only a fresh
     // sweep entry (countAttempt=true) is refused once the per-process budget is exhausted.
-    if (countAttempt && item.attempts >= item.maxAttempts) return Promise.resolve(false);
-    const flight = (async (): Promise<boolean> => {
+    if (countAttempt && item.attempts >= item.maxAttempts) return Promise.resolve({ succeeded: false });
+    const flight = (async (): Promise<StaticReconcileAttempt> => {
       if (countAttempt) item.attempts++;
       item.phase = row.phase;
       item.disposition = "retrying";
       item.nextRetryAt = undefined;
       this.reconcilingAliases.add(row.alias);
       console.error(`static reconcile terminal alias=${row.alias} phase=${row.phase} uid=${row.lifecycleUid} attempt=${item.attempts}/${item.maxAttempts}`);
+      let deprovision: DeprovisionResourceAccounting | undefined;
       try {
-        await this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid, runtime: row.runtime }, true);
+        await this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid, runtime: row.runtime }, true, (accounting) => { deprovision = accounting; });
         if (item.attempts === 1) {
           this.staticReconcileItems.delete(key);
         } else {
@@ -10484,7 +10521,7 @@ export class Manager {
           item.lastError = undefined;
           console.error(`✓ static reconcile recovered alias=${item.alias} phase=retired uid=${item.lifecycleUid} attempts=${item.attempts}/${item.maxAttempts}`);
         }
-        return true;
+        return { succeeded: true, deprovision };
       } catch (error) {
         item.lastError = rejectionText(error);
         try {
@@ -10508,7 +10545,7 @@ export class Manager {
           if (this.staticReconcileSweepsInFlight > 0) item.disposition = "retry-scheduled";
           else this.scheduleStaticReconcileRetry(key, item);
         }
-        return false;
+        return { succeeded: false, deprovision };
       } finally {
         this.reconcilingAliases.delete(row.alias);
       }
@@ -10535,7 +10572,7 @@ export class Manager {
     while (true) {
       if (this.staticReconcileSweepsInFlight > 0)
         await new Promise<void>((resolve) => this.staticReconcileDrainWaiters.push(resolve));
-      const flights: Array<Promise<boolean> | Promise<void>> = [];
+      const flights: Array<Promise<StaticReconcileAttempt> | Promise<void>> = [];
       for (const item of this.staticReconcileItems.values()) {
         if (item.flight) flights.push(item.flight);
         if (item.retryFlight) flights.push(item.retryFlight);
@@ -10696,34 +10733,9 @@ export class Manager {
             };
             this.staticReconcileItems.set(key, item);
           }
-          this.lastDeprovisionResources = undefined;
-          const succeeded = await this.attemptStaticReconcile(key, item, row);
-          const acc = (this as { lastDeprovisionResources?: DeprovisionResourceAccounting }).lastDeprovisionResources;
-          if (acc) {
-            sweepDeprovision.examined += acc.examined;
-            sweepDeprovision.deleted = sweepDeprovision.deleted === null || acc.deleted === null ? null : sweepDeprovision.deleted + acc.deleted;
-            sweepDeprovision.absent += acc.absent;
-            sweepDeprovision.refused += acc.refused;
-            sweepDeprovision.acknowledged += acc.acknowledged;
-            sweepDeprovision.disappeared += acc.disappeared;
-            sweepDeprovision.consumers.examined += acc.consumers.examined;
-            sweepDeprovision.consumers.deleted = sweepDeprovision.consumers.deleted === null || acc.consumers.deleted === null ? null : sweepDeprovision.consumers.deleted + acc.consumers.deleted;
-            sweepDeprovision.consumers.absent += acc.consumers.absent;
-            sweepDeprovision.consumers.refused += acc.consumers.refused;
-            sweepDeprovision.consumers.acknowledged += acc.consumers.acknowledged;
-            sweepDeprovision.consumers.disappeared += acc.consumers.disappeared;
-            sweepDeprovision.acls.examined += acc.acls.examined;
-            sweepDeprovision.acls.deleted += acc.acls.deleted;
-            sweepDeprovision.acls.absent += acc.acls.absent;
-            sweepDeprovision.acls.refused += acc.acls.refused;
-            sweepDeprovision.acls.disappeared += acc.acls.disappeared;
-            sweepDeprovision.members.examined += acc.members.examined;
-            sweepDeprovision.members.deleted += acc.members.deleted;
-            sweepDeprovision.members.absent += acc.members.absent;
-            sweepDeprovision.members.refused += acc.members.refused;
-            sweepDeprovision.members.disappeared += acc.members.disappeared;
-          }
-          if (succeeded) sweep.succeeded++;
+          const attempt = await this.attemptStaticReconcile(key, item, row);
+          if (attempt.deprovision) addDeprovisionAccounting(sweepDeprovision, attempt.deprovision);
+          if (attempt.succeeded) sweep.succeeded++;
           else sweep.failed++;
           this.reconcilingAliases.delete(row.alias);
         }
