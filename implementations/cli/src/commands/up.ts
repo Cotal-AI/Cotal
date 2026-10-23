@@ -2253,6 +2253,7 @@ async function verifySpawnedOrdinaryListener(pending: PendingOrdinaryResume): Pr
 
 async function resumeProvenOrdinaryListener(pending: PendingOrdinaryResume, heldLock?: MaintenanceLock): Promise<void> {
   await proveOrdinaryResumeListener(pending);
+  await recreateAdoptedMemoryBuckets(pending.root, pending.space, pending.server, pending.mode);
   const svc = await ensureRecoveredUserAuth(pending);
   // Read the recorded exposure BEFORE re-recording: `recordOurMesh` writes the entry whole, so a
   // record built without this field would erase the operator's decision, and the adopted manager
@@ -2308,6 +2309,7 @@ async function ensureRecoveredUserAuth(
 
 async function resumeProvenRestoreListener(prepared: PreparedRestore, heldLock?: MaintenanceLock): Promise<void> {
   await provePreparedRestoreListener(prepared);
+  await recreateAdoptedMemoryBuckets(prepared.root, prepared.space, prepared.server, prepared.mode);
   const svc = await ensureRecoveredUserAuth(prepared);
   // Same ordering constraint as the pending-adopt path above: capture the recorded exposure before
   // `recordOurMesh` rewrites the entry, or a restore silently demotes the mesh to loopback attach.
@@ -3976,6 +3978,15 @@ async function recreateMemoryBuckets(server: string, space: string, setup?: { cr
   } finally {
     await nc.drain();
   }
+}
+
+/** An adopted listener may have been bound by an `up` that stopped before {@link recreateMemoryBuckets},
+ *  so the memory buckets the daemons open can be missing on it. An existing bucket is left as it is. */
+async function recreateAdoptedMemoryBuckets(root: string, space: string, server: string, mode: "open" | "auth" | "user"): Promise<void> {
+  if (mode === "open") return recreateMemoryBuckets(server, space);
+  const auth = await getSpaceAuth(workspaceSecretStore(root), space);
+  if (!auth) throw new Error(`space "${space}" has no trust material under ${authDir(root)}; cannot recreate its memory buckets on the adopted listener`);
+  await recreateMemoryBuckets(server, space, { creds: await mintCreds(auth, newIdentity(), "provisioner") });
 }
 
 /** Load the declarative channels-config file to seed the registry. An explicit `--channels`

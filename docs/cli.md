@@ -1643,7 +1643,9 @@ record, endpoint, and target identity all match that proof; degraded restore rep
 the guarded workspace transition only after manager commit. If an uncommitted bound owner is provably
 dead, recovery retires that exact proof under the maintenance lock and binds a fresh listener for the
 same attempt, endpoint, and target with a new nonce and server name. A live foreign/mismatched listener
-or ambiguous owner is preserved and refused, never adopted by reachability alone. A reconstructed
+or ambiguous owner is preserved and refused, never adopted by reachability alone. Before the
+daemons start, re-entry recreates the memory-only buckets on an adopted restore or resume listener,
+because the interrupted `up` may have stopped before it made them. A reconstructed
 commit/degraded attempt without either the exact bound proof or a durable dead-listener replacement
 record fails closed even when the recorded port is free. A later ordinary startup may pass an `active`
 restore only when its details prove manager commit and its exact recorded listener is dead.
