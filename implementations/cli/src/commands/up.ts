@@ -4173,7 +4173,7 @@ async function authSetup(
     await putSpaceAuth(store, auth); // strips the $SYS seed at rest, but leaves the in-memory `auth` intact …
     await retainSystemSigningSeed(store, auth); // … and the host keeps the seed itself, beside the record, for own-broker caller issuance
     await provisionMembershipCreds(auth, cotalRoot(), space); // … so the observer can still be minted here (fresh-space only)
-    // A fresh space's $SYS material was just minted from the seed that only exists in this branch, so
+    // A fresh space's $SYS material was just minted from the seed this branch holds in memory, so
     // the ASK is already satisfied, so say so rather than rotating a one-second-old account, and never
     // report a rotation that did not happen.
     if (rotateSys) console.log(c.dim("• --rotate-sys: this space is new, so its $SYS creds were just minted - nothing to rotate"));
@@ -4391,8 +4391,8 @@ async function healMembershipDataCreds(auth: SpaceAuth, root: string, space: str
 
 /** Mint the two scoped creds the delivery daemon's membership feed loads (broker-sourced graph
  *  membership), at the FRESH `cotal up` while the in-memory `$SYS` signing seed still exists:
- *   - `membership-observer.creds` — SYSTEM-account CONNZ reader (the only window it can be minted: the
- *     `$SYS` seed is never persisted).
+ *   - `membership-observer.creds` — SYSTEM-account CONNZ reader (the only window it is minted here:
+ *     the trust record carries no `$SYS` seed, and the retained custody record serves caller issuance only).
  *   - `membership-rw.creds` — DATA-account members-read + feed-write.
  *   - `membership.json` — the DATA account id (the CONNZ/event subjects pin it; non-secret, but kept
  *     0600 alongside the creds).

@@ -21,7 +21,7 @@
  * one TTL after boot, and that manager correctly refused to start.
  *
  * The caller must hold the space's `SpaceAuth` WITH its in-memory system-account signing seed —
- * i.e. the auth object `createSpaceAuth` just returned, since the $SYS seed is never persisted.
+ * i.e. the auth object `createSpaceAuth` just returned, since the trust record carries no $SYS seed.
  *
  * `reloadStoreIdentity` is the same store the Manager remints through. Manager.start challenges
  * this hook before the first remint; an unnamed or divergent identity is a construction refusal.
