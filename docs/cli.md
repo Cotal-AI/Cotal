@@ -3584,6 +3584,10 @@ before its process exists records the instance as failed. Its refusal names the 
 space that is prepared but not started. `start` can then try again on the same instance, and
 `stop`, `remove` and `cotal down` find nothing to stop.
 
+A `start` or `restart` whose environment does not set a variable that `envRefs` reads refuses
+`DEPENDENCY_UNAVAILABLE` (exit 2) before anything launches or stops. It names each missing variable
+and the child variable it feeds, never a value. `show` lists the references by name.
+
 `stop` and `restart` ask before they act in a terminal and need `--yes` in a script. Enter, Ctrl-C,
 Ctrl-D or closed input at that question leaves the service unchanged and exits 0. Without an
 installed unit, a `restart` whose process is already gone stops nothing, so it does not ask. A

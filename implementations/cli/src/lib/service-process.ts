@@ -210,10 +210,16 @@ function executable(definition: ServiceDefinitionInput): string {
 function environment(definition: ServiceDefinitionInput): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR", "COTAL_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"]) if (process.env[key] !== undefined) env[key] = process.env[key];
-  for (const [destination, source] of Object.entries(definition.envRefs ?? {})) {
-    if (process.env[source] === undefined) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "a selected host environment reference is unavailable; no environment value was printed and no process was launched");
-    env[destination] = process.env[source];
+  // Variable names are not secrets, so a missing one is named with the child variable it feeds.
+  const missing = Object.entries(definition.envRefs ?? {}).filter(([, source]) => process.env[source] === undefined);
+  if (missing.length) {
+    const sources = missing.map(([, source]) => source);
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the environment this command runs in does not set ${missing.map(([destination, source]) => `${source} (passed to the service as ${destination})`).join(", ")}; no environment value was printed and no process was launched`, {
+      target: { missing: missing.map(([destination, source]) => ({ variable: source, as: destination })) },
+      remedy: `set ${sources.join(" and ")} in the shell that runs cotal, then run the command again`,
+    });
   }
+  for (const [destination, source] of Object.entries(definition.envRefs ?? {})) env[destination] = process.env[source];
   if (definition.credentialRef) env.COTAL_CREDS = definition.credentialRef.path;
   return env;
 }
