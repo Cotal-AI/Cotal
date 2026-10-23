@@ -4453,8 +4453,9 @@ many messages were read, whether older retained messages exist that the window d
 whether the window goes back to `--since`. An age outside the supported date range or a sequence
 that cannot be represented without rounding is a `USAGE_INVALID` refusal before connecting.
 The report shows each message's local time, with its date when it is not today; `result.items[].ts`
-is the ISO time. A DM row shows its recipient's name when a message in the window came from that
-principal, and the principal otherwise. `result.items[].to` is the principal.
+is the ISO time. A DM row shows its recipient's name when the roster carries that principal or a
+message in the window came from it, and the principal otherwise. `--dms` reads the roster for those
+names, waiting up to two seconds for it. `result.items[].to` is the principal.
 A line break or other control character in a message's text shows as its `\uXXXX` escape in the
 text and `--plain` reports, so a message cannot clear the screen or start a row of its own.
 `--json` carries the text as it was sent, in `result.items[].text`.

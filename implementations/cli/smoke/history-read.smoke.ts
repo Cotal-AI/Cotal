@@ -213,6 +213,13 @@ try {
 
   const dms = await run(["history", "--dms", "--json"]);
   check("--dms adds DMs, each naming its recipient", dms.status === 0 && (dms.envelope?.result?.items ?? []).some((i) => i.text === "a private note" && i.channel === null && i.to === bobId), shown(dms));
+  // A DM to a recipient that had sent nothing used to show its principal; the roster names it.
+  const erin = await agent("erin");
+  await alice.unicast(`${erin.principal.owner}.${erin.principal.actor}`, "for erin");
+  await wait(600);
+  const dmsPlain = await run(["history", "--dms", "--plain"]);
+  check("a DM row names its recipient from the roster when the recipient has sent nothing",
+    dmsPlain.status === 0 && /DM to erin\s+alice\s+for erin/.test(dmsPlain.stdout) && /DM to bob\s+alice\s+a private note/.test(dmsPlain.stdout), dmsPlain.stdout);
 
   const plain = await run(["history", "general", "--plain"]);
   check("the plain report is a table and names the retention and replay", plain.status === 0 && /^TIME\s+WHERE\s+FROM\s+MESSAGE/m.test(plain.stdout) && /#general\s+alice\s+deploy started/.test(plain.stdout) && /retention: /.test(plain.stdout) && /#general replay to new members: on \(24h\)/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
