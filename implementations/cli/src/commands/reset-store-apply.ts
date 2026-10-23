@@ -4,7 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { isReachable, realDirNoSymlink, type ParsedArgs } from "@cotal-ai/core";
 import {
   acquireMaintenanceLock, assertSingleSpaceBroker, authDir, brokerAddressForDisplay,
-  canonicalRoot, CommandFailure, findMesh, findPreparedSpace, loadMeshes, localMeshesForRoot, oneLine,
+  canonicalRoot, CommandFailure, findMesh, findPreparedSpace, isCommandFailure, loadMeshes, localMeshesForRoot, oneLine,
   presentationOf, readBrokerPolicy, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Block, type Report,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses, removeLocalState, safeStoreCleanupPath } from "./clean.js";
@@ -83,7 +83,11 @@ export function selectResetTarget(space: string, command: ResetCommand): ResetTa
   const root = prepared ? canonicalRoot(prepared.root) : undefined;
   let recorded: ReturnType<typeof readStackJournal>;
   try { recorded = root ? readStackJournal(root) : undefined; }
-  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the prepared root's stack journal could not be read; no reset target was inferred", { target: { space, root } }); }
+  catch (error) {
+    // A journal refusal names the file and its way out.
+    if (isCommandFailure(error)) throw error;
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the prepared root's stack journal could not be read; no reset target was inferred", { target: { space, root } });
+  }
   if (!root || !recorded || recorded.journal.space !== space)
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${command} needs a space this machine started; this one has no local registration and no stopped controller stack`, { target: { space }, remedy: `see the space with cotal space show ${space}` });
   const journal = recorded.journal, operation = journal.operation;

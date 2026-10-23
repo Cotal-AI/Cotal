@@ -5,7 +5,8 @@
  * another port, so any broker on the default port would have been dialed. They now refuse as not
  * started, name the recorded broker and say how to start it: `space create` prepares the journal's
  * space at the root again, then `cotal up`. A folder whose `.cotal` is a link to the project's is
- * told it is a link, and its status names the link once.
+ * told it is a link, and its status names the link once. A journal cut short or emptied, as an
+ * interrupted write leaves it, is named with its path and the way out, and status warns about it.
  *
  * The journal is written by hand in the shape `cotal up` leaves when its broker never started; the
  * resolver reads only its server and space fields. Driven through the built binary in a sandboxed COTAL_HOME.
@@ -15,7 +16,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -79,6 +80,25 @@ check("status names no default broker address", noDefault(status), shown(status)
 
 const components = run(["status", "--components"]);
 check("status --components refuses the target and probes no default broker", /target\s+refused · not-started/.test(components.stdout) && noDefault(components), shown(components));
+
+// A journal cut short or emptied names its path, and with no member running, says to remove it.
+{
+  const path = join(root, ".cotal", "stack-controller.json"), whole = readFileSync(path);
+  const named = (r: ReturnType<typeof run>) => r.status === 1 && r.envelope?.error?.code === "SCHEMA_INVALID"
+    && r.envelope.error.message === `the stack journal ${path} is not valid JSON, as an interrupted write or a full disk can leave it; no stack membership or stopped state was inferred`
+    && r.envelope.error.remedy === `no member of this stack is running, so remove ${path}; the next cotal up from ${root} starts the stack again from its saved definitions`;
+  writeFileSync(path, whole.subarray(0, 40));
+  const cut = run(["up", "--json"]);
+  check("up over a truncated journal refuses SCHEMA_INVALID, naming its path and saying to remove it", named(cut), shown(cut));
+  writeFileSync(path, "");
+  const down = run(["down", "--yes", "--json"]);
+  check("down over an empty journal refuses the same way", named(down), shown(down));
+  const clean = run(["clean", "all", "--force"]);
+  check("clean all over it refuses, exit 1, naming the path and the way out", clean.status === 1 && clean.stderr.includes(`the stack journal ${path} is not valid JSON`) && clean.stderr.includes(`so remove ${path}`), shown(clean));
+  const status = run(["status", "--json"]);
+  check("status warns about the journal with its way out", (status.envelope?.warnings ?? []).some((w) => w.code === "STACK_JOURNAL_INVALID" && w.message.includes(path) && w.message.includes("so remove")), shown(status));
+  writeFileSync(path, whole);
+}
 
 // The journal names the folder that recorded it. In a copy or a moved folder that is another folder,
 // whose stack this one does not hold, so the refusal names it rather than calling the shape invalid.

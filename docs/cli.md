@@ -650,6 +650,12 @@ does not read the folder's boot and additive attempt inventories through the lin
 it did not. `space create` in a copy whose records name another root says so and names that root,
 and in a linked folder it names the link.
 
+A journal that is not valid JSON, as an interrupted write or a full disk can leave it, makes `up`,
+`down`, `clean` and `reset` refuse `SCHEMA_INVALID`, exit 1, naming its path, and `status` warns
+about it. When no member of the stack runs, the Next says to remove the file, and the next
+`cotal up` starts the stack again from its saved definitions. When members still run, it names the
+`cotal service stop` for each one first, manager first and broker last.
+
 A journal root always keeps that controller route and its recorded mode and broker address, even
 when a completed stop removed its mesh registration. Bare `up` reuses that address; an explicit
 conflicting `--server` or `--open` refuses before effects. A journal whose stack never launched a

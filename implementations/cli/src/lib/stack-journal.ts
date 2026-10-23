@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, cotalDirLink, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath } from "@cotal-ai/workspace";
+import { CommandFailure, acquireMaintenanceLock, admittedControllerRestore, canonicalRoot, cotalDirLink, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, preparedSpaceAt, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, serviceOperationId, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment, stackJournalPath } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -91,6 +91,30 @@ function recordedElsewhere(root: string, recordedRoot: string, space: string): n
   });
 }
 
+/** A journal whose bytes are not JSON, as an interrupted write or a full disk can leave it. Removing it
+ *  is the way out once no member of its stack runs, so the remedy names any running member's stop
+ *  first, from the service records of the spaces at this root. */
+function unreadable(root: string): never {
+  const path = stackJournalPath(root);
+  let running: { space: string; name: string; instanceId: string }[] | undefined;
+  try {
+    const spaces = new Set([...loadMeshes().filter((mesh) => canonicalRoot(mesh.root) === root).map((mesh) => mesh.space), ...[preparedSpaceAt(root)?.space].filter((space): space is string => space !== undefined)]);
+    running = [...spaces].flatMap((space) => [...STACK_ROLES].reverse().flatMap((role) => serviceInstances(space, STACK_DEFINITION[role])
+      .filter((row) => observeServiceProcess(row.record.value) === "running")
+      .map((row) => ({ space, name: STACK_DEFINITION[role], instanceId: row.record.value.instanceId }))));
+  } catch {
+    running = undefined;
+  }
+  throw new CommandFailure("refused", "SCHEMA_INVALID", `the stack journal ${path} is not valid JSON, as an interrupted write or a full disk can leave it; no stack membership or stopped state was inferred`, {
+    target: { root, path },
+    remedy: running === undefined
+      ? `stop any running member of this stack with cotal service stop <name> --instance <id> --yes, manager first and broker last, then remove ${path} and run cotal up from ${root}`
+      : running.length === 0
+        ? `no member of this stack is running, so remove ${path}; the next cotal up from ${root} starts the stack again from its saved definitions`
+        : `stop its running members with ${running.map((row) => `cotal service stop ${row.name} --instance ${row.instanceId} --space ${row.space} --yes`).join(", then ")}, then remove ${path} and run cotal up from ${root}`,
+  });
+}
+
 function validate(input: unknown, root: string): StackJournal {
   const value = localRecordObject(input, ["schemaVersion", "kind", "root", "space", "server", "mode", "members", "broker", "operation", "updatedAt"]);
   // A journal written before the auth-service role existed carries exactly broker, delivery and
@@ -142,7 +166,10 @@ export function readStackJournal(root: string): StackJournalSnapshot | undefined
   const canonical = canonicalRoot(root);
   const bytes = readLocalRecordSource(stackJournalPath(canonical), LIMIT, true);
   if (!bytes) return undefined;
-  return { journal: validate(decodeLocalJson(bytes), canonical), sha256: createHash("sha256").update(bytes).digest("hex") };
+  let input: unknown;
+  try { input = decodeLocalJson(bytes); }
+  catch (error) { if (isCommandFailure(error)) unreadable(canonical); throw error; }
+  return { journal: validate(input, canonical), sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
 /** A controller-owned stack cannot be preserved in this release, so its preserve, and the backup and

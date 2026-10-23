@@ -675,7 +675,12 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // deliberately "your usual flags", never a bare `up` (mode/name/store-dir aren't recorded).
   // A controller stack's broker has no legacy pidfile, so that heuristic says nothing about it.
   let controllerStack = false;
-  try { controllerStack = readStackJournal(root)?.journal.space === space; } catch { controllerStack = false; }
+  try { controllerStack = readStackJournal(root)?.journal.space === space; }
+  catch (error) {
+    controllerStack = false;
+    // A journal no command can use is named with its way out; the rest of the report still stands.
+    if (isCommandFailure(error) && error.code === "SCHEMA_INVALID") gaps.add("STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
+  }
   const storedState = !controllerStack && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
   // While a maintenance journal holds the store, clean store refuses, so it is not offered.
   let maintained = false;
