@@ -421,7 +421,10 @@ async function hostShapeRefusals(): Promise<void> {
   // starts none); foreign + manual is the refusal state the fixture exists to hold.
   const recordRoot = mkdtempSync(join(scratch, "host-shape-record-root-"));
   const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
-  const entry = { space: "host-shape", server: "nats://127.0.0.1:4222", root: recordRoot, mode: "open" as const, origin: "manual" as const, ts: new Date(0).toISOString() };
+  // The record names a free port: a broker answering at the recorded address would make `up` report
+  // the space as running elsewhere before the control reaches the manual-registration refusal.
+  const recordPort = await pickFreePort();
+  const entry = { space: "host-shape", server: `nats://127.0.0.1:${recordPort}`, root: recordRoot, mode: "open" as const, origin: "manual" as const, ts: new Date(0).toISOString() };
   recordMesh(entry);
   const out = (r: { stdout: string; stderr: string }) => `${r.stdout}${r.stderr}`;
   try {
@@ -444,7 +447,7 @@ async function hostShapeRefusals(): Promise<void> {
     check("a host:port spelling is refused as a bind host", hostPort.status !== 0 && /is not a valid bind host/.test(out(hostPort)) && /the port comes from --server/.test(out(hostPort)), out(hostPort));
 
     // The real mismatch diagnostic still prints for valid hosts that disagree (and exits, not throws).
-    const mismatch = cotal(fixture, ["up", "--space", "host-shape", "--host", "10.0.0.9", "--server", "nats://127.0.0.1:4222"]);
+    const mismatch = cotal(fixture, ["up", "--space", "host-shape", "--host", "10.0.0.9", "--server", `nats://127.0.0.1:${recordPort}`]);
     check("a --host/--server address mismatch still prints its own diagnostic", mismatch.status !== 0 && /name different addresses/.test(out(mismatch)), out(mismatch));
 
     // CONTROL: a correct bare host passes the shape guard and reaches the registry's own refusal
