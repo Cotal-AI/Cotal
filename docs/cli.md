@@ -4146,8 +4146,10 @@ A recipient can still answer a `send --to` or `send --role` with `cotal_dm` or f
 session. On a static or open mesh every send has its own principal under the same display name, so
 the sender's name works only while it names one principal among the senders the recipient has heard
 from and the present peers. Once the recipient has heard two sends from the same login and host, a
-reply by that name refuses with `TARGET_AMBIGUOUS` and lists the principals. Answer by the id on
-the message instead (`from.id` in `chat --stdio`), or with `/reply` in `chat`. The reply is stored
+reply by that name refuses with `TARGET_AMBIGUOUS` and lists the principals. When none of them is
+present on a current roster, the refusal says they are no longer present and names how to answer one
+message. Answer by the id on the message instead (`from.id` in `chat --stdio`, with `replyTo` set to
+the message id), or with `/reply` in `chat`. The reply is stored
 under the sender's id in the space's DM history, which an operator's DM view such as the
 dashboard's Direct messages lens shows. The `cotal send` that asked has already exited, so the reply
 never reaches that shell.
