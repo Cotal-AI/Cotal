@@ -1077,7 +1077,9 @@ service registration in that case, so no successor is handed authority while tha
 run; the lease lapses on its TTL. A named `down` is the service stop above and never stops a
 legacy component by its pidfile, so `cotal down manager` or `cotal down web` on a legacy stack is
 refused unless a saved definition has that name. Only bare `cotal down` stops a legacy root's
-components, all together, under the folder you run it in. It takes no `--space`. The
+components, all together, under the folder you run it in. It takes no `--space`. A bare `down` or
+`down --dry-run` whose `--space` names a space whose stack is recorded in another folder refuses
+`TARGET_NOT_FOUND`, exit 2, naming that folder and the stop or preview to run there. The
 `-f` / `--run` forms tear down a [manifest deploy](#manifest-deploys) without stopping the whole mesh
 and cannot be combined with service names or `--space`.
 

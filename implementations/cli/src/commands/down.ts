@@ -22,6 +22,7 @@ import {
   canonicalRoot,
   brokerAddressForDisplay,
   findMesh,
+  findPreparedSpace,
   getCurrent,
   localMeshesForRoot,
   preparedSpaceAt,
@@ -96,7 +97,7 @@ import { processRecorded, stopLocalProcess } from "../lib/local-process-stop.js"
 import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, nothingRunning, stackDown, validateStackDownArguments } from "./stack-down.js";
-import { recordedProcessLine } from "../lib/stack-journal.js";
+import { readStackJournal, recordedProcessLine } from "../lib/stack-journal.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
@@ -366,6 +367,21 @@ function refuseUncontainedRecords(components: readonly LocalProcess[], context: 
   });
 }
 
+/** Bare down stops only the stack recorded at this folder's root. A `--space` whose stack is
+ *  recorded in another folder gets one refusal from the preview and the stop, naming that folder. */
+function refuseSpaceElsewhere(root: string, space: string, dryRun: boolean): void {
+  let at: string | undefined;
+  try { at = findMesh(space)?.root ?? findPreparedSpace(space)?.root; } catch { return; }
+  if (at === undefined || at === root || existsSync(at) && canonicalRoot(at) === canonicalRoot(root)) return;
+  let controller = false;
+  try { controller = readStackJournal(at)?.journal.space === space; } catch { /* named with the legacy stop */ }
+  const stop = dryRun ? "cotal down --dry-run" : controller ? "cotal down --yes" : "cotal down";
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the stack of space "${space}" is recorded at ${at}, not at this folder's root, and cotal down stops only the stack recorded where it runs`, {
+    target: { root, space, spaceRoot: at },
+    remedy: `run ${stop} in ${at}; to stop one saved service, run \`cotal service stop <service-name> --space ${space}\``,
+  });
+}
+
 /** `cotal down`. It owns stdout's errors for its whole run, so a reader that goes away, as with
  *  `| head -1`, no longer ends it between a member's stop request and that stop's confirmation. The
  *  stop runs to its end, and the exit status is the stop's own. */
@@ -393,7 +409,10 @@ async function downCommand(args: ParsedArgs): Promise<void> {
       return nothingRunning(presentationOf(args.values), target, values["with-agents"] === true && values["dry-run"] !== true && started);
     }
   }
-  if (values["dry-run"] && !values.file && !values.run && !values["preserve-state"] && !values["store-dir"] && !values["session-store"]?.length) return previewWholeStack(args);
+  if (values["dry-run"] && !values.file && !values.run && !values["preserve-state"] && !values["store-dir"] && !values["session-store"]?.length) {
+    if (values.space) refuseSpaceElsewhere(cotalRoot(), values.space, true);
+    return previewWholeStack(args);
+  }
   if (values["preserve-state"] && values["with-agents"])
     throw new CommandFailure("refused", "USAGE_INVALID", "--preserve-state cannot be combined with --with-agents");
   if (values["with-agents"] && (values.file || values.run || values.space))
@@ -414,6 +433,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
     return;
   }
+  if (values.space) refuseSpaceElsewhere(cotalRoot(), values.space, false);
   if (values.space)
     throw new CommandFailure("refused", "USAGE_INVALID", "a bare stop takes no --space: `cotal down` stops the stack recorded at this folder's root", {
       target: { root: cotalRoot(), space: values.space },
