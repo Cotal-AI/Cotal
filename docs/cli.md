@@ -79,6 +79,11 @@ before it acts, such as a missing argument, an invalid flag value or two flags t
 `cotal help` with a subcommand that does not exist. The command prints the error, then any remedy,
 then its help on stderr, writes nothing on stdout, exits 1, and does not run. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
+A word that starts with `-` reads as an option. A message or name that starts with one goes after
+`--`, which the refusal names, and an option value that starts with one is written `--limit=-1`,
+which the refusal gives. A short option takes its value after a space, so `-c=general` is refused
+rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
+typeset text, is refused naming the option it meant, rather than read as a positional.
 
 Command output, including error lines on stderr, the guided `setup` and `meshes add` prompts and
 the `console` screen, is colored only when stdout is a terminal, so piped or redirected output is
