@@ -26,7 +26,7 @@ import {
   MAX_DRAFT, MAX_TRANSCRIPT, addNotice, applyEvent, applyKey, applyPublishResult, closeSummary, composerRows, headerRows,
   initialState, parseSlash, replyTo, replyToLatest, runsOffline, transcriptRows, type ChatState,
 } from "../src/chat/view.js";
-import { listChoices } from "../src/chat/picker.js";
+import { listChoices, parseRecipient } from "../src/chat/picker.js";
 import { rosterLines, runSlash } from "../src/chat/controller.js";
 import { ParticipantEngine } from "../src/chat/engine.js";
 import { grantRefusal, resolveDmTarget } from "../src/chat/native-session.js";
@@ -369,6 +369,15 @@ const task = msg({ id: "t1", kind: "anycast", service: "reviewer", from: { id: "
   check("the picker shows a present peer's principal when a heard sender shares its name",
     choices.some((c) => c.label === "DM alice (u_c.alice)") && choices.some((c) => c.label === "DM bob"), choices);
   check("without such a sender the picker shows the name alone", listChoices(undefined, roster, identity.principal).some((c) => c.label === "DM alice"));
+}
+{
+  const typed = (text: string) => { const parsed = parseRecipient(text); return parsed.ok ? undefined : parsed.error; };
+  check("a typed channel holding * or > gets the sentence cotal send -c gives",
+    ["#gen*", "#team.*", "#team.>"].every((text) => typed(text) === "name one concrete channel, without wildcards"));
+  check("a typed channel outside the grammar gets the rule it breaks, naming the segment",
+    typed("#gen eral")?.startsWith('invalid channel "gen eral": segment "gen eral" must be a NATS-safe token') === true, typed("#gen eral"));
+  const general = parseRecipient("#general");
+  check("a typed concrete channel is chosen", general.ok && general.recipient.kind === "channel" && general.recipient.channel === "general", general);
 }
 {
   const working: RosterView = { view: "current", rows: [{ id: "o.carol", name: "carol", kind: "agent", status: "working", activity: "building" }] };
