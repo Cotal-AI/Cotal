@@ -26,7 +26,8 @@
  *  7. A partial loss. When the running broker lost only the delivery bucket, `up` leaves the rest as
  *     they are and refuses TARGET_NOT_FOUND (exit 2) naming the restart, which creates it.
  *  8. A store directory that also holds the user's files. After `up --store-dir` and `down`,
- *     `reset store` and its dry run refuse CONFLICT naming those files, and the folder keeps them.
+ *     `reset store`, `reset space` and their dry runs refuse CONFLICT naming those files, and the
+ *     folder keeps them.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
@@ -288,9 +289,9 @@ try {
     check("up starts the stack on that --store-dir", started.status === 0, shown(started));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", stopped.status === 0, shown(stopped));
-    for (const mode of ["--dry-run", "--yes"]) {
-      const reset = cli(root, "reset", "store", space, mode, "--json");
-      check(`reset store ${mode} refuses CONFLICT, naming the files beside the store`, reset.status === 2 && reset.env?.error?.code === "CONFLICT" && Boolean(reset.env.error.message.includes(`${store} also holds notes.txt, photos`)), shown(reset));
+    for (const kind of ["store", "space"]) for (const mode of ["--dry-run", "--yes"]) {
+      const reset = cli(root, "reset", kind, space, mode, "--json");
+      check(`reset ${kind} ${mode} refuses CONFLICT, naming the files beside the store`, reset.status === 2 && reset.env?.error?.code === "CONFLICT" && Boolean(reset.env.error.message.includes(`${store} also holds notes.txt, photos`)), shown(reset));
     }
     check("the folder keeps the user's files and the store", existsSync(join(store, "notes.txt")) && existsSync(join(store, "photos")) && existsSync(join(store, "jetstream")));
   }
