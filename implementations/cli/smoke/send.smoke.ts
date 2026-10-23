@@ -379,7 +379,7 @@ try {
     unsafe.code === 1 && unsafe.stdout.includes('"code":"USAGE_INVALID"') && unsafe.stdout.includes('segment \\"kanäle\\" must be a NATS-safe token'), unsafe);
   const spaced = await run(["send", "-c", "gen eral", "x", "--json"]);
   check("`cotal send -c` with a space in the name names the segment, not wildcards",
-    spaced.code === 1 && spaced.stdout.includes('segment \\"gen eral\\" must be a NATS-safe token') && !spaced.stdout.includes("wildcards"), spaced);
+    spaced.code === 1 && spaced.stdout.includes('segment \\"gen eral\\" must be a NATS-safe token') && !spaced.stdout.includes("wildcards") && !spaced.stdout.includes("'*', or '>'"), spaced);
   const badRole = await run(["send", "-r", "bad role!", "x", "--json"]);
   check("`cotal send -r` with a role that is not one NATS-safe token is USAGE_INVALID, exit 1, with the role rule",
     badRole.code === 1 && badRole.stdout.includes('"code":"USAGE_INVALID"') && badRole.stdout.includes('invalid role \\"bad role!\\": must be a single NATS-safe token'), badRole);
