@@ -1,5 +1,5 @@
 ---
-"@cotal-ai/cli": patch
+"@cotal-ai/cli": minor
 ---
 
 A bare `cotal spawn [<persona>]` runs the application in this terminal again, on every kind of
