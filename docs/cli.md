@@ -4108,7 +4108,9 @@ and `chat` has no `--json`. Under `--no-input` only `--stdio` runs.
 In `--plain`, a line you type becomes the draft, and it is sent only when you answer `y` to the
 question that follows. `:to` lists the recipients by number, and `:to <target>` sets one directly:
 `#<channel>`, `@<name>`, `@<owner>.<actor>` or `role:<role>`. A target in another form, such as a
-name without `@`, is refused with that list of forms, and the numbered list opens. A `#<channel>`
+name without `@`, is refused with that list of forms, and the numbered list opens. An `@<name>`
+that names no present peer and no sender the session heard from is refused there with the reason a
+send to it would get, and the numbered list opens. A `#<channel>`
 holding `*` or `>` is refused with the sentence `cotal send -c` gives. In the list, an empty line
 keeps the current recipient, and `/quit` leaves. `:multi` starts a message of several lines, which a line
 holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
@@ -4182,7 +4184,8 @@ refusal waits its turn too, so every `result` and `error` record comes back in t
 arrived. `message`, `presence` and `gap` records can arrive between results, so match each result
 by its id. A missing field, a field the type does not take or a malformed value refuses with
 `USAGE_INVALID` before the session sees the request. A channel must be a valid channel name with no `*` or `>`, and is refused with the sentence `cotal send -c` gives for that name. A role must be a
-valid role name.
+valid role name. A `text` that is empty or only whitespace is refused with `the message is empty`,
+as `cotal send` refuses an empty message.
 
 | `type` | Fields | Result |
 |---|---|---|
@@ -4276,11 +4279,17 @@ records. A missing feed remains unknown rather than an empty confirmed census. T
 writes that feed, and an open mesh runs none, so `members` refuses an open mesh with `UNSUPPORTED`.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
-space and history scope. Scripts pass `--yes`. Removing a channel that has no saved entry is a
-`no-op`, and its Metadata row says `no saved entry`; `--purge` still deletes that channel's
-retained messages. In `--json`, `result.removed` says whether a saved entry was removed. Neither
+space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
+is refused with `TARGET_NOT_FOUND` before the confirmation, listing the registered channels, or
+naming the registered spelling when only the case differs. Removing a channel that has retained
+messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`; `--purge`
+still deletes that channel's retained messages. In `--json`, `result.removed` says whether a saved entry was removed. Neither
 removal nor replay settings revoke grants or stop participants; future posts can create retained
-history again.
+history again. A `set`, `defaults` or `remove` that the broker refuses for the credential's grant
+applied nothing, so it is refused with `PERMISSION_DENIED` (exit 2), naming the credential's profile,
+the write it lacks and the subject the broker refused. With `--creds`, the Next is to run it without
+`--creds`, on the operator credential this machine records. A remove whose credential may not read
+the registry skips the name check, and the broker's answer to the remove decides.
 
 
 | Flag | Default | Meaning |
@@ -4290,7 +4299,12 @@ history again.
 | `--window <duration>` | none | `set`/`defaults`: replay window, for example `24h` |
 | `--delivery <live|durable>` | none | `set`/`defaults`: choose the live-only or durable-backstop delivery class; history retention is separate. Shell completion offers both values |
 | `--desc <text>` | none | `set`: channel description |
-| `--instructions <s>` | none | `set`: instructions shown to joiners |
+| `--instructions <text>` | none | `set`: instructions shown to joiners |
+| `--purge` | off | `remove`: also delete the channel's retained history |
+| `--yes` / `-y` | off | `remove`: confirm the stated channel and deletion scope without a question |
+| `--follow` | off | `members`: follow broker-observed membership changes |
+| `--json` / `-j` | off | One JSON document; `members --follow --json` emits NDJSON records |
+| `--plain` | off | The same report without color |
 
 Inspects and edits the channel registry: replay and delivery policy, description, and joiner instructions. `live` has no per-member backstop; it does not disable ACL-bounded retained history. Changing a channel's delivery class does not settle already pending durable copies. `--delivery durable` requires a registered static-auth or user-auth space; an open or unregistered target has no established delivery-service support. A recorded auth mode does not prove that daemon is currently healthy. ACL
 semantics (who may read or post) are set at mint / provision time, not here; see
@@ -4375,6 +4389,9 @@ code is the snapshot's.
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
 purging. These inputs cannot narrow a clear operation. It is the same operation as [`clean history`](#clean). On a user-auth mesh the purge rides a short-lived
 purger view over your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
+A purge the broker refuses for the credential's grant purged nothing, so it is refused with
+`PERMISSION_DENIED` (exit 2), naming the credential's profile; with `--creds`, the Next is to run it
+without `--creds`, on the operator credential this machine records.
 
 ## console
 
@@ -5218,16 +5235,25 @@ and contact name are included only when supplied. The public intake requires a t
 from `--email`, the existing configured contact or local git email. No environment setup is
 required. Do not put credentials, private transcripts or unrelated customer data in feedback.
 
-A protected `--key-file` selects keyed intake without placing a credential on argv. An existing
+A protected `--key-file` selects keyed intake without placing a credential on argv. The file holds
+one key: an opaque bearer token with no whitespace, optionally followed by one newline. An existing
 internal intake configuration remains supported. The old raw `--key` input refuses before the
 request and does not echo its value. Private key files must meet the shared file-ownership and
 protection policy; unsupported environments refuse rather than weakening that policy.
 
-`--url` can select a self-hosted intake. Remote intake requires HTTPS; HTTP is limited to literal
-loopback development hosts. URL credentials and fragments are refused, and redirects are not
-followed. One request has a 20-second deadline and is never automatically retried or rerouted to
-a different credential/intake. A network or unconfirmed server outcome can mean the report
-arrived: inspect the original intake before sending it again.
+`--url` can select a self-hosted intake. A Cotal intake accepts reports only at `POST /v1/feedback`,
+so the URL names that path, such as `https://intake.example/v1/feedback`; the origin alone gets
+HTTP 404. Remote intake requires HTTPS; HTTP is limited to literal loopback development hosts. URL
+credentials and fragments are refused, and redirects are not followed. One request has a 20-second
+deadline and is never automatically retried or rerouted to a different credential/intake.
+
+A connection that never opens sends nothing: a refused connection, a failed DNS lookup or a failed
+TLS handshake refuses with `TARGET_UNAVAILABLE` and the native error code. A timeout or a broken
+connection after the request was written, or an unconfirmed server outcome, can mean the report
+arrived: inspect the original intake before sending it again. An intake refusal names its cause and
+a next step. HTTP 401 means the key is missing or refused, 404 means the URL is not the intake's
+feedback path, and 429 means the intake is rate limiting submissions. A 429 names the retry time
+when the intake's `Retry-After` header gives one.
 
 JSON/plain receipts report the intake origin, HTTP acceptance and a bounded record ID when the
 server provides one. They do not repeat the submitted summary, details, contact values, key or
@@ -5422,7 +5448,8 @@ The daemon serves the workspace root that `--root <dir>` names, which must hold 
 the nearest `.cotal/` above its working directory. With neither, it refuses at start and names the
 directory it searched from, before it reads a credential or dials a broker.
 See the [delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
-(requires `--keys` and a scoped `--creds`), announcing submissions into a space channel; flags
+at `POST /v1/feedback` (requires `--keys`, in the format the `feedback-intake` service preset
+describes, and a scoped `--creds`), announcing submissions into a space channel; flags
 include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and `--rate-limit`.
 Without `--server` it dials the broker its `--space` is registered at, and refuses an unregistered
 space before dialing.
@@ -6228,7 +6255,10 @@ reading their contents during definition validation.
 The CLI's own presets are `auth-service`, `broker`, `delivery`, `exec-endpoint`, `feedback-intake`
 and `manager`. The `linear` and `web` presets come with their extensions. The intake preset is
 `feedback-intake`. Supply its `--root`, protected `--keys` and scoped
-broker `--creds` paths in the selected registered space. Optional options include `--server`,
+broker `--creds` paths in the selected registered space. The keys file is JSON with one entry per
+key, `{"keys":[{"key":"<token>","tester":"<tester-id>","name":"<display-name>"}]}`, where `name`
+is optional. A tester's `--key-file` holds their `key`. The intake serves `POST /v1/feedback` on its
+`--host` and `--port`. Optional options include `--server`,
 `--host`, `--port`, `--channel`, `--store`, `--max-bytes` and `--rate-limit`. A supplied store must
 already be private. Without one, the intake appends to a private instance-keyed store beside its
 service records. Feedback records and logs remain private local data and are retained on removal.

@@ -134,8 +134,18 @@ const ansi = /\x1b\[/;
   const unknown = run(["config", "set", "persona", "rev", "--space", "nope", "--json"]);
   check("set for a space that is neither registered nor prepared is refused, naming the known spaces, and writes nothing",
     unknown.status === 2 && unknown.envelope?.outcome === "refused" && unknown.envelope.error?.code === "TARGET_NOT_FOUND" && /no space named "nope" is registered or prepared here; known spaces: demo$/.test(unknown.envelope.error.message) && fileText() === before, shown(unknown));
-  const unknownUnset = run(["config", "unset", "persona", "--space", "nope", "--json"]);
-  check("unset for an unknown space stays open, so a value left for a gone space can go", unknownUnset.status === 0 && unknownUnset.envelope?.outcome === "no-op" && fileText() === before, shown(unknownUnset));
+  // A read or an unset for such a space is refused the same way, unless the space still holds a saved value.
+  for (const args of [["config", "--space", "nope"], ["config", "get", "persona", "--space", "nope"], ["config", "unset", "persona", "--space", "nope"]]) {
+    const r = run([...args, "--json"]);
+    check(`\`${args.join(" ")}\` is refused, naming the known spaces, and writes nothing`,
+      r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "TARGET_NOT_FOUND" && /no space named "nope" is registered, prepared or holding a saved value here; known spaces: demo$/.test(r.envelope.error.message) && fileText() === before, shown(r));
+  }
+  writeFileSync(file, JSON.stringify({ ...saved(), spaces: { ...saved().spaces, gone: { persona: "old" } } }));
+  const goneGet = run(["config", "get", "persona", "--space", "gone", "--json"]);
+  check("a value left for a removed space can still be read", goneGet.status === 0 && (goneGet.envelope?.result as { setting?: Setting } | null)?.setting?.winner?.source === "space" && (goneGet.envelope?.result as { setting?: Setting } | null)?.setting?.value === "old", shown(goneGet));
+  const goneUnset = run(["config", "unset", "persona", "--space", "gone", "--json"]);
+  check("a value left for a removed space can still be removed", goneUnset.status === 0 && goneUnset.envelope?.outcome === "ok" && saved().spaces.gone === undefined, shown(goneUnset));
+  if (before !== null) writeFileSync(file, before);
   // A persona's harness pin takes the same check as the harness preference.
   const pinned = run(["persona", "create", "pinned", "--prompt", "hi", "--subscribe", "", "--harness", "nosuch", "--json"], {}, project);
   check("persona create --harness refuses a harness no connector provides, writing no file",
