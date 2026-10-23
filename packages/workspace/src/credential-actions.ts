@@ -3,7 +3,7 @@ import { spaceFlag, serverFlag } from "./flags.js";
 import { CommandFailure, jsonFlag, plainFlag } from "./output.js";
 import { presentationOf } from "./present.js";
 
-export const privateOutputFlag = { name: "out", type: "string", value: "<private-file>", description: "private output file; required for signer export and endpoint caller issuance" } as const satisfies FlagSpec;
+export const privateOutputFlag = { name: "out", type: "string", value: "<private-file>", description: "private output file; required for signer export and endpoint caller issuance", completion: "files" } as const satisfies FlagSpec;
 export const credentialMintFlags = [
   { name: "profile", type: "string", value: "<agent|observer|admin>", description: "existing credential profile (default agent); never an internal host profile" },
   privateOutputFlag,
@@ -15,7 +15,7 @@ export const credentialMintFlags = [
   { name: "provision", type: "boolean", description: "agent: also pre-create this new lifecycle's bind-only inbox and delivery footprint" },
   { name: "expires-in", type: "string", value: "<seconds>", description: "positive integer credential lifetime; never with --expires-at" },
   { name: "expires-at", type: "string", value: "<unix-seconds>", description: "absolute credential expiry; never with --expires-in" },
-  { name: "identity", type: "string", value: "<private-creds>", description: "reuse this file's native nkey; the actual resulting lifecycle is reported" },
+  { name: "identity", type: "string", value: "<private-creds>", description: "reuse this file's native nkey; the actual resulting lifecycle is reported", completion: "files" },
   spaceFlag, serverFlag, jsonFlag, plainFlag,
 ] as const satisfies readonly FlagSpec[];
 

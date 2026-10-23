@@ -17,7 +17,7 @@ export const watchFlags = [
 export function watchComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, watchFlags);
   if (flag?.name === "view") return { items: watchViews.map((view) => ({ value: view === "activity" ? "feed" : view })), directive: "nofiles" };
-  if (flag) return { items: [], directive: "nofiles" };
+  if (flag) return { items: [], directive: flag.completion === "files" ? "default" : "nofiles" };
   return { items: watchFlags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), directive: "nofiles" };
 }
 

@@ -10,7 +10,7 @@ import { CommandFailure } from "./output.js";
  */
 export const spaceFlag = { name: "space", short: "s", type: "string", value: "<s>", description: "target space (default: the resolved mesh)" } as const satisfies FlagSpec;
 export const serverFlag = { name: "server", type: "string", value: "<url>", description: "broker URL (overrides the mesh registry entry)" } as const satisfies FlagSpec;
-export const credsFlag = { name: "creds", type: "string", value: "<path>", description: "creds file for an off-registry connection" } as const satisfies FlagSpec;
+export const credsFlag = { name: "creds", type: "string", value: "<path>", description: "creds file for an off-registry connection", completion: "files" } as const satisfies FlagSpec;
 
 /** The mesh-target bundle: which space, which broker, and (off-registry) which credential.
  *  Resolution order is `resolveMeshTarget`'s: explicit flags > the selected `current` mesh > the

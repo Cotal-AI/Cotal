@@ -71,7 +71,6 @@ import {
   preflightOrThrow,
   provenance,
   resolveAgentType,
-  resolveMeshTarget,
   resolvePreference,
   resolveTargetOrThrow,
   serverFlag,
@@ -101,6 +100,7 @@ import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positio
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { askManager, failIfNotOk, onInstance, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS, withControlConnection, type ManagerRequestIntent, type ManagerRequestReceipt } from "../lib/control.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
+import { personaCatalog } from "../lib/persona-files.js";
 import { callerHarness, spawnPersona } from "../lib/spawn-defaults.js";
 import { defaultPersonaFix } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
@@ -311,12 +311,15 @@ export function spawnComplete(argv: string[]): CompletionResult {
   return { items: [], directive: "nofiles" };
 }
 
+/** The persona catalog root this spawn would read, resolved read-only as `persona show` resolves it,
+ *  so a prepared space that is not started still lists its personas. */
+const catalogRoot = (argv: string[]): string => personaCatalog({
+  space: completedFlagValue(argv, spawnFlags, "space"),
+  server: completedFlagValue(argv, spawnFlags, "server"),
+}).root;
+
 function personaItems(argv: string[]) {
-  const target = resolveMeshTarget(process.cwd(), {
-    space: completedFlagValue(argv, spawnFlags, "space"),
-    server: completedFlagValue(argv, spawnFlags, "server"),
-  });
-  return listPersonas(target.root).map((p) => ({ value: p.name }));
+  return listPersonas(catalogRoot(argv)).map((p) => ({ value: p.name }));
 }
 
 /** Channels/roles declared by the TARGET mesh's personas — the same root {@link personaItems}
@@ -326,12 +329,7 @@ function personaItems(argv: string[]) {
  *  offer nothing rather than throw into the operator's shell. */
 function declaredFrom(argv: string[], list: (root: string) => string[]): string[] {
   try {
-    return list(
-      resolveMeshTarget(process.cwd(), {
-        space: completedFlagValue(argv, spawnFlags, "space"),
-        server: completedFlagValue(argv, spawnFlags, "server"),
-      }).root,
-    );
+    return list(catalogRoot(argv));
   } catch {
     return [];
   }
