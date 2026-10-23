@@ -17,19 +17,22 @@
  *   or close). Either going down withdraws `connected` at once, as `connecting`; it is claimed again
  *   only after the broker is back and the space answers a fresh `ready`.
  *
- * No liveness command is served: the registered `machine-status` command has void output and a
- * service connection gets no stock serve grant (see the connect contract). No token, proof or
- * provider text leaves this module; every message is fixed text.
+ * The stock guest seam verifies each pulled credential against the registered authority's issuer
+ * and keys and this daemon's embedded closure. Each opened transport binds the existing void
+ * `machine-status` responder before ready. Its descriptor is explicitly public schema; broker
+ * caller grants still control access. It reports no vitals or machine metadata. No token, proof
+ * or provider text leaves this module; every message is fixed text.
  */
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
-  CotalEndpoint, resolveAuthProvider, ServiceAuthorityTransportError, serviceWitnessDigest,
-  type SecretStore, type ServiceEndpointRenewal, type ServiceRegistrationWitness,
+  CotalEndpoint, authorizeGuestServeGrant, compileContract, resolveAuthProvider, serveAuthenticityOf, serveEndpoint,
+  ServiceAuthorityTransportError, serviceWitnessDigest, VOID_SCHEMA,
+  type EpServeGrant, type EpServeHandle, type SecretStore, type ServiceEndpointRenewal, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
-import { daemonRegisterFile, daemonWitness } from "./register.js";
+import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness } from "./register.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
 
 const SENTENCE: Record<ServiceConnectionState, string> = {
@@ -94,6 +97,8 @@ interface Live {
   instanceId?: string;
   source?: ServiceEndpointRenewal;
   endpoint?: CotalEndpoint;
+  serving: Set<EpServeHandle>;
+  flush?: () => Promise<void>;
   brokerUp: boolean;
   readying?: Promise<void>;
   closing?: Promise<void>;
@@ -131,8 +136,11 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   async function teardown(l: Live): Promise<void> {
     l.closing ??= (async () => {
       const ep = l.endpoint, src = l.source;
-      l.endpoint = undefined; l.source = undefined; l.brokerUp = false;
+      l.endpoint = undefined; l.source = undefined; l.brokerUp = false; l.flush = undefined;
+      const drains = [...l.serving].map((handle) => handle.stop().catch(() => {}));
       await ep?.stop().catch(() => {});
+      await Promise.all(drains);
+      l.serving.clear();
       await src?.close().catch(() => {});
     })();
     await l.closing;
@@ -155,6 +163,9 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
    *  one persisted ready request per witness. Sets `connected` only if the broker is still up. */
   async function ready(l: Live, space: string, witness: ServiceRegistrationWitness, store: SecretStore, dir: string): Promise<void> {
     const provider = resolveAuthProvider();
+    const flush = l.flush;
+    if (!flush) { l.state = "unavailable"; return; }
+    await flush();
     const requestId = await readyRequestId(store, witness);
     if (requestId === undefined) { l.state = "unavailable"; return; }
     let token: string;
@@ -169,7 +180,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
       l.state = "unavailable";
       return;
     }
-    if (answer.state === "ready") { l.state = l.brokerUp && l.endpoint ? "connected" : "connecting"; return; }
+    if (answer.state === "ready") { l.state = l.brokerUp && l.endpoint && l.flush === flush && l.serving.size > 0 ? "connected" : "connecting"; return; }
     if (answer.state === "denied" && answer.reason === "rate-limited") { l.state = "unavailable"; return; }
     l.state = "ended";
     l.reason = answer.state === "denied" && ENDED.has(answer.reason) ? answer.reason : "unrecognized";
@@ -207,7 +218,7 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     if (current?.state === "ended") return result(space);
     if (current?.endpoint && current.state === "connected") return result(space);
     if (current) await teardown(current);
-    const l: Live = current ?? { state: "connecting", brokerUp: false };
+    const l: Live = current ?? { state: "connecting", brokerUp: false, serving: new Set() };
     l.state = "connecting"; l.reason = undefined;
     live.set(space, l);
 
@@ -219,12 +230,21 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     const witness = w.witness;
     l.instanceId = witness.instanceId;
     const provider = resolveAuthProvider();
-    if (!provider.serviceEndpointRenewal || !provider.serviceEndpointAuthority) { l.state = "unsupported"; return result(space); }
+    if (!provider.serviceEndpointRenewal || !provider.serviceEndpointAuthority || !provider.serviceEndpointInfo) { l.state = "unsupported"; return result(space); }
     const store = daemonServiceStore(home, space, workspaceSecretStore(entry.root));
     const dir = userAuthStateDir(entry.root, space, { readOnly: true });
     const source = provider.serviceEndpointRenewal({ store, dir, witness });
     l.source = source;
-    try { await source.bearer(); } catch { sourceFailed(l); await teardown(l); return result(space); }
+    let grant: EpServeGrant;
+    const pull = async () => {
+      const credential = await source.credential();
+      const info = await provider.serviceEndpointInfo!({ store, dir, space });
+      if (info.accountPublicKey !== witness.accountPublicKey) throw new Error("the service authority account changed");
+      grant = await authorizeGuestServeGrant({ accountPublicKey: witness.accountPublicKey, result: credential,
+        registration: DAEMON_REGISTRATION, authenticity: serveAuthenticityOf(info) });
+      return credential.accessBearer;
+    };
+    try { await pull(); } catch { sourceFailed(l); await teardown(l); return result(space); }
 
     const onEnd = () => {
       // The source ends inside the endpoint's own refresh: tear down after that call returns.
@@ -232,7 +252,15 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     };
     const endpoint = new CotalEndpoint({
       space, servers: entry.server, sentinelCreds: source.sentinelCreds!,
-      bearer: async () => { try { return await source.bearer(); } finally { onEnd(); } },
+      bearer: async () => { try { return await pull(); } finally { onEnd(); } },
+      onConnection: (nc) => {
+        if (l.endpoint !== endpoint) return;
+        const contract = compileContract({ root: VOID_SCHEMA });
+        const handle = serveEndpoint(nc, space, grant, [{ command: "machine-status", contract: { input: contract, output: contract }, handler: () => null }], { public: true });
+        l.serving.add(handle);
+        l.flush = () => nc.flush();
+        void nc.closed().then(() => handle.stop()).catch(() => {}).finally(() => { l.serving.delete(handle); });
+      },
       card: { name: "cotal-daemon", kind: "endpoint", owner: witness.principal.owner, actor: witness.principal.actor },
       channels: [], registerPresence: false, watchPresence: false, watchChannels: false, consume: false,
     });

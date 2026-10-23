@@ -3149,9 +3149,11 @@ to replay it. A changed registration for the same instance is refused `CONFLICT`
 
 `service-connect` connects the running daemon to the space as its own registered service. It replays
 the saved register request unchanged to read its registration, gets its service credential from the
-space's auth provider, connects to the space's broker as that service, and reports itself ready. It
-succeeds, exit 0, only when both have happened: the broker accepted the connection and the space
-accepted the daemon as ready. The renewal and ready request IDs are kept in
+space's auth provider, verifies the bearer signature and witness against the pinned authority's
+issuer keys, checks the serving snapshot against its embedded contract, and connects to the broker
+as that service. It binds the registered
+responder before reporting ready. It succeeds, exit 0, only after the broker accepts the connection,
+the responder subscriptions are flushed and the space accepts the daemon as ready. The renewal and ready request IDs are kept in
 `<COTAL_HOME>/daemon/<space segment>/service-store/`, mode `0600`, and reused after a restart.
 
 Every other answer is a refusal and nothing is connected. Not yet approved is `LIFECYCLE_BLOCKED`
@@ -3169,8 +3171,15 @@ space accepts the daemon as ready again. This is not a persistent service: a res
 with no service connection and stays disconnected until you run `service-connect` again, and an
 ended connection is remembered only until the daemon stops.
 `service-status` reads the daemon's current answer without contacting the space. `service-disconnect`
-closes the connection, and stopping the daemon closes all of them. The daemon does not answer any
-command on its service yet.
+drains the responder and closes the connection, and stopping the daemon closes all of them.
+
+The service answers its existing `machine-status` command with `null`. This is a liveness response;
+it contains no vitals, hostname or machine metadata. Its stock Describe schema is explicitly public,
+but callers still need broker-enforced access to the selected instance and command. Connecting the
+daemon grants no caller access. Owner approval, operator name binding and caller grants remain
+separate actions. An authority that does not publish its issuer identity cannot support this
+serving connection; the daemon refuses rather than trusting a decoded token or using Manager
+credentials. The registration contract is unchanged.
 
 ## service
 

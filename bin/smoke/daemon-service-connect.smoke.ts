@@ -51,7 +51,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
 import {
-  CotalEndpoint, SERVICE_AUTHORITY_MAX_BYTES, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig, setupSpaceStreams,
+  CotalEndpoint, SERVICE_AUTHORITY_MAX_BYTES, unansweredRequest, composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig, setupSpaceStreams,
   writeSecretFileAtomic, type SecretStore,
 } from "@cotal-ai/core";
 import {
@@ -157,6 +157,7 @@ const idpUrl = `${idpOrigin}/api/auth`;
 const hits: Array<{ space: string; method: string; path: string }> = [];
 /** C7: spaces whose authority door the relay drops, as an unreachable auth service. */
 const relayDown = new Set<string>();
+const withoutIssuer = new Set<string>();
 async function relay(space: string, target: string): Promise<string> {
   const s = createHttpServer(async (req, res) => {
     if (relayDown.has(space)) { req.socket.destroy(); return; }
@@ -168,8 +169,14 @@ async function relay(space: string, target: string): Promise<string> {
     catch { req.socket.destroy(); return; }
     const headers: Record<string, string> = {};
     up.headers.forEach((v, k) => { if (k !== "content-length" && k !== "transfer-encoding") headers[k] = v; });
+    let body = Buffer.from(await up.arrayBuffer());
+    if (withoutIssuer.has(space) && req.method === "GET" && req.url === "/service-endpoint-authority" && up.ok) {
+      const info = JSON.parse(body.toString()) as Record<string, unknown>;
+      delete info.issuer; delete info.keys;
+      body = Buffer.from(JSON.stringify(info));
+    }
     res.writeHead(up.status, headers);
-    res.end(Buffer.from(await up.arrayBuffer()));
+    res.end(body);
   });
   await new Promise<void>((r) => s.listen(0, "127.0.0.1", () => r()));
   relays.push(s);
@@ -379,6 +386,9 @@ try {
       const r = await disconnectS(ON);
       check("C5 disconnected", stateOf(r) === "disconnected", r);
       check("C5 status agrees", stateOf(await statusS(ON)) === "disconnected");
+      let unanswered = false;
+      try { await probeMachine(); } catch (e) { unanswered = unansweredRequest(e); }
+      check("C5 the disconnected daemon no longer answers an authorized caller", unanswered);
     });
 
     await cell("C6 a restarted daemon reconnects from its private store under the same ids", async () => {
@@ -415,6 +425,20 @@ try {
       } finally { relayDown.delete(ON); }
       const back = await connectS(ON);
       check("C7 once the door is back, connected again", stateOf(back) === "connected", back);
+    });
+
+    await cell("C16 an authority without issuer identity cannot start a serving daemon", async () => {
+      await disconnectS(ON);
+      withoutIssuer.add(ON);
+      try {
+        const r = await connectS(ON);
+        check("C16 missing pinned issuer identity refuses connection", stateOf(r) === "unavailable", r);
+        check("C16 status remains unavailable", stateOf(await statusS(ON)) === "unavailable");
+      } finally { withoutIssuer.delete(ON); }
+      const r = await connectS(ON);
+      check("C16 restored authority identity permits the same registration", stateOf(r) === "connected", r);
+      const reply = await probeMachine();
+      check("C16 restored connection actually serves", reply.reply.ok && reply.reply.data === null);
     });
 
     await cell("C14 the shipped daemon survives a corrupt ready record and leaves nothing running", async () => {

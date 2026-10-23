@@ -23,12 +23,12 @@ import { claimIdentityRecord, findMesh, homeCotalDir, spaceSegment, userAuthStat
 import { connectCheck, DAEMON_ENDPOINT } from "./connect.js";
 import type { RegisterResult } from "./protocol.js";
 
-/** The daemon's contract: one cluster with one read command, declared for the later telemetry slice.
- *  It is ephemeral, untargeted and ungoverned, the only shape the service door admits. Nothing serves it yet. */
+/** The daemon's existing void liveness contract. It reports no machine metadata or vitals.
+ *  It is ephemeral, untargeted and ungoverned, the shape the service door admits. */
 const CLUSTER = { urn: DAEMON_ENDPOINT, revision: 1, attributes: [], events: [],
   commands: [{ name: "machine-status", class: "ephemeral", targeted: false, capability: "read", inputDigest: VOID_SCHEMA_DIGEST, outputDigest: VOID_SCHEMA_DIGEST }] };
 const closure = singleDocumentClosure(CLUSTER);
-const REGISTRATION = { clusterDigests: [closure.closureDigest], contractArtifacts: [closure.manifest, CLUSTER] };
+export const DAEMON_REGISTRATION = { clusterDigests: [closure.closureDigest], contractArtifacts: [closure.manifest, CLUSTER] };
 
 const KIND = "cotal-daemon-register-request";
 interface RegisterRecord { v: 1; kind: typeof KIND; space: string; instanceId: string; requestId: string; bodyDigest: string }
@@ -97,7 +97,7 @@ async function sendRegister(space: string, home: string): Promise<RegisterResult
   const base = {
     v: 1 as const, kind: "service-endpoint-authority" as const, operation: "register" as const, space,
     accountPublicKey: ready.accountPublicKey, endpoint: ready.endpoint, instanceId: ready.instanceId,
-    registration: REGISTRATION, expected: { state: "unregistered" as const },
+    registration: DAEMON_REGISTRATION, expected: { state: "unregistered" as const },
   };
   const bodyDigest = contractDigest(base);
   const record = claimIdentityRecord(daemonRegisterFile(space, home), "daemon register request", parseRecord(space), () => ({
