@@ -1,5 +1,20 @@
 # cotal-ai
 
+## 0.96.1
+
+### Patch Changes
+
+- 2c7fd83: Add `cotal daemon service-connect`, `service-disconnect` and `service-status` on Linux. The running daemon connects to a space as its own approved service, using the stock service renewal, and reports `connected` only when the broker accepted the connection and the space accepted it as ready. Approval pending, a refusal, an unreachable space, a lost broker connection and a revocation are each reported as not connected. While the daemon runs, the connection renews and reconnects on its own; a restarted daemon starts disconnected until `service-connect` runs again, and stopping the daemon closes it.
+- @cotal-ai/connector-core@0.96.1
+  - @cotal-ai/auth@0.96.1
+  - @cotal-ai/cli@0.96.1
+  - @cotal-ai/delivery@0.96.1
+  - @cotal-ai/manager@0.96.1
+  - @cotal-ai/runtime@0.96.1
+  - @cotal-ai/core@0.96.1
+  - @cotal-ai/seat@0.96.1
+  - @cotal-ai/workspace@0.96.1
+
 ## 0.96.0
 
 ### Patch Changes
