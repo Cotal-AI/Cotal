@@ -6571,3 +6571,11 @@ is not delivery, a spawned agent or task completion. Finite JSON/plain receipts 
 and answering manager, epoch and original request, without printing the creation input body. Rich results offer
 follow-up show or spawn commands with the original exact manager pin; a suggested launch still
 requires the caller's native spawn authority.
+When the manager writes the file into this root's catalog, the receipt's `Local files` line names
+it and JSON `localFilesChanged` is true. On a static space the manager records an owner only for
+one of its own seats. The CLI mints a new caller for each call, so its card is operator-owned, as a
+local `persona create` writes it, and the manager does not show it over `--on`. The receipt then
+offers `cotal p show <name>` for a file in this root, and a `show --on` that the manager answers
+not-found names that command when this root's catalog holds the file. A peer joined with its own
+credentials is not one of the manager's seats either, so on a static space it cannot redefine or
+read over `--on` what it defines.

@@ -325,7 +325,8 @@ export function saveAgentFile(path: string, def: AgentDef): void {
 /** Content a peer may name on `define-persona`. Policy (`capabilities`, `owner`) has no slot. */
 export type WirePersonaArgs = {
   name: string;
-  owner: string;
+  /** The principal a fresh file records as its owner; absent, the file is operator-owned. */
+  owner?: string;
   prompt: string;
   model?: string;
   role?: string;
