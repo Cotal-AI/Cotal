@@ -3147,7 +3147,7 @@ refuses by name rather than dropping the keystroke.
 cotal persona [--json|--plain]
 cotal persona show <name> [--json|--plain]
 cotal persona create <name> --file <persona.md>
-cotal persona create <name> --prompt <text> --subscribe <a,b>
+cotal persona create <name> --prompt <text> --subscribe <a,b> [--allow-subscribe <a,b>] [--allow-publish <a,b>]
 cotal persona edit <name>
 cotal persona remove <name> --yes
 ```
@@ -3158,8 +3158,10 @@ or seeding connectors. `--space` and `--server` select the same root used by lau
 space has an offline catalog before it is started. Failed target resolution never falls back
 to the current directory: a `--server` that no registration names reads the project in this
 folder, as launch does, and outside one it refuses with `TARGET_NOT_FOUND` and writes nothing. With
-no space selected and no project here, the refusal says so. Remote `--on` operations refuse as
-unsupported here.
+no space selected and no project here, the refusal says so. `--on <full-manager-instance>`
+addresses one manager's catalog instead, as
+[Personas on an exact manager](#personas-on-an-exact-manager) describes. `--announce <channel>`
+belongs to `persona create --on`; without `--on` it refuses with `USAGE_INVALID` and changes no file.
 
 A persona name uses letters, digits, `_` and `-`, up to 128 characters, and a name refusal says
 which rule it broke.
@@ -3168,8 +3170,12 @@ Creation accepts one of `--file/-f` (a complete [agent file](agent-files.md)), `
 must name the requested persona and keep their original bytes. A file that names another persona is
 refused with `SCHEMA_INVALID`, naming the file's own name and the `persona create` that keeps it.
 They cannot be combined with
-`--role`, `--model` or `--subscribe`. Body input requires an explicit `--subscribe` declaration,
-including `--subscribe ""` for no channels, and accepts `--role` and `--model`. Both refuse control
+`--role`, `--model`, `--harness`, `--subscribe`, `--allow-subscribe` or `--allow-publish`. Body
+input requires an explicit `--subscribe` declaration, including `--subscribe ""` for no channels,
+and accepts `--role`, `--model` and `--harness`. `--allow-subscribe` sets the channels the persona
+may read, and an omitted or empty one reads as the `--subscribe` set. `--allow-publish` sets the
+channels it may post to, and without it the persona posts nowhere. Both take a comma list, as the
+[agent file](agent-files.md) fields `allowSubscribe` and `allowPublish` do. Both refuse control
 characters with `USAGE_INVALID`. `--harness` must name a harness this machine knows, as
 `config set harness` requires, or creation refuses with `USAGE_INVALID` and writes nothing.
 Creation refuses an existing definition. Mutation receipts contain names and paths, not bodies.
@@ -4881,7 +4887,7 @@ copy is served whenever the fetch does not succeed. `--refresh` applies only to 
 ## config
 
 ```bash
-cotal config [--user | --space <name>] [--json | --plain]
+cotal config [--user | --space <name>] [-v | --verbose] [--json | --plain]
 cotal config get <key> [--user | --space <name>] [--json | --plain]
 cotal config set <key> <value> [--user | --space <name>] [--json | --plain]
 cotal config unset <key> [--user | --space <name>] [--json | --plain]
@@ -4891,6 +4897,7 @@ cotal config unset <key> [--user | --space <name>] [--json | --plain]
 |---|---|---|
 | `--user` | your defaults for a write | Your own values, with no space's values |
 | `--space <name>` | the selected space for a read | Your values for one space |
+| `--verbose` / `-v` | off | Bare `config` also shows the preferences file and its revision, which its JSON result always holds |
 | `--json` / `-j` | off | One JSON document |
 | `--plain` | off | The same report without color |
 
