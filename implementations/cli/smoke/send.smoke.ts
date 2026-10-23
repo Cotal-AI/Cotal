@@ -482,11 +482,10 @@ try {
     { carolId: carolIdMatch?.[1], pendingBobStdout: pendingBob.stdout },
   );
 
-  // Expiry: a fresh core observer reads the presence bucket through its own watch snapshot. An
-  // empty bucket replays nothing, so `waitForPresenceSnapshot` reports "timeout" there and a
-  // roster with no dave would prove nothing. A live witness agent keeps one card in the bucket, so
-  // a completed snapshot is a real read of the bucket, and dave's absence from it is the broker
-  // having expired his card. Nothing here writes, refreshes or forges dave's card.
+  // Expiry: a fresh core observer reads the presence bucket through its own watch snapshot. A live
+  // witness agent keeps one card in the bucket, so the snapshot is a read that found records, and
+  // dave's absence from it is the broker having expired his card. Nothing here writes, refreshes or
+  // forges dave's card.
   const witnessIdentity = newIdentity();
   const witnessUid = mintLifecycleUid();
   const witnessCreds = await provisionAgent(provisioner, auth, witnessIdentity, {

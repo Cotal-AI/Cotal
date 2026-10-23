@@ -2525,6 +2525,7 @@ A part `who` could not read makes the run `partial` (exit 4): a roster snapshot 
 (`ROSTER_ERROR`), or a manager census it could not read in full (`MANAGERS_UNREAD`, and the warnings
 `ps` names). A credential that may not read the roster is refused with `PERMISSION_DENIED` (exit 2),
 never shown an empty roster.
+A mesh where nobody is present is a complete roster: `who` says so and exits 0.
 
 `who` watches the roster and the channel registry on every mesh so it can report those states. On a
 static-auth or user-auth mesh the credential `who` connects with may not delete its watch consumers,

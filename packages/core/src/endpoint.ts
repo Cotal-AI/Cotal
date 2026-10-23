@@ -2948,9 +2948,9 @@ export class CotalEndpoint extends EventEmitter {
     return { state: "stale", fresh: false, staleSince };
   }
 
-  /** Wait until the current presence watch has consumed its initial KV snapshot. An empty bucket
-   * emits no watch entry, so the timeout keeps a genuinely empty mesh bounded and is reported
-   * distinctly from snapshot completion. */
+  /** Wait until the current presence watch has consumed its initial KV snapshot. An observer that
+   * does not register completes on an empty bucket at once. A registering one completes when its
+   * own record arrives, and the timeout bounds that wait. */
   async waitForPresenceSnapshot(timeoutMs = 1_000): Promise<"snapshot" | "timeout"> {
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -6990,8 +6990,17 @@ export class CotalEndpoint extends EventEmitter {
       return undefined;
     }
     this.presenceWatchIter = iter;
+    // A bucket with no keys replays nothing, so no entry carries the end-of-replay marker. For an
+    // observer that does not register, that empty replay is the whole snapshot: nobody is present.
+    // A registering observer is populated by its own record instead (see onPresenceBucketEmpty).
+    const empty = info.num_pending === 0 && !this.doRegister;
+    if (empty) {
+      this.presenceSnapshotPopulated = true;
+      hydrated();
+      this.markPresenceBucketEmpty();
+    }
     void (async () => {
-      let ready = false;
+      let ready = empty;
       for await (const e of iter) {
         // A rebind bound a newer watch: this one's remaining entries belong to a retired epoch.
         // Stop consuming them (the rebind stops the iterator too; this ends the loop first).
