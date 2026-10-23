@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
+import { isIP } from "node:net";
 import { join, resolve } from "node:path";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
 import { awaitDeadDeliveryLease, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, mintCreds, newIdentity, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
@@ -281,6 +282,17 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
   });
 }
 
+/** Whether a broker bound to `host` is reached at `server`'s address: a wildcard bind is reached at
+ *  any address, and any other host must name that address. */
+export function bindReaches(host: string, server: string): boolean {
+  if (host === "0.0.0.0" || host === "::" || host === "[::]") return true;
+  try {
+    return new URL(`nats://${isIP(host) === 6 ? `[${host}]` : host}:1`).hostname === new URL(server).hostname;
+  } catch {
+    return false;
+  }
+}
+
 /** Start the recorded stack and return its domain result without writing any receipt. */
 export async function startControllerStack(request: StackUpRequest, native: StackUpNative): Promise<StackUpResult> {
   const root = canonicalRoot(request.root), space = request.space;
@@ -295,7 +307,22 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const previous = unstarted ? undefined : recorded;
   // A stopped stack's broker is prepared again from its own recorded inputs. An explicit request for
   // a different store, cap or bind host refuses; none is replaced by a default.
-  const recordedBroker = previous?.journal.broker;
+  const recordedInputs = previous?.journal.broker;
+  // The broker binds its recorded host, or 127.0.0.1 when none was recorded. A bind that does not
+  // serve the recorded address starts a broker its clients never reach, so it pins nothing: while
+  // the broker is stopped, an explicit --host that serves the recorded address replaces it, and any
+  // other up refuses before anything starts and names that step.
+  const recordedBind = recordedInputs ? recordedInputs.host ?? "127.0.0.1" : undefined;
+  const strayHost = recordedBind !== undefined && !bindReaches(recordedBind, previous!.journal.server) ? recordedBind : undefined;
+  if (strayHost !== undefined) {
+    const brokerRuns = serviceInstances(space, STACK_DEFINITION.broker).some((row) => observeServiceProcess(row.record.value) === "running");
+    if (request.host === undefined || !bindReaches(request.host, previous!.journal.server) || brokerRuns)
+      throw new CommandFailure("refused", "CONFLICT", `this stack's broker binds ${strayHost}${recordedInputs!.host === undefined ? ", as no bind host was recorded," : ","} which does not serve its recorded address ${previous!.journal.server}, so its clients cannot reach it; nothing was started`, {
+        target: { root, space, recorded: recordedInputs },
+        remedy: `${brokerRuns ? `stop its broker with cotal down --yes from ${root}, then ` : ""}run cotal up --host ${new URL(previous!.journal.server).hostname} from ${root}`,
+      });
+  }
+  const recordedBroker = strayHost !== undefined ? { ...recordedInputs!, host: request.host } : recordedInputs;
   const changedInputs = recordedBroker ? [
     request.storeDir !== undefined && resolve(request.storeDir) !== recordedBroker.storeDir ? `--store-dir ${resolve(request.storeDir)} (recorded: ${recordedBroker.storeDir})` : undefined,
     request.maxFileStore !== undefined && request.maxFileStore !== recordedBroker.maxFileStore ? `--max-file-store ${request.maxFileStore} (recorded: ${recordedBroker.maxFileStore ?? "none"})` : undefined,

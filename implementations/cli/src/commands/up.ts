@@ -179,7 +179,7 @@ import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
 import { cleanedManifestStart, retainedLegacyBroker } from "../lib/legacy-start.js";
-import { controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
+import { bindReaches, controllerStackApplies, recheckExistingStore, requestedStackMode, stackUp, stackUpForegroundNotice, type ExistingStorePin, type StackUpNative } from "./stack-up.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
 import {
@@ -340,11 +340,10 @@ export function validateUpArguments(args: ParsedArgs): void {
   // A manifest boot checks its own `--server` override against `broker.servers`.
   const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
   if (serverProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${serverProblem}; nothing was started or written`, { remedy: "pass the address the local broker listens on, for example --server nats://127.0.0.1:4222" });
-  const hostProblem = typeof args.values.host === "string" && !args.values.file ? upHostProblem(args.values.host) : undefined;
-  if (hostProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${hostProblem}; nothing was started or written`, { remedy: "pass an IPv4 bind address, for example --host 127.0.0.1" });
-  // A URL or port-bearing --host, or one naming another address than --server, refuses here, before
-  // the controller stack writes its journal or trust.
-  if (args.values.host !== undefined && !args.values.file) reconcileHostAndServer(String(args.values.host), args.values.server === undefined ? undefined : String(args.values.server));
+  // A --host that is no bind host, or a bind that does not serve --server's address, refuses here,
+  // before the controller stack writes its journal or trust.
+  const hostProblem = !args.values.file ? upHostProblem(args.values.host as string | undefined, args.values.server as string | undefined) : undefined;
+  if (hostProblem) throw new CommandFailure("refused", "USAGE_INVALID", `${hostProblem.problem}; nothing was started or written`, { remedy: hostProblem.remedy });
   if (args.values.file !== undefined && args.values.foreground === true) throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime");
   if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt");
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
@@ -404,11 +403,27 @@ function upServerProblem(server: string): string | undefined {
 /** The local stack's own clients cannot reach a broker on an IPv6 address, so neither flag may name one. */
 const IPV6_UNSERVED = (flag: string): string => `${flag} names an IPv6 address, and the local stack's own clients cannot reach a broker there`;
 
-/** Why `--host` cannot be the local broker's bind address, or undefined when it can. A wildcard bind
- *  keeps a loopback URL, so only a concrete IPv6 address refuses here. */
-function upHostProblem(host: string): string | undefined {
+/** Why `--host` cannot be the local broker's bind address beside `server`, with the step that fixes
+ *  it, or undefined when it can. A wildcard bind keeps a loopback URL, so it pairs with any address.
+ *  With no `--host` the broker binds 127.0.0.1, so a `--server` naming another IPv4 address needs one. */
+function upHostProblem(host: string | undefined, server: string | undefined): { problem: string; remedy: string } | undefined {
+  if (host === undefined) {
+    const named = server === undefined ? undefined : new URL(server).hostname;
+    return named !== undefined && isIP(named) === 4 && named !== "127.0.0.1" && !WILDCARD_HOSTS.has(named)
+      ? { problem: `--server ${server} names ${named}, and with no --host the broker binds 127.0.0.1, so it would not listen where its clients connect`, remedy: `pass --host ${named} to bind the broker there` }
+      : undefined;
+  }
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) return { problem: `--host ${host} looks like a URL, and it takes a bind host only (an IP or hostname, no scheme)`, remedy: "pass the broker URL with --server instead" };
+  if (WILDCARD_HOSTS.has(host)) return undefined;
   const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-  return isIP(bare) === 6 && !/^[0:]+$/.test(bare) ? IPV6_UNSERVED("--host") : undefined;
+  if (isIP(bare) === 6) return { problem: IPV6_UNSERVED("--host"), remedy: "pass an IPv4 bind address, for example --host 127.0.0.1" };
+  let url: URL | undefined;
+  try { url = new URL(`nats://${host}:1`); } catch { url = undefined; }
+  if (!url || url.port !== "1" || url.pathname || url.search || url.hash || url.username || url.password)
+    return { problem: `--host ${host} is not a valid bind host: an IP or hostname only, with no port; the port comes from --server (or its default)`, remedy: "pass the port in --server, for example --server nats://127.0.0.1:4222" };
+  if (server !== undefined && !bindReaches(host, server))
+    return { problem: `--host ${host} and --server ${server} name different addresses: the broker would bind ${host} but be probed at ${new URL(server).hostname}`, remedy: "pass one of them, or make both name the same address" };
+  return undefined;
 }
 
 function inheritedMachineHomeRoot(): string | undefined {

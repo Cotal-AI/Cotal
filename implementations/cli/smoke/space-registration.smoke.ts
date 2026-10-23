@@ -9,7 +9,9 @@
  * and is partial when it cannot remove them. On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A stack journal
  * whose members this home has no record of, with a live manager, stands for a stack running under
- * another Cotal home: create, down and status there name that home. A prepared space
+ * another Cotal home: create, down and status there name that home. A stopped stack whose broker
+ * bind does not serve its recorded address refuses up and is started again with the --host it names.
+ * A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, and one naming a missing channels file, have refused and left the root as
  * it was. Create and a later `up` write the
@@ -458,6 +460,54 @@ if (process.platform === "linux") {
   rmSync(awayRecord);
 } else console.log("  - other Cotal home cells skipped: a controller stack needs Linux machine and boot identity");
 
+// ── A broker bind that does not serve the recorded address ─────────────────────────────────────────────
+// A stack whose recorded bind host, or the default 127.0.0.1 when none was recorded, does not serve
+// its recorded address starts a broker no client reaches. Made here from a stopped stack's journal,
+// it refuses up before anything starts and names the --host that replaces the recorded one.
+if (process.platform === "linux") {
+  const pinned = join(home, "pinned");
+  mkdirSync(pinned);
+  const selected = getCurrent();
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const created = await json(["space", "create", "pinned"], pinned);
+  const sandbox = recordSmokeSandbox({ root: pinned, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  const started = await json(["up", "--detach", "--open", "--no-manager", "--server", server], pinned);
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: pinned, env: runEnv });
+  const stopped = await run(["down", "--yes"], {}, pinned);
+  check("a stack is started and stopped at a fresh root", created.status === 0 && started.status === 0 && stopped.status === 0, { created: shown(created), started: shown(started), stopped: shown(stopped) });
+  const journalPath = stackJournalPath(pinned);
+  const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+  writeFileSync(journalPath, JSON.stringify({ ...journal, broker: { ...journal.broker, host: "127.0.0.2" } }));
+  const pinnedBytes = readFileSync(journalPath, "utf8");
+  for (const args of [["up", "--detach", "--no-manager"], ["up", "--detach", "--no-manager", "--host", "127.0.0.3"]]) {
+    const r = await json(args, pinned);
+    check(`${args.join(" ")} over a recorded bind host that does not serve the address refuses CONFLICT, names cotal up --host 127.0.0.1, and starts nothing`,
+      refused(r, 2, "CONFLICT") && /broker binds 127\.0\.0\.2, which does not serve/.test(r.env?.error?.message ?? "") && (r.env?.error?.remedy ?? "").includes("cotal up --host 127.0.0.1") &&
+        readFileSync(journalPath, "utf8") === pinnedBytes, shown(r));
+  }
+  const recovered = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.1"], pinned);
+  check("the named --host replaces the recorded bind host and starts the stack", recovered.status === 0 && JSON.parse(readFileSync(journalPath, "utf8")).broker?.host === "127.0.0.1", shown(recovered));
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: pinned, env: runEnv });
+  const down = await run(["down", "--yes"], {}, pinned);
+  check("and down stops it", down.status === 0, shown(down));
+  // An address other than 127.0.0.1 recorded with no bind host: the broker binds the default.
+  const otherAddress = server.replace("127.0.0.1", "127.0.0.2");
+  const { host: _host, ...unbound } = JSON.parse(readFileSync(journalPath, "utf8")).broker;
+  writeFileSync(journalPath, JSON.stringify({ ...JSON.parse(readFileSync(journalPath, "utf8")), server: otherAddress, broker: unbound }));
+  const unboundBytes = readFileSync(journalPath, "utf8");
+  const bare = await json(["up", "--detach", "--no-manager"], pinned);
+  check("bare up over a recorded 127.0.0.2 address with no bind host refuses CONFLICT, names cotal up --host 127.0.0.2, and starts nothing",
+    refused(bare, 2, "CONFLICT") && /broker binds 127\.0\.0\.1, as no bind host was recorded, which does not serve/.test(bare.env?.error?.message ?? "") &&
+      (bare.env?.error?.remedy ?? "").includes("cotal up --host 127.0.0.2") && readFileSync(journalPath, "utf8") === unboundBytes, shown(bare));
+  const bound = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.2"], pinned);
+  check("--host 127.0.0.2 is recorded and starts the stack there", bound.status === 0 && JSON.parse(readFileSync(journalPath, "utf8")).broker?.host === "127.0.0.2", shown(bound));
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: pinned, env: runEnv });
+  const downAgain = await run(["down", "--yes"], {}, pinned);
+  check("and down stops it again", downAgain.status === 0, shown(downAgain));
+  // Its first up selected it; the cells after this one start from the selection before it.
+  if (selected === undefined) clearCurrent(); else setCurrent(selected);
+} else console.log("  - recorded bind host cells skipped: a controller stack needs Linux machine and boot identity");
+
 // ── Preparing a space with create, then starting it with up ────────────────────────────────────────────
 {
   const before = registryFiles();
@@ -625,6 +675,16 @@ if (process.platform === "linux") {
   check("up with a port-bearing --host refuses, exit 1, pointing at --server, and leaves the root and registrations unchanged",
     hostPort.status === 1 && /is not a valid bind host/.test(hostPort.stderr) && /the port comes from --server/.test(hostPort.stderr) &&
       cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry) && findPreparedSpace("demo")?.root === fresh, shown(hostPort));
+  // --json answers these refusals in its envelope, as it does every other usage refusal.
+  const hostPair = await json(["up", "--detach", "--open", "--no-manager", "--server", server, "--host", "127.0.0.2"], fresh);
+  check("up --json with a --host naming another address than --server is a USAGE_INVALID envelope, exit 1, and leaves the root unchanged",
+    refused(hostPair, 1, "USAGE_INVALID") && /--host 127\.0\.0\.2 and --server .* name different addresses/.test(hostPair.env?.error?.message ?? "") &&
+      cotalFiles() === beforeRuntime.files, shown(hostPair));
+  const otherAddress = server.replace("127.0.0.1", "127.0.0.2");
+  const unbound = await json(["up", "--detach", "--open", "--no-manager", "--server", otherAddress], fresh);
+  check("up --json --server naming 127.0.0.2 with no --host is USAGE_INVALID, exit 1, naming --host 127.0.0.2, and leaves the root unchanged",
+    refused(unbound, 1, "USAGE_INVALID") && unbound.env?.error?.remedy === "pass --host 127.0.0.2 to bind the broker there" &&
+      cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(unbound));
 
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
   const started = findMesh("demo");
