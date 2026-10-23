@@ -4,7 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { isReachable, realDirNoSymlink, type ParsedArgs } from "@cotal-ai/core";
 import {
   acquireMaintenanceLock, assertSingleSpaceBroker, authDir, brokerAddressForDisplay,
-  canonicalRoot, CommandFailure, findMesh, findPreparedSpace, loadMeshes, localMeshesForRoot, oneLine,
+  canonicalRoot, CommandFailure, findMesh, findPreparedSpace, isCommandFailure, loadMeshes, localMeshesForRoot, oneLine,
   presentationOf, readBrokerPolicy, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Block, type Report,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses, removeLocalState, safeStoreCleanupPath } from "./clean.js";
@@ -12,7 +12,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
-import { readStackJournal, stackNeverStarted } from "../lib/stack-journal.js";
+import { acquireStackOperationLock, readStackJournal, stackNeverStarted } from "../lib/stack-journal.js";
 import type { StackRuns } from "../lib/stack-runs.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
@@ -210,9 +210,13 @@ export async function resetStoreApply(space: string, args: ParsedArgs): Promise<
       return;
     }
   }
+  // A live holder, such as a racing `up`, is named by its pid, as whole-stack commands name it.
   let lock: ReturnType<typeof acquireMaintenanceLock>;
-  try { lock = acquireMaintenanceLock(root); }
-  catch { throw new CommandFailure("refused", "CONFLICT", "the exclusive local maintenance lock could not be acquired; no store was removed", { target }); }
+  try { lock = acquireStackOperationLock(root); }
+  catch (error) {
+    if (isCommandFailure(error)) throw error;
+    throw new CommandFailure("refused", "CONFLICT", "the exclusive local maintenance lock could not be acquired; no store was removed", { target });
+  }
   let removed: string[] | undefined;
   let submitted = false;
   let failure: CommandFailure | undefined;

@@ -75,7 +75,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { mintLifecycleUid } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, stopReservationPath } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, releaseMaintenanceLock, stopReservationPath } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -366,6 +366,17 @@ try {
     const afterCrash = cli(root, "reset", "store", space, "--dry-run", "--json");
     const verdict = afterCrash.env?.result?.applyVerdict as { offered?: boolean; remedy?: string | null } | undefined;
     check("reset store --dry-run after crashes and down --yes offers the apply", afterCrash.status === 0 && verdict?.offered === true, shown(afterCrash));
+    // A reset that finds the root's maintenance lock held, as by an `up` started at the same time,
+    // names the holder's pid as whole-stack commands do, and removes nothing.
+    const held = acquireMaintenanceLock(root);
+    try {
+      for (const verb of ["store", "space"]) {
+        const raced = cli(root, "reset", verb, space, "--yes", "--json");
+        check(`reset ${verb} refuses a held maintenance lock by its holder's pid`, raced.status === 2 && raced.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(raced.env.error.message.includes(`(pid ${process.pid})`)) && raced.env.target?.holderPid === process.pid, shown(raced));
+      }
+    } finally { releaseMaintenanceLock(held); }
+    const stillOffered = cli(root, "reset", "store", space, "--dry-run", "--json");
+    check("...and those refusals removed nothing", stillOffered.status === 0 && (stillOffered.env?.result?.applyVerdict as { offered?: boolean } | undefined)?.offered === true, shown(stillOffered));
     // The killed daemon never released shard 0. That down kept its credential, so the repair up
     // recognises the row as the dead daemon's, waits out its TTL and starts delivery.
     check("down --yes after a delivery crash keeps the delivery credential", settled.env?.result?.cleanup === "registration-removed-delivery-credential-kept", settled.env?.result?.cleanup);
