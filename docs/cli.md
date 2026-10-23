@@ -2015,6 +2015,8 @@ mesh and so takes the record over (a `cotal up` for that space anywhere else ref
 Nothing that merely *infers* a record is stale from a dead broker touches it: an
 unreachable broker is listed `offline` and stays, whether `cotal up` or `cotal meshes add`
 wrote the record; a foreground `up` whose broker exits unexpectedly keeps its record the same way.
+A fresh mesh is recorded only once its broker serves, so a broker that exits before that leaves no
+record, and `up` reports that it exited before the mesh was recorded.
 A bare command does not treat that offline record as a running mesh;
 name it with `--space` to restart it. When a bare control command resolves its target, it probes the
 recorded brokers once, and its mode check and its connect both read that one result. `cotal down` / `cotal clean all` still drop an `up` record for the project

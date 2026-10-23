@@ -1703,16 +1703,19 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Unrecording (and the exit code below) both depend on WHY the broker is gone. `stopping` is
     // true only for the intended shutdown `stop()` drives (Ctrl-C, SIGTERM) — everything else here
     // (a crash, an OOM kill, a signal from outside `up`) leaves the record and its store in place.
+    // Both branches read whether the registry still points at THIS broker. A newer broker for the
+    // same space (a concurrent `up`, or a different-port re-up that recorded after us) may have
+    // replaced our record, and a fresh broker that exits before it serves has none yet: the mesh is
+    // recorded only once the listener is ready.
+    const mine = findMesh(space);
+    const recorded = mine !== undefined && mine.server === server && mine.root === cotalRoot();
     if (stopping) {
-      // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
-      // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
-      // record — removing by name would clobber the live winner and hide it from the registry.
-      // …and only if it is still OUR kind of record. A concurrent `cotal meshes add --force` can
+      // Removing a replaced record by name would clobber the live winner and hide it from the
+      // registry. Only OUR kind of record goes, too: a concurrent `cotal meshes add --force` can
       // replace it with a hand-registered one carrying the same server + root; that record outlives
       // this broker by design (it is the operator's, and only they remove it), so unrecording it on
       // our exit would delete a registration this process never owned.
-      const mine = findMesh(space);
-      if (mine && mine.origin !== "manual" && mine.server === server && mine.root === cotalRoot()) {
+      if (recorded && mine.origin !== "manual") {
         removeMesh(space);
         if (getCurrent() === space) clearCurrent();
       }
@@ -1721,12 +1724,15 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // The record is kept ON PURPOSE: it still names the store this broker opened, so a repair
       // `up` reopens that SAME store instead of falling back to the root's default, and a
       // supervising unit's restart takes the refresh path against the recorded store rather than
-      // racing a second broker into existence. Foreground stdio is inherited (its own log lines
-      // are already on this terminal, above), so there is no `.cotal/nats.log` to name here.
+      // racing a second broker into existence. With no record there is nothing to keep or repair,
+      // and the report says so. Foreground stdio is inherited (its own log lines are already on this
+      // terminal, above), so there is no `.cotal/nats.log` to name here.
       const detail = signal ? `signal ${signal}` : `code ${code}`;
       console.error(
         c.red(
-          `✗ nats-server exited unexpectedly (${detail}); the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``,
+          recorded
+            ? `✗ nats-server exited unexpectedly (${detail}); the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``
+            : `✗ nats-server exited before the mesh "${space}" was recorded (${detail}); log: see the terminal output above`,
         ),
       );
       // A foreground broker under `Restart=on-failure` must exit non-zero on a crash so the unit

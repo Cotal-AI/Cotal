@@ -15,7 +15,7 @@
  * Run: pnpm smoke:up-refresh-identity:live
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
@@ -30,7 +30,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 13 + 5 + 14; // storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord
+const EXPECTED_CHECKS = 29 + 13 + 5 + 14 + 7; // storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord + foregroundPreReadyExit
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -375,6 +375,41 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
   }
 }
 
+/** #3535 — a foreground `up` whose broker exits before it serves reports the record the registry
+ *  actually holds. A scripted nats-server first on PATH answers `--version` and exits 1 otherwise, so
+ *  the listener never answers. A fresh space has no record yet, so the report says the broker exited
+ *  before the mesh was recorded and offers no repair. A hand-registered record for the same space,
+ *  server and root predates the start and stays, so that report still names it. */
+async function foregroundPreReadyExit(): Promise<void> {
+  const fixture = await makeFixture("fg-preready");
+  process.env.COTAL_HOME = fixture.home;
+  process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
+  const { findMesh, recordMesh, removeMesh } = await import("@cotal-ai/workspace");
+  const stubDir = mkdtempSync(join(scratch, "fg-preready-bin-"));
+  writeFileSync(join(stubDir, "nats-server"), '#!/bin/sh\n[ "$1" = "--version" ] && { echo "nats-server: v2.15.0"; exit 0; }\nexit 1\n', { mode: 0o755 });
+  const stubbed = { ...fixture, env: { ...fixture.env, PATH: `${stubDir}:${fixture.env.PATH}` } };
+  const up = (space: string) => cotal(stubbed, ["up", "--foreground", "--open", "--no-manager", "--server", fixture.server, "--space", space]);
+  const manual = { space: "fg-preready-manual", server: fixture.server, root: fixture.root, mode: "open" as const, origin: "manual" as const, ts: new Date(0).toISOString() };
+  try {
+    const fresh = up("fg-preready");
+    check("a fresh foreground `up` whose broker exits before serving exits 1", fresh.status === 1, { status: fresh.status, stderr: fresh.stderr });
+    check("...and says the broker exited before the mesh was recorded", fresh.stderr.includes('nats-server exited before the mesh "fg-preready" was recorded (code 1)'), fresh.stderr);
+    check("...with no recorded-mesh claim and no repair", !/stays recorded|lists it offline|repair:/.test(fresh.stderr), fresh.stderr);
+    check("...and the registry holds no record for it", findMesh("fg-preready") === undefined, findMesh("fg-preready"));
+
+    recordMesh(manual);
+    const kept = up(manual.space);
+    check("a pre-ready exit under a hand-registered record exits 1", kept.status === 1, { status: kept.status, stderr: kept.stderr });
+    check("...and reports that record as kept", kept.stderr.includes(`the mesh "${manual.space}" stays recorded`), kept.stderr);
+    check("...which is unchanged", JSON.stringify(findMesh(manual.space)) === JSON.stringify(manual), findMesh(manual.space));
+  } finally {
+    try { removeMesh(manual.space); } catch { /* fixture cleanup keeps the primary failure */ }
+    rmSync(fixture.home, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
+    rmSync(stubDir, { recursive: true, force: true });
+  }
+}
+
 /** #1697 — `--host` takes a bind HOST, not a URL and not a host:port. Both refusals used to be
  *  reachable only past the IPv6 bracketing: a URL was wrapped into `nats://[nats://…]:4222`, which
  *  nothing validated — with no `--server` the garbage string reached the registry comparison and
@@ -440,6 +475,7 @@ try {
   await storeRecordRepair();
   await preFieldWarning();
   await foregroundCrashKeepsRecord();
+  await foregroundPreReadyExit();
   if (passed !== EXPECTED_CHECKS)
     throw new Error(`FAIL: expected ${EXPECTED_CHECKS} checks, ran ${passed}`);
   console.log(`\nUP REFRESH IDENTITY LIVE SMOKE OK ✅ (${passed} checks passed)`);
