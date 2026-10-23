@@ -2391,10 +2391,10 @@ binding. A broker publish denial remains a refusal. A lost publication outcome r
 ## service-endpoint
 
 ```bash
-cotal service-endpoint approve <proposalId> [--caller-ceiling a,b] [--space <s>] [--json | --plain]
-cotal service-endpoint refuse <proposalId> [--space <s>] [--json | --plain]
+cotal service-endpoint approve <proposalId> [--caller-ceiling a,b] [--request-id <hex32>] [--space <s>] [--json | --plain]
+cotal service-endpoint refuse <proposalId> [--request-id <hex32>] [--space <s>] [--json | --plain]
 cotal service-endpoint proposal <proposalId> | operation <operationId> | name <endpoint> [--space <s>]
-cotal service-endpoint name-bind <endpoint> --owner <u_…> --claim <ref> [--space <s>]
+cotal service-endpoint name-bind <endpoint> --owner <u_…> --claim <ref> [--request-id <hex32>] [--space <s>]
 ```
 
 Decides and inspects service endpoint registrations on a user-auth space whose auth service runs
@@ -2407,7 +2407,10 @@ moved in between is a conflict the host reports, never a decision on something e
 operator's: it needs the auth service on this machine and runs on its loopback face under the
 exchange capability, with your signed-in subject as the audit id. The host verifies no domain
 control, so `--claim` is your own reference for the namespace you checked. The answer is the host's
-own, replay included: the identical request recovers the same approval or binding.
+own. A decision or a binding prints the request id it was sent under; run the same command again
+with `--request-id <hex32>` to send the identical request, which the host replays with the same
+approval or binding. A run without it is a new request, and a proposal already being approved
+answers `approval-in-progress`.
 
 ## Handle inspection
 

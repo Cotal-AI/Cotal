@@ -1671,10 +1671,16 @@ not ready. The host checks an owner granter's current interactive row but authen
 the embedder MUST authenticate the granter it passes, operator or owner. The stock auth service
 serves that function on `POST /service-endpoint-host` when started with `--service-endpoints`: the
 body is `{ idpToken, request }` with no granter, the route verifies the IdP token and derives the
-granter itself. `decide`, a revoke whose cause is `owner-request` and the reads (`proposal-read`, `operation-read`
-and `name-read`, each scoped to the owner's own records) run as the proved owner on either face; `name-bind`, any other revoke and the admission operations are the operator's
+granter itself. `decide`, a revoke whose cause is `owner-request`, the four caller-policy operations
+(`caller-grant`, `caller-revoke`, `caller-policy-read`, `caller-policy-list`) and the reads
+(`proposal-read`, `operation-read` and `name-read`, each scoped to the owner's own records; a
+proposal read names its endpoint's binding only when that binding is the owner's) run as the proved
+owner on either face; `name-bind`, any other revoke and the admission operations are the operator's
 and are served on the loopback face under the exchange capability only, with the proved subject as
-the audit id. The engine's answer, replay included, is returned as is.
+the audit id. The admission operations have no engine handler in this cut and answer `unsupported`.
+The engine's answer, replay included, is returned as is. Host requestIds share one space-wide
+namespace, so a client MUST mint them unpredictably (16 random bytes); a guessable id can be bound
+first by another owner.
 
 `name-bind` is create-only and needs an operator granter. Its `expectedRevision` MUST be 0; any other
 value answers `unsupported`, and a native control endpoint name is refused. It issues one
