@@ -1799,7 +1799,8 @@ it starts in, before it writes anything, so it never starts a stack that `down` 
 stop from that root. `cotal up` starts a space only under a name of 1 to 200 letters, digits,
 underscores or hyphens, so any other name refuses with `USAGE_INVALID`, exit 1, before anything is
 written. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
-space's root, and the home folder, whose `.cotal` holds this machine's own records. `space` lists
+space's root, and the home folder, whose `.cotal` holds this machine's own records. A folder this
+account cannot write, such as `/`, refuses `PERMISSION_DENIED`, exit 2, with nothing written. `space` lists
 prepared spaces under their own heading, and `space show` and `use` accept one. A command that
 targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
 and so does `cotal up --space <name>` run from another folder. `cotal up --space <name>` in a folder

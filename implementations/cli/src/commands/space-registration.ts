@@ -426,7 +426,12 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
  *  Returns the record it wrote and when. */
 export function recordLocalSpace(name: string, root: string): { file: string; preparedAt: string } {
   protectedLocalDirectory(root, "the project root");
-  mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 });
+  // Making `.cotal` is the first write, so a root this account cannot write is refused with nothing written.
+  try { mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 }); }
+  catch (error) {
+    if (!["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, { space: name, root }, "create the space in a folder you own, or pass --root <dir>");
+  }
   protectedLocalDirectory(join(root, ".cotal"), "the project's .cotal directory");
   const preparedAt = new Date().toISOString();
   return { file: recordPreparedSpace({ space: name, root, ts: preparedAt }), preparedAt };

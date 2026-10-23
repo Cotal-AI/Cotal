@@ -455,6 +455,15 @@ setCurrent("keep");
     refused(heldElsewhere, 2, "DEPENDENCY_UNAVAILABLE") && (heldElsewhere.env?.error?.message ?? "").startsWith(`the broker at ${AUTH_LIVE} requires auth, and`) && (heldElsewhere.env?.error?.message ?? "").includes('holds the trust for "held", not "alias"'), shown(heldElsewhere));
   check("the home folder is CONFLICT", refused(await json(["space", "create", "other", "--root", home]), 2, "CONFLICT"));
   check("a --root that is not a directory is USAGE_INVALID", refused(await json(["space", "create", "other", "--root", join(home, "absent")]), 1, "USAGE_INVALID"));
+  // A folder this account cannot write is refused before anything is written. Root can write anywhere.
+  if (process.getuid?.() !== 0) {
+    const readOnly = join(home, "read-only");
+    mkdirSync(readOnly, { mode: 0o500 });
+    const denied = await json(["space", "create", "other", "--root", readOnly]);
+    check("a --root this account cannot write is PERMISSION_DENIED, exit 2, with nothing written",
+      refused(denied, 2, "PERMISSION_DENIED") && (denied.env?.error?.message ?? "").startsWith(`${readOnly} is not writable by this account`) && !existsSync(join(readOnly, ".cotal")) && findPreparedSpace("other") === undefined, shown(denied));
+    chmodSync(readOnly, 0o700);
+  }
   check("create takes exactly one name", refused(await json(["space", "create"], spare), 1, "USAGE_INVALID") && refused(await json(["space", "create", "a", "b"], spare), 1, "USAGE_INVALID"));
   check("an add flag other than --root on create is USAGE_INVALID", refused(await json(["space", "create", "other", "--server", LIVE], spare), 1, "USAGE_INVALID"));
   for (const name of ["a b", "dot.name", "é"]) {
