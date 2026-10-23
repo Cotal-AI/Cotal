@@ -6544,7 +6544,8 @@ process exit. A foreground manager stops through the same request-bound native s
 Ctrl-C also reaches the native child, which ignores a signal that carries no stop request and
 prints one warning line for it.
 Native service child boot never repairs or seeds connector packages. Background stdout/stderr
-go to owner-private logs. `logs --tail <1..1000>` reads a bounded tail from the last 1 MiB. The result
+go to owner-private logs. A start or restart moves a log of 16 MiB or more to `<log>.1`, replacing
+an earlier one, and the run writes a fresh log, so the log grows until the next start. `logs --tail <1..1000>` reads a bounded tail from the last 1 MiB. The result
 is partial only when that read holds fewer lines than the tail asked for. Foreground output is not captured there. Log text is not promised to be
 secret-redacted. Live following uses the bounded read-only stream described below.
 

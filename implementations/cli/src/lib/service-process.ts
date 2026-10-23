@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { CommandFailure, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, resolveOnPath, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, isWorkspaceTargetError, targetErrorCode, workspaceErrorParts, type MeshTargetError } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
@@ -233,6 +233,20 @@ export function serviceLogPath(space: string, id: string, create = false): strin
   return dir ? join(dir, `${spaceKey(id)}.log`) : undefined;
 }
 
+/** The size at which a background launch moves the instance's log aside before it starts. */
+const LOG_ROTATE_BYTES = 16 * 1024 * 1024;
+
+/** Move a log that reached {@link LOG_ROTATE_BYTES} to `<log>.1`, replacing an earlier one, so the
+ *  launch starts a fresh file. Only a start or restart rotates, so a running service's log grows
+ *  until its next start. */
+function rotateServiceLog(path: string): void {
+  let info;
+  try { info = lstatSync(path); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new Error("unprotected log target");
+  if (info.size >= LOG_ROTATE_BYTES) renameSync(path, `${path}.1`);
+}
+
 /** Both absent, or the same attempt and inventory digest. */
 function samePreserved(a: ServiceAdapterPreservedStop | undefined, b: ServiceAdapterPreservedStop | undefined): boolean {
   return a === undefined ? b === undefined : b !== undefined && a.attemptId === b.attemptId && a.inventorySha256 === b.inventorySha256;
@@ -438,6 +452,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
     const exit = new Promise<void>((resolve) => { done = resolve; });
     try {
       if (!options.foreground) {
+        rotateServiceLog(path);
         log = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
         const info = fstatSync(log);
         if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o077) !== 0) throw new Error("unprotected log target");
