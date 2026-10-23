@@ -2391,10 +2391,10 @@ binding. A broker publish denial remains a refusal. A lost publication outcome r
 ## service-endpoint
 
 ```bash
-cotal service-endpoint approve <proposalId> [--caller-ceiling a,b] [--request-id <hex32>] [--space <s>] [--json | --plain]
+cotal service-endpoint approve <proposalId> [--caller-ceiling a,b | --request-id <hex32>] [--space <s>] [--json | --plain]
 cotal service-endpoint refuse <proposalId> [--request-id <hex32>] [--space <s>] [--json | --plain]
 cotal service-endpoint proposal <proposalId> | operation <operationId> | name <endpoint> [--space <s>]
-cotal service-endpoint name-bind <endpoint> --owner <u_…> --claim <ref> [--request-id <hex32>] [--space <s>]
+cotal service-endpoint name-bind <endpoint> (--owner <u_…> --claim <ref> | --request-id <hex32>) [--space <s>]
 ```
 
 Decides and inspects service endpoint registrations on a user-auth space whose auth service runs
@@ -2407,9 +2407,11 @@ moved in between is a conflict the host reports, never a decision on something e
 operator's: it needs the auth service on this machine and runs on its loopback face under the
 exchange capability, with your signed-in subject as the audit id. The host verifies no domain
 control, so `--claim` is your own reference for the namespace you checked. The answer is the host's
-own. A decision or a binding is recorded under its request id in this root's `.cotal` state before
-it is sent, and the command prints that id, or names it in the failure when no answer came back.
-Run the same command again with `--request-id <hex32>` to send the recorded request as it was,
+own. A decision or a binding is recorded under its request id at
+`.cotal/auth/space.<key>/service-endpoint-requests/<id>.json` in this root before it is sent, and
+the command prints that id, or names the exact resend command in the failure when no answer came
+back. A run interrupted before any answer prints nothing: the record's file name is the id.
+Run the same subcommand and subject again with `--request-id <hex32>` to send the recorded request as it was,
 which the host replays with the same approval or binding; a fresh read would carry the revisions
 the first attempt moved, so the replay never rebuilds the request, and it takes no
 `--caller-ceiling`, `--owner` or `--claim`. An id this root never recorded, or one recorded for a
