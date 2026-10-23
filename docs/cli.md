@@ -5036,6 +5036,8 @@ include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and 
 Without `--server` it dials the broker its `--space` is registered at, and refuses an unregistered
 space before dialing.
 `--port` takes a decimal port from 1 to 65535 and is checked before the intake dials the broker.
+`--max-bytes` and `--rate-limit` are checked at the same point. Each must be a positive integer no
+greater than 9007199254740991, and a refusal names the value it rejected.
 
 ## Plumbing
 
