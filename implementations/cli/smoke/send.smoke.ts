@@ -280,6 +280,7 @@ try {
     noReadSend.code === 2 && noReadSend.stdout.includes('"code":"PERMISSION_DENIED"') && !got.some((m) => m.text === "never stored"),
     noReadSend,
   );
+  check(
     "a first post to an unregistered channel says it starts the channel and names the registered ones",
     firstFresh.code === 0 && firstFresh.stderr.includes(`#${fresh} has no channel metadata and no earlier message, so this message starts it`) && firstFresh.stderr.includes("Registered channels: #general."),
     firstFresh,
