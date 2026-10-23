@@ -324,10 +324,11 @@ try {
     await until(() => members.every((pid) => pid === null || !alive(pid)), 10_000);
     const settled = cli(root, "down", "--yes", "--json");
     check("down --yes records every crashed member as stopped and exits 0", settled.status === 0 && ["ok", "no-op"].includes(settled.env?.outcome ?? ""), shown(settled));
-    // A member that crashed has no recorded stop, so reset names the restart that records one.
-    const unreceipted = cli(root, "reset", "store", space, "--dry-run", "--json");
-    const verdict = unreceipted.env?.result?.applyVerdict as { offered?: boolean; remedy?: string | null } | undefined;
-    check("reset store --dry-run after crashes refuses in its verdict and names cotal up then cotal down", unreceipted.status === 0 && verdict?.offered === false && Boolean(verdict.remedy?.includes("cotal up")) && Boolean(verdict.remedy?.includes("cotal down")), shown(unreceipted));
+    // That down recorded every crashed member as already stopped, so the reset, which removes the
+    // store rather than keeps it, is offered without a restart.
+    const afterCrash = cli(root, "reset", "store", space, "--dry-run", "--json");
+    const verdict = afterCrash.env?.result?.applyVerdict as { offered?: boolean; remedy?: string | null } | undefined;
+    check("reset store --dry-run after crashes and down --yes offers the apply", afterCrash.status === 0 && verdict?.offered === true, shown(afterCrash));
     // The killed daemon never released shard 0. That down kept its credential, so the repair up
     // recognises the row as the dead daemon's, waits out its TTL and starts delivery.
     check("down --yes after a delivery crash keeps the delivery credential", settled.env?.result?.cleanup === "registration-removed-delivery-credential-kept", settled.env?.result?.cleanup);

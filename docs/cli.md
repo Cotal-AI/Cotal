@@ -1234,7 +1234,9 @@ One configurable cleanup verb; every target requires `--force`.
   address, mode or space.
 
 `history` needs the mesh up; `store` and `all` refuse while any recorded mesh process may still be
-running or any same-root recorded broker endpoint remains reachable (run `cotal down` first). A
+running or any same-root recorded broker endpoint remains reachable (run `cotal down` first). On a
+controller root, a member whose process is gone counts as stopped once a completed `down` recorded it
+as already stopped, so `down --yes` after a crash is enough. A
 record counts as stopped only when it is absent, empty, or names a pid the kernel reports gone, so
 unattributable content, a removal reservation, or a pid whose liveness cannot be read refuses. They
 also refuse outright on a root that holds accounts for several spaces: the store and the broker
@@ -1266,8 +1268,10 @@ reset keeps both, so a later `up` starts it again. A stack none of whose members
 no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
 refusal names one reason and the command that clears it. A space that may still run names
-`cotal down` from its root, or `cotal up` and then `cotal down --yes` when a member exited
-without a recorded stop. A legacy root has no stack journal, and its `down` drops the registration
+`cotal down` from its root. A member that exited without a recorded stop, as after a crash, is
+settled by `cotal down --yes`: it finds the member gone and records it as already stopped, and the
+reset then accepts it. Only a member that no completed `down` recorded that way needs `cotal up` and
+then `cotal down --yes`. A legacy root has no stack journal, and its `down` drops the registration
 a reset selects, so no reset reaches it once stopped. There the step after `cotal down` is
 `cotal clean store --force` from its root for `reset store`, or `cotal clean all --force` for
 `reset space`, with `--store-dir <dir>` when the registration records a custom store.
