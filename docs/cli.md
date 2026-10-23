@@ -4409,6 +4409,11 @@ one finite document; plain output uses the same public receipt. Signing material
 [auth signer](#account-signer-export), not a signer flag on mint. The old top-level `mint` spelling
 is refused with the literal namespace replacement.
 
+A minted credential cannot be revoked on its own, and `auth retire` refuses. A credential without an
+expiry stays valid until the space identity rotates: `cotal down`, then `cotal reset space <space>`
+(or `cotal clean all --force` from the root when `down` left no registration), then `cotal up`. That
+stops every credential the space issued. `--expires-in` or `--expires-at` bounds one instead.
+
 ### Endpoint caller credentials
 
 `--endpoint` is a separate closed mode, not an ACL override on an observer or admin profile. It
@@ -6451,10 +6456,12 @@ and is labeled accordingly. Output backpressure pauses the reader instead of gro
 without bounds. Ctrl-C, termination and closed output end the view, not the service.
 
 `auth retire <full-lifecycle-uid> [--space <space>] [--yes]` validates the native UID and resolves
-the selected auth target. The CLI then refuses unsupported caller context: the registered
-auth endpoint requires the requester's own current serve identity/gate, which the standalone CLI
-does not provide. It neither borrows a manager identity nor substitutes the interactive/managed
-loopback host doors. `--yes` cannot create authority, and no retirement request is sent.
+the selected auth target, then refuses `UNSUPPORTED` (exit 2): the registered auth endpoint accepts
+retirement only from the requester's own current serve identity and gate, which this CLI does not
+have. It neither borrows a manager identity nor substitutes the interactive or managed loopback
+host doors. `--yes` cannot create authority, and no retirement request is sent. The refusal names
+the lever that works, rotating the space identity, which stops every credential the space issued
+(see [auth mint](#auth-mint)).
 
 `auth redeem <private-handle-file> [--space <space>]` selects the existing local auth target and
 refuses with `UNSUPPORTED` because its conferring-handle redemption path is not exposed. It does
