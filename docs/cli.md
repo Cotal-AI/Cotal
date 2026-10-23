@@ -6286,7 +6286,10 @@ bounded objects, arrays and scalar fields, with no schema references, regular ex
 coercion, defaults or unknown-option removal. Every object closes its declared fields. An
 unsupported schema refuses rather than being widened. A declared path option and its ancestors
 follow the [`space create`](#selecting-a-space) rule for other local writers; a private file stays
-owner-only.
+owner-only. One refusal names the option's entry and every unsafe directory above it, with one
+`chmod` that fixes them all. `npm i -g` under umask 0002, an ordinary Ubuntu user's default, leaves the bundled
+`nats-server` and its directories group-writable, so where the private-group proof is unavailable,
+`up` refuses the broker's `binary` path and names that `chmod g-w`.
 
 The provider declares foreground, multi-instance and log capabilities. An explicit start records
 its definition revision, full instance, launch request and adapter package/version/declaration

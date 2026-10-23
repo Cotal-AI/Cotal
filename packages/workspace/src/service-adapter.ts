@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { accessSync, constants, lstatSync, readlinkSync, realpathSync, type Stats } from "node:fs";
-import { dirname, isAbsolute } from "node:path";
+import { isAbsolute } from "node:path";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import { endpointToken, token } from "@cotal-ai/core";
 import type { ControllerStackView } from "./maintenance.js";
 import type { ProcessIdentityRecord } from "./pid.js";
 import { schemaErrorLocation, type ServiceDefinitionInput } from "./service-definition.js";
 import { CommandFailure } from "./output.js";
-import { assertProtectedEntry, protectedCredentialReference, protectedLocalDirectory } from "./protected-records.js";
+import { protectedCredentialReference, protectedLocalEntry } from "./protected-records.js";
 
 /** Workstation ABI only. A declaration grants no native endpoint or OS process authority. */
 export interface ServiceAdapterDeclaration {
@@ -310,31 +310,22 @@ function pathFacts(path: string): string {
   return `${path} is ${type} owned by uid ${entry.uid} with mode ${(entry.mode & 0o7777).toString(8).padStart(4, "0")}${writable}`;
 }
 
-/** The shallowest directory on `path`'s chain that {@link protectedLocalDirectory} refuses. The rule
- *  is applied from the filesystem root down instead of restated here. */
-function refusedAncestor(path: string): string {
-  const chain: string[] = [];
-  for (let dir = path; ; dir = dirname(dir)) {
-    chain.unshift(dir);
-    if (dirname(dir) === dir) break;
-  }
-  for (const dir of chain) {
-    try { protectedLocalDirectory(dir); } catch { return dir; }
-  }
-  return path;
-}
-
 /** Reference protection is checked without reading file contents or importing provider code. A
- *  refusal names the option, the path that failed and what that path's metadata shows. */
+ *  refusal names the option and, as the protected-path rule does, every unprotected entry on the
+ *  path with its reason and one remedy, so a single change fixes them all. It ends with what the
+ *  shallowest entry's metadata shows. */
 export function validateServiceAdapterPaths(declaration: ServiceAdapterDeclaration, options: Readonly<Record<string, unknown>>): void {
   for (const [name, kind] of Object.entries(declaration.paths ?? {})) {
     const path = options[name];
     if (path === undefined) continue;
     if (typeof path !== "string" || !isAbsolute(path) || /[\u0000-\u001f\u007f]/u.test(path)) return invalid(`the ${name} option must be an absolute path with no terminal controls`);
     if (kind === "private-file") { protectedCredentialReference(path); continue; }
-    const unprotected = (refused: string): never => {
-      if (lstatSync(refused, { throwIfNoEntry: false })?.isSymbolicLink()) linked(refused);
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `the declared adapter path ${name} is not protected against other local writers: ${pathFacts(refused)}`, { target: { option: name, path, refused } });
+    const unprotected = (refusal: CommandFailure): never => {
+      const { path: deepest, paths = [deepest] } = refusal.target as { path: string; paths?: string[] };
+      const link = paths.find((entry) => lstatSync(entry, { throwIfNoEntry: false })?.isSymbolicLink());
+      if (link) linked(link);
+      const refused = paths.at(-1)!;
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `${refusal.message}; ${pathFacts(refused)}`, { target: { option: name, path, refused, paths }, remedy: refusal.remedy });
     };
     // A link can be repointed after this check, so only a physical path is checked and pinned.
     const linked = (link: string): never => {
@@ -345,14 +336,10 @@ export function validateServiceAdapterPaths(declaration: ServiceAdapterDeclarati
       });
     };
     try {
-      const parent = kind === "directory" ? path : dirname(path);
-      try { protectedLocalDirectory(parent, "the declared adapter path"); }
-      catch (error) { if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") unprotected(refusedAncestor(parent)); throw error; }
+      try { protectedLocalEntry(path, `the declared adapter path ${name}`); }
+      catch (error) { if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") unprotected(error); throw error; }
       const entry = lstatSync(path);
-      if (entry.isSymbolicLink()) linked(path);
       if (kind === "directory" ? !entry.isDirectory() : !entry.isFile()) throw new Error();
-      try { assertProtectedEntry("the declared adapter path", path, entry); }
-      catch (error) { if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") unprotected(path); throw error; }
       accessSync(path, constants.R_OK | (kind === "directory" ? constants.X_OK : 0));
     } catch (error) {
       if (error instanceof CommandFailure) throw error;
