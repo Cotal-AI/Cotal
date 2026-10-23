@@ -215,6 +215,17 @@ const sites: Site[] = [
     limit: "view.smoke drives this registration and checks both the snapshot and stream event",
   },
   {
+    cell: "native chat session ends itself when a reconnect finds its consumer gone",
+    consumer: "CLI native chat session",
+    disposition: "surface",
+    source: "implementations/cli/src/chat/native-session.ts",
+    dist: "implementations/cli/dist/chat/native-session.js",
+    sourceNeedle: 'ep.on("warning", this.onWarning);',
+    distNeedle: 'ep.on("warning",this.onWarning);',
+    proof: "behavioral",
+    limit: "chat-stand-in drives this registration over a stand-in endpoint and checks the end reason and exit 5",
+  },
+  {
     cell: "plain console renders MeshView warnings",
     consumer: "CLI plain console renderer",
     disposition: "surface",

@@ -19,6 +19,7 @@ import {
   EpEnvelopeError,
   channelInAllow,
   isConcreteChannel,
+  isConsumerNotFound,
   isPublishPermissionDenied,
   parsePrincipalKey,
   partsToText,
@@ -144,11 +145,21 @@ export class NativeChatSession implements AdmittedChatSession {
   private state: ConnectionState = "connected";
   private attention: "open" | "dnd" | "focus" = "open";
   private closed: Promise<CloseReport> | undefined;
+  /** Why the session ended itself, when it could not continue. */
+  private lost: string | undefined;
   private readonly onMessage = (m: CotalMessage, d: Delivery, meta?: MessageMeta) => this.ingest(m, d, meta);
   private readonly onConnection = (s: { connected: boolean }) => this.setState(s.connected ? "connected" : "disconnected");
   private readonly onPresence = (ev: { type: "join" | "update" | "offline"; presence: Presence }) =>
     this.emit({ type: "presence", row: rowOf(ev.presence), change: ev.type === "join" ? "joined" : ev.type === "offline" ? "left" : "updated" });
   private readonly onError = () => { /* surfaced through call results; never thrown at the UI */ };
+  /** A reconnect that finds this session's own DM durable gone cannot succeed by retrying: the
+   *  session was retired while the broker was away, as a stack restart retires the sessions its old
+   *  manager admitted. The session ends with that reason instead of reporting reconnecting for good. */
+  private readonly onWarning = (e: Error) => {
+    if (this.state === "connected" || this.closed || !isConsumerNotFound(e)) return;
+    this.lost = "this session can no longer reconnect: its inbox is gone from the broker, because the space restarted or retired the session while the connection was down; open a new session";
+    void this.close();
+  };
 
   constructor(private readonly inputs: NativeSessionInputs) {
     this.engine = new ParticipantEngine(inputs.identity.principal);
@@ -157,6 +168,7 @@ export class NativeChatSession implements AdmittedChatSession {
     ep.on("connection", this.onConnection);
     ep.on("presence", this.onPresence);
     ep.on("error", this.onError);
+    ep.on("warning", this.onWarning);
   }
 
   identity(): SessionIdentity {
@@ -372,6 +384,7 @@ export class NativeChatSession implements AdmittedChatSession {
       ep.off("message", this.onMessage);
       ep.off("connection", this.onConnection);
       ep.off("presence", this.onPresence);
+      ep.off("warning", this.onWarning);
       this.engine.clear();
       let stopped = true;
       try { await ep.stop(); } catch { stopped = false; }
@@ -379,17 +392,18 @@ export class NativeChatSession implements AdmittedChatSession {
       try { report = await this.inputs.retire(); }
       catch (e) { report = { retirement: "unknown", connectionClosed: "not-confirmed", message: (e as Error).message }; }
       ep.off("error", this.onError);
-      this.setState("ended");
+      if (this.lost) report = { ...report, lost: this.lost };
+      this.setState("ended", this.lost);
       // Our own close is observed; a broker-side eviction is the retire report's claim to make.
       return stopped ? report : { ...report, connectionClosed: "not-confirmed" };
     })();
     return this.closed;
   }
 
-  private setState(s: ConnectionState): void {
+  private setState(s: ConnectionState, reason?: string): void {
     if (this.state === s || this.state === "ended") return;
     this.state = s;
-    this.emit({ type: "connection", state: s });
+    this.emit({ type: "connection", state: s, ...(reason ? { reason } : {}) });
   }
 
   private emit(e: SessionEvent): void {

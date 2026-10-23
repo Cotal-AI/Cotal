@@ -3795,7 +3795,9 @@ A session that ends by leaving, by end of input or at its lifetime exits 0 when 
 close was confirmed and it was retired, or was an open-mesh session with nothing to retire. It exits
 4 when its connection close was confirmed and its retirement was requested but not confirmed. It
 exits 3 when the retirement outcome is unknown, its connection close was not confirmed, or no close
-was observed. In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
+was observed. A session that cannot reconnect because its inbox is gone from the broker, as when the
+space restarted and retired it while the connection was down, ends by itself with that reason and
+exits 5 when its close is confirmed. In the terminal view Ctrl-C and Ctrl-D leave. With `--plain` or `--stdio`, Ctrl-C ends
 input and the session closes, then exits 130. A terminate signal exits 143 and a hangup 129. A
 signal that arrives before the view starts is held: no session is opened if admission has not
 begun, and a session admitted meanwhile is closed at once. The exit status is still the signal's.
@@ -3892,7 +3894,8 @@ to redeliver. When a write waits for stdout to drain, or more than 4 MiB of reco
 session stops reading stdin until stdout drains.
 
 `end` is the last record. Its `reason` is `input closed` when stdin ended or a signal ended input,
-and `session ended` when the session ended by itself, for example at a static session's expiry.
+and `session ended` when the session ended by itself, for example at a static session's expiry. A
+session that could not reconnect gives that reason instead, and its `close` carries it as `lost`.
 When stdin ends, the requests already read finish first. `close` has `retirement` (`retired`,
 `requested`, `unknown` or `not-applicable`), `connectionClosed` (`confirmed` or `not-confirmed`) and
 `message`. A static session's `close` can carry `credentialValidUntil` in epoch milliseconds: the
@@ -5055,7 +5058,8 @@ controls. Leaving with `q`, Esc or Ctrl-C stops only this observer.
 Use `--view events` or `--view messages` to select a feed, or press `f` to change it in the
 terminal. Arrow keys scroll; `g` returns to the latest observations. The feed retains at most
 300 entries. A reported turn ending is not task completion. An interrupted feed keeps its
-last observations and reports the gap instead of showing them as current.
+last observations and reports the gap instead of showing them as current. When the connection
+comes back, after a broker restart too, the feed resumes and reports the transition as a gap.
 
 `--plain` or a noninteractive invocation uses the attributed line stream. Interactive filters
 are not supported by that stream. Authenticated observer views keep direct messages out of

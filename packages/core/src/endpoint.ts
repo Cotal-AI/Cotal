@@ -674,6 +674,11 @@ export class CotalEndpoint extends EventEmitter {
    *  `chathist_<id>` consumer, so overlapping reads would delete/recreate it under one another. */
   private histLock: Promise<unknown> = Promise.resolve();
   private readonly subs: Subscription[] = [];
+  /** The observer feeds {@link tap} was asked for. This is INTENT, re-subscribed by {@link bindTap}
+   *  on every (re)connect: a rebuild after an outage the library could not ride out closes the old
+   *  connection and every subscription on it, so a tap bound once went silent while the endpoint
+   *  reported itself connected again. */
+  private readonly taps: { readonly handler: (subject: string, msg: CotalMessage | undefined) => void; readonly subject: string }[] = [];
   /** The liveness responders {@link serveLiveness} was asked for, by plane. This is INTENT, re-bound
    *  by {@link bindLiveness} on every (re)connect: a rebuild closes the old connection and every
    *  subscription on it, so a responder bound once would leave its plane to the broker's
@@ -1711,6 +1716,7 @@ export class CotalEndpoint extends EventEmitter {
     // Re-bind the liveness responders on this connection, for armPlane3's reason: the rebuild closed
     // the old connection and the responders with it.
     for (const plane of this.livenessResponders.keys()) this.bindLiveness(plane);
+    for (const tap of this.taps) this.bindTap(tap);
 
     // Bound and live — covers initial start, manual reconnect, AND background self-heal (every
     // path lands here). The single signal an in-process agent's connected flag tracks.
@@ -2039,6 +2045,9 @@ export class CotalEndpoint extends EventEmitter {
           return; // success — re-armed; the supervisor re-triggers on the next terminal close
         } catch (e) {
           if (!this.stopped) this.emitRecoverable(e as Error);
+          // A warning listener may stop the endpoint. A backoff armed after that holds the process
+          // open for the whole delay, because the stop has already kicked the backoff it saw.
+          if (this.stopped) return;
           const delay = this.nextRetryDelayMs();
           await new Promise<void>((resolve) => {
             this.backoffResolve = resolve;
@@ -2501,8 +2510,15 @@ export class CotalEndpoint extends EventEmitter {
     handler: (subject: string, msg: CotalMessage | undefined) => void,
     opts?: { subject?: string },
   ): void {
+    const tap = { handler, subject: opts?.subject ?? spaceWildcard(this.space) };
+    this.taps.push(tap);
+    this.bindTap(tap);
+  }
+
+  /** Subscribe one {@link tap} on the current connection; with none, the next bind subscribes it. */
+  private bindTap(tap: (typeof this.taps)[number]): void {
     if (!this.nc) return;
-    const sub = this.nc.subscribe(opts?.subject ?? spaceWildcard(this.space));
+    const sub = this.nc.subscribe(tap.subject);
     this.subs.push(sub);
     void (async () => {
       for await (const m of sub) {
@@ -2512,7 +2528,7 @@ export class CotalEndpoint extends EventEmitter {
         } catch {
           decoded = undefined;
         }
-        handler(m.subject, decoded);
+        tap.handler(m.subject, decoded);
       }
     })().catch((e) => this.emit("error", e as Error));
   }
