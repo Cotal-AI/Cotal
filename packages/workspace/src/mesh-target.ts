@@ -17,6 +17,7 @@ import {
   type UserAuthInfo,
 } from "./mesh-registry.js";
 import { ProtectedRecordStore } from "./protected-records.js";
+import { rootNamesNoSpace } from "./space.js";
 
 /**
  * One coherent answer to "which mesh does this command act on, and where do its creds + personas
@@ -55,6 +56,10 @@ export interface MeshTarget {
   origin?: MeshEntry["origin"];
   /** `<root>/.cotal/agents` — the persona catalog for this mesh. */
   personaRoot: string;
+  /** For `local-space`: the root's `.cotal/` holds records but names no space, as after `space
+   *  forget`, so the default space was assumed for it. Surfaces name the folder, not a mesh
+   *  recorded there. */
+  namesNoSpace?: true;
   /** Where the target came from — this also carries OWNERSHIP for pruning. `registry`/`current`/
    *  `flag-space`/`local-recorded` mean the server + mode came from a registry record, so a
    *  stale-broker failure prunes the entry. `local-space`/`flag-server`/`flag-space-override` are the
@@ -532,7 +537,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
         `another mesh ("${onDefault.space}") is running at ${DEFAULT_SERVER}`,
         { space: onDefault.space, server: DEFAULT_SERVER },
       );
-    return localTarget(root, DEFAULT_SERVER, "local-space", flags.readOnly);
+    const target = localTarget(root, DEFAULT_SERVER, "local-space", flags.readOnly);
+    return rootNamesNoSpace(root) ? { ...target, namesNoSpace: true } : target;
   }
 
   // The fallback names *running* meshes. A liveness miss used to delete the record and

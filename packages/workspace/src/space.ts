@@ -1,6 +1,9 @@
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { DEFAULT_SPACE } from "@cotal-ai/core";
-import { authDir, findCotalRoot, soleSpaceOf } from "./auth-paths.js";
+import { authDir, findCotalRoot, soleSpaceOf, stackJournalPath } from "./auth-paths.js";
 import { recordedRuntimeSpaces } from "./local-process.js";
+import { canonicalRoot, homeCotalDir, meshesForRoot } from "./mesh-registry.js";
 import { preparedSpaceAt } from "./prepared-spaces.js";
 
 /** The space this folder operates on: its `.cotal/auth` space if set up, else the space
@@ -11,6 +14,22 @@ import { preparedSpaceAt } from "./prepared-spaces.js";
 export function resolveSpace(cwd: string): string {
   const root = findCotalRoot(cwd);
   return soleSpaceOf(authDir(root)) ?? preparedSpaceAt(root)?.space ?? DEFAULT_SPACE;
+}
+
+/** Whether this project's `.cotal/` holds records but names no space: no account, prepared space,
+ *  registration, stack journal, daemon record or broker configuration. That is the folder of a
+ *  prepared space that was forgotten or moved, or one where only a persona was written. A `.cotal/`
+ *  that is empty, or none, names nothing. */
+export function rootNamesNoSpace(root: string): boolean {
+  const control = join(root, ".cotal");
+  let entries: string[];
+  try { entries = readdirSync(control); } catch { return false; }
+  if (!entries.length || canonicalRoot(control) === canonicalRoot(homeCotalDir())) return false;
+  try {
+    if (soleSpaceOf(authDir(root)) !== undefined) return false;
+  } catch { return false; }
+  return !preparedSpaceAt(root) && !meshesForRoot(root).length && !existsSync(stackJournalPath(root)) && !recordedRuntimeSpaces(root).length
+    && !existsSync(join(control, "server-open.conf")) && !existsSync(join(authDir(root), "server.conf"));
 }
 
 /**

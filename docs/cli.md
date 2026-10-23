@@ -1834,7 +1834,9 @@ stopped instance records, so another folder can start a stack under the same nam
 them. While a member was not stopped cleanly, or the root holds preserved state, they stay and the
 result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
 names `cotal down --yes` in the root and then `space forget` again.
-`status` in a forgotten space's root then selects no space and probes no broker.
+`status` in a forgotten space's root then selects no space and probes no broker. When nothing left
+in that root's `.cotal/` names a space, its next step is `cotal space create <name> --root <root>`,
+because a bare `cotal up` there would start the default space `main` in that folder.
 
 `space delete <name> --dry-run` reads the registered broker in open or static-auth mode.
 It requires the broker's mode to match the registration, and a static connection must
