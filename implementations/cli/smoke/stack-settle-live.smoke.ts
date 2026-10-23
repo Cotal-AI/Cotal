@@ -38,6 +38,9 @@
  *     while the replacement manager is frozen before its readiness is recorded. The next bare `down`
  *     adopts the journaled replacement and stops it; in a second stack the next bare `up` adopts it
  *     and reuses it.
+ *  8. An upgrade. Each member record pins its built-in adapter at the release that wrote it. With
+ *     every pin set to an earlier release and the declarations unchanged, `down` stops the running
+ *     stack, `up` starts it again and a later `down` stops it.
  *
  * Sandboxes COTAL_HOME and every project root, and signals only pids its own stack records name.
  * Run: pnpm smoke:stack-settle:live
@@ -487,6 +490,33 @@ try {
     check("bare up after the interrupted redefinition adopts the journaled replacement and reuses it", recovered.status === 0 && row?.instanceId === replacement && row?.state === "reused" && journal?.operation.phase === "completed" && serviceInstances("redefup", "stack-manager").length === 1, shown(recovered));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down then stops the recovered stack", stopped.status === 0 && gone("redefup", "stack-manager"), shown(stopped));
+  }
+
+  // 8. An upgrade: this release controls member records an earlier release wrote.
+  {
+    const root = prepare("upgraded");
+    const port = await freePort();
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track("upgraded");
+    const pinEarlier = () => {
+      let pinned = 0;
+      for (const row of serviceInstances("upgraded")) {
+        const adapter = row.record.value.adapter;
+        if (!adapter) continue;
+        serviceInstanceStore("upgraded").commit(row.name, row, { ...row.record.value, adapter: { ...adapter, version: "0.0.1" } });
+        pinned++;
+      }
+      return pinned;
+    };
+    check("upgraded: every running member's record now pins an earlier release", started.status === 0 && pinEarlier() >= 3, shown(started));
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("down stops a running stack whose member records an earlier release wrote", stopped.status === 0 && gone("upgraded", "stack-manager") && gone("upgraded", "stack-broker"), shown(stopped));
+    check("upgraded: the stopped members' records pin an earlier release again", pinEarlier() >= 3, serviceInstances("upgraded").map((row) => row.record.value.adapter?.version));
+    const restarted = cli(root, "up", "--json");
+    track("upgraded");
+    check("up starts that stopped stack again", restarted.status === 0 && serviceInstances("upgraded", "stack-manager").some((row) => observeServiceProcess(row.record.value) === "running"), shown(restarted));
+    const final = cli(root, "down", "--yes", "--json");
+    check("a later down stops it", final.status === 0 && gone("upgraded", "stack-manager"), shown(final));
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");
