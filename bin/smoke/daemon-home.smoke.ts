@@ -86,13 +86,17 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
 // ---------- owned sandbox ----------
 const root = mkdtempSync(join(process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir(), "cdh-"));
 chmodSync(root, 0o700);
-const home = join(root, "home"), rt = join(root, "rt"), meshRoot = join(root, "mesh"), managed = join(root, "managed");
-for (const d of [home, rt, meshRoot, managed]) mkdirSync(d, { mode: 0o700 });
+const home = join(root, "home"), rt = join(root, "rt"), meshRoot = join(root, "mesh"), managed = join(root, "managed"), user = join(root, "user");
+for (const d of [home, rt, meshRoot, managed, user]) mkdirSync(d, { mode: 0o700 });
 process.env.COTAL_HOME = home;
 const legacy = daemonPaths({ XDG_RUNTIME_DIR: rt });
 const runtimeDir = join(rt, "cotal");
 const lockFile = (d: string) => join(d, "daemon.lock");
-const childEnv = { ...process.env, XDG_RUNTIME_DIR: rt, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", NO_COLOR: "1", DO_NOT_TRACK: "1" };
+// Every per-user location the CLI could read or write points into this sandbox, never the real user's.
+const childEnv = {
+  ...process.env, HOME: user, XDG_CONFIG_HOME: join(user, "config"), XDG_STATE_HOME: join(user, "state"), XDG_CACHE_HOME: join(user, "cache"),
+  XDG_RUNTIME_DIR: rt, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", NO_COLOR: "1", DO_NOT_TRACK: "1",
+};
 const runtimeEntries = (): string[] => existsSync(runtimeDir) ? readdirSync(runtimeDir, { recursive: true }).map(String).sort() : [];
 
 type Doc = { outcome?: string; result?: Record<string, any>; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
